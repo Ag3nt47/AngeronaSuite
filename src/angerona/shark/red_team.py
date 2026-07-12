@@ -194,6 +194,12 @@ class RedTeamEngine:
                     self._step_recon,
                     self._step_wmi_persistence,
                     self._step_defense_evasion,
+                    self._step_scheduled_task,
+                    self._step_registry_runkey,
+                    self._step_lateral_movement,
+                    self._step_exfil_staging,
+                    self._step_ransomware_canary,
+                    self._step_random_processes,
                 ]
                 if custom:
                     stage_fns.append(self._step_custom)
@@ -314,6 +320,95 @@ class RedTeamEngine:
         self._record("Custom (simulated)", f"user-defined: {name}",
                      "User-defined benign marker written (content only, never executed).",
                      ts, artifact_paths=[str(p)])
+
+    def _step_scheduled_task(self, jitter_range) -> None:
+        self._jitter(*jitter_range, note="Persistence — inert scheduled-task marker")
+        ts = time.time(); hexid = uuid.uuid4().hex[:8]
+        self._narrate("▶ STAGE: Scheduled Task Persistence [T1053.005] — writing an INERT marker "
+                      f"named like a malicious schtasks entry into {self.documents_dir}. No real "
+                      "task is created.")
+        p = self._marker(f"_redteam_schtask_{hexid}.txt",
+                         "ANGERONA RED TEAM drill — simulated scheduled-task marker. Inert.\n")
+        self._record("Scheduled Task (simulated)", "T1053.005 marker",
+                     "Inert scheduled-task-named marker written to Documents.", ts,
+                     artifact_paths=[str(p)])
+
+    def _step_registry_runkey(self, jitter_range) -> None:
+        self._jitter(*jitter_range, note="Persistence — inert Run-key marker")
+        ts = time.time(); hexid = uuid.uuid4().hex[:8]
+        self._narrate("▶ STAGE: Registry Run Key [T1547.001] — writing an INERT marker that NAMES "
+                      f"an HKCU Run autostart entry into {self.documents_dir}. The real registry is "
+                      "never modified.")
+        p = self._marker(f"_redteam_runkey_{hexid}.txt",
+                         "ANGERONA RED TEAM drill — simulated Run-key persistence marker. Inert.\n")
+        self._record("Registry Run Key (simulated)", "T1547.001 marker",
+                     "Inert Run-key-named marker written to Documents.", ts,
+                     artifact_paths=[str(p)])
+
+    def _step_lateral_movement(self, jitter_range) -> None:
+        self._jitter(*jitter_range, note="Lateral Movement — inert PsExec/SMB marker")
+        ts = time.time(); hexid = uuid.uuid4().hex[:8]
+        self._narrate("▶ STAGE: Lateral Movement [T1021.002] — writing an INERT marker named like "
+                      f"a PsExec/SMB admin-share artifact into {self.documents_dir}. No network "
+                      "share or remote host is touched.")
+        p = self._marker(f"_redteam_psexec_{hexid}.txt",
+                         "ANGERONA RED TEAM drill — simulated lateral-movement marker. Inert.\n")
+        self._record("Lateral Movement (simulated)", "T1021.002 marker",
+                     "Inert PsExec/SMB-named marker written to Documents.", ts,
+                     artifact_paths=[str(p)])
+
+    def _step_exfil_staging(self, jitter_range) -> None:
+        self._jitter(*jitter_range, note="Collection/Exfil — inert staging-archive marker")
+        ts = time.time(); hexid = uuid.uuid4().hex[:8]
+        self._narrate("▶ STAGE: Exfil Staging [T1074/T1560] — writing an INERT marker named like a "
+                      f"staged .rar/.7z exfil archive into {self.documents_dir}. Nothing is "
+                      "collected, compressed, or sent.")
+        p = self._marker(f"_redteam_exfil_stage_{hexid}.txt",
+                         "ANGERONA RED TEAM drill — simulated exfil-staging marker. Inert.\n")
+        self._record("Exfil Staging (simulated)", "T1074 marker",
+                     "Inert staging-archive-named marker written to Documents.", ts,
+                     artifact_paths=[str(p)])
+
+    def _step_ransomware_canary(self, jitter_range) -> None:
+        self._jitter(*jitter_range, note="Impact — inert ransomware-note marker")
+        ts = time.time(); hexid = uuid.uuid4().hex[:8]
+        self._narrate("▶ STAGE: Ransomware Impact [T1486] — writing an INERT marker named like a "
+                      f"ransom note / .locked file into {self.documents_dir}. No file is encrypted; "
+                      "this only tests ransomware heuristics on the NAME/pattern.")
+        p = self._marker(f"_redteam_README_DECRYPT_{hexid}.txt",
+                         "ANGERONA RED TEAM drill — simulated ransom-note marker. Inert.\n")
+        self._record("Ransomware Impact (simulated)", "T1486 marker",
+                     "Inert ransom-note-named marker written to Documents.", ts,
+                     artifact_paths=[str(p)])
+
+    def _step_random_processes(self, jitter_range) -> None:
+        """Spawn a few BENIGN, short-lived, red-team-TAGGED processes so the
+        process-creation sensors (PROC/ETW) and the SOAR active-defense path get
+        exercised end-to-end. Nothing harmful runs — each process just carries the
+        tag on its command line and exits immediately."""
+        import os
+        import subprocess
+        self._jitter(*jitter_range, note="Execution — benign tagged process spawns")
+        ts = time.time()
+        level = int(getattr(self, "_threat_level", getattr(self, "_complexity", 1)) or 1)
+        n = min(2 + level, 8)
+        self._narrate(f"▶ STAGE: Benign Execution [T1059-style] — spawning {n} short-lived, "
+                      "red-team-TAGGED processes (they exit immediately) so the process sensors "
+                      "and SOAR see realistic process-creation activity. Nothing harmful runs.")
+        spawned = 0
+        for _ in range(n):
+            tag = f"ANGERONA_REDTEAM_{uuid.uuid4().hex[:8]}"
+            try:
+                if os.name == "nt":
+                    subprocess.Popen(["cmd", "/c", "rem", tag])   # no-op comment, exits
+                else:
+                    subprocess.Popen(["sh", "-c", ": " + tag])
+                spawned += 1
+            except Exception:
+                pass
+            time.sleep(0.2)
+        self._record("Benign Execution (simulated)", "T1059 tagged spawns",
+                     f"Spawned {spawned} short-lived red-team-tagged process(es).", ts)
 
     def _write_history(self) -> None:
         try:

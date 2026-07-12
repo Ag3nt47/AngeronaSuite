@@ -173,13 +173,7 @@ class MainWindow(QMainWindow):
         forensics_btn = QPushButton("🎯  FORENSICS")
         forensics_btn.setToolTip("Incident forensics: Shark-vs-Shield ring collision view "
                                  "and per-PID blast-radius provenance tree")
-        fmenu = QMenu(forensics_btn)
-        fmenu.addAction("Shark vs Shield — collision view", self._open_collision)
-        fmenu.addAction("Blast radius by PID…", self._open_blast_prompt)
-        fmenu.addAction("Top Talkers — outbound network…", self._open_top_talkers)
-        fmenu.addSeparator()
-        fmenu.addAction("Live-Fire Sandbox & Editor…", self._open_sandbox)
-        forensics_btn.setMenu(fmenu)
+        forensics_btn.clicked.connect(self._open_forensics_hub)
         console_btn = QPushButton("🧰  CONSOLE")
         console_btn.clicked.connect(self._open_upgrade_console)
         settings_btn = QPushButton("⚙  SETTINGS")
@@ -918,6 +912,104 @@ class MainWindow(QMainWindow):
                 self.manager, self.config, self.bus, self)
         except Exception as exc:
             QMessageBox.warning(self, "Console", f"Could not open the console: {exc}")
+
+    def _open_forensics_hub(self) -> None:
+        """Forensics hub — each tool in its own highlighted, hover-lit card."""
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QGroupBox, QLabel, QPushButton
+        dlg = QDialog(self); dlg.setWindowTitle("Forensics"); dlg.resize(540, 540)
+        try:
+            dlg.setStyleSheet(self._qss())
+        except Exception:
+            pass
+        lay = QVBoxLayout(dlg)
+        title = QLabel("Incident Forensics"); title.setObjectName("PageTitle")
+        lay.addWidget(title)
+        lay.addWidget(QLabel("Pick a forensic view — each opens in its own window."))
+
+        options = [
+            ("🦈  Shark vs Shield — collision view",
+             "Per simulated attack technique, see whether a defensive ring caught it and which one. "
+             "Double-click a row for detail + a MITRE ATT&CK link.",
+             self._open_collision),
+            ("💥  Blast radius by PID",
+             "Given a process ID, map its provenance/impact tree — parents, children, and what it touched.",
+             self._open_blast_prompt),
+            ("🌐  Top Talkers — outbound network",
+             "Live per-process outbound connections. Double-click a process to Allow / Block / Ask-AI.",
+             self._open_top_talkers),
+            ("⛓️  Incident Kill-Chain Timeline",
+             "Related alerts grouped per process and laid out along the ATT&CK chain "
+             "(Recon → … → Impact) — see how far an attack got. Double-click a technique for MITRE.",
+             self._open_incident_timeline),
+            ("🧪  Live-Fire Sandbox & Editor",
+             "Run and inspect code safely, and edit module source with AI help.",
+             self._open_sandbox),
+            ("🧰  Collect IR Triage Bundle",
+             "One click: snapshot processes, connections, users, recent alerts and incidents "
+             "into a timestamped ZIP for incident response / after-action review.",
+             self._open_ir_bundle),
+        ]
+
+        def _make(cb):
+            def _run():
+                dlg.accept()
+                try:
+                    cb()
+                except Exception as exc:
+                    QMessageBox.warning(self, "Forensics", f"Could not open: {exc}")
+            return _run
+
+        for name, desc, cb in options:
+            box = QGroupBox(name)
+            box.setStyleSheet(
+                "QGroupBox{border:1px solid #33507a;border-radius:8px;margin-top:10px;"
+                "padding:10px;background:#12233b;font-weight:bold;}"
+                "QGroupBox:hover{border-color:#38bdf8;background:#16304f;}"
+                "QGroupBox::title{subcontrol-origin:margin;left:10px;padding:0 4px;color:#38bdf8;}")
+            bl = QVBoxLayout(box)
+            d = QLabel(desc); d.setWordWrap(True)
+            d.setStyleSheet("color:#9fb3c8; font-weight:normal;")
+            bl.addWidget(d)
+            openb = QPushButton("Open")
+            openb.clicked.connect(_make(cb))
+            bl.addWidget(openb)
+            lay.addWidget(box)
+
+        lay.addStretch()
+        close = QPushButton("Close"); close.clicked.connect(dlg.accept)
+        lay.addWidget(close)
+        dlg.exec()
+
+    def _open_incident_timeline(self) -> None:
+        from angerona.gui.incident_timeline_page import IncidentTimelineDialog
+        bus = getattr(self, "bus", None) or getattr(self, "_bus", None)
+        IncidentTimelineDialog(bus, self).exec()
+
+    def _open_ir_bundle(self) -> None:
+        """Collect a forensic triage ZIP and offer to open its folder."""
+        import os
+        import subprocess
+        from angerona.core.ir_bundle import collect_triage_bundle
+        try:
+            path = collect_triage_bundle(bus=getattr(self, "bus", None))
+        except Exception as exc:
+            QMessageBox.warning(self, "IR Triage Bundle",
+                                f"Could not collect bundle: {exc}")
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("IR Triage Bundle")
+        box.setText(f"Triage bundle collected:\n{path}")
+        open_btn = box.addButton("Open Folder", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Close", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_btn:
+            try:
+                if os.name == "nt":
+                    subprocess.Popen(["explorer", "/select,", str(path)])
+                else:
+                    subprocess.Popen(["xdg-open", str(path.parent)])
+            except Exception:
+                pass
 
     # ── Settings ─────────────────────────────────────────────────────────────
     def _open_settings(self) -> None:

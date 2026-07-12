@@ -136,6 +136,12 @@ class ThreatIntelDashboard(QDialog):
         refresh_btn.setFixedWidth(100)
         refresh_btn.clicked.connect(self._load_and_render)
         hdr.addWidget(refresh_btn)
+
+        self._staged: list = []
+        staged_btn = QPushButton("📋  Staged / Confirmed")
+        staged_btn.setToolTip("View the items you've staged/confirmed for remediation review.")
+        staged_btn.clicked.connect(self._show_staged)
+        hdr.addWidget(staged_btn)
         lay.addLayout(hdr)
 
         # ── Info bar ─────────────────────────────────────────────────────
@@ -170,6 +176,8 @@ class ThreatIntelDashboard(QDialog):
             "QTableWidget::item { padding: 5px 8px; }"
         )
         lay.addWidget(self._table, 1)
+        # Double-click a row (anywhere, not just the Stage button) → full detail.
+        self._table.cellDoubleClicked.connect(self._on_row_double)
 
         # ── Footer stats ─────────────────────────────────────────────────
         self._footer = QLabel("No KEV data loaded.")
@@ -190,6 +198,7 @@ class ThreatIntelDashboard(QDialog):
         data = _load_threats()
         matches = data.get("matches", [])
         generated = data.get("generated", "")
+        self._row_recs: dict = {}   # row index → (cve, rec), for row double-click
 
         self._ts_label.setText(f"Last sync: {generated or '—'}")
 
@@ -217,6 +226,7 @@ class ThreatIntelDashboard(QDialog):
                 return it
 
             cve  = rec.get("cve") or "—"
+            self._row_recs[row] = (cve, rec)
             rans = str(rec.get("ransomware") or "—")
             rem  = str(rec.get("remediation") or "—")
             due  = str(rec.get("due_date") or "—")
@@ -269,50 +279,115 @@ class ThreatIntelDashboard(QDialog):
             self._stage_review(cve, rec)
         return _handler
 
-    def _stage_review(self, cve: str, rec: dict) -> None:
-        """Show full remediation details + optional confirm() call."""
-        rem  = rec.get("remediation") or "No remediation text available."
-        mitre = rec.get("mitre") or "—"
-        rans  = rec.get("ransomware") or "—"
-        due   = rec.get("due_date") or "—"
-        name  = rec.get("name") or cve
+    def _on_row_double(self, row: int, _col: int) -> None:
+        entry = getattr(self, "_row_recs", {}).get(row)
+        if entry:
+            self._stage_review(entry[0], entry[1])
 
-        msg = QMessageBox(self)
-        msg.setWindowTitle(f"Stage for Review — {cve}")
-        msg.setIcon(QMessageBox.Icon.Warning)
-        msg.setText(f"<b>{name}</b><br><br>"
-                    f"<b>CVE:</b> {cve}<br>"
-                    f"<b>MITRE:</b> {mitre}<br>"
-                    f"<b>Ransomware:</b> {rans}<br>"
-                    f"<b>Due date:</b> {due}")
-        msg.setInformativeText(
-            f"<b>Required Remediation (CISA):</b><br>{rem}<br><br>"
-            "<i>Clicking 'Confirm & Stage' stages this item for operator review. "
-            "No change is applied to the host automatically.</i>"
-        )
-        msg.setStandardButtons(
-            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
-        msg.button(QMessageBox.StandardButton.Ok).setText("Confirm & Stage")
-        msg.button(QMessageBox.StandardButton.Cancel).setText("Cancel")
-        if msg.exec() == QMessageBox.StandardButton.Ok:
+    def _stage_review(self, cve: str, rec: dict) -> None:
+        """Full detail dialog: remediation text, WEB-RESEARCH buttons (KEV usually
+        only says 'apply per vendor instructions', so link out to the specific,
+        authoritative sources), and a review-gated Confirm & Stage."""
+        import time as _time
+        import webbrowser
+        from urllib.parse import quote_plus
+        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+                                       QTextEdit, QPushButton)
+
+        rem    = rec.get("remediation") or "No remediation text available."
+        mitre  = rec.get("mitre") or "—"
+        rans   = rec.get("ransomware") or "—"
+        due    = rec.get("due_date") or "—"
+        name   = rec.get("name") or cve
+        vendor = rec.get("vendor") or ""
+        prod   = rec.get("product") or ""
+
+        dlg = QDialog(self); dlg.setWindowTitle(f"Threat detail — {cve}"); dlg.resize(660, 500)
+        lay = QVBoxLayout(dlg)
+        head = QLabel(f"<b>{name}</b><br><b>CVE:</b> {cve} &nbsp; "
+                      f"<b>Vendor:</b> {vendor} &nbsp; <b>Product:</b> {prod}<br>"
+                      f"<b>MITRE:</b> {mitre} &nbsp; <b>Ransomware:</b> {rans} &nbsp; "
+                      f"<b>Due:</b> {due}")
+        head.setWordWrap(True); lay.addWidget(head)
+
+        lay.addWidget(QLabel("<b>Required Remediation (CISA KEV):</b>"))
+        rt = QTextEdit(); rt.setReadOnly(True); rt.setPlainText(rem); rt.setMaximumHeight(120)
+        lay.addWidget(rt)
+
+        lay.addWidget(QLabel("<b>Research the specific fix on the web:</b>"))
+        web = QHBoxLayout()
+        def _open(url):
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+        b_nvd = QPushButton("NVD detail")
+        b_nvd.clicked.connect(lambda: _open(f"https://nvd.nist.gov/vuln/detail/{quote_plus(cve)}"))
+        b_kev = QPushButton("CISA KEV entry")
+        b_kev.clicked.connect(lambda: _open(
+            "https://www.cisa.gov/known-exploited-vulnerabilities-catalog?search_api_fulltext="
+            + quote_plus(cve)))
+        b_adv = QPushButton("Vendor advisory")
+        b_adv.clicked.connect(lambda: _open(
+            "https://www.google.com/search?q="
+            + quote_plus(f"{cve} {vendor} {prod} security advisory patch")))
+        b_fix = QPushButton("How-to-patch search")
+        b_fix.clicked.connect(lambda: _open(
+            "https://www.google.com/search?q=" + quote_plus(f"{cve} remediation how to patch steps")))
+        for b in (b_nvd, b_kev, b_adv, b_fix):
+            web.addWidget(b)
+        lay.addLayout(web)
+
+        act = QHBoxLayout(); act.addStretch()
+        b_confirm = QPushButton("Confirm & Stage")
+        b_close = QPushButton("Close")
+        act.addWidget(b_confirm); act.addWidget(b_close)
+        lay.addLayout(act)
+
+        def _confirm():
+            result = {"remediation": rem, "note": "review-gated; not executed"}
             if self._intl is not None:
                 try:
                     result = self._intl.confirm(cve, run_verification=False)
-                    info = QMessageBox(self)
-                    info.setWindowTitle("Staged")
-                    info.setText(f"{cve} staged for operator review.")
-                    info.setInformativeText(
-                        f"Remediation: {result.get('remediation','—')}\n"
-                        f"Note: {result.get('note','')}"
-                    )
-                    info.exec()
                 except Exception as exc:
-                    QMessageBox.warning(self, "Stage Error", str(exc))
-            else:
-                QMessageBox.information(
-                    self, "Staged",
-                    f"{cve} noted for review.\n"
-                    "(INTL module not available — restart to enable confirm().)")
+                    QMessageBox.warning(self, "Stage Error", str(exc)); return
+            self._staged.append({
+                "cve": cve, "name": name, "vendor": vendor, "product": prod,
+                "remediation": result.get("remediation", rem),
+                "note": result.get("note", ""), "when": _time.strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            QMessageBox.information(self, "Staged",
+                                   f"{cve} staged for operator review.\n"
+                                   "View it any time via the 'Staged / Confirmed' button.")
+            dlg.accept()
+        b_confirm.clicked.connect(_confirm)
+        b_close.clicked.connect(dlg.reject)
+        dlg.exec()
+
+    def _show_staged(self) -> None:
+        """A place to review everything staged/confirmed this session."""
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QPushButton
+        dlg = QDialog(self); dlg.setWindowTitle("Staged / Confirmed remediations"); dlg.resize(700, 480)
+        lay = QVBoxLayout(dlg)
+        txt = QTextEdit(); txt.setReadOnly(True)
+        staged = getattr(self, "_staged", [])
+        if not staged:
+            txt.setPlainText("Nothing staged yet.\n\nDouble-click a CVE row (or use 'Stage for "
+                             "Review'), review the detail, and click 'Confirm & Stage' — confirmed "
+                             "items appear here with their remediation and timestamp.")
+        else:
+            lines = []
+            for s in staged:
+                lines.append(f"[{s['when']}]  {s['cve']}  —  {s['name']}")
+                lines.append(f"    Vendor / Product : {s['vendor']} / {s['product']}")
+                lines.append(f"    Remediation      : {s['remediation']}")
+                if s.get("note"):
+                    lines.append(f"    Note             : {s['note']}")
+                lines.append("")
+            txt.setPlainText("\n".join(lines))
+        lay.addWidget(txt)
+        b = QPushButton("Close"); b.clicked.connect(dlg.accept); lay.addWidget(b)
+        dlg.exec()
 
     def _open_consult_ai(self) -> None:
         """Open the online AI consult directly on the current CVE set."""

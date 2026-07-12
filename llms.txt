@@ -27,6 +27,18 @@ Subclass `core.module_base.BaseModule`; set `name/description/category/version/e
 
 ## NEW / RECENT FEATURES
 
+## LATEST (v1.5.0 — active defense + detection modules + incident kill-chains)
+- **4 new detection modules** (all `BaseModule`, auto-discovered, `CODE/NAME/state/health_pct/self_test()`+`register()`; read-only, no host change):
+  - **CREDG** (`lsass_guard.py`) — LSASS credential-dumping detection (T1003.001) via command-line + artifact signatures (comsvcs MiniDump, procdump, Mimikatz/nanodump/pypykatz tokens). Emits CRITICAL with pid so SOAR active defense can contain. Never reads LSASS memory itself.
+  - **BEAC** (`beacon_detector.py`) — C2 beacon detection (T1071/T1571). Times per-(process→external-IP) NEW connections; flags a low-jitter regular cadence via coefficient-of-variation (`_MAX_CV=0.25`, ≥4 callbacks). Ignores RFC1918/loopback.
+  - **VSSG** (`shadowcopy_guard.py`) — shadow-copy deletion + recovery-disable detection (T1490): `vssadmin delete shadows`, `wmic shadowcopy delete`, `wbadmin delete catalog`, `bcdedit …recoveryenabled no`, `Disable-ComputerRestore`. Ransomware precursor → CRITICAL with pid + parent pid.
+  - **USBW** (`usb_monitor.py`) — new removable/USB volume detection (T1091/T1200/T1052); raises severity when a drive carries `autorun.inf`. Baselines existing mounts on first pass so only NEW insertions alert.
+- **Enhancement — SOAR active-defense network isolation** (`modules/soar.py`) — on first containment `_contain()` now calls `_network_block(pid, name)`: a hidden `netsh advfirewall` outbound-block rule (tagged `Angerona-Isolate-<name>-<pid>`) so a suspended process can't reach its C2 even if resumed. Windows-only, best-effort; protected-process allowlist + 2-signal corroboration still enforced.
+- **Enhancement — Incident kill-chain timeline** (`core/incident_timeline.py` + `gui/incident_timeline_page.py`) — groups recent MITRE-tagged HIGH+ events per process into incidents, orders techniques along the ATT&CK chain (Recon→…→Impact via `attack_tracker.TACTIC_ORDER`), computes severity/progress%, and renders an expandable tree (double-click technique → MITRE page; Export JSON → `shared_logs/incident_timeline.json`). Reachable via 🎯 Forensics ▸ "⛓️ Incident Kill-Chain Timeline".
+- **Enhancement — Scheduled AI security briefing** (`modules/daily_briefing.py`, **BRIEF**) — every 24h (env `ANGERONA_BRIEFING_INTERVAL_H`) compiles alert volume by severity, top techniques, active incidents, and containment stats into a short plain-English briefing via local Ollama (`/api/chat`), with a deterministic template fallback so a briefing is ALWAYS produced. Writes `shared_logs/daily_briefing.{txt,json}` and emits to the bus.
+- **Enhancement — One-click IR triage bundle** (`core/ir_bundle.py`) — `collect_triage_bundle(bus=…)` snapshots processes (pid/ppid/exe/cmdline/mem), network connections, users, system info, recent events, and the incident timeline into a timestamped ZIP under `shared_logs/ir_bundles/`. Reachable via 🎯 Forensics ▸ "🧰 Collect IR Triage Bundle" (offers Open Folder).
+- Verified: all new modules pass `self_test()`; package CODEs unique (45, 0 duplicates); incident-timeline + briefing logic unit-tested.
+
 ## LATEST (v1.4.0 — decoupled resilience ecosystem + detection/intel modules)
 - **New detection/intel modules** (all `BaseModule`, auto-discovered, `CODE/NAME/state/health_pct/self_test()`+`register()`):
   - **ETWR** (`etw_realtime_sensor.py`) — real-time process-creation via the Kernel-Process ETW provider (pywintrace); closes the polling blind spot. Requires elevation; degrades to "unavailable" (ETWG/polling still cover) off-Windows / no pywintrace. Complements ETWG (Security-channel 4688).

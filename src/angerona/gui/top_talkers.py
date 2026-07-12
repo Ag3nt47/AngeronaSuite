@@ -50,7 +50,8 @@ class TopTalkersDialog(QDialog):
 
         root = QVBoxLayout(self)
         head = QLabel("Who is this machine talking to? Established outbound connections "
-                      "grouped by process. External (untrusted) destinations are flagged red.")
+                      "grouped by process. External (untrusted) destinations are flagged red. "
+                      "Double-click a process for Allow / Block / Ask-AI actions.")
         head.setWordWrap(True)
         head.setStyleSheet("color:#cbd5e1;")
         root.addWidget(head)
@@ -68,6 +69,7 @@ class TopTalkersDialog(QDialog):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSortingEnabled(True)
+        self.table.cellDoubleClicked.connect(self._on_process)   # row → actions
         root.addWidget(self.table, 1)
 
         row = QHBoxLayout()
@@ -151,6 +153,103 @@ class TopTalkersDialog(QDialog):
         self.summary.setText(
             f"{len(by_pid)} process(es) with live outbound connections · "
             f"{total_ext} connection(s) to untrusted external hosts")
+
+    # ── per-process actions ──────────────────────────────────────────────────
+    def _on_process(self, row: int, _col: int) -> None:
+        try:
+            name = self.table.item(row, 0).text()
+            pid = int(self.table.item(row, 1).data(Qt.DisplayRole))
+            dest_item = self.table.item(row, 4)
+            dest = dest_item.text() if dest_item else ""
+        except Exception:
+            return
+        self._process_actions(pid, name, dest)
+
+    def _process_actions(self, pid: int, name: str, dest: str) -> None:
+        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+                                       QPushButton, QMessageBox)
+        dlg = QDialog(self); dlg.setWindowTitle(f"Process actions — {name} (PID {pid})")
+        dlg.resize(480, 200)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel(f"<b>{name}</b>  (PID {pid})<br>Top remote: {dest or '—'}"))
+        lay.addWidget(QLabel("Choose an action for this process's network activity:"))
+        rowb = QHBoxLayout()
+        b_allow = QPushButton("✓ Allow"); b_block = QPushButton("⛔ Block")
+        b_ai = QPushButton("🤖 Ask AI"); b_close = QPushButton("Close")
+        for b in (b_allow, b_block, b_ai, b_close):
+            rowb.addWidget(b)
+        lay.addLayout(rowb)
+
+        def _allow():
+            self._record_list("talker_allowlist.json", pid, name, dest)
+            QMessageBox.information(dlg, "Allowed", f"{name} (PID {pid}) added to the allowlist.")
+
+        def _block():
+            if QMessageBox.question(
+                    dlg, "Block",
+                    f"Block {name} (PID {pid})?\n\nThis records it to the blocklist and "
+                    "terminates the process to stop its current connections.") != QMessageBox.Yes:
+                return
+            self._record_list("talker_blocklist.json", pid, name, dest)
+            killed = False
+            try:
+                import psutil
+                psutil.Process(pid).terminate()
+                killed = True
+            except Exception:
+                pass
+            QMessageBox.information(dlg, "Blocked",
+                                   f"{name} added to the blocklist"
+                                   + (" and terminated." if killed else " (could not terminate)."))
+            self.refresh()
+
+        def _ai():
+            QMessageBox.information(dlg, "AI recommendation", self._ask_ai(name, pid, dest))
+
+        b_allow.clicked.connect(_allow)
+        b_block.clicked.connect(_block)
+        b_ai.clicked.connect(_ai)
+        b_close.clicked.connect(dlg.accept)
+        dlg.exec()
+
+    def _record_list(self, fname: str, pid: int, name: str, dest: str) -> None:
+        import json, time
+        from pathlib import Path
+        try:
+            root = Path(__file__).resolve().parents[3] / "shared_logs"
+            root.mkdir(parents=True, exist_ok=True)
+            p = root / fname
+            data = []
+            if p.exists():
+                try:
+                    data = json.loads(p.read_text(encoding="utf-8"))
+                except Exception:
+                    data = []
+            data.append({"pid": pid, "name": name, "dest": dest,
+                         "when": time.strftime("%Y-%m-%d %H:%M:%S")})
+            p.write_text(json.dumps(data[-500:], indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _ask_ai(self, name: str, pid: int, dest: str) -> str:
+        """Best-effort local-Ollama recommendation for this process/connection."""
+        import os
+        prompt = (f"A Windows process '{name}' (PID {pid}) has an outbound network "
+                  f"connection to {dest or 'unknown'}. In 2-3 sentences, assess whether "
+                  f"this looks benign or suspicious and recommend allow or block.")
+        try:
+            import json, urllib.request
+            body = json.dumps({"model": os.environ.get("ANGERONA_OLLAMA_MODEL", "llama3"),
+                               "prompt": prompt, "stream": False}).encode()
+            req = urllib.request.Request("http://127.0.0.1:11434/api/generate", data=body,
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                data = json.loads(r.read().decode("utf-8", "ignore"))
+            return data.get("response", "").strip() or "(no response from local AI)"
+        except Exception as exc:
+            return (f"Local AI (Ollama) unavailable: {exc}\n\n"
+                    f"Heuristic: '{name}' → {dest or 'unknown'}. Check the destination's "
+                    "reputation; block if it is an unfamiliar external host.")
 
     @staticmethod
     def _num(v: int) -> QTableWidgetItem:

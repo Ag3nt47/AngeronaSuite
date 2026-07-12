@@ -889,7 +889,12 @@ class CollisionView(QDialog):
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
+        self.table.cellDoubleClicked.connect(self._on_verdict)   # row → detail + actions
+        self._row_verdicts: dict = {}
         root.addWidget(self.table)
+        _hint = QLabel("Double-click a technique for full detail + a MITRE ATT&CK link.")
+        _hint.setStyleSheet("color:#64748b; font-size:11px;")
+        root.addWidget(_hint)
 
         row = QHBoxLayout()
         refresh = QPushButton("Refresh")
@@ -924,10 +929,12 @@ class CollisionView(QDialog):
     def _refresh(self) -> None:
         verdicts, src = self._load_verdicts()
         self.table.setRowCount(0)
+        self._row_verdicts = {}
         caught = 0
         for v in verdicts:
             r = self.table.rowCount()
             self.table.insertRow(r)
+            self._row_verdicts[r] = v
             is_caught = bool(v.get("caught"))
             caught += is_caught
             by = v.get("detected_by") or ""
@@ -948,6 +955,53 @@ class CollisionView(QDialog):
         else:
             self.summary.setText(f"{caught}/{n} simulated technique(s) intercepted by the shield. "
                                  f"Source: {src}")
+
+    def _on_verdict(self, row: int, _col: int) -> None:
+        v = getattr(self, "_row_verdicts", {}).get(row)
+        if v:
+            self._verdict_detail(v)
+
+    def _verdict_detail(self, v: dict) -> None:
+        import re
+        import webbrowser
+        import json as _json
+        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+                                       QTextEdit, QPushButton, QApplication)
+        tech = f"{v.get('stage', '')} — {v.get('technique', '')}".strip(" —")
+        caught = bool(v.get("caught"))
+        m = re.search(r"\bT\d{4}(?:\.\d{3})?\b", _json.dumps(v))
+        tid = m.group(0) if m else ""
+
+        dlg = QDialog(self); dlg.setWindowTitle(f"Collision detail — {tech or 'technique'}")
+        dlg.resize(640, 480)
+        try:
+            dlg.setStyleSheet(self.styleSheet())
+        except Exception:
+            pass
+        lay = QVBoxLayout(dlg)
+        colour = "#22c55e" if caught else "#ef4444"
+        status = "BLOCKED by the shield" if caught else "MISSED — not intercepted"
+        lay.addWidget(QLabel(f"<b>{tech or 'Technique'}</b><br>Result: "
+                             f"<b style='color:{colour}'>{status}</b>"))
+        det = QTextEdit(); det.setReadOnly(True)
+        det.setPlainText("\n".join(f"{k}: {val}" for k, val in v.items()))
+        lay.addWidget(det)
+
+        rowb = QHBoxLayout()
+        if tid:
+            base = tid.split(".")[0]
+            url = (f"https://attack.mitre.org/techniques/{base}/{tid.split('.')[1]}/"
+                   if "." in tid else f"https://attack.mitre.org/techniques/{tid}/")
+            b_mitre = QPushButton(f"MITRE ATT&CK ({tid})")
+            b_mitre.clicked.connect(lambda: webbrowser.open(url))
+            rowb.addWidget(b_mitre)
+        b_copy = QPushButton("Copy details")
+        b_copy.clicked.connect(lambda: QApplication.clipboard().setText(det.toPlainText()))
+        rowb.addWidget(b_copy)
+        b_close = QPushButton("Close"); b_close.clicked.connect(dlg.accept)
+        rowb.addWidget(b_close)
+        lay.addLayout(rowb)
+        dlg.exec()
 
 
 # ── Red Team Simulation config (unified Shark + APT, difficulty/target/custom) ─
