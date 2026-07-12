@@ -1,0 +1,89 @@
+# ============================================================================
+#  Project Angerona — .gitignore
+#  Never commit secrets, local runtime state, build output, or bytecode.
+#  (git-init.bat runs `git add -A`, so anything not matched here WILL be
+#   committed — keep this list authoritative.)
+# ============================================================================
+
+# ── Secrets (NEVER commit) ──────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+*.token
+secrets/
+_*vault*
+bus.key
+ANGERONA_WATCHDOG_TOKEN*
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ── Go (compiled hypervisor watchdog — build artifact) ──────────────────────
+frz/angerona_watchdog.exe
+frz/frz_watchdog.exe
+frz/hypervisor/*.exe
+frz/hypervisor/go.sum
+*.test
+
+# ── Runtime data / local state ──────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+logs/
+*.log
+quarantine/
+flight-recorder/
+baselines/
+diagnostics/
+remediations/
+custom_user_patch.ps1
+shared_logs/
+
+# Resilience ecosystem runtime (heartbeats, shared-memory rings, tokens)
+heartbeats/
+ipc/
+*.hb
+*.ring
+standdown.cmd
+
+# Local AI model blobs (never version huge weights)
+*.gguf
+models/
+
+# ── OS / IDE / editor ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
+*.bak
+*.tmp
+
+# ── Build output ────────────────────────────────────────────────────────────
+build/
+dist/
+*.spec
+
+# ── Self-check runtime report ───────────────────────────────────────────────
+selfcheck_report*.txt

@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Angerona Sysmon Configuration — high-signal, low-noise.
+
+  Deploy : Sysmon64.exe -accepteula -i config\sysmon_config.xml
+  Update : Sysmon64.exe -c config\sysmon_config.xml
+  Remove : Sysmon64.exe -u
+
+  HashAlgorithms: SHA256 only (no MD5 collisions, manageable size).
+  Philosophy: strict Include rules so the user-mode pipeline isn't flooded.
+-->
+<Sysmon schemaversion="4.90">
+  <HashAlgorithms>SHA256</HashAlgorithms>
+  <CheckRevocation/>
+
+  <EventFiltering>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         EID 1: Process Creation
+         Exclude noisy native background tasks; include suspicious execution
+         paths and LOLBin command-line patterns.
+         ═══════════════════════════════════════════════════════════════════ -->
+    <RuleGroup name="proc_exclude_noise" groupRelation="or">
+      <ProcessCreate onmatch="exclude">
+        <!-- Standard background explorer activity -->
+        <Image condition="is">C:\Windows\explorer.exe</Image>
+        <Image condition="is">C:\Windows\System32\taskhostw.exe</Image>
+        <Image condition="is">C:\Windows\System32\sihost.exe</Image>
+        <Image condition="is">C:\Windows\System32\backgroundTaskHost.exe</Image>
+        <Image condition="is">C:\Windows\System32\SearchIndexer.exe</Image>
+        <Image condition="is">C:\Windows\System32\SearchHost.exe</Image>
+        <Image condition="is">C:\Windows\System32\RuntimeBroker.exe</Image>
+        <Image condition="is">C:\Windows\System32\conhost.exe</Image>
+        <!-- Known-clean updaters -->
+        <CommandLine condition="contains">MicrosoftEdgeUpdate</CommandLine>
+        <CommandLine condition="contains">OneDriveSetup</CommandLine>
+        <CommandLine condition="contains">WindowsUpdate</CommandLine>
+      </ProcessCreate>
+    </RuleGroup>
+
+    <RuleGroup name="proc_include_suspicious" groupRelation="or">
+      <ProcessCreate onmatch="include">
+        <!-- Execution from staging / writable directories -->
+        <Image condition="contains">\Temp\</Image>
+        <Image condition="contains">\AppData\Local\Temp\</Image>
+        <Image condition="contains">\AppData\Roaming\</Image>
+        <Image condition="contains">\Downloads\</Image>
+        <Image condition="contains">\ProgramData\</Image>
+        <Image condition="contains">\Users\Public\</Image>
+        <!-- LOLBin command-line indicators -->
+        <CommandLine condition="contains">-EncodedCommand</CommandLine>
+        <CommandLine condition="contains">-enc </CommandLine>
+        <CommandLine condition="contains">IEX</CommandLine>
+        <CommandLine condition="contains">Invoke-Expression</CommandLine>
+        <CommandLine condition="contains">DownloadString</CommandLine>
+        <CommandLine condition="contains">WebClient</CommandLine>
+        <CommandLine condition="contains">New-Object Net</CommandLine>
+        <CommandLine condition="contains">wscript</CommandLine>
+        <CommandLine condition="contains">cscript</CommandLine>
+        <CommandLine condition="contains">mshta</CommandLine>
+        <CommandLine condition="contains">regsvr32</CommandLine>
+        <CommandLine condition="contains">rundll32</CommandLine>
+        <CommandLine condition="contains">certutil</CommandLine>
+        <CommandLine condition="contains">bitsadmin</CommandLine>
+        <!-- Script hosts spawned from Office -->
+        <ParentImage condition="end with">WINWORD.EXE</ParentImage>
+        <ParentImage condition="end with">EXCEL.EXE</ParentImage>
+        <ParentImage condition="end with">POWERPNT.EXE</ParentImage>
+        <ParentImage condition="end with">OUTLOOK.EXE</ParentImage>
+      </ProcessCreate>
+    </RuleGroup>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         EID 3: Network Connection — outbound TCP/UDP, exclude loopback
+         and known-clean Microsoft infrastructure.
+         ═══════════════════════════════════════════════════════════════════ -->
+    <RuleGroup name="net_exclude" groupRelation="or">
+      <NetworkConnect onmatch="exclude">
+        <DestinationIp condition="is">127.0.0.1</DestinationIp>
+        <DestinationIp condition="is">::1</DestinationIp>
+        <DestinationIp condition="begin with">169.254.</DestinationIp>
+        <DestinationHostname condition="end with">.microsoft.com</DestinationHostname>
+        <DestinationHostname condition="end with">.windows.com</DestinationHostname>
+        <DestinationHostname condition="end with">.windowsupdate.com</DestinationHostname>
+        <!-- svchost generates enormous DNS/NTP/DHCP noise -->
+        <Image condition="is">C:\Windows\System32\svchost.exe</Image>
+      </NetworkConnect>
+    </RuleGroup>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         EID 6: Driver Loaded — capture all (driver loading is rare and
+         always high-signal; BYOVD starts here).
+         ═══════════════════════════════════════════════════════════════════ -->
+    <RuleGroup name="driver_load_all" groupRelation="or">
+      <DriverLoad onmatch="exclude"/>
+      <!-- Exclude nothing — all driver loads are captured -->
+    </RuleGroup>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         EID 8: CreateRemoteThread — cross-process injection.
+         Exclude known-safe pairs (WER, debuggers).
+         ═══════════════════════════════════════════════════════════════════ -->
+    <RuleGroup name="crt_exclude_safe" groupRelation="or">
+      <CreateRemoteThread onmatch="exclude">
+        <SourceImage condition="is">C:\Windows\System32\werfault.exe</SourceImage>
+        <SourceImage condition="is">C:\Windows\System32\wermgr.exe</SourceImage>
+      </CreateRemoteThread>
+    </RuleGroup>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         EID 10: ProcessAccess — focus on LSASS handle opens (T1003.001)
+         and broad PROCESS_ALL_ACCESS grants.
+         ═══════════════════════════════════════════════════════════════════ -->
+    <RuleGroup name="proc_access_lsass" groupRelation="or">
+      <ProcessAccess onmatch="include">
+        <!-- LSASS credential dumping access masks -->
+        <TargetImage condition="end with">lsass.exe</TargetImage>
+        <!-- Broad access masks used by injection / credential tools -->
+        <GrantedAccess condition="is">0x1010</GrantedAccess>
+        <GrantedAccess condition="is">0x1410</GrantedAccess>
+        <GrantedAccess condition="is">0x1fffff</GrantedAccess>
+        <GrantedAccess condition="is">0x143a</GrantedAccess>
+      </ProcessAccess>
+    </RuleGroup>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         EID 25: Process Tampering — process hollowing, overwritten PE
+         (T1055.012). Capture all instances.
+         ═══════════════════════════════════════════════════════════════════ -->
+    <RuleGroup name="proc_tamper_all" groupRelation="or">
+      <ProcessTampering onmatch="include"/>
+    </RuleGroup>
+
+  </EventFiltering>
+</Sysmon>

@@ -1,0 +1,78 @@
+# angerona.manifest.template — Gramine (Intel SGX) manifest for Project Angerona
+# =============================================================================
+# Runs the Angerona Python suite inside an SGX enclave so the MEMC in-memory
+# flight cache and the IPC key are protected against memory-scraping / a hostile
+# hypervisor. Rendered with `gramine-manifest` then signed with `gramine-sgx-sign`.
+#
+# BUILD (run from the repo root):
+#   # 1) one-time: generate an enclave signing key
+#   gramine-sgx-gen-private-key
+#   # 2) render this template into a concrete manifest
+#   gramine-manifest \
+#       -Dlog_level=error \
+#       -Darch_libdir=/lib/x86_64-linux-gnu \
+#       -Dentrypoint="$(which python3)" \
+#       angerona.manifest.template angerona.manifest
+#   # 3) sign it (produces angerona.manifest.sgx + angerona.sig)
+#   gramine-sgx-sign --manifest angerona.manifest --output angerona.manifest.sgx
+#   # 4) launch inside the enclave
+#   gramine-sgx angerona -m angerona
+# =============================================================================
+
+libos.entrypoint = "{{ entrypoint }}"
+
+loader.log_level = "{{ log_level }}"
+loader.entrypoint = "file:{{ gramine.libos }}"
+loader.argv = ["{{ entrypoint }}", "-m", "angerona"]
+
+loader.env.LD_LIBRARY_PATH = "/lib:{{ arch_libdir }}:/usr/lib:/usr/{{ arch_libdir }}"
+loader.env.PYTHONPATH = "/src"
+# Signal to sgx_guard.py that we are confidential-compute active.
+loader.env.GRAMINE = "1"
+loader.insecure__use_cmdline_argv = true
+
+# --- Filesystem mounts -------------------------------------------------------
+fs.mounts = [
+  { path = "/lib",                uri = "file:{{ gramine.runtimedir() }}" },
+  { path = "{{ arch_libdir }}",   uri = "file:{{ arch_libdir }}" },
+  { path = "/usr",                uri = "file:/usr" },
+  { path = "/etc",                uri = "file:/etc" },
+  # The Angerona source tree (read-only inside the enclave).
+  { path = "/src",                uri = "file:src" },
+  # Encrypted scratch for any temp files / cache the runtime creates.
+  { type = "encrypted", path = "/tmp/angerona", uri = "file:enclave_tmp",
+    key_name = "_sgx_mrenclave" },
+]
+
+sys.enable_sigterm_injection = true
+
+# --- SGX enclave configuration ----------------------------------------------
+sgx.debug = false
+sgx.enclave_size = "2G"            # room for Python + ~40 background scanner threads
+sgx.max_threads = 128             # generous headroom for the daemon-thread modules
+sgx.remote_attestation = "none"
+
+# Trusted (measured) files — their hashes are baked into the signature.
+sgx.trusted_files = [
+  "file:{{ gramine.libos }}",
+  "file:{{ gramine.runtimedir() }}/",
+  "file:{{ arch_libdir }}/",
+  "file:/usr/{{ arch_libdir }}/",
+  "file:{{ entrypoint }}",
+  "file:src/",
+]
+
+# Allowed (integrity-not-pinned) files — the live DB may legitimately change.
+sgx.allowed_files = [
+  "file:flight-recorder.db",
+  "file:settings.json",
+  "file:.env",
+]
+
+# The IPC key is SEALED to the enclave: readable ONLY inside this MRENCLAVE, so a
+# host-side attacker cannot read it even with root on the box.
+fs.insecure__keys._sgx_mrenclave = ""   # provisioned at first run; sealed to enclave
+
+# NOTE: loopback (127.0.0.1:47921 IPC guard / EventBus) works unchanged under
+# Gramine's default networking — do not restrict it here or the single-instance
+# guard and bus will fail to bind.

@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Angerona — System Architecture Canvas</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.9/dist/vis-network.min.js"></script>
+<style>
+  :root{ --bg:#0b0e14; --panel:#111725; --line:#1f2937; --txt:#cbd5e1; --accent:#38bdf8; }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
+    font-family:"Segoe UI",system-ui,sans-serif;overflow:hidden}
+  #bar{position:fixed;top:0;left:0;right:0;height:52px;display:flex;align-items:center;
+    gap:16px;padding:0 18px;background:linear-gradient(#0f1522,#0b0e14);
+    border-bottom:1px solid var(--line);z-index:5}
+  #bar h1{font-size:16px;margin:0;letter-spacing:1px;font-weight:800}
+  #bar h1 span{color:var(--accent)}
+  #bar .hint{color:#64748b;font-size:12px}
+  #bar button{margin-left:auto;background:#1e293b;color:#e2e8f0;border:1px solid #334155;
+    border-radius:6px;padding:6px 12px;cursor:pointer;font-weight:700}
+  #net{position:fixed;top:52px;left:0;right:0;bottom:0}
+  /* detail panel slides up from the bottom on click-to-focus */
+  #panel{position:fixed;left:0;right:0;bottom:-320px;height:300px;background:var(--panel);
+    border-top:1px solid var(--line);transition:bottom .28s ease;z-index:6;padding:16px 22px;
+    box-shadow:0 -12px 40px rgba(0,0,0,.5)}
+  #panel.open{bottom:0}
+  #panel h2{margin:0 0 4px;font-size:18px}
+  #panel .tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;
+    background:#0e7490;color:#fff;margin-left:8px;vertical-align:middle}
+  #panel .tag.err{background:#ef4444}
+  #panel .desc{color:#94a3b8;margin:6px 0 12px;max-width:900px}
+  #panel .metrics{display:flex;gap:26px;flex-wrap:wrap}
+  #panel .metric{background:#0b0e14;border:1px solid var(--line);border-radius:8px;padding:10px 16px;min-width:150px}
+  #panel .metric .k{color:#64748b;font-size:11px;text-transform:uppercase;letter-spacing:1px}
+  #panel .metric .v{font-size:19px;font-weight:800;margin-top:2px}
+  #panel .close{position:absolute;top:12px;right:18px;cursor:pointer;color:#64748b;font-size:20px}
+  .legend{position:fixed;left:14px;bottom:14px;font-size:11px;color:#64748b;z-index:5}
+  .legend b{color:#93c5fd}
+</style>
+</head>
+<body>
+<div id="bar">
+  <h1>ANGERONA <span>— System Architecture Canvas</span></h1>
+  <span class="hint">scroll = zoom · drag = pan · click a node to focus</span>
+  <span id="live" style="font-size:11px;font-weight:800;padding:3px 10px;border-radius:10px;
+     background:#334155;color:#94a3b8">● representative</span>
+  <button id="err">Toggle demo error</button>
+</div>
+<div id="net"></div>
+<div class="legend">Flow: <b>Sensors → Telemetry Bus → Dynamic Patch Engine → GPU Offload → Ollama LLM (behind AI Guardrail) → Self-Hardening Core</b></div>
+
+<div id="panel">
+  <span class="close" onclick="closePanel()">✕</span>
+  <h2 id="p-title">—</h2>
+  <div class="desc" id="p-desc"></div>
+  <div class="metrics" id="p-metrics"></div>
+</div>
+
+<script>
+// ── node model: each subsystem/module, with representative detail ────────────
+const NODES = [
+  {id:"sensors", label:"SENSORS\n(ETW · Sniffer · FIM · ProcMon)", group:"sensor",
+   desc:"User-mode telemetry sources: ETW 4688 process-creation, packet sniffer (NDR), File-Integrity Monitor (incl. System32\\drivers), Process Monitor. Publish events onto the bus.",
+   metrics:{"Events/sec":"~140","Sensors up":"4/4","State":"running"}},
+  {id:"bus", label:"TELEMETRY BUS\n(EventBus + FlightRecorder)", group:"core",
+   desc:"Thread-safe pub/sub ring. Every event is persisted to the SQLite flight recorder. Modules never import each other — they only meet here.",
+   metrics:{"Ring depth":"512","Persisted":"SQLite","Subscribers":"26"}},
+  {id:"patch", label:"DYNAMIC PATCH ENGINE\n(core/hw_profile.py)", group:"engine",
+   desc:"Profiles GPU VRAM (pynvml) at runtime and picks a tiered execution config. 6 GB / GTX 1060 → gemma:2b, batch 4096, ctx 4096, explicit pool clear; scales to llama3:8b on bigger cards.",
+   metrics:{"VRAM":"6144 MB","Tier":"6gb","Model":"gemma:2b","Batch":"4096"}},
+  {id:"gpu", label:"GPU OFFLOAD ENGINE\n(entropy · batching)", group:"engine",
+   desc:"Batched Shannon-entropy scoring for NDR / packet analysis. Frees memory pools after host retrieval (free_gpu_pools) to keep small cards out of OOM.",
+   metrics:{"Batch size":"4096","Pool clear":"after use","Fallback":"NumPy/CPU"}},
+  {id:"guard", label:"AI GUARDRAIL\n(engines/ai_guardrail.py)", group:"guard",
+   desc:"LLM firewall proxy (:8000) in front of Ollama. Input: injection heuristics + DoS/token cap + immutable hardened system prompt. Output: PII/secret/path redaction + banned-phrase check. Audits every event to ai_security_audit.log.",
+   metrics:{"Port":"8000","Blocks":"injection/DoS","Redacts":"PII/keys/paths","Audit":"JSON"}},
+  {id:"ollama", label:"OLLAMA LLM LAYER\n(local, loopback)", group:"llm",
+   desc:"Local inference on 127.0.0.1:11434 — zero egress. keep_alive keeps the model resident. Only ever reached THROUGH the AI Guardrail.",
+   metrics:{"Endpoint":"127.0.0.1:11434","keep_alive":"30m","Egress":"none"}},
+  {id:"harden", label:"SELF-HARDENING CORE\n(hardening · Judgment Gate)", group:"guard",
+   desc:"Process-mitigation policies on our own process; SHA-256 Judgment Gate that blocks tampered remediation scripts; SOAR self-kill guard; UI watchdog → not_responding.log.",
+   metrics:{"Mitigations":"3 applied","Gate":"SHA-256","Watchdog":"on","State":"running"}},
+];
+const EDGES = [
+  ["sensors","bus"],["bus","patch"],["patch","gpu"],["gpu","guard"],
+  ["guard","ollama"],["ollama","guard"],["guard","harden"],["harden","bus"],
+];
+
+const GROUP_COLOR = {
+  sensor:"#0e7490", core:"#334155", engine:"#7c3aed", guard:"#b45309", llm:"#0369a1",
+};
+const errored = new Set();
+
+function nodeColor(n){
+  if(errored.has(n.id)) return {background:"#7f1d1d",border:"#ef4444"};
+  const c = GROUP_COLOR[n.group] || "#334155";
+  return {background:c,border:"#93c5fd"};
+}
+
+const visNodes = new vis.DataSet(NODES.map(n=>({
+  id:n.id, label:n.label, shape:"box", margin:12, widthConstraint:{maximum:220},
+  color:nodeColor(n), font:{color:"#e2e8f0",face:"Segoe UI",multi:false,size:14},
+  borderWidth:2
+})));
+const visEdges = new vis.DataSet(EDGES.map(([f,t])=>({from:f,to:t,arrows:"to",
+  color:{color:"#475569",highlight:"#38bdf8"},smooth:{type:"cubicBezier"}})));
+
+const net = new vis.Network(document.getElementById("net"),
+  {nodes:visNodes, edges:visEdges}, {
+  layout:{hierarchical:{enabled:true, direction:"LR", sortMethod:"directed", levelSeparation:230, nodeSpacing:150}},
+  physics:false,
+  interaction:{hover:true, zoomView:true, dragView:true, tooltipDelay:120},
+});
+
+function repaint(n){ visNodes.update({id:n.id, color:nodeColor(n)}); }
+
+// ── click-to-focus → detail panel ────────────────────────────────────────────
+net.on("click", p=>{
+  if(!p.nodes.length){ closePanel(); return; }
+  const n = NODES.find(x=>x.id===p.nodes[0]); if(!n) return;
+  document.getElementById("p-title").innerHTML =
+     n.label.split("\n")[0] + (errored.has(n.id) ? ' <span class="tag err">ERROR</span>' : ' <span class="tag">OK</span>');
+  document.getElementById("p-desc").textContent = n.desc;
+  const m = document.getElementById("p-metrics"); m.innerHTML="";
+  Object.entries(n.metrics).forEach(([k,v])=>{
+    const d=document.createElement("div"); d.className="metric";
+    d.innerHTML=`<div class="k">${k}</div><div class="v">${v}</div>`; m.appendChild(d);
+  });
+  document.getElementById("panel").classList.add("open");
+});
+function closePanel(){ document.getElementById("panel").classList.remove("open"); }
+
+// public helper: mark a module errored (turns it red). e.g. setError("sensors",true)
+function setError(id,on){
+  const n=NODES.find(x=>x.id===id); if(!n) return;
+  on ? errored.add(id) : errored.delete(id); repaint(n);
+}
+window.setError = setError;
+
+// demo toggle so the red-on-error mechanic is visible without a live backend
+let demo=false;
+document.getElementById("err").onclick=()=>{ demo=!demo; setError("ollama",demo); };
+net.once("stabilized",()=>net.fit());
+
+// ── LIVE data: poll diagnostics/flow_metrics.json (written by the running app) ─
+// Works when this page is served over http (e.g. serve-canvas.bat → localhost).
+// Over file:// the fetch is blocked by the browser, so it stays on representative
+// data and the badge says so — no error, just a graceful fallback.
+const liveBadge = document.getElementById("live");
+let openNodeId = null;
+net.on("click", p => { openNodeId = p.nodes.length ? p.nodes[0] : null; });
+
+function applyLive(data){
+  if(!data || !data.nodes) return;
+  for(const [id, nd] of Object.entries(data.nodes)){
+    const n = NODES.find(x=>x.id===id); if(!n) continue;
+    if(nd.metrics) n.metrics = nd.metrics;
+    setError(id, nd.state === "err");
+  }
+  if(openNodeId){                     // refresh the open detail panel in place
+    const cur = openNodeId;
+    net.selectNodes([cur]);
+    net.emit; // no-op; re-render panel manually:
+    const n = NODES.find(x=>x.id===cur);
+    if(n){
+      const m=document.getElementById("p-metrics"); m.innerHTML="";
+      Object.entries(n.metrics).forEach(([k,v])=>{
+        const d=document.createElement("div"); d.className="metric";
+        d.innerHTML=`<div class="k">${k}</div><div class="v">${v}</div>`; m.appendChild(d);
+      });
+    }
+  }
+  liveBadge.textContent = "● LIVE  " + (data.generated||"");
+  liveBadge.style.background = "#065f46"; liveBadge.style.color = "#a7f3d0";
+}
+
+async function poll(){
+  try{
+    const r = await fetch("diagnostics/flow_metrics.json?_="+Date.now(), {cache:"no-store"});
+    if(r.ok) applyLive(await r.json());
+  }catch(e){ /* file:// or app not running — stay on representative data */ }
+}
+poll(); setInterval(poll, 3000);
+</script>
+</body>
+</html>

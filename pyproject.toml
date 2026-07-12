@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "angerona"
+version = "1.6.1"
+description = "Modular local-first endpoint security suite for Windows with a native GUI."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Angerona contributors" }]
+dependencies = [
+    "PySide6>=6.6",
+    "psutil>=5.9",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+windows = ["pywin32>=306", "WMI>=1.5", "scapy>=2.5"]
+cloud = ["google-genai", "groq", "openai"]
+
+[project.gui-scripts]
+angerona = "angerona.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

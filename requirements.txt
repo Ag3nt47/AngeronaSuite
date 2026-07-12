@@ -1,0 +1,20 @@
+# ── GUI ──────────────────────────────────────────────────────────────────────
+PySide6>=6.6
+
+# ── System telemetry (Windows) ───────────────────────────────────────────────
+psutil>=5.9
+pywin32>=306 ; sys_platform == "win32"
+WMI>=1.5 ; sys_platform == "win32"
+scapy>=2.5 ; sys_platform == "win32"     # packet sniffer (also needs Npcap installed)
+pywintrace>=0.3 ; sys_platform == "win32"  # ETW real-time process sensor (ETWR); needs elevation
+
+# ── AI triage ────────────────────────────────────────────────────────────────
+requests>=2.31
+
+# ── Optional cloud escalation (only used if you supply keys) ──────────────────
+# google-genai
+# groq
+# openai
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+python-dotenv>=1.0
