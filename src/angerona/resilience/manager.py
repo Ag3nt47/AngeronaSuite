@@ -1,19 +1,22 @@
 """manager.py — core-side driver for the resilience ecosystem.
 
-This is what the Angerona core starts to bring the decoupled ecosystem up:
+Started by Angerona at launch. It brings up the decoupled ecosystem as separate,
+MINIMIZED processes and keeps them alive:
 
-  * spawns + supervises the standalone Telemetry Scanner (and the compiled
-    watchdog binary if one is present) as detached processes, respawning them
-    with backoff (see supervisor.py);
-  * beats the core's own shared-memory heartbeat so the watchdog can tell the
-    core apart from a suspended zombie;
-  * drains the raw-telemetry ring the scanner fills and republishes each frame
-    onto the Angerona EventBus, where the existing modules decipher and act;
-  * periodically writes the core's status diagnostic for the BlackBox.
+  * Telemetry Scanner   — lean raw-telemetry forwarder (own Angerona-themed window)
+  * BlackBox            — decoupled flight recorder (own themed window, self-minimizes)
+  * Watchdog            — compiled Go binary if built, else the Python watchdog
+                          (angerona.resilience.watchdog); restarts the core, and is
+                          restarted BY the core → mutual keep-alive
+  * Watchdog monitor    — a themed window presenting the watchdog's status
 
-Everything is cancellable and low-overhead: the ring drain and heartbeat run on
-relaxed intervals, and process death is caught by the supervisor's blocking
-waiter (0% idle CPU).
+Angerona and the Watchdog watch EACH OTHER (mutual restart) and BOTH also watch
+and restart the scanner and BlackBox. A cross-process spawn lock + adopt-if-alive
+mean relaunching Angerona never opens duplicate instances of anything running.
+
+The core beats its own heartbeat (so the watchdog can restart it after a crash),
+drains the raw-telemetry ring the scanner fills and republishes each frame onto
+the EventBus, and writes its status for the BlackBox.
 """
 from __future__ import annotations
 
@@ -31,29 +34,59 @@ from angerona.resilience import diagnostics as diag
 from angerona.resilience import shutdown_token as tok
 from angerona.resilience.supervisor import ProcessSupervisor
 
-# Sensor id → human label for republished frames.
 _SENSOR_LABELS = {1: "process_creation"}
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
 def _watchdog_binary() -> Optional[Path]:
-    """Locate a compiled watchdog binary if the operator has built one."""
-    root = Path(__file__).resolve().parents[3]
     for cand in ("frz/angerona_watchdog.exe", "frz/angerona_watchdog",
                  "frz/frz_watchdog.exe", "frz/frz_watchdog"):
-        p = root / cand
+        p = _repo_root() / cand
         if p.exists():
             return p
     return None
 
 
+def _blackbox_script() -> Optional[Path]:
+    p = _repo_root() / "blackbox_recorder.py"
+    return p if p.exists() else None
+
+
+def _pythonw() -> str:
+    exe = sys.executable
+    if os.name == "nt":
+        cand = exe.replace("python.exe", "pythonw.exe")
+        if os.path.exists(cand):
+            return cand
+    return exe
+
+
+def _cmdline_probe(*needles: str) -> Callable[[], bool]:
+    def _probe() -> bool:
+        try:
+            import psutil
+            for pr in psutil.process_iter(["cmdline"]):
+                cl = " ".join(pr.info.get("cmdline") or [])
+                if cl and all(n in cl for n in needles):
+                    return True
+        except Exception:
+            pass
+        return False
+    return _probe
+
+
 class ResilienceManager:
     def __init__(self, bus=None, heartbeat_interval: float = 0.5,
                  ring_interval: float = 0.5, start_watchdog: bool = True,
-                 on_frame: Optional[Callable[[dict], None]] = None):
+                 with_ui: bool = True, on_frame: Optional[Callable[[dict], None]] = None):
         self.bus = bus
         self.heartbeat_interval = heartbeat_interval
         self.ring_interval = ring_interval
         self.start_watchdog = start_watchdog
+        self.with_ui = with_ui
         self.on_frame = on_frame
         self._core_beat = hb.HeartbeatWriter("core")
         self._reader: Optional[ipc_ring.RingReader] = None
@@ -63,7 +96,6 @@ class ResilienceManager:
         self.frames_ingested = 0
         self.status = "stopped"
 
-    # ── supervisor events → bus + diagnostics ────────────────────────────────
     def _sup_event(self, level: str, msg: str, details: dict) -> None:
         self._publish("Resilience Supervisor", f"[{level}] {msg}", level, details)
 
@@ -81,30 +113,54 @@ class ResilienceManager:
     # ── lifecycle ────────────────────────────────────────────────────────────
     def start(self) -> None:
         self._stop.clear()
-        # Ensure the ring exists before the scanner attaches (we own it as reader).
         self._reader = ipc_ring.RingReader(ipc_ring.ring_path("telemetry"))
 
-        env = {}
-        wd = _watchdog_binary() if self.start_watchdog else None
-        if wd is not None:
-            self._sup.add("watchdog", [str(wd)], stale_after_s=2.0)
-        else:
-            self._publish("Resilience Manager",
-                          "No compiled watchdog binary found (frz/angerona_watchdog[.exe]); "
-                          "running with the Python supervisor only. Build the Go watchdog to "
-                          "enable the compiled cross-monitor.", "LOW")
+        py = sys.executable
+        pyw = _pythonw()
+        # The watchdog (Go or Python) inherits how to relaunch Angerona.
+        os.environ.setdefault("ANGERONA_PY", pyw)
+        os.environ.setdefault("ANGERONA_CORE_CMD", f'"{pyw}" -m angerona')
 
-        self._sup.add("scanner",
-                      [sys.executable, "-m", "angerona.resilience.scanner"],
-                      stale_after_s=3.0)
-        self._sup.start()
+        # 1) Watchdog — compiled Go binary if built, else the Python watchdog.
+        if self.start_watchdog:
+            wd = _watchdog_binary()
+            if wd is not None:
+                self._sup.add("watchdog", [str(wd)], stale_after_s=2.0, window="minimized")
+            else:
+                self._sup.add("watchdog", [pyw, "-m", "angerona.resilience.watchdog"],
+                              stale_after_s=2.0, window="hidden")
+                self._publish("Resilience Manager",
+                              "Using the Python watchdog (compiled frz/angerona_watchdog.exe "
+                              "not found). Build the Go binary via frz/hypervisor/build.bat for "
+                              "the ultra-lean compiled version.", "LOW")
+
+        # 2) Telemetry Scanner — lean forwarder with its own themed window.
+        self._sup.add("scanner", [pyw, "-m", "angerona.resilience.scanner"],
+                      stale_after_s=3.0, window="hidden")
+
+        # 3) BlackBox — decoupled recorder, its own themed self-minimizing window.
+        bb = _blackbox_script()
+        if bb is not None:
+            self._sup.add("blackbox", [pyw, str(bb)], window="hidden",
+                          running_probe=_cmdline_probe("blackbox_recorder.py"))
+
+        # 4) Themed Watchdog monitor window (presents the watchdog's status).
+        if self.with_ui:
+            self._sup.add("watchdog_ui",
+                          [pyw, "-m", "angerona.resilience.status_ui", "watchdog",
+                           "--title", "Angerona - Watchdog"],
+                          window="hidden",
+                          running_probe=_cmdline_probe("status_ui", "watchdog"))
+
+        self._sup.start()          # adopt-if-alive: never double-spawns
 
         self._spawn_thread(self._heartbeat_loop, "core-heartbeat")
         self._spawn_thread(self._ring_loop, "ring-drain")
         self._spawn_thread(self._status_loop, "core-status")
         self.status = "running"
-        self._publish("Resilience Manager", "Ecosystem online — scanner supervised, "
-                      "ring draining, core heartbeat beating.", "INFO")
+        self._publish("Resilience Manager",
+                      "Ecosystem online — watchdog + scanner + BlackBox supervised (minimized), "
+                      "core heartbeat beating, ring draining.", "INFO")
 
     def _spawn_thread(self, target, name):
         t = threading.Thread(target=target, name=name, daemon=True)
@@ -140,7 +196,6 @@ class ResilienceManager:
                 self.on_frame({"label": label, **payload})
             except Exception:
                 pass
-        # Republish raw telemetry onto the bus for the core's modules to decipher.
         name = payload.get("name") or label
         self._publish("Telemetry Scanner",
                       f"{label}: {name} (pid {payload.get('pid')})",
@@ -154,12 +209,12 @@ class ResilienceManager:
                 "safe_mode": [n for n, c in self._sup.components.items() if c.safe_mode],
             })
 
-    def stop(self) -> None:
+    def stop(self, terminate_children: bool = False) -> None:
         if self._stop.is_set():
             return
         self._stop.set()
         try:
-            self._sup.stop(terminate_children=True)
+            self._sup.stop(terminate_children=terminate_children)
         finally:
             try:
                 self._core_beat.close()
@@ -170,22 +225,24 @@ class ResilienceManager:
 
 
 def start_resilience(bus=None, **kw) -> ResilienceManager:
-    """Convenience entry point for the Angerona core."""
+    """Convenience entry point for the Angerona core (call at launch)."""
     m = ResilienceManager(bus=bus, **kw)
     m.start()
     return m
 
 
 def self_test() -> tuple[bool, str]:
-    """Live: start the manager (which spawns a REAL scanner subprocess), confirm
-    frames flow ring→core, kill the scanner and confirm respawn, then stop."""
-    import tempfile, shutil
+    """Live: start the manager (spawns a REAL scanner subprocess), confirm frames
+    flow ring->core, a SECOND start does NOT duplicate the scanner (adopt), kill
+    the scanner and confirm exactly one respawn, then stop."""
+    import tempfile, shutil, subprocess, threading as _th
     prev = os.environ.get("ANGERONA_DATA")
     prev_diag = os.environ.get("ANGERONA_DIAG_DIR")
     workdir = tempfile.mkdtemp(prefix="mgr_selftest_")
     os.environ["ANGERONA_DATA"] = workdir
     os.environ["ANGERONA_DIAG_DIR"] = os.path.join(workdir, "diag")
     os.environ["ANGERONA_SCANNER_INTERVAL"] = "0.2"
+    os.environ["ANGERONA_SCANNER_UI"] = "0"
 
     class _Bus:
         def __init__(self): self.events = []
@@ -193,8 +250,7 @@ def self_test() -> tuple[bool, str]:
 
     bus = _Bus()
     mgr = ResilienceManager(bus=bus, heartbeat_interval=0.2, ring_interval=0.2,
-                            start_watchdog=False)
-    import subprocess, threading as _th
+                            start_watchdog=False, with_ui=False)
     churn_stop = _th.Event()
     def _churn():
         live = []
@@ -210,15 +266,15 @@ def self_test() -> tuple[bool, str]:
             except Exception: q.kill()
     try:
         mgr.start()
-        # Continuous process churn so the (separate) scanner sees NEW pids after
-        # it has baselined, and forwards them to the core.
         _th.Thread(target=_churn, daemon=True).start()
         time.sleep(3.0)
         scanner = mgr._sup.components["scanner"]
-        alive_ok = scanner.reader.classify(stale_after_s=3.0) == "alive"
-        ingested_ok = mgr.frames_ingested >= 1     # raw frames reached the core
-
+        alive_ok = mgr._sup._is_running(scanner)
+        ingested_ok = mgr.frames_ingested >= 1
         before = scanner.restarts
+        mgr._sup._spawn(scanner)
+        time.sleep(0.2)
+        no_dup_ok = scanner.restarts == before
         if scanner.proc:
             scanner.proc.kill()
         time.sleep(0.6)
@@ -226,21 +282,22 @@ def self_test() -> tuple[bool, str]:
             mgr._sup.tick(); time.sleep(0.3)
             if scanner.restarts > before:
                 break
-        respawn_ok = scanner.restarts > before
-
+        respawn_ok = scanner.restarts == before + 1
         churn_stop.set()
-        ok = alive_ok and respawn_ok and ingested_ok
-        return ok, (f"scanner spawned+alive, respawned on kill, {mgr.frames_ingested} raw "
-                    f"frame(s) ingested core-side" if ok else
-                    f"failed: alive={alive_ok} respawn={respawn_ok} ingested={ingested_ok}")
+        ok = alive_ok and ingested_ok and no_dup_ok and respawn_ok
+        return ok, (f"scanner alive + {mgr.frames_ingested} frame(s) + no-duplicate adopt + "
+                    f"single respawn" if ok else
+                    f"failed: alive={alive_ok} ingested={ingested_ok} no_dup={no_dup_ok} "
+                    f"respawn={respawn_ok}")
     finally:
-        mgr.stop()
+        mgr.stop(terminate_children=True)
         for k, v in (("ANGERONA_DATA", prev), ("ANGERONA_DIAG_DIR", prev_diag)):
             if v is None:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
         os.environ.pop("ANGERONA_SCANNER_INTERVAL", None)
+        os.environ.pop("ANGERONA_SCANNER_UI", None)
         shutil.rmtree(workdir, ignore_errors=True)
 
 

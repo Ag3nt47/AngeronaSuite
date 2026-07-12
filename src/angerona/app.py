@@ -212,7 +212,32 @@ class AngeronaApp:
             except Exception:
                 self._mcp = None   # port bind failure → silently disable
 
+        # Decoupled resilience ecosystem: launch the Watchdog + Scanner + BlackBox
+        # as separate, MINIMIZED processes that keep each other and Angerona alive
+        # and never open duplicates (adopt-if-alive). On by default; set
+        # ANGERONA_RESILIENCE=0 to skip.
+        self._resilience = None
+        import os as _os
+        if _os.environ.get("ANGERONA_RESILIENCE", "1") not in ("0", "false", "no", "off"):
+            try:
+                from angerona.resilience.manager import start_resilience
+                from angerona.resilience import shutdown_token as _tok
+                _tok.clear_standdown()          # fresh launch = intent to run
+                self._resilience = start_resilience(self.bus)
+            except Exception:
+                self._resilience = None
+
     def shutdown(self) -> None:
+        # Clean shutdown: tell the ecosystem to STAND DOWN so the watchdog does
+        # not resurrect the core, then stop the child processes. (A crash — with
+        # no stand-down — leaves the watchdog free to restart everything.)
+        if getattr(self, "_resilience", None) is not None:
+            try:
+                from angerona.resilience import shutdown_token as _tok
+                _tok.request_standdown("angerona gui shutdown")
+                self._resilience.stop(terminate_children=True)
+            except Exception:
+                pass
         self.reporter.stop()
         if self._mcp is not None:
             try:

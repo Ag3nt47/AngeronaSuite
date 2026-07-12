@@ -102,6 +102,9 @@ class ScannerHost:
             "ring_backpressure": self.ring.backpressure,
             "ring_drops": self.ring.drops, "last_ping": ping,
             "interval_s": self.interval,
+            # Sensors this scanner process controls (shown in the window's Info tab).
+            "sensors": [f"{type(s).__name__} (sensor_id={getattr(s, 'sensor_id', '?')})"
+                        for s in self.sensors],
         })
 
     def run(self) -> None:
@@ -149,6 +152,31 @@ def main(argv: list[str] | None = None) -> int:
     token_hex = os.environ.get("ANGERONA_WATCHDOG_TOKEN", "")
     token_raw = bytes.fromhex(token_hex) if token_hex else b""
     host = ScannerHost(interval=interval, token_raw=token_raw)
+
+    # Themed window (matches Angerona's look) unless disabled or unavailable.
+    # The sensor loop runs on a background thread so the window stays responsive
+    # while the sensor itself stays lean.
+    if os.environ.get("ANGERONA_SCANNER_UI", "1") not in ("0", "false", "no", "off"):
+        try:
+            from PySide6.QtWidgets import QApplication, QMainWindow
+            from angerona.resilience import status_ui
+            import threading as _th
+            _th.Thread(target=host.run, daemon=True).start()
+            app = QApplication.instance() or QApplication(sys.argv)
+            qss = status_ui._qss()
+            if qss:
+                app.setStyleSheet(qss)
+            win = QMainWindow()
+            win.setWindowTitle("Angerona - Telemetry Scanner")
+            win.setCentralWidget(status_ui.build_status_widget("scanner", "Angerona - Telemetry Scanner"))
+            win.resize(540, 460)
+            win.showMinimized()
+            rc = app.exec()
+            host.stop()
+            return rc
+        except Exception:
+            pass   # no PySide6 / no display → fall through to headless
+
     import signal
     def _sig(_s, _f):
         host.stop()

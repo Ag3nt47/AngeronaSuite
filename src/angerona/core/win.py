@@ -40,3 +40,30 @@ def popen_hidden(args, **kwargs):
     kwargs.setdefault("creationflags", NO_WINDOW)
     kwargs.setdefault("startupinfo", _startupinfo())
     return subprocess.Popen(args, **kwargs)
+
+
+def install_no_window_default() -> None:
+    """Globally stop child processes from flashing console windows.
+
+    Many modules call ``subprocess.run``/``Popen`` (netsh, tasklist, signal-cli,
+    yara, git, …) without hiding the window, so a console flashes every time one
+    runs — the "random PowerShell/cmd windows" the user sees. This patches
+    ``subprocess.Popen`` so any call that does NOT explicitly set ``creationflags``
+    or ``startupinfo`` gets CREATE_NO_WINDOW + a hidden STARTUPINFO. Calls that DO
+    set those (e.g. the resilience minimized-window launches) are left untouched.
+
+    Call once at process startup, before modules load. No-op off Windows or if
+    already installed.
+    """
+    if os.name != "nt" or getattr(subprocess.Popen, "_angerona_nowindow", False):
+        return
+    _orig_init = subprocess.Popen.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        if "creationflags" not in kwargs and "startupinfo" not in kwargs:
+            kwargs["creationflags"] = NO_WINDOW
+            kwargs["startupinfo"] = _startupinfo()
+        return _orig_init(self, *args, **kwargs)
+
+    subprocess.Popen.__init__ = _patched_init          # type: ignore[assignment]
+    subprocess.Popen._angerona_nowindow = True         # marker (idempotent)

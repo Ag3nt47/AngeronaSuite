@@ -89,13 +89,29 @@ class AngeronaUpgradeConsole(QMainWindow):
     def _init_mobile_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab)
 
-        inst = QGroupBox("Mobile Installation & Path Setup")
+        inst = QGroupBox("Mobile Installation & Path Setup — where each value comes from")
         il = QVBoxLayout(inst)
-        il.addWidget(QLabel(
-            "1. Map the notification transport (ntfy / Pushover / Signal / SMS gateway).\n"
-            "2. Enter the Host Number and destination Operator identifier.\n"
-            "3. Enter the Hardware PIN / device code for the local security module.\n"
-            "4. Use 'Test Mobile Integration' to send a real test alert and confirm delivery."))
+        info = QLabel(
+            "Angerona sends alerts to your phone through one of these transports. Pick one:\n"
+            "\n"
+            "• Signal (recommended, free, end-to-end encrypted): install signal-cli on this PC and\n"
+            "   register/link it to a phone number you control. The 'Host Number' is that registered\n"
+            "   signal-cli number (e.g. +15555550100). The 'Operator Destination' is the phone number\n"
+            "   (or group id) the alerts should be sent TO — usually your personal phone.\n"
+            "• ntfy: 'Host Number' = your ntfy topic URL (e.g. https://ntfy.sh/my-secret-topic).\n"
+            "   'Operator Destination' can be left blank. Subscribe to the topic in the ntfy phone app.\n"
+            "• Pushover: 'Host Number' = your Pushover API token; 'Operator Destination' = your user key.\n"
+            "• SMS gateway / Twilio: 'Host Number' = the sending number/SID; 'Operator Destination' =\n"
+            "   your mobile number.\n"
+            "\n"
+            "Hardware PIN / Code: an optional local secret that gates who may change these settings\n"
+            "(store it in your password manager). Notification Window: hours alerts may be sent, e.g.\n"
+            "07:00-22:00 for quiet hours.\n"
+            "\n"
+            "Fill the fields below, click 'Save', then 'Test Mobile Integration' to send a real test\n"
+            "alert and confirm delivery (it reports pass/fail with the reason and fix).")
+        info.setWordWrap(True)
+        il.addWidget(info)
         layout.addWidget(inst)
 
         form = QGroupBox("Configuration"); fl = QFormLayout(form)
@@ -234,6 +250,8 @@ class AngeronaUpgradeConsole(QMainWindow):
 
     def _check_model(self):
         model = self.model_box.currentText().strip()
+        cmd = f"ollama pull {model}"
+        installed = False
         try:
             import json, urllib.request
             req = urllib.request.Request("http://127.0.0.1:11434/api/show",
@@ -241,13 +259,45 @@ class AngeronaUpgradeConsole(QMainWindow):
                                          headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=3) as r:
                 r.read()
-            QMessageBox.information(self, "Model Status",
-                                   f"'{model}' is installed locally. To update, run:\n"
-                                   f"    ollama pull {model}")
+            installed = True
         except Exception:
-            QMessageBox.warning(self, "Model Status",
-                               f"Could not reach Ollama or '{model}' is not installed.\n"
-                               f"Install/update with:\n    ollama pull {model}")
+            installed = False
+        body = (f"Model:  {model}\n"
+                f"Status: {'installed locally' if installed else 'NOT reachable / not installed'}\n\n"
+                f"To install or update this model, run this command in PowerShell:\n\n"
+                f"    {cmd}\n\n"
+                f"Tip: click 'Copy command', then 'Open PowerShell', paste (Ctrl+V) and press Enter.")
+        self._copy_dialog("Model Status", body, cmd)
+
+    def _copy_dialog(self, title: str, body: str, command: str | None = None):
+        """Info dialog whose text is selectable/copyable, with optional
+        'Copy command' + 'Open PowerShell' buttons."""
+        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
+                                       QTextEdit, QPushButton, QApplication)
+        dlg = QDialog(self); dlg.setWindowTitle(title); dlg.resize(580, 340)
+        lay = QVBoxLayout(dlg)
+        txt = QTextEdit(); txt.setReadOnly(True); txt.setPlainText(body)
+        lay.addWidget(txt)
+        row = QHBoxLayout()
+        if command:
+            b_copy = QPushButton("Copy command")
+            b_copy.clicked.connect(lambda: QApplication.clipboard().setText(command))
+            row.addWidget(b_copy)
+            b_ps = QPushButton("Open PowerShell")
+            def _open_ps():
+                import subprocess
+                try:
+                    # Explicit console flag → bypasses the global hidden-launch default.
+                    flags = 0x00000010 if os.name == "nt" else 0   # CREATE_NEW_CONSOLE
+                    subprocess.Popen(["powershell", "-NoExit"], creationflags=flags)
+                except Exception:
+                    pass
+            b_ps.clicked.connect(_open_ps)
+            row.addWidget(b_ps)
+        b_close = QPushButton("Close"); b_close.clicked.connect(dlg.accept)
+        row.addWidget(b_close)
+        lay.addLayout(row)
+        dlg.exec()
 
     def _implement_code(self):
         code = self.ai_proposed_code.toPlainText().strip()
@@ -347,9 +397,20 @@ class AngeronaUpgradeConsole(QMainWindow):
         layout.addWidget(mg)
 
         tg = QGroupBox("Resource Boundary Hints (advisory)"); tl = QFormLayout(tg)
+        # Sliders with a live value label that updates as you drag.
         cpu = QSlider(Qt.Horizontal); cpu.setRange(5, 50); cpu.setValue(20)
+        cpu_val = QLabel("20%")
+        cpu.valueChanged.connect(lambda v: cpu_val.setText(f"{v}%"))
+        cpu_row = QHBoxLayout(); cpu_row.addWidget(cpu); cpu_row.addWidget(cpu_val)
+        cpu_w = QWidget(); cpu_w.setLayout(cpu_row)
+
         ram = QSlider(Qt.Horizontal); ram.setRange(50, 500); ram.setValue(250)
-        tl.addRow("Max CPU target (%):", cpu); tl.addRow("Max memory hint (MB):", ram)
+        ram_val = QLabel("250 MB")
+        ram.valueChanged.connect(lambda v: ram_val.setText(f"{v} MB"))
+        ram_row = QHBoxLayout(); ram_row.addWidget(ram); ram_row.addWidget(ram_val)
+        ram_w = QWidget(); ram_w.setLayout(ram_row)
+
+        tl.addRow("Max CPU target:", cpu_w); tl.addRow("Max memory hint:", ram_w)
         layout.addWidget(tg)
 
         sg = QGroupBox("Live Event Stream"); sl = QVBoxLayout(sg)

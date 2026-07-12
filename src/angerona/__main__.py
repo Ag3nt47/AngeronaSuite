@@ -5,6 +5,15 @@ import sys
 
 
 def main() -> int:
+    # Stop child processes (netsh, tasklist, signal-cli, yara, git, …) from
+    # flashing console windows every time a module runs one. Must happen before
+    # any module loads. Best-effort; no-op off Windows.
+    try:
+        from angerona.core.win import install_no_window_default
+        install_no_window_default()
+    except Exception:
+        pass
+
     # Capture any crash (unhandled exception, background-thread exception, or a
     # native Qt fault) to a log file. Under pythonw there is no console, so this
     # is the only trace we'd otherwise get. Writes to

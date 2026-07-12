@@ -2925,7 +2925,16 @@ class SettingsDialog(QDialog):
 
         tabs.addTab(self._tab_general(), "General")
         tabs.addTab(self._tab_system(),  "System")
-        tabs.addTab(self._tab_mobile(),  "Mobile Integration")
+        # Mobile Integration is consolidated into the Advanced Management Console so
+        # there is only ONE place to configure it. Show a short redirect here.
+        _mob = QWidget(); _mv = QVBoxLayout(_mob)
+        _lbl = QLabel(
+            "Mobile Integration has moved to the Advanced Management Console.\n\n"
+            "Open the main window's  \U0001F9F0 CONSOLE  button, then the "
+            "'Mobile Integration' tab — configure the transport (Signal / ntfy / "
+            "Pushover / SMS), save the settings, and send a live test alert there.")
+        _lbl.setWordWrap(True); _mv.addWidget(_lbl); _mv.addStretch()
+        tabs.addTab(_mob, "Mobile Integration")
         tabs.addTab(self._tab_apikeys(), "API Keys")
 
         # ── button row ──
