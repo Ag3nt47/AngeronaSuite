@@ -276,7 +276,11 @@ class MainWindow(QMainWindow):
         # eagerly here rather than lazily, which avoids a check-then-set race
         # if two narration lines land on background threads close together.
         self.flight_instructor = FlightInstructor(self.config)
-        self._fi_enabled = False
+        self._fi_enabled = True            # analogy coaching ON by default
+        try:
+            self.shark_monitor.fi_check.setChecked(True)
+        except Exception:
+            pass
         self.shark_monitor.fi_check.stateChanged.connect(self._on_fi_toggle)
         self.shark_monitor.fi_style.currentTextChanged.connect(self._on_fi_style_change)
 
@@ -558,21 +562,17 @@ class MainWindow(QMainWindow):
     # ── Shark Attack Engine ──────────────────────────────────────────────────
     # ── Unified Red Team Simulation (Shark + APT scenarios, configurable) ────
     def _open_simulation(self) -> None:
+        """Open the modern Red Team console (config + live kill-chain + editor).
+        The console calls back into _run_simulation(cfg) when the operator launches."""
         import os
         from pathlib import Path
-        from angerona.gui.pages import RedTeamSimulationDialog
+        from angerona.gui.red_team_console import RedTeamConsole
         default_target = str(Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents")
-        dlg = RedTeamSimulationDialog(self, default_target=default_target,
-                                     store_path=self.config.data_dir / "custom_techniques.json")
-        dlg.setStyleSheet(self._qss())
-        if not dlg.exec():
-            return
-        cfg = dlg.result_config()
-        if not (cfg["run_shark"] or cfg["run_redteam"]):
-            QMessageBox.information(self, "Red Team Simulation",
-                                    "Pick at least one scenario (Shark and/or APT Red-Team).")
-            return
-        self._run_simulation(cfg)
+        if getattr(self, "_rt_console", None) is None:
+            self._rt_console = RedTeamConsole(self, default_target=default_target)
+        self._rt_console.show()
+        self._rt_console.raise_()
+        self._rt_console.activateWindow()
 
     def _run_simulation(self, cfg) -> None:
         if self.shark_engine.is_running or self.red_team_engine.is_running:
@@ -581,28 +581,43 @@ class MainWindow(QMainWindow):
         import os
         self._shark_prev_armed = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK")
         self._shark_prev_minsev = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY")
-        os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = "1"
-        # Lower the response threshold for the duration of the drill so SOAR
-        # actually remediates the benign MEDIUM/HIGH marker detections (with the
-        # self-kill guard this only rolls back the dropped artifacts). Restored
-        # to the user's real-world default when the drill finishes.
-        os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY"] = "MEDIUM"
+        # Auto-remediation (ON by default): arm SOAR's kill+rollback tier and lower
+        # the response threshold for the drill so it actually contains the benign
+        # MEDIUM/HIGH marker detections (the self-kill guard means this only rolls
+        # back the dropped artifacts). Restored to the user's default when done.
+        self._sim_auto_remediate = bool(cfg.get("auto_remediate", True))
+        if self._sim_auto_remediate:
+            os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = "1"
+            os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY"] = "MEDIUM"
+        # Analogy coaching (Flight Instructor) — ON by default for the drill.
+        self._fi_enabled = bool(cfg.get("analogy", True))
+        try:
+            self.shark_monitor.fi_check.setChecked(self._fi_enabled)
+        except Exception:
+            pass
         self._sim_ran_shark = bool(cfg.get("run_shark"))
         self._sim_ran_redteam = bool(cfg.get("run_redteam"))
+        # The new Red Team console (which launched this) shows the live events and
+        # analogy coaching itself, so the legacy Live Offense Monitor is no longer
+        # popped up. It's still reset + fed silently (narration flows via the
+        # _shark_narration / _fi_coaching signals to the console too).
         self.shark_monitor.reset()
         self.shark_monitor.append(
-            f"Launching Red Team Simulation — complexity={cfg.get('complexity')}, "
-            f"shark={self._sim_ran_shark}, apt={self._sim_ran_redteam}"
+            f"Launching Red Team Simulation — intensity={cfg.get('intensity', cfg.get('complexity'))}, "
+            f"campaign={bool(cfg.get('campaign'))}, shark={self._sim_ran_shark}, "
+            f"apt={self._sim_ran_redteam}, auto-remediate={self._sim_auto_remediate}"
             + (", +custom technique" if cfg.get('custom') else "") + "…")
-        self.shark_monitor.show(); self.shark_monitor.raise_(); self.shark_monitor.activateWindow()
         self.shark_swim.start(); self.shark_banner.start()
-        params = dict(complexity=cfg.get("complexity", 1),
-                      target_dir=cfg.get("target_dir") or None,
-                      custom=cfg.get("custom") or None)
+        _target = cfg.get("target_dir") or None
+        _custom = cfg.get("custom") or None
         if self._sim_ran_redteam:
-            self.red_team_engine.start(**params)
+            self.red_team_engine.start(intensity=cfg.get("intensity"),
+                                       campaign=bool(cfg.get("campaign", False)),
+                                       target_dir=_target, custom=_custom)
         if self._sim_ran_shark:
-            self.shark_engine.start(**params)
+            # Shark engine keeps the legacy interface (complexity/target/custom).
+            self.shark_engine.start(complexity=cfg.get("complexity", 1),
+                                    target_dir=_target, custom=_custom)
         self._sim_poll = QTimer(self)
         self._sim_poll.timeout.connect(self._sim_check_done)
         self._sim_poll.start(500)
@@ -833,8 +848,26 @@ class MainWindow(QMainWindow):
                     res.append(f"— {w['mitre_id']}: {r.get('error', 'failed')}")
             return "Apply results:\n" + "\n".join(res)
 
+        def _clean_markers() -> int:
+            """Erase every drill marker/persistence-marker file from both engines."""
+            total = 0
+            for eng in (getattr(self, "red_team_engine", None),
+                        getattr(self, "shark_engine", None)):
+                if eng is None:
+                    continue
+                try:
+                    sweep = getattr(eng, "_sweep_markers", None)
+                    if callable(sweep):
+                        total += int(sweep() or 0)
+                    else:
+                        eng.stop_and_clean()
+                except Exception:
+                    pass
+            return total
+
         dlg = AARDialog(self.config.data_dir, self,
-                        on_attempt_fix=_attempt_fix, on_apply=_apply)
+                        on_attempt_fix=_attempt_fix, on_apply=_apply,
+                        on_clean=_clean_markers)
         dlg.setStyleSheet(self._qss())
         dlg.set_text(text)
         dlg.exec()

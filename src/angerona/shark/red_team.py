@@ -38,6 +38,27 @@ from typing import Callable, List, Optional
 # crashed before cleanup.
 _MARKER_PREFIX = "_redteam_"
 
+# ── Intensity presets ────────────────────────────────────────────────────────
+# One knob the operator can slide from Low → Extreme; it scales the number of
+# recursive phases, the timing jitter, the noise (false-positive) chance, the
+# simulated threat level, and how many benign tagged processes are spawned.
+INTENSITY_LEVELS: dict[str, dict] = {
+    "Low":     dict(cycles=1, jitter=(3.0, 8.0), noise=0.15, threat=1, proc_mult=1),
+    "Medium":  dict(cycles=2, jitter=(2.0, 6.0), noise=0.30, threat=2, proc_mult=1),
+    "High":    dict(cycles=3, jitter=(1.0, 4.0), noise=0.45, threat=3, proc_mult=2),
+    "Extreme": dict(cycles=4, jitter=(0.5, 2.5), noise=0.60, threat=5, proc_mult=3),
+}
+_INTENSITY_ORDER = ["Low", "Medium", "High", "Extreme"]
+
+# Canonical ATT&CK kill-chain order for CAMPAIGN mode (chained, not shuffled).
+_CAMPAIGN_ORDER = [
+    "_step_initial_access", "_step_recon", "_step_credential_access",
+    "_step_privilege_escalation", "_step_defense_evasion", "_step_registry_runkey",
+    "_step_scheduled_task", "_step_wmi_persistence", "_step_lateral_movement",
+    "_step_c2_beacon", "_step_exfil_staging", "_step_ransomware_canary",
+    "_step_data_destruction", "_step_random_processes",
+]
+
 
 def _hide_file(path) -> None:
     """Mark a drill marker hidden+system so it never clutters the user's view
@@ -142,11 +163,19 @@ class RedTeamEngine:
 
     # ── control ────────────────────────────────────────────────────────────
     def start(self, jitter_range=(2.0, 7.0), noise_chance=0.25,
-              complexity=1, target_dir=None, custom=None) -> bool:
-        """complexity = number of recursive phases (Low=1, Medium=2, High=3).
-        target_dir overrides where markers land. custom = optional
-        {"name", "payload"} benign technique (marker text is written verbatim
-        and NEVER executed)."""
+              complexity=1, target_dir=None, custom=None,
+              intensity=None, campaign=False) -> bool:
+        """Run a randomized Red Team playbook.
+
+        intensity — one of Low/Medium/High/Extreme. When given it drives cycles,
+          jitter, noise, threat level and process count (overrides complexity).
+        campaign  — when True the techniques run in a chained ATT&CK kill-chain
+          order (recon → access → persist → C2 → exfil → impact) instead of the
+          default per-phase shuffle, modelling a coherent operation.
+        complexity — legacy phase count, used when intensity is not supplied.
+        target_dir — where benign markers land. custom = optional benign
+          {"name","payload"} technique (written verbatim, NEVER executed).
+        """
         if self.is_running:
             return False
         if target_dir:
@@ -154,7 +183,20 @@ class RedTeamEngine:
                 self.documents_dir = Path(target_dir)
             except Exception:
                 pass
-        self._complexity = max(1, int(complexity))
+        preset = INTENSITY_LEVELS.get(str(intensity)) if intensity else None
+        if preset:
+            self._complexity = preset["cycles"]
+            self._threat_level = preset["threat"]
+            self._proc_mult = preset["proc_mult"]
+            jitter_range = preset["jitter"]
+            noise_chance = preset["noise"]
+            self._intensity = str(intensity)
+        else:
+            self._complexity = max(1, int(complexity))
+            self._threat_level = self._complexity
+            self._proc_mult = 1
+            self._intensity = f"complexity={self._complexity}"
+        self._campaign = bool(campaign)
         self._custom = custom if (custom and custom.get("name") and custom.get("payload")) else None
         self.run_id = f"redteam-{int(time.time())}-{uuid.uuid4().hex[:6]}"
         self.steps = []
@@ -181,24 +223,29 @@ class RedTeamEngine:
             "panel + Modules table for the DEFENSE side reacting.")
         cycles = getattr(self, "_complexity", 1)
         custom = getattr(self, "_custom", None)
-        if cycles > 1 or custom:
-            self._narrate(f"\U0001F39B️ Complexity: {cycles} phase(s); target={self.documents_dir}"
-                          + ("; +1 custom benign technique" if custom else ""))
+        campaign = getattr(self, "_campaign", False)
+        self._narrate(f"\U0001F39B️ Intensity: {getattr(self,'_intensity','?')}; "
+                      f"{cycles} phase(s); {'CAMPAIGN (chained kill-chain)' if campaign else 'randomized'}; "
+                      f"target={self.documents_dir}" + ("; +1 custom benign technique" if custom else ""))
         try:
             for cycle in range(cycles):
                 if cycles > 1:
                     self._narrate(f"\U0001F501 Phase {cycle + 1}/{cycles} — deeper each pass "
-                                  "(recon → escalate → persist).")
+                                  "(recon → escalate → persist → exfil → impact).")
                 stage_fns = [
+                    self._step_initial_access,
                     self._step_credential_access,
                     self._step_recon,
+                    self._step_privilege_escalation,
                     self._step_wmi_persistence,
                     self._step_defense_evasion,
                     self._step_scheduled_task,
                     self._step_registry_runkey,
                     self._step_lateral_movement,
+                    self._step_c2_beacon,
                     self._step_exfil_staging,
                     self._step_ransomware_canary,
+                    self._step_data_destruction,
                     self._step_random_processes,
                 ]
                 if custom:
@@ -207,7 +254,12 @@ class RedTeamEngine:
                     stage_fns.append(self._step_noise)
                 else:
                     self._narrate("\U0001F3B2 Noise Injection — skipped this phase (random chance).")
-                random.shuffle(stage_fns)
+                if campaign:
+                    # chained kill-chain order (coherent operation), not shuffled
+                    rank = {n: i for i, n in enumerate(_CAMPAIGN_ORDER)}
+                    stage_fns.sort(key=lambda fn: rank.get(fn.__name__, 99))
+                else:
+                    random.shuffle(stage_fns)
                 order = " → ".join(
                     fn.__name__.replace("_step_", "").replace("_", " ").title() for fn in stage_fns)
                 self._narrate(f"\U0001F500 Technique order: {order}")
@@ -391,7 +443,8 @@ class RedTeamEngine:
         self._jitter(*jitter_range, note="Execution — benign tagged process spawns")
         ts = time.time()
         level = int(getattr(self, "_threat_level", getattr(self, "_complexity", 1)) or 1)
-        n = min(2 + level, 8)
+        mult = int(getattr(self, "_proc_mult", 1) or 1)
+        n = min(2 + level * mult, 16)
         self._narrate(f"▶ STAGE: Benign Execution [T1059-style] — spawning {n} short-lived, "
                       "red-team-TAGGED processes (they exit immediately) so the process sensors "
                       "and SOAR see realistic process-creation activity. Nothing harmful runs.")
@@ -410,6 +463,51 @@ class RedTeamEngine:
         self._record("Benign Execution (simulated)", "T1059 tagged spawns",
                      f"Spawned {spawned} short-lived red-team-tagged process(es).", ts)
 
+    def _step_initial_access(self, jitter_range) -> None:
+        self._jitter(*jitter_range, note="Initial Access — inert phishing-attachment marker")
+        ts = time.time(); hexid = uuid.uuid4().hex[:8]
+        self._narrate("▶ STAGE: Initial Access [T1566.001] — writing an INERT marker named like a "
+                      f"malicious phishing attachment (invoice macro) into {self.documents_dir}. "
+                      "Nothing is opened, executed, or received over the network.")
+        p = self._marker(f"_redteam_invoice_macro_{hexid}.txt",
+                         "ANGERONA RED TEAM drill — simulated phishing-attachment marker. Inert.\n")
+        self._record("Initial Access (simulated)", "T1566.001 marker",
+                     "Inert phishing-attachment-named marker written.", ts, artifact_paths=[str(p)])
+
+    def _step_privilege_escalation(self, jitter_range) -> None:
+        self._jitter(*jitter_range, note="Privilege Escalation — inert UAC-bypass marker")
+        ts = time.time(); hexid = uuid.uuid4().hex[:8]
+        self._narrate("▶ STAGE: Privilege Escalation [T1548.002] — writing an INERT marker named "
+                      f"like a UAC-bypass artifact (fodhelper/eventvwr) into {self.documents_dir}. "
+                      "No token is manipulated and nothing is elevated.")
+        p = self._marker(f"_redteam_uac_bypass_{hexid}.txt",
+                         "ANGERONA RED TEAM drill — simulated UAC-bypass marker. Inert.\n")
+        self._record("Privilege Escalation (simulated)", "T1548.002 marker",
+                     "Inert UAC-bypass-named marker written.", ts, artifact_paths=[str(p)])
+
+    def _step_c2_beacon(self, jitter_range) -> None:
+        self._jitter(*jitter_range, note="Command & Control — inert beacon-config marker")
+        ts = time.time(); hexid = uuid.uuid4().hex[:8]
+        self._narrate("▶ STAGE: Command & Control [T1071/T1571] — writing an INERT marker that "
+                      f"NAMES a C2 beacon profile / callback config into {self.documents_dir}. No "
+                      "network callback is made — this only tests C2-config detection on the artifact.")
+        p = self._marker(f"_redteam_c2_beacon_cfg_{hexid}.txt",
+                         "ANGERONA RED TEAM drill — simulated C2 beacon-config marker. Inert. "
+                         "No callback performed.\n")
+        self._record("Command & Control (simulated)", "T1071 marker",
+                     "Inert C2 beacon-config-named marker written.", ts, artifact_paths=[str(p)])
+
+    def _step_data_destruction(self, jitter_range) -> None:
+        self._jitter(*jitter_range, note="Impact — inert wiper marker")
+        ts = time.time(); hexid = uuid.uuid4().hex[:8]
+        self._narrate("▶ STAGE: Data Destruction [T1485] — writing an INERT marker named like a "
+                      f"disk-wiper artifact into {self.documents_dir}. NOTHING is deleted, wiped, or "
+                      "overwritten — only the NAME/pattern is presented to the heuristics.")
+        p = self._marker(f"_redteam_wiper_{hexid}.txt",
+                         "ANGERONA RED TEAM drill — simulated data-destruction marker. Inert.\n")
+        self._record("Data Destruction (simulated)", "T1485 marker",
+                     "Inert wiper-named marker written.", ts, artifact_paths=[str(p)])
+
     def _write_history(self) -> None:
         try:
             self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -425,9 +523,39 @@ class RedTeamEngine:
 
 
 REDTEAM_STAGE_CATEGORY = {
+    "Initial Access (simulated)": "detection",
     "Credential Access (simulated)": "detection",
     "Discovery": "unmonitored",
+    "Privilege Escalation (simulated)": "detection",
     "WMI Persistence (simulated)": "detection",
     "Defense Evasion (simulated)": "detection",
+    "Scheduled Task (simulated)": "detection",
+    "Registry Run Key (simulated)": "detection",
+    "Lateral Movement (simulated)": "detection",
+    "Command & Control (simulated)": "detection",
+    "Exfil Staging (simulated)": "detection",
+    "Ransomware Impact (simulated)": "detection",
+    "Data Destruction (simulated)": "detection",
+    "Benign Execution (simulated)": "detection",
     "Noise Injection": "resilience",
 }
+
+
+def self_test() -> tuple[bool, str]:
+    """Verify intensity presets, campaign-order integrity, and technique coverage
+    without running the (file-writing / process-spawning) playbook thread."""
+    # 1) intensity presets well-formed and monotically escalating
+    keys = ("cycles", "jitter", "noise", "threat", "proc_mult")
+    presets_ok = all(all(k in INTENSITY_LEVELS[l] for k in keys) for l in _INTENSITY_ORDER)
+    escalating = ([INTENSITY_LEVELS[l]["cycles"] for l in _INTENSITY_ORDER] == sorted(
+        [INTENSITY_LEVELS[l]["cycles"] for l in _INTENSITY_ORDER]))
+    # 2) every campaign-order name maps to a real engine step method
+    missing = [n for n in _CAMPAIGN_ORDER if not callable(getattr(RedTeamEngine, n, None))]
+    # 3) campaign sort produces the canonical kill-chain order
+    rank = {n: i for i, n in enumerate(_CAMPAIGN_ORDER)}
+    sample = ["_step_ransomware_canary", "_step_recon", "_step_initial_access"]
+    ordered = sorted(sample, key=lambda n: rank.get(n, 99))
+    order_ok = ordered == ["_step_initial_access", "_step_recon", "_step_ransomware_canary"]
+    ok = presets_ok and escalating and not missing and order_ok
+    return ok, (f"intensity presets ok, {len(_CAMPAIGN_ORDER)} chained techniques, kill-chain order verified"
+                if ok else f"failed: presets={presets_ok} escalate={escalating} missing={missing} order={order_ok}")

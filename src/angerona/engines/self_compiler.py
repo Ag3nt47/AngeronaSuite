@@ -80,8 +80,50 @@ def run_syntax_audit(file_path):
     except Exception as e:
         return False, str(e)
 
-def hot_reload_capability(module_name, file_path):
-    """Injects the newly compiled script live into runtime memory allocations."""
+# ── A-01 hardening: self-modification is OFF by default and gated ────────────
+# Executing AI-generated Python in-process is the highest-impact capability in
+# the suite, so it ships disabled. The operator must knowingly opt in AND the
+# generated source must pass a static security scan before it is ever run.
+SELF_EVOLVE_ENABLED = os.getenv("ANGERONA_SELF_EVOLVE", "0") == "1"
+
+# Dangerous constructs that must NOT appear in autonomously-generated code.
+_DENY_PATTERNS = (
+    "os.system", "subprocess", "popen", "pty.spawn", "eval(", "exec(",
+    "__import__", "compile(", "ctypes", "cffi", "winreg", "_winreg",
+    "shutil.rmtree", "os.remove", "os.unlink", "os.rmdir", "os.replace",
+    "socket.", "urllib.request", "requests.", "httpx", "ftplib", "smtplib",
+    "base64.b64decode", "marshal", "pickle", "importlib", "setattr(",
+    "open(",  # arbitrary file writes from generated code are not allowed
+)
+
+
+def scan_generated_source(source: str) -> list[str]:
+    """Return the list of denied constructs found in *source* (empty = clean)."""
+    low = (source or "").lower()
+    return [p for p in _DENY_PATTERNS if p.lower() in low]
+
+
+def hot_reload_capability(module_name, file_path, authorized: bool = False):
+    """Injects a newly compiled script live into runtime memory.
+
+    Refuses unless (a) self-evolution is explicitly enabled via ANGERONA_SELF_EVOLVE=1
+    or the caller passes authorized=True after human review, AND (b) the source
+    passes the static security scan. This prevents autonomous execution of
+    unreviewed, potentially poisoned AI-generated code (finding A-01).
+    """
+    if not (SELF_EVOLVE_ENABLED or authorized):
+        return False, ("BLOCKED: self-evolution is disabled by default. Review the "
+                       "generated source and set ANGERONA_SELF_EVOLVE=1 (or pass "
+                       "authorized=True) to allow execution.")
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+            src = fh.read()
+    except Exception as e:
+        return False, f"could not read generated source: {e}"
+    hits = scan_generated_source(src)
+    if hits:
+        return False, ("BLOCKED by static security scan — generated code contains "
+                       f"disallowed constructs: {', '.join(hits)}. Not executed.")
     try:
         spec = importlib.util.spec_from_file_location(module_name, file_path)
         new_module = importlib.util.module_from_spec(spec)

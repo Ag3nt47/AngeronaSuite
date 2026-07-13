@@ -54,10 +54,11 @@ $killTarget  = if (Test-Path $killDeskBat) { $killDeskBat } else { $killBat }
 New-IconShortcut -LinkPath (Join-Path $desktop 'Kill All Angerona.lnk') `
                  -Target $killTarget -Icon $skull -WorkDir (Split-Path $killTarget)
 
-# 3) Backup-to-F — Desktop shortcut for the user's backup_to_F.bat
-$backupBat = Join-Path $desktop 'backup_to_F.bat'
+# 3) Backup-to-F — Desktop shortcut targeting the PROJECT copy of backup_to_F.bat
+#    (so the raw .bat can be removed from the Desktop and just the icon shortcut kept)
+$backupBat = Join-Path $proj 'backup_to_F.bat'
 New-IconShortcut -LinkPath (Join-Path $desktop 'Backup to F.lnk') `
-                 -Target $backupBat -Icon $fico -WorkDir $desktop
+                 -Target $backupBat -Icon $fico -WorkDir $proj
 
 # Nudge Explorer to refresh its icon cache
 try {

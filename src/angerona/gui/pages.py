@@ -2858,11 +2858,13 @@ class AARDialog(QDialog):
     _fix_done = Signal(str)
     _apply_done = Signal(str)
 
-    def __init__(self, data_dir, parent=None, on_attempt_fix=None, on_apply=None) -> None:
+    def __init__(self, data_dir, parent=None, on_attempt_fix=None, on_apply=None,
+                 on_clean=None) -> None:
         super().__init__(parent)
         self.data_dir = data_dir
         self._on_attempt_fix = on_attempt_fix
         self._on_apply = on_apply
+        self._on_clean = on_clean
         self._fix_done.connect(self._show_fix_result)
         self._apply_done.connect(lambda t: self.body.appendPlainText("\n" + t))
         self.setWindowTitle("Shark Attack — After-Action Report")
@@ -2894,9 +2896,24 @@ class AARDialog(QDialog):
         self._fix_btn.clicked.connect(self._attempt_fix)
         row.addWidget(self._fix_btn)
         row.addStretch(1)
-        close = QPushButton("Close"); close.clicked.connect(self.accept)
+        close = QPushButton("\U0001F9F9  Clean & Close")
+        close.setToolTip("Erase every benign drill marker / persistence-marker file used during "
+                         "the simulation, then close this report.")
+        close.clicked.connect(self._clean_and_close)
         row.addWidget(close)
         lay.addLayout(row)
+
+    def _clean_and_close(self) -> None:
+        """Sweep the drill's marker files, then close the report."""
+        if self._on_clean:
+            try:
+                n = self._on_clean()
+                if isinstance(n, int):
+                    self.body.appendPlainText(
+                        f"\n\U0001F9F9  Cleaned {n} drill marker/file(s). Closing.")
+            except Exception:
+                pass
+        self.accept()
 
     @staticmethod
     def _safe(fn):

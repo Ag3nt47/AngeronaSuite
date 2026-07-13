@@ -114,9 +114,12 @@ class ForensicsModule(BaseModule):
     def _audit_sockets(self, pid: int, case_dir: Path) -> None:
         out = case_dir / "network_sockets.txt"
         try:
-            res = run_hidden(f"netstat -ano | findstr {pid}", shell=True,
-                             capture_output=True, text=True)
-            data = res.stdout or "No tracked endpoints at capture time.\n"
+            # A-05: no shell — run netstat as an argv list and filter in Python.
+            res = run_hidden(["netstat", "-ano"], capture_output=True, text=True)
+            needle = str(int(pid))   # coerce; the PID is the last column of each row
+            rows = [ln for ln in (res.stdout or "").splitlines()
+                    if ln.split() and ln.split()[-1] == needle]
+            data = ("\n".join(rows) + "\n") if rows else "No tracked endpoints at capture time.\n"
         except Exception:
             data = "No tracked endpoints at capture time.\n"
         out.write_text(data, encoding="utf-8")

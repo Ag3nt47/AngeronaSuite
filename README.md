@@ -1,9 +1,24 @@
 # 🛡️ Angerona — Cyber Security Suite
 
+**Local-first EDR / NDR / SOAR for Windows — MITRE ATT&CK detection, YARA, ETW/AMSI/WFP telemetry, and local-AI triage. No cloud. No kernel driver.**
+
+![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
+![Python](https://img.shields.io/badge/python-3.11%2B-3776AB)
+![GUI](https://img.shields.io/badge/GUI-PySide6%2FQt-41CD52)
+![EDR·NDR·SOAR](https://img.shields.io/badge/EDR·NDR·SOAR-endpoint%20defense-1f6feb)
+![MITRE ATT&CK](https://img.shields.io/badge/MITRE-ATT%26CK-red)
+![Local AI](https://img.shields.io/badge/AI-local%20Ollama-000000)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 A modular, local-first endpoint security suite for Windows with a clean native
 desktop GUI. Angerona runs elevated in user mode and pulls kernel-sourced
 telemetry through Windows' supported APIs (ETW / WMI / AMSI / WFP) — no custom
 kernel driver required — so it is powerful **and** safe to install.
+
+<!-- Add a real screenshot/GIF here — a dashboard image is the single biggest driver of stars.
+     Drop a PNG at docs/screenshots/dashboard.png (recommended ~1280px wide) and it will render below. -->
+![Angerona dashboard](docs/screenshots/dashboard.png)
+<sub>*Live dashboard: module health, alerts, threat level, and ATT&CK heatmap. (Replace `docs/screenshots/dashboard.png` with your capture.)*</sub>
 
 > **Privacy & safety first.** Everything runs locally on your machine. The AI
 > triage engine uses a local Ollama model by default; cloud escalation is opt-in
@@ -144,6 +159,26 @@ own keys in a local `.env` (see `.env.example` if present).
 > This repository is **`AngeronaSuite/`** only. The older Rich-terminal prototype
 > that lives beside it (`agent.py` / `ui.py` at the parent folder) is a separate,
 > superseded project and is **not** part of this repo — keep it out of the commit.
+
+## 🔎 Keywords & GitHub Topics
+
+Angerona is a Windows **EDR / NDR / SOAR** platform for **endpoint detection and response**,
+**network detection**, **threat hunting**, and **incident response** — with **MITRE ATT&CK**
+mapping, **YARA** scanning, **ETW / AMSI / WFP / Sysmon** telemetry, **ransomware** and
+**LSASS credential-dumping** detection, **C2 beacon** detection, and **local-LLM (Ollama)**
+alert triage. Built in **Python** with a **PySide6** desktop GUI.
+
+**Copy these into the repo's _About ▸ Topics_ field** (Settings not required — it's the gear next to *About*):
+
+```
+edr ndr soar endpoint-security blue-team threat-hunting incident-response
+mitre-attack yara etw amsi sysmon ransomware-detection c2-detection
+malware-detection windows-security siem ollama local-llm python pyside6 security-tools
+```
+
+> Topics are the #1 on-platform discovery lever — a search for `edr` or `mitre-attack` can
+> only surface Angerona if these are set. Also fill in the one-line **About** description with
+> the tagline at the top of this README.
 
 ## 📄 License
 

@@ -36,6 +36,7 @@ Available tools
 from __future__ import annotations
 
 import json
+import os
 import queue
 import threading
 import time
@@ -66,9 +67,36 @@ class _MCPHandler(BaseHTTPRequestHandler):
     _sessions: dict[str, queue.Queue]   # session_id → response queue
     _tools:    dict[str, _Tool]         # tool name → _Tool
     _port:     int
+    _token:    str | None = None        # optional bearer token (ANGERONA_MCP_TOKEN)
+
+    # ── security guard (A-02): anti DNS-rebinding + optional bearer token ─────
+    def _guard(self) -> bool:
+        """Reject requests whose Host isn't loopback (defeats DNS-rebinding that
+        points a public hostname at 127.0.0.1) and, if a token is configured,
+        requests that don't present it. Returns True only when the request is
+        allowed to proceed."""
+        host = (self.headers.get("Host") or "").split(":")[0].strip().lower()
+        if host not in ("127.0.0.1", "localhost", ""):
+            self.send_error(403, "Forbidden host")
+            return False
+        tok = type(self)._token
+        if tok:
+            supplied = None
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if q.get("token"):
+                supplied = q["token"][0]
+            auth = self.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                supplied = auth[7:].strip()
+            if supplied != tok:
+                self.send_error(401, "Unauthorized")
+                return False
+        return True
 
     # ── routing ──────────────────────────────────────────────────────────────
     def do_GET(self) -> None:
+        if not self._guard():
+            return
         p = urllib.parse.urlparse(self.path)
         if p.path == "/sse":
             self._handle_sse()
@@ -78,6 +106,8 @@ class _MCPHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self) -> None:
+        if not self._guard():
+            return
         p = urllib.parse.urlparse(self.path)
         if p.path != "/message":
             self.send_error(404)
@@ -98,14 +128,14 @@ class _MCPHandler(BaseHTTPRequestHandler):
             self._sessions[sid].put(response)
         self.send_response(202)
         self.send_header("Content-Length", "0")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
     def do_OPTIONS(self) -> None:
-        self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        # No wildcard CORS: MCP clients are not browsers, so cross-origin reads
+        # are intentionally NOT permitted (A-02). A browser preflight gets no
+        # Access-Control-Allow-Origin and is therefore blocked from reading data.
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
     # ── SSE stream ───────────────────────────────────────────────────────────
@@ -118,7 +148,6 @@ class _MCPHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type",  "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection",    "keep-alive")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
         # First event: tell the client where to POST its messages
@@ -492,11 +521,15 @@ class AngeronaMCPServer:
 
         sessions = self._sessions
         tools_ref = tools
+        # Optional bearer token (A-02). Prefer config.mcp_token, else env; None = off.
+        token = (getattr(self._config, "mcp_token", None)
+                 or os.environ.get("ANGERONA_MCP_TOKEN") or None)
 
         class Handler(_MCPHandler):
             _sessions = sessions
             _tools    = tools_ref
             _port     = port
+            _token    = token
 
         self._httpd = HTTPServer(("127.0.0.1", port), Handler)
         self._thread = threading.Thread(

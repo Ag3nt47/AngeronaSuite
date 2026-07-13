@@ -106,10 +106,38 @@ def _extract_json(text: str) -> dict | None:
         return None
 
 
+# ── A-03 hardening: destructive-command denylist ─────────────────────────────
+# A "fix" that deletes data, wipes recovery, disables AV, or adds accounts is
+# never auto-offered — even behind the confirm dialog — because a poisoned CVE
+# feed could steer the model. Matches are refused with a clear reason.
+_DESTRUCTIVE_PS = (
+    "remove-item", "rd /s", "rmdir /s", "del /f", "format-volume", "format ",
+    "clear-disk", "vssadmin delete", "wbadmin delete", "bcdedit",
+    "set-mppreference -disable", "add-mppreference -exclusion",
+    "disable-computerrestore", "cipher /w", "new-localuser", "net user ",
+    "add-localgroupmember", "set-executionpolicy unrestricted",
+    "invoke-expression", "iex ", "downloadstring", "start-bitstransfer",
+    "reg delete", "stop-service", "uninstall-", "-encodedcommand",
+)
+
+
+def scan_powershell(script: str) -> list[str]:
+    """Return the destructive constructs found in *script* (empty = clean)."""
+    low = (script or "").lower()
+    return [p for p in _DESTRUCTIVE_PS if p in low]
+
+
 def _normalize(cve: str, raw: dict | None) -> dict:
     raw = raw or {}
     fix_script = str(raw.get("fix_script") or "").strip()
     fa = bool(raw.get("fix_available")) and bool(fix_script)
+    reason = str(raw.get("reason") or "").strip()
+    # Refuse destructive fixes outright (A-03).
+    danger = scan_powershell(fix_script) if fix_script else []
+    if danger:
+        fa = False
+        reason = ("Refused: proposed fix contains destructive/high-risk commands "
+                  f"({', '.join(danger)}). Apply manually after review if truly needed.")
     try:
         conf = float(raw.get("confidence", 0) or 0)
     except Exception:
@@ -122,7 +150,8 @@ def _normalize(cve: str, raw: dict | None) -> dict:
         "instructions": str(raw.get("instructions") or "").strip(),
         "fix_script": fix_script,
         "revert_script": str(raw.get("revert_script") or "").strip(),
-        "reason": str(raw.get("reason") or "").strip(),
+        "reason": reason,
+        "blocked_destructive": bool(danger),
     }
 
 
@@ -214,6 +243,10 @@ def apply_fix(cve: str, analysis: dict) -> dict:
     script = (analysis or {}).get("fix_script", "").strip()
     if not script:
         return {"ok": False, "output": "No fix script to apply."}
+    danger = scan_powershell(script)
+    if danger:
+        return {"ok": False, "output": "Refused: destructive/high-risk commands "
+                f"in fix ({', '.join(danger)}). Not executed."}
     rc, out = _run_powershell(script)
     ok = rc == 0
     data = _load_applied()
@@ -260,9 +293,14 @@ def self_test() -> tuple[bool, str]:
                          '"reason":""} trailing prose')
     n = _normalize("CVE-2024-1", good)
     empty = _normalize("CVE-2024-2", {"fix_available": True, "fix_script": ""})  # no script ⇒ not available
+    # A-03: a destructive "fix" must be refused even when the model marks it available.
+    danger = _normalize("CVE-2024-3", {"fix_available": True, "confidence": 0.9,
+                                       "fix_script": "Remove-Item C:\\Windows -Recurse -Force"})
     ok = (n["fix_available"] is True and 0.79 < n["confidence"] < 0.81
           and n["fix_script"].startswith("Set-Service")
           and n["revert_script"].startswith("Set-Service")
-          and empty["fix_available"] is False)
-    return ok, ("JSON parse + normalize + guardrail verified"
-                if ok else f"failed: n={n} empty={empty}")
+          and empty["fix_available"] is False
+          and danger["fix_available"] is False and danger["blocked_destructive"] is True
+          and scan_powershell("vssadmin delete shadows") == ["vssadmin delete"])
+    return ok, ("JSON parse + normalize + destructive-denylist guardrail verified"
+                if ok else f"failed: n={n} empty={empty} danger={danger}")

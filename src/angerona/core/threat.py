@@ -25,13 +25,20 @@ THREAT_LABEL = {
 
 def threat_level(events, window: float = 600.0) -> Severity:
     """Return INFO (secure), HIGH, or CRITICAL based on real detections in the
-    last ``window`` seconds."""
+    last ``window`` seconds. Operator-acknowledged (ignored) alerts are excluded
+    so cleaning up false alerts in the Resolve Center returns the level to Secure."""
     now = time.time()
+    try:
+        from angerona.core.alert_ack import acked_signatures, signature
+        acked = acked_signatures()
+    except Exception:
+        acked, signature = set(), None
     threats = [
         e for e in events
         if (now - e.ts) <= window
         and e.severity >= Severity.HIGH
         and e.module not in _META_MODULES
+        and not (signature and signature(e) in acked)
     ]
     if any(e.severity == Severity.CRITICAL for e in threats):
         return Severity.CRITICAL
