@@ -23,15 +23,34 @@ kernel driver required — so it is powerful **and** safe to install.
   - Network connection monitoring + packet inspection
   - YARA signature scanning
   - Memory / forensic scanning
+  - LSASS credential-dumping detection (Mimikatz/procdump/comsvcs MiniDump)
+  - C2 beacon detection (regular-cadence outbound callbacks)
+  - Shadow-copy / recovery-tamper guard (ransomware precursor)
+  - Removable-media / USB monitor (with autorun.inf flagging)
   - Active deception (canary files & honeytokens)
   - Flight-recorder persistence (tamper-evident SQLite ledger)
 - **Shark Attack red-team drill** — an unannounced, non-destructive adversary simulation that exercises detect-and-respond end to end, with a live Offense Monitor, an animated swimming-shark indicator, and an optional AI Flight-Instructor narration.
 - **After-Action Report + Attempt Fix** — every drill produces a report; the **Attempt Fix** button asks the local AI for a remediation and (with your confirmation) applies it.
 - **Posture Hardening (self-healing)** — records exploited weaknesses, drops its health as a visible warning, and stages review-gated PowerShell/registry remediations.
+- **Active defense (SOAR)** — under a corroborated attack, Angerona auto-contains the offending process (suspend → kill on repeat) and **isolates its network** with a hidden firewall rule, so it can't reach a C2 even if resumed. A protected-process allowlist and 2-signal corroboration keep Windows itself safe.
+- **Incident kill-chain timeline** — related alerts are grouped per process and laid out along the ATT&CK chain (Recon → … → Impact) so you can see how far an attack got, with severity and progress. Double-click a technique for its MITRE page.
+- **One-click IR triage bundle** — snapshot processes, connections, users, recent alerts and incidents into a timestamped ZIP for incident response / after-action review.
+- **Scheduled AI security briefing** — a daily plain-English summary (alert volume, top techniques, incidents, containment) via the local model, with a deterministic fallback so a briefing is always produced.
+- **Threat Intel — CVE ignore & AI fix advisor** — ignore un-actionable CVEs (too vague / no fix) so they stop inflating the threat level, kept with a revertable per-ID history. The local AI compares each CVE to your system and, where a scriptable fix exists, offers **❗ Apply** (confirm-then-execute, with a one-click **↩ Revert**). A **Mass Flag & Ignore** button clears the no-fix CVEs in one go.
+- **Multi-process resilience ecosystem** — core, Watchdog, sensor scanner and Black Box run as separate programs that keep each other alive (auto-restart, no duplicate instances), so one crashing can't take the others down.
 - **Watchdog Monitor** — supervises every module and auto-restarts any that crash (throttled), keeping the suite resilient.
 - **World View** — a deep-transparency telemetry dashboard: host↔suite resource matrix, a telemetry-blinding detector, and live Ollama diagnostics (VRAM, tokens/sec).
 - **Auto-update from GitHub Releases** — one click to pull the latest signed build.
 - **Elevated user-mode access** — UAC elevation on launch for full-system visibility, without the risk of an unsigned kernel driver.
+
+## 🆕 What's new in v1.7
+
+- **Four new detection modules** — LSASS credential-dumping (T1003.001), C2 beaconing (T1071/T1571), shadow-copy/recovery tampering (T1490, a ransomware precursor), and removable-media/USB (T1091/T1200). The suite now auto-discovers **60 modules**.
+- **Active-defense network isolation** — when SOAR contains a corroborated threat it also blocks that process's outbound traffic with a hidden firewall rule, turning a "suspend" into real containment.
+- **Incident kill-chain timeline** — per-process ATT&CK-ordered incident view (🎯 Forensics), with severity, progress, and MITRE links; exportable to JSON.
+- **One-click IR triage bundle** — 🎯 Forensics ▸ collect a timestamped forensic ZIP (processes, connections, users, events, incidents).
+- **Scheduled AI security briefing (BRIEF)** — daily local-AI briefing with a deterministic fallback, written to `shared_logs/daily_briefing.*`.
+- **CVE ignore / revert + local-AI fix advisor** — ignore un-actionable CVEs (kept with per-ID history) so they no longer raise the threat level; the local model proposes scriptable fixes with confirm-then-execute **Apply** and auto-captured **Revert**, plus **Mass Flag & Ignore** for the no-fix ones.
 
 ## 🆕 What's new in v1.3.0
 

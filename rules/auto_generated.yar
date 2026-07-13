@@ -1,8 +1,10 @@
-rule RedTeam_LSASS_Dump {
+rule Red_Team_Tagged_Process {
     meta:
         author = "Senior Detection Engineer"
     strings:
-        $a = "lsass-dump" wide
+        $tag = "red-team-tagged" wide
     condition:
-        $a in themself() and file_path: contains("Documents") and file_path: ends_with(".txt")
+        all of them {
+            5 of ($tag in /proc/self/cmdline/)
+        }
 }

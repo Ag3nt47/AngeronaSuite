@@ -366,13 +366,27 @@ class IntelSyncModule(BaseModule):
             elif "matches" in _result:
                 matches = _result["matches"]
                 kev_count = _result.get("kev_count", 0)
-                if matches:
+                # Analyst-ignored CVEs (no fix / too vague) stay in the feed and the
+                # dashboard, but are excluded from the threat level so Angerona doesn't
+                # report HIGH/CRITICAL over things the operator can't action.
+                try:
+                    from angerona.core.cve_ignore import filter_active
+                    active = filter_active(matches)
+                except Exception:
+                    active = matches
+                ignored_n = len(matches) - len(active)
+                if active:
                     self.alert_pending = True
-                    self.set_health(60, f"{len(matches)} applicable KEV CVE(s)")
-                    top = ", ".join(m["cve"] for m in matches[:5] if m.get("cve"))
-                    self.emit(f"{len(matches)} host-applicable CISA KEV CVEs (e.g. {top}). "
+                    note = f" ({ignored_n} ignored)" if ignored_n else ""
+                    self.set_health(60, f"{len(active)} applicable KEV CVE(s){note}")
+                    top = ", ".join(m["cve"] for m in active[:5] if m.get("cve"))
+                    self.emit(f"{len(active)} host-applicable CISA KEV CVEs (e.g. {top}). "
                               f"Operator confirmation required before any fix.",
-                              Severity.HIGH, count=len(matches), cves=top)
+                              Severity.HIGH, count=len(active), cves=top, ignored=ignored_n)
+                elif matches:
+                    # every applicable CVE is analyst-ignored → no threat-level impact
+                    self.alert_pending = False
+                    self.set_health(100, f"{len(matches)} applicable KEV CVE(s), all ignored")
                 else:
                     self.alert_pending = False
                     self.set_health(100, f"{kev_count} KEV records, none applicable")

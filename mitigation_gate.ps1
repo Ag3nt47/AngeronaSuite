@@ -27,3 +27,4 @@ New-NetFirewallRule -DisplayName 'Angerona-SOAR-Loopback-Guard' -Group 'Angerona
 . "$PSScriptRoot\playbooks\dynamic_block_T1070.ps1"   # T1070
 . "$PSScriptRoot\playbooks\dynamic_block_T1546.003.ps1"   # T1546.003
 . "$PSScriptRoot\playbooks\dynamic_block_T1003.ps1"   # T1003
+. "$PSScriptRoot\playbooks\dynamic_block_T1059.ps1"   # T1059
