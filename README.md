@@ -15,15 +15,29 @@ desktop GUI. Angerona runs elevated in user mode and pulls kernel-sourced
 telemetry through Windows' supported APIs (ETW / WMI / AMSI / WFP) — no custom
 kernel driver required — so it is powerful **and** safe to install.
 
-<!-- Add a real screenshot/GIF here — a dashboard image is the single biggest driver of stars.
-     Drop a PNG at docs/screenshots/dashboard.png (recommended ~1280px wide) and it will render below. -->
 ![Angerona dashboard](docs/screenshots/dashboard.png)
-<sub>*Live dashboard: module health, alerts, threat level, and ATT&CK heatmap. (Replace `docs/screenshots/dashboard.png` with your capture.)*</sub>
+<sub>*Live Angerona dashboard during a benign ATT&CK simulation, showing module health, real-time telemetry, SOAR actions, and threat posture.*</sub>
 
 > **Privacy & safety first.** Everything runs locally on your machine. The AI
 > triage engine uses a local Ollama model by default; cloud escalation is opt-in
 > and only fires if you supply your own API keys. No secrets are ever committed
 > to this repository.
+
+## Red Team Drill
+
+Angerona can exercise its detection-and-response pipeline with an unannounced,
+non-destructive adversary simulation. Every technique uses a benign, reversible
+marker—no real exploit, secret, or persistence mechanism is touched.
+
+| Drill in progress | Detection and response |
+| --- | --- |
+| ![Red Team Simulation console running an extreme-intensity campaign](docs/screenshots/red-team-drill-console.png) | ![Critical alerts raised during the benign Red Team Simulation](docs/screenshots/red-team-drill-alerts.png) |
+| Configure the campaign, intensity, marker location, and live ATT&CK kill chain. | Angerona correlates simulated activity into live alerts and SOAR decisions. |
+
+| After-Action Report | Scorecard and remediation |
+| --- | --- |
+| ![Shark Attack After-Action Report timeline](docs/screenshots/red-team-after-action-report.png) | ![After-Action Report scorecard and local-AI remediation](docs/screenshots/red-team-after-action-scorecard.png) |
+| Review each simulated technique, its detection result, and the reason behind the outcome. | Re-run delayed checks, request a local-AI fix, or clean every drill artifact. |
 
 ---
 

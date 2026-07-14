@@ -1,10 +1,14 @@
-rule Red_Team_Tagged_Process {
+rule RedTeam_RunKey_Marker {
     meta:
         author = "Senior Detection Engineer"
     strings:
-        $tag = "red-team-tagged" wide
+        $marker = "Run-key-named marker written to Documents."
     condition:
         all of them {
-            5 of ($tag in /proc/self/cmdline/)
+            0x20 in ascii and
+            contains($marker) and
+            file_path contains "_redteam_runkey_" and
+            file_path ends with ".txt" and
+            file_path starts with "C:\\Users\\"
         }
 }

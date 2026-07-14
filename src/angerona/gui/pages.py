@@ -2122,6 +2122,28 @@ class AlertsPanel(QFrame):
         self.table.setCellWidget(pos, 5, self._make_block_btn(e))
         self.table.setCellWidget(pos, 6, self._make_analyze_btn(e))
 
+    _MAX_ROWS = 120   # feed cap — keeps the table (and its cell widgets) bounded
+
+    def _free_row_widgets(self, r: int) -> None:
+        """Explicitly delete a row's Allow/Block/Analyze cell widgets.
+
+        CRITICAL for long-run performance: QTableWidget.setRowCount(0)/removeRow
+        does NOT delete widgets installed via setCellWidget — they orphan and leak.
+        In a busy EDR the feed refreshes every couple of seconds, so without this
+        the suite accumulates hundreds of thousands of dead QPushButtons over a
+        session (the "slower the longer it runs" symptom). Free them here."""
+        for c in (4, 5, 6):
+            w = self.table.cellWidget(r, c)
+            if w is not None:
+                self.table.removeCellWidget(r, c)
+                w.deleteLater()
+
+    def _trim_to_cap(self) -> None:
+        while self.table.rowCount() > self._MAX_ROWS:
+            r = self.table.rowCount() - 1
+            self._free_row_widgets(r)
+            self.table.removeRow(r)
+
     def refresh(self) -> None:
         # Cheap pre-check: a single MAX(ts) aggregation avoids fetching and
         # deserializing 120 event rows when nothing has changed (the common case).
@@ -2137,16 +2159,31 @@ class AlertsPanel(QFrame):
         if newest_ts == self._newest_ts and len(events) == len(self._events):
             return
 
-        # ── full rebuild — preserving the user's current sort column/order ──
         hdr = self.table.horizontalHeader()
         sort_col = hdr.sortIndicatorSection()
         sort_ord = hdr.sortIndicatorOrder()
 
+        prev_ts = self._newest_ts
+        new_events = [e for e in events if e.ts > prev_ts] if prev_ts else events
+        # If our previous newest fell out of the recent(120) window (a burst), we
+        # can't incrementally reconcile — do a widget-freeing full rebuild.
+        gap = bool(prev_ts) and len(new_events) >= len(events)
+
         self.table.setSortingEnabled(False)
         self.table.setUpdatesEnabled(False)
-        self.table.setRowCount(0)
-        for e in events:
-            self._insert_row(self.table.rowCount(), e)
+        if gap or not self._events:
+            # Full rebuild — FREE the old cell widgets first so they don't leak.
+            for r in range(self.table.rowCount()):
+                self._free_row_widgets(r)
+            self.table.setRowCount(0)
+            for e in events:
+                self._insert_row(self.table.rowCount(), e)
+        else:
+            # Incremental: only the genuinely-new events get new widgets (prepended
+            # so the newest ends at row 0), then trim the tail back to the cap.
+            for e in reversed(new_events):
+                self._insert_row(0, e)
+            self._trim_to_cap()
         self.table.setUpdatesEnabled(True)
         self.table.setSortingEnabled(True)
         self.table.sortByColumn(sort_col, sort_ord)
