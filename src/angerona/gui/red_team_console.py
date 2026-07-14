@@ -22,13 +22,14 @@ intensity, campaign, target_dir, custom, auto_remediate, analogy.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QSlider, QTabWidget,
-    QTextEdit, QVBoxLayout, QWidget,
+    QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
+    QPushButton, QSlider, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
 # Canonical kill-chain stages → (match-substring in narration, short chip label)
@@ -82,16 +83,20 @@ class RedTeamConsole(QDialog):
         sub.setWordWrap(True); sub.setStyleSheet("color:#9fb3c8;")
         root.addWidget(sub)
 
-        tabs = QTabWidget()
-        tabs.addTab(self._build_run_tab(default_target), "▶  Run")
-        tabs.addTab(self._build_editor_tab(), "🧪  Sandbox Editor")
-        root.addWidget(tabs, 1)
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._build_run_tab(default_target), "▶  Run")
+        self._tabs.addTab(self._build_history_tab(), "🕑  History")
+        self._tabs.addTab(self._build_editor_tab(), "🧪  Sandbox Editor")
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+        root.addWidget(self._tabs, 1)
 
-        # subscribe to live narration from the parent
-        try:
-            parent._shark_narration.connect(self._on_narration)
-        except Exception:
-            pass
+        # subscribe to live narration + analogy coaching from the parent (the
+        # legacy Live Offense Monitor is gone, so both flow into this console).
+        for sig_name in ("_shark_narration", "_fi_coaching"):
+            try:
+                getattr(parent, sig_name).connect(self._on_narration)
+            except Exception:
+                pass
 
     # ── Run tab ──────────────────────────────────────────────────────────────
     def _build_run_tab(self, default_target: str | None) -> QWidget:
@@ -197,6 +202,88 @@ class RedTeamConsole(QDialog):
         act.addStretch(); act.addWidget(self.stop_btn); act.addWidget(self.launch_btn)
         lay.addLayout(act)
         return w
+
+    # ── History tab ──────────────────────────────────────────────────────────
+    def _build_history_tab(self) -> QWidget:
+        w = QWidget(); lay = QVBoxLayout(w)
+        lay.addWidget(self._h("Past After-Action Reports"))
+        lay.addWidget(QLabel("Previous drill reports, newest first — click one to view it."))
+        body = QHBoxLayout()
+        self._hist_list = QListWidget(); self._hist_list.setFixedWidth(320)
+        self._hist_list.currentItemChanged.connect(self._on_hist_select)
+        body.addWidget(self._hist_list)
+        self._hist_view = QPlainTextEdit(); self._hist_view.setReadOnly(True)
+        self._hist_view.setStyleSheet("font-family:'Fira Code',monospace; font-size:11px;")
+        body.addWidget(self._hist_view, 1)
+        lay.addLayout(body, 1)
+        row = QHBoxLayout()
+        refresh = QPushButton("↻ Refresh"); refresh.clicked.connect(self._load_history)
+        openf = QPushButton("📂 Open folder"); openf.clicked.connect(self._open_history_folder)
+        row.addWidget(refresh); row.addWidget(openf); row.addStretch()
+        lay.addLayout(row)
+        self._load_history()
+        return w
+
+    def _history_dir(self) -> Path:
+        try:
+            return Path(self._parent.config.data_dir) / "aar_history"
+        except Exception:
+            return Path.cwd() / "aar_history"
+
+    def _load_history(self) -> None:
+        self._hist_list.clear()
+        try:
+            files = sorted(self._history_dir().glob("*_aar_*.txt"),
+                           key=lambda p: p.stat().st_mtime, reverse=True)
+        except Exception:
+            files = []
+        if not files:
+            it = QListWidgetItem("(no past reports yet — run a simulation)")
+            it.setData(Qt.ItemDataRole.UserRole, None)
+            self._hist_list.addItem(it)
+            self._hist_view.setPlainText("")
+            return
+        for p in files:
+            kind = "RED TEAM" if "redteam" in p.name.lower() else "SHARK"
+            try:
+                ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(p.stat().st_mtime))
+            except Exception:
+                ts = "?"
+            it = QListWidgetItem(f"{kind}  ·  {ts}")
+            it.setData(Qt.ItemDataRole.UserRole, str(p))
+            self._hist_list.addItem(it)
+        self._hist_list.setCurrentRow(0)
+
+    def _on_hist_select(self, cur, _prev) -> None:
+        if cur is None:
+            return
+        path = cur.data(Qt.ItemDataRole.UserRole)
+        if not path:
+            self._hist_view.setPlainText("")
+            return
+        try:
+            self._hist_view.setPlainText(Path(path).read_text(encoding="utf-8", errors="replace"))
+        except Exception as exc:
+            self._hist_view.setPlainText(f"Could not read report: {exc}")
+
+    def _on_tab_changed(self, idx: int) -> None:
+        try:
+            if "History" in self._tabs.tabText(idx):
+                self._load_history()
+        except Exception:
+            pass
+
+    def _open_history_folder(self) -> None:
+        import subprocess
+        d = self._history_dir()
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            if os.name == "nt":
+                os.startfile(str(d))   # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["xdg-open", str(d)])
+        except Exception:
+            pass
 
     def _build_editor_tab(self) -> QWidget:
         w = QWidget(); lay = QVBoxLayout(w)

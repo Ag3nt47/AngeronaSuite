@@ -277,6 +277,18 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
         except Exception:
             continue  # best-effort — a write failure here should never break the report itself
 
+    # Keep a TIMESTAMPED archive so the Red Team console's History tab can list
+    # previous reports (the fixed files above are overwritten every run).
+    try:
+        hist_dir = Path(data_dir) / "aar_history"
+        hist_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        (hist_dir / f"{basename}_{stamp}.txt").write_text(text, encoding="utf-8")
+        (hist_dir / f"{basename}_{stamp}.json").write_text(
+            json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
 
 def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
                  window: float = 3600.0, history_name: str = "shark_history.json",

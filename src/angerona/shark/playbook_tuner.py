@@ -104,7 +104,24 @@ def tune_containment(technique_id: str, timeline: dict | None = None) -> dict:
         "note": "Kill Process executed but the vector persisted (decoupled WMI hook / "
                 "hollowed process). Need a network-layer containment block.",
     }
-    block = _ollama_block(timeline) or _fallback_block(technique_id)
+    # A-03 gate: model-authored PowerShell gets dot-sourced into the auto-executed
+    # mitigation_gate.ps1, so it must NEVER contain destructive constructs. Reuse
+    # cve_fix_advisor.scan_powershell as the single denylist; if the model output
+    # is unsafe (or scanning is unavailable), fall back to the deterministic,
+    # network-only containment block instead of staging attacker-steerable code.
+    block = _ollama_block(timeline)
+    blocked_destructive: list[str] = []
+    if block:
+        try:
+            from angerona.core.cve_fix_advisor import scan_powershell
+            blocked_destructive = scan_powershell(block)
+        except Exception:
+            blocked_destructive = ["scan-unavailable"]
+        if blocked_destructive:
+            block = None
+    used_fallback = block is None
+    if block is None:
+        block = _fallback_block(technique_id)
     safe = re.sub(r"[^A-Za-z0-9_.]", "_", technique_id)
     pb = pb_dir / f"dynamic_block_{safe}.ps1"
     header = (f"# Angerona dynamic SOAR playbook — {technique_id}\n"
@@ -116,6 +133,8 @@ def tune_containment(technique_id: str, timeline: dict | None = None) -> dict:
         return {"technique": technique_id, "ok": False, "error": str(exc)}
     _register_in_gate(root, technique_id, pb)
     return {"technique": technique_id, "ok": True, "playbook": str(pb),
+            "used_fallback": used_fallback,
+            "blocked_destructive": blocked_destructive,
             "reverify": _verify(technique_id)}
 
 

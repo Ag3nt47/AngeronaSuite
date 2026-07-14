@@ -22,6 +22,40 @@ Write-Host "[*] Angerona mitigation gate — applying dynamic containment playbo
 New-NetFirewallRule -DisplayName 'Angerona-SOAR-Loopback-Guard' -Group 'Angerona-SOAR' `
     -Direction Outbound -RemoteAddress 127.0.0.1 -Action Allow -ErrorAction SilentlyContinue | Out-Null
 
+# ── LPE guard (R1-03): fail CLOSED if this gate script or the playbooks\ dir is
+# writable by a standard (non-admin) principal. Because these playbooks are
+# dot-sourced and run elevated, a writable trust boundary would let an
+# unprivileged attacker plant elevated code. If so we abort BEFORE sourcing any
+# dynamic playbook — not applying containment is safer than running attacker code.
+function Test-AngeronaUserWritable {
+    param([string]$TargetPath)
+    if (-not (Test-Path -LiteralPath $TargetPath)) { return $false }
+    try { $acl = Get-Acl -LiteralPath $TargetPath } catch { return $false }
+    # Everyone, Authenticated Users, BUILTIN\Users, INTERACTIVE
+    $unprivileged = @('S-1-1-0','S-1-5-11','S-1-5-32-545','S-1-5-4')
+    $writeMask = [System.Security.AccessControl.FileSystemRights]::Write `
+        -bor [System.Security.AccessControl.FileSystemRights]::Modify `
+        -bor [System.Security.AccessControl.FileSystemRights]::FullControl `
+        -bor [System.Security.AccessControl.FileSystemRights]::WriteData `
+        -bor [System.Security.AccessControl.FileSystemRights]::AppendData
+    foreach ($ace in $acl.Access) {
+        if ($ace.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+        try { $sid = $ace.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }
+        catch { $sid = $null }
+        if ($sid -and ($unprivileged -contains $sid) -and (($ace.FileSystemRights -band $writeMask) -ne 0)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+$gateSelf = $MyInvocation.MyCommand.Path
+$pbDir    = Join-Path $PSScriptRoot 'playbooks'
+if ((Test-AngeronaUserWritable $gateSelf) -or (Test-AngeronaUserWritable $pbDir)) {
+    Write-Host "[!] Angerona mitigation gate ABORTED: the gate script or playbooks\ directory is writable by a non-admin principal (local privilege-escalation risk). Restrict the ACL to Administrators/SYSTEM and re-run." -ForegroundColor Red
+    exit 1
+}
+
 # ── dynamic playbooks (auto-appended by playbook_tuner) ─────────────────────
 . "$PSScriptRoot\playbooks\dynamic_block_T1547.001.ps1"   # T1547.001
 . "$PSScriptRoot\playbooks\dynamic_block_T1070.ps1"   # T1070

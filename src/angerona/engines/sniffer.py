@@ -45,28 +45,26 @@ def asynchronous_dpi_worker():
         finally:
             dpi_processing_queue.task_done()
 
-# Spawns structural out-of-band worker process
-threading.Thread(target=asynchronous_dpi_worker, daemon=True).start()
+# R1-04: this legacy engine is DEAD CODE (superseded by modules/packet_sniffer.py;
+# see engines/__init__.py — nothing imports it). The import-time DPI worker thread
+# that used to start here has been removed so merely importing this module has no
+# side effects. Call start_dpi_worker() explicitly if you ever revive it.
+def start_dpi_worker():
+    """Opt-in: launch the out-of-band DPI worker. Off by default (dead code)."""
+    threading.Thread(target=asynchronous_dpi_worker, daemon=True).start()
 
 def get_geo_location(ip_address):
     if ip_address in ["127.0.0.1", "0.0.0.0"] or ip_address.startswith("192.168.") or ip_address.startswith("10."):
         return "Local Network"
-        
+
     if ip_address in geo_cache:
         return geo_cache[ip_address]
-        
-    try:
-        url = f"http://ip-api.com/json/{ip_address}?fields=status,country,org"
-        response = requests.get(url, timeout=2)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("status") == "success":
-                location = f"[{data.get('country')} - {data.get('org')}]"
-                geo_cache[ip_address] = location
-                return location
-    except Exception:
-        pass
-    
+
+    # R1-04: the previous implementation POSTed every observed remote IP to
+    # http://ip-api.com over cleartext HTTP — an information leak to a third party.
+    # That external call has been removed; geolocation is now a no-op. If ever
+    # revived, use HTTPS and gate it behind an explicit, default-off opt-in
+    # (mirroring remote_bridge/siem_forwarder).
     geo_cache[ip_address] = "[Unknown Region]"
     return "[Unknown Region]"
 

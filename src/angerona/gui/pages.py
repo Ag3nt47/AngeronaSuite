@@ -335,7 +335,10 @@ class DashboardCards(QWidget):
                                     min_sev=Severity.CRITICAL, parent=self))
 
     def _open_threat(self) -> None:
-        _show_nonmodal(ThreatWindow(self.bus, self.storage, self.manager, self))
+        # Resolve Center: list CRITICAL/HIGH alerts with Allow/Block/Research/Apply/
+        # Ignore so the operator can clear false positives and get back to Secure.
+        from angerona.gui.resolve_center import ResolveCenter
+        _show_nonmodal(ResolveCenter(self.bus, self.storage, self.manager, self))
 
 
 # ── Shared helper: fill a table with events ───────────────────────────────────

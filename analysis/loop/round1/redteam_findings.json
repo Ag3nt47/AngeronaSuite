@@ -1,0 +1,34 @@
+[
+  {
+    "id": "R1-01",
+    "title": "LLM-generated PowerShell wired into the auto-executed SOAR gate with no denylist / review gate",
+    "severity": "MEDIUM",
+    "component": "src/angerona/shark/playbook_tuner.py:37,78-88,114 (executed via root mitigation_gate.ps1)",
+    "status": "FIXED",
+    "recommendation": "Run core.cve_fix_advisor.scan_powershell (A-03 denylist) on the model block in tune_containment before pb.write_text/_register_in_gate; refuse destructive blocks and fall back to _fallback_block. Optionally hash-stamp and require a review gate."
+  },
+  {
+    "id": "R1-02",
+    "title": "posture_hardening.execute_remediation runs AI-generated PowerShell without the A-03 destructive denylist",
+    "severity": "MEDIUM",
+    "component": "src/angerona/modules/posture_hardening.py:356-366,427-473 (GUI: gui/pages.py:704, gui/main_window.py:842)",
+    "status": "FIXED",
+    "recommendation": "Apply scan_powershell to the generated script both at _generate_remediation (refuse to stamp destructive scripts) and in execute_remediation before _run_powershell_file; make the AAR-dialog bulk _apply require the same per-script confirmation as the single-fix path."
+  },
+  {
+    "id": "R1-03",
+    "title": "SOAR gate + playbooks directory is a writable trust boundary (potential local privilege escalation)",
+    "severity": "LOW",
+    "component": "mitigation_gate.ps1 (repo root) + playbooks/*.ps1, written by src/angerona/shark/playbook_tuner.py:78-88,114; run elevated via engines/defense_monitor.py:74",
+    "status": "FIXED",
+    "recommendation": "Verify the gate script and playbooks/ dir are not writable by non-admins before running (deny/log), or relocate the runtime gate + generated playbooks to a per-user protected data dir (e.g. %LOCALAPPDATA%\\Angerona\\playbooks) with a restrictive ACL Angerona controls."
+  },
+  {
+    "id": "R1-04",
+    "title": "Dead legacy sniffer leaks observed remote IPs to a third party over plaintext HTTP",
+    "severity": "INFO",
+    "component": "src/angerona/engines/sniffer.py:48,59-60",
+    "status": "FIXED",
+    "recommendation": "Delete the dead engines/sniffer.py, or if kept switch geolocation to HTTPS and gate it behind explicit opt-in like remote_bridge/siem_forwarder."
+  }
+]

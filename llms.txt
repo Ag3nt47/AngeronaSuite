@@ -27,6 +27,13 @@ Subclass `core.module_base.BaseModule`; set `name/description/category/version/e
 
 ## NEW / RECENT FEATURES
 
+## LATEST (v1.5.5 — Resolve Center, red-team console cleanup, Clean & Close)
+- **Legacy Live Offense Monitor removed from the Red Team sim** (`gui/main_window.py` `_run_simulation`): the new console already shows live events, so `shark_monitor` is no longer popped up — narration AND analogy coaching (`_shark_narration` + `_fi_coaching`) now flow into the console (`red_team_console.py` connects both). The After-Action Report still pops up.
+- **Red Team console History tab** (`gui/red_team_console.py`) — lists past After-Action Reports newest-first with timestamps; click to view, plus Open-folder. Backed by timestamped archives now written by `shark/aar_report.py::_write_report` to `<data_dir>/aar_history/<basename>_<YYYYmmdd_HHMMSS>.txt/.json` (the fixed `shark_aar`/`redteam_aar` files are still overwritten each run).
+- **Resolve Center** (`gui/resolve_center.py`) — the dashboard Threat-level box now opens a Resolve Center listing the CRITICAL/HIGH alerts driving the level, each with **Detail** (Allow/Block/Analyze/Research/Apply) and **Ignore**. Ignoring acknowledges the alert (and identical repeats) so it's excluded from the threat level — the way to clear false positives and get back to Secure. An "Ignored…" viewer reverts any ack.
+- **Alert acknowledgement store** (`core/alert_ack.py`) — signature = module + normalised message; `ack()/unack()/is_acked()/acked_signatures()/filter_active()`, cached + mtime-aware, persisted to `shared_logs/alert_acks.json`. **`core/threat.py` now excludes acknowledged alerts** from `threat_level()`, so cleared/ignored issues return the posture to Secure. self_test verified (ack suppresses alert + repeats; revert restores).
+- **AAR "Clean & Close"** (`gui/pages.py` `AARDialog`) — the report's Close button is now "🧹 Clean & Close": it sweeps every benign drill marker / persistence-marker file (both engines' `_sweep_markers`) as the report closes, so a drill never leaves artifacts behind.
+
 ## LATEST (v1.5.4 — ATT&CK heatmap: Coverage + Top tabs, richer detail, controls)
 - **Tabbed heatmap** (`gui/attack_heatmap.py`) — the live matrix is now the "🔥 Live Heat" tab, joined by:
   - **🛡 Coverage** — visualizes `core/attack_coverage.py` (`summary()` + `COVERAGE`): a Detect/Simulate/Remediate table with an overall coverage %, blind spots flagged (✗ GAP in red), and the Remediate column cross-checked against the real vetted-action allow-list (`_valid_action_keys()`), so it can't claim a response the suite doesn't ship.

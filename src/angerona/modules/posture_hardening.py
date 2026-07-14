@@ -59,6 +59,14 @@ def _edr(level: str, msg: str) -> None:
     except Exception:
         pass
 
+# A-03 destructive-command denylist — single source of truth reused from the
+# CVE fix advisor so model-authored remediations get the same scan as CVE fixes.
+try:
+    from angerona.core.cve_fix_advisor import scan_powershell as _scan_ps
+except Exception:                                   # standalone/test fallback
+    def _scan_ps(script: str) -> list:              # pragma: no cover
+        return []
+
 _SYS_REMEDIATE = (
     "You are an automated Windows Posture Hardening Engine. You are receiving a "
     "security vulnerability JSON layout successfully exploited by an adversary. "
@@ -362,6 +370,21 @@ class PostureHardening(BaseModule):
         if not script:
             script = (f"# Ollama unavailable — staged placeholder for {mitre} ({name}).\n"
                       f"# Review the coverage gap and add a WDAC/ACL/registry hardening rule.\n")
+        else:
+            # A-03 gate: never stamp/stage a model-authored remediation that
+            # contains destructive constructs — a poisoned model could steer a
+            # wipe / AV-disable / account-add into the review-gated library.
+            danger = _scan_ps(script)
+            if danger:
+                self._log_attempt("blocked_destructive_generate", mitre, name=name,
+                                  constructs=danger, script_preview=script[:1000])
+                self.emit(f"REFUSED remediation for {mitre}: local-AI output contained "
+                          f"destructive constructs ({', '.join(danger)}) — nothing staged.",
+                          Severity.HIGH, mitre=mitre, destructive=True)
+                script = (f"# REFUSED: local-AI remediation for {mitre} ({name}) contained "
+                          f"destructive/high-risk constructs ({', '.join(danger)}).\n"
+                          f"# Nothing was staged. Review the coverage gap and add a vetted "
+                          f"WDAC/ACL/registry hardening rule by hand.\n")
         out.write_text(script, encoding="utf-8")
         self._stamp_hash(mitre, str(out))          # Judgment Gate: stamp on write
         return str(out)
@@ -456,6 +479,21 @@ class PostureHardening(BaseModule):
             self._log_attempt("blocked_tamper", mitre_id, path=script_path, detail=detail)
             return {"ok": False, "tamper": True,
                     "error": f"integrity check failed: {detail}"}
+        # A-03 gate (applies to the single-fix AND bulk AAR _apply paths, which
+        # both funnel through here): scan the EXACT verified bytes for destructive
+        # constructs and refuse to run them elevated. Belt-and-suspenders with the
+        # generate-time scan — catches anything staged before this gate existed.
+        danger = _scan_ps(data.decode("utf-8", "ignore"))
+        if danger:
+            _edr("critical", f"BLOCKED remediation {mitre_id}: staged script contains "
+                             f"destructive constructs ({', '.join(danger)}).")
+            self.emit(f"BLOCKED remediation for {mitre_id}: destructive constructs "
+                      f"({', '.join(danger)}) — refused execution.", Severity.CRITICAL,
+                      mitre=mitre_id, destructive=True)
+            self._log_attempt("blocked_destructive", mitre_id, path=script_path,
+                              constructs=danger)
+            return {"ok": False, "destructive": True,
+                    "error": f"refused: destructive constructs {danger}"}
         import tempfile
         fd, run_path = tempfile.mkstemp(suffix=".ps1", dir=str(self.remediations))
         try:

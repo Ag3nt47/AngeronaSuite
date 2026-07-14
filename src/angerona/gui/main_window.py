@@ -467,7 +467,14 @@ class MainWindow(QMainWindow):
             self._intl_alert_pulse = False
             style = ""   # let the theme QSS handle it normally
 
-        self.threat_intel_btn.setStyleSheet(style)
+        # Only re-apply when the string actually changes. setStyleSheet() forces a
+        # full style re-polish/repaint of the button every call; in the common
+        # (no INTL alert) case the style is a constant "" every 1 s tick, so this
+        # guard skips a redundant re-polish each second. When pulsing, the string
+        # alternates every tick and is always applied — pulse behaviour unchanged.
+        if style != getattr(self, "_intl_btn_style", None):
+            self._intl_btn_style = style
+            self.threat_intel_btn.setStyleSheet(style)
 
     def _open_threat_intel(self) -> None:
         """Open (or raise) the Threat Intelligence Dashboard dialog."""

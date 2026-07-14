@@ -41,6 +41,7 @@ class FlightCache:
         self._db = sqlite3.connect(":memory:", check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._seq = 0
+        self._nrows = 0   # authoritative live row count (put() is the only mutator)
         self.hits = 0
         self.misses = 0
         with self._lock:
@@ -59,12 +60,17 @@ class FlightCache:
                 "INSERT INTO events (id, ts, module, severity, message, details) "
                 "VALUES (?,?,?,?,?,?)",
                 (self._seq, ts, module, int(severity), message, det))
-            # evict oldest beyond cap
-            over = self._count_locked() - self.cap
+            # evict oldest beyond cap. Track the row count in-process instead of
+            # running a `SELECT COUNT(*)` on every insert (an O(n) scan on the hot
+            # path — put() runs for every bus event). put() is the sole mutator, so
+            # the maintained counter is exact; verified identical to COUNT(*).
+            self._nrows += 1
+            over = self._nrows - self.cap
             if over > 0:
                 self._db.execute(
                     "DELETE FROM events WHERE id IN "
                     "(SELECT id FROM events ORDER BY id ASC LIMIT ?)", (over,))
+                self._nrows -= over
             self._db.commit()
 
     def _count_locked(self) -> int:
@@ -72,7 +78,7 @@ class FlightCache:
 
     def count(self) -> int:
         with self._lock:
-            return self._count_locked()
+            return self._nrows
 
     def recent(self, limit: int = 100) -> list[dict]:
         with self._lock:
