@@ -15,9 +15,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 import time
 from pathlib import Path
+
+# Volatile tokens that make otherwise-identical alerts look unique (per-run canary
+# IDs, hashes, counters). Normalising them means ignoring ONE alert also suppresses
+# future repeats of the same CLASS — e.g. a flood of DRILLCANARY_<hex> / "N
+# consecutive canaries missed" collapses to a single ignorable signature. IP
+# addresses are deliberately preserved (they're semantically meaningful).
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_HEX_RE  = re.compile(r"(?=[0-9a-f]*\d)[0-9a-f]{8,}")   # hex run that contains a digit
+_INT_RE  = re.compile(r"(?<![\d.])\d+(?![\d.])")         # standalone int, not an IP octet
+
+
+def _normalize_msg(msg: str) -> str:
+    msg = " ".join((msg or "").strip().lower().split())
+    msg = _UUID_RE.sub("<uuid>", msg)
+    msg = _HEX_RE.sub("<hex>", msg)
+    msg = _INT_RE.sub("<n>", msg)
+    return msg[:160]
 
 _LOCK = threading.Lock()
 _CACHE: set[str] | None = None
@@ -43,10 +61,10 @@ def _store_path() -> Path:
 
 
 def signature(ev) -> str:
-    """Stable signature for an event: module + normalised (lower, collapsed) message."""
+    """Stable CLASS signature for an event: module + normalised message (volatile
+    per-run tokens stripped), so ignoring one alert clears its whole class."""
     module = str(getattr(ev, "module", "") or "")
-    msg = str(getattr(ev, "message", "") or "").strip().lower()
-    msg = " ".join(msg.split())[:160]
+    msg = _normalize_msg(str(getattr(ev, "message", "") or ""))
     return hashlib.sha1(f"{module}|{msg}".encode("utf-8", "replace")).hexdigest()[:16]
 
 

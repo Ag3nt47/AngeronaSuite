@@ -20,8 +20,8 @@ import time
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QDialog, QHBoxLayout, QHeaderView, QLabel, QMessageBox, QPushButton,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QApplication, QDialog, QHBoxLayout, QHeaderView, QLabel, QMessageBox,
+    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from angerona.core.eventbus import Severity
@@ -63,12 +63,18 @@ class ResolveCenter(QDialog):
         self._foot = QLabel("")
         self._foot.setStyleSheet("color:#9aa4b2;")
         bar.addWidget(self._foot, 1)
-        ignored_btn = QPushButton("🔕  Ignored…")
+        ignore_all_btn = QPushButton("🔕  Ignore all shown")
+        ignore_all_btn.setToolTip("Ignore every active alert (by class) to clear the threat level "
+                                  "back to Secure. Reversible; repeats of each class stay suppressed.")
+        ignore_all_btn.setStyleSheet("background:#3f3f46; color:#e4e4e7; border:1px solid #52525b;"
+                                     "border-radius:4px; padding:4px 10px;")
+        ignore_all_btn.clicked.connect(self._ignore_all_shown)
+        ignored_btn = QPushButton("Ignored…")
         ignored_btn.setToolTip("View and revert previously-ignored alerts.")
         ignored_btn.clicked.connect(self._show_ignored)
         refresh = QPushButton("Refresh"); refresh.clicked.connect(self._refresh)
         close = QPushButton("Close"); close.clicked.connect(self.accept)
-        for b in (ignored_btn, refresh, close):
+        for b in (ignore_all_btn, ignored_btn, refresh, close):
             bar.addWidget(b)
         root.addLayout(bar)
 
@@ -156,9 +162,24 @@ class ResolveCenter(QDialog):
         w = QWidget(); h = QHBoxLayout(w)
         h.setContentsMargins(4, 1, 4, 1); h.setSpacing(4)
         detail = self._btn("Detail", "#1e3a5f", "#38bdf8", lambda: self._detail(ev))
+        allow = self._btn("Allow", "#14532d", "#86efac", lambda: self._allow(ev))
+        block = self._btn("Block", "#7f1d1d", "#fecaca", lambda: self._block(ev))
         ignore = self._btn("Ignore", "#3f3f46", "#d4d4d8", lambda: self._ignore(ev))
-        h.addWidget(detail); h.addWidget(ignore)
+        for b in (detail, allow, block, ignore):
+            h.addWidget(b)
         return w
+
+    def _alerts_panel(self):
+        """Find the live AlertsPanel (on the MainWindow) so Allow/Block behave
+        exactly like the Live Alerts feed — they share its suppression + SOAR queue."""
+        try:
+            for tlw in QApplication.topLevelWidgets():
+                ap = getattr(tlw, "alerts_panel", None)
+                if ap is not None:
+                    return ap
+        except Exception:
+            pass
+        return None
 
     @staticmethod
     def _btn(text, bg, fg, slot) -> QPushButton:
@@ -170,10 +191,61 @@ class ResolveCenter(QDialog):
     # ── actions ──────────────────────────────────────────────────────────────
     def _detail(self, ev) -> None:
         from angerona.gui.pages import AlertDetailDialog, _show_nonmodal
-        _show_nonmodal(AlertDetailDialog(ev, self.window()))
+        # Pass the live AlertsPanel so the detail dialog's Allow/Block work here too.
+        _show_nonmodal(AlertDetailDialog(ev, self.window(), panel=self._alerts_panel()))
+
+    def _allow(self, ev) -> None:
+        """Allow = suppress this module's future alerts in the live feed AND clear
+        this one from the threat level."""
+        ap = self._alerts_panel()
+        if ap is not None:
+            try:
+                ap._allow_event(ev)
+            except Exception:
+                pass
+        alert_ack.ack(ev, "allowed via Resolve Center")
+        self._last_key = None      # force a rebuild
+        self._refresh()
+
+    def _block(self, ev) -> None:
+        """Block = queue a SOAR containment request for review (never auto-executes)."""
+        ap = self._alerts_panel()
+        if ap is not None:
+            try:
+                ap._block_event(ev)
+            except Exception as exc:
+                QMessageBox.warning(self, "Block", f"Could not queue containment: {exc}")
+        else:
+            QMessageBox.information(self, "Block",
+                                    "The Live Alerts panel isn't available to queue containment.")
+        self._last_key = None
+        self._refresh()
 
     def _ignore(self, ev) -> None:
         alert_ack.ack(ev, "operator ignore (Resolve Center — false positive / handled)")
+        self._last_key = None
+        self._refresh()
+
+    def _ignore_all_shown(self) -> None:
+        evs = self._events()
+        if not evs:
+            return
+        if QMessageBox.question(
+                self, "Ignore all shown",
+                f"Ignore all {len(evs)} active CRITICAL/HIGH alert(s)? They stay listed (with "
+                "history) and can be reverted, but stop affecting the threat level. Repeats of "
+                "each class are also suppressed.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                ) != QMessageBox.StandardButton.Yes:
+            return
+        seen = set()
+        for ev in evs:
+            sig = alert_ack.signature(ev)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            alert_ack.ack(ev, "mass-ignore via Resolve Center")
+        self._last_key = None
         self._refresh()
 
     def _show_ignored(self) -> None:
