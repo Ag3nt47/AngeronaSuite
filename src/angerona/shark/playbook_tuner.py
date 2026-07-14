@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -75,19 +76,6 @@ def _verify(technique_id: str) -> str:
     return "ERROR"
 
 
-def _register_in_gate(root: Path, technique_id: str, pb: Path) -> None:
-    """Idempotently dot-source the new playbook from mitigation_gate.ps1."""
-    gate = root / "mitigation_gate.ps1"
-    line = f'. "$PSScriptRoot\\playbooks\\{pb.name}"   # {technique_id}\n'
-    try:
-        existing = gate.read_text(encoding="utf-8") if gate.exists() else ""
-        if pb.name not in existing:
-            with open(gate, "a", encoding="utf-8") as f:
-                f.write(line)
-    except Exception:
-        pass
-
-
 def tune_containment(technique_id: str, timeline: dict | None = None) -> dict:
     """Generate + stage a scoped SOAR containment playbook for a bypassed
     technique, wire it into the gate, then re-arm and re-test. Returns a dict
@@ -104,17 +92,14 @@ def tune_containment(technique_id: str, timeline: dict | None = None) -> dict:
         "note": "Kill Process executed but the vector persisted (decoupled WMI hook / "
                 "hollowed process). Need a network-layer containment block.",
     }
-    # A-03 gate: model-authored PowerShell gets dot-sourced into the auto-executed
-    # mitigation_gate.ps1, so it must NEVER contain destructive constructs. Reuse
-    # cve_fix_advisor.scan_powershell as the single denylist; if the model output
-    # is unsafe (or scanning is unavailable), fall back to the deterministic,
-    # network-only containment block instead of staging attacker-steerable code.
+    # R3-03: require a strict network-only command/parameter allow-list before
+    # staging any model-authored PowerShell for the privileged mitigation gate.
     block = _ollama_block(timeline)
     blocked_destructive: list[str] = []
     if block:
         try:
-            from angerona.core.cve_fix_advisor import scan_powershell
-            blocked_destructive = scan_powershell(block)
+            from angerona.core.cve_fix_advisor import validate_containment_powershell
+            blocked_destructive = validate_containment_powershell(block)
         except Exception:
             blocked_destructive = ["scan-unavailable"]
         if blocked_destructive:
@@ -128,10 +113,33 @@ def tune_containment(technique_id: str, timeline: dict | None = None) -> dict:
               f"# Generated {time.strftime('%Y-%m-%d %H:%M:%S')} after a containment bypass.\n"
               f"# Rollback: Remove-NetFirewallRule -Group 'Angerona-SOAR'\n\n")
     try:
-        pb.write_text(header + block, encoding="utf-8")
+        from angerona.core.cve_fix_advisor import validate_containment_powershell
+        final_text = header + block
+        final_findings = validate_containment_powershell(final_text)
+        if final_findings:
+            return {"technique": technique_id, "ok": False,
+                    "error": "playbook failed strict validation",
+                    "blocked_destructive": final_findings}
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{pb.name}.", suffix=".tmp",
+                                        dir=str(pb_dir), text=True)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(final_text)
+                fh.flush()
+                os.fsync(fh.fileno())
+            staged = Path(tmp_name).read_text(encoding="utf-8")
+            final_findings = validate_containment_powershell(staged)
+            if final_findings:
+                raise ValueError("staged playbook failed strict validation: "
+                                 + "; ".join(final_findings))
+            os.replace(tmp_name, pb)
+        finally:
+            try:
+                Path(tmp_name).unlink()
+            except FileNotFoundError:
+                pass
     except Exception as exc:
         return {"technique": technique_id, "ok": False, "error": str(exc)}
-    _register_in_gate(root, technique_id, pb)
     return {"technique": technique_id, "ok": True, "playbook": str(pb),
             "used_fallback": used_fallback,
             "blocked_destructive": blocked_destructive,

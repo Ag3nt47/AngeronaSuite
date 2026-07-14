@@ -76,7 +76,7 @@ class ShadowShield(BaseModule):
     # ── Cache helpers ─────────────────────────────────────────────────────────
     @staticmethod
     def _key(path: str) -> str:
-        return hashlib.sha1(path.encode("utf-8", "replace")).hexdigest()
+        return hashlib.sha256(path.encode("utf-8", "replace")).hexdigest()
 
     def _keydir(self, path: str) -> Path:
         return self._cache_dir / self._key(path)

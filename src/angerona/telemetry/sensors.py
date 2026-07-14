@@ -34,7 +34,8 @@ try:
 except Exception:
     _CACHE_TTL = 1.5
 
-_cache_lock = threading.Lock()
+_proc_cache_lock = threading.Lock()
+_conn_cache_lock = threading.Lock()
 _proc_cache: tuple[float, List[Dict]] = (0.0, [])
 _conn_cache: tuple[float, List[Dict]] = (0.0, [])
 
@@ -48,24 +49,29 @@ def list_processes(max_age: float | None = None) -> List[Dict]:
     """
     global _proc_cache
     ttl = _CACHE_TTL if max_age is None else max_age
-    now = time.time()
-    if ttl > 0:
-        ts, cached = _proc_cache
-        if cached and (now - ts) < ttl:
-            return cached
-    try:
-        import psutil
-    except Exception:
-        return []
-    out: List[Dict] = []
-    for p in psutil.process_iter(["pid", "name", "exe", "ppid", "username"]):
+    # Serialize cache misses so simultaneous sensor ticks do not all perform the
+    # same expensive OS enumeration before any of them has populated the cache.
+    with _proc_cache_lock:
+        now = time.time()
+        if ttl > 0:
+            ts, cached = _proc_cache
+            # A successful enumeration can legitimately be empty (for example
+            # in an isolated test/container).  Cache validity is represented
+            # by its timestamp, not by the snapshot's truthiness.
+            if ts > 0.0 and (now - ts) < ttl:
+                return cached
         try:
-            out.append(p.info)
+            import psutil
         except Exception:
-            continue
-    with _cache_lock:
+            return []
+        out: List[Dict] = []
+        for p in psutil.process_iter(["pid", "name", "exe", "ppid", "username"]):
+            try:
+                out.append(p.info)
+            except Exception:
+                continue
         _proc_cache = (now, out)
-    return out
+        return out
 
 
 def list_connections(max_age: float | None = None) -> List[Dict]:
@@ -76,26 +82,26 @@ def list_connections(max_age: float | None = None) -> List[Dict]:
     """
     global _conn_cache
     ttl = _CACHE_TTL if max_age is None else max_age
-    now = time.time()
-    if ttl > 0:
-        ts, cached = _conn_cache
-        if cached and (now - ts) < ttl:
-            return cached
-    try:
-        import psutil
-    except Exception:
-        return []
-    out: List[Dict] = []
-    for c in psutil.net_connections(kind="inet"):
+    with _conn_cache_lock:
+        now = time.time()
+        if ttl > 0:
+            ts, cached = _conn_cache
+            if ts > 0.0 and (now - ts) < ttl:
+                return cached
         try:
-            laddr = f"{c.laddr.ip}:{c.laddr.port}" if c.laddr else ""
-            raddr = f"{c.raddr.ip}:{c.raddr.port}" if c.raddr else ""
-            out.append({"pid": c.pid, "status": c.status, "laddr": laddr, "raddr": raddr})
+            import psutil
         except Exception:
-            continue
-    with _cache_lock:
+            return []
+        out: List[Dict] = []
+        for c in psutil.net_connections(kind="inet"):
+            try:
+                laddr = f"{c.laddr.ip}:{c.laddr.port}" if c.laddr else ""
+                raddr = f"{c.raddr.ip}:{c.raddr.port}" if c.raddr else ""
+                out.append({"pid": c.pid, "status": c.status, "laddr": laddr, "raddr": raddr})
+            except Exception:
+                continue
         _conn_cache = (now, out)
-    return out
+        return out
 
 
 class KernelSensor:

@@ -7,6 +7,8 @@ in a dialog from the header button.
 """
 from __future__ import annotations
 
+import queue
+import threading
 import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -277,6 +279,13 @@ class MainWindow(QMainWindow):
         # if two narration lines land on background threads close together.
         self.flight_instructor = FlightInstructor(self.config)
         self._fi_enabled = True            # analogy coaching ON by default
+        # Serialize and bound local-model coaching. A thread per narration line
+        # could create hundreds of concurrent Ollama calls during Extreme drills.
+        self._fi_queue: queue.Queue[str] = queue.Queue(maxsize=8)
+        self._fi_worker = threading.Thread(
+            target=self._fi_worker_loop, name="FlightInstructorWorker", daemon=True)
+        self._fi_worker.start()
+        self._flow_write_busy = threading.Event()
         try:
             self.shark_monitor.fi_check.setChecked(True)
         except Exception:
@@ -373,10 +382,24 @@ class MainWindow(QMainWindow):
             # metrics live in-process; this file is just for the external canvas).
             if self._tick_count % 4 == 0:
                 try:
-                    from angerona.core import flow_metrics
-                    flow_metrics.write(self.manager, self.bus, self.config)
+                    self._write_flow_metrics_async()
                 except Exception:
                     pass
+
+    def _write_flow_metrics_async(self) -> None:
+        """Coalesce the optional canvas feed and keep disk I/O off Qt."""
+        if self._flow_write_busy.is_set():
+            return
+        self._flow_write_busy.set()
+
+        def _write() -> None:
+            try:
+                from angerona.core import flow_metrics
+                flow_metrics.write(self.manager, self.bus, self.config)
+            finally:
+                self._flow_write_busy.clear()
+
+        threading.Thread(target=_write, name="FlowMetricsWriter", daemon=True).start()
 
     def _check_threat_animation(self) -> None:
         # Fire the shark/attack animation on a NEW genuine threat (HIGH+).
@@ -403,9 +426,12 @@ class MainWindow(QMainWindow):
     def _notify_critical(self, crits) -> None:
         now = time.time()
         # Always mirror CRITICALs to the Black Box feed (even the ones the tray
-        # throttle suppresses) so the out-of-band recorder has the full picture.
-        for e in crits:
-            self._blackbox_feed(f"CRITICAL [{e.module}] {e.message[:300]}")
+        # throttle suppresses) so the out-of-band recorder has the full picture —
+        # but batch them into ONE file write instead of open/append/close per event,
+        # so a critical storm doesn't hammer the disk on the GUI thread every tick.
+        if crits:
+            self._blackbox_feed(
+                "\n".join(f"CRITICAL [{e.module}] {e.message[:300]}" for e in crits))
         if now - getattr(self, "_last_notify_ts", 0.0) < 8.0:
             return   # throttle bursts so a storm can't spam the tray
         self._last_notify_ts = now
@@ -761,11 +787,7 @@ class MainWindow(QMainWindow):
             pass  # combo box only ever offers valid values
 
     def _fi_narrate_async(self, raw_line: str) -> None:
-        """Runs on its own background thread (spawned per narration line) so
-        a slow/offline Ollama call never delays the drill's own pacing —
-        _on_shark_narration is called synchronously by the engine between
-        stages. Emits back onto the GUI thread via the existing signal, so
-        this reuses the exact same append() path as the raw narration."""
+        """Process one coaching line on the single bounded worker."""
         try:
             coaching = self.flight_instructor.narrate_event(raw_line)
         except Exception as exc:
@@ -773,13 +795,34 @@ class MainWindow(QMainWindow):
         if coaching:
             self._fi_coaching.emit(coaching)   # → right (Flight Instructor) pane
 
+    def _fi_worker_loop(self) -> None:
+        """Drain coaching requests with exactly one local-model worker."""
+        while True:
+            raw_line = self._fi_queue.get()
+            try:
+                self._fi_narrate_async(raw_line)
+            finally:
+                self._fi_queue.task_done()
+
     def _on_shark_narration(self, msg: str) -> None:
         """Called from the engine's background thread — never touch widgets
         here directly, only emit the signal that queues onto the GUI thread."""
         self._shark_narration.emit(msg)
         if self._fi_enabled:
-            import threading
-            threading.Thread(target=self._fi_narrate_async, args=(msg,), daemon=True).start()
+            try:
+                self._fi_queue.put_nowait(msg)
+            except queue.Full:
+                # Coaching is explanatory, so coalesce toward the newest stage.
+                # Raw drill telemetry above is never dropped.
+                try:
+                    self._fi_queue.get_nowait()
+                    self._fi_queue.task_done()
+                except queue.Empty:
+                    pass
+                try:
+                    self._fi_queue.put_nowait(msg)
+                except queue.Full:
+                    pass
 
     def _shark_check_done(self) -> None:
         if self.shark_engine.is_running:

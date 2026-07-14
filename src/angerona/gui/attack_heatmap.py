@@ -270,6 +270,11 @@ class AttackHeatmapWindow(QDialog):
         return w
 
     def _refresh_coverage(self) -> None:
+        # COVERAGE and the vetted remediation ACTIONS allow-list are static for
+        # the lifetime of the process. Building this table once avoids replacing
+        # 108 QTableWidgetItems on every five-second live-heat refresh.
+        if getattr(self, "_coverage_populated", False):
+            return
         try:
             from angerona.core import attack_coverage as cov
         except Exception:
@@ -299,6 +304,7 @@ class AttackHeatmapWindow(QDialog):
                 elif c in (2, 3, 4) and txt == "·":
                     it.setForeground(QColor("#475569"))
                 self._cov_tbl.setItem(i, c, it)
+        self._coverage_populated = True
 
     # ── Top techniques tab ───────────────────────────────────────────────────
     def _build_top_tab(self) -> QWidget:

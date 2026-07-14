@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
+import os
 import time
 from typing import Optional
 
@@ -225,6 +226,19 @@ class AMSIBridgeModule(BaseModule):
             self._evict_stale_dedup()
 
     def _try_init_amsi(self) -> Optional[_AMSI]:
+        # Direct ctypes calls into AmsiScanBuffer caused repeated native access
+        # violations on the deployed Python/Windows build (21 crash-log hits).
+        # Native faults bypass Python exception handling and terminate the suite,
+        # so keep safe ETW/Sysmon observation mode as the default. The legacy
+        # consumer can be enabled only for controlled compatibility testing.
+        if os.environ.get("ANGERONA_AMSI_INPROCESS", "0").strip().lower() not in {
+            "1", "true", "yes", "on"
+        }:
+            self.last_error = (
+                "direct AmsiScanBuffer disabled for process stability; "
+                "using ETW/Sysmon observation mode"
+            )
+            return None
         try:
             return _AMSI()
         except Exception as exc:

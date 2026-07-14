@@ -67,6 +67,23 @@ from angerona.core.eventbus import Severity
 from angerona.core.threat import threat_label
 from angerona.gui.theme import SEVERITY_COLOR, available_themes
 
+
+_AUTHENTICODE_SCRIPT = (
+    "(Get-AuthenticodeSignature -LiteralPath "
+    "$env:ANGERONA_AUTHENTICODE_PATH).Status"
+)
+
+
+def _authenticode_status(path: str) -> str:
+    """Return Authenticode status without embedding *path* in PowerShell code."""
+    env = os.environ.copy()
+    env["ANGERONA_AUTHENTICODE_PATH"] = os.fspath(path)
+    return subprocess.check_output(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         _AUTHENTICODE_SCRIPT],
+        timeout=4, stderr=subprocess.DEVNULL, text=True, env=env,
+    ).strip()
+
 THREAT = {
     Severity.INFO: ("Calm", "#22c55e"),
     Severity.LOW: ("Low", "#3b82f6"),
@@ -362,6 +379,7 @@ def _fill_event_table(table: QTableWidget, events: list) -> None:
 class EventsWindow(QDialog):
     """A standalone window listing events at/above a severity over the last 24h.
     Used for both the Alerts tile (min_sev=LOW) and Critical tile (CRITICAL)."""
+    MAX_ROWS = 500
 
     def __init__(self, title, bus, storage, min_sev=Severity.LOW,
                  window_s=86400, parent=None) -> None:
@@ -419,9 +437,11 @@ class EventsWindow(QDialog):
     def _events(self) -> list:
         now = time.time()
         try:
-            evs = self.storage.events_in_window(now - self.window_s, now)
+            evs = self.storage.recent_in_window(
+                now - self.window_s, now, self.min_sev, self.MAX_ROWS
+            )
         except Exception:
-            evs = self.bus.recent(500)
+            evs = self.bus.recent(self.MAX_ROWS)
         out = [e for e in evs
                if getattr(e, "severity", Severity.INFO) >= self.min_sev
                and getattr(e, "module", "") not in NOISE_MODULES]
@@ -431,7 +451,8 @@ class EventsWindow(QDialog):
     def _refresh(self) -> None:
         evs = self._events()
         _fill_event_table(self.table, evs)
-        self.count_lbl.setText(f"{len(evs)} event(s) in the last "
+        qualifier = "most recent " if len(evs) >= self.MAX_ROWS else ""
+        self.count_lbl.setText(f"Showing {qualifier}{len(evs)} event(s) in the last "
                                f"{int(self.window_s // 3600)}h")
 
 
@@ -475,10 +496,20 @@ class ModulesStatusWindow(QDialog):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(1500)
+        self._last_snapshot = None
         self._refresh()
 
     def _refresh(self) -> None:
         mods = sorted(self.manager.modules.items())
+        snapshot = tuple(
+            (name, getattr(mod, "name", name), getattr(mod, "status", "?"),
+             getattr(mod, "health", 0), getattr(mod, "health_state", "off"),
+             getattr(mod, "category", ""))
+            for name, mod in mods
+        )
+        if snapshot == self._last_snapshot:
+            return
+        self._last_snapshot = snapshot
         self.table.setRowCount(0)
         running = 0
         for name, mod in mods:
@@ -1891,6 +1922,7 @@ class AlertsPanel(QFrame):
         self.storage = storage
         self._events: list = []
         self._newest_ts: float = 0.0
+        self._last_gap_rebuild: float = 0.0
         # Modules the operator has allowed — excluded from future rows.
         self._suppressed: set[str] = set()
         # Live "Analyze" deep-triage workers, kept alive across row rebuilds.
@@ -2169,6 +2201,14 @@ class AlertsPanel(QFrame):
         # can't incrementally reconcile — do a widget-freeing full rebuild.
         gap = bool(prev_ts) and len(new_events) >= len(events)
 
+        # If a burst replaces the full window, avoid rebuilding 360 button
+        # widgets every two seconds. Threat handling remains live on the bus.
+        now = time.monotonic()
+        if gap and now - self._last_gap_rebuild < 5.0:
+            return
+        if gap:
+            self._last_gap_rebuild = now
+
         self.table.setSortingEnabled(False)
         self.table.setUpdatesEnabled(False)
         if gap or not self._events:
@@ -2392,11 +2432,7 @@ class SoarPanel(QFrame):
             # Windows Authenticode / digital signature quick check
             if os.name == "nt":
                 try:
-                    out = subprocess.check_output(
-                        ["powershell", "-NoProfile", "-Command",
-                         f"(Get-AuthenticodeSignature '{path}').Status"],
-                        timeout=4, stderr=subprocess.DEVNULL, text=True
-                    ).strip()
+                    out = _authenticode_status(path)
                     bits.append(f"signature={out}")
                 except Exception:
                     pass
@@ -3435,8 +3471,8 @@ class SettingsDialog(QDialog):
                                 f"Could not DPAPI-wrap the PIN: {exc}")
 
     def _save(self) -> None:
-        from angerona.core.autostart import enable as _autostart_enable, \
-            disable as _autostart_disable
+        from angerona.core.autostart import enable_autostart as _autostart_enable, \
+            disable_autostart as _autostart_disable
 
         self._cfg.ollama_host  = self._ollama_host.text().strip()
         self._cfg.ollama_model = self._ollama_model.text().strip()

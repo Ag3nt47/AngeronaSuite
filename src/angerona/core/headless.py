@@ -33,9 +33,10 @@ def run_headless() -> int:
     config = Config.load()
     storage = FlightRecorder(config.db_path)
     bus = EventBus()
+    bus.arm(storage.authority)
 
     # Same subscriptions app.py wires, minus anything GUI-bound.
-    bus.subscribe(storage.record)
+    bus.subscribe(storage.record_bus)
     try:
         from angerona.core.incidents import get_correlator
         bus.subscribe(get_correlator().on_event)

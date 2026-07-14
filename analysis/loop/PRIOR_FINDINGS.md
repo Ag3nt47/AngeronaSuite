@@ -13,3 +13,12 @@ From the comprehensive security self-assessment (analysis/Angerona_Security_Asse
 | A-07 | SHA-1 used for a path identifier (non-security) | modules/shadow_shield.py | OPEN (cosmetic) — SHA-256 for consistency |
 
 Recently added (already present — do not propose as "new"): core/alert_ack.py + threat-level exclusion, gui/resolve_center.py, gui/red_team_console.py (intensity/campaign/history), gui/incident_timeline_page.py, gui/attack_heatmap.py (Coverage/Top tabs), core/cve_ignore.py, core/cve_fix_advisor.py, core/ir_bundle.py, modules/daily_briefing.py, modules/lsass_guard/beacon_detector/shadowcopy_guard/usb_monitor.
+
+Round 2 visionary addition (already present — do not re-propose):
+`modules/evidence_lattice.py` (ELAT), entity-scoped fusion of MEDIUM evidence
+across three modules and two sensor domains; local/EventBus-only and no response.
+
+Round 3 visionary addition (already present — do not re-propose):
+`core/telemetry_contracts.py` (TECT), a bounded deadline/echo validation engine,
+integrated into `modules/canary_drill.py` with strict ETWG EID 4688 source
+matching, late/missing outcomes, and no response or host action.

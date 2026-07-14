@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
+import threading
 from pathlib import Path
 
 from angerona.core.module_base import BaseModule, Severity
@@ -33,6 +35,10 @@ class YaraScannerModule(BaseModule):
     category = "Signatures"
     enabled_by_default = True
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._rules_lock = threading.RLock()
+
     def _repo_root(self) -> Path:
         # src/angerona/modules/yara_scanner.py  ->  repo root
         return Path(__file__).resolve().parents[3]
@@ -52,27 +58,66 @@ class YaraScannerModule(BaseModule):
                 return str(cand)
         return ""
 
-    def reload_rules(self) -> None:
+    def _compile_rules(self, rules_path: Path) -> tuple[bool, str]:
+        yara = self._find_yara()
+        if not yara:
+            return False, "yara engine not found"
+        fd, sample = tempfile.mkstemp(prefix="angerona_yara_compile_", suffix=".bin")
+        os.close(fd)
+        try:
+            out = run_hidden([yara, "-w", str(rules_path), sample],
+                             capture_output=True, text=True, timeout=60)
+            if out.returncode != 0:
+                return False, (out.stderr or out.stdout or "compile failed").strip()
+            return True, "compiled"
+        except Exception as exc:
+            return False, str(exc)
+        finally:
+            try:
+                os.remove(sample)
+            except OSError:
+                pass
+
+    def reload_rules(self, candidate_text: str | None = None) -> bool:
         """Re-index the ruleset, merging the Evolution Engine's auto_generated.yar
         into the active set so new signatures take effect on the next scan cycle.
         Called by evolution_engine after it deploys a fresh rule."""
         base = self._find_rules()
         auto = self._repo_root() / "rules" / "auto_generated.yar"
         try:
-            if auto.exists() and base:
-                combined = self._repo_root() / "rules" / "_active_combined.yar"
+            auto_text = (candidate_text if candidate_text is not None else
+                         (auto.read_text(encoding="utf-8", errors="strict")
+                          if auto.exists() else None))
+            if auto_text is not None and base:
+                combined = self._repo_root() / "rules" / "_active_runtime.yar"
+                candidate = combined.with_suffix(".candidate")
                 combined.parent.mkdir(parents=True, exist_ok=True)
-                combined.write_text(
+                candidate.write_text(
                     Path(base).read_text(encoding="utf-8", errors="ignore")
                     + "\n\n// ── auto-generated (evolution engine) ──\n"
-                    + auto.read_text(encoding="utf-8", errors="ignore"),
+                    + auto_text,
                     encoding="utf-8")
+                ok, detail = self._compile_rules(candidate)
+                if not ok:
+                    candidate.unlink(missing_ok=True)
+                    self.last_error = detail
+                    self.set_health(20, "generated YARA rejected by compile gate")
+                    self.emit(f"YARA candidate rejected: {detail}", Severity.HIGH)
+                    return False
+                with self._rules_lock:
+                    if candidate_text is not None:
+                        auto_candidate = auto.with_suffix(".candidate")
+                        auto_candidate.write_text(candidate_text, encoding="utf-8")
+                        os.replace(auto_candidate, auto)
+                    os.replace(candidate, combined)
                 self._active_rules = str(combined)
             else:
                 self._active_rules = base
             self.emit(f"YARA rules reloaded ({Path(self._active_rules).name}).", Severity.INFO)
+            return True
         except Exception as exc:
             self.last_error = str(exc)
+            return False
 
     def _severity_for(self, line: str) -> Severity:
         low = line.lower()
@@ -94,7 +139,7 @@ class YaraScannerModule(BaseModule):
         """
         import tempfile
         yara = self._find_yara()
-        rules = self._find_rules()
+        rules = getattr(self, "_active_rules", None) or self._find_rules()
         if not yara:
             return False, "yara64.exe not found"
 
@@ -111,6 +156,9 @@ class YaraScannerModule(BaseModule):
             if rules:
                 out = run_hidden([yara, "-w", rules, sample],
                                  capture_output=True, text=True, timeout=60)
+                if out.returncode != 0:
+                    return False, ("FAIL - active ruleset does not compile: "
+                                   + ((out.stderr or out.stdout or "no detail").strip()))
                 if marker.split("-")[0] in out.stdout or "eicar" in out.stdout.lower():
                     return True, "PASS — active ruleset detected the EICAR sample"
                 primary_err = (out.stderr or "").strip()
@@ -168,6 +216,14 @@ class YaraScannerModule(BaseModule):
                 try:
                     out = run_hidden([yara, "-r", "-w", active, d],
                                      capture_output=True, text=True, timeout=180)
+                    if out.returncode != 0:
+                        detail = (out.stderr or out.stdout or "YARA scan failed").strip()
+                        self.last_error = detail
+                        self.set_health(15, "active YARA rules failed to compile/scan")
+                        self.emit(f"YARA health failure: {detail}", Severity.HIGH)
+                        continue
+                    if self.health < 100:
+                        self.set_health(100, "validated rules active")
                     for line in out.stdout.splitlines():
                         line = line.strip()
                         if line:

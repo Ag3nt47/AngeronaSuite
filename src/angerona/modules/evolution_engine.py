@@ -53,6 +53,7 @@ except Exception:
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 MODEL = os.getenv("MODEL_NAME", "llama3:latest")
 MAX_ITERATIONS = 3
+_TECHNIQUE_ID = re.compile(r"^T\d{4}(?:\.\d{3})?$")
 
 _SYS_YARA = (
     "You are a senior detection engineer. Analyze this bypassed red-team footprint "
@@ -125,7 +126,11 @@ class EvolutionEngine(BaseModule):
     def activate(self, technique_id: str) -> None:
         """Called strictly on a validation bypass. Spawns the evolution loop on a
         background thread so the caller (bus/GUI) never blocks."""
-        if not technique_id or technique_id in self._active:
+        if not isinstance(technique_id, str) or not _TECHNIQUE_ID.fullmatch(technique_id):
+            self.emit("Evolution trigger rejected: invalid ATT&CK technique identifier.",
+                      Severity.MEDIUM)
+            return
+        if technique_id in self._active:
             return
         self._active.add(technique_id)
         threading.Thread(target=self._evolve, args=(technique_id,),
@@ -208,17 +213,19 @@ class EvolutionEngine(BaseModule):
                 f"    condition:\n        any of them\n}}\n")
 
     # ── 4. deployment + 5. re-test loop + 6. persistence ─────────────────────
-    def _deploy(self, rule_text: str) -> None:
-        self.rules_dir.mkdir(parents=True, exist_ok=True)
-        self.auto_rule.write_text(rule_text, encoding="utf-8")
-        # re-index via the YARA scanner module, if we can reach it
+    def _deploy(self, rule_text: str) -> bool:
+        """Compile and atomically activate through the YARA scanner.
+
+        No candidate is persisted when the actual bundled engine rejects it.
+        """
         try:
             if self._mgr is not None:
                 ys = self._mgr.modules.get("YARA Scanner")
                 if ys is not None and hasattr(ys, "reload_rules"):
-                    ys.reload_rules()
+                    return bool(ys.reload_rules(rule_text))
         except Exception:
             pass
+        return False
 
     def _verify(self, technique_id: str) -> str:
         try:
@@ -248,7 +255,12 @@ class EvolutionEngine(BaseModule):
                 if not rule:
                     rule = self._fallback_yara(footprint, technique_id, i)
                     source = "fallback"
-                self._deploy(rule)
+                if not self._deploy(rule):
+                    attempts.append({"iteration": i, "result": "REJECTED",
+                                     "rule_excerpt": rule[:400], "source": source})
+                    self.emit(f"Evolution iteration {i} rejected by YARA compile gate.",
+                              Severity.HIGH, technique=technique_id, iteration=i)
+                    continue
                 result = self._verify(technique_id)
                 attempts.append({"iteration": i, "result": result,
                                  "rule_excerpt": rule[:400], "source": source})

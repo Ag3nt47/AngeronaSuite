@@ -32,6 +32,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import hmac
+import json
 import os
 import secrets
 import threading
@@ -96,30 +97,73 @@ class BusAuthority:
 
     @classmethod
     def generate(cls) -> "BusAuthority":
-        """Generate a new key, persist it, and return a BusAuthority."""
+        """Generate and atomically create the first-install key.
+
+        This is deliberately create-only: a second process racing first start
+        loads the winner's key rather than replacing it and splitting the
+        ledger's signing authority.
+        """
         key = secrets.token_bytes(cls._KEY_BYTES)
         p   = cls._key_path()
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(key.hex(), encoding="ascii")
+        try:
+            fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return cls.load()
+        try:
+            with os.fdopen(fd, "w", encoding="ascii") as fh:
+                fh.write(key.hex())
+                fh.flush()
+                os.fsync(fh.fileno())
+        except Exception:
+            try:
+                p.unlink()
+            except Exception:
+                pass
+            raise
         return cls(key)
 
     @classmethod
     def load(cls) -> "BusAuthority":
-        """Load the existing key; generates one if the file is missing."""
+        """Load the existing key; generate only when it is genuinely absent.
+
+        A malformed or unreadable existing key is an integrity failure, not a
+        first run. Silently rotating it would make every signed ledger row look
+        corrupt and conceal key-file tampering.
+        """
         p = cls._key_path()
         try:
-            key = bytes.fromhex(p.read_text(encoding="ascii").strip())
-            if len(key) == cls._KEY_BYTES:
-                return cls(key)
-        except Exception:
-            pass
-        return cls.generate()
+            encoded = p.read_text(encoding="ascii").strip()
+        except FileNotFoundError:
+            return cls.generate()
+        except Exception as exc:
+            raise RuntimeError(f"event signing key is unreadable: {p}") from exc
+        try:
+            key = bytes.fromhex(encoded)
+        except ValueError as exc:
+            raise RuntimeError(f"event signing key is malformed: {p}") from exc
+        if len(key) != cls._KEY_BYTES:
+            raise RuntimeError(
+                f"event signing key has invalid length ({len(key)} bytes): {p}"
+            )
+        return cls(key)
 
     def sign(self, event: "Event") -> str:
         """Return hex HMAC-SHA256 over the event's canonical fields."""
-        canonical = (
-            f"{event.module}\x00{int(event.severity)}\x00"
-            f"{event.message}\x00{event.ts!r}"
+        # Canonical JSON avoids separator ambiguity and includes the full details
+        # payload used by triage, forensics, and response decisions.
+        canonical = json.dumps(
+            {
+                "details": event.details or {},
+                "message": event.message,
+                "module": event.module,
+                "severity": int(event.severity),
+                "ts": event.ts,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
         ).encode("utf-8")
         return hmac.new(self._key, canonical, hashlib.sha256).hexdigest()
 
@@ -132,15 +176,13 @@ class BusAuthority:
 
 
 class EventBus:
-    # G3-E: backpressure — drop INFO events when ring is this full (fraction 0–1)
-    _BACKPRESSURE_FRACTION = 0.85
+    # G3-E: bounded recent-history ring; oldest entries roll off automatically.
 
     def __init__(self, ring_size: int = 500) -> None:
         self._subs:      List[Subscriber]          = []
         self._ring:      Deque[Event]              = deque(maxlen=ring_size)
         self._lock:      threading.RLock           = threading.RLock()
         self._authority: Optional[BusAuthority]    = None   # G3-A
-        self._ring_max:  int                       = ring_size
 
     # G3-A: wire in the signing authority
     def arm(self, authority: BusAuthority) -> None:
@@ -159,15 +201,13 @@ class EventBus:
 
     def publish(self, event: Event) -> None:
         # G3-A: sign the event if an authority is registered
-        if self._authority is not None and not event.hmac_sig:
+        if self._authority is not None:
             sig   = self._authority.sign(event)
             event = dataclasses.replace(event, hmac_sig=sig)
 
-        # G3-E: backpressure — drop INFO events when ring nears capacity
+        # deque(maxlen=...) is the backpressure: it evicts old history while
+        # every new event still reaches subscribers and persistent storage.
         with self._lock:
-            occupancy = len(self._ring) / self._ring_max
-            if occupancy >= self._BACKPRESSURE_FRACTION and event.severity == Severity.INFO:
-                return   # silently drop; HIGH/CRITICAL always admitted
             self._ring.append(event)
             subs = list(self._subs)
 

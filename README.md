@@ -44,7 +44,7 @@ marker—no real exploit, secret, or persistence mechanism is touched.
 ## ✨ Features
 
 - **Native desktop GUI** (PySide6/Qt) — dashboard, live alerts, module control, settings.
-- **Drop-in module system** — add a single `.py` file to `modules/` and it appears in the app. No core changes.
+- **Module system** — bundled modules are auto-discovered. External `.py` drop-ins are disabled by default because they execute with Angerona's privileges; trusted development environments can opt in with `ANGERONA_EXTERNAL_MODULES=1`.
 - **Local AI triage** — security events are explained and scored by a local LLM (Ollama `llama3`), with optional cloud escalation.
 - **Core protections, ported from the original Angerona engines:**
   - File Integrity Monitoring (FIM)
@@ -75,11 +75,31 @@ marker—no real exploit, secret, or persistence mechanism is touched.
 - **Auto-update from GitHub Releases** — one click to pull the latest signed build.
 - **Elevated user-mode access** — UAC elevation on launch for full-system visibility, without the risk of an unsigned kernel driver.
 
+## 🆕 What's new in v1.7.6 — the "Legendary Upgrades" (next-gen engines)
+
+Seven **additive, read-only, self-tested** engines that turn Angerona's ~61 independent detectors into one correlating, learning, explaining, self-improving system. Each is a `core/` engine + `self_test()` and is **not yet wired into startup** — zero behavior/detection risk until enabled (roadmap foundations, review-gated). Full vision: `analysis/loop/visionary/legendary_upgrades.md`.
+
+- **Angerona Cortex (`core/cortex.py`) ★** — a live entity graph (process/file/user/IP) where every event adds a decay-weighted signal and a per-entity **malice score** rises as *independent weak signals converge on the same entity* — three MEDIUMs from three modules across three tactics on one process fuse into one explainable HIGH. It unifies the ATT&CK tracker, provenance graph, incident timeline, evidence lattice and SOAR into one verdict (self-test: fused entity 65.5 vs a lone HIGH 16.8 — the 1+1=3).
+- **One Angerona Score (`core/angerona_score.py`)** — collapses threat level + posture + coverage % + Cortex top-entity into a single 0–100 safety score plus one ranked "do this now" action.
+- **Sigma engine (`core/sigma_engine.py`)** — a Sigma-subset matcher so you can import the public community rule library (hundreds of detections, standards-native).
+- **OCSF export (`core/ocsf_export.py`)** — maps events to OCSF Detection Findings for real SIEM/XDR interop.
+- **D3FEND overlay (`core/d3fend_map.py`)** — the defensive countermeasure for each ATT&CK technique, and whether Angerona implements it.
+- **Self-hardening purple-team loop (`core/purple_loop.py`)** — finds detection-coverage gaps and drafts review-gated candidate rules (proposals only; nothing auto-installed).
+- **Angerona Copilot (`core/copilot.py`)** — a local, read-only "talk to your EDR" query layer over the Cortex graph and event feed.
+
+## 🆕 What's new in v1.7.5
+
+- **Evidence Lattice Fusion (ELAT)** — a bounded, local, response-free module that promotes MEDIUM evidence only after three modules across two sensor domains corroborate the same structured PID, path/hash, or IP within 90 seconds. Angerona now auto-discovers **61 modules**.
+- **Telemetry Expectation Contracts (TECT)** — DRILL now requires an exact trusted ETW/EID 4688 echo before its canary succeeds. Its own announcement can no longer self-acknowledge, and real consecutive misses are preserved for the existing escalation path.
+- **Security loop** — 12 new findings were reviewed across three rounds: nine fixed and three deferred. Fixes cover AI-to-PowerShell staging, Authenticode path binding, complete persisted event signatures, bounded concurrent MCP serving, strict generated-containment validation, and compile-before-activate YARA with last-known-good preservation. Deferred work is the Remote Bridge encrypted protocol migration, an Administrator-owned packaged trust root, and privileged ledger-key custody.
+- **Measured performance work** — Flight Cache inserts improved 1.57×; redundant static ATT&CK Coverage refresh work fell about 99.9%; recorder preparation saves 13.61 µs/event by reusing the bus HMAC; concurrent shared sensor misses fell from 12 scans to 1, and valid empty snapshots from 8 scans to 1. Long-run GUI work and diagnostic logs are also bounded.
+- **Verification** — 177/177 Python files compiled in the final combined Claude/Codex tree, 61 modules discovered with zero errors or duplicate codes, and the full self-check passed 26/26 phases with zero failures.
+
 ## 🆕 What's new in v1.7.x
 
 **Detection & response**
 
-- **Four new detection modules** — LSASS credential-dumping (T1003.001), C2 beaconing (T1071/T1571), shadow-copy/recovery tampering (T1490, a ransomware precursor), and removable-media/USB (T1091/T1200). The suite now auto-discovers **60 modules**.
+- **Four v1.7.0 detection modules** — LSASS credential-dumping (T1003.001), C2 beaconing (T1071/T1571), shadow-copy/recovery tampering (T1490, a ransomware precursor), and removable-media/USB (T1091/T1200) brought the suite to 60 modules; v1.7.5 ELAT brings the current total to **61 modules**.
 - **Active-defense network isolation** — when SOAR contains a corroborated threat it also blocks that process's outbound traffic with a hidden firewall rule, turning a "suspend" into real containment (protected-process allowlist + 2-signal corroboration still enforced).
 - **Incident kill-chain timeline** — per-process ATT&CK-ordered incident view (🎯 Forensics), with severity, progress, and MITRE links; exportable to JSON.
 - **One-click IR triage bundle** — 🎯 Forensics ▸ collect a timestamped forensic ZIP (processes, connections, users, events, incidents).
@@ -140,7 +160,8 @@ Download the latest `Angerona-Setup.exe` (or portable `Angerona.exe`) from the
 
 ## 🧩 Writing a module
 
-Drop a file in `modules/` that subclasses `BaseModule`. See
+Create a trusted file in `modules/` that subclasses `BaseModule`, then explicitly
+enable external discovery with `ANGERONA_EXTERNAL_MODULES=1`. See
 [`docs/writing-modules.md`](docs/writing-modules.md). Minimal example:
 
 ```python

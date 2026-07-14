@@ -118,13 +118,116 @@ _DESTRUCTIVE_PS = (
     "add-localgroupmember", "set-executionpolicy unrestricted",
     "invoke-expression", "iex ", "downloadstring", "start-bitstransfer",
     "reg delete", "stop-service", "uninstall-", "-encodedcommand",
+    # Defense weakening / persistence / remote execution. These can be harmful
+    # even though they do not look like data-deletion cmdlets.
+    "enablelua' -value 0", 'enablelua" -value 0', "enablelua -value 0",
+    "disablerealtimemonitoring $true", "disablebehaviormonitoring $true",
+    "disableioavprotection $true", "disableintrusionpreventionsystem $true",
+    "new-scheduledtask", "register-scheduledtask", "schtasks /create",
+    "new-service", "sc.exe create", "win32_startupcommand",
+    "currentversion\\run", "currentversion\\runonce",
+    "invoke-command", "enter-pssession", "new-pssession",
+    "set-netfirewallprofile -enabled false", "disable-netfirewallrule",
+    # WMI/CIM access and process/member actions are never acceptable in an
+    # AI-authored remediation. These precise tokens close the demonstrated
+    # Terminate()/SetState() bypass without relying on process-name matching.
+    "get-wmiobject", "gwmi ", "invoke-wmimethod", "[wmiclass]",
+    "get-ciminstance", "gcim ", "invoke-cimmethod",
+)
+
+_DESTRUCTIVE_PS_REGEX = (
+    (re.compile(r"\.\s*terminate\s*\(", re.IGNORECASE), "member:Terminate()"),
+    (re.compile(r"\.\s*setstate\s*\(", re.IGNORECASE), "member:SetState()"),
+    (re.compile(r"\bwin32_process\b", re.IGNORECASE), "class:Win32_Process"),
 )
 
 
 def scan_powershell(script: str) -> list[str]:
     """Return the destructive constructs found in *script* (empty = clean)."""
     low = (script or "").lower()
-    return [p for p in _DESTRUCTIVE_PS if p in low]
+    found = [p for p in _DESTRUCTIVE_PS if p in low]
+    found.extend(label for pattern, label in _DESTRUCTIVE_PS_REGEX
+                 if pattern.search(script or ""))
+    return list(dict.fromkeys(found))
+
+
+_CONTAINMENT_PARAMETERS = {
+    "displayname", "group", "direction", "remoteaddress", "localaddress",
+    "remoteport", "localport", "protocol", "program", "service", "action",
+    "profile", "enabled", "erroraction",
+}
+_CONTAINMENT_PARAM = re.compile(
+    r"\s*-(?P<name>[A-Za-z][A-Za-z0-9]*)\s+"
+    r"(?P<value>'[^']*'|\"[^\"]*\"|[^\s]+)"
+)
+
+
+def validate_containment_powershell(script: str) -> list[str]:
+    """Strictly validate a generated network-containment playbook.
+
+    Only independent ``New-NetFirewallRule`` commands with a bounded parameter
+    set are accepted. Dynamic invocation, variables, member calls, pipelines,
+    aliases, WMI/CIM, script blocks and command chaining therefore fail closed.
+    Comments and blank lines are ignored.
+    """
+    problems: list[str] = []
+    commands = 0
+    for lineno, raw in enumerate((script or "").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        commands += 1
+        if re.search(r"[|;&`{}$@()\[\]<>]", line):
+            problems.append(f"line {lineno}: dynamic or chained syntax")
+            continue
+        match = re.match(r"(?i)^New-NetFirewallRule\b", line)
+        if not match:
+            command = line.split(None, 1)[0]
+            problems.append(f"line {lineno}: command {command!r} is not allowed")
+            continue
+        rest = line[match.end():]
+        pos = 0
+        params: dict[str, str] = {}
+        while pos < len(rest):
+            pm = _CONTAINMENT_PARAM.match(rest, pos)
+            if not pm:
+                problems.append(f"line {lineno}: malformed parameter list")
+                break
+            name = pm.group("name").lower()
+            value = pm.group("value")
+            if value[:1] in {"'", '"'}:
+                value = value[1:-1]
+            if name not in _CONTAINMENT_PARAMETERS:
+                problems.append(f"line {lineno}: parameter -{pm.group('name')} is not allowed")
+            elif name in params:
+                problems.append(f"line {lineno}: duplicate -{pm.group('name')}")
+            else:
+                params[name] = value
+            pos = pm.end()
+
+        required = {"displayname", "group", "direction", "action"}
+        missing = sorted(required - params.keys())
+        if missing:
+            problems.append(f"line {lineno}: missing {', '.join('-' + p for p in missing)}")
+            continue
+        if not params["displayname"].startswith("Angerona-Dyn-"):
+            problems.append(f"line {lineno}: DisplayName must start with Angerona-Dyn-")
+        if params["group"] != "Angerona-SOAR":
+            problems.append(f"line {lineno}: Group must be Angerona-SOAR")
+        if params["direction"].lower() not in {"inbound", "outbound"}:
+            problems.append(f"line {lineno}: invalid Direction")
+        action = params["action"].lower()
+        if action not in {"block", "allow"}:
+            problems.append(f"line {lineno}: invalid Action")
+        if action == "allow" and params.get("remoteaddress", "").lower() not in {
+            "127.0.0.1", "::1"
+        }:
+            problems.append(f"line {lineno}: Allow is restricted to loopback")
+        if "erroraction" in params and params["erroraction"].lower() != "silentlycontinue":
+            problems.append(f"line {lineno}: ErrorAction must be SilentlyContinue")
+    if not commands:
+        problems.append("playbook contains no commands")
+    return problems
 
 
 def _normalize(cve: str, raw: dict | None) -> dict:
@@ -274,6 +377,10 @@ def revert_fix(cve: str) -> dict:
     script = (rec.get("revert_script") or "").strip()
     if not script:
         return {"ok": False, "output": "No revert script was captured for this fix."}
+    danger = scan_powershell(script)
+    if danger:
+        return {"ok": False, "output": "Refused: destructive/high-risk commands "
+                f"in revert ({', '.join(danger)}). Not executed."}
     rc, out = _run_powershell(script)
     ok = rc == 0
     rec["reverted"] = ok
@@ -296,11 +403,27 @@ def self_test() -> tuple[bool, str]:
     # A-03: a destructive "fix" must be refused even when the model marks it available.
     danger = _normalize("CVE-2024-3", {"fix_available": True, "confidence": 0.9,
                                        "fix_script": "Remove-Item C:\\Windows -Recurse -Force"})
+    weaken = _normalize("CVE-2024-4", {"fix_available": True, "confidence": 0.9,
+        "fix_script": "Set-ItemProperty -Path 'HKLM:\\x' -Name 'EnableLUA' -Value 0"})
+    persist = scan_powershell(
+        "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name x -Value y")
+    wmi = scan_powershell(
+        "Get-WmiObject Win32_Process | ForEach-Object { $_.Terminate() }")
+    safe_containment = validate_containment_powershell(
+        "New-NetFirewallRule -DisplayName 'Angerona-Dyn-Test' -Group "
+        "'Angerona-SOAR' -Direction Outbound -RemoteAddress Any -Action Block "
+        "-ErrorAction SilentlyContinue")
+    unsafe_containment = validate_containment_powershell(
+        "Get-CimInstance Win32_Process | ForEach-Object { $_.SetState(0) }")
     ok = (n["fix_available"] is True and 0.79 < n["confidence"] < 0.81
           and n["fix_script"].startswith("Set-Service")
           and n["revert_script"].startswith("Set-Service")
           and empty["fix_available"] is False
           and danger["fix_available"] is False and danger["blocked_destructive"] is True
+          and weaken["fix_available"] is False and weaken["blocked_destructive"] is True
+          and "currentversion\\run" in persist
+          and "get-wmiobject" in wmi and "member:Terminate()" in wmi
+          and not safe_containment and bool(unsafe_containment)
           and scan_powershell("vssadmin delete shadows") == ["vssadmin delete"])
-    return ok, ("JSON parse + normalize + destructive-denylist guardrail verified"
+    return ok, ("JSON parse + normalize + destructive and containment guardrails verified"
                 if ok else f"failed: n={n} empty={empty} danger={danger}")

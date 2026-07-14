@@ -11,6 +11,7 @@ acts as coordinator and spawns the subagents below in order.
 | `angerona-remediation` | Fix the red-team findings | Apply behind gates |
 | `angerona-bug-tester` | Compile + self_test + selfcheck; find bugs | Apply obvious fixes behind gates |
 | `angerona-performance` | Speed / memory optimizations | Apply behind gates (behavior-preserving) |
+| `angerona-visionary` | Envision new defensive architectures/modules; build one bounded MVP when safe | Research + apply behind strict gates |
 | `angerona-innovation` | Research cutting-edge defensive ideas | Research only (proposal doc) — **round 1 only** |
 | `angerona-docs` | Fold everything into the docs | Docs only — **end of round 3 only** |
 
@@ -21,8 +22,8 @@ acts as coordinator and spawns the subagents below in order.
 
 ## Cadence — 3 rounds
 - **Round 1:** red-team → remediation → bug-tester → performance → **innovation (web search, ONCE)**.
-- **Round 2:** red-team → remediation → bug-tester → performance.
-- **Round 3:** red-team → remediation → bug-tester → performance → **docs-updater (updates analysis/ docs, llms.txt, and README.md)**.
+- **Round 2:** red-team → remediation → bug-tester → performance → **visionary**.
+- **Round 3:** red-team → remediation → bug-tester → performance → **visionary** → **docs-updater (updates analysis/ docs, llms.txt, and README.md)**.
 
 Rationale: internet research happens once (round 1) so ideas seed the whole loop; docs are written once at the very end (round 3) so they capture the net result.
 
@@ -34,6 +35,7 @@ Rationale: internet research happens once (round 1) so ideas seed the whole loop
 - `round<N>/remediation_summary.md` — fixes applied/deferred.
 - `round<N>/bugtest_results.md` — compile/self_test/selfcheck results + bugs.
 - `round<N>/performance_summary.md` — optimizations applied/proposed.
+- `round<N>/visionary_summary.md` — novel concepts scored; at most one gated MVP implemented per round.
 - `innovation_ideas.md` — round-1 research proposals (ranked).
 
 ## Stop / safety

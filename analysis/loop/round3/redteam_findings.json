@@ -1,0 +1,34 @@
+[
+  {
+    "id": "R3-01",
+    "title": "Elevated startup executes code from user-writable trust roots",
+    "severity": "HIGH",
+    "component": "start-angerona.bat:13-18,39-42; src/angerona/core/config.py:16-22,82-85,153-162; src/angerona/core/module_manager.py:69-88; src/angerona/app.py:21,49,188-201",
+    "status": "DEFERRED",
+    "recommendation": "Install the elevated runtime under an admin-only ACL, fail closed before elevation if the launcher/interpreter/package is user-writable, and load only signed/hash-allow-listed external modules from an Administrator/SYSTEM-owned directory. Do not enable privileged imports from a per-user .env."
+  },
+  {
+    "id": "R3-02",
+    "title": "The event-ledger signing key shares the database's writable boundary",
+    "severity": "MEDIUM",
+    "component": "src/angerona/core/eventbus.py:91-117; src/angerona/core/storage.py:72-81,276-300; src/angerona/core/config.py:16-22,73-75",
+    "status": "DEFERRED",
+    "recommendation": "Store the signing key behind an Administrator/SYSTEM-only ACL or protected non-exportable key service, fail closed rather than silently rotate a malformed existing key, and prove a DB writer cannot read or replace signing material."
+  },
+  {
+    "id": "R3-03",
+    "title": "The shared PowerShell substring denylist accepts destructive WMI actions",
+    "severity": "MEDIUM",
+    "component": "src/angerona/core/cve_fix_advisor.py:109-137; src/angerona/shark/playbook_tuner.py:107-134; mitigation_gate.ps1:25-64; playbooks/dynamic_block_*.ps1",
+    "status": "FIXED",
+    "recommendation": "Use a strict parsed command/parameter allow-list for generated containment, reject WMI/CIM/member invocation/pipelines/aliases/dynamic calls, validate both before staging and immediately before execution, and quarantine the existing unsafe playbooks."
+  },
+  {
+    "id": "R3-04",
+    "title": "Invalid model-generated YARA is activated without a compile gate",
+    "severity": "MEDIUM",
+    "component": "src/angerona/modules/evolution_engine.py:168-181,211-220,236-265; src/angerona/modules/yara_scanner.py:55-75,144-176; rules/auto_generated.yar:1-14",
+    "status": "FIXED",
+    "recommendation": "Compile a temporary combined ruleset before atomic promotion, retain and restore a last-known-good ruleset, surface non-zero YARA exits as health failures, validate/escape technique metadata, and make self-test compile the live active rules."
+  }
+]

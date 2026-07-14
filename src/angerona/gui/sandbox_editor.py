@@ -32,7 +32,8 @@ from typing import Callable, Dict, List, Optional
 
 from PySide6.QtCore import Qt, QRegularExpression, QThread, Signal
 from PySide6.QtGui import (
-    QColor, QFont, QKeySequence, QShortcut, QSyntaxHighlighter, QTextCharFormat)
+    QColor, QFont, QKeySequence, QShortcut, QSyntaxHighlighter, QTextCharFormat,
+    QTextCursor)
 from PySide6.QtWidgets import (
     QApplication, QDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
     QPlainTextEdit, QPushButton, QSplitter, QTextEdit, QTreeWidget,
@@ -486,7 +487,9 @@ class SandboxEditor(QMainWindow):
         if not self.editor.find(term, flags):
             # wrap around
             cur = self.editor.textCursor()
-            cur.movePosition(cur.Start if forward else cur.End)
+            operation = (QTextCursor.MoveOperation.Start if forward else
+                         QTextCursor.MoveOperation.End)
+            cur.movePosition(operation)
             self.editor.setTextCursor(cur)
             self.editor.find(term, flags)
 
@@ -576,9 +579,9 @@ class SandboxEditor(QMainWindow):
         if not lineno:
             return
         cursor = self.editor.textCursor()
-        cursor.movePosition(cursor.Start)
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
         for _ in range(max(0, lineno - 1)):
-            cursor.movePosition(cursor.Down)
+            cursor.movePosition(QTextCursor.MoveOperation.Down)
         self.editor.setTextCursor(cursor)
 
     def _log(self, msg: str) -> None:

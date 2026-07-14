@@ -29,9 +29,10 @@ class AngeronaApp:
             pass
         self.storage = FlightRecorder(self.config.db_path)
         self.bus = EventBus()
+        self.bus.arm(self.storage.authority)
 
         # Persist every event the moment it is published.
-        self.bus.subscribe(self.storage.record)
+        self.bus.subscribe(self.storage.record_bus)
 
         # Correlate the flat event stream into scored incidents (O(1)/event).
         from angerona.core.incidents import get_correlator

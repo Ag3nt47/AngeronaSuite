@@ -78,6 +78,8 @@ class ResolveCenter(QDialog):
         self._refresh()
 
     # ── data ─────────────────────────────────────────────────────────────────
+    _SCAN_CAP = 500   # bound the per-refresh signature work regardless of alert volume
+
     def _events(self) -> list:
         from angerona.gui.pages import NOISE_MODULES
         now = time.time()
@@ -85,14 +87,40 @@ class ResolveCenter(QDialog):
             evs = self.storage.events_in_window(now - self.window_s, now)
         except Exception:
             evs = self.bus.recent(500)
+        # Cheap filters + sort FIRST, then cap, THEN the expensive per-event ack
+        # signature check — so a critical storm (thousands of HIGH+ events) can't
+        # make this O(all events) in sha1 on every 2 s tick.
         out = [e for e in evs
                if getattr(e, "severity", Severity.INFO) >= Severity.HIGH
-               and getattr(e, "module", "") not in NOISE_MODULES
-               and not alert_ack.is_acked(e)]
+               and getattr(e, "module", "") not in NOISE_MODULES]
         out.sort(key=lambda e: getattr(e, "ts", 0), reverse=True)
-        return out
+        out = out[:self._SCAN_CAP]
+        acked = alert_ack.acked_signatures()
+        return [e for e in out if alert_ack.signature(e) not in acked]
+
+    _MAX_ROWS = 200   # displayed-row cap — triaging the newest 200 is plenty
+
+    def _free_action_widgets(self) -> None:
+        """Delete the per-row Detail/Ignore cell widgets before a rebuild.
+        setRowCount() does NOT free setCellWidget widgets — without this the
+        Resolve Center leaks buttons on every 2 s refresh (badly, when critical)."""
+        for r in range(self.table.rowCount()):
+            w = self.table.cellWidget(r, 4)
+            if w is not None:
+                self.table.removeCellWidget(r, 4)
+                w.deleteLater()
 
     def _refresh(self) -> None:
+        # Change-detection: skip the whole (expensive) rebuild when nothing new has
+        # arrived and no ack changed — otherwise this ran O(alerts) every 2 s.
+        try:
+            key = (self.storage.max_ts(), len(alert_ack.acked_signatures()))
+        except Exception:
+            key = None
+        if key is not None and key == getattr(self, "_last_key", object()):
+            return
+        self._last_key = key
+
         evs = self._events()
         label, color = threat_label(self.bus.recent(200))
         self._head.setText(f"🛠  Resolve Center — threat level: {label}")
@@ -106,8 +134,11 @@ class ResolveCenter(QDialog):
         n_ign = len(alert_ack.acked_records())
         self._foot.setText(f"{len(evs)} active · {n_ign} ignored. Clearing/ignoring all returns to Secure.")
 
-        self.table.setRowCount(len(evs))
-        for r, ev in enumerate(evs):
+        shown = evs[:self._MAX_ROWS]
+        self.table.setUpdatesEnabled(False)
+        self._free_action_widgets()          # free old buttons BEFORE resizing rows
+        self.table.setRowCount(len(shown))
+        for r, ev in enumerate(shown):
             when = time.strftime("%m-%d %H:%M:%S", time.localtime(getattr(ev, "ts", time.time())))
             sev = getattr(ev, "severity", Severity.INFO)
             sev_name = getattr(sev, "name", str(sev))
@@ -118,6 +149,7 @@ class ResolveCenter(QDialog):
             self.table.setItem(r, 2, QTableWidgetItem(str(getattr(ev, "module", ""))))
             self.table.setItem(r, 3, QTableWidgetItem(str(getattr(ev, "message", ""))))
             self.table.setCellWidget(r, 4, self._actions_cell(ev))
+        self.table.setUpdatesEnabled(True)
         self.table.resizeColumnToContents(4)
 
     def _actions_cell(self, ev) -> QWidget:

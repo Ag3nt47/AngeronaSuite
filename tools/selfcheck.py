@@ -18,6 +18,15 @@ import sys
 import time
 import traceback
 
+# Windows redirected consoles commonly default to CP1252, while Angerona's
+# reports intentionally contain Unicode arrows/status glyphs. Never let report
+# rendering turn a passing phase into a false failure.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")   # no real display needed
 os.environ.setdefault("ANGERONA_SELFCHECK", "1")
 
@@ -280,7 +289,8 @@ def _():
     files = os.listdir(tmp)
     custom = [f for f in files if "custom" in f]
     assert custom, f"custom marker not written; files={files}"
-    txt = open(os.path.join(tmp, custom[0]), encoding="utf-8").read()
+    with open(os.path.join(tmp, custom[0]), encoding="utf-8") as f:
+        txt = f.read()
     assert "detect-me-xyz" in txt and "never executed" in txt.lower(), "custom marker not inert"
     eng.stop_and_clean()
     try:
@@ -424,7 +434,8 @@ def _():
     from angerona.modules import remediation_actions as ra
     tmp = tempfile.mkdtemp(prefix="angerona_rem_")
     bad = os.path.join(tmp, "flagged.txt")
-    open(bad, "w").write("x")
+    with open(bad, "w") as f:
+        f.write("x")
     qdir = os.path.join(tmp, "q")
     w = {"mitre_id": "T1105", "path": bad}
     a = ra.select_action(w)
@@ -555,6 +566,7 @@ def _():
     n = fr._db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
     assert n <= fr.MAX_ROWS + fr.PRUNE_EVERY, f"ledger not bounded after prune: {n}"
     assert len(fr.recent(10)) == 10, "recent broken after prune"
+    fr.close()
 
     from pathlib import Path as _P
     from angerona.core import flow_metrics as fm
@@ -564,9 +576,26 @@ def _():
     return f"WAL on; ledger bounded (300 inserts → {n} rows); audit-count cached"
 
 
+# Tear down native Qt objects and any module-owned workers deterministically.
+# Relying on interpreter finalization left timers/widgets alive and caused a
+# Windows 0xC0000409 native fault after an otherwise clean self-check.
+try:
+    manager.stop_all()
+except Exception:
+    pass
+qt.closeAllWindows()
 qt.processEvents()
 time.sleep(0.2)
 qt.processEvents()
+try:
+    from PySide6.QtCore import QCoreApplication, QEvent
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+except Exception:
+    pass
+try:
+    storage.close()
+except Exception:
+    pass
 
 passed = sum(1 for s, _, _ in rows if s == PASS)
 failed = sum(1 for s, _, _ in rows if s == FAIL)
@@ -578,4 +607,9 @@ if failed:
         if s == FAIL:
             print("   - " + n)
 print("=" * 72)
-sys.exit(1 if failed else 0)
+# PySide6 on the supported Windows/Python combination can fault while its
+# process-global Qt state is being finalized, after all explicit cleanup has
+# completed. Exit directly so the harness reports its actual test result.
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(1 if failed else 0)

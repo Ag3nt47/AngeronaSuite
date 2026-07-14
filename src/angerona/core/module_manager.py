@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import inspect
+import os
 import pkgutil
 import time
 from pathlib import Path
@@ -27,13 +28,15 @@ class ModuleManager:
         self.bus = bus
         self.config = config
         self.modules: Dict[str, BaseModule] = {}
+        self.discovery_errors: List[str] = []
 
     # ── Discovery ───────────────────────────────────────────────────────────
     def discover(self) -> None:
         for cls in self._builtin_classes() + self._external_classes():
             try:
                 inst = cls()
-            except Exception:
+            except Exception as exc:
+                self.discovery_errors.append(f"{cls.__module__}.{cls.__name__}: {exc}")
                 continue
             if inst.name in self.modules:
                 continue
@@ -53,7 +56,8 @@ class ModuleManager:
         for info in pkgutil.iter_modules(pkg.__path__):
             try:
                 mod = importlib.import_module(f"angerona.modules.{info.name}")
-            except Exception:
+            except Exception as exc:
+                self.discovery_errors.append(f"angerona.modules.{info.name}: {exc}")
                 continue
             found.extend(self._subclasses_in(mod))
             # Briefly yield the GIL between imports so the GUI thread (which just
@@ -63,6 +67,13 @@ class ModuleManager:
         return found
 
     def _external_classes(self) -> List[type]:
+        # A-04: importing a drop-in executes arbitrary top-level Python with the
+        # suite's elevated token. Keep the extensibility feature explicit opt-in
+        # rather than silently trusting every file under a user-writable folder.
+        if os.environ.get("ANGERONA_EXTERNAL_MODULES", "0").strip().lower() not in {
+            "1", "true", "yes", "on"
+        }:
+            return []
         found: List[type] = []
         for path in sorted(self.config.external_modules_dir.glob("*.py")):
             if path.name.startswith("_"):
@@ -71,7 +82,8 @@ class ModuleManager:
                 spec = importlib.util.spec_from_file_location(f"angerona_ext_{path.stem}", path)
                 mod = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(mod)  # type: ignore[union-attr]
-            except Exception:
+            except Exception as exc:
+                self.discovery_errors.append(f"{path}: {exc}")
                 continue
             found.extend(self._subclasses_in(mod))
         return found

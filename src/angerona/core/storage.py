@@ -5,6 +5,7 @@ and it survives restarts so you can review what happened while you were away.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import sqlite3
 import threading
@@ -12,7 +13,7 @@ import time
 from pathlib import Path
 from typing import List
 
-from angerona.core.eventbus import Event, Severity
+from angerona.core.eventbus import BusAuthority, Event, Severity
 
 
 def _dlq_write_exclusive(path: Path, entry: str) -> None:
@@ -73,6 +74,7 @@ class FlightRecorder:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         # check_same_thread=False: the bus may publish from any module thread.
         self._db = sqlite3.connect(str(self._path), check_same_thread=False)
+        self._authority = BusAuthority.load()
         self._lock     = threading.Lock()
         self._dlq_lock = threading.Lock()   # separate lock — DLQ must never deadlock primary
         self._writes   = 0
@@ -101,8 +103,28 @@ class FlightRecorder:
                 )
                 """
             )
+            columns = {
+                row[1] for row in self._db.execute("PRAGMA table_info(events)").fetchall()
+            }
+            if "hmac_sig" not in columns:
+                # Existing rows are retained as explicitly marked legacy records.
+                self._db.execute(
+                    "ALTER TABLE events ADD COLUMN hmac_sig TEXT NOT NULL DEFAULT ''"
+                )
             self._db.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)")
             self._db.commit()
+
+    @property
+    def authority(self) -> BusAuthority:
+        """Signing authority shared with the live EventBus."""
+        return self._authority
+
+    @staticmethod
+    def _details_json(details: dict) -> str:
+        return json.dumps(
+            details or {}, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, default=str,
+        )
 
     def record(self, event: Event) -> None:
         """Write an event to SQLite, falling back to the DLQ on repeated lock failures.
@@ -112,14 +134,31 @@ class FlightRecorder:
         the DB remains locked beyond that window.  After _DLQ_RETRIES failures the
         event is routed to dlq_events.json so no telemetry is silently dropped.
         """
+        self._record(event, reuse_bus_signature=False)
+
+    def record_bus(self, event: Event) -> None:
+        """Persist an event delivered by an EventBus armed with ``authority``.
+
+        The bus has already produced the authoritative signature, so the normal
+        publish path can avoid repeating canonical JSON serialization and HMAC.
+        Unsigned input is still signed defensively. Direct callers should use
+        :meth:`record`, which preserves the independent-signing contract.
+        """
+        self._record(event, reuse_bus_signature=True)
+
+    def _record(self, event: Event, reuse_bus_signature: bool) -> None:
+        if not reuse_bus_signature or not event.hmac_sig:
+            event = dataclasses.replace(event, hmac_sig=self._authority.sign(event))
+        details_json = self._details_json(event.details)
         for attempt in range(self._DLQ_RETRIES):
             try:
                 with self._lock:
                     self._db.execute(
-                        "INSERT INTO events (ts, module, severity, message, details) "
-                        "VALUES (?,?,?,?,?)",
+                        "INSERT INTO events "
+                        "(ts, module, severity, message, details, hmac_sig) "
+                        "VALUES (?,?,?,?,?,?)",
                         (event.ts, event.module, int(event.severity), event.message,
-                         json.dumps(event.details)),
+                         details_json, event.hmac_sig),
                     )
                     self._db.commit()
                     self._writes += 1
@@ -154,6 +193,7 @@ class FlightRecorder:
             "severity_name": event.severity.name,
             "message":       event.message,
             "details":       event.details,
+            "hmac_sig":      event.hmac_sig,
             "dlq_ts":        time.time(),
         }, default=str) + "\n"
         try:
@@ -176,18 +216,11 @@ class FlightRecorder:
     def recent(self, limit: int = 200) -> List[Event]:
         with self._lock:
             rows = self._db.execute(
-                "SELECT ts, module, severity, message, details FROM events ORDER BY id DESC LIMIT ?",
+                "SELECT id, ts, module, severity, message, details, hmac_sig "
+                "FROM events ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-        out = []
-        for r in rows:
-            try:
-                details = json.loads(r[4]) if r[4] else {}
-            except Exception:
-                details = {}
-            out.append(Event(module=r[1], message=r[3], severity=Severity(r[2]),
-                             ts=r[0], details=details))
-        return out
+        return [self._event_from_row(r) for r in rows]
 
     def events_in_window(self, start_ts: float, end_ts: float) -> List[Event]:
         """Return ALL events between start_ts and end_ts (inclusive), ordered
@@ -197,19 +230,25 @@ class FlightRecorder:
         recent-2000 window."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT ts, module, severity, message, details FROM events "
+                "SELECT id, ts, module, severity, message, details, hmac_sig FROM events "
                 "WHERE ts >= ? AND ts <= ? ORDER BY ts ASC",
                 (start_ts, end_ts),
             ).fetchall()
-        out = []
-        for r in rows:
-            try:
-                details = json.loads(r[4]) if r[4] else {}
-            except Exception:
-                details = {}
-            out.append(Event(module=r[1], message=r[3], severity=Severity(r[2]),
-                             ts=r[0], details=details))
-        return out
+        return [self._event_from_row(r) for r in rows]
+
+    def recent_in_window(self, start_ts: float, end_ts: float,
+                         min_severity: Severity = Severity.INFO,
+                         limit: int = 500) -> List[Event]:
+        """Return a bounded newest-first slice for interactive views."""
+        limit = max(1, min(int(limit), 5000))
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, ts, module, severity, message, details, hmac_sig FROM events "
+                "WHERE ts >= ? AND ts <= ? AND severity >= ? "
+                "ORDER BY id DESC LIMIT ?",
+                (start_ts, end_ts, int(min_severity), limit),
+            ).fetchall()
+        return [self._event_from_row(r) for r in rows]
 
     def search(self, query: str, limit: int = 50) -> List[dict]:
         """Full-text search across message and details columns (case-insensitive).
@@ -219,25 +258,65 @@ class FlightRecorder:
         q = f"%{query.lower()}%"
         with self._lock:
             rows = self._db.execute(
-                "SELECT ts, module, severity, message, details FROM events "
+                "SELECT id, ts, module, severity, message, details, hmac_sig FROM events "
                 "WHERE LOWER(message) LIKE ? OR LOWER(details) LIKE ? "
                 "ORDER BY id DESC LIMIT ?",
                 (q, q, int(limit)),
             ).fetchall()
         out = []
         for r in rows:
-            try:
-                details = json.loads(r[4]) if r[4] else {}
-            except Exception:
-                details = {}
+            event = self._event_from_row(r)
             out.append({
-                "ts":       r[0],
-                "module":   r[1],
-                "severity": r[2],
-                "message":  r[3],
-                "details":  details,
+                "ts": event.ts, "module": event.module,
+                "severity": int(event.severity), "message": event.message,
+                "details": event.details,
             })
         return out
+
+    def _event_from_row(self, row) -> Event:
+        """Decode and authenticate one ``id,ts,module,severity,message,details,sig`` row."""
+        record_id, ts, module, severity, message, raw_details, sig = row
+        try:
+            details = json.loads(raw_details) if raw_details else {}
+            if not isinstance(details, dict):
+                raise ValueError("details is not an object")
+            event = Event(
+                module=str(module), message=str(message),
+                severity=Severity(int(severity)), ts=float(ts),
+                details=details, hmac_sig=str(sig or ""),
+            )
+        except Exception:
+            return self._integrity_failure(record_id, ts, module, "malformed record")
+
+        if not event.hmac_sig:
+            marked = dict(event.details)
+            marked["_ledger_integrity"] = "legacy-unsigned"
+            return dataclasses.replace(
+                event, details=marked,
+                message=f"[UNSIGNED LEGACY] {event.message}",
+            )
+        if not self._authority.verify(event):
+            return self._integrity_failure(record_id, ts, module, "invalid HMAC")
+        return event
+
+    @staticmethod
+    def _integrity_failure(record_id, ts, module, reason: str) -> Event:
+        try:
+            event_ts = float(ts)
+        except (TypeError, ValueError):
+            event_ts = time.time()
+        return Event(
+            module="Flight Recorder",
+            message=f"[INTEGRITY FAILURE] Stored event #{record_id} is not trusted ({reason}).",
+            severity=Severity.CRITICAL,
+            ts=event_ts,
+            details={
+                "_ledger_integrity": "invalid",
+                "record_id": record_id,
+                "stored_module": str(module),
+                "reason": reason,
+            },
+        )
 
     def max_ts(self) -> float:
         """Return the timestamp of the most-recent stored event (0.0 if empty).

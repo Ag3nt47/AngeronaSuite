@@ -22,14 +22,20 @@ from pathlib import Path
 _LOCK = threading.Lock()
 _CACHE: set[str] | None = None
 _CACHE_MTIME: float = -1.0
+_REPO_ROOT: Path | None = None
 
 
 def _repo_root() -> Path:
+    global _REPO_ROOT
+    if _REPO_ROOT is not None:
+        return _REPO_ROOT
     here = Path(__file__).resolve()
     for parent in here.parents:
         if (parent / "shared_logs").exists():
-            return parent
-    return Path(__file__).resolve().parents[3]
+            _REPO_ROOT = parent
+            return _REPO_ROOT
+    _REPO_ROOT = here.parents[3]
+    return _REPO_ROOT
 
 
 def _store_path() -> Path:

@@ -17,11 +17,6 @@
 $ErrorActionPreference = 'SilentlyContinue'
 Write-Host "[*] Angerona mitigation gate — applying dynamic containment playbooks..." -ForegroundColor Cyan
 
-# Loopback must always stay open so local Ollama triage + the IPC channel survive
-# any containment applied below.
-New-NetFirewallRule -DisplayName 'Angerona-SOAR-Loopback-Guard' -Group 'Angerona-SOAR' `
-    -Direction Outbound -RemoteAddress 127.0.0.1 -Action Allow -ErrorAction SilentlyContinue | Out-Null
-
 # ── LPE guard (R1-03): fail CLOSED if this gate script or the playbooks\ dir is
 # writable by a standard (non-admin) principal. Because these playbooks are
 # dot-sourced and run elevated, a writable trust boundary would let an
@@ -57,8 +52,57 @@ if ((Test-AngeronaUserWritable $gateSelf) -or (Test-AngeronaUserWritable $pbDir)
 }
 
 # ── dynamic playbooks (auto-appended by playbook_tuner) ─────────────────────
-. "$PSScriptRoot\playbooks\dynamic_block_T1547.001.ps1"   # T1547.001
-. "$PSScriptRoot\playbooks\dynamic_block_T1070.ps1"   # T1070
-. "$PSScriptRoot\playbooks\dynamic_block_T1546.003.ps1"   # T1546.003
-. "$PSScriptRoot\playbooks\dynamic_block_T1003.ps1"   # T1003
-. "$PSScriptRoot\playbooks\dynamic_block_T1059.ps1"   # T1059
+function Test-AngeronaContainmentPlaybook {
+    param([System.IO.FileInfo]$Playbook)
+    $tokens = $null
+    $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+        $Playbook.FullName, [ref]$tokens, [ref]$errors)
+    if ($errors.Count -gt 0) { return $false }
+
+    $commands = $ast.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.CommandAst]
+    }, $true)
+    if ($commands.Count -eq 0) { return $false }
+    $allowedParams = @(
+        'displayname','group','direction','remoteaddress','localaddress',
+        'remoteport','localport','protocol','program','service','action',
+        'profile','enabled','erroraction'
+    )
+    foreach ($cmd in $commands) {
+        if ($cmd.GetCommandName() -cne 'New-NetFirewallRule') { return $false }
+        $text = $cmd.Extent.Text
+        if ($text -match '[|;&`{}$@()\[\]<>]') { return $false }
+        foreach ($element in $cmd.CommandElements) {
+            if ($element -is [System.Management.Automation.Language.CommandParameterAst]) {
+                if ($allowedParams -notcontains $element.ParameterName.ToLowerInvariant()) {
+                    return $false
+                }
+            }
+        }
+        if ($text -notmatch '(?i)-DisplayName\s+[''"]Angerona-Dyn-[^''"]+[''"]') { return $false }
+        if ($text -notmatch '(?i)-Group\s+[''"]Angerona-SOAR[''"]') { return $false }
+        if ($text -notmatch '(?i)-Direction\s+(Inbound|Outbound)\b') { return $false }
+        if ($text -notmatch '(?i)-Action\s+(Block|Allow)\b') { return $false }
+        if ($text -match '(?i)-Action\s+Allow\b') {
+            if ($text -notmatch '(?i)-RemoteAddress\s+(127\.0\.0\.1|::1)\b') { return $false }
+        }
+    }
+    return $true
+}
+
+$playbooks = @(Get-ChildItem -LiteralPath $pbDir -Filter 'dynamic_block_*.ps1' -File)
+foreach ($playbook in $playbooks) {
+    if (-not (Test-AngeronaContainmentPlaybook $playbook)) {
+        Write-Host "[!] Angerona mitigation gate ABORTED: unsafe generated playbook quarantined: $($playbook.Name)" -ForegroundColor Red
+        exit 1
+    }
+}
+
+# Validation is complete. Only now create the loopback guard and apply the
+# independently validated playbooks.
+New-NetFirewallRule -DisplayName 'Angerona-SOAR-Loopback-Guard' -Group 'Angerona-SOAR' `
+    -Direction Outbound -RemoteAddress 127.0.0.1 -Action Allow -ErrorAction SilentlyContinue | Out-Null
+foreach ($playbook in $playbooks) {
+    . $playbook.FullName
+}

@@ -43,7 +43,7 @@ import time
 import traceback
 import urllib.parse
 import uuid
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
 
@@ -68,6 +68,10 @@ class _MCPHandler(BaseHTTPRequestHandler):
     _tools:    dict[str, _Tool]         # tool name → _Tool
     _port:     int
     _token:    str | None = None        # optional bearer token (ANGERONA_MCP_TOKEN)
+    _sessions_lock: threading.Lock
+    _MAX_BODY = 256 * 1024
+    _MAX_SESSIONS = 16
+    _SESSION_QUEUE = 128
 
     # ── security guard (A-02): anti DNS-rebinding + optional bearer token ─────
     def _guard(self) -> bool:
@@ -114,18 +118,31 @@ class _MCPHandler(BaseHTTPRequestHandler):
             return
         qs  = urllib.parse.parse_qs(p.query)
         sid = qs.get("sessionId", [None])[0]
-        if sid not in self._sessions:
+        with self._sessions_lock:
+            response_queue = self._sessions.get(sid)
+        if response_queue is None:
             self.send_error(400, "Unknown sessionId")
             return
         try:
             length = int(self.headers.get("Content-Length", 0))
+            if length <= 0:
+                raise ValueError("empty request body")
+            if length > self._MAX_BODY:
+                self.send_error(413, "JSON body too large")
+                return
             body   = json.loads(self.rfile.read(length))
+            if not isinstance(body, dict):
+                raise ValueError("JSON-RPC body must be an object")
         except Exception:
             self.send_error(400, "Bad JSON")
             return
         response = self._dispatch(body)
         if response is not None:
-            self._sessions[sid].put(response)
+            try:
+                response_queue.put_nowait(response)
+            except queue.Full:
+                self.send_error(503, "Session response queue full")
+                return
         self.send_response(202)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -141,8 +158,12 @@ class _MCPHandler(BaseHTTPRequestHandler):
     # ── SSE stream ───────────────────────────────────────────────────────────
     def _handle_sse(self) -> None:
         session_id = str(uuid.uuid4())
-        q: queue.Queue = queue.Queue()
-        self._sessions[session_id] = q
+        q: queue.Queue = queue.Queue(maxsize=self._SESSION_QUEUE)
+        with self._sessions_lock:
+            if len(self._sessions) >= self._MAX_SESSIONS:
+                self.send_error(503, "Too many active MCP sessions")
+                return
+            self._sessions[session_id] = q
 
         self.send_response(200)
         self.send_header("Content-Type",  "text/event-stream")
@@ -170,7 +191,8 @@ class _MCPHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
-            self._sessions.pop(session_id, None)
+            with self._sessions_lock:
+                self._sessions.pop(session_id, None)
 
     def _write_sse(self, event: str, data: Any) -> None:
         blob = f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
@@ -496,6 +518,18 @@ def _make_tools(storage, bus, manager, config) -> dict[str, _Tool]:
 
 
 # ── Server ────────────────────────────────────────────────────────────────────
+class _MCPHTTPServer(ThreadingHTTPServer):
+    """Thread-per-request server with a bounded listen queue and read timeout."""
+
+    daemon_threads = True
+    request_queue_size = 32
+
+    def get_request(self):
+        request, client_address = super().get_request()
+        request.settimeout(10.0)
+        return request, client_address
+
+
 class AngeronaMCPServer:
     """Loopback HTTP+SSE MCP server.
 
@@ -509,9 +543,10 @@ class AngeronaMCPServer:
         self._bus     = bus
         self._manager = manager
         self._config  = config
-        self._httpd:  HTTPServer | None     = None
+        self._httpd:  _MCPHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._sessions: dict[str, queue.Queue] = {}
+        self._sessions_lock = threading.Lock()
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def start(self) -> int:
@@ -530,8 +565,11 @@ class AngeronaMCPServer:
             _tools    = tools_ref
             _port     = port
             _token    = token
+            _sessions_lock = self._sessions_lock
 
-        self._httpd = HTTPServer(("127.0.0.1", port), Handler)
+        self._httpd = _MCPHTTPServer(("127.0.0.1", port), Handler)
+        port = int(self._httpd.server_address[1])
+        Handler._port = port
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,
             name="AngeronaMCP",
@@ -542,14 +580,22 @@ class AngeronaMCPServer:
 
     def stop(self) -> None:
         """Gracefully shut down the server and close all SSE sessions."""
-        for q in list(self._sessions.values()):
+        with self._sessions_lock:
+            queues = list(self._sessions.values())
+        for q in queues:
             try:
                 q.put_nowait(None)   # signal each SSE stream to close
             except Exception:
                 pass
         if self._httpd is not None:
-            self._httpd.shutdown()
+            httpd = self._httpd
+            httpd.shutdown()
+            httpd.server_close()
             self._httpd = None
+        if (self._thread is not None
+                and self._thread is not threading.current_thread()):
+            self._thread.join(timeout=2.0)
+        self._thread = None
 
     @property
     def is_running(self) -> bool:

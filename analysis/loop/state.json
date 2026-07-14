@@ -1,9 +1,9 @@
 {
   "loop": "angerona-improvement",
   "rounds_total": 3,
-  "round": 1,
+  "round": 3,
   "round_1_status": "COMPLETE",
-  "phase": "checkpoint — awaiting go-ahead for round 2",
+  "phase": "COMPLETE",
   "web_search_round": 1,
   "web_search_done": true,
   "docs_update_round": 3,
@@ -17,5 +17,31 @@
     "performance_proposed": 2,
     "innovation_ideas": 10
   },
-  "notes": "Round 1 complete: red-team -> innovation(web) -> remediation(gated) -> bug-test -> performance. Rounds 2-3 pending user go-ahead; docs-updater (incl. README.md) runs at end of round 3."
+  "round_2_results": {
+    "redteam_findings": 4,
+    "remediated": 3,
+    "deferred": 1,
+    "bugtest": "168/168 compile; 26/26 selfcheck; 0 genuine failures",
+    "performance_applied": 3,
+    "visionary": "ELAT implemented; discovery increased to 61 modules"
+  },
+  "round_3_results": {
+    "redteam_findings": 4,
+    "remediated": 2,
+    "deferred": 2,
+    "bugtest": "169/169 compile; 61 modules; 12/12 focused gates; 26/26 selfcheck",
+    "performance_applied": 1,
+    "visionary": "TECT implemented and integrated into DRILL"
+  },
+  "final_results": {
+    "security_findings": 12,
+    "fixed": 9,
+    "deferred": 3,
+    "modules": 61,
+    "compile": "177/177 final combined Claude/Codex tree",
+    "selfcheck": "26/26 PASS",
+    "documentation_version": "1.7.5"
+  },
+  "completed": "2026-07-14",
+  "notes": "Three-round loop complete. DOCX, README.md and llms.txt updated to v1.7.5; ELAT and TECT documented; fixed and deferred security work separated; measured performance results recorded."
 }

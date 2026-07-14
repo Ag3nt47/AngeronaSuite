@@ -1,0 +1,34 @@
+[
+  {
+    "id": "R2-01",
+    "title": "Alert enrichment interpolates an attacker-controlled path into elevated PowerShell",
+    "severity": "HIGH",
+    "component": "src/angerona/gui/pages.py:2361-2366,2397-2421 (callers at 2482 and 2529)",
+    "status": "FIXED",
+    "recommendation": "Remove path interpolation from PowerShell source. Prefer WinVerifyTrust, or bind the path as a separate parameter to a constant script and use -LiteralPath; regression-test quotes, semicolons, spaces, and Unicode."
+  },
+  {
+    "id": "R2-02",
+    "title": "Remote Bridge authenticates only the sender and leaves telemetry unauthenticated and unencrypted",
+    "severity": "MEDIUM",
+    "component": "src/angerona/modules/remote_bridge.py:62-87,184-203,209-262",
+    "status": "DEFERRED",
+    "recommendation": "Use TLS 1.3 mutual authentication or a transcript-bound mutual challenge plus per-frame AEAD. Authenticate peer identities, length and sequence; reject replays; use random keys/HKDF and a memory-hard KDF for passphrases."
+  },
+  {
+    "id": "R2-03",
+    "title": "The advertised tamper-evident event ledger neither persists nor verifies event HMACs",
+    "severity": "MEDIUM",
+    "component": "src/angerona/core/eventbus.py:118-131,158-168; src/angerona/core/storage.py:79-94,113-124,181-230",
+    "status": "FIXED",
+    "recommendation": "Sign a canonical representation including details, persist signatures in SQLite and DLQ, verify every read/import, visibly reject invalid records, migrate the schema, and consider chained hashes/checkpoints for deletion detection."
+  },
+  {
+    "id": "R2-04",
+    "title": "A single MCP SSE connection monopolizes the single-threaded server",
+    "severity": "LOW",
+    "component": "src/angerona/engines/mcp_server.py:108-170,499-540",
+    "status": "FIXED",
+    "recommendation": "Use ThreadingHTTPServer or async I/O; cap sessions and response queues; enforce a small request-body limit and timeouts; add a live SSE-plus-POST concurrency test."
+  }
+]

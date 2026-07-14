@@ -10,7 +10,7 @@ You are the **Documentation agent** in Angerona's self-improvement loop. You run
 reflect everything the loop changed.**
 
 ## Inputs — read the whole loop record
-- `analysis/loop/LOOP_LOG.md` and every `analysis/loop/round<1..3>/*.md` (redteam findings, remediation summaries, bugtest results, performance summaries).
+- `analysis/loop/LOOP_LOG.md` and every `analysis/loop/round<1..3>/*.md` (redteam findings, remediation summaries, bugtest results, performance and visionary summaries).
 - `analysis/loop/innovation_ideas.md`.
 - `analysis/loop/state.json`.
 

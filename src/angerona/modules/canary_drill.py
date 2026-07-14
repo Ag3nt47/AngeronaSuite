@@ -34,13 +34,17 @@ from __future__ import annotations
 import os
 import queue
 import subprocess
-import threading
 import time
 import uuid
 
 from angerona.core.eventbus import Event
 from angerona.core.jitter import jittered
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.telemetry_contracts import (
+    ExpectationContract,
+    TelemetryExpectationEngine,
+    self_test as contract_engine_self_test,
+)
 from angerona.core.win import popen_hidden
 
 # ── tunables ──────────────────────────────────────────────────────────────────
@@ -48,6 +52,18 @@ DRILL_INTERVAL_S: float = 60.0   # how often to fire a canary
 CANARY_TIMEOUT_S: float = 6.0    # window to receive the echo
 MAX_CONSECUTIVE_MISSES: int = 2  # misses before CRITICAL
 _CANARY_PREFIX = "DRILLCANARY_"
+_CANARY_TAG_LEN = len(_CANARY_PREFIX) + 16
+_PROCESS_ECHO = "sensor.process_create"
+_PROCESS_CONTRACT = ExpectationContract(
+    "benign_process_creation_echo",
+    (_PROCESS_ECHO,),
+    CANARY_TIMEOUT_S,
+)
+_TRUSTED_PROCESS_SENSORS: frozenset[str] = frozenset({
+    "ETW Core Listener",
+    "ETWG",
+    "ETWG-sim",
+})
 
 # G2 sensor coverage validation: if any of these modules is silent on the
 # EventBus for longer than _SENSOR_SILENCE_WINDOW_S, emit MEDIUM so the
@@ -88,17 +104,17 @@ class CanaryDrillModule(BaseModule):
         "hooking) and raises a CRITICAL alert."
     )
     category = "Resilience"
-    version = "1.0.0"
+    version = "1.1.0"
     enabled_by_default = True
 
     def __init__(self) -> None:
         super().__init__()
-        self._pending: dict[str, float] = {}  # tag → deadline
-        self._pending_lock = threading.Lock()
-        self._echo_queue: queue.Queue[str] = queue.Queue()
+        self._expectations = TelemetryExpectationEngine(max_pending=8)
+        self._echo_queue: queue.Queue[tuple[str, float]] = queue.Queue()
         self._consecutive_misses = 0
         self._drills_fired = 0
         self._drills_caught = 0
+        self._subscribed = False
         # G2 sensor coverage tracking: module name → last observed bus timestamp
         self._sensor_last_seen: dict[str, float] = {}
         self._next_coverage_check: float = time.monotonic() + _SENSOR_WARMUP_S
@@ -115,32 +131,54 @@ class CanaryDrillModule(BaseModule):
 
     # ── EventBus subscriber ──────────────────────────────────────────────────
     def _on_event(self, event: Event) -> None:
-        """Called for every bus event; look for our canary tag in the details."""
-        # ETWG embeds raw command-line inserts; the canary tag appears in
-        # the 'raw' list or message string.
-        tag = None
+        """Map a trusted ETWG 4688 event to the contract's named echo.
+
+        The module's own ``DRILL canary fired`` event also contains the tag.
+        Requiring both the ETWG source identity and EID 4688 prevents that
+        announcement (or another module quoting the tag) from satisfying the
+        telemetry contract.
+        """
+        if event.module not in _TRUSTED_PROCESS_SENSORS:
+            return
+        try:
+            if int(event.details.get("eid", 0)) != 4688:
+                return
+        except (TypeError, ValueError):
+            return
+
+        def tag_in(value: object) -> str | None:
+            if not isinstance(value, str):
+                return None
+            start = value.find(_CANARY_PREFIX)
+            if start < 0:
+                return None
+            candidate = value[start:start + _CANARY_TAG_LEN]
+            suffix = candidate[len(_CANARY_PREFIX):]
+            if (
+                len(candidate) == _CANARY_TAG_LEN
+                and all(ch in "0123456789ABCDEF" for ch in suffix.upper())
+            ):
+                return candidate
+            return None
+
         raw = event.details.get("raw", [])
-        for part in raw:
-            if isinstance(part, str) and part.startswith(_CANARY_PREFIX):
-                tag = part[:36 + len(_CANARY_PREFIX)]  # prefix + UUID portion
-                break
+        if not isinstance(raw, (list, tuple)):
+            raw = [raw]
+        tag = next(
+            (found for part in raw if (found := tag_in(part)) is not None),
+            None,
+        )
         if tag is None:
-            # Also check the message text (psutil fallback path)
-            msg = event.message or ""
-            for candidate in msg.split():
-                if candidate.startswith(_CANARY_PREFIX):
-                    tag = candidate
-                    break
+            tag = tag_in(event.message or "")
         if tag:
-            self._echo_queue.put(tag)
+            self._echo_queue.put((tag, time.monotonic()))
 
     # ── canary fire ──────────────────────────────────────────────────────────
     def _fire_canary(self) -> str:
         """Spawn a benign process tagged with a unique canary ID."""
         tag = _CANARY_PREFIX + uuid.uuid4().hex[:16].upper()
-        deadline = time.monotonic() + CANARY_TIMEOUT_S
-        with self._pending_lock:
-            self._pending[tag] = deadline
+        if not self._expectations.arm(tag, _PROCESS_CONTRACT, now=time.monotonic()):
+            raise RuntimeError("telemetry expectation capacity exhausted")
 
         if os.name == "nt":
             # cmd /c REM <tag> exits immediately; the tag appears in the
@@ -169,28 +207,34 @@ class CanaryDrillModule(BaseModule):
         return tag
 
     # ── result harvesting ────────────────────────────────────────────────────
-    def _collect_echoes(self) -> None:
-        """Drain the echo queue and mark matched canaries as caught."""
+    def _collect_echoes(self) -> list[str]:
+        """Drain trusted echoes and return any contracts completed too late."""
+        missed: list[str] = []
         while True:
             try:
-                tag = self._echo_queue.get_nowait()
+                tag, observed_at = self._echo_queue.get_nowait()
             except queue.Empty:
                 break
-            with self._pending_lock:
-                if tag in self._pending:
-                    del self._pending[tag]
-                    self._drills_caught += 1
+            outcome = self._expectations.observe(
+                tag,
+                _PROCESS_ECHO,
+                now=observed_at,
+            )
+            if outcome is None:
+                continue
+            if outcome.status == "satisfied":
+                self._drills_caught += 1
+                self._consecutive_misses = 0
+            else:
+                missed.append(outcome.probe_id)
+        return missed
 
     def _expire_pending(self) -> list[str]:
         """Return tags whose deadline has passed (missed canaries)."""
-        now = time.monotonic()
-        expired = []
-        with self._pending_lock:
-            for tag, deadline in list(self._pending.items()):
-                if now >= deadline:
-                    expired.append(tag)
-                    del self._pending[tag]
-        return expired
+        return [
+            outcome.probe_id
+            for outcome in self._expectations.expire(now=time.monotonic())
+        ]
 
     # ── G2 sensor coverage validation ────────────────────────────────────────
     def _check_sensor_coverage(self) -> None:
@@ -240,8 +284,9 @@ class CanaryDrillModule(BaseModule):
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def run(self) -> None:
-        if self._bus is not None:
+        if self._bus is not None and not self._subscribed:
             self._bus.subscribe(self._on_event)
+            self._subscribed = True
         self.emit("DRILL online — telemetry canary drills active.", Severity.INFO,
                   interval_s=DRILL_INTERVAL_S, timeout_s=CANARY_TIMEOUT_S)
 
@@ -251,10 +296,10 @@ class CanaryDrillModule(BaseModule):
             now = time.monotonic()
 
             # Collect any echoes that arrived
-            self._collect_echoes()
+            late_misses = self._collect_echoes()
 
             # Check for expired (missed) canaries
-            for tag in self._expire_pending():
+            for tag in late_misses + self._expire_pending():
                 self._consecutive_misses += 1
                 self.emit(
                     f"⚠️ DRILL MISS: canary {tag} not echoed within "
@@ -301,18 +346,24 @@ class CanaryDrillModule(BaseModule):
                     self.emit(f"DRILL canary spawn failed: {exc}", Severity.LOW)
                 # Jittered cadence (anti-TOCTOU): no fixed 60s rhythm to exploit.
                 next_drill = time.monotonic() + jittered(DRILL_INTERVAL_S)
-                # Reset consecutive miss counter after each new canary fire
-                # (only escalate if *consecutive* misses pile up)
-                if self._consecutive_misses > 0 and self._drills_caught > 0:
-                    self._consecutive_misses = 0
 
             self.sleep(1.0)
 
     def self_test(self) -> tuple[bool, str]:
-        """Fire a canary and verify the echo_queue receives it (bus smoke-test)."""
+        """Verify contracts and reject self/untrusted echoes before ETWG smoke-test."""
         from angerona.core.eventbus import Event as _Ev
 
-        tag = _CANARY_PREFIX + "SELFTEST0000"
+        tag = _CANARY_PREFIX + "ABCDEF0123456789"
+        self_event = _Ev(
+            ts=time.time(),
+            module=self.name,
+            severity=Severity.INFO,
+            message=f"DRILL canary fired: {tag}",
+            details={"canary_tag": tag},
+        )
+        self._on_event(self_event)
+        self_echo_rejected = self._echo_queue.empty()
+
         fake_event = _Ev(
             ts=time.time(),
             module="ETWG",
@@ -322,12 +373,18 @@ class CanaryDrillModule(BaseModule):
         )
         self._on_event(fake_event)
         try:
-            received = self._echo_queue.get(timeout=1.0)
-            ok = received == tag
-            return (ok, "canary echo round-trip OK" if ok
-                    else f"echo mismatch: got {received!r}")
+            received, _observed_at = self._echo_queue.get(timeout=1.0)
+            echo_ok = received == tag
         except queue.Empty:
-            return (False, "canary echo not received within 1s")
+            echo_ok = False
+        contracts_ok, contracts_detail = contract_engine_self_test()
+        ok = self_echo_rejected and echo_ok and contracts_ok
+        detail = (
+            "strict ETWG echo + bounded telemetry contract controls passed"
+            if ok else
+            f"failed: reject_self={self_echo_rejected} echo={echo_ok} contracts={contracts_detail}"
+        )
+        return ok, detail
 
 
 def register() -> CanaryDrillModule:
