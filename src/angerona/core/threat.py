@@ -12,8 +12,54 @@ import time
 
 from angerona.core.eventbus import Severity
 
-# Modules whose output is meta/operational, never a threat signal.
-_META_MODULES = {"Self-Test", "Status", "Console"}
+# Modules whose output is meta/operational, never an intrusion signal. These
+# report the SUITE's OWN state — a module crashed, a watchdog restarted, a
+# self-improvement pass needs work, a synthetic probe didn't echo. That is
+# important health information, but it belongs to a resilience/health indicator,
+# NOT the external-threat level. Counting it as CRITICAL is what makes the
+# dashboard read "Critical" when nothing malicious is actually happening.
+_META_MODULES = {
+    "Self-Test", "Status", "Console",
+    "Watchdog Monitor", "Resilience Supervisor", "Resilience Manager",
+    "Evolution Engine", "CHAOS",
+    # SOAR is a RESPONSE tier: its "UNDER ATTACK" is a summary of detections the
+    # primary modules already emitted. Scoring it too double-counts and lets a
+    # burst of upstream noise cascade the level to Critical. The underlying
+    # detections still score on their own.
+    "SOAR Automation", "Active Response SOAR",
+}
+
+# Message fingerprints of module-lifecycle / self-health events. These can be
+# emitted under a real detector's own module name (e.g. a sensor announcing it
+# has crashed), so they must be filtered by message, not just by module — that
+# way a genuine detection from the same module still counts.
+_HEALTH_MARKERS = (
+    "quarantined after", "keeps crashing", "left down after", "sensor blind",
+    "entered safe_mode", "pipeline regression", "could not catch",
+    "manual signature work", "restarts; manual attention",
+)
+
+
+def _is_health_noise(event) -> bool:
+    msg = (getattr(event, "message", "") or "").lower()
+    return any(mk in msg for mk in _HEALTH_MARKERS)
+
+
+def _is_self_or_drill(event) -> bool:
+    """True for Angerona's own synthetic/drill activity (CHAOS probes, shark/
+    red-team drills, self-IOC decoy traffic) so it never scores as a threat."""
+    d = getattr(event, "details", None) or {}
+    if d.get("drill") or d.get("synthetic") or d.get("self_probe"):
+        return True
+    try:
+        from angerona.core.self_ioc import is_self_ioc
+    except Exception:
+        return False
+    for key in ("qname", "domain", "host", "origin_message"):
+        v = d.get(key)
+        if isinstance(v, str) and is_self_ioc(v):
+            return True
+    return False
 
 # label, colour for each computed level
 THREAT_LABEL = {
@@ -50,6 +96,8 @@ def threat_level(events, window: float = 600.0) -> Severity:
         if (now - e.ts) <= window
         and e.severity >= Severity.HIGH
         and e.module not in _META_MODULES
+        and not _is_health_noise(e)
+        and not _is_self_or_drill(e)
         and not (signature and signature(e) in acked)
         and not is_event_allowed(e, policy=process_policy)
         and not is_resolved_event(e, resolutions=resolutions)

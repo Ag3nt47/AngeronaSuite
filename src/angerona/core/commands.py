@@ -42,6 +42,11 @@ class CommandConsole:
         self.manager, self.bus, self.config = manager, bus, config
         self._instructor = None    # lazy — angerona.academy.security_academy.FlightInstructor
         self._achievements = None  # lazy — angerona.academy.achievements.AchievementTracker
+        # Optional ARIA handler. When the GUI wires it, free-form questions typed
+        # into the console are answered by ARIA (greetings, posture, indicator
+        # research, runbook-grounded conversation) instead of a raw model call —
+        # melding ARIA's capabilities into the always-visible prompt.
+        self._ask_handler: Callable[[str], str] | None = None
         self._cmds: Dict[str, Callable[[List[str]], str]] = {
             "help": self._help, "?": self._help,
             "ps": self._ps, "find": self._find,
@@ -78,7 +83,13 @@ class CommandConsole:
             "consult": self._consult_ai, "consultai": self._consult_ai,
             "research": self._consult_ai,
             "resources": self._resources, "resmon": self._resources, "load": self._resources,
+            "trust-running": self._trust_running, "trustrunning": self._trust_running,
+            "baseline": self._trust_running, "trust-apps": self._trust_running,
         }
+
+    def set_ask_handler(self, fn) -> None:
+        """Route the console's free-form/AI path through ARIA (or any handler)."""
+        self._ask_handler = fn
 
     # ── Entry point ──────────────────────────────────────────────────────────
     def run(self, line: str) -> str:
@@ -237,6 +248,8 @@ class CommandConsole:
             "  intel                     latest CISA KEV threat intel correlated to this host (alias: kev, fetchintel)\n"
             "  consult <question>        consult an ONLINE AI (Claude first, then fallbacks) — user-initiated egress\n"
             "  resources                 per-module resource-intensity snapshot (alias: resmon, load)\n"
+            "  trust-running [all]       trust the apps you're running now (exact path) so memory/\n"
+            "                            behaviour modules stop flagging them (alias: baseline, trust-apps)\n"
             "  ask <question>            ask the local AI\n"
             "  clear                     clear the console\n"
             "\nThreat-hunt tables: processes(pid,name,exe,ppid,username,mem_mb), "
@@ -910,9 +923,64 @@ class CommandConsole:
         except Exception as exc:
             return f"portmap error: {exc}"
 
+    # ── Supervised trust baseline ────────────────────────────────────────────
+    def _trust_running(self, args: List[str]) -> str:
+        """trust-running [all] — baseline the programs you're running now into the
+        trusted-process allowlist by EXACT path, so memory/behaviour modules stop
+        flagging apps you normally use (e.g. Electron/JIT apps' RWX memory). This
+        is an explicit, logged operator action — nothing is trusted silently.
+
+        By default it skips system-directory binaries and Angerona's own files;
+        'trust-running all' includes system-path apps too."""
+        from angerona.core import process_allowlist as pa
+        procs = pa.running_processes()
+        if not procs:
+            return "No running processes discovered (psutil unavailable?)."
+        include_system = any(a.lower() in ("all", "-a", "--all") for a in args)
+        added, skipped, names = 0, 0, []
+        for p in procs:
+            path = str(p.get("path") or "")
+            name = str(p.get("name") or "")
+            if not path:                       # need an exact path to trust safely
+                skipped += 1; continue
+            low = path.lower()
+            if "angerona" in low:              # never trust our own binaries here
+                skipped += 1; continue
+            if not include_system and ("\\windows\\" in low or "/windows/" in low):
+                skipped += 1; continue
+            try:
+                pa.add(name=name, path=path)
+                added += 1
+                if len(names) < 20:
+                    names.append(name)
+            except Exception:
+                skipped += 1
+        self._audit(f"Console: baselined {added} running process path(s) as trusted",
+                    Severity.MEDIUM)
+        sample = ", ".join(sorted(set(names)))
+        return (
+            f"Trusted {added} running app(s) by exact path "
+            f"(skipped {skipped}: system/no-path/Angerona).\n"
+            f"Memory Injection, behaviour and threat-level scoring will now skip "
+            f"these programs.\n"
+            + (f"Trusted: {sample}\n" if sample else "")
+            + "Tip: 'trust-running all' also trusts system-path apps · manage/remove "
+            "in Settings ▸ Trusted Processes."
+        )
+
     # ── AI pass-through ─────────────────────────────────────────────────────
     def _ai(self, query: str) -> str:
-        """Send a free-form query to the local Ollama AI."""
+        """Free-form query. Prefer ARIA (if the GUI wired her in) so the console
+        shares her greeting/posture/research/runbook-grounded brain; fall back to
+        a direct local-model call if ARIA is absent or errors."""
+        handler = self._ask_handler
+        if handler is not None:
+            try:
+                out = handler(query)
+                if out:
+                    return str(out)
+            except Exception:
+                pass   # fall through to the raw local model
         import json
         import urllib.request
         host = getattr(self.config, "ollama_host", "http://localhost:11434")

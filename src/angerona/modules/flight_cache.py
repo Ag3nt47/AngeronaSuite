@@ -40,6 +40,7 @@ class FlightCache:
         self._lock = threading.Lock()
         self._db = sqlite3.connect(":memory:", check_same_thread=False)
         self._db.row_factory = sqlite3.Row
+        self._closed = False
         self._seq = 0
         self._nrows = 0   # authoritative live row count (put() is the only mutator)
         self.hits = 0
@@ -55,23 +56,30 @@ class FlightCache:
             details: dict | str | None = None) -> None:
         det = details if isinstance(details, str) else json.dumps(details or {})
         with self._lock:
-            self._seq += 1
-            self._db.execute(
-                "INSERT INTO events (id, ts, module, severity, message, details) "
-                "VALUES (?,?,?,?,?,?)",
-                (self._seq, ts, module, int(severity), message, det))
-            # evict oldest beyond cap. Track the row count in-process instead of
-            # running a `SELECT COUNT(*)` on every insert (an O(n) scan on the hot
-            # path — put() runs for every bus event). put() is the sole mutator, so
-            # the maintained counter is exact; verified identical to COUNT(*).
-            self._nrows += 1
-            over = self._nrows - self.cap
-            if over > 0:
+            if self._closed:
+                return   # cache closed (module stopped) — ephemeral tier, safe to drop
+            try:
+                self._seq += 1
                 self._db.execute(
-                    "DELETE FROM events WHERE id IN "
-                    "(SELECT id FROM events ORDER BY id ASC LIMIT ?)", (over,))
-                self._nrows -= over
-            self._db.commit()
+                    "INSERT INTO events (id, ts, module, severity, message, details) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (self._seq, ts, module, int(severity), message, det))
+                # evict oldest beyond cap. Track the row count in-process instead of
+                # running a `SELECT COUNT(*)` on every insert (an O(n) scan on the hot
+                # path — put() runs for every bus event). put() is the sole mutator, so
+                # the maintained counter is exact; verified identical to COUNT(*).
+                self._nrows += 1
+                over = self._nrows - self.cap
+                if over > 0:
+                    self._db.execute(
+                        "DELETE FROM events WHERE id IN "
+                        "(SELECT id FROM events ORDER BY id ASC LIMIT ?)", (over,))
+                    self._nrows -= over
+                self._db.commit()
+            except sqlite3.Error:
+                # A concurrent close() (Eco pause / stop) can race an in-flight
+                # put(). Never let it crash the producer or quarantine the module.
+                pass
 
     def _count_locked(self) -> int:
         return self._db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
@@ -82,8 +90,13 @@ class FlightCache:
 
     def recent(self, limit: int = 100) -> list[dict]:
         with self._lock:
-            rows = self._db.execute(
-                "SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            if self._closed:
+                return []
+            try:
+                rows = self._db.execute(
+                    "SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            except sqlite3.Error:
+                return []
         self.hits += 1
         return [dict(r) for r in rows]
 
@@ -92,7 +105,12 @@ class FlightCache:
         if not _READONLY_RE.match(sql) or _FORBIDDEN_RE.search(sql):
             raise ValueError("flight cache is read-only (SELECT/WITH only)")
         with self._lock:
-            rows = self._db.execute(sql, params).fetchall()
+            if self._closed:
+                return []
+            try:
+                rows = self._db.execute(sql, params).fetchall()
+            except sqlite3.Error:
+                return []
         self.hits += 1
         return [dict(r) for r in rows]
 
@@ -111,7 +129,11 @@ class FlightCache:
 
     def close(self) -> None:
         with self._lock:
-            self._db.close()
+            self._closed = True   # idempotent; reads/writes short-circuit after this
+            try:
+                self._db.close()
+            except Exception:
+                pass
 
 
 class FlightCacheModule(BaseModule):
@@ -129,6 +151,7 @@ class FlightCacheModule(BaseModule):
         super().__init__()
         self.state_lock = threading.Lock()
         self.cache = FlightCache(cap=self.CAP)
+        self._subscribed = False
 
     @property
     def state(self) -> str:
@@ -154,19 +177,27 @@ class FlightCacheModule(BaseModule):
 
     def run(self) -> None:
         from angerona.core.config import Config
-        
-        # FIX: Re-initialize the cache instance on start. 
-        # If Angerona paused/stopped the sensor, the previous cache was closed.
-        self.cache = FlightCache(cap=self.CAP)
-        
+
+        # If a previous stop()/Eco-pause closed the cache, start a fresh one.
+        # (Recreate ONLY when actually closed, so a benign restart doesn't throw
+        # away a live warm cache.)
+        if getattr(self.cache, "_closed", False):
+            self.cache = FlightCache(cap=self.CAP)
+
         warmed = self.cache.warm(str(Config().db_path), limit=2000)
-        
-        if self._bus is not None:
+
+        # Subscribe exactly once for the module's lifetime. run() can be called
+        # again on resume, but the EventBus has no unsubscribe — re-subscribing
+        # every restart leaked a growing fan-out of _on_event callbacks. The
+        # callback always uses the current self.cache, so one subscription covers
+        # every restart.
+        if self._bus is not None and not self._subscribed:
             try:
                 self._bus.subscribe(self._on_event)
+                self._subscribed = True
             except Exception:
                 pass
-                
+
         self.emit(f"MEMC online — warmed {warmed} events into the in-memory tier.",
                   Severity.INFO)
                   

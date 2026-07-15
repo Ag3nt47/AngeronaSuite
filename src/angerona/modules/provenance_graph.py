@@ -62,7 +62,14 @@ class ProvenanceGraph:
 
     @staticmethod
     def _pid_id(pid) -> str:
-        return f"PROC:{int(pid)}"
+        # Total by construction: callers (GUI blast-radius, forensics) may pass a
+        # pid that is None or dirty string data like 'unknown'. Returning a
+        # sentinel that matches no real PROC node yields empty ancestry/subtree
+        # instead of crashing the whole module into quarantine.
+        try:
+            return f"PROC:{int(pid)}"
+        except (ValueError, TypeError):
+            return "PROC:?"
 
     def add_node(self, node_id: str, kind: str, label: str, ts: float, **meta) -> None:
         n = self.nodes.get(node_id)
@@ -249,7 +256,10 @@ class ProvenanceGraphModule(BaseModule):
                 d = json.loads(details) if details else {}
             except Exception:
                 d = {}
-            self.graph.ingest(module, message, d, ts or time.time())
+            try:
+                self.graph.ingest(module, message, d, ts or time.time())
+            except Exception:
+                continue   # one malformed row must not abort the whole rebuild
         return len(rows)
 
     def _on_event(self, event) -> None:

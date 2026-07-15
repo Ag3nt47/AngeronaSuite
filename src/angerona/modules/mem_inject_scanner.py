@@ -56,24 +56,37 @@ PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_VM_READ           = 0x0010
 _OPEN_FLAGS               = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
 
-# JIT runtimes that legitimately produce anonymous RWX pages.
-# Lower-cased for case-insensitive comparison.
+# JIT runtimes / Chromium-Electron apps that legitimately produce anonymous RWX
+# pages (V8, CLR, JVM, LuaJIT, etc.). Lower-cased for case-insensitive compare.
+# NOTE: this is a false-positive DAMPER for the weak "RWX-alone" signal, not a
+# trust grant — RWX here is expected behaviour for these apps. Real trust of a
+# specific binary path still goes through core.process_allowlist (Settings ▸
+# Trusted Processes / Resolve Center ▸ Allow). LOLBins (powershell/cmd/rundll32/
+# mshta/regsvr32) are deliberately NOT listed — they are common injection hosts.
 _JIT_SAFE_NAMES: frozenset[str] = frozenset({
-    "python.exe", "pythonw.exe",
-    "node.exe",
-    "java.exe", "javaw.exe",
-    "dotnet.exe",
-    "mono.exe",
-    "ruby.exe",
-    "v8.exe",
-    "chrome.exe", "firefox.exe", "msedge.exe",  # browser JITs
+    # language runtimes
+    "python.exe", "pythonw.exe", "node.exe", "java.exe", "javaw.exe",
+    "dotnet.exe", "mono.exe", "ruby.exe", "perl.exe", "v8.exe", "deno.exe", "bun.exe",
+    # browsers (V8/SpiderMonkey JIT)
+    "chrome.exe", "firefox.exe", "msedge.exe", "brave.exe", "opera.exe",
+    "vivaldi.exe", "chromium.exe", "iexplore.exe",
+    # Chromium/Electron desktop apps — heavy V8 JIT, many RWX regions per process
+    "claude.exe", "electron.exe", "code.exe", "code - insiders.exe", "cursor.exe",
+    "discord.exe", "slack.exe", "teams.exe", "ms-teams.exe", "msteams.exe",
+    "msedgewebview2.exe", "spotify.exe", "signal.exe", "whatsapp.exe",
+    "telegram.exe", "obsidian.exe", "notion.exe", "figma.exe", "gitkraken.exe",
+    "postman.exe", "1password.exe", "steam.exe", "steamwebhelper.exe",
+    "epicgameslauncher.exe",
 })
 
 # Minimum suspicious region size (bytes).  1-page stubs are common in JIT/CLR.
 _MIN_REGION_BYTES = 4096
 
-# Suppress repeat alerts for the same (pid, base_addr) for this many seconds.
-_DEDUP_TTL = 60.0
+# Per-PROCESS alert cooldown. A JIT-heavy app can hold dozens of anonymous RWX
+# regions across several PIDs; alerting per region produced hundreds of near-
+# identical alerts and froze the GUI. We now emit at most one aggregated alert
+# per process per this window.
+_DEDUP_TTL = 300.0
 
 # Ensure proper 64-bit padding/alignment for VirtualQueryEx
 if sys.maxsize > 2**32:
@@ -166,8 +179,9 @@ class MemInjectScannerModule(BaseModule):
         super().__init__()
         self._k32: Optional[ctypes.WinDLL] = None
         self._self_pid = os.getpid()
-        # (pid, base_address) → last_alert_ts
-        self._seen: dict[tuple[int, int], float] = {}
+        # pid → last aggregated-alert ts (per-process cooldown; also throttles the
+        # heavy psutil enrichment so it can't run every scan for the same process)
+        self._seen: dict[int, float] = {}
 
     def run(self) -> None:
         self._k32 = _try_load_kernel32()
@@ -264,6 +278,7 @@ class MemInjectScannerModule(BaseModule):
             mbi = MEMORY_BASIC_INFORMATION()
             mbi_size = ctypes.sizeof(mbi)
             addr: int = 0
+            regions: list[tuple[int, int, int]] = []   # (base, size, protect)
 
             while addr < self._MAX_ADDRESS:
                 ret = self._k32.VirtualQueryEx(
@@ -284,15 +299,19 @@ class MemInjectScannerModule(BaseModule):
                     and mbi.Protect in _RWX_PROTECTIONS
                     and region_size >= _MIN_REGION_BYTES
                 ):
-                    self._alert(
-                        pid, proc_name, region_base, region_size, mbi.Protect,
-                        process_policy,
-                    )
+                    regions.append((region_base, region_size, mbi.Protect))
+                    if len(regions) >= 64:
+                        break   # already ample evidence; stop walking 128TB of VAS
 
                 # Advance — if RegionSize is 0 we'd loop forever
                 if region_size == 0:
                     break
                 addr = region_base + region_size
+
+            # One aggregated alert per process (not one per region) — this is what
+            # turned a JIT app's dozens of RWX regions into an alert storm.
+            if regions:
+                self._alert(pid, proc_name, regions, process_policy)
 
         except Exception:
             pass
@@ -388,13 +407,17 @@ class MemInjectScannerModule(BaseModule):
         return f"{hint} | Techniques: {', '.join(techniques)}"
 
     # ── Alert ─────────────────────────────────────────────────────────────────
-    def _alert(self, pid, proc_name, base, size, protect, process_policy=None):
-        key = (pid, base)
+    def _alert(self, pid, proc_name, regions, process_policy=None):
         now = time.time()
-        if now - self._seen.get(key, 0.0) < _DEDUP_TTL:
+        if now - self._seen.get(pid, 0.0) < _DEDUP_TTL:
             return
-        self._seen[key] = now
+        # Start the per-process cooldown up front so an allowlisted or repeat
+        # process isn't re-enriched (heavy psutil) on every 30s scan.
+        self._seen[pid] = now
 
+        # Largest region drives the technique prediction and the headline detail.
+        base, size, protect = max(regions, key=lambda r: r[1])
+        region_count = len(regions)
         prot_name = (
             "PAGE_EXECUTE_READWRITE" if protect == PAGE_EXECUTE_READWRITE
             else "PAGE_EXECUTE_WRITECOPY"
@@ -409,8 +432,9 @@ class MemInjectScannerModule(BaseModule):
         prediction = self._predict_technique(proc_name, size, protect, ctx)
 
         parts = [
-            f"Suspicious RWX memory in {name_str} (PID={pid})",
-            f"Region: 0x{base:X}–0x{base + size:X}  size={size // 1024}KB  protect={prot_name}",
+            f"Suspicious RWX memory in {name_str} (PID={pid}) — "
+            f"{region_count} anonymous RWX region(s)",
+            f"Largest: 0x{base:X}–0x{base + size:X}  size={size // 1024}KB  protect={prot_name}",
         ]
         if ctx.get("exe"):
             parts.append(f"Executable: {ctx['exe']}")
@@ -437,6 +461,7 @@ class MemInjectScannerModule(BaseModule):
             parent=ctx.get("parent", ""),
             base_address=hex(base),
             region_size=size,
+            region_count=region_count,
             protection=prot_name,
             process_age_s=ctx.get("age_s"),
             threads=ctx.get("threads"),

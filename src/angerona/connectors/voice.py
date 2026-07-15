@@ -177,12 +177,66 @@ class Voice:
     # ── Input (STT + wake word) ───────────────────────────────────────────────
     def listen(self, timeout: float = 5.0) -> Optional[str]:
         """Return recognised text, or None if disabled / no backend / silence."""
-        if not self.enabled or self._stt_fn is None:
+        if not self.enabled:
+            return None
+        fn = self._stt_fn or self._resolve_stt()
+        if fn is None:
             return None
         try:
-            return self._stt_fn(timeout)
+            return fn(timeout)
         except Exception as exc:
             self.last_error = f"STT failed: {exc}"
+            return None
+
+    def _resolve_stt(self) -> Optional[Callable[[float], Optional[str]]]:
+        """Build an OFFLINE speech recogniser from vosk + a sounddevice mic, if
+        both are installed. Never required: returns None (→ listen() no-ops) when
+        the libraries or a model are absent, so voice input is purely opt-in.
+
+        Install to enable:  pip install vosk sounddevice
+        and either set ANGERONA_VOSK_MODEL to a downloaded model directory, or let
+        vosk fetch the small en-us model on first use."""
+        if self._stt_fn is not None:
+            return self._stt_fn
+        if not (_have("vosk") and _have("sounddevice")):
+            return None
+        try:
+            import json
+            import os
+            import queue
+            import time as _t
+            import vosk            # type: ignore
+            import sounddevice as sd  # type: ignore
+
+            model_path = os.environ.get("ANGERONA_VOSK_MODEL", "").strip()
+            model = vosk.Model(model_path) if model_path else vosk.Model(lang="en-us")
+            rec = vosk.KaldiRecognizer(model, 16000)
+
+            def _listen(timeout: float) -> Optional[str]:
+                q: "queue.Queue[bytes]" = queue.Queue()
+
+                def _cb(indata, _frames, _time, _status):
+                    q.put(bytes(indata))
+
+                with sd.RawInputStream(samplerate=16000, blocksize=8000, dtype="int16",
+                                       channels=1, callback=_cb):
+                    end = _t.time() + max(1.0, float(timeout))
+                    while _t.time() < end:
+                        try:
+                            data = q.get(timeout=0.5)
+                        except Exception:
+                            continue
+                        if rec.AcceptWaveform(data):
+                            txt = (json.loads(rec.Result()).get("text") or "").strip()
+                            if txt:
+                                return txt
+                    txt = (json.loads(rec.FinalResult()).get("text") or "").strip()
+                    return txt or None
+
+            self._stt_fn = _listen
+            return self._stt_fn
+        except Exception as exc:  # pragma: no cover - hardware/lib dependent
+            self.last_error = f"vosk STT init failed: {exc}"
             return None
 
     def is_wake(self, text: Optional[str]) -> bool:

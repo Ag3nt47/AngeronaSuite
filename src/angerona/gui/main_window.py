@@ -1027,6 +1027,51 @@ class MainWindow(QMainWindow):
             self.aria.register("posture", ToolKind.READ,
                                lambda: getattr(self, "_last_posture", {}) or {},
                                "current Angerona posture")
+            # Give ARIA a real, gated action layer by reusing the tested console
+            # backend. READ tools run live; WRITE tools stage behind a confirm
+            # token (assistant.py enforces the gate). This is what lets ARIA
+            # "perform actions/functions" that weren't hard-wired into a button.
+            try:
+                _b = self.console.backend
+                self.aria.register("modules", ToolKind.READ, lambda: _b._modules([]),
+                                   "list modules and their status")
+                self.aria.register("alerts", ToolKind.READ, lambda: _b._iocs([]),
+                                   "recent HIGH/CRITICAL indicators")
+                self.aria.register("threat", ToolKind.READ, lambda: _b._threat([]),
+                                   "current threat level + counts")
+                self.aria.register("processes", ToolKind.READ, lambda n=15: _b._ps([str(n)]),
+                                   "top processes by memory")
+                self.aria.register("connections", ToolKind.READ, lambda: _b._conns([]),
+                                   "active network connections")
+                self.aria.register("selftest", ToolKind.READ, lambda: _b._test([]),
+                                   "run module self-tests (diagnostics)")
+                self.aria.register("resources", ToolKind.READ, lambda: _b._resources([]),
+                                   "per-module resource load")
+                self.aria.register(
+                    "trust_running", ToolKind.WRITE, lambda: _b._trust_running([]),
+                    "trust the apps you're running now (exact path)",
+                    preview=lambda: "Trust every currently-running non-system app by exact "
+                                    "path so memory/behaviour modules stop flagging them.")
+                self.aria.register(
+                    "suspend", ToolKind.WRITE, lambda pid: _b._suspend([str(pid)]),
+                    "freeze (contain) a process by PID",
+                    preview=lambda pid: f"Suspend/contain PID {pid} (reversible with resume).")
+                self.aria.register(
+                    "resume", ToolKind.WRITE, lambda pid: _b._resume([str(pid)]),
+                    "resume a suspended process",
+                    preview=lambda pid: f"Resume PID {pid}.")
+                self.aria.register(
+                    "kill", ToolKind.WRITE, lambda pid: _b._kill([str(pid)]),
+                    "terminate a process by PID",
+                    preview=lambda pid: f"TERMINATE PID {pid} — this cannot be undone.")
+                self.aria.register(
+                    "set_module", ToolKind.WRITE,
+                    lambda name, state: _b._module([name, state]),
+                    "enable/disable/restart a module",
+                    preview=lambda name, state: f"Set module '{name}' → {state}.")
+            except Exception as exc:
+                self.console._append(f"[aria] action tools skipped: {exc}")
+            self._aria_pending_token = ""   # last staged WRITE awaiting confirmation
 
             self.aria_hud = AriaHud(
                 score_fn=lambda: int((getattr(self, "_last_posture", {}) or {}).get("score", 100)),
@@ -1036,6 +1081,21 @@ class MainWindow(QMainWindow):
                 ask_fn=self._aria_ask,
             )
             self._right_tabs.addTab(self.aria_hud, "ARIA")
+
+            # Meld ARIA into the always-visible bottom Console: any free-form
+            # question typed there (or `ask …`) now goes through ARIA's brain,
+            # while the IR commands (kill/ps/suspend/…) keep working as before.
+            try:
+                console = getattr(self, "console", None)
+                backend = getattr(console, "backend", None)
+                if backend is not None and hasattr(backend, "set_ask_handler"):
+                    backend.set_ask_handler(self._aria_ask)
+                    if console is not None:
+                        console._append(
+                            "[aria] ARIA is wired into this console — ask her anything "
+                            "(e.g. \"what's my posture?\"), or type 'help' for commands.")
+            except Exception as exc:
+                self.console._append(f"[aria] console meld skipped: {exc}")
 
             # ── Opt-in connectors (each honours its own Settings toggle) ──────
             # Overdrive governor — read-only tuning authority, instantiated so
@@ -1052,8 +1112,53 @@ class MainWindow(QMainWindow):
                 self.aria_voice = init_voice(
                     enabled=bool(getattr(self.config, "aria_voice_enabled", False)),
                     allow_cloud_tts=bool(getattr(self.config, "aria_voice_cloud_tts", False)))
+                # If voice is enabled, run the hands-free listen→ARIA→speak loop on
+                # a daemon thread. It idles silently when no STT backend/mic exists.
+                self._aria_voice_stop = False
+                if getattr(self.aria_voice, "enabled", False):
+                    import threading as _th
+                    _th.Thread(target=self._aria_voice_loop, name="AriaVoice",
+                               daemon=True).start()
+                    self.console._append(
+                        "[aria] voice enabled — speaking replies; say 'hey aria …' to "
+                        "talk (needs vosk + a mic for listening: pip install vosk sounddevice).")
             except Exception:
                 self.aria_voice = None
+            # Talk to ARIA over the Signal mobile bridge: route its non-command
+            # (already sender-verified) messages to ARIA's conversational brain.
+            try:
+                mob = (self.manager.modules.get("Mobile Response Bridge")
+                       if getattr(self, "manager", None) else None)
+                if mob is not None and hasattr(mob, "set_aria_handler"):
+                    mob.set_aria_handler(self._aria_converse)
+            except Exception:
+                pass
+            # Two-way Teams bot — opt-in; talk to ARIA from Teams. Off unless
+            # enabled AND an App ID + password (.env) are set. Chat/reads only.
+            try:
+                import os as _os
+                from angerona.connectors.teams_bot import init_teams_bot
+                _tb_enabled = bool(getattr(self.config, "teams_bot_enabled", False))
+                _tb_pw = _os.environ.get("ANGERONA_TEAMS_APP_PASSWORD", "")
+                _allowed = getattr(self.config, "teams_allowed_users", "") or ""
+                if isinstance(_allowed, str):
+                    _allowed = [u for u in _allowed.replace(";", ",").split(",") if u.strip()]
+                self.aria_teams = init_teams_bot(
+                    enabled=_tb_enabled,
+                    app_id=str(getattr(self.config, "teams_app_id", "") or ""),
+                    app_password=_tb_pw,
+                    allowed_users=_allowed,
+                    handler=self._aria_converse,
+                    port=int(getattr(self.config, "teams_bot_port", 3978) or 3978),
+                    skip_auth=bool(getattr(self.config, "teams_bot_skip_auth", False)))
+                if _tb_enabled and self.aria_teams.start():
+                    self.console._append(
+                        "[aria] Teams bot listening — DM the bot in Teams to chat with ARIA.")
+                elif _tb_enabled:
+                    self.console._append(
+                        f"[aria] Teams bot not started: {self.aria_teams.last_error or 'set App ID + ANGERONA_TEAMS_APP_PASSWORD'}.")
+            except Exception:
+                self.aria_teams = None
             # Channel auto-brief — only if enabled AND a URL is configured.
             try:
                 url = str(getattr(self.config, "aria_push_url", "") or "").strip()
@@ -1108,6 +1213,57 @@ class MainWindow(QMainWindow):
                 pass
 
     def _aria_ask(self, text: str) -> str:
+        """Public ARIA entry point: run the brain, then speak the reply if voice
+        output is enabled. Kept thin so the HUD, the console, and the voice loop
+        all share one path."""
+        answer = self._aria_ask_core(text)
+        try:
+            self._aria_speak(answer)
+        except Exception:
+            pass
+        return answer
+
+    def _aria_speak(self, text: str) -> None:
+        """Speak a trimmed version of an answer when voice OUTPUT is enabled."""
+        v = getattr(self, "aria_voice", None)
+        if v is None or not getattr(v, "enabled", False) or not text:
+            return
+        spoken = str(text).strip()
+        if "\n" in spoken:                       # speak the headline, not whole tables
+            spoken = spoken.split("\n", 1)[0]
+        spoken = spoken[:400]
+        try:
+            v.speak(spoken)
+        except Exception:
+            pass
+
+    def _aria_voice_loop(self) -> None:
+        """Background: listen for 'hey aria <command>', run it through the full
+        ARIA brain (gated actions included), and speak the reply. Off unless voice
+        is enabled and an STT backend is present; degrades to a silent idle."""
+        import time as _t
+        v = getattr(self, "aria_voice", None)
+        if v is None:
+            return
+        self._aria_speak("ARIA voice online. Say 'hey aria' followed by a command.")
+        while not getattr(self, "_aria_voice_stop", False):
+            try:
+                heard = v.listen(5.0)
+            except Exception:
+                heard = None
+            if not heard or not v.is_wake(heard):
+                continue
+            cmd = v.strip_wake(heard)
+            if not cmd:
+                self._aria_speak("Yes?")
+                continue
+            try:
+                self._aria_ask(cmd)              # reply is spoken inside _aria_ask
+            except Exception:
+                pass
+            _t.sleep(0.2)
+
+    def _aria_ask_core(self, text: str) -> str:
         """HUD chat handler. A few quick intents (posture / indicator research)
         are answered directly; everything else is a real conversation with the
         local model, grounded with runbook excerpts + live posture. Runs on a
@@ -1120,6 +1276,27 @@ class MainWindow(QMainWindow):
             if low in ("score", "posture", "status"):
                 p = getattr(self, "_last_posture", {}) or {}
                 return f"Angerona Score {p.get('score', '?')} — {p.get('label', '?')}."
+            # Greetings / help — answer directly; NEVER fall through to a runbook
+            # dump (a BM25 match for "hello" is what made ARIA look broken).
+            greetings = {"hi", "hello", "hey", "yo", "hiya", "sup", "howdy",
+                         "hey aria", "hello aria", "hi aria", "thanks", "thank you",
+                         "ty", "gm", "good morning", "good afternoon", "good evening"}
+            g = low.rstrip("!.? ")
+            if g in greetings or g in ("help", "commands", "what can you do",
+                                       "who are you", "what can you do"):
+                return self._aria_help()
+            # "trust my running apps" → baseline current apps into the allowlist.
+            if "trust" in low and any(k in low for k in (
+                    "running", "my apps", "these apps", "current apps", "open apps",
+                    "programs i", "programs im", "what i'm running", "what im running")):
+                try:
+                    return self.console.backend._trust_running([])
+                except Exception as exc:
+                    return f"Couldn't baseline running apps: {exc}"
+            # Gated actions / live reads (suspend/kill/resume/module, confirm …).
+            acted = self._aria_action(t)
+            if acted is not None:
+                return acted
             # Indicator? Open vetted lookups (user-initiated, read-only recon).
             from angerona.connectors.research import classify, get_research
             if classify(t) != "unknown":
@@ -1133,10 +1310,189 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             return f"[aria error] {exc}"
 
+    def _aria_action(self, text: str):
+        """Map a natural-language request to a gated ARIA tool. READ tools answer
+        live; WRITE tools stage behind a confirm token (assistant.py enforces the
+        gate). Returns a string to show, or None if this wasn't an action request."""
+        import re
+        aria = getattr(self, "aria", None)
+        if aria is None:
+            return None
+        low = text.lower().strip()
+
+        # 1) Confirm / cancel a pending write.
+        m = re.search(r"\bconfirm\s+([0-9a-f]{8,})\b", low)
+        if m:
+            return aria.confirm(m.group(1)).text
+        if low in ("confirm", "yes", "do it", "go ahead", "proceed", "y") and self._aria_pending_token:
+            tok, self._aria_pending_token = self._aria_pending_token, ""
+            return aria.confirm(tok).text
+        if low in ("cancel", "no", "abort", "stop", "nvm", "never mind") and self._aria_pending_token:
+            aria.cancel(self._aria_pending_token); self._aria_pending_token = ""
+            return "Cancelled the pending action."
+
+        def _pid(s):
+            mm = re.search(r"\bpid\s*(\d{2,7})\b", s) or re.search(r"\b(\d{2,7})\b", s)
+            return int(mm.group(1)) if mm else None
+
+        # 2) Read intents (answered live). Don't fire the modules LIST when the
+        # user is actually asking to enable/disable/restart a specific module.
+        _has_module_verb = re.search(
+            r"\b(enable|disable|restart|turn on|turn off|stop|start)\b", low)
+        if ((re.search(r"\b(list|show|which)\s+modules?\b", low)
+             or low in ("modules", "module status", "list modules", "show modules"))
+                and not _has_module_verb):
+            return aria.invoke("modules").text
+        if re.search(r"\b(recent )?(alerts|iocs|indicators|detections)\b", low):
+            return aria.invoke("alerts").text
+        if low in ("threat", "threat level", "what's the threat level", "whats the threat level"):
+            return aria.invoke("threat").text
+        if re.search(r"\b(top )?(processes|proc list|running processes)\b", low):
+            return aria.invoke("processes").text
+        if re.search(r"\b(connections|netstat|network connections)\b", low):
+            return aria.invoke("connections").text
+        if re.search(r"\b(self.?test|run tests?|diagnostics?)\b", low):
+            return aria.invoke("selftest").text
+        if re.search(r"\b(resources?|resource (load|usage)|resmon)\b", low):
+            return aria.invoke("resources").text
+
+        # 3) Write intents (staged behind confirmation).
+        res = None
+        if re.search(r"\b(suspend|contain|freeze|isolate)\b", low) and _pid(low):
+            res = aria.invoke("suspend", pid=_pid(low))
+        elif re.search(r"\b(resume|unfreeze|unsuspend)\b", low) and _pid(low):
+            res = aria.invoke("resume", pid=_pid(low))
+        elif re.search(r"\b(kill|terminate)\b", low) and _pid(low):
+            res = aria.invoke("kill", pid=_pid(low))
+        else:
+            mm = (re.search(r"\b(enable|disable|restart|turn on|turn off|stop|start)\b"
+                            r"(?:\s+the)?\s+(.+?)\s+module\b", low)
+                  or re.search(r"\bmodule\s+(.+?)\s+(on|off|restart)\b", low))
+            if mm:
+                if mm.re.pattern.startswith(r"\bmodule"):
+                    name, verb = mm.group(1), mm.group(2)
+                else:
+                    verb, name = mm.group(1), mm.group(2)
+                state = {"enable": "on", "turn on": "on", "start": "on",
+                         "disable": "off", "turn off": "off", "stop": "off",
+                         "on": "on", "off": "off",
+                         "restart": "restart"}.get(verb.strip(), verb.strip())
+                # NOTE: pass positionally — assistant.invoke()'s first param is
+                # itself called `name` (the tool name), so a name= kwarg collides.
+                res = aria.invoke("set_module", name.strip(), state)
+
+        if res is None:
+            return None
+        if res.needs_confirmation:
+            self._aria_pending_token = res.confirm_token
+        return res.text
+
+    def _aria_help(self) -> str:
+        p = getattr(self, "_last_posture", {}) or {}
+        return (
+            "Hi — I'm ARIA, your local assistant inside Angerona.\n"
+            f"Current posture: Angerona Score {p.get('score', '?')} "
+            f"({p.get('label', '?')}).\n\n"
+            "You can ask me to:\n"
+            "• \"score\" / \"posture\" — the live security posture\n"
+            "• a question about Angerona or security — I'll answer from the local "
+            "model, grounded in your runbooks\n"
+            "• an indicator (hash / IP / domain / URL / CVE) — I'll open vetted, "
+            "read-only lookups\n\n"
+            "Everything I do is local and defensive; any action stays behind a "
+            "confirm-then-execute gate."
+        )
+
+    @staticmethod
+    def _looks_like_lookup(q: str) -> bool:
+        """True if the question is a substantive how-to/what-is query worth a
+        runbook fallback — as opposed to a greeting or one-word aside."""
+        ql = (q or "").lower()
+        if "?" in ql:
+            return True
+        triggers = ("how ", "what ", "why ", "where ", "when ", "which ", "who ",
+                    "explain", "list", "show ", "configure", "set up", "setup",
+                    "enable", "disable", "runbook", "playbook", "steps",
+                    "procedure", "fix", "troubleshoot", "how to")
+        return any(tk in ql for tk in triggers) or len(ql.split()) >= 4
+
+    # Concise, static primer so ARIA understands how the modules interrelate
+    # (the "how it works together" the operator asked for). Kept short on purpose.
+    _ARIA_ARCH = (
+        "How Angerona works together: real-time SENSORS (ETW + Sysmon process events, "
+        "network sniffer/protocol decoder, memory-injection scanner, file-integrity, "
+        "YARA, AMSI/AV bridges) publish onto a signed EventBus. DETECTION modules "
+        "(Sigma engine, deterministic fast-path IOCs, LSASS/ransomware/beacon/shadow-copy "
+        "guards, live ATT&CK tracker) score those events, and the Evidence Lattice fuses "
+        "weak signals across modules into one corroborated finding. AI TRIAGE (local "
+        "llama3, optional cloud fallback) explains them. The SOAR engine requires >=2 "
+        "independent module signals before any contain/kill/rollback and only acts on "
+        "operator confirmation (System32 allowlist protects critical processes). A "
+        "resilience layer (watchdog + supervisor + shared-memory heartbeats) keeps the "
+        "core alive, while DRILL and CHAOS fire benign synthetic probes to prove the "
+        "sensors aren't blinded. Everything is local-first and strictly defensive."
+    )
+
+    # Practical setup/testing/troubleshooting knowledge so ARIA can coach the
+    # operator through real tasks with exact steps (not vague advice).
+    _ARIA_COACH = (
+        "Coaching cheat-sheet (use exact names/commands):\n"
+        "SETUP: Trusted apps → type 'trust-running' (or say 'trust my running apps') so "
+        "memory/behaviour modules stop flagging apps you use. Local AI → run Ollama "
+        "(ollama serve · ollama pull llama3); online fallback → Settings ▸ API Keys. "
+        "Voice → Settings ▸ enable voice (speaks via Windows SAPI); for listening 'pip "
+        "install vosk sounddevice' then say 'hey aria …'. Phone → Settings ▸ Mobile "
+        "Response Bridge (signal-cli path + your number); then text ARIA over Signal. "
+        "Autostart → Settings ▸ Start with Windows.\n"
+        "TESTING: header 'RUN SELF-TEST' or console 'test [module]' checks a sensor's "
+        "pipeline; 'RUN RED TEAM SIMULATION' fires a benign ATT&CK drill; 'aar' re-scores "
+        "the last drill (re-run after FIM ~30s / YARA ~5min cycles). DRILL/CHAOS auto-"
+        "verify sensors aren't blind.\n"
+        "TROUBLESHOOT: console 'threat' (level+counts), 'modules' (status), 'resources' "
+        "(per-module load), 'iocs' (recent HIGH/CRITICAL). A module stuck 'stopped' or "
+        "'quarantined' → 'module <name> restart'. Threat level stuck High on your own "
+        "apps → 'trust-running' or Resolve Center ▸ Ignore/Allow. Logs live in "
+        "diagnostics/ (runtime_alerts.log, crash.log, not_responding.log). If ARIA's "
+        "local model is unreachable it's usually Ollama not running."
+    )
+
+    def _aria_context(self) -> str:
+        """A compact, LIVE snapshot of the running environment so ARIA answers with
+        real awareness of what's actually happening, not generic knowledge."""
+        from angerona.core.eventbus import Severity
+        lines: list[str] = []
+        try:
+            mods = self.manager.modules
+            running = sum(1 for m in mods.values() if getattr(m, "status", "") == "running")
+            by_cat: dict[str, list] = {}
+            for m in mods.values():
+                by_cat.setdefault(getattr(m, "category", "?"), []).append(m)
+            lines.append(f"Live modules: {running}/{len(mods)} running, by role:")
+            for cat in sorted(by_cat):
+                ms = by_cat[cat]
+                up = sum(1 for m in ms if getattr(m, "status", "") == "running")
+                names = ", ".join(sorted(getattr(m, "name", type(m).__name__) for m in ms)[:6])
+                lines.append(f"  {cat}: {up}/{len(ms)} up — {names}")
+        except Exception:
+            pass
+        try:
+            evs = [e for e in self.bus.recent(200) if e.severity >= Severity.HIGH]
+            if evs:
+                lines.append(f"Recent HIGH/CRITICAL ({len(evs)} in window), newest first:")
+                for e in sorted(evs, key=lambda e: e.ts, reverse=True)[:6]:
+                    lines.append(f"  [{e.severity.label}] {e.module}: {(e.message or '')[:90]}")
+            else:
+                lines.append("No HIGH/CRITICAL alerts in the recent window.")
+        except Exception:
+            pass
+        return "\n".join(lines)
+
     def _aria_converse(self, question: str) -> str:
-        """Ask the local Ollama model, grounded with runbook context + posture,
-        through the guarded ollama_client. Falls back to a runbook answer (or a
-        clear 'is Ollama running?' note) if the model is unreachable."""
+        """Ask the local Ollama model, grounded with a LIVE environment snapshot +
+        architecture primer + runbook context + posture. If the local model is
+        unreachable, optionally consult an online AI (when a provider key is
+        configured), then fall back to a relevant runbook or a clear note."""
+        from angerona.core.eventbus import Severity   # local import: keep top clean
         # Grounding: top runbook chunks (if any) + current posture.
         context = ""
         try:
@@ -1148,14 +1504,22 @@ class MainWindow(QMainWindow):
             pass
         p = getattr(self, "_last_posture", {}) or {}
         posture_line = f"Current Angerona Score: {p.get('score', '?')} ({p.get('label', '?')})."
+        env = self._aria_context()
         system = (
-            "You are ARIA, the local assistant inside Angerona, a defensive Windows "
-            "security suite. Answer conversationally, concisely, and accurately. You are "
-            "strictly defensive: never help with malware, exploits, or offensive tooling. "
-            "Use the reference excerpts when relevant, but you may also answer from general "
-            "knowledge. Don't invent Angerona features you're unsure about."
+            "You are ARIA, the local assistant embedded inside Angerona, a defensive "
+            "Windows security suite. You are also a hands-on COACH: help the operator "
+            "set up, configure, TEST, and TROUBLESHOOT any part of Angerona or their "
+            "Windows device. When they ask how to do something, give concrete, ordered "
+            "steps — name the exact Settings toggle, console command, or button, and "
+            "explain what a good result looks like and what to check if it fails. Use "
+            "the LIVE environment snapshot so your guidance reflects what's actually "
+            "running now (e.g. reference a module that's stopped or an alert that's "
+            "firing). Answer conversationally, concisely, accurately. You are strictly "
+            "defensive: never help with malware, exploits, or offensive tooling. You may "
+            "use general knowledge, but don't invent Angerona features you're unsure of."
         )
-        prompt = f"{system}\n\n{posture_line}"
+        prompt = (f"{system}\n\n{self._ARIA_ARCH}\n\n{self._ARIA_COACH}\n\n"
+                  f"{posture_line}\n\n[LIVE ENVIRONMENT]\n{env}")
         if context:
             prompt += "\n\nReference excerpts from the operator's runbooks:\n" + context
         prompt += f"\n\nUser: {question}\nARIA:"
@@ -1168,15 +1532,32 @@ class MainWindow(QMainWindow):
             if isinstance(res, dict) and res.get("response"):
                 return str(res["response"]).strip()
             err = res.get("error") if isinstance(res, dict) else "no response"
-            # Model unreachable → fall back to the runbook, else a helpful note.
-            try:
-                fb = self._aria_rag.answer(question) if getattr(self, "_aria_rag", None) else ""
-            except Exception:
-                fb = ""
+            # Local model down → optionally consult an ONLINE AI. This only does
+            # anything if the operator configured a provider key (Settings ▸ API
+            # Keys); consult_ai self-gates and returns an error otherwise, so no
+            # egress happens by default. Full ARIA context is passed along.
+            if getattr(self.config, "aria_cloud_fallback", True):
+                try:
+                    from angerona.engines.ai_consult import consult_ai
+                    online = consult_ai(prompt)
+                    if isinstance(online, dict) and online.get("text"):
+                        return (f"[ARIA · online:{online.get('provider', '?')}]\n"
+                                + str(online["text"]).strip())
+                except Exception:
+                    pass
+            # Then a runbook — but ONLY for substantive how-to queries; an
+            # irrelevant BM25 match is worse than an honest "AI is offline" note.
+            fb = ""
+            if self._looks_like_lookup(question):
+                try:
+                    fb = self._aria_rag.answer(question) if getattr(self, "_aria_rag", None) else ""
+                except Exception:
+                    fb = ""
             if fb and "No " not in fb[:4]:
-                return fb
+                return "Local AI is offline, but here's a relevant runbook:\n\n" + fb
             return (f"Local AI unavailable ({err}). Is Ollama running with the "
-                    f"'{model}' model?  (ollama serve · ollama pull {model})")
+                    f"'{model}' model?  (ollama serve · ollama pull {model})  "
+                    "Or set an online provider key in Settings ▸ API Keys for a cloud fallback.")
         except Exception as exc:
             return f"(Local AI error: {exc})"
 

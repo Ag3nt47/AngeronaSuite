@@ -145,4 +145,23 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # This process runs DETACHED + hidden (no console), so any startup/runtime
+    # exception otherwise vanishes — the supervisor just sees it die and, after 3
+    # failures, parks it in SAFE_MODE with no clue why. Persist the traceback so
+    # the actual cause is visible in diagnostics/resilience_watchdog_crash.log.
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except BaseException:
+        try:
+            import traceback
+            from angerona.resilience import heartbeat as _hb
+            _dir = _hb._data_dir() / "diagnostics"
+            _dir.mkdir(parents=True, exist_ok=True)
+            with open(_dir / "resilience_watchdog_crash.log", "a", encoding="utf-8") as _f:
+                _f.write(f"\n[{time.strftime('%Y-%m-%dT%H:%M:%S')}] watchdog crashed:\n")
+                _f.write(traceback.format_exc())
+        except Exception:
+            pass
+        raise

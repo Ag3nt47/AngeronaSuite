@@ -88,10 +88,18 @@ class MobileResponseBridge(BaseModule):
         self._cursor_ts = 0.0                        # bus read watermark
         self._last_sweep = 0.0
         self._last_digest_flush = 0.0
+        self._aria_handler = None                    # optional ARIA chat handler
 
     def bind_manager(self, manager) -> None:
         self._manager = manager
         self._config = getattr(manager, "config", None)
+
+    def set_aria_handler(self, fn) -> None:
+        """Route non-command Signal messages to ARIA for a conversational answer.
+        Only the already-sender-verified operator reaches this path; ARIA's
+        state-changing actions are deliberately NOT exposed here — remote
+        mutations go through the PIN+token-gated commands (KILL/SUSPEND/…)."""
+        self._aria_handler = fn
 
     # ── Config resolution ──────────────────────────────────────────────────────
     def _enabled(self) -> bool:
@@ -279,6 +287,17 @@ class MobileResponseBridge(BaseModule):
             if len(args) == 1 and self._token_ok(args[0]):
                 return self._mute(args[0])
             return self._spoof(body, "MUTE token fail")
+        # Not a built-in command → hand it to ARIA for a conversational answer.
+        # The sender is already verified as the operator (checked at the top), so
+        # this is the operator chatting with ARIA from their phone. ARIA's
+        # state-changing actions are NOT reachable here — only reads/conversation.
+        if self._aria_handler is not None:
+            try:
+                reply = self._aria_handler(body.strip())
+            except Exception as exc:
+                reply = f"(ARIA error: {exc})"
+            if reply:
+                return self._send(f"🤖 ARIA: {str(reply)[:1200]}")
         return self._spoof(body, "unknown command")
 
     def _pin_ok(self, given: str) -> bool:

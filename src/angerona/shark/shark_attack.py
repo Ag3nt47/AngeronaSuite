@@ -132,7 +132,15 @@ class _DrillCancelled(Exception):
 
 def _pick_exfil_host() -> str:
     override = os.environ.get("ANGERONA_SHARK_EXFIL_HOST")
-    return override if override else random.choice(EXFIL_TEST_HOSTS)
+    host = override if override else random.choice(EXFIL_TEST_HOSTS)
+    # Tell the sensors this drill destination is ours, so NDRD / network alerts
+    # on our own benign exfil probe are treated as a DRILL, not a real threat.
+    try:
+        from angerona.core import self_ioc
+        self_ioc.register_domain(host, ttl=600.0)
+    except Exception:
+        pass
+    return host
 
 
 def _file_has_marker(p: Path) -> bool:

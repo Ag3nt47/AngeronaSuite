@@ -63,7 +63,14 @@ _TRUSTED_PROCESS_SENSORS: frozenset[str] = frozenset({
     "ETW Core Listener",
     "ETWG",
     "ETWG-sim",
+    # Sysmon EID 1 always carries the full command line and the new-process PID,
+    # so it catches the canary even when Windows 4688 command-line auditing is
+    # off — the common reason DRILL never saw an echo and cried "blinding".
+    "Sysmon Event Bridge",
 })
+# Process-creation event IDs we accept from a trusted sensor: 4688 (Windows
+# Security channel) and 1 (Sysmon process-create).
+_PROCESS_ECHO_EIDS: frozenset[int] = frozenset({4688, 1})
 
 # G2 sensor coverage validation: if any of these modules is silent on the
 # EventBus for longer than _SENSOR_SILENCE_WINDOW_S, emit MEDIUM so the
@@ -150,7 +157,7 @@ class CanaryDrillModule(BaseModule):
         if event.module not in _TRUSTED_PROCESS_SENSORS:
             return
         try:
-            if int(event.details.get("eid", 0)) != 4688:
+            if int(event.details.get("eid", 0)) not in _PROCESS_ECHO_EIDS:
                 return
         except (TypeError, ValueError):
             return
@@ -173,6 +180,13 @@ class CanaryDrillModule(BaseModule):
         raw = event.details.get("raw", [])
         if not isinstance(raw, (list, tuple)):
             raw = [raw]
+        raw = list(raw)
+        # Sysmon (and some ETW paths) carry the command line — where our canary
+        # tag lives — in a structured field rather than in `raw`.
+        for key in ("command_line", "cmdline", "CommandLine"):
+            val = event.details.get(key)
+            if isinstance(val, str):
+                raw.append(val)
         tag = next(
             (found for part in raw if (found := tag_in(part)) is not None),
             None,
