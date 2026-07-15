@@ -41,11 +41,41 @@ marker—no real exploit, secret, or persistence mechanism is touched.
 
 ---
 
+## 🎯 Use cases — who it's for
+
+- **Home-lab & self-hosted defense** — put enterprise-style **EDR/NDR/SOAR** on a
+  personal Windows workstation or home server without per-seat licensing, cloud
+  accounts, or an unsigned kernel driver. Detection, response, and AI triage all
+  run locally.
+- **Privacy-conscious / near-air-gapped setups** — **100% local AI** (Ollama) and
+  **zero telemetry egress by default**; every outbound path (cloud escalation,
+  channel push, threat-intel pull) is strictly opt-in. Nothing leaves the box
+  unless you turn it on.
+- **Learning detection engineering & MITRE ATT&CK** — watch **Sigma** rules and
+  **YARA** signatures fire in real time, explore the live **ATT&CK coverage
+  heatmap** (86 techniques / 14 tactics), and read incident **kill-chain
+  timelines** — a hands-on way to learn blue-team fundamentals.
+- **Blue-team / SOC practice** — triage live alerts, tune false positives via the
+  Resolve Center, run the **local-AI security briefing**, and generate a
+  **one-click IR triage bundle** for after-action review.
+- **Safe adversary emulation / purple teaming** — fire an unannounced,
+  **non-destructive 14-stage ATT&CK kill chain** (benign reversible markers),
+  then read the **after-action report** to validate and close detection gaps.
+- **Phishing & threat-intel triage** — point ARIA at a mailbox for **local,
+  read-only phishing scoring**, and let the **CISA KEV** correlation + AI CVE fix
+  advisor tell you which vulnerabilities actually apply to your host.
+- **A conversational security copilot** — ask **ARIA** anything in plain English;
+  it answers from your own runbooks and your local model, and can open vetted
+  indicator lookups (VirusTotal / NVD / CISA KEV / AbuseIPDB / URLhaus) on command.
+- **A portfolio / résumé project** — a substantial, self-tested security-engineering
+  codebase (Python · Rust · Go) demonstrating detection, response, and secure SDLC.
+
 ## ✨ Features
 
 - **Native desktop GUI** (PySide6/Qt) — dashboard, live alerts, module control, settings.
 - **Module system** — bundled modules are auto-discovered. External `.py` drop-ins are disabled by default because they execute with Angerona's privileges; trusted development environments can opt in with `ANGERONA_EXTERNAL_MODULES=1`.
 - **Local AI triage** — security events are explained and scored by a local LLM (Ollama `llama3`), with optional cloud escalation.
+- **ARIA — conversational security copilot (v1.8.0)** — a talk-to-it HUD with a local-LLM chat (grounded in your runbooks + live posture), spoken threat narration, live read-only email/phishing scanning, on-command indicator research, and adaptive UI performance tuning. Local, gated, defensive-only, and off by default — enable and live-test each piece in **Settings ▸ ARIA**. See "What's new in v1.8.0" below.
 - **Core protections, ported from the original Angerona engines:**
   - File Integrity Monitoring (FIM)
   - Process / parent-lineage monitoring
@@ -84,7 +114,15 @@ additive, **off by default**, and each shipped with a `self_test()`. Every actio
 stays **confirm-then-execute**; nothing touches detection, correlation, or response.
 
 Run every ARIA self-test from the repo root: `python run_aria_selftests.py`
-(currently **12/12 PASS** — the eleven modules plus the research→browser bridge).
+(currently **13/13 PASS** — the modules plus the research→browser bridge and the
+email watcher).
+
+**Using it:** ARIA appears as an **ARIA tab** next to Live Alerts (a pulsing orb
+tied to your live Angerona Score, a posture sparkline, and a chat box). The chat is
+**conversational** — off-runbook questions are answered by your local model
+(Ollama) through the guarded client, grounded with your runbook excerpts and live
+posture. Configure and **live-test** every feature in **Settings ▸ ARIA** (voice,
+email scanning, channel push, research) — each has a one-click test button.
 
 - **ARIA Overdrive** — `core/perf_governor.py`. An adaptive governor for the
   *cosmetic/UI* path (GUI refresh, alert row cap, display batch) that scales to
@@ -106,12 +144,26 @@ Run every ARIA self-test from the repo root: `python run_aria_selftests.py`
 - **ARIA HUD** — `gui/aria_hud.py`. A pulsing orb tied to the live Angerona
   Score (colour + pulse by band), status line, posture sparkline, chat box. Pure
   score→visual core is self-tested; the Qt widget is optional.
-- **Connectors** — `connectors/` (all opt-in, degraded-safe): `voice.py`
-  (local TTS/STT + "hey aria"), `channel_push.py` (Slack/Teams/ntfy briefings,
-  secret-redacted), `inbox_triage.py` (local phishing heuristics), `research.py`
-  (indicator → vetted lookups) + `research_fetchers.py`. The `research` READ
-  only builds a local vetted-source plan; opening browser sources is a separate
-  confirmed WRITE/egress action and defaults off.
+- **Conversational assistant** — the HUD chat answers off-runbook questions with
+  your **local LLM** (Ollama) through the app's guarded `ollama_client`
+  (prompt-injection defense, PII/secret redaction), grounded with runbook excerpts
+  and live posture, under a strictly defensive-only system prompt. Runs async so
+  the UI never blocks; falls back cleanly when Ollama isn't running.
+- **Voice narration (works out of the box on Windows)** — `connectors/voice.py`.
+  Spoken threat narration + "hey aria" voice commands, resolving a TTS backend
+  automatically: pyttsx3 → **Windows SAPI via System.Speech (zero-install)** →
+  win32com. Opt-in; ElevenLabs cloud TTS only if explicitly enabled.
+- **Email scanning (live)** — `connectors/inbox_watcher.py` runs a background,
+  **read-only IMAP** poller that scores each message with local phishing
+  heuristics (`inbox_triage.py`: SPF/DKIM/DMARC, Reply-To mismatch, lookalike
+  domains, exe/macro attachments, lure terms, link masking) and raises phishing +
+  CVE-advisory alerts onto the bus. Never marks read / moves / deletes; mailbox
+  password lives in `.env`.
+- **Other connectors** — `channel_push.py` (Slack/Teams/ntfy/webhook briefings,
+  secret-redacted, off by default) and `research.py` + `research_fetchers.py`
+  (indicator → vetted, allow-listed lookups). The `research` READ only builds a
+  local plan; opening browser sources is a separate confirmed WRITE/egress action
+  and defaults off.
 
 ### v1.8.0 three-loop hardening and performance convergence
 
