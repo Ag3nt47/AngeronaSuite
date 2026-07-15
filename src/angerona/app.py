@@ -246,4 +246,16 @@ class AngeronaApp:
             except Exception:
                 pass
         self.manager.stop_all()
+        # Release Angerona's resident llama3 model immediately. Ollama normally
+        # keeps models loaded for several minutes, which left its runner using
+        # CPU/GPU after the GUI had closed. Keep the Ollama service itself alive
+        # for other local applications and fail silently if it is unavailable.
+        try:
+            from angerona.core.ollama_lifecycle import unload_angerona_models
+            unload_angerona_models(
+                getattr(self.config, "ollama_host", "http://localhost:11434"),
+                getattr(self.config, "ollama_model", "llama3"),
+            )
+        except Exception:
+            pass
         self.storage.close()

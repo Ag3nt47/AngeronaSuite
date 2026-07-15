@@ -13,6 +13,7 @@ import tempfile
 import threading
 from pathlib import Path
 
+from angerona.core.data_paths import data_dir
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.win import run_hidden
 
@@ -20,6 +21,7 @@ from angerona.core.win import run_hidden
 # noisy. Add more dirs here if you want broader coverage.
 SCAN_DIRS = [
     os.path.join(os.environ.get("USERPROFILE", str(Path.home())), "Downloads"),
+    str(data_dir() / "drill-sandbox"),
 ]
 
 # Map a matched rule name to a severity (falls back to HIGH).

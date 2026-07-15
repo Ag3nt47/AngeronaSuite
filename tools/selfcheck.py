@@ -30,6 +30,12 @@ for _stream in (sys.stdout, sys.stderr):
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")   # no real display needed
 os.environ.setdefault("ANGERONA_SELFCHECK", "1")
 
+# Match the production entry point before any test imports ``tempfile`` or a
+# component creates diagnostics. Running this file directly must not fall back
+# to the user's C: profile for temporary drill/report artifacts.
+from angerona.core.data_paths import configure_runtime_environment  # noqa: E402
+configure_runtime_environment()
+
 PASS, FAIL = "PASS", "FAIL"
 rows: list[tuple[str, str, str]] = []
 
@@ -121,6 +127,12 @@ def _():
     w = MainWindow(bus, storage, manager, config)
     assert hasattr(w, "_open_collision") and hasattr(w, "_open_blast_prompt"), \
         "dashboard forensics entry points missing"
+    # This harness intentionally does not enter Qt's event loop.  Leaving the
+    # real UI watchdog armed would therefore record long self-check phases as
+    # false application freezes in diagnostics/not_responding.log.
+    watchdog = getattr(w, "_ui_watchdog", None)
+    if watchdog is not None:
+        watchdog.stop()
     return "constructed (with forensics entry points)"
 
 

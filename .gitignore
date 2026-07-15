@@ -45,6 +45,7 @@ frz/hypervisor/go.sum
 *.test
 
 # ── Runtime data / local state ──────────────────────────────────────────────
+runtime-data/
 *.db
 *.sqlite
 *.sqlite3

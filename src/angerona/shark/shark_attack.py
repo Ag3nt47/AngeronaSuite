@@ -183,9 +183,9 @@ class SharkAttackEngine:
                  on_event: Optional[Callable[[str], None]] = None) -> None:
         self.data_dir = Path(data_dir)
         self.history_path = self.data_dir / "shark_history.json"
-        home = Path(os.environ.get("USERPROFILE", str(Path.home())))
-        self.downloads_dir = downloads_dir or (home / "Downloads")
-        self.documents_dir = documents_dir or (home / "Documents")
+        sandbox = self.data_dir / "drill-sandbox"
+        self.downloads_dir = Path(downloads_dir) if downloads_dir else sandbox
+        self.documents_dir = Path(documents_dir) if documents_dir else sandbox
         self._on_complete = on_complete
         # Fired for every narration line ("what, where, when") as the
         # playbook runs, so a live monitor window can show the offense side

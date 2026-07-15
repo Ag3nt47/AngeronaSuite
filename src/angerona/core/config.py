@@ -14,10 +14,8 @@ from typing import Dict
 
 
 def _data_dir() -> Path:
-    base = os.environ.get("ANGERONA_DATA") or os.path.join(
-        os.environ.get("LOCALAPPDATA", str(Path.home())), "Angerona"
-    )
-    p = Path(base)
+    from angerona.core.data_paths import data_dir
+    p = data_dir()
     (p / "logs").mkdir(parents=True, exist_ok=True)
     return p
 

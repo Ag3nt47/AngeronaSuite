@@ -86,7 +86,13 @@ class FlightRecorder:
             # sync per insert — crippling at ~140 events/sec). WAL lets readers run
             # without blocking the writer and cuts fsyncs to checkpoints; NORMAL is
             # durable enough for telemetry. busy_timeout avoids "database locked".
-            for pragma in ("journal_mode=WAL", "synchronous=NORMAL", "busy_timeout=3000"):
+            for pragma in (
+                    "auto_vacuum=INCREMENTAL",
+                    "journal_mode=WAL",
+                    "synchronous=NORMAL",
+                    "busy_timeout=3000",
+                    "wal_autocheckpoint=1000",
+                    "journal_size_limit=16777216"):
                 try:
                     self._db.execute(f"PRAGMA {pragma}")
                 except Exception:
@@ -112,6 +118,9 @@ class FlightRecorder:
                     "ALTER TABLE events ADD COLUMN hmac_sig TEXT NOT NULL DEFAULT ''"
                 )
             self._db.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)")
+            self._db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_events_severity_id ON events(severity, id)"
+            )
             self._db.commit()
 
     @property
@@ -206,10 +215,26 @@ class FlightRecorder:
         """Bound the table to ~MAX_ROWS newest rows (id-ordered). O(deleted rows)
         — cheap and keeps count_since / events_in_window / recent fast forever."""
         try:
-            row = self._db.execute("SELECT MAX(id) FROM events").fetchone()
-            if row and row[0] and row[0] > self.MAX_ROWS:
-                self._db.execute("DELETE FROM events WHERE id <= ?", (row[0] - self.MAX_ROWS,))
+            row = self._db.execute("SELECT COUNT(*) FROM events").fetchone()
+            excess = max(0, int(row[0] if row else 0) - int(self.MAX_ROWS))
+            if excess:
+                # Retire lower-severity chatter first so an INFO flood cannot
+                # erase the entire HIGH/CRITICAL evidence window. If protected
+                # evidence alone exceeds MAX_ROWS its oldest rows are retired,
+                # preserving the hard disk bound.
+                self._db.execute(
+                    "DELETE FROM events WHERE id IN ("
+                    "SELECT id FROM events ORDER BY "
+                    "CASE WHEN severity >= ? THEN 1 ELSE 0 END ASC, id ASC LIMIT ?)",
+                    (int(Severity.HIGH), excess),
+                )
                 self._db.commit()
+                # DELETE alone leaves freed pages inside SQLite/WAL files, so
+                # the old database kept occupying C: even though row retention
+                # was active. Incremental vacuum plus a passive checkpoint
+                # returns unused pages gradually without freezing writers.
+                self._db.execute("PRAGMA incremental_vacuum(2000)")
+                self._db.execute("PRAGMA wal_checkpoint(PASSIVE)")
         except Exception:
             pass
 
@@ -324,6 +349,15 @@ class FlightRecorder:
         as a zero-cost pre-check before calling the heavier recent() fetch."""
         with self._lock:
             row = self._db.execute("SELECT MAX(ts) FROM events").fetchone()
+        return (row[0] or 0.0) if row else 0.0
+
+    def max_ts_for_severity(self, min_severity: Severity) -> float:
+        """Newest timestamp at or above a severity, without deserializing rows."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT MAX(ts) FROM events WHERE severity >= ?",
+                (int(min_severity),),
+            ).fetchone()
         return (row[0] or 0.0) if row else 0.0
 
     def count_since(self, ts: float) -> int:

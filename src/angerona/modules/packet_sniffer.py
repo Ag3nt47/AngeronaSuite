@@ -64,6 +64,9 @@ class PacketSnifferModule(BaseModule):
         while not self.stopping:
             try:
                 sniff(prn=on_packet, store=False, timeout=5)
+                # ``sniff`` is the bounded work unit; unlike most modules this
+                # success path has no BaseModule.sleep() cadence call.
+                self.mark_cycle_complete()
             except Exception as exc:
                 self.last_error = str(exc)
                 self.sleep(5)

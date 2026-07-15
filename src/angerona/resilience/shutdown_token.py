@@ -31,9 +31,8 @@ def _data_dir() -> Path:
         from angerona.core.config import _data_dir as core_data_dir
         return Path(core_data_dir())
     except Exception:
-        base = os.environ.get("ANGERONA_DATA") or os.path.join(
-            os.environ.get("LOCALAPPDATA", str(Path.home())), "Angerona")
-        return Path(base)
+        from angerona.core.data_paths import data_dir
+        return data_dir()
 
 
 def _load_key() -> bytes:

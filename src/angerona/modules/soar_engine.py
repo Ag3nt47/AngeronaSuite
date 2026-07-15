@@ -35,6 +35,10 @@ import time
 from pathlib import Path
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.process_allowlist import (
+    is_event_allowed as _process_event_allowed,
+    policy_snapshot as _process_policy_snapshot,
+)
 
 try:
     import psutil
@@ -80,12 +84,18 @@ class ActiveResponseSOAR(BaseModule):
             if self._bus is None or not self._armed():
                 continue
             floor = self._min_severity()
-            for ev in self._bus.recent(25):
+            process_policy = _process_policy_snapshot()
+            # Drills can emit 50+ marker detections in one FIM cycle. This path
+            # is reached only while explicitly armed, so retain enough history
+            # to remediate the whole batch rather than only the newest 25.
+            for ev in self._bus.recent(250):
                 if ev.ts <= self._last_ts or ev.severity < floor:
                     continue
                 if ev.module in (self.name, "Console", "SOAR Automation"):
                     continue
                 self._last_ts = max(self._last_ts, ev.ts)
+                if _process_event_allowed(ev, policy=process_policy):
+                    continue
                 self._kill_and_rollback(ev)
 
     # ── Response playbook ────────────────────────────────────────────────

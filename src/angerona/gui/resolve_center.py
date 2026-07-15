@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from angerona.core.eventbus import Severity
 from angerona.core.threat import threat_label
 from angerona.core import alert_ack
+from angerona.core import drill_resolution, process_allowlist
 
 _SEV_COLOR = {"CRITICAL": "#f87171", "HIGH": "#fb923c", "MEDIUM": "#facc15"}
 
@@ -80,17 +81,18 @@ class ResolveCenter(QDialog):
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
-        self._timer.start(2000)
+        self._timer.start(4000)
         self._refresh()
 
     # ── data ─────────────────────────────────────────────────────────────────
-    _SCAN_CAP = 500   # bound the per-refresh signature work regardless of alert volume
+    _SCAN_CAP = 300   # bound HMAC/policy work regardless of alert volume
 
     def _events(self) -> list:
         from angerona.gui.pages import NOISE_MODULES
         now = time.time()
         try:
-            evs = self.storage.events_in_window(now - self.window_s, now)
+            evs = self.storage.recent_in_window(
+                now - self.window_s, now, Severity.HIGH, self._SCAN_CAP)
         except Exception:
             evs = self.bus.recent(500)
         # Cheap filters + sort FIRST, then cap, THEN the expensive per-event ack
@@ -102,9 +104,15 @@ class ResolveCenter(QDialog):
         out.sort(key=lambda e: getattr(e, "ts", 0), reverse=True)
         out = out[:self._SCAN_CAP]
         acked = alert_ack.acked_signatures()
-        return [e for e in out if alert_ack.signature(e) not in acked]
+        process_policy = process_allowlist.policy_snapshot()
+        resolutions = drill_resolution.resolution_snapshot()
+        return [e for e in out
+                if alert_ack.signature(e) not in acked
+                and not process_allowlist.is_event_allowed(e, policy=process_policy)
+                and not drill_resolution.is_resolved_event(
+                    e, resolutions=resolutions)]
 
-    _MAX_ROWS = 200   # displayed-row cap — triaging the newest 200 is plenty
+    _MAX_ROWS = 75   # keep per-row action controls responsive during alert storms
 
     def _free_action_widgets(self) -> None:
         """Delete the per-row Detail/Ignore cell widgets before a rebuild.
@@ -120,7 +128,15 @@ class ResolveCenter(QDialog):
         # Change-detection: skip the whole (expensive) rebuild when nothing new has
         # arrived and no ack changed — otherwise this ran O(alerts) every 2 s.
         try:
-            key = (self.storage.max_ts(), len(alert_ack.acked_signatures()))
+            def _stamp(path):
+                try:
+                    return path.stat().st_mtime_ns
+                except OSError:
+                    return -1
+            key = (self.storage.max_ts_for_severity(Severity.HIGH),
+                   len(alert_ack.acked_signatures()),
+                   _stamp(process_allowlist.policy_path()),
+                   _stamp(drill_resolution.state_path()))
         except Exception:
             key = None
         if key is not None and key == getattr(self, "_last_key", object()):
@@ -197,6 +213,25 @@ class ResolveCenter(QDialog):
     def _allow(self, ev) -> None:
         """Allow = suppress this module's future alerts in the live feed AND clear
         this one from the threat level."""
+        proc_name, proc_path = process_allowlist.event_process(ev)
+        if proc_name or proc_path:
+            label = proc_path or proc_name
+            if QMessageBox.question(
+                    self, "Trust process",
+                    f"Trust this exact process for process-attributed alerts?\n\n{label}\n\n"
+                    "A trusted process is excluded from threat posture and automatic "
+                    "response. Use this only when you recognize it.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                process_allowlist.add(proc_name, proc_path)
+            except Exception as exc:
+                QMessageBox.warning(self, "Trust process", str(exc))
+                return
+            self._last_key = None
+            self._refresh()
+            return
         ap = self._alerts_panel()
         if ap is not None:
             try:

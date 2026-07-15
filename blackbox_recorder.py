@@ -125,13 +125,8 @@ ARCHIVE_DIR = APP_DIR / "archive"
 
 
 def _angerona_data_dir() -> Path:
-    """Resolve the SAME per-user data dir Angerona writes to (ANGERONA_DATA, else
-    %LOCALAPPDATA%\\Angerona). Crash snapshots, the flight-recorder DB, status.json
-    and the data-side crash.log live HERE — not next to the suite's source — so the
-    recorder must watch this location too or it would miss the crash evidence."""
-    base = os.environ.get("ANGERONA_DATA") or os.path.join(
-        os.environ.get("LOCALAPPDATA", str(Path.home())), "Angerona")
-    return Path(base)
+    """Resolve the same D:-resident runtime root used by the suite."""
+    return Path(os.environ.get("ANGERONA_DATA") or (APP_DIR / "runtime-data"))
 
 
 DATA_DIR = _angerona_data_dir()

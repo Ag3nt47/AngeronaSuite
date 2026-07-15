@@ -12,13 +12,12 @@ Invoked by the Posture Hardening (HARD) Judgment loop as a hidden subprocess:
     python -m angerona.shark.verify <technique_id> [--settle SECONDS]
 
 SAFETY: identical model to red_team.py — drops a single INERT, benignly-named
-marker in Documents (so File Integrity Monitor can notice it) and deletes it
-afterward. Nothing real is touched.
+marker in Angerona's D: drill sandbox (watched by File Integrity Monitor) and
+deletes it afterward. Nothing real is touched.
 """
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import time
 import uuid
@@ -37,8 +36,8 @@ _TECH = {
 
 
 def _documents() -> Path:
-    home = Path(os.environ.get("USERPROFILE", str(Path.home())))
-    return home / "Documents"
+    from angerona.core.data_paths import data_dir
+    return data_dir() / "drill-sandbox"
 
 
 def main(argv=None) -> int:

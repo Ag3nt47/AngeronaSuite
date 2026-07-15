@@ -9,7 +9,7 @@ G3-A — HMAC-SHA256 bus authentication
 --------------------------------------
 Each event is optionally signed with HMAC-SHA256 before entering the ring.
 A per-install 32-byte secret key is stored (or generated on first run) at
-``LOCALAPPDATA/Angerona/bus.key``.
+``<installation>/runtime-data/bus.key``.
 
 Why:
   A threat actor with filesystem access could tamper with the SQLite ledger
@@ -79,7 +79,7 @@ Subscriber = Callable[[Event], None]
 class BusAuthority:
     """Loads or generates the per-install HMAC key for event signing.
 
-    Key file: ``LOCALAPPDATA/Angerona/bus.key`` (32 random bytes, hex-encoded).
+    Key file: ``<installation>/runtime-data/bus.key`` (32 random bytes, hex-encoded).
     On first run call ``BusAuthority.generate()`` to create a new key.
     On subsequent runs call ``BusAuthority.load()`` to read the existing key.
     """
@@ -90,10 +90,8 @@ class BusAuthority:
 
     @staticmethod
     def _key_path() -> Path:
-        base = os.environ.get("ANGERONA_DATA") or os.path.join(
-            os.environ.get("LOCALAPPDATA", str(Path.home())), "Angerona"
-        )
-        return Path(base) / "bus.key"
+        from angerona.core.data_paths import data_dir
+        return data_dir() / "bus.key"
 
     @classmethod
     def generate(cls) -> "BusAuthority":

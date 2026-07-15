@@ -17,6 +17,7 @@ after the fact.
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,19 @@ from angerona.core.eventbus import Event
 from angerona.core.storage import FlightRecorder
 
 WIDTH = 84
+
+
+def _bounded_env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+# One report is kept as a text/JSON pair. These bounds prevent repeated drills
+# from becoming a permanent archive while retaining useful comparison history.
+_HISTORY_RUN_LIMIT = _bounded_env_int("ANGERONA_AAR_HISTORY_RUNS", 40)
+_HISTORY_MAX_AGE_DAYS = _bounded_env_int("ANGERONA_AAR_HISTORY_DAYS", 30)
 
 # Not every Shark Attack stage is a "did a detector notice this" test. This
 # mapping is what stops the report from mislabeling structurally-expected
@@ -65,22 +79,54 @@ class StepVerdict:
     catch_latency: Optional[float] = None
     remediation: Optional[Event] = None
     remediation_latency: Optional[float] = None
+    finding_resolved: bool = False
 
 
 def _load_history(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _canonical_path(value: object) -> str:
+    raw = os.path.expandvars(os.path.expanduser(str(value or "").strip().strip('"')))
+    return os.path.normcase(os.path.normpath(raw)) if raw else ""
+
+
 def _matches(step: dict, ev: Event) -> bool:
+    """Match only deterministic drill evidence, never a basename or bare PID."""
     details = ev.details or {}
-    for p in step.get("artifact_paths", []):
-        name = Path(p).name
-        if details.get("path") == p or name in (ev.message or ""):
-            return True
-    pid = step.get("pid")
-    if pid is not None and details.get("pid") == pid:
+    step_id = str(step.get("step_id") or "")
+    run_id = str(step.get("run_id") or "")
+    event_step = str(details.get("step_id") or details.get("drill_step_id") or "")
+    event_run = str(details.get("run_id") or details.get("drill_run_id") or "")
+    if step_id and event_step and step_id == event_step and (not run_id or event_run == run_id):
+        return True
+
+    expected_paths = {_canonical_path(p) for p in step.get("artifact_paths", []) if p}
+    observed_paths = {
+        _canonical_path(details.get(key))
+        for key in ("path", "artifact_path", "exe", "process_path", "image")
+        if details.get(key)
+    }
+    if expected_paths.intersection(observed_paths):
+        return True
+
+    expected_pids = {p for p in ([step.get("pid")] + list(step.get("pids") or []))
+                     if isinstance(p, int)}
+    tokens = [str(t) for t in step.get("correlation_tokens", []) if t]
+    command = str(details.get("cmdline") or details.get("command_line") or "")
+    if details.get("pid") in expected_pids and tokens and any(t in command for t in tokens):
         return True
     return False
+
+
+def _matches_remediation(step: dict, catch: Event, ev: Event) -> bool:
+    details = ev.details or {}
+    try:
+        if abs(float(details.get("trigger_ts")) - float(catch.ts)) < 0.000001:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return _matches(step, ev)
 
 
 def _is_remediation(ev: Event) -> bool:
@@ -96,23 +142,39 @@ def evaluate(history: dict, events: List[Event],
     own stages."""
     cats = stage_category or STAGE_CATEGORY
     chrono = sorted(events, key=lambda e: e.ts)
+    steps = list(history.get("steps", []))
+    used_catches: set[int] = set()
+    used_remediations: set[int] = set()
     verdicts: List[StepVerdict] = []
-    for step in history.get("steps", []):
+    for step_index, original_step in enumerate(steps):
+        step = dict(original_step)
+        step.setdefault("run_id", history.get("run_id", ""))
+        next_start = (float(steps[step_index + 1]["ts_start"])
+                      if step_index + 1 < len(steps)
+                      else float(step.get("ts_end") or step["ts_start"]) + 30.0)
         v = StepVerdict(stage=step["stage"], technique=step["technique"],
                         description=step["description"], ts_start=step["ts_start"],
                         ok=step.get("ok", True),
                         category=cats.get(step["stage"], "detection"))
-        for ev in chrono:
-            if ev.ts < step["ts_start"] - 2 or ev.module == "Console":
+        catch_index: Optional[int] = None
+        for event_index, ev in enumerate(chrono):
+            if ev.ts < step["ts_start"] - 2 or ev.ts > next_start or ev.module == "Console":
                 continue
             if _is_remediation(ev):
-                if v.catch is not None and v.remediation is None and ev.ts >= v.catch.ts and _matches(step, ev):
+                if (v.catch is not None and v.remediation is None
+                        and event_index not in used_remediations
+                        and ev.ts >= v.catch.ts
+                        and _matches_remediation(step, v.catch, ev)):
                     v.remediation = ev
                     v.remediation_latency = round(ev.ts - v.catch.ts, 3)
+                    used_remediations.add(event_index)
                 continue
-            if v.catch is None and _matches(step, ev):
+            if v.catch is None and event_index not in used_catches and _matches(step, ev):
                 v.catch = ev
+                catch_index = event_index
                 v.catch_latency = round(ev.ts - step["ts_start"], 3)
+        if catch_index is not None:
+            used_catches.add(catch_index)
         verdicts.append(v)
     return verdicts
 
@@ -128,6 +190,7 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
     n = len(verdicts)
     caught = sum(1 for v in verdicts if v.catch)
     remediated = sum(1 for v in verdicts if v.remediation)
+    findings_resolved = sum(1 for v in verdicts if v.finding_resolved)
     detection = [v for v in verdicts if v.category == "detection"]
     det_caught = sum(1 for v in detection if v.catch)
     lines.append(f" Steps run  : {n}     Raw catches: {caught}/{n}     Remediated: {remediated}/{n}")
@@ -175,6 +238,10 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
                              "default; it deliberately won't auto-delete a merely-suspicious "
                              "new file). See ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY to "
                              "test a more aggressive policy.")
+        elif v.finding_resolved:
+            lines.append("           finding closed for this drill run after operator review and "
+                         "marker cleanup. Detection coverage is still shown as MISSED; a later "
+                         "run that misses again will reopen the finding.")
         elif v.stage == "Exfiltration":
             lines.append("           not yet detected — Network Monitor polls every 4s, so this "
                          "is rarely a timing issue. More likely: it deliberately doesn't re-alert "
@@ -198,6 +265,9 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
                  f"({(det_caught / len(detection) * 100 if detection else 0):.0f}%)   "
                  "— Initial Access / Persistence / Exfiltration-style steps only")
     lines.append(f"   Remediation rate   : {remediated}/{n}  ({(remediated / n * 100 if n else 0):.0f}%)")
+    if findings_resolved:
+        lines.append(f"   Drill findings closed: {findings_resolved}  "
+                     "(run-scoped; future misses reopen)")
     resilience = [v for v in verdicts if v.category == "resilience"]
     if resilience:
         fps = sum(1 for v in resilience if v.catch)
@@ -218,17 +288,41 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
 
 def _report_dirs(data_dir: Path) -> List[Path]:
     """Same dual-location pattern core/status_report.py already uses: the
-    per-user data dir (%LOCALAPPDATA%\\Angerona, not always reachable from
-    outside the machine) AND <cwd>/diagnostics, which sits right next to the
-    app in the repo — so the report is easy to find and read directly off
-    disk (by a person, or an assistant working in this folder) without
-    needing to run anything through the GUI or console first."""
+    configured D: runtime-data directory AND <cwd>/diagnostics, which sits next
+    to the app — so the latest report is easy to find directly off disk."""
     dirs = [Path(data_dir)]
     try:
         dirs.append(Path.cwd() / "diagnostics")
     except Exception:
         pass
     return dirs
+
+
+def _prune_report_history(hist_dir: Path, basename: str) -> None:
+    """Bound timestamped AAR text/JSON pairs by run count and age."""
+    try:
+        groups: dict[str, list[Path]] = {}
+        for path in hist_dir.glob(f"{basename}_*.*"):
+            if path.suffix.lower() not in {".txt", ".json"}:
+                continue
+            groups.setdefault(path.stem, []).append(path)
+        ordered = sorted(
+            groups.values(),
+            key=lambda paths: max(p.stat().st_mtime for p in paths),
+            reverse=True,
+        )
+        cutoff = time.time() - (_HISTORY_MAX_AGE_DAYS * 86400)
+        for index, paths in enumerate(ordered):
+            newest = max(p.stat().st_mtime for p in paths)
+            if index < _HISTORY_RUN_LIMIT and newest >= cutoff:
+                continue
+            for path in paths:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+    except (OSError, ValueError):
+        pass
 
 
 def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], text: str,
@@ -241,6 +335,7 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
     n = len(verdicts)
     caught = sum(1 for v in verdicts if v.catch)
     remediated = sum(1 for v in verdicts if v.remediation)
+    findings_resolved = sum(1 for v in verdicts if v.finding_resolved)
     detection = [v for v in verdicts if v.category == "detection"]
     payload = {
         "run_id": history.get("run_id"),
@@ -248,6 +343,7 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
         "steps_run": n,
         "detected": caught,               # raw count, all categories — kept for backward compat
         "remediated": remediated,
+        "findings_resolved": findings_resolved,
         "detection_steps": len(detection),      # steps where a detector SHOULD fire
         "detection_caught": sum(1 for v in detection if v.catch),
         "verdicts": [
@@ -265,6 +361,7 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
                 "remediated_by": v.remediation.module if v.remediation else None,
                 "remediate_latency_s": v.remediation_latency,
                 "remediate_message": v.remediation.message if v.remediation else None,
+                "finding_resolved": v.finding_resolved,
             }
             for v in verdicts
         ],
@@ -286,6 +383,7 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
         (hist_dir / f"{basename}_{stamp}.txt").write_text(text, encoding="utf-8")
         (hist_dir / f"{basename}_{stamp}.json").write_text(
             json.dumps(payload, indent=2), encoding="utf-8")
+        _prune_report_history(hist_dir, basename)
     except Exception:
         pass
 
@@ -299,8 +397,8 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
 
     Call with ``settle_seconds`` > 0 right after a run completes to give
     fast-polling modules (e.g. File Integrity Monitor, 30s) one more cycle
-    before judging a step a miss. Note YARA only scans Downloads every 5
-    minutes by default, so a fresh report may legitimately show a file-drop
+    before judging a step a miss. Note YARA scans configured hot folders every
+    5 minutes by default, so a fresh report may legitimately show a file-drop
     step as "not yet detected" — re-running the report later will pick that
     up without needing another drill.
     """
@@ -326,6 +424,23 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
         recorder.close()
 
     verdicts = evaluate(history, events, stage_category)
+    if report_basename == "redteam_aar":
+        try:
+            from angerona.core.drill_resolution import (
+                already_resolved, resolution_snapshot,
+            )
+            run_id = str(history.get("run_id") or "")
+            resolutions = resolution_snapshot(data_dir)
+            for verdict in verdicts:
+                tech = str(verdict.technique or "").strip()
+                mitre = tech.split()[0] if tech[:1].upper() == "T" else (
+                    "RT-" + str(verdict.stage or "?"))
+                verdict.finding_resolved = (
+                    verdict.category == "detection" and verdict.catch is None
+                    and already_resolved(
+                        mitre, run_id, data_dir, resolutions))
+        except Exception:
+            pass
     text = render(history, verdicts, title)
     _write_report(data_dir, history, verdicts, text, report_basename)
     return text

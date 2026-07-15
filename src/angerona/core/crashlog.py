@@ -25,9 +25,8 @@ _FH_FILES: list = []
 
 
 def _data_log() -> Path:
-    base = os.environ.get("ANGERONA_DATA") or os.path.join(
-        os.environ.get("LOCALAPPDATA", str(Path.home())), "Angerona")
-    d = Path(base) / "logs"
+    from angerona.core.data_paths import data_dir
+    d = data_dir() / "logs"
     d.mkdir(parents=True, exist_ok=True)
     return d / "crash.log"
 

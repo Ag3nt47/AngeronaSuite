@@ -22,10 +22,8 @@ from angerona.core.eventbus import Event, EventBus, Severity
 
 def _get_snapshot_dir() -> Path:
     """Return (and create) the crash-snapshot directory for this installation."""
-    base = os.environ.get("ANGERONA_DATA") or os.path.join(
-        os.environ.get("LOCALAPPDATA", str(Path.home())), "Angerona"
-    )
-    snap = Path(base) / "diagnostics" / "crash_snapshots"
+    from angerona.core.data_paths import data_dir
+    snap = data_dir() / "diagnostics" / "crash_snapshots"
     snap.mkdir(parents=True, exist_ok=True)
     return snap
 
@@ -52,6 +50,12 @@ class BaseModule:
         self.health_note: str = ""    # why it's degraded, if it is
         self._initial_delay: float = 0.0   # first-poll stagger (set by the manager at boot)
         self._throttle: float = 1.0   # loop-cadence multiplier (Adaptive Resource Governor)
+        # Readiness barrier used by staged Eco Mode wake-up. A module's first
+        # cadence boundary proves it has actually run, rather than merely
+        # having a live thread and stale pre-Eco health.
+        self._first_cycle_complete = threading.Event()
+        self._cycle_count: int = 0
+        self._last_cycle_completed_at: float = 0.0
 
     # ── Wiring (called by ModuleManager) ────────────────────────────────────
     def bind(self, bus: EventBus) -> None:
@@ -89,6 +93,9 @@ class BaseModule:
             return
         self._initial_delay = max(0.0, float(initial_delay))
         self._stop.clear()
+        self._first_cycle_complete.clear()
+        self._cycle_count = 0
+        self._last_cycle_completed_at = 0.0
         self._thread = threading.Thread(target=self._wrapped_run, name=self.name, daemon=True)
         self._thread.start()
         self.status = "running"
@@ -111,7 +118,25 @@ class BaseModule:
         (lower CPU) automatically — in both Eco and normal mode — and relaxes it
         back to 1.0 when things are idle. Modules that use ``self.sleep()`` for
         their loop cadence get this for free."""
+        # Module loops conventionally sleep after completing a poll/baseline.
+        # Publishing that boundary here gives lifecycle orchestration one
+        # uniform first-cycle signal across all scanner implementations.
+        self.mark_cycle_complete()
         self._stop.wait(timeout=seconds * getattr(self, "_throttle", 1.0))
+
+    def mark_cycle_complete(self) -> None:
+        """Publish completion of one module work cycle."""
+        self._cycle_count += 1
+        self._last_cycle_completed_at = time.monotonic()
+        self._first_cycle_complete.set()
+
+    def wait_for_first_cycle(self, timeout: Optional[float] = None) -> bool:
+        """Wait until this start has completed its first work cycle."""
+        return self._first_cycle_complete.wait(timeout=timeout)
+
+    @property
+    def first_cycle_complete(self) -> bool:
+        return self._first_cycle_complete.is_set()
 
     def set_throttle(self, multiplier: float) -> None:
         """Set the loop-cadence multiplier (1.0 = normal, higher = slower/lighter).

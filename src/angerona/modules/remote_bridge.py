@@ -69,10 +69,8 @@ def _shared_key() -> Optional[bytes]:
     raw = os.environ.get(_KEY_ENV)
     if not raw:
         try:
-            base = os.environ.get("ANGERONA_DATA") or os.path.join(
-                os.environ.get("LOCALAPPDATA", str(Path.home())), "Angerona"
-            )
-            kp = Path(base) / "bridge.key"
+            from angerona.core.data_paths import data_dir
+            kp = data_dir() / "bridge.key"
             if kp.exists():
                 raw = kp.read_text(encoding="ascii").strip()
         except Exception:

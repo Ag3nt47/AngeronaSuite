@@ -202,6 +202,11 @@ def _soar_queue_path():
     return d / "soar_queue.json"
 
 
+_SOAR_QUEUE_CACHE_LOCK = threading.RLock()
+_SOAR_QUEUE_CACHE_KEY: tuple[str, int, int, int] | None = None
+_SOAR_QUEUE_CACHE_VALUE: tuple[dict, ...] = ()
+
+
 def _persist_soar_queue(event) -> None:
     """Append a Block→SOAR request to a persisted JSON-lines file (scrollback)."""
     try:
@@ -220,11 +225,24 @@ def _persist_soar_queue(event) -> None:
 
 
 def _read_soar_queue(limit: int = 500) -> list:
+    """Read the bounded queue, reusing the parse while the file is unchanged.
+
+    The dashboard calls this every two seconds. A queue normally changes only
+    when an operator presses Block or Clear, so reparsing the same 500 JSON
+    records on every refresh is pure UI overhead. The cache key includes path,
+    nanosecond mtime, byte size, and limit; callers still receive a fresh list.
+    """
+    global _SOAR_QUEUE_CACHE_KEY, _SOAR_QUEUE_CACHE_VALUE
     out = []
     try:
         p = _soar_queue_path()
         if not p.exists():
             return out
+        st = p.stat()
+        key = (str(p), st.st_mtime_ns, st.st_size, int(limit))
+        with _SOAR_QUEUE_CACHE_LOCK:
+            if key == _SOAR_QUEUE_CACHE_KEY:
+                return list(_SOAR_QUEUE_CACHE_VALUE)
         for line in p.read_text(encoding="utf-8").splitlines()[-limit:]:
             line = line.strip()
             if line:
@@ -232,9 +250,12 @@ def _read_soar_queue(limit: int = 500) -> list:
                     out.append(json.loads(line))
                 except Exception:
                     pass
+        with _SOAR_QUEUE_CACHE_LOCK:
+            _SOAR_QUEUE_CACHE_KEY = key
+            _SOAR_QUEUE_CACHE_VALUE = tuple(out)
     except Exception:
         pass
-    return out
+    return list(out)
 
 
 def _section(text: str) -> QLabel:
@@ -277,6 +298,7 @@ class StatCard(QFrame):
         lay.setContentsMargins(18, 14, 18, 14)
         self.value = QLabel("—")
         self.value.setObjectName("CardValue")
+        self._rendered: tuple[str, str] | None = None
         lay.addWidget(self.value)
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -290,6 +312,10 @@ class StatCard(QFrame):
         lay.addLayout(row)
 
     def set(self, text: str, color: str = "#ffffff") -> None:
+        rendered = (str(text), str(color))
+        if rendered == self._rendered:
+            return
+        self._rendered = rendered
         self.value.setText(text)
         self.value.setStyleSheet(f"color: {color};")
 
@@ -1976,14 +2002,20 @@ class AlertsPanel(QFrame):
             self._status.setText("📋 Alert copied to clipboard.")
 
     def _on_click(self, row: int, col: int) -> None:
-        # Col 4/5 handled by button widgets; cols 0-3 open detail dialog.
-        if col >= 4:
-            return
         item = self.table.item(row, 0)
-        if item is not None:
-            event = item.data(Qt.UserRole)
-            if event is not None:
-                _show_nonmodal(AlertDetailDialog(event, self.window(), panel=self))
+        if item is None:
+            return
+        event = item.data(Qt.UserRole)
+        if event is None:
+            return
+        if col == 4:
+            self._allow_event(event)
+        elif col == 5:
+            self._block_event(event)
+        elif col == 6:
+            self._analyze_event(event, None)
+        else:
+            _show_nonmodal(AlertDetailDialog(event, self.window(), panel=self))
 
     def _make_allow_btn(self, event) -> QPushButton:
         btn = QPushButton("Allow")
@@ -2028,11 +2060,12 @@ class AlertsPanel(QFrame):
         except Exception as exc:
             self._status.setText(f"Analyze unavailable: {exc}")
             return
-        try:
-            btn.setEnabled(False)
-            btn.setText("Analyzing…")
-        except RuntimeError:
-            pass   # button may have been rebuilt by a refresh — harmless
+        if btn is not None:
+            try:
+                btn.setEnabled(False)
+                btn.setText("Analyzing…")
+            except RuntimeError:
+                pass   # button may have been rebuilt by a refresh — harmless
         d = event.details or {}
         alert = {
             "pid":            d.get("pid"),
@@ -2052,6 +2085,8 @@ class AlertsPanel(QFrame):
 
     @staticmethod
     def _reset_analyze_btn(btn) -> None:
+        if btn is None:
+            return
         try:
             btn.setEnabled(True)
             btn.setText("Analyze")
@@ -2150,11 +2185,21 @@ class AlertsPanel(QFrame):
         self.table.setItem(pos, 2, _SeverityItem(e.severity))
         self.table.setItem(pos, 3, QTableWidgetItem(e.message))
         # Action buttons — must use setCellWidget, not setItem
-        self.table.setCellWidget(pos, 4, self._make_allow_btn(e))
-        self.table.setCellWidget(pos, 5, self._make_block_btn(e))
-        self.table.setCellWidget(pos, 6, self._make_analyze_btn(e))
+        # Lightweight clickable items replace three QWidget buttons per row.
+        # At 120 rows this avoids creating/reparenting 360 controls during an
+        # alert burst, the exact GUI-thread stall recorded in diagnostics.
+        for col, text, bg, fg in (
+                (4, "Allow", "#14532d", "#86efac"),
+                (5, "Block", "#7f1d1d", "#fca5a5"),
+                (6, "Analyze", "#1e3a5f", "#7dd3fc")):
+            action = QTableWidgetItem(text)
+            action.setTextAlignment(Qt.AlignCenter)
+            action.setBackground(QColor(bg))
+            action.setForeground(QColor(fg))
+            action.setToolTip(f"{text} this alert")
+            self.table.setItem(pos, col, action)
 
-    _MAX_ROWS = 120   # feed cap — keeps the table (and its cell widgets) bounded
+    _MAX_ROWS = 120   # feed cap keeps table-item refresh work bounded
 
     def _free_row_widgets(self, r: int) -> None:
         """Explicitly delete a row's Allow/Block/Analyze cell widgets.
@@ -2935,12 +2980,13 @@ class AARDialog(QDialog):
     _apply_done = Signal(str)
 
     def __init__(self, data_dir, parent=None, on_attempt_fix=None, on_apply=None,
-                 on_clean=None) -> None:
+                 on_clean=None, redteam=False) -> None:
         super().__init__(parent)
         self.data_dir = data_dir
         self._on_attempt_fix = on_attempt_fix
         self._on_apply = on_apply
         self._on_clean = on_clean
+        self._redteam = bool(redteam)
         self._fix_done.connect(self._show_fix_result)
         self._apply_done.connect(lambda t: self.body.appendPlainText("\n" + t))
         self.setWindowTitle("Shark Attack — After-Action Report")
@@ -2965,10 +3011,14 @@ class AARDialog(QDialog):
         refresh.clicked.connect(self.refresh)
         row.addWidget(refresh)
         row.addStretch(1)
-        self._fix_btn = QPushButton("\U0001F6E0  Attempt Fix")
+        self._fix_btn = QPushButton("\U0001F6E0  " +
+                                    ("Resolve Findings" if self._redteam else "Attempt Fix"))
         self._fix_btn.setObjectName("Primary")
-        self._fix_btn.setToolTip("Ask the local AI to generate a remediation for each open "
-                                 "weakness, then optionally apply it (with your confirmation).")
+        self._fix_btn.setToolTip(
+            "Close this run's simulated findings and clean its inert markers. A future miss "
+            "will reopen the finding." if self._redteam else
+            "Ask the local AI to generate a remediation for each open weakness, then "
+            "optionally apply it (with your confirmation).")
         self._fix_btn.clicked.connect(self._attempt_fix)
         row.addWidget(self._fix_btn)
         row.addStretch(1)
@@ -3003,8 +3053,12 @@ class AARDialog(QDialog):
             self.body.appendPlainText("\n[Attempt Fix] Posture Hardening module not available.")
             return
         self._fix_btn.setEnabled(False)
-        self.body.appendPlainText("\n[Attempt Fix] Asking the local AI for a remediation "
-                                  "(temperature 0) — this may take a few seconds…")
+        if self._redteam:
+            self.body.appendPlainText("\n[Resolve Findings] Closing this run's simulated "
+                                      "findings and cleaning inert markers…")
+        else:
+            self.body.appendPlainText("\n[Attempt Fix] Asking the local AI for a remediation "
+                                      "(temperature 0) — this may take a few seconds…")
         import threading
         threading.Thread(target=lambda: self._fix_done.emit(self._safe(self._on_attempt_fix)),
                          daemon=True).start()
@@ -3034,7 +3088,14 @@ class AARDialog(QDialog):
         from angerona.shark.aar_report import generate_aar
         self.body.setPlainText("Re-evaluating against the flight-recorder ledger…")
         try:
-            text = generate_aar(self.data_dir, settle_seconds=0)
+            if self._redteam:
+                from angerona.shark.red_team import REDTEAM_STAGE_CATEGORY
+                text = generate_aar(
+                    self.data_dir, settle_seconds=0, history_name="redteam_history.json",
+                    stage_category=REDTEAM_STAGE_CATEGORY, title="RED TEAM ATTACK",
+                    report_basename="redteam_aar")
+            else:
+                text = generate_aar(self.data_dir, settle_seconds=0)
         except Exception as exc:
             text = f"Could not generate report: {exc}"
         self.body.setPlainText(text)
@@ -3060,7 +3121,7 @@ class SettingsDialog(QDialog):
         self._apply_theme    = apply_theme_fn
 
         self.setWindowTitle("Angerona — Settings")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(720)
         self.setModal(True)
 
         root = QVBoxLayout(self)
@@ -3072,6 +3133,7 @@ class SettingsDialog(QDialog):
 
         tabs.addTab(self._tab_general(), "General")
         tabs.addTab(self._tab_system(),  "System")
+        tabs.addTab(self._tab_trusted_processes(), "Trusted Processes")
         # Mobile Integration is consolidated into the Advanced Management Console so
         # there is only ONE place to configure it. Show a short redirect here.
         _mob = QWidget(); _mv = QVBoxLayout(_mob)
@@ -3259,6 +3321,148 @@ class SettingsDialog(QDialog):
 
         lay.addStretch()
         return w
+
+    def _tab_trusted_processes(self) -> QWidget:
+        """Operator-supervised process learning and exact allowlisting."""
+        from angerona.core import process_allowlist
+
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setSpacing(8)
+        lay.addWidget(self._section("Trusted process policy"))
+        note = QLabel(
+            "Trusted executables are excluded from process-attributed threat posture and "
+            "automatic response. Angerona discovers candidates, but never silently trusts "
+            "them: select only software you recognize. Exact executable paths are safest.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#f59e0b; font-size:11px;")
+        lay.addWidget(note)
+
+        self._trusted_process_list = QListWidget()
+        self._trusted_process_list.setMinimumHeight(120)
+        lay.addWidget(self._trusted_process_list)
+
+        add_row = QHBoxLayout()
+        self._trusted_process_name = QLineEdit()
+        self._trusted_process_name.setPlaceholderText("Exact process name, e.g. ProtonVPN.Client.exe")
+        add_name = QPushButton("Trust name")
+        browse = QPushButton("Browse executable…")
+        remove = QPushButton("Remove selected")
+        add_name.clicked.connect(self._trust_process_name)
+        browse.clicked.connect(self._browse_trusted_process)
+        remove.clicked.connect(self._remove_trusted_process)
+        add_row.addWidget(self._trusted_process_name, 1)
+        add_row.addWidget(add_name)
+        add_row.addWidget(browse)
+        add_row.addWidget(remove)
+        lay.addLayout(add_row)
+
+        lay.addWidget(self._section("Supervised learning — processes running now"))
+        learn_note = QLabel(
+            "Scan the current system, select a recognized executable, then trust its exact "
+            "path. Items are suggestions only; observing a process never makes it safe.")
+        learn_note.setWordWrap(True)
+        learn_note.setStyleSheet("color:#94a3b8; font-size:11px;")
+        lay.addWidget(learn_note)
+        self._running_process_list = QListWidget()
+        self._running_process_list.setMinimumHeight(150)
+        lay.addWidget(self._running_process_list)
+        learn_row = QHBoxLayout()
+        scan = QPushButton("Scan running processes")
+        trust_selected = QPushButton("Trust selected exact path")
+        scan.clicked.connect(self._scan_running_processes)
+        trust_selected.clicked.connect(self._trust_selected_process)
+        learn_row.addWidget(scan)
+        learn_row.addWidget(trust_selected)
+        learn_row.addStretch(1)
+        self._trusted_process_status = QLabel("")
+        self._trusted_process_status.setStyleSheet("color:#94a3b8; font-size:11px;")
+        learn_row.addWidget(self._trusted_process_status)
+        lay.addLayout(learn_row)
+
+        self._refresh_trusted_processes()
+        return w
+
+    def _refresh_trusted_processes(self) -> None:
+        from angerona.core import process_allowlist
+        self._trusted_process_list.clear()
+        for row in process_allowlist.entries(self._cfg.data_dir):
+            label = row.get("path") or row.get("name") or "(unnamed)"
+            item = QListWidgetItem(label)
+            item.setToolTip("Exact path" if row.get("path") else
+                            "Exact basename — applies wherever this executable name runs")
+            item.setData(Qt.UserRole, row.get("id"))
+            self._trusted_process_list.addItem(item)
+
+    def _trust_process_name(self) -> None:
+        from angerona.core import process_allowlist
+        name = self._trusted_process_name.text().strip()
+        try:
+            process_allowlist.add(name=name, data_dir=self._cfg.data_dir)
+        except Exception as exc:
+            QMessageBox.warning(self, "Trust process", str(exc))
+            return
+        self._trusted_process_name.clear()
+        self._refresh_trusted_processes()
+
+    def _browse_trusted_process(self) -> None:
+        from angerona.core import process_allowlist
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose a trusted executable", "", "Executables (*.exe);;All files (*.*)")
+        if not path:
+            return
+        try:
+            process_allowlist.add(path=path, data_dir=self._cfg.data_dir)
+        except Exception as exc:
+            QMessageBox.warning(self, "Trust process", str(exc))
+            return
+        self._refresh_trusted_processes()
+
+    def _remove_trusted_process(self) -> None:
+        from angerona.core import process_allowlist
+        item = self._trusted_process_list.currentItem()
+        if item is None:
+            return
+        process_allowlist.remove(str(item.data(Qt.UserRole) or ""), self._cfg.data_dir)
+        self._refresh_trusted_processes()
+
+    def _scan_running_processes(self) -> None:
+        from angerona.core import process_allowlist
+        self._running_process_list.clear()
+        rows = process_allowlist.running_processes()
+        for row in rows:
+            if process_allowlist.is_allowed(row.get("name", ""), row.get("path", ""),
+                                              self._cfg.data_dir):
+                continue
+            label = f"{row.get('name', '?')}  —  {row.get('path') or 'path unavailable'}"
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, row)
+            self._running_process_list.addItem(item)
+        self._trusted_process_status.setText(
+            f"{self._running_process_list.count()} candidate(s)")
+
+    def _trust_selected_process(self) -> None:
+        from angerona.core import process_allowlist
+        item = self._running_process_list.currentItem()
+        if item is None:
+            return
+        row = item.data(Qt.UserRole) or {}
+        if not row.get("path"):
+            if QMessageBox.question(
+                    self, "Trust by name",
+                    f"The exact path for {row.get('name', 'this process')} is unavailable. "
+                    "Trust its basename everywhere instead?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                return
+        try:
+            process_allowlist.add(row.get("name", ""), row.get("path", ""),
+                                  self._cfg.data_dir)
+        except Exception as exc:
+            QMessageBox.warning(self, "Trust process", str(exc))
+            return
+        self._refresh_trusted_processes()
+        self._scan_running_processes()
 
     def _tab_mobile(self) -> QWidget:
         """Mobile Response Bridge (Signal) config."""

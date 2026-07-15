@@ -59,16 +59,13 @@ from angerona.core.module_base import BaseModule, Severity
 def _resolve_db_path() -> str:
     """Locate flight-recorder.db without hard-coding a drive.
 
-    Honours EDR_DB_PATH first (matches storage.py), then ANGERONA_DATA, then the
-    per-user LOCALAPPDATA\\Angerona convention used elsewhere in the suite.
+    Honours EDR_DB_PATH first, then the canonical D:-resident data root.
     """
     explicit = os.getenv("EDR_DB_PATH")
     if explicit:
         return explicit
-    base = os.environ.get("ANGERONA_DATA") or os.path.join(
-        os.environ.get("LOCALAPPDATA", str(Path.home())), "Angerona"
-    )
-    return os.path.join(base, "flight-recorder.db")
+    from angerona.core.data_paths import data_dir
+    return str(data_dir() / "flight-recorder.db")
 
 
 # ── Learning window default ───────────────────────────────────────────────────

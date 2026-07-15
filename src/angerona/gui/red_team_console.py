@@ -32,6 +32,8 @@ from PySide6.QtWidgets import (
     QPushButton, QSlider, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
+from angerona.core.data_paths import data_dir
+
 # Canonical kill-chain stages → (match-substring in narration, short chip label)
 _STAGES = [
     ("Initial Access", "Initial Access"), ("Discovery", "Discovery"),
@@ -143,15 +145,17 @@ class RedTeamConsole(QDialog):
         prow = QHBoxLayout()
         self.loc_preset = QComboBox()
         home = Path(os.environ.get("USERPROFILE", str(Path.home())))
+        sandbox = Path(default_target) if default_target else data_dir() / "drill-sandbox"
         self._presets = {
-            "Documents (default)": str(home / "Documents"),
+            "Angerona sandbox (D: default)": str(sandbox),
+            "Documents": str(home / "Documents"),
             "Desktop": str(home / "Desktop"),
             "Downloads": str(home / "Downloads"),
-            "Temp": os.environ.get("TEMP", str(home / "AppData/Local/Temp")),
+            "Angerona runtime temp": str(data_dir() / "tmp"),
         }
         self.loc_preset.addItems(list(self._presets.keys()) + ["Custom…"])
         self.loc_preset.currentTextChanged.connect(self._on_preset)
-        self.loc_edit = QLineEdit(default_target or self._presets["Documents (default)"])
+        self.loc_edit = QLineEdit(str(sandbox))
         browse = QPushButton("Browse…"); browse.clicked.connect(self._browse)
         prow.addWidget(self.loc_preset); prow.addWidget(self.loc_edit, 1); prow.addWidget(browse)
         ll.addLayout(prow)
@@ -228,7 +232,7 @@ class RedTeamConsole(QDialog):
         try:
             return Path(self._parent.config.data_dir) / "aar_history"
         except Exception:
-            return Path.cwd() / "aar_history"
+            return data_dir() / "aar_history"
 
     def _load_history(self) -> None:
         self._hist_list.clear()

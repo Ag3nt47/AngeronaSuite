@@ -8,6 +8,15 @@ REM  creating "%ANGERONA_WD_DATADIR%\watchdog.stop", or Ctrl-Break in this windo
 REM ============================================================================
 cd /d "%~dp0"
 
+REM Keep agent data, watchdog state, diagnostics, and temp files on D:.
+set "ANGERONA_DATA=%~dp0runtime-data"
+set "ANGERONA_DIAG_DIR=%~dp0diagnostics"
+set "ANGERONA_STORAGE_AUTOMIGRATE=1"
+set "TEMP=%~dp0runtime-data\tmp"
+set "TMP=%TEMP%"
+if not exist "%ANGERONA_DATA%" mkdir "%ANGERONA_DATA%"
+if not exist "%TEMP%" mkdir "%TEMP%"
+
 if not exist "angerona_watchdog.exe" (
     echo [!] angerona_watchdog.exe not found. Build it first: frz\build-watchdog.bat
     pause
@@ -20,7 +29,7 @@ if not exist "venv\Scripts\pythonw.exe" (
 )
 
 REM Heartbeats + watchdog log live here (the agent's frz_heartbeat.mmap dir).
-set "ANGERONA_WD_DATADIR=%LOCALAPPDATA%\Angerona"
+set "ANGERONA_WD_DATADIR=%ANGERONA_DATA%"
 if not exist "%ANGERONA_WD_DATADIR%" mkdir "%ANGERONA_WD_DATADIR%"
 
 REM Optionally pin the expected agent hash (recommended once you have a signed

@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 
 from angerona.core.win import run_hidden, popen_hidden
@@ -90,7 +91,8 @@ CREATE TABLE IF NOT EXISTS system_weaknesses (
     severity TEXT,
     last_tested_epoch INTEGER,
     status TEXT DEFAULT 'VULNERABLE',      -- 'VULNERABLE' or 'PATCHED'
-    remediation_script_path TEXT
+    remediation_script_path TEXT,
+    source TEXT DEFAULT 'host'
 );
 -- Judgment Gate: SHA-256 of every staged remediation script, stamped the moment
 -- it is written. execute_remediation() re-hashes the file on disk and refuses to
@@ -110,7 +112,8 @@ def _default_data_dir() -> Path:
             return Config.load().data_dir
         except Exception:
             pass
-    return Path(os.getenv("ANGERONA_DATA", Path.home() / ".angerona"))
+    from angerona.core.data_paths import data_dir
+    return data_dir()
 
 
 def _ollama(system: str, user: str, timeout: int = 60) -> str | None:
@@ -155,8 +158,11 @@ class PostureHardening(BaseModule):
 
     # ── 1. DB SCHEMA & STATE ─────────────────────────────────────────────────
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as c:
+        with closing(sqlite3.connect(self.db_path)) as c, c:
             c.executescript(_SCHEMA)
+            cols = {row[1] for row in c.execute("PRAGMA table_info(system_weaknesses)")}
+            if "source" not in cols:
+                c.execute("ALTER TABLE system_weaknesses ADD COLUMN source TEXT DEFAULT 'host'")
 
     def _locate_aar(self) -> Path:
         for cand in (self.data_dir / "shared_logs" / "after_action_report.json",
@@ -165,28 +171,37 @@ class PostureHardening(BaseModule):
                 return cand
         return self.data_dir / "shared_logs" / "after_action_report.json"
 
-    def record_weakness(self, mitre_id, name, severity, remediation_path=None) -> None:
-        with sqlite3.connect(self.db_path) as c:
+    def record_weakness(self, mitre_id, name, severity, remediation_path=None,
+                        source="host") -> None:
+        with closing(sqlite3.connect(self.db_path)) as c, c:
             c.execute(
                 "INSERT INTO system_weaknesses(mitre_technique_id,technique_name,severity,"
-                "last_tested_epoch,status,remediation_script_path) VALUES(?,?,?,?,?,?) "
+                "last_tested_epoch,status,remediation_script_path,source) VALUES(?,?,?,?,?,?,?) "
                 "ON CONFLICT(mitre_technique_id) DO UPDATE SET technique_name=excluded.technique_name,"
                 "severity=excluded.severity,last_tested_epoch=excluded.last_tested_epoch,"
-                "status='VULNERABLE',remediation_script_path=excluded.remediation_script_path",
-                (mitre_id, name, severity, int(time.time()), "VULNERABLE", remediation_path))
+                "status='VULNERABLE',remediation_script_path=excluded.remediation_script_path,"
+                "source=excluded.source",
+                (mitre_id, name, severity, int(time.time()), "VULNERABLE",
+                 remediation_path, source))
 
-    def weaknesses(self, status=None) -> list[dict]:
-        q = "SELECT mitre_technique_id,technique_name,severity,last_tested_epoch,status,remediation_script_path FROM system_weaknesses"
-        args = ()
+    def weaknesses(self, status=None, source=None) -> list[dict]:
+        q = ("SELECT mitre_technique_id,technique_name,severity,last_tested_epoch,"
+             "status,remediation_script_path,source FROM system_weaknesses")
+        clauses, args = [], []
         if status:
-            q += " WHERE status=?"; args = (status,)
-        with sqlite3.connect(self.db_path) as c:
-            rows = c.execute(q, args).fetchall()
-        keys = ["mitre_id", "name", "severity", "last_tested_epoch", "status", "remediation_script_path"]
+            clauses.append("status=?"); args.append(status)
+        if source:
+            clauses.append("source=?"); args.append(source)
+        if clauses:
+            q += " WHERE " + " AND ".join(clauses)
+        with closing(sqlite3.connect(self.db_path)) as c, c:
+            rows = c.execute(q, tuple(args)).fetchall()
+        keys = ["mitre_id", "name", "severity", "last_tested_epoch", "status",
+                "remediation_script_path", "source"]
         return [dict(zip(keys, r)) for r in rows]
 
     def mark_patched(self, mitre_id) -> None:
-        with sqlite3.connect(self.db_path) as c:
+        with closing(sqlite3.connect(self.db_path)) as c, c:
             c.execute("UPDATE system_weaknesses SET status='PATCHED' WHERE mitre_technique_id=?", (mitre_id,))
         self._recompute_health()
 
@@ -208,7 +223,7 @@ class PostureHardening(BaseModule):
         except Exception as exc:
             self.last_error = f"stamp {mitre_id}: {exc}"
             return ""
-        with sqlite3.connect(self.db_path) as c:
+        with closing(sqlite3.connect(self.db_path)) as c, c:
             c.execute(
                 "INSERT INTO remediation_hashes(mitre_technique_id,sha256,script_path,stamped_epoch)"
                 " VALUES(?,?,?,?) ON CONFLICT(mitre_technique_id) DO UPDATE SET"
@@ -219,7 +234,7 @@ class PostureHardening(BaseModule):
 
     def _stored_hash(self, mitre_id: str):
         """The SHA-256 stamped for a technique's staged script, or None."""
-        with sqlite3.connect(self.db_path) as c:
+        with closing(sqlite3.connect(self.db_path)) as c, c:
             row = c.execute("SELECT sha256 FROM remediation_hashes WHERE mitre_technique_id=?",
                             (mitre_id,)).fetchone()
         return row[0] if row else None
@@ -227,7 +242,7 @@ class PostureHardening(BaseModule):
     def _verify_hash(self, mitre_id: str, path: str) -> tuple[bool, str]:
         """Re-hash the on-disk script and compare to the stamped digest. Returns
         (ok, detail). Missing stamp or any mismatch is treated as tampering."""
-        with sqlite3.connect(self.db_path) as c:
+        with closing(sqlite3.connect(self.db_path)) as c, c:
             row = c.execute(
                 "SELECT sha256 FROM remediation_hashes WHERE mitre_technique_id=?",
                 (mitre_id,)).fetchone()
@@ -295,7 +310,7 @@ class PostureHardening(BaseModule):
             sev = r.get("severity", "High")
             self._ctx[mitre] = r                       # remember for on-demand fix
             rpath = self._stage_placeholder(mitre, name)   # instant — NO Ollama at drill time
-            self.record_weakness(mitre, name, sev, rpath)
+            self.record_weakness(mitre, name, sev, rpath, source="shark")
             new.append({"mitre": mitre, "name": name})
             self.emit(f"NEW WEAKNESS: {name} ({mitre}) exploited — staged remediation for review",
                       Severity.HIGH, mitre=mitre, remediation=rpath)
@@ -323,22 +338,28 @@ class PostureHardening(BaseModule):
         except Exception:
             return []
         new = []
+        run_id = str(report.get("run_id") or "")
+        from angerona.core import drill_resolution
+        resolutions = drill_resolution.resolution_snapshot(self.data_dir)
         for v in report.get("verdicts", []):
             if v.get("category") != "detection" or v.get("caught"):
                 continue                       # caught, or not a detection test → not a weakness
             tech = str(v.get("technique", "")).strip()
             mitre = tech.split()[0] if tech[:1].upper() == "T" else ("RT-" + str(v.get("stage", "?")))
+            if drill_resolution.already_resolved(
+                    mitre, run_id, self.data_dir, resolutions):
+                continue
             key = ("redteam", mitre, v.get("ts_start"))
             if key in self._seen:
                 continue
             self._seen.add(key)
             name = v.get("stage") or tech or "Red Team finding"
             self._ctx[mitre] = {"objective": v.get("description", ""), "target": "Red Team"}
-            rpath = self._stage_placeholder(mitre, name)   # instant — no Ollama at ingest
-            self.record_weakness(mitre, name, "High", rpath)
+            self.record_weakness(mitre, name, "High", None, source="redteam")
             new.append({"mitre": mitre, "name": name})
             self.emit(f"NEW WEAKNESS (Red Team): {name} ({mitre}) slipped past detection — "
-                      f"staged remediation for review", Severity.HIGH, mitre=mitre, remediation=rpath)
+                      f"deterministic finding resolution available", Severity.HIGH,
+                      mitre=mitre, run_id=run_id, remediation="drill-resolution")
         if new:
             self._recompute_health()
             # Opt-in active patching: after a drill records weaknesses, apply the
@@ -351,6 +372,45 @@ class PostureHardening(BaseModule):
             except Exception:
                 pass
         return new
+
+    def resolve_redteam_report(self, path=None) -> dict:
+        """Close one simulated run's missed findings without generating host
+        PowerShell. Historical alerts close at the resolution timestamp; a
+        later run that misses the same technique becomes active again."""
+        report_path = Path(path or self.redteam_aar_path)
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return {"ok": False, "error": f"could not read drill report: {exc}"}
+        findings = []
+        for verdict in report.get("verdicts", []):
+            if verdict.get("category") != "detection" or verdict.get("caught"):
+                continue
+            tech = str(verdict.get("technique", "")).strip()
+            mitre = tech.split()[0] if tech[:1].upper() == "T" else (
+                "RT-" + str(verdict.get("stage", "?")))
+            findings.append({"mitre": mitre,
+                             "name": verdict.get("stage") or tech or "Red Team finding"})
+        if not findings:
+            return {"ok": True, "resolved": 0, "findings": [],
+                    "message": "No missed detection findings need resolution."}
+
+        from angerona.core import drill_resolution
+        run_id = str(report.get("run_id") or "")
+        resolved = drill_resolution.resolve(findings, run_id, self.data_dir)
+        ids = [row["mitre"] for row in resolved]
+        with closing(sqlite3.connect(self.db_path)) as c, c:
+            c.executemany(
+                "UPDATE system_weaknesses SET status='PATCHED' WHERE mitre_technique_id=?",
+                [(mitre,) for mitre in ids])
+        self._recompute_health()
+        self._log_attempt("resolve_drill_findings", "-", run_id=run_id,
+                          report=str(report_path), techniques=ids)
+        self.emit(f"Resolved {len(ids)} simulated drill finding(s) for run "
+                  f"{run_id or 'unknown'}; a future missed run will reopen them.",
+                  Severity.INFO, run_id=run_id, resolved_techniques=ids)
+        return {"ok": True, "resolved": len(ids), "findings": resolved,
+                "run_id": run_id}
 
     def _recompute_health(self) -> None:
         vuln = len(self.weaknesses("VULNERABLE"))
@@ -409,6 +469,9 @@ class PostureHardening(BaseModule):
         w = next((x for x in self.weaknesses() if x["mitre_id"] == mitre_id), None)
         if not w:
             return {"ok": False, "error": "unknown weakness"}
+        if w.get("source") == "redteam":
+            return {"ok": False, "error": ("simulated detection gaps use deterministic report "
+                                             "resolution, not host PowerShell")}
         r = self._ctx.get(mitre_id, {"objective": "", "target": ""})
         path = self._generate_remediation(mitre_id, w["name"], w["severity"], r)
         script = Path(path).read_text(encoding="utf-8")
@@ -427,7 +490,8 @@ class PostureHardening(BaseModule):
         also require ANGERONA_AUTO_REMEDIATE=1. Applied+verified weaknesses are
         marked PATCHED; a failed verify auto-rolls-back. See remediation_actions.py."""
         from angerona.modules import remediation_actions as ra
-        weaknesses = self.weaknesses(status="VULNERABLE")
+        weaknesses = [w for w in self.weaknesses(status="VULNERABLE")
+                      if w.get("source") != "redteam"]
         if not apply:
             plan = ra.plan_remediation(weaknesses)
             self._log_attempt("vetted_plan", "-", plan=plan)
@@ -454,6 +518,9 @@ class PostureHardening(BaseModule):
         match = next((w for w in rows if w["mitre_id"] == mitre_id), None)
         if not match or not match["remediation_script_path"]:
             return {"ok": False, "error": "no staged remediation"}
+        if match.get("source") == "redteam":
+            return {"ok": False, "error": ("simulated detection gaps cannot be repaired by "
+                                             "executing host PowerShell")}
         script_path = match["remediation_script_path"]
         if not authorized:
             return {"ok": False, "review_required": True,

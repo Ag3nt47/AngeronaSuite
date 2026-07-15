@@ -49,10 +49,8 @@ from angerona.core.module_base import BaseModule, Severity
 
 # ── Paths (mirror module_base._get_snapshot_dir) ──────────────────────────────
 def _data_base() -> Path:
-    base = os.environ.get("ANGERONA_DATA") or os.path.join(
-        os.environ.get("LOCALAPPDATA", str(Path.home())), "Angerona"
-    )
-    return Path(base)
+    from angerona.core.data_paths import data_dir
+    return data_dir()
 
 
 def _snapshot_dir() -> Path:

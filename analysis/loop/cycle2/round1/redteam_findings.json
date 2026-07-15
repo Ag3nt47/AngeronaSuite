@@ -1,0 +1,75 @@
+[
+  {
+    "id": "C2-R1-01",
+    "title": "Name-only process trust can suppress scanning, threat posture, and SOAR for a renamed executable",
+    "severity": "MEDIUM",
+    "status": "OPEN",
+    "components": [
+      "src/angerona/core/process_allowlist.py:105-126,139-151",
+      "src/angerona/gui/pages.py:3320-3327,3360-3380,3418-3430",
+      "src/angerona/modules/mem_inject_scanner.py:193-213",
+      "src/angerona/core/threat.py:48-55",
+      "src/angerona/modules/soar.py:96-105",
+      "src/angerona/modules/soar_engine.py:87-99"
+    ],
+    "impact": "A process renamed to an operator-trusted basename can bypass memory scanning and have process-tagged HIGH/CRITICAL events excluded from posture and automated response.",
+    "exploitability": "Requires a pre-existing operator-approved name-only entry; exact-path Proton entries are not affected.",
+    "remediation": "Require exact canonical path plus publisher/hash for suppression; keep name-only entries as non-enforcing display hints and migrate existing basename rows to review-required state."
+  },
+  {
+    "id": "C2-R1-02",
+    "title": "AAR fuzzy PID/path matching can credit unrelated detections and remediation to drill steps",
+    "severity": "MEDIUM",
+    "status": "OPEN",
+    "components": [
+      "src/angerona/shark/aar_report.py:89-100,107-134,371-400",
+      "src/angerona/shark/shark_attack.py:661-745",
+      "src/angerona/shark/red_team.py"
+    ],
+    "impact": "Unrelated telemetry or one SOAR event can inflate detection/remediation results and hide real drill gaps.",
+    "exploitability": "Can occur during ordinary runs through PID reuse/shared PID, repeated basenames, or later-step events; an in-process producer could also manufacture a false pass.",
+    "remediation": "Propagate opaque run_id and step_id fields through markers, detector events, and SOAR actions; bound each step window and treat legacy PID/path matches as low-confidence only."
+  },
+  {
+    "id": "C2-R1-03",
+    "title": "Newest-row-only retention lets telemetry volume evict critical audit evidence",
+    "severity": "MEDIUM",
+    "status": "OPEN",
+    "components": [
+      "src/angerona/core/storage.py:61-65,155-181,211-226",
+      "src/angerona/shark/aar_report.py:371-379"
+    ],
+    "impact": "High-volume INFO/LOW traffic can remove earlier critical evidence and SOAR actions, damaging incident forensics and delayed AAR accuracy.",
+    "exploitability": "Scanner/drill storms are sufficient; an adversary able to induce telemetry volume can accelerate eviction.",
+    "remediation": "Use severity- and incident-aware tiered retention with a hard byte ceiling; prune INFO first and retain bounded signed critical/AAR evidence with visible retirement records."
+  },
+  {
+    "id": "C2-R1-04",
+    "title": "Emergency shutdown terminates unrelated Python jobs and every Ollama model runner",
+    "severity": "MEDIUM",
+    "status": "OPEN",
+    "components": [
+      "kill-all-angerona.bat:17-29",
+      "src/angerona/core/ollama_lifecycle.py:21-53",
+      "src/angerona/app.py:231-260"
+    ],
+    "impact": "The elevated recovery script can kill unrelated Python applications and unload models used by other local applications, risking data loss.",
+    "exploitability": "Requires an operator to invoke the emergency recovery script.",
+    "remediation": "Track and validate Angerona-owned PIDs; command-line filter only as fallback; require a separate explicit force-all action before killing every Ollama runner."
+  },
+  {
+    "id": "C2-R1-05",
+    "title": "ARIA's off switch is stored but not enforced by the assistant action gate",
+    "severity": "LOW",
+    "status": "OPEN_DORMANT",
+    "components": [
+      "src/angerona/core/assistant.py:63-84,107-158,270-282",
+      "src/angerona/core/aria_dispatch.py:89-114",
+      "src/angerona/gui/aria_hud.py:159-232"
+    ],
+    "impact": "After future tool registration, a disabled ARIA instance could still invoke reads and stage/confirm writes, violating the documented opt-out boundary.",
+    "exploitability": "Dormant today because the combined app does not yet wire ARIA tools; becomes active immediately when integration registers callbacks.",
+    "remediation": "Fail closed in invoke/confirm/proactive/voice paths while disabled, clear pending tokens on disable, bind confirmation to immutable action identity, and add zero-callback disabled-state tests."
+  }
+]
+

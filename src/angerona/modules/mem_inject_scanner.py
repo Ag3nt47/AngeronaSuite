@@ -41,6 +41,10 @@ import time
 from typing import Optional
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.process_allowlist import (
+    is_allowed as _process_is_allowed,
+    policy_snapshot as _process_policy_snapshot,
+)
 
 # ── Windows constants ─────────────────────────────────────────────────────────
 PAGE_EXECUTE_READWRITE  = 0x40
@@ -191,6 +195,7 @@ class MemInjectScannerModule(BaseModule):
         # Use native C-API to batch-pull all PIDs and Names at once. 
         # This completely eliminates heavy psutil.Process() object creation during idle scanning.
         processes = self._get_active_processes()
+        process_policy = _process_policy_snapshot()
 
         for pid, proc_name in processes.items():
             if self.stopping:
@@ -200,8 +205,11 @@ class MemInjectScannerModule(BaseModule):
             # Early JIT exclusion before even opening a process handle
             if proc_name and proc_name.lower() in _JIT_SAFE_NAMES:
                 continue
-                
-            self._scan_pid(pid, proc_name)
+            # Do not skip a scan from a basename alone: a renamed executable
+            # could otherwise inherit another program's trust. Exact-path
+            # policy is applied after suspicious memory is found and the
+            # process has been enriched with its executable path.
+            self._scan_pid(pid, proc_name, process_policy)
 
     def _get_active_processes(self) -> dict[int, str]:
         """Returns a map of {pid: process_name} using native Windows API."""
@@ -245,7 +253,7 @@ class MemInjectScannerModule(BaseModule):
             pass
         return proc_map
 
-    def _scan_pid(self, pid: int, proc_name: str) -> None:
+    def _scan_pid(self, pid: int, proc_name: str, process_policy=None) -> None:
         """Walk the VAS of a single PID, looking for suspicious RWX regions."""
         handle = None
         try:
@@ -276,7 +284,10 @@ class MemInjectScannerModule(BaseModule):
                     and mbi.Protect in _RWX_PROTECTIONS
                     and region_size >= _MIN_REGION_BYTES
                 ):
-                    self._alert(pid, proc_name, region_base, region_size, mbi.Protect)
+                    self._alert(
+                        pid, proc_name, region_base, region_size, mbi.Protect,
+                        process_policy,
+                    )
 
                 # Advance — if RegionSize is 0 we'd loop forever
                 if region_size == 0:
@@ -377,7 +388,7 @@ class MemInjectScannerModule(BaseModule):
         return f"{hint} | Techniques: {', '.join(techniques)}"
 
     # ── Alert ─────────────────────────────────────────────────────────────────
-    def _alert(self, pid, proc_name, base, size, protect):
+    def _alert(self, pid, proc_name, base, size, protect, process_policy=None):
         key = (pid, base)
         now = time.time()
         if now - self._seen.get(key, 0.0) < _DEDUP_TTL:
@@ -392,6 +403,9 @@ class MemInjectScannerModule(BaseModule):
 
         # Deep enrichment triggered only upon detection
         ctx = self._enrich_process(pid)
+        if _process_is_allowed(
+                proc_name, ctx.get("exe", ""), policy=process_policy):
+            return
         prediction = self._predict_technique(proc_name, size, protect, ctx)
 
         parts = [

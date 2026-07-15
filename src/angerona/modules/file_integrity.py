@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+from angerona.core.data_paths import data_dir
 from angerona.core.module_base import BaseModule, Severity
 # Ring 1 interlock (direct cross-module, no orchestrator): FIM asks INTL whether
 # a dropped driver is known-vulnerable / the benign drill marker.
@@ -21,7 +23,48 @@ DEFAULT_WATCH = [
     os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "drivers", "etc"),
     os.path.join(os.environ.get("USERPROFILE", str(Path.home())), "Documents"),
     os.path.join(os.environ.get("USERPROFILE", str(Path.home())), "Downloads"),
+    str(data_dir() / "drill-sandbox"),
 ]
+_RUNTIME_WATCH: set[str] = set()
+_RUNTIME_WATCH_LOCK = threading.RLock()
+
+
+def register_runtime_watch(path) -> bool:
+    """Add a drill-selected directory for this process lifetime only."""
+    if not path:
+        return False
+    try:
+        root = os.path.normcase(os.path.abspath(os.path.expandvars(str(path))))
+    except Exception:
+        return False
+    if not root or any(ch in root for ch in "*?"):
+        return False
+    with _RUNTIME_WATCH_LOCK:
+        _RUNTIME_WATCH.add(root)
+    return True
+
+
+def unregister_runtime_watch(path) -> None:
+    if not path:
+        return
+    try:
+        root = os.path.normcase(os.path.abspath(os.path.expandvars(str(path))))
+    except Exception:
+        return
+    with _RUNTIME_WATCH_LOCK:
+        _RUNTIME_WATCH.discard(root)
+
+
+def watch_roots() -> list[str]:
+    with _RUNTIME_WATCH_LOCK:
+        extra = sorted(_RUNTIME_WATCH)
+    roots, seen = [], set()
+    for root in [*DEFAULT_WATCH, *extra]:
+        key = os.path.normcase(os.path.abspath(str(root)))
+        if key not in seen:
+            roots.append(str(root))
+            seen.add(key)
+    return roots
 # The kernel driver pool — watched by NAME only (cheap: no hashing of hundreds of
 # MB of .sys every cycle). A new .sys appearing here is the classic BYOVD staging
 # step, so it is treated as a CRITICAL Ring 1 event.
@@ -78,7 +121,7 @@ class FileIntegrityModule(BaseModule):
         """
         snap: Dict[str, str] = {}
         new_stat_cache: Dict[str, Tuple[int, int]] = {}
-        for root in DEFAULT_WATCH:
+        for root in watch_roots():
             if not os.path.isdir(root):
                 continue
             for dirpath, _, files in os.walk(root):
@@ -149,7 +192,21 @@ class FileIntegrityModule(BaseModule):
             if self.stopping:
                 break
             current = self._scan()
-            base_keys, cur_keys = set(self._baseline), set(current)
+            active_roots = [os.path.normcase(os.path.abspath(root))
+                            for root in watch_roots()]
+            def _still_watched(path: str) -> bool:
+                candidate = os.path.normcase(os.path.abspath(path))
+                for root in active_roots:
+                    try:
+                        if os.path.commonpath((candidate, root)) == root:
+                            return True
+                    except ValueError:
+                        continue
+                return False
+            # Removing a transient drill sandbox from the runtime watch set is
+            # a policy change, not deletion of every file it contained.
+            base_keys = {path for path in self._baseline if _still_watched(path)}
+            cur_keys = set(current)
 
             for path in cur_keys - base_keys:
                 alert = self._driver_alert(path)

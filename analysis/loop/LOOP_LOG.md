@@ -285,6 +285,16 @@ Post-remediation Windows/venv QA completed. Full evidence is in
 - Gate: changed file `py_compile` PASS; process/connection × empty/non-empty
   concurrency regression **4/4 PASS**, with identical caller results and one
   enumeration per shared miss.
+- **P11 APPLIED:** process allowlist and drill resolution now expose immutable,
+  reusable snapshots and cache their default data directories. Threat posture,
+  Resolve Center, Memory Injection Scanner, both SOAR tiers, Posture Hardening,
+  and Red Team AAR matching load once per evaluation batch instead of once per
+  event/process/verdict. Existing direct-call APIs and mtime invalidation remain.
+- P11 gates: nine touched files compile; exact name/path and old/new resolution
+  behavior, immutability, next-batch write invalidation, and zero hidden reloads
+  PASS. A 50-event threat batch used 1 policy + 1 resolution snapshot; a
+  three-PID memory batch and both eight-event SOAR batches used one policy
+  snapshot each. Response actions were stubbed, so no host state changed.
 - **P4/P8 remain PROPOSED:** cached detector connections could change detection
   freshness/data shape; globally bounding MCP request workers changes overload
   protocol behavior and needs load tests.
@@ -292,7 +302,7 @@ Post-remediation Windows/venv QA completed. Full evidence is in
   a bounded reverse/indexed lookup should be gated for UTF-8 boundaries and
   newest-match equivalence before implementation.
 - Evidence Lattice remains bounded/event-driven and generated YARA compilation
-  remains bypass-driven; no second proven steady-state optimization was applied.
+  remains bypass-driven; no further proven win was found in those two paths.
 - Full evidence: `round3/performance_summary.md`. The active combined YARA
   runtime output was not touched.
 

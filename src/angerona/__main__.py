@@ -3,6 +3,11 @@ from __future__ import annotations
 
 import sys
 
+# Establish D:-resident data/temp paths before crash logging, singleton locks,
+# Qt, or any scanner imports can create files.
+from angerona.core.data_paths import configure_runtime_environment
+configure_runtime_environment()
+
 
 def main() -> int:
     # Stop child processes (netsh, tasklist, signal-cli, yara, git, …) from
@@ -17,7 +22,7 @@ def main() -> int:
     # Capture any crash (unhandled exception, background-thread exception, or a
     # native Qt fault) to a log file. Under pythonw there is no console, so this
     # is the only trace we'd otherwise get. Writes to
-    # %LOCALAPPDATA%\Angerona\logs\crash.log and the repo's diagnostics\crash.log.
+    # <D: installation>\runtime-data\logs\crash.log and diagnostics\crash.log.
     try:
         from angerona.core.crashlog import install as _install_crashlog
         _install_crashlog()

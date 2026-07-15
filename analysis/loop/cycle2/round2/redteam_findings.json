@@ -1,0 +1,88 @@
+{
+  "cycle": 2,
+  "round": 2,
+  "phase": "red-team",
+  "date": "2026-07-14",
+  "scope": "Read-only audit of the current combined tree after Cycle 2 Round 1 remediation, QA, and performance changes.",
+  "rules_modified": false,
+  "converged": false,
+  "summary": {
+    "total": 4,
+    "active": 2,
+    "dormant": 2,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 2,
+      "low": 2
+    }
+  },
+  "findings": [
+    {
+      "id": "C2-R2-01",
+      "title": "Stop & clean does not stop either running drill",
+      "severity": "MEDIUM",
+      "status": "active",
+      "components": [
+        "src/angerona/gui/red_team_console.py:375-381",
+        "src/angerona/shark/shark_attack.py:239-247,329-378",
+        "src/angerona/shark/red_team.py:120-124,215-217,232-272"
+      ],
+      "evidence": "Shark cleanup never clears a run flag; Red Team clears _running but neither unconditional jitter nor phase/step loops consult it. Both workers continue after the UI reports a stop request.",
+      "exploitability": "No attacker required; operator stopping a live multi-phase drill reliably reaches the faulty lifecycle path.",
+      "impact": "Later stages can write new markers, spawn tagged processes, make the Shark test connection, sustain CPU/UI load, and race cleanup after Stop & clean.",
+      "remediation": "Use a dedicated cancellation event, interruptible waits, cancellation checks at every phase/stage boundary, bounded non-GUI join, and final cleanup; test stop-during-jitter with zero later side effects."
+    },
+    {
+      "id": "C2-R2-02",
+      "title": "Emergency shutdown ownership matching still reaches unrelated Python processes",
+      "severity": "MEDIUM",
+      "status": "active",
+      "components": [
+        "kill-all-angerona.bat:17-19"
+      ],
+      "evidence": "StartsWith(root) lacks a directory boundary, and any command line containing the root substring is treated as Angerona-owned.",
+      "exploitability": "Requires an operator to run the elevated recovery batch, plus a sibling-prefix interpreter or unrelated Python job with an Angerona path argument.",
+      "impact": "Can terminate unrelated notebooks, automation, tools, or sibling installations; the image-wide Ollama kill remains removed.",
+      "remediation": "Prefer PID/start-time/executable identity; otherwise require the exact suite interpreter and a parsed entry point under the root with boundary-aware canonical comparison. Do not infer ownership from an arbitrary argument substring."
+    },
+    {
+      "id": "C2-R2-03",
+      "title": "ARIA confirmation can execute a different callback than the operator previewed",
+      "severity": "LOW",
+      "status": "dormant-opt-in",
+      "components": [
+        "src/angerona/core/assistant.py:97-100,136-164"
+      ],
+      "evidence": "Pending confirmations bind only tool name, mutable arguments, and time; confirm resolves the current mutable registry entry and executes its current callback without checking original identity, kind, preview, or digest.",
+      "exploitability": "A component with access to a future shared Assistant can replace a registered name or mutate nested staged arguments before the operator confirms.",
+      "impact": "A valid token can authorize an action different from its preview once ARIA tools are dynamically integrated.",
+      "remediation": "Bind an immutable staged WRITE action to tool version/callable identity, canonical arguments, preview, expiry, and digest; invalidate tokens on registry change and test replacement/mutation/replay paths."
+    },
+    {
+      "id": "C2-R2-04",
+      "title": "ARIA default research READ performs browser and egress side effects without confirmation",
+      "severity": "LOW",
+      "status": "dormant-opt-in",
+      "components": [
+        "src/angerona/connectors/research_fetchers.py:44-59,87-104",
+        "src/angerona/connectors/research.py:73-96"
+      ],
+      "evidence": "The research tool defaults open_in_browser to true, is registered as READ, and immediately opens all allow-listed source URLs with the indicator embedded.",
+      "exploitability": "Once wired, any caller/prompt/voice input that invokes research can trigger the side effect; destinations are limited to the source allow-list.",
+      "impact": "Unexpected browser tabs and disclosure of an internal hash, IP, domain, URL, or CVE to third-party sites without per-action confirmation.",
+      "remediation": "Keep URL construction as pure READ; make external opening an explicit WRITE/EGRESS action with destination/indicator preview and confirmation, default opening false, and test zero opener calls on READ."
+    }
+  ],
+  "verified_without_new_regression": [
+    "path-aware trusted-process suppression",
+    "AAR exact path and PID-plus-token correlation with bounded windows",
+    "run-scoped drill resolution",
+    "severity-aware hard-bounded SQLite retention",
+    "ARIA disabled-state refusal",
+    "D-drive production and direct-selfcheck environment setup",
+    "SOAR queue cache invalidation design",
+    "steady-state stat-card render suppression",
+    "graceful model-specific Ollama unload without image-wide runner kill"
+  ]
+}

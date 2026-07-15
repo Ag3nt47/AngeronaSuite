@@ -33,12 +33,26 @@ def threat_level(events, window: float = 600.0) -> Severity:
         acked = acked_signatures()
     except Exception:
         acked, signature = set(), None
+    try:
+        from angerona.core.process_allowlist import is_event_allowed, policy_snapshot
+        process_policy = policy_snapshot()
+    except Exception:
+        is_event_allowed = lambda _event, **_kwargs: False
+        process_policy = ()
+    try:
+        from angerona.core.drill_resolution import is_resolved_event, resolution_snapshot
+        resolutions = resolution_snapshot()
+    except Exception:
+        is_resolved_event = lambda _event, **_kwargs: False
+        resolutions = {}
     threats = [
         e for e in events
         if (now - e.ts) <= window
         and e.severity >= Severity.HIGH
         and e.module not in _META_MODULES
         and not (signature and signature(e) in acked)
+        and not is_event_allowed(e, policy=process_policy)
+        and not is_resolved_event(e, resolutions=resolutions)
     ]
     if any(e.severity == Severity.CRITICAL for e in threats):
         return Severity.CRITICAL

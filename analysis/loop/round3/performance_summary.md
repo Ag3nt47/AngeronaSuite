@@ -1,9 +1,9 @@
 # Round 3 — Performance Summary
 
-Date: 2026-07-14. Scope: the QA-reported P6 empty-snapshot cache edge and a
-final review of the current Round 3 loop changes. Changes were limited to one
-measurable, behavior-preserving cache correction. `rules/_active_combined.yar`
-was not touched.
+Date: 2026-07-14. Scope: the QA-reported P6 empty-snapshot cache edge, repeated
+process-policy/drill-resolution reads in hot batches, and a final review of the
+current Round 3 loop changes. Changes were limited to measurable,
+behavior-preserving cache work. `rules/_active_combined.yar` was not touched.
 
 ## APPLIED
 
@@ -27,6 +27,38 @@ was not touched.
   combinations (process/connection × empty/non-empty): eight callers received
   identical results, the sequential cache hit did not enumerate again, and
   `max_age=0` performed exactly one forced refresh.
+- **Status:** APPLIED.
+
+### P11 — Reuse process-policy and drill-resolution snapshots per batch
+
+- **Components:** `core/process_allowlist.py`, `core/drill_resolution.py`,
+  `core/threat.py`, `gui/resolve_center.py`, `modules/mem_inject_scanner.py`,
+  `modules/soar.py`, `modules/soar_engine.py`,
+  `modules/posture_hardening.py`, and `shark/aar_report.py`.
+- **Problem:** The JSON content caches already avoided repeated file reads when
+  mtimes were unchanged, but each process/event match still resolved the
+  default data directory through `Config.load()`, statted the policy file,
+  cloned cached rows, and—for drill state—deep-copied the complete JSON object.
+  Threat, process-scan, SOAR, Resolve Center, and AAR loops repeated that work
+  for every item in a batch.
+- **Change:** Both policy modules now cache their process-lifetime default data
+  directory. `policy_snapshot()` returns immutable normalized allowlist rows;
+  `resolution_snapshot()` returns an immutable resolution mapping. Existing
+  match APIs accept an optional snapshot and retain direct-call compatibility.
+  Each identified hot caller now loads once at batch start and reuses that exact
+  snapshot for all items. Atomic writes still invalidate the underlying mtime
+  cache, so the next batch observes operator changes.
+- **Measured win:** A 50-event threat evaluation fell from up to **50 policy +
+  50 resolution load/stat/clone paths to 1 + 1**. A three-PID memory batch and
+  both eight-event SOAR batches each used **one** policy snapshot. Reused
+  snapshot checks were instrumented to prove **zero hidden per-item reloads**.
+  Four implicit path lookups across the two policy modules caused two total
+  `Config.load()` calls (one per module), rather than four.
+- **Gate:** Nine touched files `py_compile` PASS. Exact name/path allowlist
+  behavior, old/new drill timestamp behavior, run-scoped resolution matching,
+  snapshot immutability, policy-write invalidation, threat output, and forced
+  no-reload checks PASS. Memory and both SOAR response actions were stubbed;
+  their batch read-count gates PASS without host changes.
 - **Status:** APPLIED.
 
 ## REVIEWED / NOT APPLIED
@@ -69,8 +101,10 @@ was not touched.
 
 ## Gate summary
 
-- Changed Python file compiled: **1/1 PASS**.
+- Changed Python files compiled: **10/10 PASS** (P9 + P11).
 - Sensor concurrency/equivalence combinations: **4/4 PASS**.
+- Policy/resolution equivalence, invalidation, immutability, default-path, and
+  batch read-count gates: **PASS**.
 - No detector cadence, security threshold, snapshot TTL, output shape, or
   forced-refresh behavior changed.
 - Temporary test scaffolding was removed after the gate.
@@ -78,6 +112,7 @@ was not touched.
 | Optimization | Component | Status | Measured / expected win |
 |---|---|---|---|
 | Cache valid empty snapshots | Shared process/connection sensors | APPLIED | 8 concurrent empty-result scans → 1; 87.5% removed |
+| Reuse policy/resolution snapshots | Threat, Resolve Center, MINJ, SOAR, AAR | APPLIED | 50-event threat batch: 50+50 load paths → 1+1 |
 | Reuse shared connection cache in detectors | BEAC/CAGT | PROPOSED | Up to one full scan per overlapping tick |
 | Bound MCP request workers | MCP server | PROPOSED | Bounded thread resources under local floods |
 | Reverse/index Evolution feed lookup | Evolution Engine | PROPOSED | Avoid O(file size) rare-trigger reads |

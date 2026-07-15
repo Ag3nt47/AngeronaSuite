@@ -37,10 +37,8 @@ from angerona.core.module_base import BaseModule, Severity
 
 
 def _data_base() -> Path:
-    base = os.environ.get("ANGERONA_DATA") or os.path.join(
-        os.environ.get("LOCALAPPDATA", str(Path.home())), "Angerona"
-    )
-    return Path(base)
+    from angerona.core.data_paths import data_dir
+    return data_dir()
 
 
 _IS_WINDOWS = sys.platform.startswith("win")

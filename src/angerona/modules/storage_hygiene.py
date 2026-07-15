@@ -2,9 +2,8 @@
 
 Purpose
     Keeps Angerona's runtime data off the system drive. The suite resolves its
-    data root from ``ANGERONA_DATA`` (falling back to ``LOCALAPPDATA\\Angerona``
-    on C:). When an operator points ``ANGERONA_DATA`` at another volume (e.g. an
-    F: drive) to avoid C: log/cache bloat, stray data can still land at the old
+    data root from ``ANGERONA_DATA`` (falling back to this installation's
+    ``runtime-data`` directory on D:). Stray data can still land at the old
     default location if something writes there before the env is applied. SHYG
     detects that spill and migrates it to the configured root, so nothing keeps
     accumulating on C:.
@@ -20,9 +19,8 @@ Behaviour (safe by default)
       C: spill directory. It is NEVER called automatically — destructive removal
       always requires an explicit, confirmed operator action.
 
-If ``ANGERONA_DATA`` is unset, the default C: location *is* the canonical root,
-so there is nothing to migrate; SHYG advises (once) that setting ANGERONA_DATA
-relocates data off the system drive.
+The legacy C: path is treated only as a spill source and is never the normal
+default for this installation.
 
 Drop-in contract: BaseModule subclass + CODE/NAME/state/health_pct/self_test +
 module-level register().
@@ -47,7 +45,7 @@ def default_c_location() -> Path:
 
 
 def canonical_root() -> Path:
-    """The configured data root (ANGERONA_DATA if set, else the C: default)."""
+    """The configured data root (D: runtime-data by default)."""
     return Path(_data_dir())
 
 
@@ -161,13 +159,13 @@ class StorageHygieneModule(BaseModule):
         dest = canonical_root()
 
         if _same_path(source, dest):
-            # ANGERONA_DATA unset → C: default IS the root; nothing to migrate.
+            # An explicit legacy override points back to C:; never auto-delete.
             if not self._advised_unset:
                 self._advised_unset = True
-                self.emit("Storage hygiene: data root is the default C: location. Set "
-                          "ANGERONA_DATA to a non-system volume to keep logs/caches off C:.",
+                self.emit("Storage hygiene: data root was explicitly set to the legacy "
+                          "C: location. Point ANGERONA_DATA to the D: runtime-data folder.",
                           Severity.LOW, data_root=str(dest))
-            self.set_health(100, "data root = default C: location (set ANGERONA_DATA to relocate)")
+            self.set_health(70, "data root explicitly points to legacy C: location")
             return
 
         if not find_stray(source, dest):

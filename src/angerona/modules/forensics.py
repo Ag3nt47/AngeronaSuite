@@ -25,7 +25,8 @@ MEM_COMMIT = 0x1000
 
 
 def _evidence_root() -> Path:
-    base = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Angerona" / "forensics"
+    from angerona.core.config import _data_dir
+    base = Path(_data_dir()) / "forensics"
     base.mkdir(parents=True, exist_ok=True)
     return base
 

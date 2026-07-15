@@ -3,10 +3,9 @@ core/uiwatchdog.py — main-thread (UI) responsiveness watchdog.
 
 A QTimer on the GUI thread bumps a heartbeat timestamp. A separate daemon thread
 watches that timestamp; if the GUI thread hasn't bumped it within ``stall_seconds``
-the UI is (or is about to be) "Not Responding", so the watchdog appends a snapshot
-of EVERY thread's stack to a log file — which shows exactly what is blocking the
-GUI thread (look at the ``MainThread`` stack). Best-effort; never raises into the
-app.
+the UI is (or is about to be) "Not Responding", so the watchdog appends the
+actionable GUI-thread stack and a compact list of other live threads. Best-effort;
+never raises into the app.
 
 This is a diagnostic aid: it does not try to unstick the UI, it documents the
 cause so the offending blocking call can be moved off the GUI thread.
@@ -40,6 +39,7 @@ class UiWatchdog:
     def start(self) -> None:
         try:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._enforce_retention()
         except Exception:
             pass
         self._thread = threading.Thread(target=self._run, name="UiWatchdog", daemon=True)
@@ -47,6 +47,30 @@ class UiWatchdog:
 
     def stop(self) -> None:
         self._stop.set()
+
+    def _enforce_retention(self) -> None:
+        """Keep the active log plus one archive, each bounded to 4 MiB.
+
+        Older versions dumped every module thread and could leave a very large
+        ``.1`` archive. Trimming from the front preserves the newest evidence
+        without reading the whole archive into memory.
+        """
+        rotated = self.log_path.with_suffix(self.log_path.suffix + ".1")
+        if self.log_path.exists() and self.log_path.stat().st_size > self._MAX_LOG_BYTES:
+            rotated.unlink(missing_ok=True)
+            self.log_path.replace(rotated)
+        if not rotated.exists() or rotated.stat().st_size <= self._MAX_LOG_BYTES:
+            return
+        tmp = rotated.with_suffix(rotated.suffix + ".trim")
+        with open(rotated, "rb") as source:
+            source.seek(-self._MAX_LOG_BYTES, 2)
+            tail = source.read(self._MAX_LOG_BYTES)
+        newline = tail.find(b"\n")
+        if newline >= 0:
+            tail = tail[newline + 1:]
+        with open(tmp, "wb") as target:
+            target.write(tail)
+        tmp.replace(rotated)
 
     def _run(self) -> None:
         while not self._stop.wait(1.0):

@@ -38,6 +38,10 @@ from typing import Callable, List, Optional
 # crashed before cleanup.
 _MARKER_PREFIX = "_redteam_"
 
+
+class _DrillCancelled(Exception):
+    """Internal control flow for an operator-requested drill stop."""
+
 # ── Intensity presets ────────────────────────────────────────────────────────
 # One knob the operator can slide from Low → Extreme; it scales the number of
 # recursive phases, the timing jitter, the noise (false-positive) chance, the
@@ -80,6 +84,8 @@ class RedTeamStep:
     ts_end: float = 0.0
     artifact_paths: List[str] = field(default_factory=list)
     pid: Optional[int] = None
+    pids: List[int] = field(default_factory=list)
+    correlation_tokens: List[str] = field(default_factory=list)
     detail: str = ""
     ok: bool = True
 
@@ -95,11 +101,12 @@ class RedTeamEngine:
                  on_event: Optional[Callable[[str], None]] = None) -> None:
         self.data_dir = Path(data_dir)
         self.history_path = self.data_dir / "redteam_history.json"
-        home = Path(os.environ.get("USERPROFILE", str(Path.home())))
-        self.documents_dir = Path(documents_dir) if documents_dir else (home / "Documents")
+        self.documents_dir = (Path(documents_dir) if documents_dir
+                              else self.data_dir / "drill-sandbox")
         self._on_event = on_event
         self._thread: Optional[threading.Thread] = None
         self._running = threading.Event()
+        self._cancel = threading.Event()
         self.run_id = ""
         self.steps: List[RedTeamStep] = []
 
@@ -119,7 +126,8 @@ class RedTeamEngine:
         d = round(random.uniform(lo, hi), 1)
         if note:
             self._narrate(f"⏳ Waiting {d}s (jitter) before: {note}")
-        time.sleep(d)
+        if self._cancel.wait(d):
+            raise _DrillCancelled()
 
     def _record(self, stage, technique, description, ts_start, **kw) -> RedTeamStep:
         step = RedTeamStep(stage=stage, technique=technique, description=description,
@@ -128,6 +136,8 @@ class RedTeamEngine:
         return step
 
     def _marker(self, name: str, body: str) -> Path:
+        if self._cancel.is_set():
+            raise _DrillCancelled()
         self.documents_dir.mkdir(parents=True, exist_ok=True)
         p = self.documents_dir / name
         p.write_text(body, encoding="utf-8")
@@ -176,8 +186,9 @@ class RedTeamEngine:
         target_dir — where benign markers land. custom = optional benign
           {"name","payload"} technique (written verbatim, NEVER executed).
         """
-        if self.is_running:
+        if self.is_running or (self._thread is not None and self._thread.is_alive()):
             return False
+        self._cancel.clear()
         if target_dir:
             try:
                 self.documents_dir = Path(target_dir)
@@ -211,7 +222,11 @@ class RedTeamEngine:
         return True
 
     def stop_and_clean(self) -> None:
+        self._cancel.set()
         self._running.clear()
+        worker = self._thread
+        if worker is not None and worker.is_alive() and worker is not threading.current_thread():
+            worker.join(timeout=0.25)
         self._sweep_markers()
 
     # ── playbook ─────────────────────────────────────────────────────────────
@@ -449,19 +464,25 @@ class RedTeamEngine:
                       "red-team-TAGGED processes (they exit immediately) so the process sensors "
                       "and SOAR see realistic process-creation activity. Nothing harmful runs.")
         spawned = 0
+        pids = []
+        tokens = []
         for _ in range(n):
             tag = f"ANGERONA_REDTEAM_{uuid.uuid4().hex[:8]}"
             try:
                 if os.name == "nt":
-                    subprocess.Popen(["cmd", "/c", "rem", tag])   # no-op comment, exits
+                    proc = subprocess.Popen(["cmd", "/c", "rem", tag])   # no-op, exits
                 else:
-                    subprocess.Popen(["sh", "-c", ": " + tag])
+                    proc = subprocess.Popen(["sh", "-c", ": " + tag])
                 spawned += 1
+                pids.append(int(proc.pid))
+                tokens.append(tag)
             except Exception:
                 pass
             time.sleep(0.2)
         self._record("Benign Execution (simulated)", "T1059 tagged spawns",
-                     f"Spawned {spawned} short-lived red-team-tagged process(es).", ts)
+                     f"Spawned {spawned} short-lived red-team-tagged process(es).", ts,
+                     pid=(pids[0] if pids else None), pids=pids,
+                     correlation_tokens=tokens)
 
     def _step_initial_access(self, jitter_range) -> None:
         self._jitter(*jitter_range, note="Initial Access — inert phishing-attachment marker")

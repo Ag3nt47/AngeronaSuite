@@ -309,9 +309,9 @@ class MainWindow(QMainWindow):
         # The first timer tick at t=1s will populate the panels with live data.
 
         # UI responsiveness watchdog: a GUI-thread heartbeat every 1s; if the GUI
-        # thread ever stalls (Not Responding), a background thread dumps all
-        # thread stacks to diagnostics/not_responding.log so the blocking call is
-        # identifiable. Starts best-effort; never breaks startup.
+        # thread ever stalls (Not Responding), a background thread records the
+        # GUI stack to diagnostics/not_responding.log so the blocking call is
+        # identifiable without dumping every sleeping module. Best-effort only.
         try:
             from pathlib import Path as _P
             from angerona.core.uiwatchdog import UiWatchdog
@@ -522,15 +522,14 @@ class MainWindow(QMainWindow):
     # ── Eco Mode (shed heavy background scan load) ───────────────────────────
     # Heavy pollers/scanners that dominate idle CPU but are NOT part of the
     # safety-critical response path — safe to pause for instant relief.
-    _ECO_HEAVY_MODULES = {
+    _ECO_HEAVY_MODULES = (
         "Process Monitor", "Network Monitor", "Memory Time-Machine",
         "Memory Injection Scanner", "YARA Scanner", "Packet Sniffer",
-        "Ransomware Heuristics", "Sysmon Event Bridge", "ETW Core Listener",
+        "Ransomware Heuristics",
         "Upstream Threat Intel Sync", "API Patch / Anti-Blinding Detector",
-        "Persistence Sweep", "Network Protocol Deep Decoder", "WLAN Monitor",
-        "ARP Watchdog", "AMSI Bridge", "AV Telemetry Bridge",
+        "Persistence Sweep", "WLAN Monitor", "ARP Watchdog",
         "Data Provenance Graph", "Hardware-Rooted Integrity",
-    }
+    )
 
     def apply_startup_eco(self) -> None:
         """Called shortly after boot: if the user's saved preference is Eco Mode,
@@ -566,9 +565,9 @@ class MainWindow(QMainWindow):
             self._enter_eco(startup=False)
         else:
             # Resume: wake paused modules SEQUENTIALLY on a background thread so
-            # ~19 heavy scanners don't all fire their first scan at once (the
-            # "memory stampede" that froze the UI). EcoWakeupWorker health-gates
-            # each module before starting the next; the GUI stays responsive.
+            # heavy scanners don't all fire their first scan at once (the
+            # "memory stampede" that froze the UI). EcoWakeupWorker waits for a
+            # real work-cycle boundary before starting the next module.
             mods = [self.manager.modules[n] for n in self._eco_paused
                     if n in self.manager.modules]
             self._eco_on = False
@@ -578,13 +577,18 @@ class MainWindow(QMainWindow):
                 self._eco_paused = []
                 return
             self.console._append(
-                f"[eco] Waking {len(mods)} scanner(s) one-by-one — UI stays live…")
+                f"[eco] Waking {len(mods)} scanner(s) one-by-one; each completes "
+                "one work cycle before the next starts.")
             self._eco_worker = EcoWakeupWorker(mods)
             self._eco_worker.module_waking.connect(
                 lambda name: self.console._append(f"[eco]   waking {name}…"))
             self._eco_worker.module_ready.connect(
                 lambda name, ok: self.console._append(
-                    f"[eco]   {name}: {'online' if ok else 'FAILED to wake'}"))
+                    f"[eco]   {name}: {'first cycle complete' if ok else 'FAILED to wake'}"))
+            self._eco_worker.module_cycle_timeout.connect(
+                lambda name: self.console._append(
+                    f"[eco]   {name}: still running after its safety timeout; "
+                    "continuing without stopping it."))
             self._eco_worker.wakeup_complete.connect(
                 lambda ok, failed: self.console._append(
                     f"[eco] Wake-up complete — {ok} online, {failed} failed."))
@@ -597,10 +601,10 @@ class MainWindow(QMainWindow):
     def _open_simulation(self) -> None:
         """Open the modern Red Team console (config + live kill-chain + editor).
         The console calls back into _run_simulation(cfg) when the operator launches."""
-        import os
-        from pathlib import Path
         from angerona.gui.red_team_console import RedTeamConsole
-        default_target = str(Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents")
+        # Keep drill artifacts with Angerona's bounded runtime data by default.
+        # User folders remain explicit presets for deliberate coverage tests.
+        default_target = str(self.config.data_dir / "drill-sandbox")
         if getattr(self, "_rt_console", None) is None:
             self._rt_console = RedTeamConsole(self, default_target=default_target)
         self._rt_console.show()
@@ -630,6 +634,9 @@ class MainWindow(QMainWindow):
             pass
         self._sim_ran_shark = bool(cfg.get("run_shark"))
         self._sim_ran_redteam = bool(cfg.get("run_redteam"))
+        self._sim_aar_pending = int(self._sim_ran_shark) + int(self._sim_ran_redteam)
+        import threading
+        self._sim_aar_lock = threading.Lock()
         # The new Red Team console (which launched this) shows the live events and
         # analogy coaching itself, so the legacy Live Offense Monitor is no longer
         # popped up. It's still reset + fed silently (narration flows via the
@@ -643,6 +650,13 @@ class MainWindow(QMainWindow):
         self.shark_swim.start(); self.shark_banner.start()
         _target = cfg.get("target_dir") or None
         _custom = cfg.get("custom") or None
+        self._sim_runtime_watch = _target
+        if _target:
+            try:
+                from angerona.modules.file_integrity import register_runtime_watch
+                register_runtime_watch(_target)
+            except Exception:
+                pass
         if self._sim_ran_redteam:
             self.red_team_engine.start(intensity=cfg.get("intensity"),
                                        campaign=bool(cfg.get("campaign", False)),
@@ -660,19 +674,43 @@ class MainWindow(QMainWindow):
             return
         self._sim_poll.stop()
         self.shark_swim.stop(); self.shark_banner.stop()
-        import os
-        for _k, _prev in (("ANGERONA_SOAR_KILL_AND_ROLLBACK", self._shark_prev_armed),
-                          ("ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY",
-                           getattr(self, "_shark_prev_minsev", None))):
-            if _prev is None:
-                os.environ.pop(_k, None)
-            else:
-                os.environ[_k] = _prev
+        # Do not disarm response here: FIM and other pollers report during the
+        # following 45-second settle window. The last AAR worker restores the
+        # operator's prior policy after evaluation completes.
         import threading
         if getattr(self, "_sim_ran_redteam", False):
             threading.Thread(target=self._red_team_build_aar, daemon=True).start()
         if getattr(self, "_sim_ran_shark", False):
             threading.Thread(target=self._shark_build_aar, daemon=True).start()
+
+    def _simulation_aar_finished(self) -> None:
+        """Restore the pre-drill response policy after every requested AAR settles."""
+        lock = getattr(self, "_sim_aar_lock", None)
+        if lock is None:
+            return
+        with lock:
+            pending = int(getattr(self, "_sim_aar_pending", 0))
+            if pending <= 0:
+                return
+            pending -= 1
+            self._sim_aar_pending = pending
+            if pending:
+                return
+            import os
+            for key, previous in (
+                    ("ANGERONA_SOAR_KILL_AND_ROLLBACK", self._shark_prev_armed),
+                    ("ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY",
+                     getattr(self, "_shark_prev_minsev", None))):
+                if previous is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = previous
+            try:
+                from angerona.modules.file_integrity import unregister_runtime_watch
+                unregister_runtime_watch(getattr(self, "_sim_runtime_watch", None))
+            except Exception:
+                pass
+            self._sim_runtime_watch = None
 
     def _start_shark_attack(self) -> None:
         if self.shark_engine.is_running:
@@ -761,10 +799,13 @@ class MainWindow(QMainWindow):
 
     def _red_team_build_aar(self) -> None:
         from angerona.shark.aar_report import generate_aar
-        text = generate_aar(self.config.data_dir, settle_seconds=45,
-                             history_name="redteam_history.json",
-                             stage_category=REDTEAM_STAGE_CATEGORY,
-                             title="RED TEAM ATTACK", report_basename="redteam_aar")
+        try:
+            text = generate_aar(self.config.data_dir, settle_seconds=45,
+                                 history_name="redteam_history.json",
+                                 stage_category=REDTEAM_STAGE_CATEGORY,
+                                 title="RED TEAM ATTACK", report_basename="redteam_aar")
+        finally:
+            self._simulation_aar_finished()
         try:
             print(text)
         except Exception:
@@ -854,7 +895,10 @@ class MainWindow(QMainWindow):
         # should be back near the nominal 30s — but 45s keeps a comfortable
         # margin for scheduling jitter without a noticeably longer wait for
         # the AAR dialog to pop up.
-        text = generate_aar(self.config.data_dir, settle_seconds=45)
+        try:
+            text = generate_aar(self.config.data_dir, settle_seconds=45)
+        finally:
+            self._simulation_aar_finished()
         try:
             print(text)  # surface on the terminal when launched with a console
         except Exception:
@@ -866,10 +910,24 @@ class MainWindow(QMainWindow):
 
     def _show_aar_dialog(self, text: str) -> None:
         pm = self.manager.modules.get("Posture Hardening")
+        is_redteam = "RED TEAM ATTACK" in text.upper()
+        report_path = self.config.data_dir / ("redteam_aar.json" if is_redteam
+                                              else "shark_aar.json")
 
         def _attempt_fix() -> str:
             if pm is None:
                 return "[Attempt Fix] Posture Hardening module not available."
+            if is_redteam:
+                cleaned = _clean_markers()
+                result = pm.resolve_redteam_report(report_path)
+                if not result.get("ok"):
+                    return f"[Drill resolution] {result.get('error', 'failed')}"
+                count = int(result.get("resolved", 0))
+                return (f"[Drill resolution] Closed {count} missed finding(s) for run "
+                        f"{result.get('run_id') or 'unknown'} and cleaned {cleaned} inert "
+                        "marker/file(s). Historical duplicate alerts no longer affect posture. "
+                        "A future drill miss will reopen the finding. Re-run the report to see "
+                        "the run-scoped resolution status.")
             vuln = pm.weaknesses("VULNERABLE")
             if not vuln:
                 return "[Attempt Fix] No open weaknesses — posture is clean."
@@ -917,7 +975,7 @@ class MainWindow(QMainWindow):
 
         dlg = AARDialog(self.config.data_dir, self,
                         on_attempt_fix=_attempt_fix, on_apply=_apply,
-                        on_clean=_clean_markers)
+                        on_clean=_clean_markers, redteam=is_redteam)
         dlg.setStyleSheet(self._qss())
         dlg.set_text(text)
         dlg.exec()
@@ -1270,6 +1328,19 @@ class MainWindow(QMainWindow):
         """Best-effort graceful cleanup, then an unconditional hard exit."""
         try:
             self.manager.stop_all()
+        except Exception:
+            pass
+        # This path ends with os._exit(), so QApplication.aboutToQuit may not
+        # get enough event-loop time to run AngeronaApp.shutdown(). Explicitly
+        # release the resident local model here as well; this covers the red
+        # STOP button and tray Quit, while kill-all-angerona.bat has its own
+        # external fallback for a wedged runner.
+        try:
+            from angerona.core.ollama_lifecycle import unload_angerona_models
+            unload_angerona_models(
+                getattr(self.config, "ollama_host", "http://localhost:11434"),
+                getattr(self.config, "ollama_model", "llama3"),
+            )
         except Exception:
             pass
         try:

@@ -15,6 +15,10 @@ import time
 from typing import List
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.process_allowlist import (
+    is_event_allowed as _process_event_allowed,
+    policy_snapshot as _process_policy_snapshot,
+)
 
 try:
     import psutil
@@ -89,12 +93,15 @@ class SOARModule(BaseModule):
             # refresh the flags so the user can flip them without a restart
             self._auto = os.environ.get("ANGERONA_SOAR_AUTOCONTAIN", "0") == "1"
             self._active_defense = os.environ.get("ANGERONA_ACTIVE_DEFENSE", "1") != "0"
+            process_policy = _process_policy_snapshot()
             for ev in self._bus.recent(25):
                 if ev.ts <= self._last_ts or ev.severity < Severity.HIGH:
                     continue
                 if ev.module in (self.name, "Console"):
                     continue
                 self._last_ts = max(self._last_ts, ev.ts)
+                if _process_event_allowed(ev, policy=process_policy):
+                    continue
                 self._track_attack(ev)
                 self._run_playbook(ev)
             self._purge_stale_pending()
@@ -209,7 +216,8 @@ class SOARModule(BaseModule):
                 self.emit(
                     f"Playbook[contain]: TERMINATED {name} (pid {pid}) — repeat corroborated "
                     f"threat from {ev.module}. Active defense.",
-                    Severity.HIGH, pid=pid, action="terminate", mitre="T1562")
+                    Severity.HIGH, pid=pid, action="terminate", mitre="T1562",
+                    trigger_ts=ev.ts, trigger_module=ev.module)
             else:
                 p.suspend()
                 self._suspended_pids.add(pid)
@@ -218,7 +226,8 @@ class SOARModule(BaseModule):
                 self.emit(
                     f"Playbook[contain]: AUTO-SUSPENDED {name} (pid {pid}) — corroborated "
                     f"CRITICAL from {ev.module}. Investigate, then resume/kill.",
-                    Severity.HIGH, pid=pid, action="suspend")
+                    Severity.HIGH, pid=pid, action="suspend",
+                    trigger_ts=ev.ts, trigger_module=ev.module)
         except Exception as exc:
             self.emit(
                 f"Playbook[contain]: could not act on pid {pid}: {exc}",

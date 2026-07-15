@@ -14,9 +14,18 @@ if errorlevel 1 (
     exit /b
 )
 
-echo [*] Terminating all Angerona / Python GUI processes ...
-taskkill /F /IM pythonw.exe /T 2>nul
-taskkill /F /IM python.exe  /T 2>nul
+echo [*] Terminating Angerona-owned Python processes only ...
+set "ANGERONA_ROOT=%~dp0"
+powershell -NoProfile -Command "$root=[IO.Path]::GetFullPath($env:ANGERONA_ROOT).TrimEnd([char]92); Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'python.exe' -or $_.Name -eq 'pythonw.exe') -and (($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) -or ($_.CommandLine -and $_.CommandLine.IndexOf($root,[StringComparison]::OrdinalIgnoreCase) -ge 0)) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+
+echo [*] Unloading Angerona's llama3 model ...
+set "OLLAMA_CLI=ollama"
+if exist "%LOCALAPPDATA%\Programs\Ollama\ollama.exe" set "OLLAMA_CLI=%LOCALAPPDATA%\Programs\Ollama\ollama.exe"
+"%OLLAMA_CLI%" stop llama3 2>nul
+"%OLLAMA_CLI%" stop llama3:8b 2>nul
+"%OLLAMA_CLI%" stop llama3:latest 2>nul
+REM Never image-kill Ollama runners: other local applications may be using them.
+REM If graceful model unload fails, report it and leave unrelated work alone.
 
 echo.
 echo [+] Done. All instances stopped. Launch ONE clean copy with start-angerona.bat
