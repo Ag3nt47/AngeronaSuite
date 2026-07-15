@@ -126,6 +126,10 @@ EXFIL_TEST_PORT = int(os.environ.get("ANGERONA_SHARK_EXFIL_PORT", "443"))
 EXFIL_MARKER = b"ANGERONA-SHARK-TEST-EXFIL-MARKER\n"
 
 
+class _DrillCancelled(Exception):
+    """Internal control flow for an operator-requested drill stop."""
+
+
 def _pick_exfil_host() -> str:
     override = os.environ.get("ANGERONA_SHARK_EXFIL_HOST")
     return override if override else random.choice(EXFIL_TEST_HOSTS)
@@ -194,6 +198,7 @@ class SharkAttackEngine:
         self._on_event = on_event
         self._thread: Optional[threading.Thread] = None
         self._running = threading.Event()
+        self._cancel = threading.Event()
         self.run_id = ""
         self.steps: List[SharkStep] = []
 
@@ -217,8 +222,9 @@ class SharkAttackEngine:
         target_dir overrides where document markers land. custom = optional
         {"name", "payload"} benign technique (text written verbatim, NEVER run).
         Returns False if a run is already in progress."""
-        if self.is_running:
+        if self.is_running or (self._thread is not None and self._thread.is_alive()):
             return False
+        self._cancel.clear()
         if target_dir:
             try:
                 self.documents_dir = Path(target_dir)
@@ -239,6 +245,11 @@ class SharkAttackEngine:
     def stop_and_clean(self) -> None:
         """Best-effort cleanup of anything the last run created that the SOAR
         engine hasn't already removed. Safe to call any time."""
+        self._cancel.set()
+        self._running.clear()
+        worker = self._thread
+        if worker is not None and worker.is_alive() and worker is not threading.current_thread():
+            worker.join(timeout=0.25)
         for step in self.steps:
             for p in step.artifact_paths:
                 try:
@@ -317,7 +328,8 @@ class SharkAttackEngine:
             try:
                 p.unlink()
                 removed += 1
-                time.sleep(self._CLEANUP_SPACING_S)
+                if self._cancel.wait(self._CLEANUP_SPACING_S):
+                    break
             except Exception:
                 continue
         if removed:
@@ -333,7 +345,8 @@ class SharkAttackEngine:
         delay = random.uniform(lo, hi)
         if note:
             self._narrate(f"⏳ Waiting {delay:.1f}s (jitter) before: {note}")
-        time.sleep(delay)
+        if self._cancel.wait(delay):
+            raise _DrillCancelled()
 
     def _run_playbook(self, jitter_range, noise_chance) -> None:
         self._narrate(
@@ -343,6 +356,7 @@ class SharkAttackEngine:
             "DEFENSE side reacting in real time — this window only narrates "
             "the OFFENSE side.")
         self._cleanup_stale_artifacts()
+        cancelled = False
         try:
             # VARIETY ENGINE, axis 2: shuffle the stage order every run.
             # Angerona's detection is purely event-reactive, so it should
@@ -355,6 +369,8 @@ class SharkAttackEngine:
                 self._narrate(f"\U0001F39B️ Complexity: {cycles} phase(s)"
                               + ("; +1 custom benign technique" if custom else ""))
             for cycle in range(cycles):
+                if self._cancel.is_set():
+                    raise _DrillCancelled()
                 if cycles > 1:
                     self._narrate(f"\U0001F501 Phase {cycle + 1}/{cycles}.")
                 stage_fns = [
@@ -375,20 +391,31 @@ class SharkAttackEngine:
                     fn.__name__.replace("_step_", "").replace("_", " ").title() for fn in stage_fns)
                 self._narrate(f"\U0001F500 Technique order: {order}")
                 for fn in stage_fns:
+                    if self._cancel.is_set():
+                        raise _DrillCancelled()
                     fn(jitter_range)
+                    if self._cancel.is_set():
+                        raise _DrillCancelled()
+        except _DrillCancelled:
+            cancelled = True
         finally:
             self._write_history()
             n, ok = len(self.steps), sum(1 for s in self.steps if s.ok)
-            self._narrate(
-                f"\U0001F3C1 Shark Attack complete — {ok}/{n} steps executed successfully. "
-                "Generating the After-Action Report (allowing modules a brief "
-                "settle window to finish reacting)…")
-            self._running.clear()
-            if self._on_complete:
-                try:
-                    self._on_complete(list(self.steps))
-                except Exception:
-                    pass
+            if cancelled or self._cancel.is_set():
+                self._running.clear()
+                self._narrate(f"Shark Attack cancelled - {ok}/{n} steps executed; cleaning markers.")
+                self.stop_and_clean()
+            else:
+                self._narrate(
+                    f"\U0001F3C1 Shark Attack complete — {ok}/{n} steps executed successfully. "
+                    "Generating the After-Action Report (allowing modules a brief "
+                    "settle window to finish reacting)…")
+                self._running.clear()
+                if self._on_complete:
+                    try:
+                        self._on_complete(list(self.steps))
+                    except Exception:
+                        pass
 
     def _record(self, stage, technique, description, ts_start, **kw) -> SharkStep:
         step = SharkStep(stage=stage, technique=technique, description=description,
@@ -619,6 +646,8 @@ class SharkAttackEngine:
                 h = hashlib.sha256()
                 with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
                     for i in range(8):
+                        if self._cancel.is_set():
+                            break
                         chunk = blob[i * 1_000_000:(i + 1) * 1_000_000]
                         h.update(chunk)
                         zf.writestr(f"chunk_{i}.bin", chunk)
@@ -630,7 +659,7 @@ class SharkAttackEngine:
                               "SOAR engine doesn't overreact to a CPU spike alone.")
                 start, n = time.time(), 0
                 h = hashlib.sha256(b"angerona-shark-cpu-noise")
-                while time.time() - start < 3.0:
+                while time.time() - start < 3.0 and not self._cancel.is_set():
                     h.update(h.digest())
                     n += 1
                 self._narrate(f"   done — {n} hash iterations in ~3s, purely in-process.")
@@ -643,6 +672,8 @@ class SharkAttackEngine:
                               "overreact to burst I/O alone.")
                 scratch.mkdir(parents=True, exist_ok=True)
                 for i in range(200):
+                    if self._cancel.is_set():
+                        break
                     (scratch / f"chunk_{i}.tmp").write_bytes(os.urandom(4096))
                 for f in scratch.glob("*.tmp"):
                     f.unlink(missing_ok=True)
@@ -695,15 +726,21 @@ class SharkAttackEngine:
                               f"outbound connections to {host}:{port} (simulates chunked "
                               "exfiltration).")
                 for i in range(3):
+                    if self._cancel.is_set():
+                        raise _DrillCancelled()
                     with socket.create_connection((host, port), timeout=5) as s:
+                        if self._cancel.is_set():
+                            raise _DrillCancelled()
                         try:
                             s.sendall(EXFIL_MARKER)
                         except OSError:
                             pass
-                        time.sleep(2.5)
+                        if self._cancel.wait(2.5):
+                            raise _DrillCancelled()
                     self._narrate(f"   chunk {i + 1}/3 sent, connection closed.")
                     if i < 2:
-                        time.sleep(1.0)
+                        if self._cancel.wait(1.0):
+                            raise _DrillCancelled()
                 self._narrate("   done.")
                 technique = "T1041-style outbound test (burst)"
                 desc = (f"Opened 3 short sequential outbound connections to {host}:{port} and "
@@ -715,6 +752,8 @@ class SharkAttackEngine:
                               "test/documentation domain) and sending a fixed dummy marker. No "
                               "real data of any kind is ever read or transmitted.")
                 with socket.create_connection((host, port), timeout=5) as s:
+                    if self._cancel.is_set():
+                        raise _DrillCancelled()
                     try:
                         s.sendall(EXFIL_MARKER)
                     except OSError:
@@ -722,7 +761,8 @@ class SharkAttackEngine:
                     self._narrate(f"   connected to {host}:{port}, holding the connection open "
                                   f"{self.HOLD_OPEN_S:.0f}s so Network Monitor's poller has a "
                                   "fair window to observe it.")
-                    time.sleep(self.HOLD_OPEN_S)
+                    if self._cancel.wait(self.HOLD_OPEN_S):
+                        raise _DrillCancelled()
                 self._narrate("   done — connection closed.")
                 technique = f"T1041-style outbound test (held, port {port})"
                 desc = (f"Opened a real outbound connection to {host}:{port} and sent a fixed "

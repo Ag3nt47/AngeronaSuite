@@ -21,6 +21,7 @@ tools when you opt in.
 from __future__ import annotations
 
 import hashlib
+import threading
 import time
 import uuid
 from collections import deque
@@ -92,6 +93,7 @@ class Assistant:
     """
 
     def __init__(self, *, enabled: bool = False, memory_turns: int = 200) -> None:
+        self._state_lock = threading.RLock()
         self._enabled = bool(enabled)
         self._tools: dict[str, Tool] = {}
         self._tool_generation = 0
@@ -102,30 +104,63 @@ class Assistant:
 
     @property
     def enabled(self) -> bool:
-        return self._enabled
+        with self._state_lock:
+            return self._enabled
 
     @enabled.setter
     def enabled(self, value: bool) -> None:
-        self._enabled = bool(value)
-        if not self._enabled and hasattr(self, "_pending"):
-            self._pending.clear()
+        with self._state_lock:
+            self._enabled = bool(value)
+            if not self._enabled and hasattr(self, "_pending"):
+                self._pending.clear()
 
     # ── Registration ──────────────────────────────────────────────────────────
     def register(self, name: str, kind: ToolKind, fn: Callable[..., Any],
                  description: str = "", preview: Optional[Callable[..., str]] = None) -> None:
-        self._invalidate_pending_for(name)
-        self._tool_generation += 1
-        self._tools[name] = Tool(name, kind, fn, description, preview,
-                                 self._tool_generation)
+        with self._state_lock:
+            self._invalidate_pending_for(name)
+            self._tool_generation += 1
+            self._tools[name] = Tool(name, kind, fn, description, preview,
+                                     self._tool_generation)
 
     def unregister(self, name: str) -> bool:
-        self._invalidate_pending_for(name)
-        return self._tools.pop(name, None) is not None
+        with self._state_lock:
+            self._invalidate_pending_for(name)
+            return self._tools.pop(name, None) is not None
 
     def _invalidate_pending_for(self, name: str) -> None:
-        for token, action in list(self._pending.items()):
-            if action.name == name:
+        with self._state_lock:
+            self._prune_expired_pending(full_scan=True)
+            for token, action in list(self._pending.items()):
+                if action.name == name:
+                    self._pending.pop(token, None)
+
+    def _prune_expired_pending(self, *, full_scan: bool = False) -> int:
+        """Release abandoned confirmation snapshots after their TTL.
+
+        Staged actions normally arrive in timestamp order, so the hot path only
+        examines/removes expired entries from the dict's oldest edge. Registry
+        changes and the operator-facing ``pending()`` view use a full scan to
+        remain correct if the wall clock changes or a test adjusts timestamps.
+        """
+        with self._state_lock:
+            if not self._pending:
+                return 0
+            now = time.time()
+            expired: list[str] = []
+            if full_scan:
+                expired = [
+                    token for token, action in self._pending.items()
+                    if now - action.staged_at > self._confirm_ttl
+                ]
+            else:
+                for token, action in self._pending.items():
+                    if now - action.staged_at <= self._confirm_ttl:
+                        break
+                    expired.append(token)
+            for token in expired:
                 self._pending.pop(token, None)
+            return len(expired)
 
     def register_trigger(self, name: str, predicate: Callable[[dict], Optional[str]]) -> None:
         """A proactive trigger: given a state dict, return a message to surface,
@@ -133,7 +168,8 @@ class Assistant:
         self._triggers.append((name, predicate))
 
     def tools(self) -> list[str]:
-        return sorted(self._tools)
+        with self._state_lock:
+            return sorted(self._tools)
 
     # ── Memory ────────────────────────────────────────────────────────────────
     def remember(self, role: str, text: str, **meta) -> None:
@@ -151,7 +187,8 @@ class Assistant:
         if not self.enabled:
             return self._say(Result(False, "ARIA is disabled; no tool was invoked."))
         self.remember("user", f"invoke {name}({_fmt_args(args, kwargs)})")
-        tool = self._tools.get(name)
+        with self._state_lock:
+            tool = self._tools.get(name)
         if tool is None:
             return self._say(Result(False, f"No such tool: {name!r}."))
 
@@ -175,14 +212,26 @@ class Assistant:
                        else f"{name}({_fmt_args(call_args, call_kwargs)})")
         except Exception as exc:
             return self._say(Result(False, f"Could not safely stage {name}: {exc}"))
-        token = uuid.uuid4().hex[:8]
         digest = _action_digest(name, tool.version, tool.kind,
                                 frozen_args, frozen_kwargs, preview)
-        self._pending[token] = StagedAction(
-            name=name, version=tool.version, kind=tool.kind, fn=tool.fn,
-            args=frozen_args, kwargs=frozen_kwargs, preview=preview,
-            staged_at=time.time(), digest=digest,
-        )
+        with self._state_lock:
+            if not self._enabled:
+                return self._say(Result(False, "ARIA is disabled; no action was staged."))
+            if self._tools.get(name) is not tool:
+                return self._say(Result(False, "The registered action changed; re-issue the action."))
+            self._prune_expired_pending()
+            for _attempt in range(64):
+                token = uuid.uuid4().hex
+                if token not in self._pending:
+                    break
+            else:  # A broken or adversarial token source must fail closed.
+                return self._say(Result(False, "Could not allocate a unique confirmation token."))
+            self._pending[token] = StagedAction(
+                name=name, version=tool.version, kind=tool.kind, fn=tool.fn,
+                args=frozen_args, kwargs=frozen_kwargs, preview=preview,
+                staged_at=time.time(), digest=digest,
+            )
+        self._record_shadow_preview(name, tool.version, frozen_args, frozen_kwargs)
         msg = (f"⚠ Confirmation required before executing a change.\n"
                f"    Action : {preview}\n"
                f"    Confirm: reply/confirm with token {token}  (expires in {int(self._confirm_ttl)}s)")
@@ -190,15 +239,16 @@ class Assistant:
 
     def confirm(self, token: str) -> Result:
         """Execute a previously staged WRITE tool by its confirmation token."""
-        if not self.enabled:
-            self._pending.clear()
-            return self._say(Result(False, "ARIA is disabled; confirmation was refused."))
-        staged = self._pending.pop(token, None)
+        with self._state_lock:
+            if not self._enabled:
+                self._pending.clear()
+                return self._say(Result(False, "ARIA is disabled; confirmation was refused."))
+            staged = self._pending.pop(token, None)
+            tool = self._tools.get(staged.name) if staged is not None else None
         if staged is None:
             return self._say(Result(False, "Unknown or already-used confirmation token."))
         if time.time() - staged.staged_at > self._confirm_ttl:
             return self._say(Result(False, "Confirmation expired — re-issue the action."))
-        tool = self._tools.get(staged.name)
         if tool is None:                       # tool removed between stage & confirm
             return self._say(Result(False, f"Tool {staged.name!r} no longer registered."))
         if (staged.kind is not ToolKind.WRITE or tool.kind is not ToolKind.WRITE or
@@ -218,10 +268,57 @@ class Assistant:
             return self._say(Result(False, f"{staged.name} execution failed: {exc}"), role="tool")
 
     def cancel(self, token: str) -> bool:
-        return self._pending.pop(token, None) is not None
+        with self._state_lock:
+            return self._pending.pop(token, None) is not None
 
     def pending(self) -> list[str]:
-        return list(self._pending)
+        with self._state_lock:
+            self._prune_expired_pending(full_scan=True)
+            return list(self._pending)
+
+    def _record_shadow_preview(self, name: str, version: int, args: tuple,
+                               kwargs: tuple) -> None:
+        """Mirror a WRITE preview into the experimental policy model.
+
+        The comparison is audit data only.  It is deliberately isolated from
+        the confirmation/execution path: every failure is swallowed, no result
+        is returned to branch on, and only a digest plus diagnostic codes enter
+        the already-bounded conversation memory.
+        """
+        try:
+            from angerona.core.action_policy import compare_current, evaluate_shadow
+
+            now = time.time()
+            shadow = evaluate_shadow(
+                {"kind": "assistant", "id": "aria"},
+                {"name": name, "arguments": {"args": args, "kwargs": kwargs}},
+                {"kind": "tool", "id": name, "version": version},
+                {"phase": "preview", "proposed_at": now,
+                 "expires_at": now + self._confirm_ttl, "simulation": False,
+                 "host_mutation": True},
+            )
+            comparison = compare_current("STAGE", shadow)
+            meta = {
+                "shadow_only": True,
+                "policy_version": shadow.policy_version,
+                "current_decision": comparison.current_decision,
+                "shadow_decision": comparison.shadow_decision,
+                "aligned": comparison.aligned,
+                "digest": comparison.digest,
+                "diagnostics": shadow.diagnostics + comparison.diagnostics,
+            }
+        except Exception:
+            # The shadow must never affect existing staging/confirmation.
+            meta = {
+                "shadow_only": True,
+                "policy_version": "unavailable",
+                "current_decision": "STAGE",
+                "shadow_decision": "DENY",
+                "aligned": True,
+                "digest": "",
+                "diagnostics": ("kernel.error",),
+            }
+        self.remember("system", "Response Safety Kernel shadow comparison", **meta)
 
     # ── Proactivity (speak, never act) ────────────────────────────────────────
     def check_proactive(self, state: dict) -> list[str]:

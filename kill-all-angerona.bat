@@ -16,7 +16,7 @@ if errorlevel 1 (
 
 echo [*] Terminating Angerona-owned Python processes only ...
 set "ANGERONA_ROOT=%~dp0"
-powershell -NoProfile -Command "$root=[IO.Path]::GetFullPath($env:ANGERONA_ROOT).TrimEnd([char]92); Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'python.exe' -or $_.Name -eq 'pythonw.exe') -and (($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) -or ($_.CommandLine -and $_.CommandLine.IndexOf($root,[StringComparison]::OrdinalIgnoreCase) -ge 0)) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command ". '%~dp0tools\angerona_process_owner.ps1'; $root=[IO.Path]::GetFullPath($env:ANGERONA_ROOT); Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'python.exe' -or $_.Name -eq 'pythonw.exe') -and (Test-AngeronaProcessOwnership -Process $_ -Root $root) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 
 echo [*] Unloading Angerona's llama3 model ...
 set "OLLAMA_CLI=ollama"

@@ -108,3 +108,191 @@
   bounded severity-aware retention, the disabled ARIA gate, D-drive setup, and
   Round 1 UI caches showed no new regression in this static pass.
 - Convergence: **NO**; remediation and independent validation are required.
+
+## Round 2 — Remediation
+
+- Fixed both drill Stop & clean paths with interruptible cancellation, bounded
+  join/final cleanup, worker-overlap refusal, and no Shark completion callback
+  after cancellation.
+- Replaced emergency-shutdown substring ownership with a canonical,
+  entry-point-aware predicate; sibling prefixes, unrelated repo-file readers,
+  mixed case, quoting, and PID reuse are covered.
+- Bound ARIA confirmations to the exact versioned WRITE callback, immutable
+  arguments, preview, expiry, and digest; registry changes revoke previews.
+- Split local research preview from confirmed browser/indicator egress.
+- Gates: **5/5 compile**, **4/4 focused regressions**, **2/2 module self-tests**;
+  diff check passed with line-ending notices only. Rules and host state were not
+  changed.
+
+## Round 2 — Bug Test / QA
+
+- Full compile passed **201/201** Python files; conflict and diff-integrity
+  scans passed.
+- Module integrity passed: **62/62 imports**, **61/61 construction/discovery**,
+  0 errors, 0 duplicate names, and 0 duplicate non-empty codes.
+- With pytest absent, direct repository runners passed **15/15** Round 1,
+  Round 2, policy/drill, lifecycle, storage-path, and shutdown regressions.
+- ARIA/research self-tests passed **12/12**.
+- Full offscreen application self-check passed **26/26**; raw module result was
+  **47 pass, 15 expected stopped/idle/Ollama skips, 0 genuine failures**. The
+  benign live drill completed 30 steps over two phases and cleaned its marker.
+- Canonical data and temp paths were asserted under
+  `D:\local-security-ai\AngeronaSuite\runtime-data`; the current self-check
+  produced no new crash or watchdog record, and the self-test failure ledger is
+  empty.
+- **New production bugs: 0; code changes in this phase: 0.** Round 2 QA is
+  converged; the scheduled performance/visionary and Round 3 gates remain.
+
+## Round 2 - Performance
+
+- Found one proven long-session retention defect in ARIA's newly bound WRITE
+  confirmations: expired, abandoned action snapshots were never retired. A
+  20,000-action probe retained **20,001 records / 30.129 MiB** after expiry.
+- Added TTL cleanup before another WRITE is staged, with an efficient oldest-
+  edge hot path and full expiry scans only for registry mutation/operator
+  inspection. Still-valid tokens and every confirmation safety binding remain
+  unchanged.
+- The identical post-fix probe retained **1 record / 0.403 MiB**, releasing
+  **98.7%** of traced retained memory. Normal binding cost remained about
+  **260 us/action** versus **255 us/action** before.
+- Repeated actual cancellation left **0** Red Team/Shark worker threads after
+  100 runs each (p95 **0.650/0.302 ms**). Five thousand research reads plus
+  5,000 staged/cancelled previews left **0 pending** and **0.009 MiB** current
+  traced memory. The emergency shutdown helper is not resident during normal
+  operation; Round 1 caches are constant-size.
+- Gates: full compile helper **194/194**, affected compile **5/5**, direct Round
+  2 regressions **5/5**, ARIA **12/12**, diff integrity PASS. No visible GUI,
+  detector cadence, response durability, rules, or host process state changed.
+- Performance convergence: **YES** for the measured Round 2 scope.
+
+## Round 2 - Visionary
+
+- Scored the three Round 1 concepts against the post-remediation architecture.
+  Response Safety Kernel remained the only candidate suitable for a bounded
+  MVP; Sensor Cells remain proposed and Collective Baseline Exchange remains
+  research-only.
+- Added a dependency-free, pure `core/action_policy.py` shadow evaluator with
+  bounded canonical input, deterministic digests/codes, stale-process and
+  protected-process checks, argument-binding comparison, and fail-closed shadow
+  results for missing context or policy errors.
+- Wired only ARIA's already-staged WRITE preview to a digest-only comparison in
+  its bounded memory. Confirmation, execution, SOAR containment, rules, host
+  actions, network behavior, and visible GUI do not consult the shadow result.
+- Focused tests passed **7/7**; action-policy self-test PASS; existing Round 2
+  regressions **5/5**; ARIA **12/12**; compile helper **195/195**. A 10,000-call
+  preview probe measured approximately **35.309 microseconds/evaluation**.
+- Round 3 must prove no production branch consumes the shadow decision, fuzz
+  canonicalization, re-check bounded/no-secret audit metadata, and keep SOAR
+  unwired unless a separate latency/recursion audit justifies observation only.
+## 2026-07-14 21:19 EDT - Round 3 red-team
+
+- Completed the final read-only convergence audit of the combined post-Round-2
+  tree, including the Response Safety Kernel shadow boundary, ARIA confirmation
+  lifecycle/TTL, research egress, drill cancellation races, shutdown ownership,
+  trusted-process/AAR/remediation/retention paths, D-drive storage, performance,
+  and current crash/watchdog evidence.
+- Verified the new Response Safety Kernel remains shadow-only: its decisions and
+  alignment metadata are never consumed by confirmation, SOAR, or another host
+  action path.
+- Found one new LOW opt-in issue, C2-R3-01: 32-bit ARIA confirmation tokens are
+  inserted without collision handling. A deterministic repeated-UUID probe
+  proved the older visible token can select a newer staged action.
+- No new MEDIUM/HIGH/CRITICAL issue was established. Round 3 red-team is not yet
+  converged pending the small token-allocation remediation and independent gates.
+- Reports: `round3/redteam_findings.md` and `round3/redteam_findings.json`.
+
+## 2026-07-14 21:26 EDT - Round 3 remediation
+
+- Closed C2-R3-01 with full 128-bit UUID4 hexadecimal confirmation tokens and
+  collision-safe allocation that never replaces a live staged action.
+- Added one re-entrant state lock around pending confirmation and tool-registry
+  mutation; user callbacks and the Response Safety Kernel shadow evaluator
+  remain outside the lock.
+- Added a deterministic repeated-UUID regression proving both previews retain
+  distinct tokens and each confirmation executes only its own immutable bound
+  callback and arguments.
+- Gates: changed compile **2/2**, forced collision **1/1**, Round 2 remediation
+  **5/5**, visionary shadow-policy **7/7**, and ARIA **12/12** all PASS; scoped
+  diff-integrity PASS.
+- Rules, GUI, runtime configuration, and host state were not changed.
+- Report: `round3/remediation_summary.md`.
+
+## 2026-07-14 21:34 EDT - Round 3 final bug test / QA
+
+- Complete combined-tree compile passed **205/205** Python files; the
+  production-package helper passed **195/195**. Conflict-marker and diff-
+  integrity gates passed.
+- Module integrity passed: **62/62 imports**, **61/61 construction/discovery**,
+  0 errors, 0 duplicate names, and 0 duplicate non-empty codes.
+- All focused Cycle 2 and lifecycle regressions passed **24/24**; ARIA/research
+  passed **12/12** and the Response Safety Kernel self-test passed.
+- A bounded pending-action probe retained both forced-collision actions,
+  produced **480/480 unique concurrent tokens**, executed each exactly once
+  while refusing 480 duplicate confirmations, retired 200 expired snapshots,
+  and left no stale pending state.
+- Full offscreen application self-check passed **26/26**; raw module result was
+  **47 pass, 15 expected stopped/idle/Ollama skips, 0 genuine failures**. The
+  benign live drill completed 30 steps over two phases and cleaned its marker.
+- Canonical data, `TEMP`, `TMP`, and Python temp paths all resolved under the
+  D-drive runtime directory. Crash and watchdog logs were unchanged; the new
+  self-test ledger contains 0 failures.
+- **Final QA convergence: YES. New production bugs: 0; QA code changes: 0.**
+- Report: `round3/bugtest_results.md`.
+
+## 2026-07-15 - Round 3 final performance
+
+- Confirmed the 21:39:50 watchdog entry as a valid 5.4-second production stall:
+  the GUI was waiting in `DashboardCards.refresh -> FlightRecorder.max_ts ->
+  storage._lock` while the machine was awake. Sleep/wake and shutdown happened
+  afterward and do not explain that entry.
+- Applied a narrow fix: dashboard cards
+  and the live alert feed now use a post-commit in-memory ledger revision plus
+  immediate-only interactive reads, so the Qt thread keeps its last complete
+  view and retries instead of waiting behind SQLite writer/retention work.
+- Controlled writer contention: the former blocking query waited **250.407 ms**
+  for a 250 ms hold; **10,000** new busy-path probe triplets completed in
+  **10.966 ms** (~1.10 us/triplet), with revision reads at **306.4 ns/call**.
+- ARIA stage/cancel remained bounded at **663.63 us/action** with memory tracing,
+  **0 pending**, and **0.037 MiB** retained; shadow evaluation measured
+  **63.46 us/call**. Cancellation, caches, sequential wake-up, retention, and
+  diagnostic bounds showed no new regression.
+- Gates: changed compile **3/3**, focused storage **1/1**, Cycle 2 regressions
+  **16/16**, package compile **195/195**, ARIA/research **12/12**, lifecycle and
+  scoped diff integrity all PASS. Final performance convergence: **YES**.
+- Report: `round3/performance_summary.md`.
+
+## 2026-07-15 - Round 3 final visionary review
+
+- Final disposition: keep the Response Safety Kernel MVP exactly as a bounded
+  shadow experiment; no rollback is warranted and promotion is not authorized.
+- Proved the boundary remains unchanged after the token-lock and non-blocking
+  storage fixes. Source-wide search found no confirmation, SOAR, Resolve Center,
+  drill, shutdown, trust, or storage branch consuming shadow decisions.
+- Re-ran the shadow-policy **7/7**, token-collision **1/1**, non-blocking storage
+  **1/1**, and changed-file compile **3/3** gates; all passed.
+- Re-scored Sensor Cells as a future one-parser lab prototype and Collective
+  Baseline Exchange as research-only. Added two proposed-only next-cycle ideas:
+  a local Lifecycle Epoch Ledger and an advisory Shadow Differential Review.
+- The operator-confirmed sleep/wake/watchdog lifecycle action is treated as
+  legitimate evidence, not a new defect or a reason to change the shadow MVP.
+- Recorded a six-stage future safety-kernel roadmap with an explicit operator
+  approval gate before each scope expansion and before any enforcement.
+- Implemented in this phase: report/log only. Proposed items were not shipped.
+  Final visionary convergence: **YES**.
+- Report: `round3/visionary_summary.md`.
+
+## 2026-07-15 - Documentation / Cycle 2 complete
+
+- Three adversarial/remediation/QA/performance loops completed and converged:
+  **10/10 security findings fixed** with no unresolved Cycle 2 finding.
+- Final gates: complete-tree compile **205/205**, production package **195/195**,
+  module imports **62/62**, discovery **61/61**, focused regressions **24/24**,
+  ARIA/research **12/12**, and full self-check **26/26** with **0 genuine
+  module failures**.
+- Updated both README and llms mirrors plus eight distinct current Word masters;
+  published hash-matched current copies to the Desktop analysis folder while
+  preserving historical snapshots.
+- DOCX structural and accessibility QA passed **8/8**. Pixel/page render QA was
+  unavailable because LibreOffice is absent and the installed Word automation
+  type library is broken; no page counts were guessed.
+- Documentation manifest: `DOCUMENTATION_UPDATE.md`. Cycle 2 state: COMPLETE.

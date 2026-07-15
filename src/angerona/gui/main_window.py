@@ -218,6 +218,10 @@ class MainWindow(QMainWindow):
 
         self.console = CommandConsolePanel(CommandConsole(manager, bus, config))
 
+        # ── ARIA (v1.8.0): HUD tab + local assistant. Fully guarded so any
+        # ARIA import/build failure just skips it without touching the rest.
+        self._wire_aria()
+
         body = QSplitter(Qt.Vertical)
         body.addWidget(top_split)
         body.addWidget(self.console)
@@ -981,6 +985,131 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     # ── Threat Posture indicator ─────────────────────────────────────────────
+    # ── ARIA (local, defensive-only assistant layer) ──────────────────────────
+    def _wire_aria(self) -> None:
+        """Instantiate the ARIA layer and add the HUD tab. Fully guarded — any
+        failure just skips ARIA without affecting the rest of the UI."""
+        self.aria_hud = None
+        self.aria_voice = None
+        self.aria_push = None
+        self.aria_governor = None
+        self._aria_crit_announced = False
+        # Master toggle (Settings ▸ ARIA). Default on so the HUD is visible.
+        if not getattr(self.config, "aria_enabled", True):
+            return
+        try:
+            from pathlib import Path
+            from angerona.core.posture_history import init_history
+            from angerona.core.runbook_rag import RunbookRAG
+            from angerona.core.assistant import Assistant, ToolKind
+            from angerona.gui.aria_hud import AriaHud
+
+            # Posture-Score trend store — its OWN small DB (not the hot
+            # flight-recorder.db) so the HUD's occasional trend writes can never
+            # lock-contend with the high-frequency event writer on the GUI thread.
+            _hist_db = str(Path(self.config.data_dir) / "aria_posture_history.db")
+            self.aria_history = init_history(_hist_db)
+            self._aria_last_score = None
+
+            # Runbook RAG over any local playbooks (best-effort; empty is fine).
+            root = Path(__file__).resolve().parents[3]
+            self._aria_rag = RunbookRAG([str(root / "docs"),
+                                         str(root / "playbooks"),
+                                         str(Path(self.config.data_dir) / "runbooks")])
+            try:
+                self._aria_rag.build()
+            except Exception:
+                pass
+
+            # The assistant (reads live; writes stay confirm-then-execute).
+            self.aria = Assistant(enabled=True)
+            self.aria.register("posture", ToolKind.READ,
+                               lambda: getattr(self, "_last_posture", {}) or {},
+                               "current Angerona posture")
+
+            self.aria_hud = AriaHud(
+                score_fn=lambda: int((getattr(self, "_last_posture", {}) or {}).get("score", 100)),
+                alerts_fn=lambda: int(((getattr(self, "_last_posture", {}) or {}).get("factors", {}) or {}).get("active_threats", 0)),
+                sparkline_fn=lambda: self.aria_history.sparkline(32),
+                trend_fn=lambda: int(self.aria_history.trend().get("delta", 0)),
+                ask_fn=self._aria_ask,
+            )
+            self._right_tabs.addTab(self.aria_hud, "ARIA")
+
+            # ── Opt-in connectors (each honours its own Settings toggle) ──────
+            # Overdrive governor — read-only tuning authority, instantiated so
+            # panels/callers can consult it; only active when enabled.
+            try:
+                from angerona.core.perf_governor import init_governor
+                self.aria_governor = init_governor(
+                    enabled=bool(getattr(self.config, "perf_governor_enabled", False)))
+            except Exception:
+                self.aria_governor = None
+            # Voice I/O — off unless enabled; degrades silently without a backend.
+            try:
+                from angerona.connectors.voice import init_voice
+                self.aria_voice = init_voice(
+                    enabled=bool(getattr(self.config, "aria_voice_enabled", False)),
+                    allow_cloud_tts=bool(getattr(self.config, "aria_voice_cloud_tts", False)))
+            except Exception:
+                self.aria_voice = None
+            # Channel auto-brief — only if enabled AND a URL is configured.
+            try:
+                url = str(getattr(self.config, "aria_push_url", "") or "").strip()
+                if getattr(self.config, "aria_push_enabled", False) and url:
+                    from angerona.connectors.channel_push import (
+                        init_channel_push, Target, Level)
+                    self.aria_push = init_channel_push(
+                        enabled=True, min_level=Level.CRITICAL,
+                        targets=[Target(str(getattr(self.config, "aria_push_kind", "slack")), url)])
+                else:
+                    self.aria_push = None
+            except Exception:
+                self.aria_push = None
+            # Research egress preference (browser-surface by default).
+            try:
+                from angerona.connectors.research import init_research
+                from angerona.connectors.research_fetchers import HttpFetcher
+                _egress = bool(getattr(self.config, "aria_research_egress", False))
+                init_research(enabled=_egress,
+                              fetch=HttpFetcher(allow_egress=True) if _egress else None)
+            except Exception:
+                pass
+        except Exception as exc:
+            self.aria_hud = None
+            try:
+                self.console._append(f"[aria] wiring skipped: {exc}")
+            except Exception:
+                pass
+
+    def _aria_ask(self, text: str) -> str:
+        """HUD chat handler: posture summary, runbook answers, or indicator
+        research. Recon opens vetted lookups in the browser (user-initiated,
+        read-only); anything that would change host state stays gated."""
+        t = (text or "").strip()
+        if not t:
+            return ""
+        low = t.lower()
+        try:
+            if low in ("score", "posture", "status"):
+                p = getattr(self, "_last_posture", {}) or {}
+                return f"Angerona Score {p.get('score', '?')} — {p.get('label', '?')}."
+            if low in ("help", "?", "tools", "commands"):
+                return ("Ask ARIA: 'score' for posture; a runbook question like "
+                        "'how do we handle ransomware'; or paste an indicator "
+                        "(hash / IP / domain / CVE) to open vetted lookups.")
+            from angerona.connectors.research import classify, get_research
+            if classify(t) != "unknown":
+                task = get_research().run(t)
+                from angerona.connectors.research_fetchers import open_sources
+                opened = open_sources(task)
+                srcs = ", ".join(n for n, _ in task.sources) or "none"
+                return f"{t} → {task.kind}: opened {opened} vetted source(s) [{srcs}]."
+            ans = self._aria_rag.answer(t) if getattr(self, "_aria_rag", None) else ""
+            return ans or "No runbook match. Try 'score', 'help', or paste an indicator."
+        except Exception as exc:
+            return f"[aria error] {exc}"
+
     def _refresh_posture(self) -> None:
         try:
             from angerona.core.posture import posture, posture_tooltip
@@ -993,6 +1122,39 @@ class MainWindow(QMainWindow):
             f"color:{p['color']}; font-weight:800; font-size:11px; letter-spacing:1px;")
         try:
             self.posture_lbl.setToolTip(posture_tooltip(p))
+        except Exception:
+            pass
+        # Feed the ARIA HUD: record the score trend (on change) and repaint.
+        try:
+            if getattr(self, "aria_hud", None) is not None:
+                s = int(p.get("score", 0))
+                if getattr(self, "_aria_last_score", None) != s:
+                    self.aria_history.record(s, band=str(p.get("label", "")))
+                    self._aria_last_score = s
+                self.aria_hud.refresh()
+                # Proactive: announce a NEW critical posture once (voice + channel).
+                # Both are no-ops unless their Settings toggle is on. Re-arms only
+                # after posture recovers above the critical threshold.
+                if s < 50 and not self._aria_crit_announced:
+                    self._aria_crit_announced = True
+                    msg = f"Angerona posture critical — score {s} ({p.get('label', '')})."
+                    v, pu = getattr(self, "aria_voice", None), getattr(self, "aria_push", None)
+                    if v is not None or pu is not None:
+                        # TTS runAndWait and the urllib POST both block — never on
+                        # the Qt thread. Fire-and-forget on a daemon thread.
+                        def _announce(_v=v, _pu=pu, _m=msg):
+                            for _fn in ((lambda: _v.speak(_m)) if _v else None,
+                                        (lambda: _pu.push(_m, level="CRITICAL")) if _pu else None):
+                                if _fn is None:
+                                    continue
+                                try:
+                                    _fn()
+                                except Exception:
+                                    pass
+                        threading.Thread(target=_announce, name="AriaAnnounce",
+                                         daemon=True).start()
+                elif s >= 50:
+                    self._aria_crit_announced = False
         except Exception:
             pass
 

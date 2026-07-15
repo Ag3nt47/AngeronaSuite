@@ -62,7 +62,7 @@ marker—no real exploit, secret, or persistence mechanism is touched.
 - **Shark Attack drill** — the classic commodity-malware chain (lure → discovery → persistence → exfil markers) with an animated swimming-shark indicator; exercises detect-and-respond end to end.
 - **After-Action Report** — every drill produces a report. Simulated detection gaps use deterministic, run-scoped **Resolve Findings** (never model-authored host PowerShell); genuine host weaknesses retain the reviewed **Attempt Fix** workflow. **🧹 Clean & Close** erases all drill markers.
 - **Resolve Center** — the Threat-level box lists the CRITICAL/HIGH alerts driving it, each with Allow / Block / Analyze / Research / Apply and **Ignore** (acknowledge → excluded from the threat level), so false positives clear back to Secure.
-- **Trusted Processes** — Settings includes an exact-path/name policy plus supervised discovery of currently running executables. Trusted process alerts are excluded from posture and automatic response without muting the scanner module; Resolve Center's **Allow** action is process-aware.
+- **Trusted Processes** — Settings includes exact-path trust plus supervised discovery of currently running executables. Path-rich telemetry requires an exact canonical path; basename entries are a pathless-telemetry fallback and cannot suppress memory scanning. Resolve Center's **Allow** action is process-aware.
 - **MITRE ATT&CK heatmap (tabbed)** — live heat matrix + a Coverage tab (Detect/Simulate/Remediate map with % and blind spots) + a Top-Techniques tab, richer cell detail, search, and an AI posture summary.
 - **Posture Hardening (self-healing)** — records exploited host weaknesses and stages review-gated PowerShell/registry remediations; simulated drill gaps are kept on a separate deterministic resolution path and reopen on a later failed run.
 - **Active defense (SOAR)** — under a corroborated attack, Angerona auto-contains the offending process (suspend → kill on repeat) and **isolates its network** with a hidden firewall rule, so it can't reach a C2 even if resumed. A protected-process allowlist and 2-signal corroboration keep Windows itself safe.
@@ -91,8 +91,10 @@ Run every ARIA self-test from the repo root: `python run_aria_selftests.py`
   live load with hysteresis, and under a threat spike sheds UI work first so
   detection keeps its cycles. Never throttles the security path.
 - **ARIA assistant** — `core/assistant.py`. Conversation memory + a READ/WRITE
-  tool registry: reads run live, every write is confirm-then-execute (single-use
-  token). Proactive triggers speak, never act. No offensive tools.
+  tool registry: reads run live, every write is confirm-then-execute with an
+  immutable callback/version/argument/preview binding, a five-minute TTL, and a
+  collision-safe 128-bit single-use token. Expired previews are pruned. Proactive
+  triggers speak, never act. No offensive tools.
 - **Runbook RAG** — `core/runbook_rag.py`. Pure-Python BM25 over your markdown
   playbooks; answers cite your own procedures. No model, no network.
 - **Posture history** — `core/posture_history.py`. Append-only Angerona-Score
@@ -107,9 +109,39 @@ Run every ARIA self-test from the repo root: `python run_aria_selftests.py`
 - **Connectors** — `connectors/` (all opt-in, degraded-safe): `voice.py`
   (local TTS/STT + "hey aria"), `channel_push.py` (Slack/Teams/ntfy briefings,
   secret-redacted), `inbox_triage.py` (local phishing heuristics), `research.py`
-  (indicator → vetted lookups) + `research_fetchers.py` (the browser bridge:
-  opens the vetted URLs where Claude-for-Chrome reads them, or an opt-in
-  GET-only allow-listed headless fetcher; registers a live `research` tool).
+  (indicator → vetted lookups) + `research_fetchers.py`. The `research` READ
+  only builds a local vetted-source plan; opening browser sources is a separate
+  confirmed WRITE/egress action and defaults off.
+
+### v1.8.0 three-loop hardening and performance convergence
+
+- **Reliable drills and remediation** — After-Action correlation now requires
+  an exact full path or PID plus an opaque drill token, uses bounded step
+  windows and single-use evidence, and binds remediation to the triggering
+  event. **Stop & Clean** cancels interruptible waits, refuses overlapping
+  workers, performs a bounded join, and finishes scoped cleanup.
+- **Scoped shutdown** — emergency recovery recognizes only Angerona-owned
+  Python entry points, gracefully unloads Angerona llama3 models, and never
+  image-kills all Python or Ollama runners.
+- **D:-resident, bounded evidence** — runtime data and temporary work remain
+  under `D:\local-security-ai\AngeronaSuite\runtime-data`. SQLite stays
+  hard-bounded and prunes lower-severity rows before HIGH/CRITICAL evidence;
+  AAR history, WAL growth, and watchdog logs remain capped.
+- **Long-session responsiveness** — unchanged SOAR queue parsing and dashboard
+  text/style work are cached; abandoned ARIA action previews are TTL-pruned.
+  After a valid 5.4-second production stall showed the GUI waiting behind the
+  SQLite writer, dashboard and live-alert refreshes moved to a committed
+  revision plus immediate-only reads: a busy refresh keeps the last complete
+  view and retries instead of freezing.
+- **Response Safety Kernel experiment** — `core/action_policy.py` is a bounded,
+  digest-only **shadow evaluator** attached to ARIA WRITE previews. It has no
+  authority: confirmation, SOAR, Resolve Center, drills, shutdown, trust, and
+  storage never branch on its ALLOW/DENY result.
+- **Final three-loop gates** — 205/205 Python files compiled; 62/62 module files
+  imported; 61 modules discovered; focused regressions passed 24/24;
+  ARIA/research passed 12/12; the full application self-check passed 26/26.
+  Raw module diagnostics reported 47 pass and 15 expected stopped/idle/Ollama
+  skips, with zero genuine failures.
 
 ## 🆕 What's new in v1.7.6 — the "Legendary Upgrades" (next-gen engines)
 
@@ -198,7 +230,8 @@ run.bat       :: self-elevates and launches the GUI
 ```
 
 Optional: `create-launcher.ps1` puts an **Angerona** shortcut on your desktop.
-If instances ever pile up, `kill-all-angerona.bat` force-stops them all and unloads Angerona's resident llama3 model.
+If an Angerona instance becomes wedged, `kill-all-angerona.bat` stops only
+suite-owned Python entry points and unloads Angerona's resident llama3 model.
 
 ## 📦 Install (release build)
 

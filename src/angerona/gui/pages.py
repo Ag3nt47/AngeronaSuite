@@ -343,18 +343,20 @@ class DashboardCards(QWidget):
         self.c_alerts.clicked.connect(self._open_alerts)
         self.c_crit.clicked.connect(self._open_critical)
         self.c_threat.clicked.connect(self._open_threat)
-        # Cache the last-seen storage max_ts so count_since() only runs when new
-        # events actually arrive — avoids a SQLite COUNT query every 2 s.
-        self._last_storage_ts: float = 0.0
+        # Use the recorder's committed in-memory revision so this timer never
+        # waits behind a SQLite writer/checkpoint on the GUI thread.
+        self._last_storage_revision: int = -1
         self._cached_count: int = 0
 
     def refresh(self) -> None:
         running = sum(1 for m in self.manager.modules.values() if m.status == "running")
         self.c_modules.set(f"{running}/{len(self.manager.modules)}")
-        cur_ts = self.storage.max_ts()
-        if cur_ts != self._last_storage_ts:
-            self._cached_count = self.storage.count_since(time.time() - 86400)
-            self._last_storage_ts = cur_ts
+        revision = self.storage.revision()
+        if revision != self._last_storage_revision:
+            count = self.storage.try_count_since(time.time() - 86400)
+            if count is not None:
+                self._cached_count = count
+                self._last_storage_revision = revision
         self.c_alerts.set(str(self._cached_count))
 
         events = self.bus.recent(200)
@@ -1948,6 +1950,7 @@ class AlertsPanel(QFrame):
         self.storage = storage
         self._events: list = []
         self._newest_ts: float = 0.0
+        self._last_storage_revision: int = -1
         self._last_gap_rebuild: float = 0.0
         # Modules the operator has allowed — excluded from future rows.
         self._suppressed: set[str] = set()
@@ -2124,6 +2127,7 @@ class AlertsPanel(QFrame):
         )
         # Force refresh to remove suppressed rows immediately
         self._newest_ts = 0.0
+        self._last_storage_revision = -1
         self._events = []
         self.refresh()
 
@@ -2222,18 +2226,23 @@ class AlertsPanel(QFrame):
             self.table.removeRow(r)
 
     def refresh(self) -> None:
-        # Cheap pre-check: a single MAX(ts) aggregation avoids fetching and
-        # deserializing 120 event rows when nothing has changed (the common case).
-        if self.storage.max_ts() == self._newest_ts:
+        # The pre-check is an in-memory committed revision. If a writer is busy,
+        # keep the current table and retry on the next two-second refresh.
+        revision = self.storage.revision()
+        if revision == self._last_storage_revision:
             return
 
-        events = self.storage.recent(120)
+        events = self.storage.try_recent(120)
+        if events is None:
+            return
         if not events:
+            self._last_storage_revision = revision
             return
         newest_ts = events[0].ts          # storage.recent() returns newest-first
 
         # ── fast path: nothing new ──────────────────────────────────────────
         if newest_ts == self._newest_ts and len(events) == len(self._events):
+            self._last_storage_revision = revision
             return
 
         hdr = self.table.horizontalHeader()
@@ -2275,6 +2284,7 @@ class AlertsPanel(QFrame):
 
         self._events = events
         self._newest_ts = newest_ts
+        self._last_storage_revision = revision
 
 
 # ── Bottom status strip ───────────────────────────────────────────────────────
@@ -3133,6 +3143,7 @@ class SettingsDialog(QDialog):
 
         tabs.addTab(self._tab_general(), "General")
         tabs.addTab(self._tab_system(),  "System")
+        tabs.addTab(self._tab_aria(),    "ARIA")
         tabs.addTab(self._tab_trusted_processes(), "Trusted Processes")
         # Mobile Integration is consolidated into the Advanced Management Console so
         # there is only ONE place to configure it. Show a short redirect here.
@@ -3318,6 +3329,77 @@ class SettingsDialog(QDialog):
         sgx_lbl.setWordWrap(True)
         sgx_lbl.setStyleSheet(f"color: {'#22c55e' if _sgx_on else '#94a3b8'}; font-size: 11px;")
         lay.addWidget(sgx_lbl)
+
+        lay.addStretch()
+        return w
+
+    def _tab_aria(self) -> QWidget:
+        """ARIA assistant layer — HUD, Overdrive, voice, auto-brief, inbox, research.
+        Everything here is local-first and off by default (except the HUD itself)."""
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setSpacing(10)
+
+        def _note(text: str) -> None:
+            n = QLabel(text)
+            n.setWordWrap(True)
+            n.setStyleSheet("color:#94a3b8; font-size:11px;")
+            lay.addWidget(n)
+
+        lay.addWidget(self._section("ARIA assistant"))
+        self._aria_chk = QCheckBox("Show the ARIA HUD (orb + posture trend + chat)")
+        self._aria_chk.setChecked(getattr(self._cfg, "aria_enabled", True))
+        lay.addWidget(self._aria_chk)
+        _note("Local, defensive-only. Reads run live; any action stays confirm-then-execute. "
+              "Restart to apply a change.")
+
+        lay.addWidget(self._section("ARIA Overdrive — adaptive performance governor"))
+        self._aria_perf_chk = QCheckBox(
+            "Scale cosmetic/UI work to live load (never throttles detection/response)")
+        self._aria_perf_chk.setChecked(getattr(self._cfg, "perf_governor_enabled", False))
+        lay.addWidget(self._aria_perf_chk)
+
+        lay.addWidget(self._section("Voice (local, opt-in)"))
+        self._aria_voice_chk = QCheckBox("Speak threat narration and accept voice commands ('hey aria')")
+        self._aria_voice_chk.setChecked(getattr(self._cfg, "aria_voice_enabled", False))
+        lay.addWidget(self._aria_voice_chk)
+        self._aria_voice_cloud_chk = QCheckBox("Allow ElevenLabs cloud TTS (opt-in egress; else local SAPI/pyttsx3)")
+        self._aria_voice_cloud_chk.setChecked(getattr(self._cfg, "aria_voice_cloud_tts", False))
+        lay.addWidget(self._aria_voice_cloud_chk)
+        _note("Needs a local TTS/STT backend (pyttsx3/SAPI, vosk/whisper). Degrades silently if "
+              "absent; the mic stays off unless enabled.")
+
+        lay.addWidget(self._section("Auto-brief a channel (outbound, opt-in)"))
+        self._aria_push_chk = QCheckBox("Push CRITICAL posture to a channel")
+        self._aria_push_chk.setChecked(getattr(self._cfg, "aria_push_enabled", False))
+        lay.addWidget(self._aria_push_chk)
+        prow = QHBoxLayout()
+        prow.addWidget(QLabel("Kind:"))
+        self._aria_push_kind = QComboBox()
+        self._aria_push_kind.addItems(["slack", "teams", "ntfy", "webhook"])
+        _ci = self._aria_push_kind.findText(getattr(self._cfg, "aria_push_kind", "slack"))
+        if _ci >= 0:
+            self._aria_push_kind.setCurrentIndex(_ci)
+        prow.addWidget(self._aria_push_kind)
+        prow.addWidget(QLabel("Webhook URL:"))
+        self._aria_push_url = QLineEdit(getattr(self._cfg, "aria_push_url", ""))
+        self._aria_push_url.setPlaceholderText("https://hooks.slack.com/services/…")
+        prow.addWidget(self._aria_push_url, 1)
+        lay.addLayout(prow)
+        _note("Off by default. Only sends text you'd already see (secret-redacted) — never raw "
+              "telemetry, files, or credentials.")
+
+        lay.addWidget(self._section("Inbox triage & research"))
+        self._aria_inbox_chk = QCheckBox(
+            "Flag phishing from a mailbox (IMAP creds in .env: ARIA_IMAP_HOST / USER / PASS)")
+        self._aria_inbox_chk.setChecked(getattr(self._cfg, "aria_inbox_enabled", False))
+        lay.addWidget(self._aria_inbox_chk)
+        self._aria_egress_chk = QCheckBox(
+            "Allow headless research fetches (else open vetted lookups in the browser)")
+        self._aria_egress_chk.setChecked(getattr(self._cfg, "aria_research_egress", False))
+        lay.addWidget(self._aria_egress_chk)
+        _note("Research classifies an indicator (hash / IP / domain / CVE) and uses only "
+              "allow-listed reputation/advisory sites (VirusTotal, NVD, CISA KEV, AbuseIPDB, URLhaus).")
 
         lay.addStretch()
         return w
@@ -3702,6 +3784,17 @@ class SettingsDialog(QDialog):
         except ValueError:
             pass
         self._cfg.ebpf_enabled = self._ebpf_chk.isChecked()
+
+        # ── ARIA toggles ──
+        self._cfg.aria_enabled          = self._aria_chk.isChecked()
+        self._cfg.perf_governor_enabled = self._aria_perf_chk.isChecked()
+        self._cfg.aria_voice_enabled    = self._aria_voice_chk.isChecked()
+        self._cfg.aria_voice_cloud_tts  = self._aria_voice_cloud_chk.isChecked()
+        self._cfg.aria_push_enabled     = self._aria_push_chk.isChecked()
+        self._cfg.aria_push_kind        = self._aria_push_kind.currentText()
+        self._cfg.aria_push_url         = self._aria_push_url.text().strip()
+        self._cfg.aria_inbox_enabled    = self._aria_inbox_chk.isChecked()
+        self._cfg.aria_research_egress  = self._aria_egress_chk.isChecked()
 
         self._cfg.mobile_enabled     = self._mob_chk.isChecked()
         self._cfg.mobile_signal_cli  = self._mob_cli.text().strip()

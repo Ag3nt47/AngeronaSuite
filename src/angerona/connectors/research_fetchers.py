@@ -86,22 +86,47 @@ class HttpFetcher:
 
 # ── Wire research into the ARIA assistant (recon = read-only) ─────────────────
 def register_research_tool(aria, research: Optional[Research] = None, *,
-                           open_in_browser: bool = True,
+                           open_in_browser: bool = False,
                            opener: Optional[Callable[[str], bool]] = None) -> None:
-    """Register a READ tool ``research`` on the assistant. Recon is read-only:
-    building the vetted URLs is local, and in browser mode the app fetches
-    nothing (Claude-for-Chrome reads the opened pages). Returns the ResearchTask."""
+    """Register pure planning plus a separately confirmed browser action.
+
+    ``research`` only classifies the indicator and builds vetted URLs. Opening
+    those URLs is registered as the WRITE tool ``open_research_sources`` so the
+    operator sees a redacted destination preview before any browser/egress side
+    effect. ``open_in_browser`` is retained for caller compatibility but never
+    makes the READ tool open a browser.
+    """
     research = research or Research()
 
     def _research(indicator: str):
-        task = research.run(indicator)
-        if open_in_browser and task.sources:
-            opened = open_sources(task, opener=opener)
-            task.note = (task.note + f"  [opened {opened} source(s) in browser]").strip()
+        # A fresh disabled Research instance guarantees this READ cannot call an
+        # injected fetcher even when the caller supplied an egress-enabled one.
+        return Research(enabled=False).run(indicator)
+
+    def _open(indicator: str):
+        task = Research(enabled=False).run(indicator)
+        opened = open_sources(task, opener=opener)
+        task.note = (task.note + f"  [opened {opened} source(s) in browser]").strip()
         return task
 
+    def _preview(indicator: str) -> str:
+        task = Research(enabled=False).run(indicator)
+        destinations = ", ".join(name for name, _url in task.sources) or "no vetted destinations"
+        return (f"Open {len(task.sources)} vetted research source(s) in the default browser "
+                f"for {_redact_indicator(indicator)}: {destinations}")
+
     aria.register("research", ToolKind.READ, _research,
-                  "look up an indicator (hash/IP/domain/URL/CVE) via vetted sources")
+                  "build a local preview for vetted indicator-research sources")
+    aria.register("open_research_sources", ToolKind.WRITE, _open,
+                  "open vetted indicator-research sources in the browser",
+                  preview=_preview)
+
+
+def _redact_indicator(indicator: str) -> str:
+    value = (indicator or "").strip()
+    if len(value) <= 4:
+        return repr(value)
+    return repr(f"{value[:3]}...{value[-3:]}")
 
 
 # ── Self-test ──────────────────────────────────────────────────────────────────
@@ -138,12 +163,16 @@ def self_test() -> tuple[bool, str]:
             r = aria.invoke("research", "8.8.8.8")     # READ → runs live
             assert r.ok and not r.needs_confirmation, "research is a live READ tool"
             assert isinstance(r.data, ResearchTask) and r.data.kind == "ip", "returns a ResearchTask"
-            assert surfaced, "browser opener invoked through the tool"
+            assert not surfaced, "READ preview must not open a browser"
+            w = aria.invoke("open_research_sources", "8.8.8.8")
+            assert w.ok and w.needs_confirmation and not surfaced, "browser opening must stage"
+            assert "Open 2 vetted" in w.text and "8.8...8.8" in w.text, "redacted preview shown"
+            assert aria.confirm(w.confirm_token).ok and surfaced, "confirmation opens vetted sources"
 
         return True, ("OK — browser mode opens only allow-listed source URLs via the "
                       "injected opener; headless fetcher refuses egress by default and "
                       "rejects off-allow-list hosts when enabled; assistant 'research' "
-                      "tool runs as a live READ returning a ResearchTask.")
+                      "tool stays local while browser opening requires confirmation.")
     except AssertionError as exc:
         return False, f"FAIL — {exc}"
     except Exception as exc:  # pragma: no cover

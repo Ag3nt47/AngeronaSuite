@@ -67,6 +67,17 @@ class Config:
     mcp_enabled: bool = False                   # start engines/mcp_server.py at boot
     mcp_port:    int  = 47923                   # loopback port for the MCP SSE endpoint
 
+    # ── ARIA assistant layer (v1.8.0) — local, gated, defensive-only ───────
+    aria_enabled: bool = True                   # show the ARIA HUD tab + local assistant
+    perf_governor_enabled: bool = False         # ARIA Overdrive adaptive UI-path governor
+    aria_voice_enabled: bool = False            # spoken threat narration (local TTS)
+    aria_voice_cloud_tts: bool = False          # allow ElevenLabs cloud TTS (opt-in egress)
+    aria_push_enabled: bool = False             # auto-brief a channel on criticals
+    aria_push_kind: str = "slack"               # slack | teams | ntfy | webhook
+    aria_push_url: str = ""                      # channel webhook URL (blank = disabled)
+    aria_inbox_enabled: bool = False            # inbox phishing triage (needs IMAP creds in .env)
+    aria_research_egress: bool = False          # allow headless research fetches (else browser-surface)
+
     # ── Derived paths ───────────────────────────────────────────────────────
     @property
     def db_path(self) -> Path:
@@ -107,6 +118,15 @@ class Config:
                 cfg.ai_provider_order = data.get("ai_provider_order", cfg.ai_provider_order)
                 cfg.mcp_enabled = data.get("mcp_enabled", cfg.mcp_enabled)
                 cfg.mcp_port    = int(data.get("mcp_port", cfg.mcp_port))
+                cfg.aria_enabled          = data.get("aria_enabled", cfg.aria_enabled)
+                cfg.perf_governor_enabled = data.get("perf_governor_enabled", cfg.perf_governor_enabled)
+                cfg.aria_voice_enabled    = data.get("aria_voice_enabled", cfg.aria_voice_enabled)
+                cfg.aria_voice_cloud_tts  = data.get("aria_voice_cloud_tts", cfg.aria_voice_cloud_tts)
+                cfg.aria_push_enabled     = data.get("aria_push_enabled", cfg.aria_push_enabled)
+                cfg.aria_push_kind        = data.get("aria_push_kind", cfg.aria_push_kind)
+                cfg.aria_push_url         = data.get("aria_push_url", cfg.aria_push_url)
+                cfg.aria_inbox_enabled    = data.get("aria_inbox_enabled", cfg.aria_inbox_enabled)
+                cfg.aria_research_egress  = data.get("aria_research_egress", cfg.aria_research_egress)
             except Exception:
                 pass
         # OLLAMA_HOST env var (set by the D-drive Ollama install) wins.
@@ -141,6 +161,15 @@ class Config:
                     "ai_provider_order":  self.ai_provider_order,
                     "mcp_enabled":       self.mcp_enabled,
                     "mcp_port":          self.mcp_port,
+                    "aria_enabled":          self.aria_enabled,
+                    "perf_governor_enabled": self.perf_governor_enabled,
+                    "aria_voice_enabled":    self.aria_voice_enabled,
+                    "aria_voice_cloud_tts":  self.aria_voice_cloud_tts,
+                    "aria_push_enabled":     self.aria_push_enabled,
+                    "aria_push_kind":        self.aria_push_kind,
+                    "aria_push_url":         self.aria_push_url,
+                    "aria_inbox_enabled":    self.aria_inbox_enabled,
+                    "aria_research_egress":  self.aria_research_egress,
                 },
                 indent=2,
             ),

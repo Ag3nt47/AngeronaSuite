@@ -242,8 +242,11 @@ class RedTeamEngine:
         self._narrate(f"\U0001F39B️ Intensity: {getattr(self,'_intensity','?')}; "
                       f"{cycles} phase(s); {'CAMPAIGN (chained kill-chain)' if campaign else 'randomized'}; "
                       f"target={self.documents_dir}" + ("; +1 custom benign technique" if custom else ""))
+        cancelled = False
         try:
             for cycle in range(cycles):
+                if self._cancel.is_set():
+                    raise _DrillCancelled()
                 if cycles > 1:
                     self._narrate(f"\U0001F501 Phase {cycle + 1}/{cycles} — deeper each pass "
                                   "(recon → escalate → persist → exfil → impact).")
@@ -279,26 +282,35 @@ class RedTeamEngine:
                     fn.__name__.replace("_step_", "").replace("_", " ").title() for fn in stage_fns)
                 self._narrate(f"\U0001F500 Technique order: {order}")
                 for fn in stage_fns:
+                    if self._cancel.is_set():
+                        raise _DrillCancelled()
                     try:
                         fn(jitter_range)
+                    except _DrillCancelled:
+                        raise
                     except Exception as exc:
                         self._narrate(f"⚠ step error (non-fatal): {exc}")
+                    if self._cancel.is_set():
+                        raise _DrillCancelled()
+        except _DrillCancelled:
+            cancelled = True
         finally:
             self._write_history()
             n, ok = len(self.steps), sum(1 for s in self.steps if s.ok)
-            self._narrate(
-                f"\U0001F3C1 Red Team Attack complete — {ok}/{n} steps executed. "
-                "Generating the After-Action Report (brief settle window)…")
-            self._running.clear()
-            # Auto-clean: give the defensive stack a settle window to detect the
-            # markers (matches the AAR's ~45s settle), THEN sweep every test file
-            # so the drill never litters the user's Documents. Runs on a daemon
-            # timer so it can't block the playbook thread from exiting.
-            delay = getattr(self, "_cleanup_delay", 55.0)
-            try:
-                threading.Timer(delay, self._sweep_markers).start()
-            except Exception:
+            if cancelled or self._cancel.is_set():
+                self._running.clear()
+                self._narrate(f"Red Team Attack cancelled - {ok}/{n} steps executed; cleaning markers.")
                 self._sweep_markers()
+            else:
+                self._narrate(
+                    f"\U0001F3C1 Red Team Attack complete — {ok}/{n} steps executed. "
+                    "Generating the After-Action Report (brief settle window)…")
+                self._running.clear()
+                delay = getattr(self, "_cleanup_delay", 55.0)
+                try:
+                    threading.Timer(delay, self._sweep_markers).start()
+                except Exception:
+                    self._sweep_markers()
 
     def _step_credential_access(self, jitter_range) -> None:
         self._jitter(*jitter_range, note="Credential Access — drop an inert cred-dump marker")
@@ -467,6 +479,8 @@ class RedTeamEngine:
         pids = []
         tokens = []
         for _ in range(n):
+            if self._cancel.is_set():
+                break
             tag = f"ANGERONA_REDTEAM_{uuid.uuid4().hex[:8]}"
             try:
                 if os.name == "nt":
@@ -478,7 +492,8 @@ class RedTeamEngine:
                 tokens.append(tag)
             except Exception:
                 pass
-            time.sleep(0.2)
+            if self._cancel.wait(0.2):
+                break
         self._record("Benign Execution (simulated)", "T1059 tagged spawns",
                      f"Spawned {spawned} short-lived red-team-tagged process(es).", ts,
                      pid=(pids[0] if pids else None), pids=pids,

@@ -76,6 +76,11 @@ class FlightRecorder:
         self._db = sqlite3.connect(str(self._path), check_same_thread=False)
         self._authority = BusAuthority.load()
         self._lock     = threading.Lock()
+        # GUI refreshes must never queue behind a busy SQLite writer. This
+        # separately locked revision advances only after a committed insert
+        # and any scheduled retention work have finished.
+        self._revision_lock = threading.Lock()
+        self._revision = 0
         self._dlq_lock = threading.Lock()   # separate lock — DLQ must never deadlock primary
         self._writes   = 0
         self._init_schema()
@@ -122,6 +127,8 @@ class FlightRecorder:
                 "CREATE INDEX IF NOT EXISTS idx_events_severity_id ON events(severity, id)"
             )
             self._db.commit()
+            row = self._db.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()
+            self._revision = int(row[0] if row else 0)
 
     @property
     def authority(self) -> BusAuthority:
@@ -162,7 +169,7 @@ class FlightRecorder:
         for attempt in range(self._DLQ_RETRIES):
             try:
                 with self._lock:
-                    self._db.execute(
+                    cursor = self._db.execute(
                         "INSERT INTO events "
                         "(ts, module, severity, message, details, hmac_sig) "
                         "VALUES (?,?,?,?,?,?)",
@@ -174,6 +181,10 @@ class FlightRecorder:
                     if self._writes >= self.PRUNE_EVERY:
                         self._writes = 0
                         self._prune_locked()
+                    with self._revision_lock:
+                        self._revision = max(
+                            self._revision, int(cursor.lastrowid or self._revision)
+                        )
                 return   # success
             except sqlite3.OperationalError:
                 if attempt < self._DLQ_RETRIES - 1:
@@ -245,6 +256,35 @@ class FlightRecorder:
                 "FROM events ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
+        return [self._event_from_row(r) for r in rows]
+
+    def revision(self) -> int:
+        """Return the latest committed event id without touching SQLite.
+
+        Dashboard timers use this as a change detector. Its independent lock
+        is held only for an integer copy, so a retention checkpoint or burst of
+        module writers cannot freeze the Qt thread.
+        """
+        with self._revision_lock:
+            return self._revision
+
+    def try_recent(self, limit: int = 200) -> List[Event] | None:
+        """Return recent events only when the database is immediately free.
+
+        ``None`` means a writer is busy and an interactive caller should keep
+        its current view and retry on the next refresh. An empty list means the
+        query completed and the ledger is empty.
+        """
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            rows = self._db.execute(
+                "SELECT id, ts, module, severity, message, details, hmac_sig "
+                "FROM events ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        finally:
+            self._lock.release()
         return [self._event_from_row(r) for r in rows]
 
     def events_in_window(self, start_ts: float, end_ts: float) -> List[Event]:
@@ -365,6 +405,18 @@ class FlightRecorder:
             return self._db.execute(
                 "SELECT COUNT(*) FROM events WHERE ts >= ?", (ts,)
             ).fetchone()[0]
+
+    def try_count_since(self, ts: float) -> int | None:
+        """Return a count only if the writer lock is immediately available."""
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            row = self._db.execute(
+                "SELECT COUNT(*) FROM events WHERE ts >= ?", (ts,)
+            ).fetchone()
+            return int(row[0] if row else 0)
+        finally:
+            self._lock.release()
 
     def close(self) -> None:
         with self._lock:
