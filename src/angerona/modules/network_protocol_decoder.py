@@ -27,10 +27,14 @@ import threading
 import time
 from collections import Counter
 
+from angerona.core import self_ioc
 from angerona.core.module_base import BaseModule, Severity
 
 # entropy (bits/char) above which a label looks machine-generated
 _ENTROPY_HI = 3.6
+# per-qname alert cooldown: one HIGH per name per window, so a repeated or
+# looping DNS name can never storm the UI (defence-in-depth against floods)
+_EMIT_COOLDOWN_S = 60.0
 # a single label longer than this is a classic tunneling indicator
 _LABEL_LEN_HI = 30
 # DNS query names may arrive embedded in a larger log message
@@ -63,6 +67,7 @@ class NetworkProtocolDecoderModule(BaseModule):
         self._seen = 0
         self._flagged = 0
         self._recent_flags: list[dict] = []
+        self._last_emit: dict[str, float] = {}   # qname -> last HIGH emit (monotonic)
 
     @property
     def state(self) -> str:
@@ -96,6 +101,19 @@ class NetworkProtocolDecoderModule(BaseModule):
                 "reasons": reasons,
                 "verdict": "DGA/tunneling-suspect" if suspicious else "benign"}
 
+    def _should_emit(self, qname: str) -> bool:
+        """Rate-limit HIGH alerts to one per qname per cooldown window."""
+        now = time.monotonic()
+        with self.state_lock:
+            last = self._last_emit.get(qname, 0.0)
+            if now - last < _EMIT_COOLDOWN_S:
+                return False
+            if len(self._last_emit) > 256:
+                self._last_emit = {k: t for k, t in self._last_emit.items()
+                                   if now - t < _EMIT_COOLDOWN_S}
+            self._last_emit[qname] = now
+            return True
+
     def _handle(self, qname: str, src: str = "") -> None:
         v = self.analyze_qname(qname)
         with self.state_lock:
@@ -103,12 +121,34 @@ class NetworkProtocolDecoderModule(BaseModule):
             if v["suspicious"]:
                 self._flagged += 1
                 self._recent_flags = ([v] + self._recent_flags)[:50]
-        if v["suspicious"]:
-            self.emit(f"🧬 Suspicious DNS '{v['qname']}' ({', '.join(v['reasons'])}).",
-                      Severity.HIGH, **v, source=src)
+        if not v["suspicious"]:
+            return
+        # Our own synthetic probe/decoy (CHAOS, shark, deception)? Acknowledge it
+        # as a DRILL so the probe's pipeline check still sees NDRD react, but do
+        # NOT raise a real HIGH threat or feed the threat level / SOAR.
+        if self_ioc.is_self_ioc(v["qname"]):
+            self.emit(f"DRILL echo — self-probe DNS '{v['qname']}' scored "
+                      f"({', '.join(v['reasons'])}).",
+                      Severity.INFO, drill=True, source=src, **v)
+            return
+        # Rate-limit so no single name can flood the UI.
+        if not self._should_emit(v["qname"]):
+            return
+        self.emit(f"🧬 Suspicious DNS '{v['qname']}' ({', '.join(v['reasons'])}).",
+                  Severity.HIGH, source=src, **v)
 
     def _on_event(self, event) -> None:
-        blob = f"{event.message} " + " ".join(str(x) for x in (event.details or {}).values())
+        # Ignore our OWN emissions (and any DNS *alert* echoes on the bus): the
+        # bus delivers each event back to every subscriber including the
+        # publisher, so scoring an alert's own text would feed back into another
+        # alert — a re-entrant, self-amplifying loop that storms the UI.
+        if getattr(event, "module", "") == self.name:
+            return
+        msg = event.message or ""
+        low_msg = msg.lower()
+        if "suspicious dns" in low_msg or "self-probe dns" in low_msg:
+            return
+        blob = f"{msg} " + " ".join(str(x) for x in (event.details or {}).values())
         low = blob.lower()
         if "dns" not in low and "query" not in low and "resolve" not in low:
             return
@@ -117,7 +157,7 @@ class NetworkProtocolDecoderModule(BaseModule):
         if qname:
             self._handle(str(qname), src=event.module)
             return
-        for m in _QNAME_RE.finditer(event.message or ""):
+        for m in _QNAME_RE.finditer(msg):
             self._handle(m.group(1), src=event.module)
 
     def stats(self) -> dict:

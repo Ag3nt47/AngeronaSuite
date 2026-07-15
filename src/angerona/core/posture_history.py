@@ -14,6 +14,7 @@ a lock, an append-only table, bounded reads. Stdlib-only, local-first, additive
 """
 from __future__ import annotations
 
+import queue
 import sqlite3
 import threading
 import time
@@ -70,22 +71,53 @@ class PostureHistory:
         self._db = sqlite3.connect(db_path, check_same_thread=False)
         self._db.executescript(_SCHEMA)
         self._db.commit()
+        # Writes are drained on a dedicated daemon thread so the INSERT+commit
+        # (which can block for SECONDS behind a WAL checkpoint or a busy
+        # flight-recorder.db lock) never runs on the caller. The GUI refresh
+        # timer records posture every tick and was freezing the Qt main thread
+        # inside self._db.commit() — see diagnostics/not_responding.log
+        # (_refresh_posture → posture_history.record → commit).
+        self._wq: "queue.Queue[Optional[tuple]]" = queue.Queue()
+        self._writer = threading.Thread(
+            target=self._writer_loop, name="PostureHistoryWriter", daemon=True
+        )
+        self._writer.start()
 
-    # ── Write (append-only) ───────────────────────────────────────────────────
+    # ── Write (append-only, off the caller thread) ────────────────────────────
     def record(self, score: int, band: str = "", note: str = "",
                ts: Optional[float] = None) -> PosturePoint:
         """Append one posture point. Score is clamped to 0–100; band is derived
-        if not supplied. Returns the stored point."""
+        if not supplied. Returns the stored point immediately; the DB write is
+        performed asynchronously by the writer thread so the caller (typically
+        the Qt GUI thread) never blocks on SQLite."""
         s = max(0, min(100, int(score)))
         b = band or _band_for(s)
         t = time.time() if ts is None else float(ts)
-        with self._lock:
-            self._db.execute(
-                "INSERT INTO posture_history (ts, score, band, note) VALUES (?,?,?,?)",
-                (t, s, b, note),
-            )
-            self._db.commit()
+        self._wq.put((t, s, b, note))
         return PosturePoint(t, s, b, note)
+
+    def _writer_loop(self) -> None:
+        """Persist queued points one at a time, off the caller thread."""
+        while True:
+            item = self._wq.get()
+            try:
+                if item is None:            # shutdown sentinel
+                    return
+                with self._lock:
+                    self._db.execute(
+                        "INSERT INTO posture_history (ts, score, band, note) "
+                        "VALUES (?,?,?,?)",
+                        item,
+                    )
+                    self._db.commit()
+            except Exception:
+                pass                        # never let a write kill the thread
+            finally:
+                self._wq.task_done()
+
+    def flush(self) -> None:
+        """Block until all queued points are written (shutdown / tests)."""
+        self._wq.join()
 
     # ── Reads (bounded) ───────────────────────────────────────────────────────
     def series(self, limit: int = 500, since: Optional[float] = None) -> list[PosturePoint]:
@@ -152,6 +184,8 @@ class PostureHistory:
         return "".join(blocks[min(7, (p.score - lo) * 7 // span)] for p in pts)
 
     def close(self) -> None:
+        self._wq.put(None)                  # tell the writer to stop
+        self._writer.join(timeout=2.0)
         with self._lock:
             self._db.close()
 
@@ -164,6 +198,7 @@ class PostureHistory:
             base = 1_000_000.0
             for i, s in enumerate([40, 55, 70, 85, 90]):
                 h.record(s, ts=base + i * 3600)     # one per hour, rising
+            h.flush()                               # wait for async writes
             assert h.count() == 5, "all points stored"
 
             ser = h.series()
@@ -184,6 +219,7 @@ class PostureHistory:
             many = PostureHistory(":memory:")
             for i in range(500):
                 many.record(i % 101, ts=base + i)
+            many.flush()                            # wait for async writes
             ds = many.downsample(60)
             assert len(ds) <= 60, "downsample bound"
             assert ds[0].ts == base and ds[-1].ts == base + 499, "endpoints preserved"

@@ -46,6 +46,21 @@ def _pythonw() -> str:
     return exe
 
 
+def _dequote(token: str) -> str:
+    """Strip one matched surrounding quote pair from a token.
+
+    On Windows the core command is parsed with ``shlex.split(..., posix=False)``
+    so backslash paths survive — but that mode also RETAINS the quote characters,
+    so a quoted launcher (``"…pythonw.exe" -m angerona``) comes back as
+    ``'"…pythonw.exe"'`` and the spawn fails with ``WinError 2`` (file not found),
+    driving the core into SAFE_MODE. Windows filenames cannot contain a double
+    quote, so removing a matched pair is always safe here.
+    """
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in ('"', "'"):
+        return token[1:-1]
+    return token
+
+
 def _blackbox_script():
     p = _repo_root() / "blackbox_recorder.py"
     return p if p.exists() else None
@@ -77,8 +92,15 @@ def main(argv: list[str] | None = None) -> int:
     core_cmd = (os.environ.get("ANGERONA_CORE_CMD") or "").strip()
     if core_cmd:
         try:
-            core_argv = shlex.split(core_cmd, posix=(os.name != "nt"))
+            # posix=False keeps backslash paths intact on Windows; _dequote then
+            # removes the quote characters that mode leaves around each token.
+            core_argv = [_dequote(t) for t in
+                         shlex.split(core_cmd, posix=(os.name != "nt"))]
         except Exception:
+            core_argv = []
+        # If the resolved launcher path is missing/garbled, fall back to this
+        # interpreter so the core is still supervised instead of never spawning.
+        if not core_argv or (os.sep in core_argv[0] and not os.path.exists(core_argv[0])):
             core_argv = [pyw, "-m", "angerona"]
         sup.add("core", core_argv, stale_after_s=3.0, window="hidden")
 

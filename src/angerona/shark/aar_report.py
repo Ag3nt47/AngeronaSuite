@@ -42,6 +42,17 @@ def _bounded_env_int(name: str, default: int, minimum: int = 1) -> int:
 _HISTORY_RUN_LIMIT = _bounded_env_int("ANGERONA_AAR_HISTORY_RUNS", 40)
 _HISTORY_MAX_AGE_DAYS = _bounded_env_int("ANGERONA_AAR_HISTORY_DAYS", 30)
 
+# How long after a drill step a detection may still be attributed to it. The
+# real detectors that catch file-drop markers are interval pollers — FIM ~30s,
+# YARA ~5min — so their catch lands well after the NEXT drill step has already
+# begun. Bounding a step's catch window at the next step (as the raw ordering
+# does) therefore drops every interval-scanner detection as "too late", scoring
+# detection (and hence remediation) at ~0%. This budget extends the window past
+# the next step so a late, artifact-specific catch can still attribute. Safe
+# because _matches() requires the event to reference THIS step's marker and
+# catches are de-duplicated, so a step can never steal another step's evidence.
+_DETECTION_BUDGET_S = _bounded_env_int("ANGERONA_AAR_DETECTION_BUDGET_S", 360)
+
 # Not every Shark Attack stage is a "did a detector notice this" test. This
 # mapping is what stops the report from mislabeling structurally-expected
 # non-catches as failures right next to genuine detection gaps — a real run
@@ -152,13 +163,17 @@ def evaluate(history: dict, events: List[Event],
         next_start = (float(steps[step_index + 1]["ts_start"])
                       if step_index + 1 < len(steps)
                       else float(step.get("ts_end") or step["ts_start"]) + 30.0)
+        # Extend the attribution window past the next step so interval-based
+        # detectors (FIM ~30s, YARA ~5min) that fire late still count. _matches()
+        # keeps this artifact-specific, so a widened window never mis-attributes.
+        catch_deadline = max(next_start, float(step["ts_start"]) + _DETECTION_BUDGET_S)
         v = StepVerdict(stage=step["stage"], technique=step["technique"],
                         description=step["description"], ts_start=step["ts_start"],
                         ok=step.get("ok", True),
                         category=cats.get(step["stage"], "detection"))
         catch_index: Optional[int] = None
         for event_index, ev in enumerate(chrono):
-            if ev.ts < step["ts_start"] - 2 or ev.ts > next_start or ev.module == "Console":
+            if ev.ts < step["ts_start"] - 2 or ev.ts > catch_deadline or ev.module == "Console":
                 continue
             if _is_remediation(ev):
                 if (v.catch is not None and v.remediation is None

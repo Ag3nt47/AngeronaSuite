@@ -115,6 +115,15 @@ class CanaryDrillModule(BaseModule):
         self._drills_fired = 0
         self._drills_caught = 0
         self._subscribed = False
+        # canary process pid → tag, so an echo can be matched on PID even when
+        # the 4688 event carries no command line (default Windows auditing, or
+        # ETWG in psutil-fallback mode) and the tag is therefore invisible.
+        self._pending_pids: dict[int, str] = {}
+        # Have we EVER caught a canary this session? If not, misses mean the echo
+        # path was never wired (no elevation / auditing off) — a config problem,
+        # NOT adversary blinding. Gates the CRITICAL escalation below.
+        self._ever_caught = False
+        self._config_warned = False
         # G2 sensor coverage tracking: module name → last observed bus timestamp
         self._sensor_last_seen: dict[str, float] = {}
         self._next_coverage_check: float = time.monotonic() + _SENSOR_WARMUP_S
@@ -170,8 +179,38 @@ class CanaryDrillModule(BaseModule):
         )
         if tag is None:
             tag = tag_in(event.message or "")
+        # Fallback: correlate on the canary's PID. A missing command line (4688
+        # auditing off, or ETWG psutil-fallback which emits no cmdline at all)
+        # means the tag is absent — but the new-process id still identifies our
+        # own canary, so the pipeline is demonstrably NOT blind.
+        if tag is None:
+            pid = self._event_pid(event)
+            if pid is not None:
+                tag = self._pending_pids.get(pid)
         if tag:
             self._echo_queue.put((tag, time.monotonic()))
+
+    @staticmethod
+    def _event_pid(event: Event) -> int | None:
+        """Extract the new-process id from an ETWG event (decimal ``pid`` from the
+        psutil fallback, or ``pid_hex`` like ``0x1a2b`` from the Security channel)."""
+        p = event.details.get("pid")
+        if isinstance(p, int):
+            return p
+        if isinstance(p, str) and p.isdigit():
+            return int(p)
+        ph = event.details.get("pid_hex")
+        if isinstance(ph, str) and ph.lower().startswith("0x"):
+            try:
+                return int(ph, 16)
+            except ValueError:
+                return None
+        return None
+
+    def _forget_tag(self, tag: str) -> None:
+        """Drop any pending PID→tag mapping once a canary is resolved."""
+        for pid in [p for p, t in self._pending_pids.items() if t == tag]:
+            self._pending_pids.pop(pid, None)
 
     # ── canary fire ──────────────────────────────────────────────────────────
     def _fire_canary(self) -> str:
@@ -182,13 +221,19 @@ class CanaryDrillModule(BaseModule):
 
         if os.name == "nt":
             # cmd /c REM <tag> exits immediately; the tag appears in the
-            # 4688 CommandLine StringInsert that ETWG reads.
+            # 4688 CommandLine StringInsert that ETWG reads (when command-line
+            # auditing is on). We also record the pid so the echo can be matched
+            # by PID when the command line is unavailable.
             cmd = ["cmd", "/c", f"REM {tag}"]
-            popen_hidden(
+            proc = popen_hidden(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            if proc is not None and getattr(proc, "pid", None):
+                if len(self._pending_pids) > 64:      # belt-and-suspenders bound
+                    self._pending_pids.clear()
+                self._pending_pids[proc.pid] = tag
         else:
             # Non-Windows: emit a synthetic bus event that DRILL can catch
             # (smoke-test only — blinding detection requires real ETW).
@@ -225,8 +270,14 @@ class CanaryDrillModule(BaseModule):
             if outcome.status == "satisfied":
                 self._drills_caught += 1
                 self._consecutive_misses = 0
+                # The echo path is proven live: real blinding (misses AFTER a
+                # catch) can now legitimately escalate to CRITICAL again.
+                self._ever_caught = True
+                self._config_warned = False
+                self._forget_tag(outcome.probe_id)
             else:
                 missed.append(outcome.probe_id)
+                self._forget_tag(outcome.probe_id)
         return missed
 
     def _expire_pending(self) -> list[str]:
@@ -301,23 +352,51 @@ class CanaryDrillModule(BaseModule):
             # Check for expired (missed) canaries
             for tag in late_misses + self._expire_pending():
                 self._consecutive_misses += 1
+                self._forget_tag(tag)
+                # A miss is only credible evidence of *blinding* once the echo
+                # path has been proven to work at least once. Before that, a miss
+                # just means the pipeline was never wired — report it as LOW noise,
+                # not a HIGH "possible telemetry blinding" that inflates the threat
+                # level on every host without process-creation auditing.
                 self.emit(
                     f"⚠️ DRILL MISS: canary {tag} not echoed within "
-                    f"{CANARY_TIMEOUT_S:.0f}s — possible telemetry blinding.",
-                    Severity.HIGH,
+                    f"{CANARY_TIMEOUT_S:.0f}s"
+                    + (" — possible telemetry blinding." if self._ever_caught
+                       else " (echo path not yet verified this session)."),
+                    Severity.HIGH if self._ever_caught else Severity.LOW,
                     canary_tag=tag,
                     consecutive_misses=self._consecutive_misses,
+                    echo_path_verified=self._ever_caught,
                 )
                 if self._consecutive_misses >= MAX_CONSECUTIVE_MISSES:
-                    self.emit(
-                        f"\U0001f6a8 TELEMETRY BLINDING DETECTED — "
-                        f"{self._consecutive_misses} consecutive canaries missed.  "
-                        "EtwEventWrite hooking or Security channel suppression suspected.",
-                        Severity.CRITICAL,
-                        consecutive_misses=self._consecutive_misses,
-                        mitigation="Check APID for ntdll hooks; inspect audit policy.",
-                    )
-                    self.set_health(10, "telemetry blinding suspected")
+                    if self._ever_caught:
+                        # Path worked earlier and has now gone dark → real signal.
+                        self.emit(
+                            f"\U0001f6a8 TELEMETRY BLINDING DETECTED — "
+                            f"{self._consecutive_misses} consecutive canaries missed.  "
+                            "EtwEventWrite hooking or Security channel suppression suspected.",
+                            Severity.CRITICAL,
+                            consecutive_misses=self._consecutive_misses,
+                            mitigation="Check APID for ntdll hooks; inspect audit policy.",
+                        )
+                        self.set_health(10, "telemetry blinding suspected")
+                    elif not self._config_warned:
+                        # Never once caught a canary → misconfiguration, not attack.
+                        # Warn ONCE, hold a degraded (not critical) health, and
+                        # suppress the blinding CRITICAL until the path is verified.
+                        self._config_warned = True
+                        self.emit(
+                            "DRILL cannot confirm the telemetry echo path — no canary "
+                            "has ever been observed on the EventBus. This almost always "
+                            "means process-creation auditing is unavailable (run elevated / "
+                            "enable Audit Process Creation, or ensure ETWG isn't stuck in "
+                            "psutil-fallback) rather than active blinding. Blinding alerts "
+                            "are suppressed until one canary is confirmed.",
+                            Severity.MEDIUM,
+                            consecutive_misses=self._consecutive_misses,
+                            remediation="Enable 4688 process-creation auditing or run Angerona elevated.",
+                        )
+                        self.set_health(40, "telemetry echo path unverified")
 
             # G2 sensor coverage check (every _SENSOR_COVERAGE_INTERVAL_S after warmup)
             if now >= self._next_coverage_check:
@@ -330,10 +409,15 @@ class CanaryDrillModule(BaseModule):
                 self.set_health(min(100, pct),
                                 f"{self._drills_caught}/{self._drills_fired} canaries caught")
             elif self._consecutive_misses > 0 and self._drills_fired > 0:
-                self.set_health(
-                    max(10, 100 - self._consecutive_misses * 30),
-                    f"{self._consecutive_misses} miss(es)",
-                )
+                if self._ever_caught:
+                    self.set_health(
+                        max(10, 100 - self._consecutive_misses * 30),
+                        f"{self._consecutive_misses} miss(es)",
+                    )
+                else:
+                    # Path never verified: degraded, not critical — the misses
+                    # are a config gap, not confirmed blinding.
+                    self.set_health(40, "telemetry echo path unverified")
 
             # Fire the next canary
             if now >= next_drill:

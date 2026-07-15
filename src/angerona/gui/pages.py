@@ -207,8 +207,11 @@ _SOAR_QUEUE_CACHE_KEY: tuple[str, int, int, int] | None = None
 _SOAR_QUEUE_CACHE_VALUE: tuple[dict, ...] = ()
 
 
-def _persist_soar_queue(event) -> None:
-    """Append a Block→SOAR request to a persisted JSON-lines file (scrollback)."""
+def _persist_soar_queue(event) -> bool:
+    """Append a Block→SOAR request to a persisted JSON-lines file (scrollback).
+
+    Returns True on success so callers can report an honest status instead of
+    claiming the item was queued when the write actually failed."""
     try:
         rec = {
             "ts": time.time(),
@@ -220,8 +223,9 @@ def _persist_soar_queue(event) -> None:
         }
         with open(_soar_queue_path(), "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, default=str) + "\n")
+        return True
     except Exception:
-        pass
+        return False
 
 
 def _read_soar_queue(limit: int = 500) -> list:
@@ -1869,23 +1873,33 @@ class AlertDetailDialog(QDialog):
 
     def _act_block(self) -> None:
         if self._panel is not None:
-            self._panel._block_event(self._event)
-            self._action_status.setText("Queued SOAR containment for review.")
+            # Report the panel's ACTUAL result — it shows its own confirm dialog
+            # and may cancel or fail; claiming "queued" unconditionally is what
+            # made blocks look successful while nothing reached the SOAR tab.
+            ok = self._panel._block_event(self._event)
+            self._action_status.setText(
+                "Queued SOAR containment for review." if ok
+                else "Not queued (cancelled or write failed) — see SOAR tab.")
             return
-        # Standalone (opened from a module view): publish the same review-gated
-        # SOAR containment request directly to the bus.
+        # Standalone (opened from a module view): persist the review-gated request
+        # first (the SOAR tab reads the file), then best-effort bus notify.
         e = self._event
+        persisted = _persist_soar_queue(e)
         try:
-            from angerona.core.eventbus import publish, Event as BusEvent, Severity as BusSev
-            publish(BusEvent(ts=time.time(), module="OPERATOR", severity=BusSev.CRITICAL,
-                             message=(f"[SOAR-QUEUE] Operator requested containment of source "
-                                      f"'{e.module}' — alert: {e.message[:120]}"),
-                             details={"origin_module": e.module, "origin_ts": e.ts,
-                                      "soar_action": "containment_review"}))
-            _persist_soar_queue(e)
-            self._action_status.setText(f"✓ Containment request queued for '{e.module}'.")
-        except Exception as exc:
-            self._action_status.setText(f"Block failed: {exc}")
+            from angerona.core.eventbus import Event as BusEvent, Severity as BusSev
+            bus = getattr(self, "bus", None) or getattr(getattr(self, "_panel", None), "bus", None)
+            if bus is not None:
+                bus.publish(BusEvent(module="OPERATOR", severity=BusSev.CRITICAL,
+                            ts=time.time(),
+                            message=(f"[SOAR-QUEUE] Operator requested containment of source "
+                                     f"'{e.module}' — alert: {e.message[:120]}"),
+                            details={"origin_module": e.module, "origin_ts": e.ts,
+                                     "soar_action": "containment_review"}))
+        except Exception:
+            pass
+        self._action_status.setText(
+            f"✓ Containment request queued for '{e.module}'." if persisted
+            else "⚠ Could not write to the SOAR queue — check disk/permissions.")
 
     def _act_analyze(self) -> None:
         if self._panel is not None:
@@ -2131,8 +2145,11 @@ class AlertsPanel(QFrame):
         self._events = []
         self.refresh()
 
-    def _block_event(self, event) -> None:
-        """Queue a SOAR containment action for operator review (never auto-executes)."""
+    def _block_event(self, event) -> bool:
+        """Queue a SOAR containment action for operator review (never auto-executes).
+
+        Returns True if the item was persisted to the SOAR queue (what the SOAR
+        Queue tab reads), False if the operator cancelled or the write failed."""
         ts_str = time.strftime("%H:%M:%S", time.localtime(event.ts))
         details = (f"Module: {event.module}\n"
                    f"Severity: {event.severity.label}\n"
@@ -2149,28 +2166,38 @@ class AlertsPanel(QFrame):
         dlg.setDefaultButton(QMessageBox.Cancel)
         dlg.setIcon(QMessageBox.Warning)
         if dlg.exec() != QMessageBox.Ok:
-            return
-        # Publish a SOAR containment request event to the bus (review-gated)
+            return False
+        # Persist FIRST — the SOAR Queue tab reads this file, so it must be written
+        # regardless of the (optional) bus notification below. The old code built
+        # the bus event first with a non-existent module-level publish() and an
+        # invalid mitre_tags= kwarg; that always threw, so persistence never ran
+        # and the queue stayed permanently empty despite the "queued" message.
+        persisted = _persist_soar_queue(event)
+        # Best-effort bus notification (audit trail). AlertsPanel has no bus, so
+        # this is skipped cleanly; it must never prevent the queue write above.
         try:
-            from angerona.core.eventbus import publish, Event as BusEvent
-            from angerona.core.eventbus import Severity as BusSeverity
-            publish(BusEvent(
-                ts=time.time(),
-                module="OPERATOR",
-                severity=BusSeverity.CRITICAL,
-                message=(f"[SOAR-QUEUE] Operator requested containment of source "
-                         f"'{event.module}' — alert: {event.message[:120]}"),
-                details={"origin_module": event.module, "origin_ts": event.ts,
-                         "origin_message": event.message, "soar_action": "containment_review"},
-                mitre_tags=getattr(event, "mitre_tags", []),
-            ))
-            _persist_soar_queue(event)   # save so the SOAR tab keeps a scrollable history
-            self._status.setText(
-                f"✓ Containment request queued for '{event.module}' — "
-                "review in the SOAR tab before any action is applied."
-            )
-        except Exception as exc:
-            self._status.setText(f"Bus publish failed: {exc}")
+            from angerona.core.eventbus import Event as BusEvent, Severity as BusSeverity
+            bus = getattr(self, "bus", None)
+            if bus is not None:
+                bus.publish(BusEvent(
+                    module="OPERATOR",
+                    message=(f"[SOAR-QUEUE] Operator requested containment of source "
+                             f"'{event.module}' — alert: {event.message[:120]}"),
+                    severity=BusSeverity.CRITICAL,
+                    ts=time.time(),
+                    details={"origin_module": event.module, "origin_ts": event.ts,
+                             "origin_message": event.message,
+                             "soar_action": "containment_review"},
+                ))
+        except Exception:
+            pass
+        self._status.setText(
+            f"✓ Containment request queued for '{event.module}' — "
+            "review in the SOAR tab before any action is applied."
+            if persisted else
+            "⚠ Could not write to the SOAR queue — check disk/permissions."
+        )
+        return persisted
 
     def _insert_row(self, pos: int, e) -> None:
         if e.module in self._suppressed:

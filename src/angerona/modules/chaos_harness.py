@@ -113,6 +113,13 @@ class ChaosHarness(BaseModule):
         t0 = time.time()
         label = "".join(random.choices(string.ascii_lowercase + string.digits, k=28))
         host = f"{label}.{random.choice(_DRILL_DOMAINS)}"
+        # Tell the sensor side this indicator is ours, so NDRD scores it as a
+        # DRILL echo instead of raising a real HIGH threat on our own probe.
+        try:
+            from angerona.core import self_ioc
+            self_ioc.register_domain(host, ttl=self.ECHO_TIMEOUT_S + 60.0)
+        except Exception:
+            pass
         self.emit(f"DRILL: high-entropy DNS probe → {host}", Severity.INFO,
                   drill="ndrd_dga", host=host)
         try:
