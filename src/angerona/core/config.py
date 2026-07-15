@@ -75,7 +75,10 @@ class Config:
     aria_push_enabled: bool = False             # auto-brief a channel on criticals
     aria_push_kind: str = "slack"               # slack | teams | ntfy | webhook
     aria_push_url: str = ""                      # channel webhook URL (blank = disabled)
-    aria_inbox_enabled: bool = False            # inbox phishing triage (needs IMAP creds in .env)
+    aria_inbox_enabled: bool = False            # inbox phishing triage (background IMAP poller)
+    aria_imap_host: str = ""                     # IMAP server, e.g. imap.gmail.com
+    aria_imap_user: str = ""                     # mailbox address (password lives in .env: ARIA_IMAP_PASS)
+    aria_inbox_interval_min: int = 5             # how often to scan the mailbox (minutes)
     aria_research_egress: bool = False          # allow headless research fetches (else browser-surface)
 
     # ── Derived paths ───────────────────────────────────────────────────────
@@ -126,6 +129,9 @@ class Config:
                 cfg.aria_push_kind        = data.get("aria_push_kind", cfg.aria_push_kind)
                 cfg.aria_push_url         = data.get("aria_push_url", cfg.aria_push_url)
                 cfg.aria_inbox_enabled    = data.get("aria_inbox_enabled", cfg.aria_inbox_enabled)
+                cfg.aria_imap_host        = data.get("aria_imap_host", cfg.aria_imap_host)
+                cfg.aria_imap_user        = data.get("aria_imap_user", cfg.aria_imap_user)
+                cfg.aria_inbox_interval_min = int(data.get("aria_inbox_interval_min", cfg.aria_inbox_interval_min))
                 cfg.aria_research_egress  = data.get("aria_research_egress", cfg.aria_research_egress)
             except Exception:
                 pass
@@ -169,6 +175,9 @@ class Config:
                     "aria_push_kind":        self.aria_push_kind,
                     "aria_push_url":         self.aria_push_url,
                     "aria_inbox_enabled":    self.aria_inbox_enabled,
+                    "aria_imap_host":        self.aria_imap_host,
+                    "aria_imap_user":        self.aria_imap_user,
+                    "aria_inbox_interval_min": self.aria_inbox_interval_min,
                     "aria_research_egress":  self.aria_research_egress,
                 },
                 indent=2,

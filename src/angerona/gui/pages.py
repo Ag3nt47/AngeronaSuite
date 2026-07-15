@@ -3121,8 +3121,12 @@ class SettingsDialog(QDialog):
     ----
     General   : Ollama host / model, GitHub repo, theme picker
     System    : Launch on boot (Scheduled Task), MCP server toggle
+    ARIA      : HUD, Overdrive, voice, auto-brief, email scanning + live tests
     API Keys  : Optional cloud-escalation keys (Gemini, Groq, OpenAI, etc.)
     """
+
+    # Background ARIA setup tests post their result here (thread-safe → GUI).
+    aria_test_result = Signal(str)
 
     def __init__(self, config, check_updates_fn, apply_theme_fn, parent=None):
         super().__init__(parent)
@@ -3171,6 +3175,11 @@ class SettingsDialog(QDialog):
 
         self._btn_save.clicked.connect(self._save)
         self._btn_cancel.clicked.connect(self.reject)
+        # Route background ARIA-test results back to the status label on the GUI thread.
+        try:
+            self.aria_test_result.connect(self._aria_test_status.setText)
+        except Exception:
+            pass
 
     # ── Tab builders ──────────────────────────────────────────────────────────
 
@@ -3389,20 +3398,117 @@ class SettingsDialog(QDialog):
         _note("Off by default. Only sends text you'd already see (secret-redacted) — never raw "
               "telemetry, files, or credentials.")
 
-        lay.addWidget(self._section("Inbox triage & research"))
-        self._aria_inbox_chk = QCheckBox(
-            "Flag phishing from a mailbox (IMAP creds in .env: ARIA_IMAP_HOST / USER / PASS)")
+        lay.addWidget(self._section("Email scanning (inbox phishing triage)"))
+        self._aria_inbox_chk = QCheckBox("Scan a mailbox for phishing (read-only IMAP, local scoring)")
         self._aria_inbox_chk.setChecked(getattr(self._cfg, "aria_inbox_enabled", False))
         lay.addWidget(self._aria_inbox_chk)
+        igrid = QGridLayout()
+        igrid.setColumnStretch(1, 1)
+        igrid.addWidget(QLabel("IMAP host:"), 0, 0)
+        self._aria_imap_host = QLineEdit(getattr(self._cfg, "aria_imap_host", ""))
+        self._aria_imap_host.setPlaceholderText("imap.gmail.com")
+        igrid.addWidget(self._aria_imap_host, 0, 1)
+        igrid.addWidget(QLabel("Mailbox:"), 1, 0)
+        self._aria_imap_user = QLineEdit(getattr(self._cfg, "aria_imap_user", ""))
+        self._aria_imap_user.setPlaceholderText("you@example.com")
+        igrid.addWidget(self._aria_imap_user, 1, 1)
+        igrid.addWidget(QLabel("Password / app-password:"), 2, 0)
+        self._aria_imap_pass = QLineEdit(os.environ.get("ARIA_IMAP_PASS", ""))
+        self._aria_imap_pass.setEchoMode(QLineEdit.Password)
+        self._aria_imap_pass.setPlaceholderText("stored in .env — never in settings.json")
+        igrid.addWidget(self._aria_imap_pass, 2, 1)
+        igrid.addWidget(QLabel("Scan every (min):"), 3, 0)
+        self._aria_inbox_interval = QLineEdit(str(getattr(self._cfg, "aria_inbox_interval_min", 5)))
+        self._aria_inbox_interval.setFixedWidth(60)
+        igrid.addWidget(self._aria_inbox_interval, 3, 1, Qt.AlignLeft)
+        lay.addLayout(igrid)
+        _note("Gmail / Outlook with 2FA need an app-password. Read-only: never marks read, moves, "
+              "or deletes. Scoring is 100% local; flagged mail becomes an alert on the bus.")
+
+        lay.addWidget(self._section("Research"))
         self._aria_egress_chk = QCheckBox(
             "Allow headless research fetches (else open vetted lookups in the browser)")
         self._aria_egress_chk.setChecked(getattr(self._cfg, "aria_research_egress", False))
         lay.addWidget(self._aria_egress_chk)
-        _note("Research classifies an indicator (hash / IP / domain / CVE) and uses only "
-              "allow-listed reputation/advisory sites (VirusTotal, NVD, CISA KEV, AbuseIPDB, URLhaus).")
+        _note("Research classifies an indicator (hash / IP / domain / CVE) and uses only allow-listed "
+              "reputation/advisory sites (VirusTotal, NVD, CISA KEV, AbuseIPDB, URLhaus).")
+
+        lay.addWidget(self._section("Verify setup"))
+        trow = QHBoxLayout()
+        b_voice = QPushButton("\U0001F50A  Test voice")
+        b_email = QPushButton("✉  Test email")
+        b_push  = QPushButton("\U0001F4E3  Test channel push")
+        b_voice.clicked.connect(self._aria_test_voice)
+        b_email.clicked.connect(self._aria_test_email)
+        b_push.clicked.connect(self._aria_test_push)
+        trow.addWidget(b_voice); trow.addWidget(b_email); trow.addWidget(b_push); trow.addStretch()
+        lay.addLayout(trow)
+        self._aria_test_status = QLabel("Save first, then use these to verify each feature end-to-end.")
+        self._aria_test_status.setWordWrap(True)
+        self._aria_test_status.setStyleSheet("color:#94a3b8; font-size:11px;")
+        lay.addWidget(self._aria_test_status)
 
         lay.addStretch()
         return w
+
+    # ── ARIA setup: live verification (each runs off-thread; result via signal) ─
+    def _aria_test_voice(self) -> None:
+        self._aria_test_status.setText("Speaking a test line…")
+
+        def _run() -> None:
+            try:
+                from angerona.connectors.voice import Voice
+                v = Voice(enabled=True, allow_cloud_tts=self._aria_voice_cloud_chk.isChecked())
+                ok = v.speak("ARIA voice test. Angerona narration is online.")
+                msg = (f"Voice OK — you should have heard ARIA.  ({v.status()})" if ok
+                       else f"No audio produced. {v.last_error or 'no TTS backend found'}")
+            except Exception as exc:
+                msg = f"Voice test error: {exc}"
+            self.aria_test_result.emit(msg)
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _aria_test_email(self) -> None:
+        host = self._aria_imap_host.text().strip()
+        user = self._aria_imap_user.text().strip()
+        pw   = self._aria_imap_pass.text()
+        if not (host and user and pw):
+            self._aria_test_status.setText("Enter IMAP host, mailbox, and password first.")
+            return
+        self._aria_test_status.setText(f"Connecting to {host} as {user}…")
+
+        def _run() -> None:
+            try:
+                from angerona.connectors.inbox_watcher import InboxWatcher
+                w = InboxWatcher(host=host, user=user, password=pw, limit=15)
+                r = w.test_connection()
+                msg = (f"Email OK — scanned {r['scanned']} message(s), flagged {r['flagged']} suspicious."
+                       if r["ok"] else f"Email connect failed: {r['error']}")
+            except Exception as exc:
+                msg = f"Email test error: {exc}"
+            self.aria_test_result.emit(msg)
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _aria_test_push(self) -> None:
+        url = self._aria_push_url.text().strip()
+        if not url:
+            self._aria_test_status.setText("Enter a webhook URL first.")
+            return
+        kind = self._aria_push_kind.currentText()
+        self._aria_test_status.setText(f"Sending a test message to your {kind} webhook…")
+
+        def _run() -> None:
+            try:
+                from angerona.connectors.channel_push import ChannelPush, Target
+                cp = ChannelPush(enabled=True, targets=[Target(kind, url)])
+                res = cp.push("Angerona ARIA — channel push test. If you can read this, it works.",
+                              level="CRITICAL")
+                r0 = res[0] if res else None
+                msg = (f"Push OK — delivered (HTTP {r0.status})." if r0 and r0.ok
+                       else f"Push failed: {(r0.reason if r0 else 'no target')}.")
+            except Exception as exc:
+                msg = f"Push test error: {exc}"
+            self.aria_test_result.emit(msg)
+        threading.Thread(target=_run, daemon=True).start()
 
     def _tab_trusted_processes(self) -> QWidget:
         """Operator-supervised process learning and exact allowlisting."""
@@ -3794,6 +3900,20 @@ class SettingsDialog(QDialog):
         self._cfg.aria_push_kind        = self._aria_push_kind.currentText()
         self._cfg.aria_push_url         = self._aria_push_url.text().strip()
         self._cfg.aria_inbox_enabled    = self._aria_inbox_chk.isChecked()
+        self._cfg.aria_imap_host        = self._aria_imap_host.text().strip()
+        self._cfg.aria_imap_user        = self._aria_imap_user.text().strip()
+        try:
+            self._cfg.aria_inbox_interval_min = max(1, int(self._aria_inbox_interval.text().strip() or "5"))
+        except ValueError:
+            pass
+        # The mailbox password is a secret → .env (git-ignored), never settings.json.
+        _imap_pw = self._aria_imap_pass.text()
+        if _imap_pw:
+            try:
+                from angerona.core.config import write_env_keys
+                write_env_keys({"ARIA_IMAP_PASS": _imap_pw})
+            except Exception:
+                pass
         self._cfg.aria_research_egress  = self._aria_egress_chk.isChecked()
 
         self._cfg.mobile_enabled     = self._mob_chk.isChecked()

@@ -993,6 +993,7 @@ class MainWindow(QMainWindow):
         self.aria_voice = None
         self.aria_push = None
         self.aria_governor = None
+        self.aria_inbox = None
         self._aria_crit_announced = False
         # Master toggle (Settings ▸ ARIA). Default on so the HUD is visible.
         if not getattr(self.config, "aria_enabled", True):
@@ -1075,6 +1076,30 @@ class MainWindow(QMainWindow):
                               fetch=HttpFetcher(allow_egress=True) if _egress else None)
             except Exception:
                 pass
+            # Email scanning — background read-only IMAP poller → bus alerts.
+            # Only starts when enabled AND fully configured (password from .env).
+            try:
+                import os as _os
+                _ih = str(getattr(self.config, "aria_imap_host", "") or "").strip()
+                _iu = str(getattr(self.config, "aria_imap_user", "") or "").strip()
+                _ip = _os.environ.get("ARIA_IMAP_PASS", "")
+                if getattr(self.config, "aria_inbox_enabled", False) and _ih and _iu and _ip:
+                    from angerona.connectors.inbox_watcher import InboxWatcher
+                    from angerona.core.eventbus import Event, Severity
+
+                    def _inbox_emit(message, sev_name, **details):
+                        sev = getattr(Severity, str(sev_name).upper(), Severity.HIGH)
+                        try:
+                            self.bus.publish(Event("ARIA Inbox", message, sev, time.time(), details))
+                        except Exception:
+                            pass
+                    _mins = float(getattr(self.config, "aria_inbox_interval_min", 5) or 5)
+                    self.aria_inbox = InboxWatcher(
+                        host=_ih, user=_iu, password=_ip,
+                        interval_s=_mins * 60.0, emit=_inbox_emit)
+                    self.aria_inbox.start()
+            except Exception:
+                self.aria_inbox = None
         except Exception as exc:
             self.aria_hud = None
             try:
@@ -1083,9 +1108,10 @@ class MainWindow(QMainWindow):
                 pass
 
     def _aria_ask(self, text: str) -> str:
-        """HUD chat handler: posture summary, runbook answers, or indicator
-        research. Recon opens vetted lookups in the browser (user-initiated,
-        read-only); anything that would change host state stays gated."""
+        """HUD chat handler. A few quick intents (posture / indicator research)
+        are answered directly; everything else is a real conversation with the
+        local model, grounded with runbook excerpts + live posture. Runs on a
+        worker thread (the HUD offloads it), so the blocking model call is fine."""
         t = (text or "").strip()
         if not t:
             return ""
@@ -1094,10 +1120,7 @@ class MainWindow(QMainWindow):
             if low in ("score", "posture", "status"):
                 p = getattr(self, "_last_posture", {}) or {}
                 return f"Angerona Score {p.get('score', '?')} — {p.get('label', '?')}."
-            if low in ("help", "?", "tools", "commands"):
-                return ("Ask ARIA: 'score' for posture; a runbook question like "
-                        "'how do we handle ransomware'; or paste an indicator "
-                        "(hash / IP / domain / CVE) to open vetted lookups.")
+            # Indicator? Open vetted lookups (user-initiated, read-only recon).
             from angerona.connectors.research import classify, get_research
             if classify(t) != "unknown":
                 task = get_research().run(t)
@@ -1105,10 +1128,57 @@ class MainWindow(QMainWindow):
                 opened = open_sources(task)
                 srcs = ", ".join(n for n, _ in task.sources) or "none"
                 return f"{t} → {task.kind}: opened {opened} vetted source(s) [{srcs}]."
-            ans = self._aria_rag.answer(t) if getattr(self, "_aria_rag", None) else ""
-            return ans or "No runbook match. Try 'score', 'help', or paste an indicator."
+            # Everything else → conversational answer from the local model.
+            return self._aria_converse(t)
         except Exception as exc:
             return f"[aria error] {exc}"
+
+    def _aria_converse(self, question: str) -> str:
+        """Ask the local Ollama model, grounded with runbook context + posture,
+        through the guarded ollama_client. Falls back to a runbook answer (or a
+        clear 'is Ollama running?' note) if the model is unreachable."""
+        # Grounding: top runbook chunks (if any) + current posture.
+        context = ""
+        try:
+            rag = getattr(self, "_aria_rag", None)
+            hits = rag.query(question, k=3) if rag is not None else []
+            if hits:
+                context = "\n\n".join(f"[{h.source} › {h.heading}]\n{h.excerpt}" for h in hits)
+        except Exception:
+            pass
+        p = getattr(self, "_last_posture", {}) or {}
+        posture_line = f"Current Angerona Score: {p.get('score', '?')} ({p.get('label', '?')})."
+        system = (
+            "You are ARIA, the local assistant inside Angerona, a defensive Windows "
+            "security suite. Answer conversationally, concisely, and accurately. You are "
+            "strictly defensive: never help with malware, exploits, or offensive tooling. "
+            "Use the reference excerpts when relevant, but you may also answer from general "
+            "knowledge. Don't invent Angerona features you're unsure about."
+        )
+        prompt = f"{system}\n\n{posture_line}"
+        if context:
+            prompt += "\n\nReference excerpts from the operator's runbooks:\n" + context
+        prompt += f"\n\nUser: {question}\nARIA:"
+        try:
+            from angerona.engines import ollama_client
+            model = getattr(self.config, "ollama_model", "llama3")
+            host = getattr(self.config, "ollama_host", None)
+            res = ollama_client.call({"model": model, "stream": False, "prompt": prompt},
+                                     "/api/generate", host=host, timeout=60)
+            if isinstance(res, dict) and res.get("response"):
+                return str(res["response"]).strip()
+            err = res.get("error") if isinstance(res, dict) else "no response"
+            # Model unreachable → fall back to the runbook, else a helpful note.
+            try:
+                fb = self._aria_rag.answer(question) if getattr(self, "_aria_rag", None) else ""
+            except Exception:
+                fb = ""
+            if fb and "No " not in fb[:4]:
+                return fb
+            return (f"Local AI unavailable ({err}). Is Ollama running with the "
+                    f"'{model}' model?  (ollama serve · ollama pull {model})")
+        except Exception as exc:
+            return f"(Local AI error: {exc})"
 
     def _refresh_posture(self) -> None:
         try:

@@ -172,6 +172,7 @@ if _HAVE_QT:
         """
 
         submitted = Signal(str)
+        response_ready = Signal(str)   # answer posted back from the ask thread
 
         def __init__(self, *, score_fn: Callable[[], int],
                      alerts_fn: Optional[Callable[[], int]] = None,
@@ -193,6 +194,8 @@ if _HAVE_QT:
             self._log = QTextEdit(); self._log.setReadOnly(True)
             self._input = QLineEdit(); self._input.setPlaceholderText("Ask ARIA…")
             self._input.returnPressed.connect(self._on_submit)
+            # Answers come back from a worker thread — append on the GUI thread.
+            self.response_ready.connect(self._log.append)
 
             top = QHBoxLayout()
             top.addWidget(self._orb)
@@ -225,11 +228,20 @@ if _HAVE_QT:
             self._input.clear()
             self._log.append(f"> {text}")
             self.submitted.emit(text)
-            if self._ask_fn is not None:
+            if self._ask_fn is None:
+                return
+            # The handler may call the local LLM (blocking) — never on the Qt
+            # thread. Run it on a worker and post the answer back via the signal.
+            self._log.append("ARIA is thinking…")
+            import threading
+
+            def _run(_t: str = text) -> None:
                 try:
-                    self._log.append(str(self._ask_fn(text)))
+                    ans = str(self._ask_fn(_t))
                 except Exception as exc:
-                    self._log.append(f"[error] {exc}")
+                    ans = f"[error] {exc}"
+                self.response_ready.emit(ans)
+            threading.Thread(target=_run, name="AriaAsk", daemon=True).start()
 
 
 if __name__ == "__main__":

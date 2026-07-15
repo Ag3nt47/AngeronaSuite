@@ -68,12 +68,17 @@ class Voice:
 
     # ── Capability detection ──────────────────────────────────────────────────
     def capabilities(self) -> VoiceCaps:
+        import sys
+        # Windows always has a local TTS via the built-in System.Speech
+        # (driven by PowerShell) — no extra install needed.
+        win_sapi = sys.platform.startswith("win")
         return VoiceCaps(
-            tts_local=self._tts_fn is not None or _have("pyttsx3") or _have("win32com"),
+            tts_local=self._tts_fn is not None or _have("pyttsx3") or _have("win32com") or win_sapi,
             stt_local=self._stt_fn is not None or _have("vosk") or _have("faster_whisper"),
             tts_cloud_available=self.allow_cloud_tts and _have("requests"),
             detail={
                 "pyttsx3": _have("pyttsx3"), "win32com": _have("win32com"),
+                "win_sapi": win_sapi,
                 "vosk": _have("vosk"), "faster_whisper": _have("faster_whisper"),
                 "injected_tts": self._tts_fn is not None,
                 "injected_stt": self._stt_fn is not None,
@@ -108,9 +113,16 @@ class Voice:
             return False
 
     def _resolve_tts(self) -> Optional[Callable[[str], None]]:
+        """Pick a local TTS backend, cheapest-to-most-robust. Cached once built.
+
+        Order: injected → pyttsx3 (if installed) → Windows SAPI via PowerShell
+        (zero dependencies, thread-safe because it's a subprocess) → win32com
+        SAPI. The PowerShell path is what makes narration work out of the box on
+        a stock Windows install with nothing extra to install."""
+        import sys
         if self._tts_fn is not None:
             return self._tts_fn
-        # Lazy local backend: pyttsx3 (offline). Built once, cached.
+        # 1) pyttsx3 — cross-platform offline engine, if the user installed it.
         if _have("pyttsx3"):
             try:
                 import pyttsx3  # type: ignore
@@ -119,7 +131,45 @@ class Voice:
                 return self._tts_fn
             except Exception as exc:  # pragma: no cover
                 self.last_error = f"pyttsx3 init failed: {exc}"
+        # 2) Windows SAPI via PowerShell System.Speech — no deps, and because it
+        #    runs as a subprocess it is safe to call from any thread (no COM init).
+        if sys.platform.startswith("win"):
+            self._tts_fn = self._powershell_speak
+            return self._tts_fn
+        # 3) Windows SAPI via win32com (pywin32), if PowerShell was unavailable.
+        if _have("win32com"):
+            try:
+                import pythoncom  # type: ignore
+                import win32com.client  # type: ignore
+
+                def _sapi(t: str) -> None:
+                    pythoncom.CoInitialize()          # COM per calling thread
+                    try:
+                        win32com.client.Dispatch("SAPI.SpVoice").Speak(t)
+                    finally:
+                        pythoncom.CoUninitialize()
+                self._tts_fn = _sapi
+                return self._tts_fn
+            except Exception as exc:  # pragma: no cover
+                self.last_error = f"SAPI init failed: {exc}"
         return None
+
+    @staticmethod
+    def _powershell_speak(text: str) -> None:  # pragma: no cover - Windows only
+        """Speak via the built-in .NET SpeechSynthesizer. Text is piped over
+        stdin so there's nothing to escape, and the window is suppressed."""
+        import subprocess
+        ps = ("Add-Type -AssemblyName System.Speech; "
+              "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+              "$s.Speak([Console]::In.ReadToEnd())")
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            input=text, text=True, timeout=60,
+            creationflags=0x08000000,   # CREATE_NO_WINDOW
+        )
+
+    def narration_history(self, n: int = 10) -> list[str]:
+        return list(self._spoken)[-n:]
 
     def narration_history(self, n: int = 10) -> list[str]:
         return list(self._spoken)[-n:]

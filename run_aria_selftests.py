@@ -41,6 +41,7 @@ def main() -> int:
     from angerona.connectors.inbox_triage import InboxTriage
     from angerona.connectors.research import Research
     from angerona.connectors import research_fetchers
+    from angerona.connectors.inbox_watcher import InboxWatcher
 
     checks = [
         ("perf_governor  (ARIA Overdrive)", PerfGovernor().self_test),
@@ -55,6 +56,7 @@ def main() -> int:
         ("inbox_triage   (phishing)", InboxTriage().self_test),
         ("research       (on-command)", Research().self_test),
         ("research_fetchers (Chrome bridge)", research_fetchers.self_test),
+        ("inbox_watcher  (email scanning)", InboxWatcher().self_test),
     ]
 
     all_ok = True
