@@ -116,10 +116,16 @@ class TeamsBot:
                     bot.last_error = f"activity handling failed: {exc}"
                 self.send_response(200); self.end_headers()
 
+        # Hardening: bind LOOPBACK by default, not 0.0.0.0. Angerona runs elevated,
+        # so exposing this HTTP endpoint on every interface needlessly offered the
+        # LAN a foothold. A Teams tunnel (dev tunnel / ngrok) forwards to localhost,
+        # so 127.0.0.1 is sufficient. Advanced users who terminate the tunnel on
+        # another host can opt back in with ANGERONA_TEAMS_BIND=0.0.0.0.
+        bind = os.environ.get("ANGERONA_TEAMS_BIND", "127.0.0.1").strip() or "127.0.0.1"
         try:
-            self._server = ThreadingHTTPServer(("0.0.0.0", self.port), _Handler)
+            self._server = ThreadingHTTPServer((bind, self.port), _Handler)
         except Exception as exc:
-            self.last_error = f"cannot bind :{self.port}: {exc}"
+            self.last_error = f"cannot bind {bind}:{self.port}: {exc}"
             return False
         self._thread = threading.Thread(target=self._server.serve_forever,
                                         name="TeamsBot", daemon=True)

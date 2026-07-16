@@ -19,6 +19,20 @@ _*vault*
 bus.key
 ANGERONA_WATCHDOG_TOKEN*
 
+# ── Personal setup / config (NEVER commit — Signal number, API keys, custom
+#    edits, device choices, wizard answers all live here) ─────────────────────
+settings.json
+**/settings.json
+*.settings.json
+**/settings.local.json
+user_config.json
+**/aria_posture_history.db
+drill-sandbox/
+**/drill-sandbox/
+staged_patches/
+shadow_cache/
+forensics/
+
 # ── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]

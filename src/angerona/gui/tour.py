@@ -78,7 +78,8 @@ def self_test() -> "tuple[bool, str]":
 try:
     from PySide6.QtCore import QRect, Qt
     from PySide6.QtGui import QColor, QPainter, QPen
-    from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+    from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton,
+                                   QScrollArea, QVBoxLayout, QWidget)
     _HAVE_QT = True
 except Exception:  # pragma: no cover
     _HAVE_QT = False
@@ -103,12 +104,23 @@ if _HAVE_QT:
                 "background:#0f141c; border:2px solid #1f9cff; border-radius:10px;")
             cl = QVBoxLayout(self._callout)
             self._title = QLabel("")
+            self._title.setWordWrap(True)
             self._title.setStyleSheet("font-size:15px; font-weight:800; color:#e8f4ff;")
             self._body = QLabel("")
             self._body.setWordWrap(True)
-            self._body.setStyleSheet("color:#cbd5e1;")
+            self._body.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            self._body.setStyleSheet("color:#cbd5e1; font-size:12px;")
+            # Scroll the body so long, detailed steps stay fully readable instead of
+            # being clipped by a tight fixed box.
+            self._scroll = QScrollArea()
+            self._scroll.setWidgetResizable(True)
+            self._scroll.setFrameShape(QFrame.NoFrame)
+            self._scroll.setWidget(self._body)
+            self._scroll.setMaximumHeight(300)
+            self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self._scroll.setStyleSheet("background:transparent; border:none;")
             cl.addWidget(self._title)
-            cl.addWidget(self._body)
+            cl.addWidget(self._scroll, 1)
             row = QHBoxLayout()
             self._step_lbl = QLabel("")
             self._step_lbl.setStyleSheet("color:#94a3b8; font-size:11px;")
@@ -121,7 +133,8 @@ if _HAVE_QT:
             row.addWidget(self._skip)
             row.addWidget(self._next)
             cl.addLayout(row)
-            self._callout.setFixedWidth(320)
+            self._callout.setFixedWidth(400)
+            self._callout.setMaximumHeight(440)
 
         # ── lifecycle ────────────────────────────────────────────────────────
         def start(self) -> None:
@@ -189,33 +202,93 @@ if _HAVE_QT:
 
 
 def build_default_steps(mw) -> "list[TourStep]":
-    """Build a tour for the main window from attributes it exposes (best-effort;
-    a missing widget just centres that step's callout)."""
+    """Build a rich, click-through tour for the main window from the attributes it
+    exposes. Every header control and panel gets its own step; a widget that isn't
+    present just centres that step's callout (still readable), so the tour degrades
+    gracefully. The callout scrolls, so steps can be as detailed as needed."""
     g = lambda name: getattr(mw, name, None)
     return [
         TourStep("Welcome to Angerona",
-                 "This 60-second tour points out the main areas. Use Next to move on, "
-                 "or Skip any time."),
-        TourStep("Your posture & threat level",
-                 "These cards show modules running, alerts, and your live Threat level. "
-                 "It stays Secure until a REAL detection fires.",
-                 g("_cards")),
-        TourStep("ARIA — your assistant",
-                 "Ask ARIA anything, or tell her to do things (\"suspend pid 1234\", "
-                 "\"trust my running apps\"). She types replies live and can talk by voice.",
+                 "This tour walks through every button and panel so you know exactly what "
+                 "each one does. Press Next to move on, Skip to leave any time. Nothing here "
+                 "changes your system — it's just a guided look around."),
+        TourStep("Your dashboard cards",
+                 "The cards across the top are your at-a-glance health: how many modules are "
+                 "running, alerts seen in the last 24 hours, Critical count, and your live "
+                 "Threat level. Threat level stays low until a REAL detection fires — routine "
+                 "activity and drills don't inflate it. Click any card to drill into detail.",
+                 g("cards")),
+        TourStep("Modules panel",
+                 "Every sensor and defense module, with a live health dot: green = healthy, "
+                 "amber = degraded, red = failed, grey = off. Toggle a module on/off with its "
+                 "checkbox, or click its name to open a full inspector (what it does, its last "
+                 "events, a self-test, and an editable sandbox copy).",
+                 g("modules_panel")),
+        TourStep("Live Alerts & SOAR Queue",
+                 "The right side has two tabs. LIVE ALERTS is the real-time event feed — click "
+                 "any row for full detail plus Allow / Block / Analyze / Research actions. "
+                 "SOAR QUEUE holds actions staged for your review before they run. Because ARIA "
+                 "now lives in the console below, these stay visible while you chat.",
+                 g("_right_tabs")),
+        TourStep("ARIA — your assistant & the mic meter",
+                 "This is ARIA. The glowing orb tracks your posture score; under it, the 🎤 bar "
+                 "shows your live microphone level once voice is on — when it moves as you speak, "
+                 "ARIA can hear you. Ask ARIA anything, or tell her to act (\"suspend pid 1234\", "
+                 "\"trust my running apps\", \"install voice\"). Every change is confirm-then-execute.",
                  g("aria_hud")),
-        TourStep("The Console",
-                 "Type commands (ps, kill, trust-running, guide) OR plain questions — "
-                 "anything that isn't a command goes to ARIA.",
+        TourStep("The ARIA Console",
+                 "One prompt bar for everything. Type an incident-response command (ps, kill 1234, "
+                 "suspend, trust-running, wd-restart, guide) OR just ask in plain language — anything "
+                 "that isn't a command streams to ARIA, whose reply types in live. Try "
+                 "\"what's my posture?\" or \"capabilities\".",
                  g("console")),
-        TourStep("Test your defenses",
-                 "RUN SELF-TEST checks your sensors; RUN RED TEAM SIMULATION fires a safe "
-                 "drill. Results appear in the console and an after-action report.",
+        TourStep("RUN SELF-TEST",
+                 "Runs every module's self-test and an end-to-end pipeline check, so you know your "
+                 "sensors actually work. Watch the colour wheel next to the buttons climb red → amber "
+                 "→ green to 100%. Results print in the console; any failures offer a one-click fix.",
                  g("_selftest_btn")),
-        TourStep("Setup & Help",
-                 "The SETUP button runs the one-swoop wizard; HELP has tabs for every "
-                 "feature. You can relaunch this tour from HELP any time.",
-                 g("_help_btn")),
+        TourStep("RUN RED TEAM SIMULATION",
+                 "Fires an unannounced, non-destructive adversary drill against THIS machine — every "
+                 "technique is a benign, reversible marker (no real exploit or persistence). A console "
+                 "window shows the live kill-chain, a progress wheel, and an After-Action Report scoring "
+                 "how much your defenses detected and remediated.",
+                 g("_sim_btn")),
+        TourStep("ECO MODE",
+                 "One tap to pause the heavy background scanners and free up your machine, while the "
+                 "core response path (SOAR, deception, watchdog, heartbeat) stays fully live. Tap again "
+                 "to resume — modules wake one at a time, with a progress wheel, so there's no CPU spike.",
+                 g("eco_btn")),
+        TourStep("WORLD VIEW",
+                 "A live map of your outbound connections and where in the world they terminate — handy "
+                 "for spotting a process quietly talking to an unexpected country or host.",
+                 g("_worldview_btn")),
+        TourStep("ATT&CK MAP",
+                 "The live MITRE ATT&CK heatmap — 86 techniques across 14 tactics. Cells light up as "
+                 "Angerona detects, simulates, or remediates each technique, so you can see your coverage "
+                 "and any blind spots at a glance. Click a cell for detail.",
+                 g("_attack_btn")),
+        TourStep("THREAT INTEL",
+                 "The latest CISA KEV (Known Exploited Vulnerabilities) intel correlated to what's on THIS "
+                 "host. The button pulses when there's something new that matches your machine.",
+                 g("threat_intel_btn")),
+        TourStep("FORENSICS",
+                 "Deep-dive incident views: the provenance/kill-chain graph, blast-radius mapping for a "
+                 "given PID, and the collision/evidence timeline — for after-the-fact investigation.",
+                 g("_forensics_btn")),
+        TourStep("SETUP & HELP",
+                 "SETUP runs the one-swoop wizard (appearance, local AI, voice + microphone, Signal, Teams, "
+                 "trusted apps, startup). HELP has a tab for every feature plus a 'Take the tour' button to "
+                 "replay this walkthrough any time.",
+                 g("_setup_btn")),
+        TourStep("SETTINGS",
+                 "Fine-grained control of everything: modules, AI keys, ARIA, voice + which microphone to "
+                 "use, connectors, and appearance. The panels scroll, so nothing is hidden.",
+                 g("_settings_btn")),
+        TourStep("STOP — and you're set",
+                 "STOP shuts every module down and closes Angerona cleanly (closing the window only hides "
+                 "it to the tray). That's the whole dashboard — relaunch this tour any time from HELP ▸ Take "
+                 "the tour. Stay safe out there.",
+                 g("_stop_btn")),
     ]
 
 

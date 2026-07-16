@@ -309,13 +309,15 @@ class RedTeamConsole(QDialog):
         self.editor = QPlainTextEdit()
         self.editor.setStyleSheet("font-family:'Fira Code',monospace; font-size:11px;")
         lay.addWidget(self.editor, 1)
-        self._load_editor()
         row = QHBoxLayout()
         save = QPushButton("💾  Save (syntax-checked)"); save.clicked.connect(self._save_editor)
         revert = QPushButton("↩  Revert"); revert.clicked.connect(self._load_editor)
         self.edit_status = QLabel(""); self.edit_status.setStyleSheet("color:#9fb3c8;")
         row.addWidget(save); row.addWidget(revert); row.addWidget(self.edit_status, 1)
         lay.addLayout(row)
+        # Load AFTER edit_status exists — _load_editor() writes to it, so calling
+        # it earlier raised 'RedTeamConsole has no attribute edit_status'.
+        self._load_editor()
         return w
 
     # ── helpers ──────────────────────────────────────────────────────────────

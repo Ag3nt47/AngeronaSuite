@@ -23,6 +23,16 @@ kernel driver required — so it is powerful **and** safe to install.
 > and only fires if you supply your own API keys. No secrets are ever committed
 > to this repository.
 
+## What's new (v1.9.2 — self-defense hardening)
+
+- **Local-tamper & privilege hardening.** A fresh weakness hunt closed several
+  elevated-privilege gaps: the cross-process restart channel is now HMAC-signed
+  (a forged one raises a tamper alert), the Teams bot binds loopback instead of
+  every interface, ARIA's self-install uses wheels-only + isolated pip (no sdist
+  code runs as admin), and a new startup audit flags a world-writable state
+  directory — the misconfiguration that would let a standard user read `bus.key`
+  and forge signed commands against the elevated agent.
+
 ## What's new (v1.9.1)
 
 - **ARIA lives in the Console.** The assistant is no longer a tab competing with your

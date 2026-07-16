@@ -27,9 +27,77 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import os
+import subprocess
+import sys
 import time
 
 from angerona.core.module_base import BaseModule, Severity
+
+# ── Privilege / ACL audit ─────────────────────────────────────────────────────
+# The whole authenticated-command model (signed stand-down/restart, the bus HMAC)
+# assumes only Administrators/SYSTEM can read or write Angerona's state directory.
+# If a broad principal (Everyone / BUILTIN\Users / Authenticated Users) has write
+# there — common when the app lives on a custom drive like D:\ that inherited loose
+# ACLs — a NON-admin can read bus.key to forge signed commands (kill the EDR), or
+# drop a settings.json to redirect the AI host / push URL. Running elevated on top
+# of a world-writable state dir is the escalation combo we flag here.
+_BROAD_PRINCIPALS = ("everyone", "\\users", "authenticated users", "builtin\\users",
+                     "interactive", "\\everyone")
+_WRITE_RIGHTS = ("(F)", "(M)", "(W)", "(WD)", "(RX,W)", "(GW)")
+
+
+def _is_elevated() -> bool:
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def parse_icacls_weaknesses(icacls_output: str) -> list[str]:
+    """Lines granting a broad principal write-class rights on the state dir."""
+    hits: list[str] = []
+    for line in (icacls_output or "").splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        low = s.lower()
+        if any(p in low for p in _BROAD_PRINCIPALS) and any(r in s for r in _WRITE_RIGHTS):
+            hits.append(s)
+    return hits
+
+
+def audit_state_dir() -> list[str]:
+    """Return findings if Angerona's state directory is writable by non-admins."""
+    findings: list[str] = []
+    if not sys.platform.startswith("win"):
+        return findings
+    data_dir = None
+    for getter in ("angerona.core.config._data_dir", "angerona.core.data_paths.data_dir"):
+        try:
+            mod_path, fn = getter.rsplit(".", 1)
+            data_dir = str(getattr(importlib.import_module(mod_path), fn)())
+            break
+        except Exception:
+            continue
+    if not data_dir or not os.path.isdir(data_dir):
+        return findings
+    try:
+        out = subprocess.run(["icacls", data_dir], capture_output=True, text=True,
+                             timeout=10, creationflags=0x08000000).stdout
+    except Exception:
+        return findings
+    weak = parse_icacls_weaknesses(out)
+    if weak:
+        prefix = "Angerona is ELEVATED but its" if _is_elevated() else "Angerona's"
+        findings.append(
+            f"{prefix} state directory ({data_dir}) is writable by a broad principal — a "
+            "standard user could read bus.key to FORGE signed stand-down/restart commands "
+            "(kill the EDR), or inject settings.json to redirect the AI host / exfil URL. "
+            "Lock it down: icacls \"" + data_dir + "\" /inheritance:r /grant:r "
+            "Administrators:(OI)(CI)F SYSTEM:(OI)(CI)F  [" + "; ".join(weak[:2]) + "]")
+    return findings
 
 # "module.path:attr[.subattr]" — the agent's load-bearing enforcement callables.
 # Unresolvable targets (renamed/absent) are skipped, so this list is safe to keep
@@ -141,6 +209,14 @@ class SelfIntegrityMonitor(BaseModule):
         self.emit(f"Self-integrity baseline armed — watching {armed} enforcement "
                   "function(s) for runtime tampering.", Severity.INFO, watched=armed)
         self.set_health(100, f"{armed} targets baselined")
+        # One-time privilege/ACL audit: a world-writable state dir defeats the whole
+        # signed-command model (a non-admin could forge a stand-down and kill the EDR).
+        try:
+            for finding in audit_state_dir():
+                self.emit("🔒 PRIVILEGE WEAKNESS: " + finding, Severity.HIGH,
+                          hardening=True, mitre_tags=["T1222", "T1548"])
+        except Exception:
+            pass
         while not self.stopping:
             self.sleep(self._INTERVAL)
             if self.stopping:

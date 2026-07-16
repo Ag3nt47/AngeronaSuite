@@ -145,8 +145,12 @@ class ResilienceManager:
                               "(see frz/BUILD_SIGN_DEPLOY.md) for the out-of-process parent.", "LOW")
 
         # 2) Telemetry Scanner — lean forwarder with its own themed window.
+        # stale_after_s is generous (was 3s): the scanner's 1 Hz psutil snapshot can
+        # briefly exceed 3s under heavy load (Eco off, ~48 modules), and a too-tight
+        # threshold flapped it into SAFE_MODE — which starved DRILL of echoes and
+        # produced false "telemetry blinding" CRITICALs. 8s absorbs the jitter.
         self._sup.add("scanner", [pyw, "-m", "angerona.resilience.scanner"],
-                      stale_after_s=3.0, window="hidden")
+                      stale_after_s=8.0, window="hidden")
 
         # 3) BlackBox — decoupled recorder, its own themed self-minimizing window.
         bb = _blackbox_script()

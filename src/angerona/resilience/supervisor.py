@@ -114,13 +114,30 @@ def release_spawn(name: str) -> None:
 
 def request_restart(*names: str) -> None:
     """Ask the supervisor(s) to force-restart the named components on the next tick
-    (clears SAFE_MODE too). Pass '*' or no name for ALL. File-based, so it works
-    across the core/watchdog process boundary — callable from the console."""
+    (clears SAFE_MODE too). Pass '*' or no name for ALL. Cross-process via a file.
+
+    Hardening: the command is HMAC-signed with the per-install key (same bus.key as
+    the stand-down command), so a lower-privileged local process can't drop a
+    restart.cmd to poke the elevated supervisor. Unsigned/forged files are rejected
+    AND raised as a tamper alert by the reader."""
+    import hashlib
+    import hmac
+    import json
+    import secrets
+    import time as _t
     try:
+        from angerona.resilience import shutdown_token as _tok
+        key = _tok._load_key()
+        targets = [str(n).strip() for n in (names or ("*",)) if str(n).strip()] or ["*"]
+        nonce = secrets.token_hex(16)
+        ts = int(_t.time())
+        payload = f"{nonce}\x00{ts}\x00{','.join(targets)}"
+        sig = hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        cmd = {"nonce": nonce, "ts": ts, "targets": targets, "sig": sig}
         p = _ipc_dir() / "restart.cmd"
-        with open(p, "a", encoding="utf-8") as f:
-            for n in (names or ("*",)):
-                f.write(f"{str(n).strip()}\n")
+        tmp = p.with_suffix(".cmd.tmp")
+        tmp.write_text(json.dumps(cmd), encoding="utf-8")
+        os.replace(tmp, p)          # atomic publish
     except Exception:
         pass
 
@@ -304,9 +321,43 @@ class ProcessSupervisor:
         try:
             if not p.exists():
                 return set()
-            names = {ln.strip() for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()}
+            raw = p.read_text(encoding="utf-8")
             p.unlink()
-            return names
+        except Exception:
+            return set()
+        import hashlib
+        import hmac
+        import json
+        import time as _t
+        try:
+            from angerona.resilience import shutdown_token as _tok
+            cmd = json.loads(raw)
+            nonce = str(cmd.get("nonce", ""))
+            ts = int(cmd.get("ts", 0))
+            targets = cmd.get("targets", [])
+            sig = str(cmd.get("sig", ""))
+            if not isinstance(targets, list):
+                return set()
+            # A restart is immediate; ignore anything older than 30s (anti-replay).
+            if _t.time() - ts > 30:
+                return set()
+            payload = f"{nonce}\x00{ts}\x00{','.join(str(x) for x in targets)}"
+            expected = hmac.new(_tok._load_key(), payload.encode("utf-8"),
+                                hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(expected, sig):
+                # Unsigned/forged restart file → treat as a local tamper attempt.
+                self._emit("HIGH",
+                           "Rejected an UNSIGNED/forged restart command in ipc/ — a "
+                           "lower-privileged local process may be probing the supervisor.",
+                           component="supervisor")
+                return set()
+            valid = {str(n).strip() for n in targets if str(n).strip() == "*"
+                     or str(n).strip() in self.components}
+            if valid:
+                self._emit("INFO",
+                           f"Authenticated restart command for: {', '.join(sorted(valid))}.",
+                           component="supervisor")
+            return valid
         except Exception:
             return set()
 

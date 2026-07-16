@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
     _selftest_done = Signal(str, object)   # report text, failures list
     _selftest_progress = Signal(int, int)  # (done, total) → live progress wheel
     _mic_level = Signal(float)             # live mic input level (0..1) → HUD meter
+    _voice_live_requested = Signal()       # bring voice up live (GUI thread) after install
     _fi_coaching = Signal(str)             # Flight Instructor line → right pane
     startup_eco_requested = Signal()       # emitted from the loader thread once modules are up
 
@@ -206,6 +207,17 @@ class MainWindow(QMainWindow):
         rl.addWidget(console_btn); rl.addWidget(setup_btn); rl.addWidget(self._help_btn)
         rl.addWidget(settings_btn); rl.addWidget(stop_btn)
 
+        # Keep references so the guided tour can highlight each control by name.
+        self._selftest_btn = test_btn
+        self._sim_btn = sim_btn
+        self._worldview_btn = worldview_btn
+        self._attack_btn = attack_heatmap_btn
+        self._forensics_btn = forensics_btn
+        self._console_btn = console_btn
+        self._setup_btn = setup_btn
+        self._settings_btn = settings_btn
+        self._stop_btn = stop_btn
+
         header.addWidget(left, 1)
         header.addWidget(brand_box, 1)
         header.addWidget(right, 1)
@@ -311,6 +323,7 @@ class MainWindow(QMainWindow):
         self._selftest_done.connect(self._on_selftest_done)
         self._selftest_progress.connect(self.run_spinner.set_progress)
         self._mic_level.connect(self._on_mic_level)
+        self._voice_live_requested.connect(self._enable_voice_live)
         self.startup_eco_requested.connect(self.apply_startup_eco)
 
         # Cyber Security Academy — Flight Instructor Mode. Instantiation is
@@ -1139,8 +1152,7 @@ class MainWindow(QMainWindow):
                                    "which optional capabilities are installed / missing")
                 self.aria.register(
                     "install_capabilities", ToolKind.WRITE,
-                    lambda caps="all": _si.install(
-                        [c.strip() for c in str(caps).replace(",", " ").split()] or ["all"]),
+                    lambda caps="all": self._aria_install(caps),
                     "install ARIA's optional capability packages (voice/teams/all)",
                     preview=lambda caps="all": (
                         "Install the missing packages for "
@@ -1336,6 +1348,9 @@ class MainWindow(QMainWindow):
         except Exception:
             return
         meter.set_active(True)
+        if getattr(self, "_mic_meter_running", False):
+            return                     # a monitor thread is already feeding the meter
+        self._mic_meter_running = True
 
         def _run():
             try:
@@ -1343,6 +1358,7 @@ class MainWindow(QMainWindow):
                                 should_stop=lambda: getattr(self, "_aria_voice_stop", False))
             except Exception:
                 pass
+            self._mic_meter_running = False
             # Monitor ended (no backend / stopped) — hide the meter.
             try:
                 self._mic_level.emit(0.0)
@@ -1405,26 +1421,83 @@ class MainWindow(QMainWindow):
         except Exception:
             stt = None
         if stt is None:
-            self._aria_speak("Voice replies enabled. Install vosk and sounddevice to talk to me.")
+            self._aria_speak("Voice replies enabled. Ask me to 'install voice' so I can hear you.")
             return
+        self._voice_loop_alive = True     # a real listen loop is now running
         self._aria_speak("ARIA voice online. Say 'hey aria' followed by a command.")
-        while not getattr(self, "_aria_voice_stop", False):
+        try:
+            while not getattr(self, "_aria_voice_stop", False):
+                try:
+                    heard = v.listen(5.0)
+                except Exception:
+                    heard = None
+                if not heard or not v.is_wake(heard):
+                    _t.sleep(0.3)          # guard against any tight-spin on empty listen
+                    continue
+                cmd = v.strip_wake(heard)
+                if not cmd:
+                    self._aria_speak("Yes?")
+                    continue
+                try:
+                    self._aria_ask(cmd)          # reply is spoken inside _aria_ask
+                except Exception:
+                    pass
+                _t.sleep(0.2)
+        finally:
+            self._voice_loop_alive = False       # loop exited → allow a fresh start
+
+    def _enable_voice_live(self) -> None:
+        """(Re)build the voice subsystem NOW with whatever backends are installed,
+        enable it, and start the listen loop + mic meter — so 'install voice'
+        makes ARIA hear you WITHOUT an app restart. Runs on the GUI thread (via a
+        signal) because it touches the mic-meter widget."""
+        from angerona.connectors.voice import init_voice
+        try:
+            self.config.aria_voice_enabled = True
+            self.config.save()
+        except Exception:
+            pass
+        # If a listen loop is already alive, voice is already hearing — just make
+        # sure the meter is visible and stop here (no duplicate loop).
+        if getattr(self, "_voice_loop_alive", False):
             try:
-                heard = v.listen(5.0)
-            except Exception:
-                heard = None
-            if not heard or not v.is_wake(heard):
-                _t.sleep(0.3)          # guard against any tight-spin on empty listen
-                continue
-            cmd = v.strip_wake(heard)
-            if not cmd:
-                self._aria_speak("Yes?")
-                continue
-            try:
-                self._aria_ask(cmd)              # reply is spoken inside _aria_ask
+                self._start_mic_meter()
             except Exception:
                 pass
-            _t.sleep(0.2)
+            return
+        try:
+            self.aria_voice = init_voice(
+                enabled=True,
+                allow_cloud_tts=bool(getattr(self.config, "aria_voice_cloud_tts", False)))
+            try:
+                self.aria_voice.set_mic_device(getattr(self.config, "aria_mic_device", "") or None)
+            except Exception:
+                pass
+            self._aria_voice_stop = False
+            import threading as _th
+            _th.Thread(target=self._aria_voice_loop, name="AriaVoice", daemon=True).start()
+            self._start_mic_meter()
+        except Exception as exc:
+            try:
+                self.console._append(f"[aria] live voice start failed: {exc}")
+            except Exception:
+                pass
+
+    def _aria_install(self, caps: str = "all") -> str:
+        """Install a capability, then — for voice — bring listening up live so the
+        mic meter appears and ARIA can hear you without a restart."""
+        from angerona.core import self_installer as si
+        names = [c.strip() for c in str(caps).replace(",", " ").split()] or ["all"]
+        report = si.install(names)
+        low = [n.lower() for n in names]
+        if any(n in ("voice", "all", "windows-speech") for n in low) and "❌" not in report:
+            try:
+                self._voice_live_requested.emit()   # start on the GUI thread
+                report += ("\n\nVoice is coming online now — watch the mic bar next to ARIA "
+                           "and speak; when it moves, I can hear you. Then say 'hey aria …'.")
+            except Exception:
+                report += "\n\n(Installed — restart Angerona to start voice listening.)"
+        return report
 
     def _aria_ask_core(self, text: str, on_token=None) -> str:
         """HUD chat handler. A few quick intents (posture / indicator research)

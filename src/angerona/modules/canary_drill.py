@@ -140,6 +140,9 @@ class CanaryDrillModule(BaseModule):
         # NOT adversary blinding. Gates the CRITICAL escalation below.
         self._ever_caught = False
         self._config_warned = False
+        # Last time ANY trusted process-creation event was seen on the bus. Lets us
+        # separate real blinding from our own telemetry source (scanner) being down.
+        self._last_trusted_event = 0.0
         # G2 sensor coverage tracking: module name → last observed bus timestamp
         self._sensor_last_seen: dict[str, float] = {}
         self._coverage_alerted: set[str] = set()   # dedup: one alert per silence episode
@@ -178,6 +181,11 @@ class CanaryDrillModule(BaseModule):
         type_ok = str(details.get("type") or details.get("event_type") or "") == "process_creation"
         if not (eid_ok or type_ok):
             return
+        # ANY trusted process-creation event proves the telemetry pipeline is
+        # alive right now — even if it isn't our canary. We use this to tell real
+        # blinding (events flowing, but our canary suppressed) apart from our own
+        # sensor being down (nothing flowing at all → operational, not an attack).
+        self._last_trusted_event = time.monotonic()
 
         def tag_in(value: object) -> str | None:
             if not isinstance(value, str):
@@ -394,24 +402,37 @@ class CanaryDrillModule(BaseModule):
             for tag in late_misses + self._expire_pending():
                 self._consecutive_misses += 1
                 self._forget_tag(tag)
-                # A miss is only credible evidence of *blinding* once the echo
-                # path has been proven to work at least once. Before that, a miss
-                # just means the pipeline was never wired — report it as LOW noise,
-                # not a HIGH "possible telemetry blinding" that inflates the threat
-                # level on every host without process-creation auditing.
+                # Three cases for a miss:
+                #   • echo path never verified  → LOW  (config gap, not blinding)
+                #   • our telemetry SOURCE is silent (no trusted process events at
+                #     all recently → scanner/ETW down, SAFE_MODE, or Eco-paused)
+                #                               → MEDIUM operational, NOT blinding
+                #   • events ARE flowing but our canary was suppressed
+                #                               → HIGH → CRITICAL (real blinding)
+                source_silent = self._ever_caught and (
+                    time.monotonic() - self._last_trusted_event) > (CANARY_TIMEOUT_S * 3)
+                if not self._ever_caught:
+                    miss_msg = " (echo path not yet verified this session)."
+                    miss_sev = Severity.LOW
+                elif source_silent:
+                    miss_msg = " — telemetry source is silent (a sensor may be down or paused)."
+                    miss_sev = Severity.MEDIUM
+                else:
+                    miss_msg = " — possible telemetry blinding."
+                    miss_sev = Severity.HIGH
                 self.emit(
                     f"⚠️ DRILL MISS: canary {tag} not echoed within "
-                    f"{CANARY_TIMEOUT_S:.0f}s"
-                    + (" — possible telemetry blinding." if self._ever_caught
-                       else " (echo path not yet verified this session)."),
-                    Severity.HIGH if self._ever_caught else Severity.LOW,
+                    f"{CANARY_TIMEOUT_S:.0f}s" + miss_msg,
+                    miss_sev,
                     canary_tag=tag,
                     consecutive_misses=self._consecutive_misses,
                     echo_path_verified=self._ever_caught,
+                    source_silent=source_silent,
                 )
                 if self._consecutive_misses >= MAX_CONSECUTIVE_MISSES:
-                    if self._ever_caught:
-                        # Path worked earlier and has now gone dark → real signal.
+                    if self._ever_caught and not source_silent:
+                        # Path worked earlier, events still flow, but our canary is
+                        # gone → real signal.
                         self.emit(
                             f"\U0001f6a8 TELEMETRY BLINDING DETECTED — "
                             f"{self._consecutive_misses} consecutive canaries missed.  "
@@ -421,6 +442,22 @@ class CanaryDrillModule(BaseModule):
                             mitigation="Check APID for ntdll hooks; inspect audit policy.",
                         )
                         self.set_health(10, "telemetry blinding suspected")
+                    elif source_silent:
+                        # Our OWN telemetry source stopped reporting — operational,
+                        # not an attack. Warn once (reuse the throttle) at MEDIUM.
+                        if not self._config_warned:
+                            self._config_warned = True
+                            self.emit(
+                                "DRILL: telemetry source appears DOWN — no process-creation "
+                                "events from any trusted sensor recently. The Telemetry Scanner "
+                                "or ETW sensor is likely in SAFE_MODE, stopped, or Eco-paused. "
+                                "This is an operational gap, NOT confirmed adversary blinding; "
+                                "canaries resume verifying once it recovers.",
+                                Severity.MEDIUM,
+                                consecutive_misses=self._consecutive_misses,
+                                remediation="Check the Telemetry Scanner is running (console: wd-restart scanner).",
+                            )
+                            self.set_health(40, "telemetry source down (operational)")
                     elif not self._config_warned:
                         # Never once caught a canary → misconfiguration, not attack.
                         # Warn ONCE, hold a degraded (not critical) health, and

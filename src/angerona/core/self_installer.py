@@ -120,8 +120,13 @@ def install(caps: Optional[Iterable[str]] = None,
 
     emit(f"Installing {len(pkgs)} package(s) into this Angerona environment: "
          f"{', '.join(pkgs)} — please wait…")
+    # Hardening (Angerona runs elevated): --only-binary :all: installs prebuilt
+    # wheels ONLY, so a malicious/typosquatted sdist can never run arbitrary
+    # setup.py code as Administrator during install. --isolated ignores any
+    # attacker-planted pip.ini / PIP_* env that could redirect the index or inject
+    # options. --require-virtualenv is deliberately NOT set (we target the app env).
     cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
-           "--no-input"] + pkgs
+           "--no-input", "--isolated", "--only-binary", ":all:"] + pkgs
     kwargs: dict = {"capture_output": True, "text": True, "timeout": timeout}
     if sys.platform.startswith("win"):
         kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW — no console flash
