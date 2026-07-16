@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 @dataclass(frozen=True)
 class Field:
-    kind: str            # "check" | "text" | "password_env" | "combo" | "action"
+    kind: str            # "check" | "text" | "password_env" | "combo" | "mic" | "action"
     key: str             # Config attribute (or env var for password_env; action id)
     label: str
     placeholder: str = ""
@@ -50,8 +50,12 @@ STEPS: "tuple[Step, ...]" = (
                 note="Run 'ollama serve' and 'ollama pull llama3' if you haven't."))),
     Step("Voice",
          "Let ARIA speak her replies (built-in Windows voice — no install). For "
-         "hands-free 'hey aria' commands, install vosk + sounddevice later.",
-         (Field("check", "aria_voice_enabled", "Enable voice (ARIA speaks replies)"),)),
+         "hands-free 'hey aria' commands, just ask ARIA to 'install voice' later. A "
+         "live level bar next to ARIA shows when your microphone is being heard.",
+         (Field("check", "aria_voice_enabled", "Enable voice (ARIA speaks replies)"),
+          Field("mic", "aria_mic_device", "Microphone",
+                note="Uses your computer's built-in mic by default; pick an added/external "
+                     "mic if you have one."))),
     Step("Talk to ARIA from your phone (Signal)",
          "End-to-end encrypted remote control + chat over Signal. Requires signal-"
          "cli installed and your number registered.",
@@ -103,7 +107,7 @@ def self_test() -> "tuple[bool, str]":
         cfg = Config()
         for s in STEPS:
             for f in s.fields:
-                if f.kind in ("check", "text", "combo"):
+                if f.kind in ("check", "text", "combo", "mic"):
                     assert hasattr(cfg, f.key), f"Config has {f.key}"
         # collect() picks up editable fields, skips actions/secrets
         appearance = next(s for s in STEPS if s.title == "Appearance")
@@ -199,6 +203,22 @@ if _HAVE_QT:
                         combo.setCurrentIndex(i)
                     lay.addWidget(combo)
                     wmap[f.key] = combo
+                elif f.kind == "mic":
+                    lay.addWidget(QLabel(f.label))
+                    combo = QComboBox()
+                    combo.addItem("Computer microphone (default)", "")
+                    try:
+                        from angerona.connectors.voice import Voice
+                        for _idx, _name in Voice.list_input_devices():
+                            combo.addItem(f"Added mic — {_name}", str(_idx))
+                    except Exception:
+                        pass
+                    _cur = str(getattr(self._cfg, f.key, "") or "")
+                    _i = combo.findData(_cur)
+                    combo.setCurrentIndex(_i if _i >= 0 else 0)
+                    combo.setProperty("useData", True)   # store index, not label
+                    lay.addWidget(combo)
+                    wmap[f.key] = combo
                 elif f.kind == "text":
                     lay.addWidget(QLabel(f.label))
                     le = QLineEdit(str(getattr(self._cfg, f.key, "")))
@@ -245,7 +265,10 @@ if _HAVE_QT:
                     elif isinstance(widget, QCheckBox):
                         setattr(self._cfg, key, widget.isChecked())
                     elif isinstance(widget, QComboBox):
-                        setattr(self._cfg, key, widget.currentText())
+                        if widget.property("useData"):
+                            setattr(self._cfg, key, str(widget.currentData() or ""))
+                        else:
+                            setattr(self._cfg, key, widget.currentText())
                     elif isinstance(widget, QLineEdit):
                         setattr(self._cfg, key, widget.text().strip())
                 except Exception:

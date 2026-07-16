@@ -78,6 +78,11 @@ class AITriageModule(BaseModule):
             ],
             "stream": False,
             "keep_alive": "30m",   # keep llama3 resident — avoid per-incident cold starts
+            # Bound worst-case latency. With stream=False no bytes arrive until
+            # generation finishes, so an unbounded reply that runs past the 90s
+            # socket timeout ALWAYS trips the breaker. A triage verdict is a few
+            # sentences — cap it so generation can't outrun the timeout.
+            "options": {"num_predict": 256, "temperature": 0.2},
         }).encode("utf-8")
         req = urllib.request.Request(
             f"{self._host}/api/chat", data=payload,
@@ -92,10 +97,15 @@ class AITriageModule(BaseModule):
             with self._cb_lock:
                 if self._cb_state == "closed":
                     self._cb_state = "open"
+                    # MEDIUM, not HIGH: a slow/unavailable local LLM is an infra
+                    # condition, not a security threat — raising it HIGH inflated
+                    # the threat level and cluttered Live Alerts. Triage simply
+                    # falls back to deterministic rules until the pinger recovers it.
                     self.emit(
-                        f"AI circuit breaker TRIPPED — Ollama timeout/error after "
-                        f"{self._CB_TIMEOUT_S}s: {exc}. Falling back to deterministic rules.",
-                        Severity.HIGH,
+                        f"AI triage degraded — Ollama timeout/error after "
+                        f"{self._CB_TIMEOUT_S}s: {exc}. Falling back to deterministic rules "
+                        "(auto-recovers when Ollama responds).",
+                        Severity.MEDIUM,
                         cb_state="open",
                     )
             return None

@@ -23,6 +23,25 @@ kernel driver required — so it is powerful **and** safe to install.
 > and only fires if you supply your own API keys. No secrets are ever committed
 > to this repository.
 
+## What's new (v1.9.1)
+
+- **ARIA lives in the Console.** The assistant is no longer a tab competing with your
+  alerts — a compact posture orb sits beside a single prompt bar. Ask in plain
+  language ("what's my posture?", "kill 1234", "trust my running apps") and replies
+  **stream in live**, while Live Alerts and the SOAR queue stay visible beside it.
+- **ARIA installs its own capabilities.** No terminal, no PATH headaches. Ask ARIA to
+  *"install voice"* (or `teams`, or `all`) and it pip-installs the optional packages
+  into its **own** interpreter — wheels only, so no C++ build tools — then confirms.
+  Console: `capabilities` to see what's missing, `install <capability|all>` to add it.
+- **Live progress wheels.** Self-Test, Eco-Mode wake-up, and Red-Team drills now show a
+  smooth spinning ring with a **red → amber → green percentage** so you can see work
+  actively running to completion.
+- **Crash & resilience hardening.** Removed an uncatchable `psutil.open_files()` C-level
+  access violation (Python 3.14) that could crash-loop the core; the watchdog now
+  **auto-recovers from SAFE_MODE after a cooldown** and supports **manual restart**
+  (`wd-restart core|scanner|blackbox|watchdog|*`). Quieter alerting: routine web
+  browsing and a slow local LLM no longer inflate the threat level.
+
 ## Red Team Drill
 
 Angerona can exercise its detection-and-response pipeline with an unannounced,

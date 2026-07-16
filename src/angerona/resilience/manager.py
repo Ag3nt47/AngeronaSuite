@@ -120,6 +120,11 @@ class ResilienceManager:
         # The watchdog (Go or Python) inherits how to relaunch Angerona.
         os.environ.setdefault("ANGERONA_PY", pyw)
         os.environ.setdefault("ANGERONA_CORE_CMD", f'"{pyw}" -m angerona')
+        # Run the hidden scanner HEADLESS. It was spawning a full QApplication +
+        # Qt window per (detached, no-console) scanner process — heavy RAM and a
+        # frequent startup failure that pushed the scanner into SAFE_MODE. Headless
+        # is lean and reliable; the BlackBox + watchdog_ui already give visibility.
+        os.environ["ANGERONA_SCANNER_UI"] = "0"
 
         # 1) Watchdog. BL-01: the compiled Go watchdog is a resilience PARENT that
         # LAUNCHES + hashes + relaunches Angerona (deployed by start-angerona.bat,
@@ -149,13 +154,25 @@ class ResilienceManager:
             self._sup.add("blackbox", [pyw, str(bb)], window="hidden",
                           running_probe=_cmdline_probe("blackbox_recorder.py"))
 
-        # 4) Themed Watchdog monitor window (presents the watchdog's status).
+        # 4) Themed monitor windows (present a component's status; lean readers).
         if self.with_ui:
             self._sup.add("watchdog_ui",
                           [pyw, "-m", "angerona.resilience.status_ui", "watchdog",
                            "--title", "Angerona - Watchdog"],
                           window="hidden",
                           running_probe=_cmdline_probe("status_ui", "watchdog"))
+            # Telemetry Scanner monitor window. The scanner PROCESS itself runs
+            # headless (ANGERONA_SCANNER_UI=0) for reliability — its old inline
+            # QApplication was heavy and flaky and pushed it into SAFE_MODE. So the
+            # scanner had no window and looked like it "wasn't starting with the
+            # others." This dedicated status_ui reader gives it a visible themed
+            # window like the watchdog's, without the fragile inline UI — it just
+            # reads status_scanner.json + the scanner heartbeat on a timer.
+            self._sup.add("scanner_ui",
+                          [pyw, "-m", "angerona.resilience.status_ui", "scanner",
+                           "--title", "Angerona - Telemetry Scanner"],
+                          window="hidden",
+                          running_probe=_cmdline_probe("status_ui", "scanner"))
 
         self._sup.start()          # adopt-if-alive: never double-spawns
 

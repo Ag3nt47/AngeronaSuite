@@ -6,9 +6,241 @@ can run a different colour/glyph for other events (e.g. a scan sweep).
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QPropertyAnimation, Qt, QTimer
+from PySide6.QtCore import QPoint, QPropertyAnimation, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
+
+
+# ── Live progress spinner: a smooth ring + a red→yellow→green percentage ──────
+_C_RED = (255, 77, 77)
+_C_YEL = (255, 176, 32)
+_C_GRN = (47, 227, 138)
+
+
+def _mix(a, b, t: float) -> QColor:
+    t = max(0.0, min(1.0, t))
+    return QColor(int(a[0] + (b[0] - a[0]) * t),
+                  int(a[1] + (b[1] - a[1]) * t),
+                  int(a[2] + (b[2] - a[2]) * t))
+
+
+def color_for_pct(pct: float) -> QColor:
+    """Red at 0%, warming through amber at the midpoint, to green near 100%."""
+    p = max(0.0, min(100.0, float(pct))) / 100.0
+    return _mix(_C_RED, _C_YEL, p / 0.5) if p < 0.5 else _mix(_C_YEL, _C_GRN, (p - 0.5) / 0.5)
+
+
+class _SpinRing(QWidget):
+    """A small, continuously-rotating arc — the 'it's working' wheel. Smooth
+    (~30 fps) and its colour tracks the current percentage."""
+
+    def __init__(self, parent: QWidget | None = None, d: int = 18) -> None:
+        super().__init__(parent)
+        self.setFixedSize(d, d)
+        self._angle = 0.0
+        self._color = QColor(*_C_RED)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+
+    def start(self) -> None:
+        if not self._timer.isActive():
+            self._timer.start(33)
+        self.show()
+
+    def stop(self) -> None:
+        self._timer.stop()
+
+    def set_color(self, c: QColor) -> None:
+        self._color = c
+        self.update()
+
+    def _tick(self) -> None:
+        self._angle = (self._angle + 11.0) % 360.0
+        self.update()
+
+    def paintEvent(self, _evt) -> None:  # noqa: N802
+        from PySide6.QtGui import QPen
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        m = 3.0
+        rect = QRectF(m, m, w - 2 * m, h - 2 * m)
+        p.setPen(QPen(QColor(255, 255, 255, 30), 2.4))
+        p.drawArc(rect, 0, 360 * 16)
+        pen = QPen(self._color, 2.6)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.drawArc(rect, int(-self._angle * 16), 105 * 16)   # a sweeping 105° arc
+        p.end()
+
+
+class RunSpinner(QWidget):
+    """Compact 'actively running' indicator: a smooth spinning ring next to a
+    live percentage, both coloured red→amber→green as progress climbs.
+
+    Determinate use (self-test, eco wake): call ``start(label)`` then
+    ``set_progress(done, total)``; ``finish()`` snaps to a green 100% and fades.
+    Estimated use (a drill with no exact count): ``begin_estimated(seconds)``
+    eases the bar toward 95% over the expected duration; ``finish()`` completes it.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._ring = _SpinRing(self)
+        self._label = QLabel("")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 0, 8, 0)
+        lay.setSpacing(8)
+        lay.addWidget(self._ring)
+        lay.addWidget(self._label)
+        self._text = ""
+        self._pct = 0
+        self._t0 = 0.0
+        self._secs = 1.0
+        self._est_timer = QTimer(self)
+        self._est_timer.timeout.connect(self._ease)
+        self._done_timer = QTimer(self)
+        self._done_timer.setSingleShot(True)
+        self._done_timer.timeout.connect(self.stop)
+        self.hide()
+
+    def start(self, text: str = "") -> None:
+        self._text = text
+        self._pct = 0
+        self._est_timer.stop()
+        self._done_timer.stop()
+        self._ring.start()
+        self.show()
+        self._render()
+
+    def set_pct(self, pct: float) -> None:
+        self._pct = max(0, min(100, int(round(pct))))
+        self._render()
+
+    def set_progress(self, done: int, total: int) -> None:
+        self.set_pct(0 if total <= 0 else done / total * 100.0)
+
+    def begin_estimated(self, seconds: float, text: str = "") -> None:
+        import time as _t
+        self.start(text or self._text)
+        self._secs = max(1.0, float(seconds))
+        self._t0 = _t.time()
+        self._est_timer.start(60)
+
+    def _ease(self) -> None:
+        import time as _t
+        e = min(1.0, (_t.time() - self._t0) / self._secs)
+        self.set_pct(95.0 * (1.0 - (1.0 - e) ** 2))   # ease-out toward 95%
+
+    def finish(self, text: str | None = None) -> None:
+        self._est_timer.stop()
+        if text is not None:
+            self._text = text
+        self.set_pct(100)
+        self._done_timer.start(1500)   # linger on green, then fade out
+
+    def stop(self) -> None:
+        self._est_timer.stop()
+        self._done_timer.stop()
+        self._ring.stop()
+        self.hide()
+
+    def _render(self) -> None:
+        c = color_for_pct(self._pct)
+        self._ring.set_color(c)
+        label = f"{self._text}  {self._pct}%" if self._text else f"{self._pct}%"
+        self._label.setText(label)
+        self._label.setStyleSheet(
+            f"color: rgb({c.red()},{c.green()},{c.blue()}); font-weight:700; letter-spacing:0.3px;")
+
+
+class _LevelBar(QWidget):
+    """The bar itself: a rounded track that fills left→right with the mic level,
+    coloured green (quiet) → amber → red (loud), with a held peak tick."""
+
+    def __init__(self, parent: QWidget | None = None, w: int = 104, h: int = 12) -> None:
+        super().__init__(parent)
+        self.setMinimumWidth(w)
+        self.setFixedHeight(h)
+        self._level = 0.0
+        self._peak = 0.0
+        self._target = 0.0
+
+    def set_target(self, lv: float) -> None:
+        self._target = max(0.0, min(1.0, float(lv)))
+        if self._target > self._peak:
+            self._peak = self._target
+
+    def tick(self) -> None:
+        # Fast attack, slow release — reads like a real audio meter.
+        k = 0.6 if self._target > self._level else 0.3
+        self._level += (self._target - self._level) * k
+        self._peak = max(self._level, self._peak - 0.015)
+        self.update()
+
+    def paintEvent(self, _evt) -> None:  # noqa: N802
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QBrush, QLinearGradient, QPen
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        r = h / 2.0
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(18, 24, 32))
+        p.drawRoundedRect(QRectF(0, 0, w, h), r, r)
+        fw = self._level * w
+        if fw > 1:
+            grad = QLinearGradient(0, 0, w, 0)
+            grad.setColorAt(0.0, QColor(47, 227, 138))
+            grad.setColorAt(0.62, QColor(255, 176, 32))
+            grad.setColorAt(1.0, QColor(255, 77, 77))
+            p.setBrush(QBrush(grad))
+            p.drawRoundedRect(QRectF(0, 0, fw, h), r, r)
+        px = self._peak * w
+        if px > 1:
+            p.setPen(QPen(QColor(230, 240, 255), 1.4))
+            p.drawLine(int(px), 2, int(px), h - 2)
+        p.end()
+
+
+class MicMeter(QWidget):
+    """A little "ARIA can hear you" indicator: a mic glyph + a live level bar.
+    Purely a VU meter — push_level(0..1) is fed from the audio thread; it shows
+    the operator that the microphone is working. Hidden until set_active(True)."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._active = False
+        self._icon = QLabel("\U0001F3A4")   # 🎤
+        self._icon.setStyleSheet("font-size:13px;")
+        self._bar = _LevelBar(self)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        lay.addWidget(self._icon)
+        lay.addWidget(self._bar, 1)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._bar.tick)
+        self.setToolTip("Microphone input level — if this moves when you speak, ARIA can hear you.")
+        self.hide()
+
+    def set_active(self, on: bool) -> None:
+        self._active = bool(on)
+        if on:
+            self.show()
+            if not self._timer.isActive():
+                self._timer.start(40)   # ~25 fps meter animation
+        else:
+            self._timer.stop()
+            self._bar.set_target(0.0)
+            self._bar._level = self._bar._peak = 0.0
+            self._bar.update()
+            self.hide()
+
+    def push_level(self, lv: float) -> None:
+        """Feed a new level (0..1) — safe to call from a Qt signal on the GUI thread."""
+        if self._active:
+            self._bar.set_target(lv)
 
 
 class ThreatOverlay(QWidget):

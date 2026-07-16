@@ -67,6 +67,15 @@ _TRUSTED_PROCESS_SENSORS: frozenset[str] = frozenset({
     # so it catches the canary even when Windows 4688 command-line auditing is
     # off — the common reason DRILL never saw an echo and cried "blinding".
     "Sysmon Event Bridge",
+    # The out-of-process psutil snapshot-diff scanner, bridged onto the bus by
+    # the Resilience Manager as "Telemetry Scanner". On hosts with no elevation /
+    # no Sysmon / no ETW, this is the ONLY process-creation sensor that actually
+    # works — so DRILL must trust it or the echo path can never be verified and
+    # DRILL cries "blinding" forever. It's a first-party Angerona component
+    # (same trust tier as ETWG). Note: it validates the *polling* path, not ETW,
+    # which is honest — if ETW is blinded but psutil still sees processes, that's
+    # exactly what this reports.
+    "Telemetry Scanner",
 })
 # Process-creation event IDs we accept from a trusted sensor: 4688 (Windows
 # Security channel) and 1 (Sysmon process-create).
@@ -133,6 +142,7 @@ class CanaryDrillModule(BaseModule):
         self._config_warned = False
         # G2 sensor coverage tracking: module name → last observed bus timestamp
         self._sensor_last_seen: dict[str, float] = {}
+        self._coverage_alerted: set[str] = set()   # dedup: one alert per silence episode
         self._next_coverage_check: float = time.monotonic() + _SENSOR_WARMUP_S
         self._start_time: float = time.monotonic()
 
@@ -156,10 +166,17 @@ class CanaryDrillModule(BaseModule):
         """
         if event.module not in _TRUSTED_PROCESS_SENSORS:
             return
+        details = event.details or {}
+        # Accept the echo if it's a process-creation record. Windows/Sysmon paths
+        # carry an EID (4688 / 1); the psutil snapshot-diff scanner carries no EID
+        # but tags the record type="process_creation" — that record still proves
+        # a new process was observed, and it's PID-correlated below, so honour it.
         try:
-            if int(event.details.get("eid", 0)) not in _PROCESS_ECHO_EIDS:
-                return
+            eid_ok = int(details.get("eid", 0)) in _PROCESS_ECHO_EIDS
         except (TypeError, ValueError):
+            eid_ok = False
+        type_ok = str(details.get("type") or details.get("event_type") or "") == "process_creation"
+        if not (eid_ok or type_ok):
             return
 
         def tag_in(value: object) -> str | None:
@@ -234,11 +251,17 @@ class CanaryDrillModule(BaseModule):
             raise RuntimeError("telemetry expectation capacity exhausted")
 
         if os.name == "nt":
-            # cmd /c REM <tag> exits immediately; the tag appears in the
-            # 4688 CommandLine StringInsert that ETWG reads (when command-line
-            # auditing is on). We also record the pid so the echo can be matched
-            # by PID when the command line is unavailable.
-            cmd = ["cmd", "/c", f"REM {tag}"]
+            # The tag appears in the 4688/Sysmon CommandLine StringInsert that ETW
+            # reads (when command-line auditing is on); we also record the pid so
+            # the echo can be matched by PID when the command line is unavailable.
+            #
+            # It must LINGER ~2s: the only sensor on an un-elevated host is the
+            # 1 Hz psutil snapshot-diff scanner, which compares process sets each
+            # poll. A fire-and-exit `REM` (sub-millisecond) never appears in any
+            # snapshot, so the canary was structurally invisible — the real reason
+            # the echo path never verified. `ping -n 3` keeps cmd.exe alive ~2s so
+            # at least one poll snapshots it (well within the 6s echo window).
+            cmd = ["cmd", "/c", f"REM {tag} & ping -n 3 127.0.0.1 >nul"]
             proc = popen_hidden(
                 cmd,
                 stdout=subprocess.DEVNULL,
@@ -329,16 +352,20 @@ class CanaryDrillModule(BaseModule):
                 prev = self._sensor_last_seen.get(ev.module, 0.0)
                 if ev.ts > prev:
                     self._sensor_last_seen[ev.module] = ev.ts
+                    self._coverage_alerted.discard(ev.module)   # spoke again → re-arm
 
-        # Report any module that has never been seen OR has been silent too long
+        # Flag ONLY a sensor that was ACTIVE before and then went silent — a real
+        # stall. A never-seen module is almost always intentionally disabled or
+        # Eco-paused (no activity to report), NOT stalled — flagging those produced
+        # a MEDIUM alert storm in Eco Mode. Alert once per silence episode (dedup).
         silence_cutoff = now_wall - _SENSOR_SILENCE_WINDOW_S
         for module_name in _G2_SENSOR_MODULES:
             last = self._sensor_last_seen.get(module_name, 0.0)
-            if last < silence_cutoff:
-                elapsed = int(now_wall - last) if last else int(now_mono - self._start_time)
+            if last > 0.0 and last < silence_cutoff and module_name not in self._coverage_alerted:
+                self._coverage_alerted.add(module_name)
                 self.emit(
-                    f"[DRILL/COVERAGE] Sensor '{module_name}' has been silent for "
-                    f"≥{elapsed}s — module may be stalled or unregistered.",
+                    f"[DRILL/COVERAGE] Sensor '{module_name}' went silent for "
+                    f"≥{int(now_wall - last)}s after being active — may have stalled.",
                     Severity.MEDIUM,
                     silent_module=module_name,
                     last_seen_ts=last,

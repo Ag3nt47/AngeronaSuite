@@ -161,7 +161,19 @@ class MemoryTimeMachineModule(BaseModule):
                 out.append(str(tok))
         except Exception:
             return out
-        for getter in ("open_files", "connections", "environ"):
+        # CRASH FIX: psutil.Process.open_files() triggers a Windows ACCESS VIOLATION
+        # (an uncatchable C-level fault that kills the ENTIRE process — no Python
+        # try/except can stop it) on Python 3.14 / this psutil build. It was the
+        # source of the repeated core crashes. It is NOT called unless explicitly
+        # re-enabled after you've confirmed a stable psutil (ANGERONA_MTM_OPEN_FILES=1).
+        # Only `connections` runs by default — it's the low-risk psutil surface.
+        # Both open_files (the KNOWN Py3.14 access violation) and environ (a
+        # cross-process PEB read) are C-level fault risks on this build, so they
+        # are opt-in behind the same flag after you've confirmed a stable psutil.
+        getters = ["connections"]
+        if os.environ.get("ANGERONA_MTM_OPEN_FILES") == "1":
+            getters = ["open_files", "connections", "environ"]
+        for getter in getters:
             try:
                 val = getattr(proc, getter)()
                 if getter == "open_files":

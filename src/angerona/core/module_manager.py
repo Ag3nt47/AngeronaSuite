@@ -53,17 +53,49 @@ class ModuleManager:
     def _builtin_classes(self) -> List[type]:
         import angerona.modules as pkg
         found: List[type] = []
-        for info in pkgutil.iter_modules(pkg.__path__):
+        seen: set[str] = set()
+
+        def _load(name: str) -> None:
+            if name in seen or name.startswith("_"):
+                return
+            seen.add(name)
             try:
-                mod = importlib.import_module(f"angerona.modules.{info.name}")
+                mod = importlib.import_module(f"angerona.modules.{name}")
             except Exception as exc:
-                self.discovery_errors.append(f"angerona.modules.{info.name}: {exc}")
-                continue
+                self.discovery_errors.append(f"angerona.modules.{name}: {exc}")
+                return
             found.extend(self._subclasses_in(mod))
-            # Briefly yield the GIL between imports so the GUI thread (which just
-            # painted the freshly-shown window) stays responsive during the import
-            # burst instead of freezing until all ~40 modules finish loading.
+            # Briefly yield the GIL between imports so the GUI thread stays
+            # responsive during the import burst instead of freezing.
             time.sleep(0.003)
+
+        for info in pkgutil.iter_modules(pkg.__path__):
+            _load(info.name)
+        # Filesystem fallback: a strict (PEP 660) editable install freezes the
+        # module map at install time, so a module file added LATER is invisible to
+        # pkgutil — it would silently never load until a reinstall. Scan the
+        # package's real directory too so new modules discover without reinstalling.
+        # Derive the dir from __file__ (the physical __init__.py) — reliable even
+        # when the editable finder gives __path__ a non-filesystem value.
+        roots = list(getattr(pkg, "__path__", []) or [])
+        pkg_file = getattr(pkg, "__file__", None)
+        if pkg_file:
+            roots.append(os.path.dirname(pkg_file))
+        scanned: set[str] = set()
+        for root in roots:
+            try:
+                real = os.path.realpath(root)
+            except Exception:
+                continue
+            if not real or real in scanned or not os.path.isdir(real):
+                continue
+            scanned.add(real)
+            try:
+                for fn in os.listdir(real):
+                    if fn.endswith(".py"):
+                        _load(fn[:-3])
+            except Exception:
+                continue
         return found
 
     def _external_classes(self) -> List[type]:

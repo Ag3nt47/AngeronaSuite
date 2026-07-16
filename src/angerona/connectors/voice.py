@@ -65,6 +65,85 @@ class Voice:
         self._stt_fn = stt_fn
         self._spoken: deque[str] = deque(maxlen=50)   # narration history
         self.last_error: str = ""
+        # Microphone input device. None / "" = the OS default (computer) mic;
+        # otherwise a sounddevice input-device index for an added/external mic.
+        self.mic_device: Optional[int] = None
+
+    def set_mic_device(self, device) -> None:
+        """Choose the input device. None / "" / "default" → computer default mic;
+        an int (or int-like string) → that sounddevice input device index."""
+        if device in (None, "", "default"):
+            self.mic_device = None
+            return
+        try:
+            self.mic_device = int(device)
+        except (TypeError, ValueError):
+            self.mic_device = None
+
+    @staticmethod
+    def list_input_devices() -> list[tuple[int, str]]:
+        """Enumerate input-capable audio devices as (index, label). Empty if
+        sounddevice isn't installed — the caller falls back to 'computer mic'."""
+        if not _have("sounddevice"):
+            return []
+        try:
+            import sounddevice as sd  # type: ignore
+            out: list[tuple[int, str]] = []
+            for idx, dev in enumerate(sd.query_devices()):
+                if int(dev.get("max_input_channels", 0)) > 0:
+                    out.append((idx, str(dev.get("name", f"device {idx}"))))
+            return out
+        except Exception:
+            return []
+
+    def level_monitor(self, on_level: Callable[[float], None],
+                      should_stop: Callable[[], bool]) -> bool:
+        """Open the selected mic and report a smoothed input LEVEL (0..1) via
+        on_level(), so the UI can show a live "ARIA can hear you" meter. Purely a
+        VU meter — it recognises nothing and sends no audio anywhere. Returns
+        False immediately if sounddevice isn't installed. Blocks until
+        should_stop() is true, so run it on a daemon thread."""
+        if not _have("sounddevice"):
+            return False
+        try:
+            import array
+            import time as _t
+            import sounddevice as sd  # type: ignore
+
+            def _rms_level(raw: bytes) -> float:
+                samples = array.array("h")
+                samples.frombytes(raw)
+                if not samples:
+                    return 0.0
+                acc = 0
+                for s in samples:
+                    acc += s * s
+                rms = (acc / len(samples)) ** 0.5
+                # Normalise + a little gain so ordinary speech reads mid-scale.
+                return max(0.0, min(1.0, (rms / 32768.0) * 6.0))
+
+            box = {"lv": 0.0}
+
+            def _cb(indata, _frames, _time, _status):
+                try:
+                    box["lv"] = _rms_level(bytes(indata))
+                except Exception:
+                    box["lv"] = 0.0
+
+            with sd.RawInputStream(samplerate=16000, blocksize=1600, dtype="int16",
+                                   channels=1, device=self.mic_device, callback=_cb):
+                while not should_stop():
+                    on_level(box["lv"])
+                    _t.sleep(0.05)          # ~20 Hz UI updates
+            on_level(0.0)
+            return True
+        except Exception as exc:  # pragma: no cover - hardware/lib dependent
+            self.last_error = f"mic level monitor failed: {exc}"
+            try:
+                on_level(0.0)
+            except Exception:
+                pass
+            return False
 
     # ── Capability detection ──────────────────────────────────────────────────
     def capabilities(self) -> VoiceCaps:
@@ -219,7 +298,7 @@ class Voice:
                     q.put(bytes(indata))
 
                 with sd.RawInputStream(samplerate=16000, blocksize=8000, dtype="int16",
-                                       channels=1, callback=_cb):
+                                       channels=1, device=self.mic_device, callback=_cb):
                     end = _t.time() + max(1.0, float(timeout))
                     while _t.time() < end:
                         try:

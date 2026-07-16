@@ -39,6 +39,10 @@ from angerona.resilience import heartbeat as hb
 from angerona.resilience import diagnostics as diag
 from angerona.resilience import shutdown_token as tok
 
+# After a component hits SAFE_MODE (crash-loop), wait this long, then retry once —
+# so supervision recovers automatically instead of giving up permanently.
+_SAFE_MODE_COOLDOWN = 120.0
+
 
 # ── detached, windowed spawning ──────────────────────────────────────────────
 def spawn_detached(argv: list[str], env: Optional[dict] = None,
@@ -108,6 +112,19 @@ def release_spawn(name: str) -> None:
         pass
 
 
+def request_restart(*names: str) -> None:
+    """Ask the supervisor(s) to force-restart the named components on the next tick
+    (clears SAFE_MODE too). Pass '*' or no name for ALL. File-based, so it works
+    across the core/watchdog process boundary — callable from the console."""
+    try:
+        p = _ipc_dir() / "restart.cmd"
+        with open(p, "a", encoding="utf-8") as f:
+            for n in (names or ("*",)):
+                f.write(f"{str(n).strip()}\n")
+    except Exception:
+        pass
+
+
 @dataclass
 class Component:
     name: str                      # heartbeat name + identity
@@ -123,6 +140,7 @@ class Component:
     _dead: bool = False
     _failures: deque = field(default_factory=deque)
     safe_mode: bool = False
+    safe_mode_since: float = 0.0    # when SAFE_MODE was entered (for cooldown recovery)
     restarts: int = 0
     adopted: bool = False
 
@@ -235,7 +253,26 @@ class ProcessSupervisor:
     def tick(self) -> dict:
         actions: dict = {}
         standdown = tok.is_standdown_requested()
+        forced = self._pop_restart_requests()       # operator/console manual restart
+        now = time.time()
         for name, c in self.components.items():
+            # Manual restart: force a respawn now, clearing SAFE_MODE.
+            if name in forced or "*" in forced:
+                c.safe_mode = False
+                c._failures.clear()
+                self._terminate(c)
+                self._spawn(c)
+                actions[name] = "manual_restart"
+                self._emit("INFO", f"{name}: manual restart — respawned.", component=name)
+                continue
+            # SAFE_MODE recovery: never give up forever. After a cooldown, clear it
+            # and allow a retry — a transient crash-loop (or a since-fixed bug) then
+            # recovers automatically instead of staying permanently dead.
+            if c.safe_mode and now - c.safe_mode_since >= _SAFE_MODE_COOLDOWN:
+                c.safe_mode = False
+                c._failures.clear()
+                self._emit("INFO", f"{name} leaving SAFE_MODE after "
+                           f"{_SAFE_MODE_COOLDOWN:.0f}s cooldown — retrying.", component=name)
             state = self._assess(c)
             actions[name] = state
             if standdown:
@@ -243,9 +280,11 @@ class ProcessSupervisor:
             if state in ("dead", "suspended") and not c.safe_mode:
                 if self._register_failure(c):
                     c.safe_mode = True
+                    c.safe_mode_since = now
                     self._emit("CRITICAL",
-                               f"{name} entered SAFE_MODE after {c.max_failures} failures "
-                               f"in {c.window_s:.0f}s — respawns halted to prevent thrash.",
+                               f"{name} entered SAFE_MODE after {c.max_failures} failures in "
+                               f"{c.window_s:.0f}s — respawns paused, auto-retry in "
+                               f"{_SAFE_MODE_COOLDOWN:.0f}s (or use manual restart).",
                                component=name)
                     actions[name] = "safe_mode"
                     continue
@@ -254,6 +293,22 @@ class ProcessSupervisor:
                 self._spawn(c)
                 actions[name] = f"respawned({state})"
         return actions
+
+    # ── manual restart (operator-triggered, cross-process via a command file) ──
+    @staticmethod
+    def _restart_cmd_path() -> Path:
+        return _ipc_dir() / "restart.cmd"
+
+    def _pop_restart_requests(self) -> set:
+        p = self._restart_cmd_path()
+        try:
+            if not p.exists():
+                return set()
+            names = {ln.strip() for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()}
+            p.unlink()
+            return names
+        except Exception:
+            return set()
 
     def _assess(self, c: Component) -> str:
         # Heartbeat-less components (BlackBox): liveness is the process probe.

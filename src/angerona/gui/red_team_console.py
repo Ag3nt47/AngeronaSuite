@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from angerona.core.data_paths import data_dir
+from angerona.gui.animations import RunSpinner
 
 # Canonical kill-chain stages → (match-substring in narration, short chip label)
 _STAGES = [
@@ -197,6 +198,9 @@ class RedTeamConsole(QDialog):
 
         # actions
         act = QHBoxLayout()
+        # Live progress wheel — colours from red → amber → green as the drill runs.
+        self.run_spinner = RunSpinner()
+        act.addWidget(self.run_spinner)
         self.launch_btn = QPushButton("▶  Launch simulation")
         self.launch_btn.setStyleSheet("background:#7f1d1d; color:#fecaca; border:1px solid #b91c1c;"
                                       "border-radius:6px; padding:7px 16px; font-weight:800;")
@@ -206,6 +210,13 @@ class RedTeamConsole(QDialog):
         act.addStretch(); act.addWidget(self.stop_btn); act.addWidget(self.launch_btn)
         lay.addLayout(act)
         return w
+
+    def finish_run(self) -> None:
+        """Called by the parent when both engines have finished — completes the wheel."""
+        try:
+            self.run_spinner.finish("Simulation complete")
+        except Exception:
+            pass
 
     # ── History tab ──────────────────────────────────────────────────────────
     def _build_history_tab(self) -> QWidget:
@@ -369,6 +380,11 @@ class RedTeamConsole(QDialog):
         }
         try:
             self._parent._run_simulation(cfg)
+            # Estimated-duration wheel: scales with intensity (phases) and whether
+            # both profiles run. finish_run() snaps it to green when the drill ends.
+            phases = self.sld.value() + 1
+            est = 14 + phases * 9 + (12 if (self.cb_shark.isChecked() and self.cb_apt.isChecked()) else 0)
+            self.run_spinner.begin_estimated(est, "Simulation running")
         except Exception as exc:
             QMessageBox.warning(self, "Launch failed", str(exc))
 
@@ -378,6 +394,10 @@ class RedTeamConsole(QDialog):
                 getattr(self._parent, eng).stop_and_clean()
             except Exception:
                 pass
+        try:
+            self.run_spinner.stop()
+        except Exception:
+            pass
         self.log.append("■ Stop requested — engines cleaning up their markers.")
 
     # ── editor ───────────────────────────────────────────────────────────────

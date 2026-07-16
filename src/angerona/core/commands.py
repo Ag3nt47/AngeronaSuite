@@ -86,11 +86,27 @@ class CommandConsole:
             "trust-running": self._trust_running, "trustrunning": self._trust_running,
             "baseline": self._trust_running, "trust-apps": self._trust_running,
             "guide": self._guide, "info": self._guide, "how": self._guide,
+            "wd-restart": self._wd_restart, "restart-component": self._wd_restart,
+            "revive": self._wd_restart,
+            "install": self._install, "capabilities": self._capabilities,
+            "caps": self._capabilities,
         }
 
     def set_ask_handler(self, fn) -> None:
         """Route the console's free-form/AI path through ARIA (or any handler)."""
         self._ask_handler = fn
+
+    def is_command(self, line: str) -> bool:
+        """True if the first token is a known IR command (kill/ps/suspend/…),
+        False if it's free-form text destined for ARIA. Lets the console stream
+        ARIA answers while running real commands synchronously."""
+        try:
+            parts = shlex.split(line)
+        except Exception:
+            parts = line.split()
+        if not parts:
+            return True
+        return parts[0].lower() in self._cmds
 
     # ── Entry point ──────────────────────────────────────────────────────────
     def run(self, line: str) -> str:
@@ -923,6 +939,42 @@ class CommandConsole:
             return "\n".join(lines)
         except Exception as exc:
             return f"portmap error: {exc}"
+
+    # ── Manual restart of a supervised component ──────────────────────────────
+    def _wd_restart(self, args: List[str]) -> str:
+        """wd-restart [component...] — force the watchdog/supervisor to restart a
+        supervised component (core, scanner, blackbox, watchdog), clearing SAFE_MODE.
+        No name = all. Cross-process via a command file the supervisor polls."""
+        try:
+            from angerona.resilience.supervisor import request_restart
+        except Exception as exc:
+            return f"restart unavailable: {exc}"
+        targets = [a.lower() for a in args] or ["*"]
+        request_restart(*targets)
+        self._audit(f"Console: manual restart requested for {', '.join(targets)}", Severity.MEDIUM)
+        return (f"Restart requested for: {', '.join(targets)}. The supervisor will respawn "
+                "on its next tick (clears SAFE_MODE). Valid: core, scanner, blackbox, watchdog, *")
+
+    # ── Self-install optional capabilities ────────────────────────────────────
+    def _capabilities(self, args: List[str]) -> str:
+        """capabilities — show which optional capabilities are installed/missing."""
+        try:
+            from angerona.core import self_installer as si
+            return si.summary()
+        except Exception as exc:
+            return f"capabilities unavailable: {exc}"
+
+    def _install(self, args: List[str]) -> str:
+        """install [voice|teams|network-arp|realtime-etw|windows-speech|all] —
+        install ARIA's optional capability packages into this environment (pip,
+        no admin, no PATH needed). No argument installs everything missing."""
+        try:
+            from angerona.core import self_installer as si
+        except Exception as exc:
+            return f"installer unavailable: {exc}"
+        caps = [a.lower() for a in args] or ["all"]
+        self._audit(f"Console: capability install requested for {', '.join(caps)}", Severity.MEDIUM)
+        return si.install(caps)
 
     # ── End-user help / info ──────────────────────────────────────────────────
     def _guide(self, args: List[str]) -> str:

@@ -240,4 +240,22 @@ def self_test() -> tuple[bool, str]:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # Detached + hidden → any startup exception otherwise vanishes and the
+    # supervisor just sees the scanner die (SAFE_MODE after 3 fails, no reason).
+    # Persist the traceback so the actual cause is visible.
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except BaseException:
+        try:
+            import traceback
+            from angerona.resilience import heartbeat as _hb
+            _dir = _hb._data_dir() / "diagnostics"
+            _dir.mkdir(parents=True, exist_ok=True)
+            with open(_dir / "resilience_scanner_crash.log", "a", encoding="utf-8") as _f:
+                _f.write(f"\n[{time.strftime('%Y-%m-%dT%H:%M:%S')}] scanner crashed:\n")
+                _f.write(traceback.format_exc())
+        except Exception:
+            pass
+        raise

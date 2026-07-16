@@ -30,12 +30,13 @@ class SelfTestRunner:
         # Populated by run(): list of {"module", "detail"} for the last run.
         self.last_failures: List[dict] = []
 
-    def run(self, names: Optional[List[str]] = None, timeout: float = 15.0) -> str:
+    def run(self, names: Optional[List[str]] = None, timeout: float = 15.0,
+            progress_cb=None) -> str:
         lines = ["===== SELF-TEST / STRESS DRILL =====", ""]
         passed = failed = 0
         failures: List[dict] = []
 
-        target_modules = [mod for name, mod in sorted(self.manager.modules.items()) 
+        target_modules = [mod for name, mod in sorted(self.manager.modules.items())
                           if not names or name in names]
 
         # SUPER EFFICIENT: Run pipeline check and all module self-tests concurrently.
@@ -43,11 +44,30 @@ class SelfTestRunner:
         pipeline_res: dict = {}
         mod_results: dict = {}
 
+        # Live progress: fire progress_cb(done, total) as each concurrent test
+        # finishes, so the UI can show a real percentage climbing to 100%.
+        total = len(target_modules) + 1          # +1 for the pipeline check
+        _done = {"n": 0}
+        _plock = threading.Lock()
+
+        def _bump():
+            if progress_cb is None:
+                return
+            with _plock:
+                _done["n"] += 1
+                n = _done["n"]
+            try:
+                progress_cb(n, total)
+            except Exception:
+                pass
+
         def _run_pipeline():
             pipeline_res["res"] = self._pipeline_check()
+            _bump()
 
         def _run_single(mod):
             mod_results[mod.name] = self._test_module(mod, timeout)
+            _bump()
 
         threads = []
         

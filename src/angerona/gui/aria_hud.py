@@ -181,6 +181,7 @@ if _HAVE_QT:
                      trend_fn: Optional[Callable[[], int]] = None,
                      ask_fn: Optional[Callable[[str], str]] = None,
                      stream_fn: Optional[Callable[[str, Callable[[str], None]], str]] = None,
+                     compact: bool = False,
                      parent: Optional["QWidget"] = None) -> None:
             super().__init__(parent)
             self._score_fn = score_fn
@@ -189,11 +190,41 @@ if _HAVE_QT:
             self._trend_fn = trend_fn or (lambda: 0)
             self._ask_fn = ask_fn
             self._stream_fn = stream_fn
+            # Compact = orb + status + sparkline ONLY (no chat log / input). Used
+            # when ARIA lives beside the Console: the Console is the single prompt
+            # bar, so a second chat box here would be redundant. The orb stays as
+            # the live posture HUD next to the prompt.
+            self._compact = compact
 
             self._orb = _Orb(self)
             self._status = QLabel("ARIA online.")
+            self._status.setWordWrap(True)
             self._spark = QLabel("")
             self._spark.setStyleSheet("font-family: 'Fira Code', monospace; color:#7fd0ff;")
+
+            # Live mic-level meter ("ARIA can hear you"). Only visible once voice
+            # listening is active; the main window feeds it from the audio thread.
+            self.mic_meter = None
+            try:
+                from angerona.gui.animations import MicMeter
+                self.mic_meter = MicMeter()
+            except Exception:
+                self.mic_meter = None
+
+            if compact:
+                self._log = None
+                self._input = None
+                root = QVBoxLayout(self)
+                root.setContentsMargins(8, 6, 8, 6)
+                root.addWidget(self._orb, 0, Qt.AlignHCenter)
+                root.addWidget(self._status)
+                root.addWidget(self._spark)
+                if self.mic_meter is not None:
+                    root.addWidget(self.mic_meter)
+                root.addStretch(1)
+                self.refresh()
+                return
+
             self._log = QTextEdit(); self._log.setReadOnly(True)
             self._input = QLineEdit(); self._input.setPlaceholderText("Ask ARIA…")
             self._input.returnPressed.connect(self._on_submit)

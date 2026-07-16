@@ -72,6 +72,10 @@ class Config:
     perf_governor_enabled: bool = False         # ARIA Overdrive adaptive UI-path governor
     aria_voice_enabled: bool = False            # spoken threat narration (local TTS)
     aria_voice_cloud_tts: bool = False          # allow ElevenLabs cloud TTS (opt-in egress)
+    # Microphone source for listening: "" / "default" = the computer's built-in
+    # mic (default); otherwise the sounddevice input-device index (as a string)
+    # of an added/external mic chosen in Settings.
+    aria_mic_device: str = ""
     aria_push_enabled: bool = False             # auto-brief a channel on criticals
     aria_push_kind: str = "slack"               # slack | teams | ntfy | webhook
     aria_push_url: str = ""                      # channel webhook URL (blank = disabled)
@@ -133,6 +137,7 @@ class Config:
                 cfg.perf_governor_enabled = data.get("perf_governor_enabled", cfg.perf_governor_enabled)
                 cfg.aria_voice_enabled    = data.get("aria_voice_enabled", cfg.aria_voice_enabled)
                 cfg.aria_voice_cloud_tts  = data.get("aria_voice_cloud_tts", cfg.aria_voice_cloud_tts)
+                cfg.aria_mic_device       = str(data.get("aria_mic_device", cfg.aria_mic_device))
                 cfg.aria_push_enabled     = data.get("aria_push_enabled", cfg.aria_push_enabled)
                 cfg.aria_push_kind        = data.get("aria_push_kind", cfg.aria_push_kind)
                 cfg.aria_push_url         = data.get("aria_push_url", cfg.aria_push_url)
@@ -185,6 +190,7 @@ class Config:
                     "perf_governor_enabled": self.perf_governor_enabled,
                     "aria_voice_enabled":    self.aria_voice_enabled,
                     "aria_voice_cloud_tts":  self.aria_voice_cloud_tts,
+                    "aria_mic_device":       self.aria_mic_device,
                     "aria_push_enabled":     self.aria_push_enabled,
                     "aria_push_kind":        self.aria_push_kind,
                     "aria_push_url":         self.aria_push_url,

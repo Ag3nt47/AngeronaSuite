@@ -20,7 +20,8 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication, QKeySequence, QShortcut
+from PySide6.QtGui import (QAction, QColor, QFont, QGuiApplication, QKeySequence,
+                           QShortcut, QTextCursor)
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFileDialog, QGridLayout, QFrame, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -2809,17 +2810,22 @@ class ResourceStrip(QFrame):
 
 # ── Command console (interactive prompt + AI) ────────────────────────────────
 class CommandConsolePanel(QFrame):
-    """Embedded console: type a command (try 'help') or ask the AI. Commands run
-    on a background thread so AI calls never freeze the UI."""
+    """Embedded console — now ARIA's home. Type an IR command (try 'help') or just
+    talk to ARIA in plain language; ARIA's replies stream in live. Everything runs
+    on a background thread so AI calls never freeze the UI. This is the single ARIA
+    prompt bar: the orb HUD sits beside it and the Live Alerts stay in their own
+    panel so you can watch alerts and talk to ARIA at the same time."""
     _result = Signal(str)
+    _token = Signal(str)     # one streamed ARIA chunk (live typing effect)
 
     def __init__(self, backend) -> None:
         super().__init__()
         self.setObjectName("Panel")
         self.backend = backend
+        self._stream_ask = None          # optional fn(text, on_token)->str (ARIA)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 12, 14, 12)
-        lay.addWidget(_section("Console  —  type 'help', or ask the AI"))
+        lay.addWidget(_section("ARIA Console  —  ask ARIA in plain language, or type 'help' for commands"))
 
         self.out = QPlainTextEdit()
         self.out.setReadOnly(True)
@@ -2832,11 +2838,11 @@ class CommandConsolePanel(QFrame):
         self.spin.setStyleSheet("color:#1f9cff; font-weight:800; font-size:14px; "
                                 "letter-spacing:1px; min-width:150px;")
         row.addWidget(self.spin)
-        prompt = QLabel("UDE#")
+        prompt = QLabel("ARIA#")
         prompt.setStyleSheet("color:#22c55e; font-weight:700; font-family:Consolas;")
         row.addWidget(prompt)
         self.inp = QLineEdit()
-        self.inp.setPlaceholderText("kill 1234   ·   ps   ·   suspend 1234   ·   ask is pid 20300 safe?")
+        self.inp.setPlaceholderText("what's my posture?   ·   ps   ·   kill 1234   ·   trust my running apps")
         self.inp.setStyleSheet("font-family:Consolas;")
         self.inp.returnPressed.connect(self._submit)
         row.addWidget(self.inp)
@@ -2850,7 +2856,13 @@ class CommandConsolePanel(QFrame):
         self._spin_timer.timeout.connect(self._tick)
 
         self._result.connect(self._on_result)
-        self._append("Angerona console ready. Type 'help' for commands.")
+        self._token.connect(self._on_token)
+        self._append("ARIA console ready — ask me anything, or type 'help' for commands.")
+
+    def set_stream_ask(self, fn) -> None:
+        """Wire ARIA's streaming brain. fn(text, on_token)->str; free-form input
+        (anything that isn't a known command) streams through it token-by-token."""
+        self._stream_ask = fn
 
     def _submit(self) -> None:
         text = self.inp.text().strip()
@@ -2860,22 +2872,44 @@ class CommandConsolePanel(QFrame):
         if text.lower() == "clear":
             self.out.clear()
             return
-        self._append(f"UDE# {text}")
+        self._append(f"ARIA# {text}")
         self._start_busy()
         threading.Thread(target=self._work, args=(text,), daemon=True).start()
 
     def run_command(self, text: str) -> None:
         """Run a command programmatically (e.g. from a toolbar button)."""
-        self._append(f"UDE# {text}")
+        self._append(f"ARIA# {text}")
         self._start_busy()
         threading.Thread(target=self._work, args=(text,), daemon=True).start()
 
     def _work(self, text: str) -> None:
+        # Free-form text → stream through ARIA if wired; real commands run normally.
         try:
+            if self._stream_ask is not None and not self.backend.is_command(text):
+                emitted = {"n": 0}
+
+                def _tok(chunk: str) -> None:
+                    if chunk:
+                        emitted["n"] += 1
+                        self._token.emit(chunk)
+
+                self._token.emit("ARIA: ")
+                ans = str(self._stream_ask(text, _tok))
+                if emitted["n"] == 0:        # instant / non-streaming answer
+                    self._token.emit(ans)
+                self._result.emit("")         # finalize turn (newline + end busy)
+                return
             result = self.backend.run(text)
         except Exception as exc:
             result = f"error: {exc}"
         self._result.emit(result)
+
+    def _on_token(self, chunk: str) -> None:
+        """Append one streamed ARIA chunk inline at the end (GUI thread)."""
+        self.out.moveCursor(QTextCursor.End)
+        self.out.insertPlainText(chunk)
+        self.out.moveCursor(QTextCursor.End)
+        self.out.verticalScrollBar().setValue(self.out.verticalScrollBar().maximum())
 
     def _on_result(self, text: str) -> None:
         self._append(text)
@@ -2928,12 +2962,18 @@ class SharkMonitorDialog(QDialog):
         self.setAttribute(Qt.WA_DeleteOnClose, False)
         lay = QVBoxLayout(self)
 
-        title = QLabel("\U0001F988  OFFENSE — what the drill is doing, live")
+        from angerona.gui.animations import RunSpinner
+        title = QLabel("\U0001F988  Offense — a live view of what the drill is doing")
         title.setObjectName("PageTitle")
-        lay.addWidget(title)
-        hint = QLabel("This window only narrates the simulated attack. Watch the main "
-                     "dashboard's Alerts panel, Modules table, and status strip "
-                     "alongside it to see the DEFENSE side react in real time.")
+        self.run_spinner = RunSpinner()
+        trow = QHBoxLayout()
+        trow.addWidget(title)
+        trow.addStretch(1)
+        trow.addWidget(self.run_spinner)
+        lay.addLayout(trow)
+        hint = QLabel("This window narrates the simulated attack as it unfolds. Keep the "
+                     "main dashboard in view — its Alerts panel, Modules table, and status "
+                     "strip show the defense reacting in real time.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#9aa4b2;")
         lay.addWidget(hint)
@@ -2993,6 +3033,16 @@ class SharkMonitorDialog(QDialog):
     def reset(self) -> None:
         self.log.clear()
         self.instructor.clear()
+        self.run_spinner.stop()
+
+    def begin_run(self, estimated_seconds: float) -> None:
+        """Start the live progress wheel for a drill of roughly this duration.
+        The bar eases toward ~95% over the estimate, then finish_run() completes it."""
+        self.run_spinner.begin_estimated(estimated_seconds, "Simulation running")
+
+    def finish_run(self) -> None:
+        """Snap the wheel to a green 100% — the drill has finished."""
+        self.run_spinner.finish("Simulation complete")
 
     def append(self, line: str) -> None:
         ts = time.strftime("%H:%M:%S")
@@ -3410,8 +3460,26 @@ class SettingsDialog(QDialog):
         self._aria_voice_cloud_chk = QCheckBox("Allow ElevenLabs cloud TTS (opt-in egress; else local SAPI/pyttsx3)")
         self._aria_voice_cloud_chk.setChecked(getattr(self._cfg, "aria_voice_cloud_tts", False))
         lay.addWidget(self._aria_voice_cloud_chk)
-        _note("Needs a local TTS/STT backend (pyttsx3/SAPI, vosk/whisper). Degrades silently if "
-              "absent; the mic stays off unless enabled.")
+        # Microphone source: computer mic by default, or an added/external device.
+        mrow = QHBoxLayout()
+        mrow.addWidget(QLabel("Microphone:"))
+        self._aria_mic_combo = QComboBox()
+        self._aria_mic_combo.addItem("Computer microphone (default)", "")
+        try:
+            from angerona.connectors.voice import Voice
+            for _idx, _name in Voice.list_input_devices():
+                self._aria_mic_combo.addItem(f"Added mic — {_name}", str(_idx))
+        except Exception:
+            pass
+        _saved_mic = str(getattr(self._cfg, "aria_mic_device", "") or "")
+        _mi = self._aria_mic_combo.findData(_saved_mic)
+        self._aria_mic_combo.setCurrentIndex(_mi if _mi >= 0 else 0)
+        mrow.addWidget(self._aria_mic_combo, 1)
+        lay.addLayout(mrow)
+        _note("Uses your computer's built-in microphone by default; pick an added/external mic "
+              "here if you have one. A live level bar next to ARIA shows when it can hear you. "
+              "Needs a local TTS/STT backend (pyttsx3/SAPI, vosk/whisper) — install via ARIA "
+              "('install voice'). Degrades silently if absent; the mic stays off unless enabled.")
 
         lay.addWidget(self._section("Auto-brief a channel (outbound, opt-in)"))
         self._aria_push_chk = QCheckBox("Push CRITICAL posture to a channel")
@@ -3989,6 +4057,7 @@ class SettingsDialog(QDialog):
         self._cfg.perf_governor_enabled = self._aria_perf_chk.isChecked()
         self._cfg.aria_voice_enabled    = self._aria_voice_chk.isChecked()
         self._cfg.aria_voice_cloud_tts  = self._aria_voice_cloud_chk.isChecked()
+        self._cfg.aria_mic_device       = str(self._aria_mic_combo.currentData() or "")
         self._cfg.aria_push_enabled     = self._aria_push_chk.isChecked()
         self._cfg.aria_push_kind        = self._aria_push_kind.currentText()
         self._cfg.aria_push_url         = self._aria_push_url.text().strip()

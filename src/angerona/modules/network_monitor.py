@@ -42,6 +42,14 @@ from angerona.telemetry.sensors import list_connections
 # Ports commonly abused by malware C2 / tooling (illustrative, tune as needed).
 SUSPICIOUS_PORTS = {4444, 1337, 6660, 6667, 31337, 12345, 9001, 5555}
 
+# Standard web ports. A first-contact to a novel host over ordinary HTTPS/HTTP is
+# what normal browsing looks like — every new website hits one. Flagging those at
+# MEDIUM turned routine web traffic into a threat-level-inflating alert storm, so
+# novel hosts on these ports are downgraded to LOW (still recorded for exfil
+# review, just not alarming). Novel hosts on NON-web ports stay MEDIUM — a fresh
+# destination on an odd port is the more C2/beacon-like signal.
+WEB_PORTS = {80, 443, 8080, 8443}
+
 # A host counts as "novel" again if we haven't seen it in this many minutes —
 # a fresh destination is a meaningfully different signal than a long-running
 # peer, but "seen once, forever trusted" would quietly stop watching after
@@ -130,9 +138,13 @@ class NetworkMonitorModule(BaseModule):
                               f"(pid {c['pid']})", Severity.HIGH, **c)
                 elif is_novel_host:
                     mins = int(NOVELTY_WINDOW_S // 60)
+                    # Novel host on a normal web port = ordinary browsing → LOW.
+                    # Novel host on an unusual port = more C2/beacon-like → MEDIUM.
+                    web = rport in WEB_PORTS
                     self.emit(f"First contact with external host {ip} in the last "
                               f"{mins}min (pid {c['pid']}, port {rport}) — novel-destination "
-                              "signal.", Severity.MEDIUM, **c)
+                              "signal." + (" (web port)" if web else ""),
+                              Severity.LOW if web else Severity.MEDIUM, **c)
                 elif is_novel_for_pid:
                     # The host itself is already known (some other process
                     # touched it recently — very common with shared-IP CDN

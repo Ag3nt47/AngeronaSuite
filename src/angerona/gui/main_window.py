@@ -24,7 +24,7 @@ from angerona.core.commands import CommandConsole
 from angerona.core.eco_wakeup import EcoWakeupWorker
 from angerona.core.eventbus import Severity
 from angerona.gui.animations import (
-    ClashingSwords, SharkSwimBanner, SharkSwimIndicator, ThreatOverlay)
+    ClashingSwords, RunSpinner, SharkSwimBanner, SharkSwimIndicator, ThreatOverlay)
 from angerona.gui.pages import (
     AARDialog, AlertsPanel, CommandConsolePanel, DashboardCards, ModuleInspector,
     ModulesPanel, ResourceStrip, SettingsDialog, SharkMonitorDialog, SoarPanel,
@@ -55,6 +55,8 @@ class MainWindow(QMainWindow):
     _aar_ready = Signal(str)
     _shark_narration = Signal(str)
     _selftest_done = Signal(str, object)   # report text, failures list
+    _selftest_progress = Signal(int, int)  # (done, total) → live progress wheel
+    _mic_level = Signal(float)             # live mic input level (0..1) → HUD meter
     _fi_coaching = Signal(str)             # Flight Instructor line → right pane
     startup_eco_requested = Signal()       # emitted from the loader thread once modules are up
 
@@ -133,6 +135,10 @@ class MainWindow(QMainWindow):
         self.red_swords = _NoAnim()
         self.shark_swim = _NoAnim()
         bl.addWidget(test_btn); bl.addWidget(sim_btn); bl.addWidget(self.eco_btn)
+        # Live progress wheel: shows self-test / eco-wake activity with a colour-
+        # coded percentage (red → amber → green) right beside the buttons.
+        self.run_spinner = RunSpinner()
+        bl.addWidget(self.run_spinner)
         bl.addStretch(1)
 
         brand = QLabel("ANGERONA")
@@ -230,9 +236,29 @@ class MainWindow(QMainWindow):
         # ARIA import/build failure just skips it without touching the rest.
         self._wire_aria()
 
+        # Bottom section = ARIA. The compact orb HUD (built in _wire_aria) sits to
+        # the LEFT of the Console prompt bar; the Console is the single place you
+        # type to ARIA (streaming) or run IR commands. If ARIA is disabled/failed
+        # to build, the Console fills the space alone.
+        if getattr(self, "aria_hud", None) is not None:
+            self._console_section = QSplitter(Qt.Horizontal)
+            self.aria_hud.setMinimumWidth(150)
+            self.aria_hud.setMaximumWidth(340)
+            self._console_section.addWidget(self.aria_hud)
+            self._console_section.addWidget(self.console)
+            self._console_section.setStretchFactor(0, 2)
+            self._console_section.setStretchFactor(1, 8)
+            self._console_section.setSizes([230, 900])
+            self._console_section.setOpaqueResize(False)
+            self._console_section.setChildrenCollapsible(False)
+            self._console_section.setHandleWidth(7)
+            bottom = self._console_section
+        else:
+            bottom = self.console
+
         body = QSplitter(Qt.Vertical)
         body.addWidget(top_split)
-        body.addWidget(self.console)
+        body.addWidget(bottom)
         body.setStretchFactor(0, 3)
         body.setStretchFactor(1, 2)
         body.setSizes([500, 240])
@@ -283,6 +309,8 @@ class MainWindow(QMainWindow):
         self._shark_narration.connect(self.shark_monitor.append)
         self._fi_coaching.connect(self.shark_monitor.append_instructor)
         self._selftest_done.connect(self._on_selftest_done)
+        self._selftest_progress.connect(self.run_spinner.set_progress)
+        self._mic_level.connect(self._on_mic_level)
         self.startup_eco_requested.connect(self.apply_startup_eco)
 
         # Cyber Security Academy — Flight Instructor Mode. Instantiation is
@@ -588,25 +616,35 @@ class MainWindow(QMainWindow):
             if not mods:
                 self._eco_paused = []
                 return
+            total = len(mods)
             self.console._append(
-                f"[eco] Waking {len(mods)} scanner(s) one-by-one; each completes "
-                "one work cycle before the next starts.")
+                f"[eco] Waking {total} scanner(s) one at a time — each finishes a "
+                "full work cycle before the next begins, so the machine stays smooth.")
+            # Live wake-up progress on the header wheel (red → amber → green).
+            self._eco_wake_total = total
+            self._eco_wake_done = 0
+            self.run_spinner.start("Waking scanners")
             self._eco_worker = EcoWakeupWorker(mods)
             self._eco_worker.module_waking.connect(
                 lambda name: self.console._append(f"[eco]   waking {name}…"))
-            self._eco_worker.module_ready.connect(
-                lambda name, ok: self.console._append(
-                    f"[eco]   {name}: {'first cycle complete' if ok else 'FAILED to wake'}"))
+            self._eco_worker.module_ready.connect(self._on_eco_module_ready)
             self._eco_worker.module_cycle_timeout.connect(
                 lambda name: self.console._append(
-                    f"[eco]   {name}: still running after its safety timeout; "
-                    "continuing without stopping it."))
-            self._eco_worker.wakeup_complete.connect(
-                lambda ok, failed: self.console._append(
-                    f"[eco] Wake-up complete — {ok} online, {failed} failed."))
+                    f"[eco]   {name}: still finishing its first cycle — leaving it running."))
+            self._eco_worker.wakeup_complete.connect(self._on_eco_wakeup_complete)
             self._eco_worker.finished.connect(self._eco_worker.deleteLater)
             self._eco_paused = []
             self._eco_worker.start()
+
+    def _on_eco_module_ready(self, name: str, ok: bool) -> None:
+        self._eco_wake_done += 1
+        self.run_spinner.set_progress(self._eco_wake_done, getattr(self, "_eco_wake_total", 1))
+        self.console._append(
+            f"[eco]   {name}: {'back online' if ok else 'could not wake'}")
+
+    def _on_eco_wakeup_complete(self, ok: int, failed: int) -> None:
+        self.run_spinner.finish("Scanners online")
+        self.console._append(f"[eco] Wake-up complete — {ok} online, {failed} failed.")
 
     # ── Shark Attack Engine ──────────────────────────────────────────────────
     # ── Unified Red Team Simulation (Shark + APT scenarios, configurable) ────
@@ -686,6 +724,13 @@ class MainWindow(QMainWindow):
             return
         self._sim_poll.stop()
         self.shark_swim.stop(); self.shark_banner.stop()
+        # Complete the live progress wheel in the Red Team console (green 100%).
+        rtc = getattr(self, "_rt_console", None)
+        if rtc is not None:
+            try:
+                rtc.finish_run()
+            except Exception:
+                pass
         # Do not disarm response here: FIM and other pollers report during the
         # following 45-second settle window. The last AAR worker restores the
         # operator's prior policy after evaluation completes.
@@ -1086,10 +1131,32 @@ class MainWindow(QMainWindow):
                     lambda name, state: _b._module([name, state]),
                     "enable/disable/restart a module",
                     preview=lambda name, state: f"Set module '{name}' → {state}.")
+                # ARIA installs its OWN optional capabilities (voice, teams, …) into
+                # this environment — no terminal, no PATH problems. READ status /
+                # WRITE (confirm-gated) install.
+                from angerona.core import self_installer as _si
+                self.aria.register("capabilities", ToolKind.READ, lambda: _si.summary(),
+                                   "which optional capabilities are installed / missing")
+                self.aria.register(
+                    "install_capabilities", ToolKind.WRITE,
+                    lambda caps="all": _si.install(
+                        [c.strip() for c in str(caps).replace(",", " ").split()] or ["all"]),
+                    "install ARIA's optional capability packages (voice/teams/all)",
+                    preview=lambda caps="all": (
+                        "Install the missing packages for "
+                        f"'{caps}' into Angerona's own Python (pip, no admin): "
+                        + (", ".join(_si._resolve(
+                            [c.strip() for c in str(caps).replace(',', ' ').split()] or ['all']))
+                           or "nothing — already installed") + "."))
             except Exception as exc:
                 self.console._append(f"[aria] action tools skipped: {exc}")
             self._aria_pending_token = ""   # last staged WRITE awaiting confirmation
 
+            # Compact HUD: orb + status + sparkline only. ARIA now lives entirely
+            # in the bottom Console (the single prompt bar), so the orb sits beside
+            # the Console rather than in its own tab. This frees the right-hand
+            # tabs for Live Alerts + SOAR Queue — you watch alerts and talk to ARIA
+            # at the same time. (No more "ARIA" tab stealing the alerts view.)
             self.aria_hud = AriaHud(
                 score_fn=lambda: int((getattr(self, "_last_posture", {}) or {}).get("score", 100)),
                 alerts_fn=lambda: int(((getattr(self, "_last_posture", {}) or {}).get("factors", {}) or {}).get("active_threats", 0)),
@@ -1097,21 +1164,26 @@ class MainWindow(QMainWindow):
                 trend_fn=lambda: int(self.aria_history.trend().get("delta", 0)),
                 ask_fn=self._aria_ask,
                 stream_fn=self._aria_ask_stream,
+                compact=True,
             )
-            self._right_tabs.addTab(self.aria_hud, "ARIA")
+            # NOTE: intentionally NOT added to self._right_tabs — ARIA is in the
+            # Console section now (see _build_console_section in __init__).
 
             # Meld ARIA into the always-visible bottom Console: any free-form
-            # question typed there (or `ask …`) now goes through ARIA's brain,
+            # question typed there now STREAMS through ARIA's brain (live typing),
             # while the IR commands (kill/ps/suspend/…) keep working as before.
             try:
                 console = getattr(self, "console", None)
                 backend = getattr(console, "backend", None)
                 if backend is not None and hasattr(backend, "set_ask_handler"):
-                    backend.set_ask_handler(self._aria_ask)
+                    backend.set_ask_handler(self._aria_ask)         # non-stream fallback
+                    if hasattr(console, "set_stream_ask"):
+                        console.set_stream_ask(self._aria_ask_stream)  # live streaming
                     if console is not None:
                         console._append(
-                            "[aria] ARIA is wired into this console — ask her anything "
-                            "(e.g. \"what's my posture?\"), or type 'help' for commands.")
+                            "[aria] ARIA lives here now — ask anything in plain language "
+                            "(e.g. \"what's my posture?\"); replies stream in live. Type "
+                            "'help' for IR commands.")
             except Exception as exc:
                 self.console._append(f"[aria] console meld skipped: {exc}")
 
@@ -1130,6 +1202,11 @@ class MainWindow(QMainWindow):
                 self.aria_voice = init_voice(
                     enabled=bool(getattr(self.config, "aria_voice_enabled", False)),
                     allow_cloud_tts=bool(getattr(self.config, "aria_voice_cloud_tts", False)))
+                # Select the mic source (computer default, or an added device).
+                try:
+                    self.aria_voice.set_mic_device(getattr(self.config, "aria_mic_device", "") or None)
+                except Exception:
+                    pass
                 # If voice is enabled, run the hands-free listen→ARIA→speak loop on
                 # a daemon thread. It idles silently when no STT backend/mic exists.
                 self._aria_voice_stop = False
@@ -1137,9 +1214,14 @@ class MainWindow(QMainWindow):
                     import threading as _th
                     _th.Thread(target=self._aria_voice_loop, name="AriaVoice",
                                daemon=True).start()
+                    # Live mic-level meter so you can SEE ARIA is hearing you. Runs
+                    # whenever a mic backend (sounddevice) is present — even before
+                    # vosk is installed — so the bar proves the mic works.
+                    self._start_mic_meter()
                     self.console._append(
-                        "[aria] voice enabled — speaking replies; say 'hey aria …' to "
-                        "talk (needs vosk + a mic for listening: pip install vosk sounddevice).")
+                        "[aria] voice enabled — speaking replies; watch the mic bar to confirm "
+                        "I can hear you. For listening, ask me to 'install voice', then say "
+                        "'hey aria …'.")
             except Exception:
                 self.aria_voice = None
             # Talk to ARIA over the Signal mobile bridge: route its non-command
@@ -1230,6 +1312,46 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+    def _on_mic_level(self, level: float) -> None:
+        """Feed a live mic level (0..1) to the HUD meter (GUI thread)."""
+        hud = getattr(self, "aria_hud", None)
+        meter = getattr(hud, "mic_meter", None) if hud is not None else None
+        if meter is not None:
+            meter.push_level(level)
+
+    def _start_mic_meter(self) -> None:
+        """Show the mic-level meter and drive it from a background audio thread.
+        Best-effort: silently does nothing if there's no mic backend."""
+        v = getattr(self, "aria_voice", None)
+        hud = getattr(self, "aria_hud", None)
+        meter = getattr(hud, "mic_meter", None) if hud is not None else None
+        if v is None or meter is None:
+            return
+        # Only show the meter if a mic backend (sounddevice) is actually present;
+        # otherwise there's nothing to read — the user installs it via 'install voice'.
+        try:
+            from angerona.connectors.voice import Voice
+            if not Voice.list_input_devices():
+                return
+        except Exception:
+            return
+        meter.set_active(True)
+
+        def _run():
+            try:
+                v.level_monitor(on_level=lambda lv: self._mic_level.emit(lv),
+                                should_stop=lambda: getattr(self, "_aria_voice_stop", False))
+            except Exception:
+                pass
+            # Monitor ended (no backend / stopped) — hide the meter.
+            try:
+                self._mic_level.emit(0.0)
+            except Exception:
+                pass
+
+        import threading as _th
+        _th.Thread(target=_run, name="AriaMicMeter", daemon=True).start()
+
     def _aria_ask(self, text: str) -> str:
         """Public ARIA entry point: run the brain, then speak the reply if voice
         output is enabled. Kept thin so the HUD, the console, and the voice loop
@@ -1274,6 +1396,17 @@ class MainWindow(QMainWindow):
         v = getattr(self, "aria_voice", None)
         if v is None:
             return
+        # Only run the hands-free LISTEN loop if a real STT backend resolves.
+        # Without one, listen() returns instantly and the loop busy-spins at 100%
+        # CPU hammering importlib.find_spec (seen in the crash dump). TTS reply-
+        # speaking still works via _aria_speak, so we just skip the listen loop.
+        try:
+            stt = v._resolve_stt()
+        except Exception:
+            stt = None
+        if stt is None:
+            self._aria_speak("Voice replies enabled. Install vosk and sounddevice to talk to me.")
+            return
         self._aria_speak("ARIA voice online. Say 'hey aria' followed by a command.")
         while not getattr(self, "_aria_voice_stop", False):
             try:
@@ -1281,6 +1414,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 heard = None
             if not heard or not v.is_wake(heard):
+                _t.sleep(0.3)          # guard against any tight-spin on empty listen
                 continue
             cmd = v.strip_wake(heard)
             if not cmd:
@@ -1408,9 +1542,29 @@ class MainWindow(QMainWindow):
             return aria.invoke("coverage").text
         if re.search(r"\b(threat intel|kev|cve|vulnerabilit)\b", low):
             return aria.invoke("threat_intel").text
+        # Capability status (read).
+        if (re.search(r"\b(capabilit|dependenc|what.*can you install|what.*missing)\b", low)
+                and not re.search(r"\binstall\b", low)):
+            return aria.invoke("capabilities").text
 
         # 3) Write intents (staged behind confirmation).
         res = None
+        # Self-install optional capabilities. "install voice", "install your
+        # dependencies", "set up teams", "install everything".
+        _inst = re.search(r"\b(install|set ?up|add|enable)\b", low)
+        if _inst and re.search(r"\b(capabilit|dependenc|packages?|voice|teams|scapy|"
+                               r"speech|everything|all your|yourself|your (deps|dependencies))\b", low):
+            if re.search(r"\b(voice|speech|mic|listen|speak|talk)\b", low):
+                caps = "voice windows-speech"
+            elif "teams" in low:
+                caps = "teams"
+            elif re.search(r"\b(arp|scapy|network)\b", low):
+                caps = "network-arp"
+            elif re.search(r"\b(etw|real.?time)\b", low):
+                caps = "realtime-etw"
+            else:
+                caps = "all"
+            res = aria.invoke("install_capabilities", caps)
         if re.search(r"\b(suspend|contain|freeze|isolate)\b", low) and _pid(low):
             res = aria.invoke("suspend", pid=_pid(low))
         elif re.search(r"\b(resume|unfreeze|unsuspend)\b", low) and _pid(low):
@@ -1493,8 +1647,10 @@ class MainWindow(QMainWindow):
         "SETUP: Trusted apps → type 'trust-running' (or say 'trust my running apps') so "
         "memory/behaviour modules stop flagging apps you use. Local AI → run Ollama "
         "(ollama serve · ollama pull llama3); online fallback → Settings ▸ API Keys. "
-        "Voice → Settings ▸ enable voice (speaks via Windows SAPI); for listening 'pip "
-        "install vosk sounddevice' then say 'hey aria …'. Phone → Settings ▸ Mobile "
+        "Voice → Settings ▸ enable voice (speaks via Windows SAPI); for listening you "
+        "don't need a terminal — just ask me to 'install voice' and I'll add vosk + "
+        "sounddevice myself, then say 'hey aria …'. (I can also 'install teams' or "
+        "'install all'; type 'capabilities' to see what's missing.) Phone → Settings ▸ Mobile "
         "Response Bridge (signal-cli path + your number); then text ARIA over Signal. "
         "Autostart → Settings ▸ Start with Windows.\n"
         "TESTING: header 'RUN SELF-TEST' or console 'test [module]' checks a sensor's "
@@ -1924,8 +2080,9 @@ class MainWindow(QMainWindow):
 
     # ── Self-test (off-thread) + fix prompt on failures ──────────────────────
     def _run_self_test(self) -> None:
-        self.console._append("UDE# test all")
+        self.console._append("ARIA# test all")
         self.console._start_busy()
+        self.run_spinner.start("Running self-test")
         import threading
         threading.Thread(target=self._self_test_worker, daemon=True).start()
 
@@ -1933,7 +2090,8 @@ class MainWindow(QMainWindow):
         from angerona.core.selftest import SelfTestRunner
         runner = SelfTestRunner(self.manager, self.bus)
         try:
-            report = runner.run()
+            report = runner.run(
+                progress_cb=lambda done, total: self._selftest_progress.emit(done, total))
             failures = list(runner.last_failures)
         except Exception as exc:
             report, failures = f"self-test error: {exc}", []
@@ -1942,6 +2100,8 @@ class MainWindow(QMainWindow):
     def _on_selftest_done(self, report: str, failures) -> None:
         self.console._append(report)
         self.console._end_busy()
+        # Snap the wheel to a green 100% so the run visibly completes, then fade.
+        self.run_spinner.finish("Self-test complete")
         if failures:
             self._prompt_selftest_fix(failures)
 
