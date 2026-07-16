@@ -85,6 +85,7 @@ class CommandConsole:
             "resources": self._resources, "resmon": self._resources, "load": self._resources,
             "trust-running": self._trust_running, "trustrunning": self._trust_running,
             "baseline": self._trust_running, "trust-apps": self._trust_running,
+            "guide": self._guide, "info": self._guide, "how": self._guide,
         }
 
     def set_ask_handler(self, fn) -> None:
@@ -922,6 +923,16 @@ class CommandConsole:
             return "\n".join(lines)
         except Exception as exc:
             return f"portmap error: {exc}"
+
+    # ── End-user help / info ──────────────────────────────────────────────────
+    def _guide(self, args: List[str]) -> str:
+        """guide [topic] — end-user help for any feature (aria, voice, signal,
+        teams, trusted-apps, testing, troubleshooting, threat-level, privacy)."""
+        try:
+            from angerona.gui.help_content import get
+        except Exception as exc:
+            return f"guide unavailable: {exc}"
+        return get(" ".join(args) if args else "getting-started")
 
     # ── Supervised trust baseline ────────────────────────────────────────────
     def _trust_running(self, args: List[str]) -> str:

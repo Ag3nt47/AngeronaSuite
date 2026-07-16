@@ -52,6 +52,22 @@ def shannon_entropy(s: str) -> float:
     return -sum((c / n) * math.log2(c / n) for c in counts.values())
 
 
+_VOWELS = frozenset("aeiou")
+
+
+def _max_consonant_run(s: str) -> int:
+    """Longest run of consecutive consonant letters — DGA labels tend to have long
+    unpronounceable clusters (e.g. 'xkqjzv') that ordinary names don't."""
+    run = best = 0
+    for ch in s:
+        if ch.isalpha() and ch not in _VOWELS:
+            run += 1
+            best = max(best, run)
+        else:
+            run = 0
+    return best
+
+
 class NetworkProtocolDecoderModule(BaseModule):
     CODE = "NDRD"
     NAME = "Network Protocol Deep Decoder"
@@ -88,6 +104,14 @@ class NetworkProtocolDecoderModule(BaseModule):
         longest = max((len(l) for l in labels), default=0)
         digits = sum(c.isdigit() for c in subject_str)
         digit_ratio = digits / len(subject_str) if subject_str else 0.0
+        # ── BL-16: layered detectors ─────────────────────────────────────────
+        # A single Shannon threshold is trivially evaded by tuning a name to just
+        # under it (entropy 3.5). So we add cheap lexical signals AND a corroboration
+        # rule: several weak signals together flag a name that dodges every single
+        # hard threshold. This is defence in depth, not one gate.
+        vowel_ratio = (sum(c in _VOWELS for c in subject_str) / len(subject_str)
+                       if subject_str else 1.0)
+        cons_run = _max_consonant_run(subject_str)
         reasons = []
         if ent >= _ENTROPY_HI:
             reasons.append(f"entropy {ent:.2f}≥{_ENTROPY_HI}")
@@ -95,10 +119,23 @@ class NetworkProtocolDecoderModule(BaseModule):
             reasons.append(f"label len {longest}≥{_LABEL_LEN_HI}")
         if digit_ratio >= 0.5 and len(subject_str) >= 8:
             reasons.append(f"digit-ratio {digit_ratio:.0%}")
+        if len(subject_str) >= 10 and vowel_ratio < 0.18:
+            reasons.append(f"low vowel-ratio {vowel_ratio:.0%}")
+        if cons_run >= 7:
+            reasons.append(f"consonant-run {cons_run}")
+        # Corroboration: count moderately-elevated soft signals (each BELOW its own
+        # hard threshold). Enough of them together = a name engineered to skate under
+        # each gate individually.
+        if not reasons and len(subject_str) >= 14:
+            soft = (int(ent >= 3.2) + int(longest >= 20) + int(digit_ratio >= 0.3)
+                    + int(vowel_ratio < 0.30) + int(cons_run >= 4))
+            if soft >= 4:
+                reasons.append(f"multi-signal DGA (soft {soft}/5 — evades single threshold)")
         suspicious = bool(reasons)
         return {"qname": name, "entropy": round(ent, 3), "longest_label": longest,
-                "digit_ratio": round(digit_ratio, 3), "suspicious": suspicious,
-                "reasons": reasons,
+                "digit_ratio": round(digit_ratio, 3),
+                "vowel_ratio": round(vowel_ratio, 3), "consonant_run": cons_run,
+                "suspicious": suspicious, "reasons": reasons,
                 "verdict": "DGA/tunneling-suspect" if suspicious else "benign"}
 
     def _should_emit(self, qname: str) -> bool:
@@ -183,9 +220,17 @@ class NetworkProtocolDecoderModule(BaseModule):
         """A random high-entropy name must flag; a normal domain must not."""
         dga = self.analyze_qname("kq3v9z7x1p4m8n2b5w0c.example.com")
         good = self.analyze_qname("www.microsoft.com")
-        if dga["suspicious"] and not good["suspicious"]:
-            return True, f"entropy scoring verified (DGA={dga['entropy']}, ok={good['entropy']})"
-        return False, f"entropy logic off (dga={dga}, good={good})"
+        # BL-16: a name tuned to just UNDER the entropy threshold but otherwise
+        # DGA-shaped (long, low-vowel, consonant clusters) must still be caught by
+        # the layered/corroboration detectors, while an ordinary long name is not.
+        evasive = self.analyze_qname("xkvhbrtplmqnzwcf.example.net")   # low entropy, unpronounceable
+        benign_long = self.analyze_qname("developer-portal-login.example.com")
+        ok = (dga["suspicious"] and not good["suspicious"]
+              and evasive["suspicious"] and not benign_long["suspicious"])
+        return (ok, f"layered DGA scoring verified (dga E={dga['entropy']}, evasive "
+                f"E={evasive['entropy']} caught via {evasive['reasons']}, benign clean)"
+                if ok else f"logic off: dga={dga['suspicious']} good={good['suspicious']} "
+                f"evasive={evasive} benign={benign_long['suspicious']}")
 
 
 def register() -> NetworkProtocolDecoderModule:

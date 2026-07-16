@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from typing import Optional
 
 from angerona.core.module_base import BaseModule, Severity
@@ -80,7 +81,11 @@ class CloudEscalationModule(BaseModule):
             if self.stopping:
                 return
 
-        self.emit("Cloud CTI escalation active.", Severity.INFO)
+        self.emit("Cloud CTI escalation active — CRITICAL events are sent to Gemini for a "
+                  "second opinion (explicit cloud egress).", Severity.INFO)
+        _calls: list[float] = []          # recent cloud-call timestamps (rate cap)
+        _CAP, _WINDOW = 20, 3600.0        # BL-15: cap API use — ≤20 cloud calls/hour
+        _capped = False
         while not self.stopping:
             self.sleep(8)
             if self._bus is None:
@@ -91,8 +96,28 @@ class CloudEscalationModule(BaseModule):
                 if ev.module in (self.name, "AI Triage (Ollama)"):
                     continue
                 self._last_ts = max(self._last_ts, ev.ts)
+                now = time.time()
+                _calls[:] = [t for t in _calls if now - t < _WINDOW]
+                if len(_calls) >= _CAP:
+                    if not _capped:
+                        _capped = True
+                        self.emit(f"Cloud escalation rate cap reached ({_CAP}/h) — further "
+                                  "CRITICALs use the LOCAL verdict only until the window clears.",
+                                  Severity.MEDIUM)
+                    continue
+                _capped = False
+                _calls.append(now)
                 verdict = self._ask_gemini(f"Event from {ev.module}: {ev.message}")
                 if verdict:
                     self.emit(f"Cloud verdict: {verdict.get('verdict','?')} "
                               f"({verdict.get('confidence','?')}) — {verdict.get('justification','')}",
                               Severity.INFO, source=ev.module)
+                else:
+                    # BL-15: fail CLOSED — never silently drop a CRITICAL that we
+                    # meant to corroborate. Surface that it went UNVERIFIED so the
+                    # operator can't mistake a cloud outage for an all-clear.
+                    self.emit(
+                        f"⚠ Cloud escalation FAILED for CRITICAL from {ev.module} "
+                        f"({self.last_error or 'unreachable/rate-limited'}) — treating as "
+                        "UNVERIFIED; the local verdict stands, investigate manually.",
+                        Severity.HIGH, source=ev.module, fail_closed=True)

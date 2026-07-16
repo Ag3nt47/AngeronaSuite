@@ -101,7 +101,7 @@ def self_test() -> tuple[bool, str]:
 # ── Qt widget (import-guarded; optional) ──────────────────────────────────────
 try:
     from PySide6.QtCore import Qt, QTimer, Signal
-    from PySide6.QtGui import QColor, QPainter, QRadialGradient
+    from PySide6.QtGui import QColor, QPainter, QRadialGradient, QTextCursor
     from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                    QLineEdit, QTextEdit)
     _HAVE_QT = True
@@ -172,13 +172,15 @@ if _HAVE_QT:
         """
 
         submitted = Signal(str)
-        response_ready = Signal(str)   # answer posted back from the ask thread
+        response_ready = Signal(str)   # full answer posted back from the ask thread
+        token_ready = Signal(str)      # one streamed chunk (live typing effect)
 
         def __init__(self, *, score_fn: Callable[[], int],
                      alerts_fn: Optional[Callable[[], int]] = None,
                      sparkline_fn: Optional[Callable[[], str]] = None,
                      trend_fn: Optional[Callable[[], int]] = None,
                      ask_fn: Optional[Callable[[str], str]] = None,
+                     stream_fn: Optional[Callable[[str, Callable[[str], None]], str]] = None,
                      parent: Optional["QWidget"] = None) -> None:
             super().__init__(parent)
             self._score_fn = score_fn
@@ -186,6 +188,7 @@ if _HAVE_QT:
             self._sparkline_fn = sparkline_fn or (lambda: "")
             self._trend_fn = trend_fn or (lambda: 0)
             self._ask_fn = ask_fn
+            self._stream_fn = stream_fn
 
             self._orb = _Orb(self)
             self._status = QLabel("ARIA online.")
@@ -194,8 +197,9 @@ if _HAVE_QT:
             self._log = QTextEdit(); self._log.setReadOnly(True)
             self._input = QLineEdit(); self._input.setPlaceholderText("Ask ARIA…")
             self._input.returnPressed.connect(self._on_submit)
-            # Answers come back from a worker thread — append on the GUI thread.
+            # Answers come back from a worker thread — render on the GUI thread.
             self.response_ready.connect(self._log.append)
+            self.token_ready.connect(self._on_token)
 
             top = QHBoxLayout()
             top.addWidget(self._orb)
@@ -221,6 +225,14 @@ if _HAVE_QT:
             except Exception as exc:
                 self._status.setText(f"HUD read error: {exc}")
 
+        def _on_token(self, chunk: str) -> None:
+            """Append one streamed chunk to the end of the log (GUI thread)."""
+            cur = self._log.textCursor()
+            cur.movePosition(QTextCursor.End)
+            self._log.setTextCursor(cur)
+            self._log.insertPlainText(chunk)
+            self._log.ensureCursorVisible()
+
         def _on_submit(self) -> None:
             text = self._input.text().strip()
             if not text:
@@ -228,19 +240,33 @@ if _HAVE_QT:
             self._input.clear()
             self._log.append(f"> {text}")
             self.submitted.emit(text)
-            if self._ask_fn is None:
+            if self._stream_fn is None and self._ask_fn is None:
                 return
             # The handler may call the local LLM (blocking) — never on the Qt
-            # thread. Run it on a worker and post the answer back via the signal.
-            self._log.append("ARIA is thinking…")
+            # thread. Run it on a worker; stream tokens (or post the full answer)
+            # back via signals so the UI updates on the GUI thread.
             import threading
+            stream = self._stream_fn is not None
+            self._log.append("ARIA: " if stream else "ARIA is thinking…")
 
             def _run(_t: str = text) -> None:
+                emitted = {"n": 0}
+
+                def _tok(chunk: str) -> None:
+                    emitted["n"] += 1
+                    self.token_ready.emit(chunk)
+
                 try:
-                    ans = str(self._ask_fn(_t))
+                    if stream:
+                        ans = str(self._stream_fn(_t, _tok))
+                        if emitted["n"] == 0:      # instant answer (no tokens)
+                            self.token_ready.emit(ans)
+                        self.response_ready.emit("")   # blank line separates turns
+                    else:
+                        ans = str(self._ask_fn(_t)) if self._ask_fn else ""
+                        self.response_ready.emit(ans)
                 except Exception as exc:
-                    ans = f"[error] {exc}"
-                self.response_ready.emit(ans)
+                    self.response_ready.emit(f"[error] {exc}")
             threading.Thread(target=_run, name="AriaAsk", daemon=True).start()
 
 

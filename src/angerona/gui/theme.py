@@ -139,11 +139,19 @@ QPushButton#Primary {{
     background: {p['accent']}; color: {p['bg']};
     border: none; border-radius: {r};
     padding: 9px 16px; font-weight: 700;
+    border-bottom: 2px solid {p['accent2']};   /* subtle raised edge */
 }}
 QPushButton#Primary:hover {{ background: {p['accent2']}; }}
+/* Pressed: content dips ~2px and the raised edge collapses → tactile "push". */
+QPushButton#Primary:pressed {{
+    background: {p['accent2']};
+    padding: 11px 16px 7px 16px;
+    border-bottom: 0px;
+}}
 QPushButton {{
     background: {p['panel2']};
     border: 1px solid {p['border']};
+    border-bottom: 2px solid {p['border']};    /* raised edge for depth */
     border-radius: {r};
     padding: 7px 14px;
     color: {p['text']};
@@ -151,6 +159,18 @@ QPushButton {{
 QPushButton:hover {{
     background: {p['accent']}22;
     border-color: {p['accent']};
+}}
+/* Every button visibly depresses on click: darker fill, label shifts down, and
+   the raised bottom edge collapses so it reads as physically pushed in. */
+QPushButton:pressed {{
+    background: {p['accent']}44;
+    border: 1px solid {p['accent']};
+    border-bottom: 0px;
+    padding: 9px 14px 5px 14px;
+}}
+QPushButton:checked {{
+    background: {p['accent']}33;
+    border: 1px solid {p['accent']};
 }}
 
 /* ── Inputs ────────────────────────────────────────────────────────────── */

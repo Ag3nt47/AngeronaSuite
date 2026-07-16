@@ -26,12 +26,17 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import random
 import struct
 import threading
 import time
 from pathlib import Path
 
 from angerona.core.module_base import BaseModule, Severity
+try:
+    import ctypes.wintypes as _wt
+except Exception:                       # non-Windows
+    _wt = None
 
 _SYS32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
 _WATCH = {
@@ -140,7 +145,9 @@ class ApiPatchDetectorModule(BaseModule):
     version = "1.0.0"
     enabled_by_default = True
 
-    _INTERVAL = 30.0
+    # BL-14: a much shorter (jittered) interval shrinks the hook→act→unhook window
+    # an attacker could exploit against a predictable 30s scan. Env-tunable.
+    _INTERVAL = float(os.environ.get("ANGERONA_APID_INTERVAL", "12") or 12)
 
     def __init__(self) -> None:
         super().__init__()
@@ -148,6 +155,8 @@ class ApiPatchDetectorModule(BaseModule):
         self._soar = _repo_root() / "shared_logs" / "soar_events.json"
         self._disk_cache: dict[str, dict[str, bytes]] = {}
         self._flagged: set[str] = set()
+        self._addr_cache = None            # {(dll, fn): local export address}
+        self._proc_cursor = 0              # rotates cross-process coverage
 
     @property
     def state(self) -> str:
@@ -223,8 +232,107 @@ class ApiPatchDetectorModule(BaseModule):
         self._last_checked = checked
         return findings
 
+    # ── BL-14: cross-process hook scan ───────────────────────────────────────
+    def _watched_addrs(self) -> dict:
+        """{(dll, fn): local export address}. ntdll/kernel32 load at the SAME base
+        in every process this boot session, so a locally-resolved export address is
+        valid to read in a remote process too — no remote module walk needed."""
+        if self._addr_cache is not None:
+            return self._addr_cache
+        out: dict = {}
+        if os.name == "nt":
+            try:
+                k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                k32.GetModuleHandleW.restype = ctypes.c_void_p
+                k32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+                k32.GetProcAddress.restype = ctypes.c_void_p
+                k32.GetProcAddress.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+                for dll, fns in _WATCH.items():
+                    h = k32.GetModuleHandleW(dll)
+                    if not h:
+                        continue
+                    for fn in fns:
+                        a = k32.GetProcAddress(ctypes.c_void_p(h), fn.encode("ascii"))
+                        if a:
+                            out[(dll, fn)] = a
+            except Exception as exc:
+                self.last_error = f"addr resolve: {exc}"
+        self._addr_cache = out
+        return out
+
+    def _scan_other_processes(self, max_procs: int = 40) -> list[dict]:
+        """Read the watched export prologues in OTHER live processes and compare to
+        the pristine on-disk bytes. Catches malware that hooked ntdll in its own or
+        a victim process (not just ours). Rotates coverage across cycles; best-effort
+        per process (access-denied is skipped, never fatal)."""
+        findings: list[dict] = []
+        if os.name != "nt" or _wt is None:
+            return findings
+        try:
+            import psutil
+        except Exception:
+            return findings
+        addrs = self._watched_addrs()
+        if not addrs:
+            return findings
+        try:
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.OpenProcess.restype = ctypes.c_void_p
+            k32.OpenProcess.argtypes = [_wt.DWORD, _wt.BOOL, _wt.DWORD]
+            k32.ReadProcessMemory.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                              ctypes.c_void_p, ctypes.c_size_t,
+                                              ctypes.POINTER(ctypes.c_size_t)]
+            k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        except Exception:
+            return findings
+        PROCESS_VM_READ, PROCESS_QUERY_INFORMATION = 0x0010, 0x0400
+        self_pid = os.getpid()
+        try:
+            pids = sorted(p.pid for p in psutil.process_iter())
+        except Exception:
+            return findings
+        if not pids:
+            return findings
+        start = self._proc_cursor % len(pids)
+        window = pids[start:start + max_procs]
+        self._proc_cursor = start + max_procs
+        for pid in window:
+            if pid == self_pid or pid <= 4:
+                continue
+            h = k32.OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, False, pid)
+            if not h:
+                continue                    # access denied / protected → skip
+            try:
+                for (dll, fn), addr in addrs.items():
+                    disk = self._disk_prologues(dll).get(fn)
+                    if not disk:
+                        continue
+                    buf = ctypes.create_string_buffer(_PROLOGUE)
+                    read = ctypes.c_size_t(0)
+                    ok = k32.ReadProcessMemory(ctypes.c_void_p(h), ctypes.c_void_p(addr),
+                                               buf, _PROLOGUE, ctypes.byref(read))
+                    if not ok or read.value < _PROLOGUE:
+                        continue
+                    mem = buf.raw[:_PROLOGUE]
+                    if mem == disk:
+                        continue
+                    indicator = _looks_hooked(mem)
+                    if indicator is None:
+                        continue
+                    findings.append({"pid": pid, "dll": dll, "function": fn,
+                                     "indicator": indicator, "disk": disk[:8].hex(),
+                                     "memory": mem[:8].hex()})
+            finally:
+                try:
+                    k32.CloseHandle(ctypes.c_void_p(h))
+                except Exception:
+                    pass
+        return findings
+
     def _raise_alert(self, finding: dict) -> None:
-        key = f"{finding['dll']}!{finding['function']}"
+        pid = finding.get("pid")
+        scope = f"pid {pid}" if pid else "self"
+        key = f"{scope}:{finding['dll']}!{finding['function']}"
         if key in self._flagged:
             return
         self._flagged.add(key)
@@ -252,7 +360,8 @@ class ApiPatchDetectorModule(BaseModule):
         self.emit("APID online — watching ntdll/kernel32 export integrity.", Severity.INFO)
         while not self.stopping:
             try:
-                findings = self.scan_once()
+                findings = self.scan_once()                     # our own process
+                findings += self._scan_other_processes()        # BL-14: other processes
                 for f in findings:
                     self._raise_alert(f)
                 if not findings:
@@ -262,7 +371,8 @@ class ApiPatchDetectorModule(BaseModule):
             except Exception as exc:
                 self.last_error = str(exc)
                 self.set_health(50, "scan error")
-            self.sleep(self._INTERVAL)
+            # Jitter the cadence so an attacker can't time an unhook to the scan.
+            self.sleep(self._INTERVAL * (0.7 + 0.6 * random.random()))
 
     def self_test(self) -> tuple[bool, str]:
         """Verify the parser resolves real exports from the on-disk ntdll."""

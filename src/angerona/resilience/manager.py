@@ -121,18 +121,23 @@ class ResilienceManager:
         os.environ.setdefault("ANGERONA_PY", pyw)
         os.environ.setdefault("ANGERONA_CORE_CMD", f'"{pyw}" -m angerona')
 
-        # 1) Watchdog — compiled Go binary if built, else the Python watchdog.
-        if self.start_watchdog:
-            wd = _watchdog_binary()
-            if wd is not None:
-                self._sup.add("watchdog", [str(wd)], stale_after_s=2.0, window="minimized")
-            else:
-                self._sup.add("watchdog", [pyw, "-m", "angerona.resilience.watchdog"],
-                              stale_after_s=2.0, window="hidden")
+        # 1) Watchdog. BL-01: the compiled Go watchdog is a resilience PARENT that
+        # LAUNCHES + hashes + relaunches Angerona (deployed by start-angerona.bat,
+        # which sets ANGERONA_EXTERNAL_WATCHDOG=1). It is NOT a child to spawn here —
+        # doing so passed no agent arg and just errored. So: if an external parent
+        # watchdog is running, skip our own; otherwise run the Python PEER watchdog.
+        external_wd = os.environ.get("ANGERONA_EXTERNAL_WATCHDOG") == "1"
+        if external_wd:
+            self._publish("Resilience Manager",
+                          "External signed watchdog is the resilience parent — skipping the "
+                          "internal watchdog to avoid double-supervision.", "INFO")
+        elif self.start_watchdog:
+            self._sup.add("watchdog", [pyw, "-m", "angerona.resilience.watchdog"],
+                          stale_after_s=2.0, window="hidden")
+            if _watchdog_binary() is None:
                 self._publish("Resilience Manager",
-                              "Using the Python watchdog (compiled frz/angerona_watchdog.exe "
-                              "not found). Build the Go binary via frz/hypervisor/build.bat for "
-                              "the ultra-lean compiled version.", "LOW")
+                              "Using the Python peer watchdog. Build + code-sign the Go binary "
+                              "(see frz/BUILD_SIGN_DEPLOY.md) for the out-of-process parent.", "LOW")
 
         # 2) Telemetry Scanner — lean forwarder with its own themed window.
         self._sup.add("scanner", [pyw, "-m", "angerona.resilience.scanner"],

@@ -55,6 +55,19 @@ MODEL = os.getenv("MODEL_NAME", "llama3:latest")
 MAX_ITERATIONS = 3
 _TECHNIQUE_ID = re.compile(r"^T\d{4}(?:\.\d{3})?$")
 
+# ── BL-07: keep self-hardening from becoming a self-DoS engine ─────────────────
+# Each activation spawns a thread that hammers Ollama + a verify subprocess. An
+# event storm (or a poisoned attack_feed) could otherwise spawn unbounded
+# concurrent evolutions and exhaust CPU/Ollama. These bounds cap the blast radius.
+_MAX_CONCURRENT = 2                 # never evolve more than N techniques at once
+_DEBOUNCE_S = 300.0                 # per-technique cooldown between activations
+_RATE_MAX, _RATE_WINDOW = 8, 3600.0        # ≤8 activations/hour globally
+# Ollama circuit breaker: too many failures in a window → stop calling it and use
+# the deterministic fallback only, for a cooldown, so we don't pile onto a
+# struggling model under load.
+_OLLAMA_FAIL_MAX, _OLLAMA_FAIL_WINDOW = 3, 120.0
+_OLLAMA_BREAK_S = 300.0
+
 _SYS_YARA = (
     "You are a senior detection engineer. Analyze this bypassed red-team footprint "
     "telemetry. Generate a functional, optimized YARA rule targeting the core "
@@ -92,6 +105,13 @@ class EvolutionEngine(BaseModule):
         self.history_path = self.shared_logs / "evolution_history.json"
         self._mgr = None
         self._active: set = set()          # technique_ids currently evolving (no re-entrancy)
+        # BL-07 bounds
+        self._gate = threading.RLock()
+        self._last_activation: dict = {}   # technique -> last activation ts (debounce)
+        self._recent: list = []            # global activation timestamps (rate cap)
+        self._rate_warned = False
+        self._ollama_fails: list = []      # recent Ollama failure timestamps
+        self._ollama_open_until = 0.0      # circuit-breaker cooldown deadline
         try:
             self.shared_logs.mkdir(parents=True, exist_ok=True)
             self.rules_dir.mkdir(parents=True, exist_ok=True)
@@ -130,11 +150,44 @@ class EvolutionEngine(BaseModule):
             self.emit("Evolution trigger rejected: invalid ATT&CK technique identifier.",
                       Severity.MEDIUM)
             return
-        if technique_id in self._active:
-            return
-        self._active.add(technique_id)
+        now = time.time()
+        with self._gate:
+            if technique_id in self._active:
+                return                      # already evolving this one
+            # Debounce: same technique handled very recently → ignore the storm.
+            if now - self._last_activation.get(technique_id, 0.0) < _DEBOUNCE_S:
+                return
+            # Global rate cap: don't let an event flood spin up endless work.
+            self._recent = [t for t in self._recent if now - t < _RATE_WINDOW]
+            if len(self._recent) >= _RATE_MAX:
+                if not self._rate_warned:
+                    self._rate_warned = True
+                    self.emit("Evolution rate cap reached — deferring further self-hardening "
+                              "to avoid a self-inflicted DoS.", Severity.MEDIUM)
+                return
+            self._rate_warned = False
+            # Concurrency cap: bound simultaneous Ollama/verify work.
+            if len(self._active) >= _MAX_CONCURRENT:
+                return                      # debounce will let it retry later, not storm
+            self._active.add(technique_id)
+            self._last_activation[technique_id] = now
+            self._recent.append(now)
         threading.Thread(target=self._evolve, args=(technique_id,),
                          name=f"evolve-{technique_id}", daemon=True).start()
+
+    # ── Ollama circuit breaker (BL-07) ───────────────────────────────────────
+    def _ollama_open(self) -> bool:
+        """True when the breaker is OPEN (skip Ollama, use fallback only)."""
+        return time.time() < self._ollama_open_until
+
+    def _note_ollama_fail(self) -> None:
+        now = time.time()
+        with self._gate:
+            self._ollama_fails = [t for t in self._ollama_fails if now - t < _OLLAMA_FAIL_WINDOW]
+            self._ollama_fails.append(now)
+            if len(self._ollama_fails) >= _OLLAMA_FAIL_MAX:
+                self._ollama_open_until = now + _OLLAMA_BREAK_S
+                self._ollama_fails.clear()
 
     # ── 2. telemetry extraction ──────────────────────────────────────────────
     def _latest_footprint(self, technique_id: str) -> dict:
@@ -250,11 +303,18 @@ class EvolutionEngine(BaseModule):
             attempts = []
             certified = False
             for i in range(1, MAX_ITERATIONS + 1):
-                rule = self._ollama_yara(footprint)
-                source = "ollama"
-                if not rule:
+                # Circuit breaker: skip Ollama entirely while it's failing under
+                # load; the deterministic fallback still hardens the signature.
+                rule = None
+                if not self._ollama_open():
+                    rule = self._ollama_yara(footprint)
+                    if not rule:
+                        self._note_ollama_fail()
+                if rule:
+                    source = "ollama"
+                else:
                     rule = self._fallback_yara(footprint, technique_id, i)
-                    source = "fallback"
+                    source = "fallback(breaker)" if self._ollama_open() else "fallback"
                 if not self._deploy(rule):
                     attempts.append({"iteration": i, "result": "REJECTED",
                                      "rule_excerpt": rule[:400], "source": source})
@@ -313,7 +373,28 @@ class EvolutionEngine(BaseModule):
             fp = {"technique": "T1003", "telemetry": "lsass_dump credential access marker"}
             rule = self._fallback_yara(fp, "T1003", 1)
             ok = "rule Angerona_Auto_T1003" in rule and "condition" in rule
-            return (ok, f"fallback YARA synthesis {'OK' if ok else 'FAILED'}")
+
+            # BL-07 bounds (no real evolving — stub the worker so no Ollama/subprocess).
+            e = EvolutionEngine()
+            e._evolve = lambda _tid: None
+            for tid in ("T1001", "T1002", "T1003"):
+                e.activate(tid)
+            conc_ok = len(e._active) == _MAX_CONCURRENT        # 3rd refused (concurrency cap)
+
+            e2 = EvolutionEngine(); e2._evolve = lambda _tid: None
+            e2._recent = [time.time()] * _RATE_MAX             # pre-fill the rate window
+            e2.activate("T1099")
+            rate_ok = "T1099" not in e2._active                # refused by the rate cap
+
+            e3 = EvolutionEngine()
+            for _ in range(_OLLAMA_FAIL_MAX):
+                e3._note_ollama_fail()
+            breaker_ok = e3._ollama_open()                     # breaker opens after N fails
+
+            ok = bool(ok and conc_ok and rate_ok and breaker_ok)
+            return (ok, "fallback YARA synthesis + BL-07 bounds (concurrency/rate/breaker) OK"
+                    if ok else f"failed: yara={rule[:20]!r} conc={conc_ok} rate={rate_ok} "
+                    f"breaker={breaker_ok}")
         except Exception as exc:
             return (False, str(exc))
 

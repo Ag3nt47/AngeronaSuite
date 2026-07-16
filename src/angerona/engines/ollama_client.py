@@ -64,3 +64,52 @@ def call(payload: dict, path: str = "/api/generate", host: str | None = None,
     g.audit("Output Redacted" if applied else "Clean", decision["verdict"]["risk"],
             plen, time.time() - t0, {"redactions": applied})
     return raw
+
+
+def call_stream(payload: dict, on_token, path: str = "/api/generate",
+                host: str | None = None, timeout: int = 120) -> dict:
+    """Guarded STREAMING round-trip: same input guardrail as call(), but the model's
+    reply is streamed. ``on_token(chunk)`` is invoked for each text chunk as it
+    arrives (for a live typing effect); the full reply is redacted once at the end
+    and returned as {'response': ...}. Best-effort; returns {'error': ...} on failure."""
+    t0 = time.time()
+    plen = g._prompt_len_of(payload)
+    decision = guard_payload(payload)
+    if not decision["allow"]:
+        g.audit("Input Blocked", decision["verdict"]["risk"], plen, time.time() - t0,
+                {"reasons": decision["verdict"]["reasons"], "path": path})
+        return {"error": "blocked by AI guardrail", "reasons": decision["verdict"]["reasons"]}
+    host = host or g.OLLAMA_UPSTREAM
+    pay = dict(decision["payload"])
+    pay["stream"] = True
+    parts: list[str] = []
+    try:
+        import json as _json
+        import requests
+        with requests.post(f"{host}{path}", json=pay, timeout=timeout,
+                           headers={g.TOKEN_HEADER: g.SESSION_TOKEN}, stream=True) as r:
+            for line in r.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                try:
+                    obj = _json.loads(line)
+                except Exception:
+                    continue
+                chunk = obj.get("response")
+                if chunk is None and isinstance(obj.get("message"), dict):
+                    chunk = obj["message"].get("content")
+                if chunk:
+                    parts.append(chunk)
+                    try:
+                        on_token(chunk)
+                    except Exception:
+                        pass
+                if obj.get("done"):
+                    break
+    except Exception as exc:
+        g.audit("Upstream Error", "Med", plen, time.time() - t0, {"error": str(exc)})
+        return {"error": f"upstream: {exc}"}
+    text, applied = g.redact_output("".join(parts))
+    g.audit("Output Redacted" if applied else "Clean", decision["verdict"]["risk"],
+            plen, time.time() - t0, {"redactions": applied, "streamed": True})
+    return {"response": text}

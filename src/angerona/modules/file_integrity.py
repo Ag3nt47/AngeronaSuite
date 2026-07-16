@@ -71,6 +71,25 @@ def watch_roots() -> list[str]:
 DRIVER_DIR = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "drivers")
 SKIP_EXT = {".tmp", ".log", ".lock"}
 
+# ── BL-13: paranoid content-hash for high-value paths ─────────────────────────
+# The fast path in _scan() reuses a file's cached hash when (mtime, size) is
+# unchanged. An attacker can rewrite a watched file while PRESERVING mtime+size
+# to slip past that stat-only check. So high-value targets are ALWAYS re-read and
+# re-hashed, ignoring the cache — you can't evade content hashing by faking stat.
+_HIGH_VALUE_DIRS = [
+    # the hosts / networks files — a classic silent-redirect target
+    os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "drivers", "etc"),
+]
+# Force EVERY watched path to always re-hash (max paranoia, higher CPU).
+_FIM_PARANOID_ALL = os.environ.get("ANGERONA_FIM_PARANOID", "").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
+def _extra_paranoid_dirs() -> "list[str]":
+    """Operator-marked always-hash paths (os.pathsep-separated)."""
+    raw = os.environ.get("ANGERONA_FIM_PARANOID_PATHS", "")
+    return [p.strip() for p in raw.split(os.pathsep) if p.strip()]
+
 
 class FileIntegrityModule(BaseModule):
     name = "File Integrity Monitor"
@@ -103,6 +122,25 @@ class FileIntegrityModule(BaseModule):
         except Exception:
             return None
 
+    def _is_high_value(self, path: str) -> bool:
+        """True if ``path`` must be content-hashed every scan (BL-13), ignoring the
+        mtime/size fast-path. Covers the built-in high-value dirs, any operator-
+        marked paranoid paths, and global paranoid mode."""
+        if _FIM_PARANOID_ALL:
+            return True
+        try:
+            cand = os.path.normcase(os.path.abspath(path))
+        except Exception:
+            return False
+        for root in [*_HIGH_VALUE_DIRS, *_extra_paranoid_dirs()]:
+            try:
+                r = os.path.normcase(os.path.abspath(root))
+                if os.path.commonpath((cand, r)) == r:
+                    return True
+            except (ValueError, TypeError):
+                continue
+        return False
+
     def _scan(self) -> Dict[str, str]:
         """Incremental scan: a file only gets re-hashed if it's new to this
         scan or its (mtime, size) changed since the last time it was hashed.
@@ -133,10 +171,13 @@ class FileIntegrityModule(BaseModule):
                     if st is None:
                         continue
                     cached_st = self._stat_cache.get(full)
-                    if cached_st == st and full in self._baseline:
-                        # Unchanged since last hash — reuse the known digest.
+                    if (cached_st == st and full in self._baseline
+                            and not self._is_high_value(full)):
+                        # Unchanged since last hash AND not high-value — reuse it.
                         digest = self._baseline[full]
                     else:
+                        # New/changed, OR a high-value path we ALWAYS re-hash so a
+                        # mtime+size-preserving rewrite can't evade detection (BL-13).
                         digest = self._hash(full)
                     if digest:
                         snap[full] = digest
@@ -171,14 +212,38 @@ class FileIntegrityModule(BaseModule):
         except Exception:
             return set()
 
+    def _sweep_drivers(self) -> None:
+        """BL-13: cheap name-only sweep of the kernel driver pool. Run more often
+        than the full FIM cycle so BYOVD staging (a new *.sys) is caught fast."""
+        cur_drivers = self._list_driver_names()
+        for name in cur_drivers - self._driver_baseline:
+            alert = self._driver_alert(name)
+            sev, msg = alert if alert else (Severity.HIGH, f"New driver present: {name}")
+            self.emit(msg, sev, driver=name, path=os.path.join(DRIVER_DIR, name))
+        self._driver_baseline = cur_drivers
+
     def self_test(self) -> tuple[bool, str]:
         a = self._driver_alert(r"C:\x\rtcore64.sys")                # known-vulnerable
         b = self._driver_alert(r"C:\x\angerona_byovd_drill.sys")    # benign drill
         c = self._driver_alert(r"C:\Users\me\notes.txt")           # benign non-driver
         ok = (a and a[0] == Severity.CRITICAL
               and b and b[0] == Severity.CRITICAL and c is None)
-        return (ok, "driver-shield classifier verified (known-bad + drill flagged, "
-                    "benign ignored)" if ok else f"classifier failed: a={a} b={b} c={c}")
+        # BL-13: an operator-marked paranoid path is always content-hashed.
+        import tempfile
+        _prev = os.environ.get("ANGERONA_FIM_PARANOID_PATHS")
+        try:
+            d = tempfile.mkdtemp(prefix="fim_hv_")
+            os.environ["ANGERONA_FIM_PARANOID_PATHS"] = d
+            hv = self._is_high_value(os.path.join(d, "sub", "secret.bin"))
+            nv = self._is_high_value(os.path.join(tempfile.gettempdir(), "unrelated", "x.txt"))
+        finally:
+            if _prev is None:
+                os.environ.pop("ANGERONA_FIM_PARANOID_PATHS", None)
+            else:
+                os.environ["ANGERONA_FIM_PARANOID_PATHS"] = _prev
+        ok = bool(ok and hv and not nv)
+        return (ok, "driver-shield classifier + BL-13 paranoid high-value hashing verified"
+                if ok else f"failed: a={a} b={b} c={c} hv={hv} nv={nv}")
 
     def run(self) -> None:
         self.emit("Building file-integrity baseline…", Severity.INFO)
@@ -187,8 +252,17 @@ class FileIntegrityModule(BaseModule):
         self.emit(f"Baseline armed: {len(self._baseline)} files watched, "
                   f"{len(self._driver_baseline)} drivers.", Severity.INFO)
 
+        _DRIVER_INTERVAL, _FILE_INTERVAL = 10.0, 30.0
         while not self.stopping:
-            self.sleep(30)
+            # Sweep the (cheap, name-only) driver pool every _DRIVER_INTERVAL for a
+            # fast BYOVD catch, while the full file-integrity scan runs every
+            # _FILE_INTERVAL. BL-13: shorter driver-pool interval.
+            slept = 0.0
+            while slept < _FILE_INTERVAL and not self.stopping:
+                self.sleep(_DRIVER_INTERVAL)
+                slept += _DRIVER_INTERVAL
+                if not self.stopping:
+                    self._sweep_drivers()
             if self.stopping:
                 break
             current = self._scan()
@@ -224,12 +298,5 @@ class FileIntegrityModule(BaseModule):
                     else:
                         self.emit(f"Watched file modified: {path}", Severity.HIGH, path=path)
 
-            # Cheap, name-only sweep of the kernel driver pool for new .sys files.
-            cur_drivers = self._list_driver_names()
-            for name in cur_drivers - self._driver_baseline:
-                alert = self._driver_alert(name)
-                sev, msg = alert if alert else (Severity.HIGH, f"New driver present: {name}")
-                self.emit(msg, sev, driver=name, path=os.path.join(DRIVER_DIR, name))
-            self._driver_baseline = cur_drivers
-
+            # (the kernel driver-pool sweep now runs on the shorter cadence above)
             self._baseline = current

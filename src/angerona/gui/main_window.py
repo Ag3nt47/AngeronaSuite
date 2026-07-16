@@ -178,6 +178,13 @@ class MainWindow(QMainWindow):
         forensics_btn.clicked.connect(self._open_forensics_hub)
         console_btn = QPushButton("🧰  CONSOLE")
         console_btn.clicked.connect(self._open_upgrade_console)
+        setup_btn = QPushButton("🚀  SETUP")
+        setup_btn.setToolTip("One-swoop setup: AI, voice, Signal, Teams, trusted apps, startup")
+        setup_btn.clicked.connect(self._open_setup)
+        self._help_btn = QPushButton("❔  HELP")
+        self._help_btn.setToolTip("How to set up, test, and troubleshoot Angerona, ARIA, "
+                                  "voice, Signal and Teams — plus an interactive tour")
+        self._help_btn.clicked.connect(self._open_help)
         settings_btn = QPushButton("⚙  SETTINGS")
         settings_btn.clicked.connect(self._open_settings)
         stop_btn = QPushButton("⏹  STOP")
@@ -190,7 +197,8 @@ class MainWindow(QMainWindow):
         rl.addWidget(worldview_btn); rl.addWidget(attack_heatmap_btn)
         rl.addWidget(self.threat_intel_btn)
         rl.addWidget(forensics_btn)
-        rl.addWidget(console_btn); rl.addWidget(settings_btn); rl.addWidget(stop_btn)
+        rl.addWidget(console_btn); rl.addWidget(setup_btn); rl.addWidget(self._help_btn)
+        rl.addWidget(settings_btn); rl.addWidget(stop_btn)
 
         header.addWidget(left, 1)
         header.addWidget(brand_box, 1)
@@ -1047,6 +1055,15 @@ class MainWindow(QMainWindow):
                                    "run module self-tests (diagnostics)")
                 self.aria.register("resources", ToolKind.READ, lambda: _b._resources([]),
                                    "per-module resource load")
+                self.aria.register("incidents", ToolKind.READ, lambda: _b._incidents([]),
+                                   "correlated incidents (kill-chains)")
+                self.aria.register("coverage", ToolKind.READ, lambda: _b._coverage([]),
+                                   "MITRE ATT&CK detect/simulate/remediate coverage")
+                self.aria.register("threat_intel", ToolKind.READ, lambda: _b._threat_intel([]),
+                                   "latest CISA KEV threat intel for this host")
+                self.aria.register("search_events", ToolKind.READ,
+                                   lambda term="": _b._search([str(term)]),
+                                   "search recent events for a term")
                 self.aria.register(
                     "trust_running", ToolKind.WRITE, lambda: _b._trust_running([]),
                     "trust the apps you're running now (exact path)",
@@ -1079,6 +1096,7 @@ class MainWindow(QMainWindow):
                 sparkline_fn=lambda: self.aria_history.sparkline(32),
                 trend_fn=lambda: int(self.aria_history.trend().get("delta", 0)),
                 ask_fn=self._aria_ask,
+                stream_fn=self._aria_ask_stream,
             )
             self._right_tabs.addTab(self.aria_hud, "ARIA")
 
@@ -1223,6 +1241,17 @@ class MainWindow(QMainWindow):
             pass
         return answer
 
+    def _aria_ask_stream(self, text: str, on_token) -> str:
+        """Streaming entry point for the HUD: quick intents return instantly (no
+        tokens); a real conversation streams token-by-token via on_token. The full
+        answer is still returned (and spoken if voice is on)."""
+        answer = self._aria_ask_core(text, on_token=on_token)
+        try:
+            self._aria_speak(answer)
+        except Exception:
+            pass
+        return answer
+
     def _aria_speak(self, text: str) -> None:
         """Speak a trimmed version of an answer when voice OUTPUT is enabled."""
         v = getattr(self, "aria_voice", None)
@@ -1263,11 +1292,12 @@ class MainWindow(QMainWindow):
                 pass
             _t.sleep(0.2)
 
-    def _aria_ask_core(self, text: str) -> str:
+    def _aria_ask_core(self, text: str, on_token=None) -> str:
         """HUD chat handler. A few quick intents (posture / indicator research)
         are answered directly; everything else is a real conversation with the
         local model, grounded with runbook excerpts + live posture. Runs on a
-        worker thread (the HUD offloads it), so the blocking model call is fine."""
+        worker thread (the HUD offloads it), so the blocking model call is fine.
+        ``on_token`` (if given) streams the conversational reply chunk-by-chunk."""
         t = (text or "").strip()
         if not t:
             return ""
@@ -1285,6 +1315,14 @@ class MainWindow(QMainWindow):
             if g in greetings or g in ("help", "commands", "what can you do",
                                        "who are you", "what can you do"):
                 return self._aria_help()
+            # Instant help topic (no model needed): "guide voice", "info teams".
+            if g in ("guide", "info") or low.startswith("guide ") or low.startswith("info "):
+                try:
+                    from angerona.gui.help_content import get
+                    topic = t.split(None, 1)[1] if len(t.split(None, 1)) > 1 else "getting-started"
+                    return get(topic)
+                except Exception:
+                    pass
             # "trust my running apps" → baseline current apps into the allowlist.
             if "trust" in low and any(k in low for k in (
                     "running", "my apps", "these apps", "current apps", "open apps",
@@ -1297,6 +1335,15 @@ class MainWindow(QMainWindow):
             acted = self._aria_action(t)
             if acted is not None:
                 return acted
+            # Strategy / planning → a prioritized, grounded action plan.
+            if any(k in low for k in ("what should i do", "strategi", "recommend",
+                                      "next step", "prioriti", "action plan", "game plan",
+                                      "what do you suggest", "harden")):
+                plan_q = ("Given the current posture and live environment above, reply with a "
+                          "SHORT, prioritized, numbered action plan (most important first). For "
+                          "each item give the exact Angerona step/command/Setting to use. "
+                          "Operator asked: " + t)
+                return self._aria_converse(plan_q, on_token=on_token)
             # Indicator? Open vetted lookups (user-initiated, read-only recon).
             from angerona.connectors.research import classify, get_research
             if classify(t) != "unknown":
@@ -1306,7 +1353,7 @@ class MainWindow(QMainWindow):
                 srcs = ", ".join(n for n, _ in task.sources) or "none"
                 return f"{t} → {task.kind}: opened {opened} vetted source(s) [{srcs}]."
             # Everything else → conversational answer from the local model.
-            return self._aria_converse(t)
+            return self._aria_converse(t, on_token=on_token)
         except Exception as exc:
             return f"[aria error] {exc}"
 
@@ -1355,6 +1402,12 @@ class MainWindow(QMainWindow):
             return aria.invoke("selftest").text
         if re.search(r"\b(resources?|resource (load|usage)|resmon)\b", low):
             return aria.invoke("resources").text
+        if re.search(r"\b(incidents?|kill.?chains?)\b", low):
+            return aria.invoke("incidents").text
+        if re.search(r"\b(att&?ck coverage|mitre coverage|detection coverage|coverage)\b", low):
+            return aria.invoke("coverage").text
+        if re.search(r"\b(threat intel|kev|cve|vulnerabilit)\b", low):
+            return aria.invoke("threat_intel").text
 
         # 3) Write intents (staged behind confirmation).
         res = None
@@ -1487,7 +1540,7 @@ class MainWindow(QMainWindow):
             pass
         return "\n".join(lines)
 
-    def _aria_converse(self, question: str) -> str:
+    def _aria_converse(self, question: str, on_token=None) -> str:
         """Ask the local Ollama model, grounded with a LIVE environment snapshot +
         architecture primer + runbook context + posture. If the local model is
         unreachable, optionally consult an online AI (when a provider key is
@@ -1527,8 +1580,19 @@ class MainWindow(QMainWindow):
             from angerona.engines import ollama_client
             model = getattr(self.config, "ollama_model", "llama3")
             host = getattr(self.config, "ollama_host", None)
-            res = ollama_client.call({"model": model, "stream": False, "prompt": prompt},
-                                     "/api/generate", host=host, timeout=60)
+            # Conversational speed: keep_alive pins the model in RAM so there's no
+            # multi-second cold reload between messages; capped num_predict + a
+            # lower temperature make replies land fast and stay concise.
+            payload = {"model": model, "prompt": prompt,
+                       "keep_alive": getattr(self.config, "ollama_keep_alive", "30m"),
+                       "options": {"num_predict": 400, "temperature": 0.4, "top_p": 0.9}}
+            if on_token is not None:
+                # Stream the reply token-by-token for a live "typing" feel.
+                res = ollama_client.call_stream(dict(payload, stream=True), on_token,
+                                                "/api/generate", host=host, timeout=60)
+            else:
+                res = ollama_client.call(dict(payload, stream=False),
+                                         "/api/generate", host=host, timeout=60)
             if isinstance(res, dict) and res.get("response"):
                 return str(res["response"]).strip()
             err = res.get("error") if isinstance(res, dict) else "no response"
@@ -1666,6 +1730,76 @@ class MainWindow(QMainWindow):
                 self.manager, self.config, self.bus, self)
         except Exception as exc:
             QMessageBox.warning(self, "Console", f"Could not open the console: {exc}")
+
+    def _open_help(self) -> None:
+        """End-user Help & Info — one tab per topic (ARIA, voice, Signal, Teams,
+        trusted apps, testing, troubleshooting, …)."""
+        try:
+            from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
+                                           QTextEdit, QPushButton, QLabel)
+            from angerona.gui.help_content import TOPICS
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Angerona — Help & Info")
+            dlg.resize(700, 580)
+            lay = QVBoxLayout(dlg)
+            lay.addWidget(QLabel("Everything you can set up, test, and troubleshoot. "
+                                 "You can also just ask ARIA, or type 'guide <topic>' "
+                                 "in the console."))
+            tabs = QTabWidget()
+            for _key, (title, body) in TOPICS.items():
+                view = QTextEdit()
+                view.setReadOnly(True)
+                view.setPlainText(body)
+                tabs.addTab(view, title.split("—")[0].strip()[:20])
+            lay.addWidget(tabs)
+            brow = QHBoxLayout()
+            tour_btn = QPushButton("▶  Take the interactive tour")
+            tour_btn.clicked.connect(lambda: (dlg.accept(), self._start_tour()))
+            close = QPushButton("Close")
+            close.clicked.connect(dlg.accept)
+            brow.addWidget(tour_btn)
+            brow.addStretch()
+            brow.addWidget(close)
+            lay.addLayout(brow)
+            dlg.exec()
+        except Exception as exc:
+            try:
+                QMessageBox.information(self, "Help", f"Help unavailable: {exc}")
+            except Exception:
+                pass
+
+    def _open_setup(self) -> None:
+        """One-swoop Setup Wizard — steps through AI, voice, Signal, Teams, trusted
+        apps and startup with Next/Skip, saving config at the end."""
+        try:
+            from angerona.gui.setup_wizard import SetupWizard
+
+            def _trust():
+                try:
+                    self.console.backend._trust_running([])
+                except Exception:
+                    pass
+            dlg = SetupWizard(self.config,
+                              apply_theme_fn=getattr(self, "_apply_theme", None),
+                              trust_running_fn=_trust, parent=self)
+            dlg.exec()
+        except Exception as exc:
+            try:
+                QMessageBox.warning(self, "Setup", f"Setup wizard unavailable: {exc}")
+            except Exception:
+                pass
+
+    def _start_tour(self) -> None:
+        """Launch the interactive coach-marks tour of the dashboard."""
+        try:
+            from angerona.gui.tour import CoachMarks, build_default_steps
+            self._tour = CoachMarks(self, build_default_steps(self))
+            self._tour.start()
+        except Exception as exc:
+            try:
+                QMessageBox.information(self, "Tour", f"Tour unavailable: {exc}")
+            except Exception:
+                pass
 
     def _open_forensics_hub(self) -> None:
         """Forensics hub — each tool in its own highlighted, hover-lit card."""

@@ -80,6 +80,14 @@ class Config:
     aria_imap_user: str = ""                     # mailbox address (password lives in .env: ARIA_IMAP_PASS)
     aria_inbox_interval_min: int = 5             # how often to scan the mailbox (minutes)
     aria_research_egress: bool = False          # allow headless research fetches (else browser-surface)
+    # ── Microsoft Teams bot (two-way ARIA over Teams) — opt-in, default off ──
+    teams_bot_enabled: bool = False
+    teams_app_id: str = ""                       # Azure Bot App (client) ID; secret in .env
+    teams_allowed_users: str = ""                # comma/semicolon-separated Teams user id(s)/name(s)
+    teams_bot_port: int = 3978                   # local Bot Framework messaging-endpoint port
+    teams_bot_skip_auth: bool = False            # DEV ONLY: skip inbound JWT verification
+    # ── ARIA model tuning ──
+    ollama_keep_alive: str = "30m"               # keep the local model warm for fast replies
 
     # ── Derived paths ───────────────────────────────────────────────────────
     @property
@@ -133,6 +141,12 @@ class Config:
                 cfg.aria_imap_user        = data.get("aria_imap_user", cfg.aria_imap_user)
                 cfg.aria_inbox_interval_min = int(data.get("aria_inbox_interval_min", cfg.aria_inbox_interval_min))
                 cfg.aria_research_egress  = data.get("aria_research_egress", cfg.aria_research_egress)
+                cfg.teams_bot_enabled     = data.get("teams_bot_enabled", cfg.teams_bot_enabled)
+                cfg.teams_app_id          = data.get("teams_app_id", cfg.teams_app_id)
+                cfg.teams_allowed_users   = data.get("teams_allowed_users", cfg.teams_allowed_users)
+                cfg.teams_bot_port        = int(data.get("teams_bot_port", cfg.teams_bot_port))
+                cfg.teams_bot_skip_auth   = data.get("teams_bot_skip_auth", cfg.teams_bot_skip_auth)
+                cfg.ollama_keep_alive     = data.get("ollama_keep_alive", cfg.ollama_keep_alive)
             except Exception:
                 pass
         # OLLAMA_HOST env var (set by the D-drive Ollama install) wins.
@@ -179,6 +193,12 @@ class Config:
                     "aria_imap_user":        self.aria_imap_user,
                     "aria_inbox_interval_min": self.aria_inbox_interval_min,
                     "aria_research_egress":  self.aria_research_egress,
+                    "teams_bot_enabled":     self.teams_bot_enabled,
+                    "teams_app_id":          self.teams_app_id,
+                    "teams_allowed_users":   self.teams_allowed_users,
+                    "teams_bot_port":        self.teams_bot_port,
+                    "teams_bot_skip_auth":   self.teams_bot_skip_auth,
+                    "ollama_keep_alive":     self.ollama_keep_alive,
                 },
                 indent=2,
             ),

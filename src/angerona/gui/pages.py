@@ -24,7 +24,7 @@ from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication, QKeySequence,
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFileDialog, QGridLayout, QFrame, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMenu, QMessageBox, QPlainTextEdit, QPushButton,
+    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
     QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -3172,10 +3172,18 @@ class SettingsDialog(QDialog):
         tabs = QTabWidget()
         root.addWidget(tabs)
 
-        tabs.addTab(self._tab_general(), "General")
-        tabs.addTab(self._tab_system(),  "System")
-        tabs.addTab(self._tab_aria(),    "ARIA")
-        tabs.addTab(self._tab_trusted_processes(), "Trusted Processes")
+        def _scroll(inner: QWidget) -> QScrollArea:
+            """Wrap a tab so long panels (ARIA especially) get a scroll bar."""
+            sa = QScrollArea()
+            sa.setWidgetResizable(True)
+            sa.setFrameShape(QScrollArea.NoFrame)
+            sa.setWidget(inner)
+            return sa
+
+        tabs.addTab(_scroll(self._tab_general()), "General")
+        tabs.addTab(_scroll(self._tab_system()),  "System")
+        tabs.addTab(_scroll(self._tab_aria()),    "ARIA")
+        tabs.addTab(_scroll(self._tab_trusted_processes()), "Trusted Processes")
         # Mobile Integration is consolidated into the Advanced Management Console so
         # there is only ONE place to configure it. Show a short redirect here.
         _mob = QWidget(); _mv = QVBoxLayout(_mob)
@@ -3185,8 +3193,8 @@ class SettingsDialog(QDialog):
             "'Mobile Integration' tab — configure the transport (Signal / ntfy / "
             "Pushover / SMS), save the settings, and send a live test alert there.")
         _lbl.setWordWrap(True); _mv.addWidget(_lbl); _mv.addStretch()
-        tabs.addTab(_mob, "Mobile Integration")
-        tabs.addTab(self._tab_apikeys(), "API Keys")
+        tabs.addTab(_scroll(_mob), "Mobile Integration")
+        tabs.addTab(_scroll(self._tab_apikeys()), "API Keys")
 
         # ── button row ──
         btn_row = QHBoxLayout()
@@ -3460,15 +3468,49 @@ class SettingsDialog(QDialog):
         _note("Research classifies an indicator (hash / IP / domain / CVE) and uses only allow-listed "
               "reputation/advisory sites (VirusTotal, NVD, CISA KEV, AbuseIPDB, URLhaus).")
 
+        lay.addWidget(self._section("Microsoft Teams bot (two-way, opt-in)"))
+        self._teams_chk = QCheckBox("Chat with ARIA from Microsoft Teams (needs an Azure Bot)")
+        self._teams_chk.setChecked(getattr(self._cfg, "teams_bot_enabled", False))
+        lay.addWidget(self._teams_chk)
+        tgrid = QGridLayout()
+        tgrid.setColumnStretch(1, 1)
+        tgrid.addWidget(QLabel("App (client) ID:"), 0, 0)
+        self._teams_app_id = QLineEdit(getattr(self._cfg, "teams_app_id", ""))
+        self._teams_app_id.setPlaceholderText("Azure Bot Microsoft App ID")
+        tgrid.addWidget(self._teams_app_id, 0, 1)
+        tgrid.addWidget(QLabel("App password:"), 1, 0)
+        self._teams_pw = QLineEdit(os.environ.get("ANGERONA_TEAMS_APP_PASSWORD", ""))
+        self._teams_pw.setEchoMode(QLineEdit.Password)
+        self._teams_pw.setPlaceholderText("stored in .env — never in settings.json")
+        tgrid.addWidget(self._teams_pw, 1, 1)
+        tgrid.addWidget(QLabel("Allowed Teams user(s):"), 2, 0)
+        self._teams_users = QLineEdit(getattr(self._cfg, "teams_allowed_users", ""))
+        self._teams_users.setPlaceholderText("your AAD object id or display name (comma-separated)")
+        tgrid.addWidget(self._teams_users, 2, 1)
+        tgrid.addWidget(QLabel("Endpoint port:"), 3, 0)
+        self._teams_port = QLineEdit(str(getattr(self._cfg, "teams_bot_port", 3978)))
+        self._teams_port.setFixedWidth(80)
+        tgrid.addWidget(self._teams_port, 3, 1, Qt.AlignLeft)
+        lay.addLayout(tgrid)
+        self._teams_skip_chk = QCheckBox("DEV ONLY: skip inbound JWT verification (insecure)")
+        self._teams_skip_chk.setChecked(getattr(self._cfg, "teams_bot_skip_auth", False))
+        lay.addWidget(self._teams_skip_chk)
+        _note("Create an Azure Bot, set its messaging endpoint to https://<your-tunnel>/api/messages, "
+              "add the Microsoft Teams channel, then 'pip install pyjwt'. Only your allow-listed user "
+              "is answered; chat/reads only (no remote state changes). Restart to apply.")
+
         lay.addWidget(self._section("Verify setup"))
         trow = QHBoxLayout()
         b_voice = QPushButton("\U0001F50A  Test voice")
         b_email = QPushButton("✉  Test email")
         b_push  = QPushButton("\U0001F4E3  Test channel push")
+        b_teams = QPushButton("\U0001F4AC  Test Teams creds")
         b_voice.clicked.connect(self._aria_test_voice)
         b_email.clicked.connect(self._aria_test_email)
         b_push.clicked.connect(self._aria_test_push)
-        trow.addWidget(b_voice); trow.addWidget(b_email); trow.addWidget(b_push); trow.addStretch()
+        b_teams.clicked.connect(self._aria_test_teams)
+        trow.addWidget(b_voice); trow.addWidget(b_email); trow.addWidget(b_push)
+        trow.addWidget(b_teams); trow.addStretch()
         lay.addLayout(trow)
         self._aria_test_status = QLabel("Save first, then use these to verify each feature end-to-end.")
         self._aria_test_status.setWordWrap(True)
@@ -3534,6 +3576,30 @@ class SettingsDialog(QDialog):
                        else f"Push failed: {(r0.reason if r0 else 'no target')}.")
             except Exception as exc:
                 msg = f"Push test error: {exc}"
+            self.aria_test_result.emit(msg)
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _aria_test_teams(self) -> None:
+        app_id = self._teams_app_id.text().strip()
+        pw = self._teams_pw.text().strip()
+        if not (app_id and pw):
+            self._aria_test_status.setText("Enter the Teams App ID and password first.")
+            return
+        self._aria_test_status.setText("Validating Teams bot credentials with Azure…")
+
+        def _run() -> None:
+            try:
+                from angerona.connectors.teams_bot import TeamsBot
+                bot = TeamsBot(enabled=True, app_id=app_id, app_password=pw)
+                token = bot._get_token()          # real OAuth against Azure (no tunnel needed)
+                if token:
+                    msg = ("Teams credentials OK — Azure issued a bot token. Finish setup: set "
+                           "the messaging endpoint to https://<tunnel>/api/messages, add the "
+                           "Teams channel, and 'pip install pyjwt' for inbound auth.")
+                else:
+                    msg = f"No token returned. {bot.last_error or 'check App ID / password'}"
+            except Exception as exc:
+                msg = f"Teams test error: {exc}"
             self.aria_test_result.emit(msg)
         threading.Thread(target=_run, daemon=True).start()
 
@@ -3942,6 +4008,23 @@ class SettingsDialog(QDialog):
             except Exception:
                 pass
         self._cfg.aria_research_egress  = self._aria_egress_chk.isChecked()
+
+        # ── Teams bot ──
+        self._cfg.teams_bot_enabled   = self._teams_chk.isChecked()
+        self._cfg.teams_app_id        = self._teams_app_id.text().strip()
+        self._cfg.teams_allowed_users = self._teams_users.text().strip()
+        self._cfg.teams_bot_skip_auth = self._teams_skip_chk.isChecked()
+        try:
+            self._cfg.teams_bot_port  = int(self._teams_port.text().strip() or "3978")
+        except ValueError:
+            pass
+        _teams_pw = self._teams_pw.text()
+        if _teams_pw:                       # secret → .env, never settings.json
+            try:
+                from angerona.core.config import write_env_keys
+                write_env_keys({"ANGERONA_TEAMS_APP_PASSWORD": _teams_pw})
+            except Exception:
+                pass
 
         self._cfg.mobile_enabled     = self._mob_chk.isChecked()
         self._cfg.mobile_signal_cli  = self._mob_cli.text().strip()

@@ -48,7 +48,18 @@ echo [*] Using Python: %PYCMD%
 :launch
 REM ── Launch (pythonw = no console window) ─────────────────────────────────────
 echo [*] Launching Angerona...
-start "" "venv\Scripts\pythonw.exe" -m angerona
+REM BL-01: if the signed out-of-process watchdog is built, use it as the resilience
+REM PARENT (it launches + hashes + relaunches Angerona). ANGERONA_EXTERNAL_WATCHDOG
+REM tells the in-process manager to skip its own watchdog (no double-supervision).
+REM See frz\BUILD_SIGN_DEPLOY.md to build and code-sign the binary.
+if exist "frz\angerona_watchdog.exe" (
+    set "ANGERONA_EXTERNAL_WATCHDOG=1"
+    for /f %%H in ('certutil -hashfile "venv\Scripts\pythonw.exe" SHA256 ^| findstr /r "^[0-9a-f]*$"') do set "ANGERONA_AGENT_SHA256=%%H"
+    echo [*] Using signed watchdog as resilience parent.
+    start "" "frz\angerona_watchdog.exe" "venv\Scripts\pythonw.exe" -m angerona
+) else (
+    start "" "venv\Scripts\pythonw.exe" -m angerona
+)
 
 REM ── Black Box out-of-band recorder ─────────────────────────────────────────
 REM Detached, independent process (pythonw = no console window). --show opens
