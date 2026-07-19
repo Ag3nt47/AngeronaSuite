@@ -85,7 +85,8 @@ def _edr(level: str, msg: str) -> None:
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]   # src/angerona/modules/ -> repo root
+    from angerona.core.data_paths import data_dir
+    return data_dir()
 
 
 class EvolutionEngine(BaseModule):

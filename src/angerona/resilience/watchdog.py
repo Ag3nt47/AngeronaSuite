@@ -34,7 +34,8 @@ from angerona.resilience.supervisor import ProcessSupervisor
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    from angerona.core.data_paths import project_root
+    return project_root()
 
 
 def _pythonw() -> str:

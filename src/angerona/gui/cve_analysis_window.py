@@ -68,11 +68,8 @@ _DRIVER_KEYWORDS = (
 
 
 def _threats_path() -> Path:
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        if (parent / "shared_logs").exists():
-            return parent / "shared_logs" / "upstream_threats.json"
-    return Path.cwd() / "shared_logs" / "upstream_threats.json"
+    from angerona.core.data_paths import data_dir
+    return data_dir() / "shared_logs" / "upstream_threats.json"
 
 
 def _load_matches() -> list[dict]:

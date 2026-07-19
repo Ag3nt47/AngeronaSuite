@@ -39,7 +39,8 @@ OLLAMA_UPSTREAM = "http://localhost:11434"
 PROXY_HOST = "127.0.0.1"
 PROXY_PORT = 8000
 MAX_PROMPT_CHARS = 16000          # DoS / token-flood ceiling
-AUDIT_LOG = Path(__file__).resolve().parents[3] / "diagnostics" / "ai_security_audit.log"
+from angerona.core.data_paths import data_dir
+AUDIT_LOG = data_dir() / "diagnostics" / "ai_security_audit.log"
 
 # Per-session token authenticating the guardrail's control plane (BL-02). The
 # in-process guarded client attaches it; the proxy rejects requests without it,

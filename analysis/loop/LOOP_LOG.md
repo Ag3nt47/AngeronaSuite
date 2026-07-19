@@ -359,3 +359,201 @@ Copilot pane → OCSF/D3FEND/purple-loop panels.
 - Documentation updated to v1.7.5: Capability Doc, Master Manual, Vulnerabilities Assessment/Remediation, System Flow, Security Assessment loop addendum, README.md, and canonical llms.txt.
 - Remaining deferred work is R2-02 Remote Bridge mutual authentication/encryption, R3-01 packaged administrator-owned trust roots, R3-02 privileged ledger-key custody, and the previously open A-06 centralized PowerShell execution boundary.
 - Remaining visionary/performance proposals are recorded as proposed, not shipped. Visual DOCX render QA was unavailable because LibreOffice is absent; all five packages passed CRC, XML/package, python-docx reopen, content, metadata, and table-shape validation.
+
+---
+
+## Round 1 — Innovation
+
+Research/design refresh completed 2026-07-19. Eight defensive-only proposals were
+checked against the current code so existing behavioral baselining, trusted paths,
+telemetry contracts, ARIA voice, OCSF/D3FEND, and action-policy foundations were not
+re-proposed. Full architecture, implementation slices, limitations, safety gates,
+and primary-source citations are in `analysis/loop/innovation_ideas.md`.
+
+- **I1 (M, implement first): Proof-Carrying Purple Remediation.** The present
+  simulated-finding "resolve" path marks a database row patched but does not prove a
+  detector changed. Replace it with `OPEN -> CANDIDATE_READY -> VERIFIED`; a finding
+  closes only after an opaque-token micro-probe produces exact sensor, detector, and
+  signed-ledger echoes. This directly targets the reported 0% After-Action score.
+- **I2 (M, suitable now): Trust Passports.** Locally bind process trust to canonical
+  path, hash, Authenticode publisher, parent/update lineage, and network boundary.
+  Learning creates review candidates, not automatic trust; trust can reduce noise but
+  can never suppress memory, credential, tamper, or corroborated HIGH/CRITICAL signals.
+- **I3 (M, suitable now): Push-to-Talk ARIA + deterministic Settings Pilot.** Add a
+  visible press/hold mic, bounded memory-only capture, local transcript preview, and a
+  small typed/confirmed settings grammar. Voice alone cannot authorize a write.
+- **I4 (M-L, incremental): Settings Capability Cockpit.** One typed schema and atomic
+  transaction path for GUI, Setup, console, and voice, with search, dependencies,
+  privacy/CPU impact, live test, diff, restart status, and rollback.
+- **I5 (S-M, audit now): Driver Shield Audit.** Read-only HVCI, vulnerable-driver
+  blocklist, ASR, and Code Integrity posture with audit-first guidance; never silently
+  deploy boot-critical WDAC policy.
+- **I6 (L, phase): Privacy Receipt Broker + Remote Bridge v2.** Central fail-closed
+  egress consent/receipts, immediate bridge bind/hostname containment, then versioned
+  TLS 1.3 mutual authentication with no plaintext downgrade.
+- **I7 (L, phase): Attested One-Click Installer.** Pin and lock the release, verify
+  bundled binary provenance, publish SBOM/build attestation, install elevated code to
+  an administrator-owned directory, and keep runtime data on the selected drive.
+- **I8 (M, after typed settings): Evidence-Taint Firewall.** Preserve provenance of
+  email/web/telemetry/model/speech context and allow only deterministic code to form
+  action names, typed arguments, and canonical confirmation dialogs.
+
+Recommended pass order: I1 verified drill closure; I4 foundation + I3 mic; I2 trust
+passports; immediate I6 bridge containment and I7 release provenance; I5 audit card
+if time remains. Sources include 2025 NIST SP 800-53 updates and Privacy Framework,
+MITRE CTID continuous emulation, Microsoft App Control/driver/privacy guidance,
+GitHub artifact attestations, TLS 1.3, and OWASP LLM01/LLM06.
+
+## Cycle 3 / Round 1 — Performance
+
+Six behavior-preserving fixes were applied after reviewing the current crash and
+not-responding evidence. Full measurements and gates are in
+`cycle3/round1/performance_summary.md`.
+
+- EventBus subscriptions are idempotent across module restarts, and bounded
+  `recent(20)` reads are 4.04x faster.
+- Dashboard SQLite reads now use a zero-wait read-only connection; the existing
+  writer-busy skip behavior remains, eliminating the captured multi-second COUNT
+  wait without changing stored or displayed event meaning.
+- Memory Time-Machine connection collection uses one attributed system snapshot
+  instead of one scan per PID (60.97x faster in the measured 238-process case),
+  with fail-safe fallback to the original per-process path.
+- Speculative-triage cooldown state expires when it can no longer affect a
+  decision; sequential Eco wake cancellation is race-free; Stop filters by
+  process name before command-line reads (3.13x faster measured).
+- Gates: 205/205 Python files compile; performance/lifecycle regressions 11/11
+  PASS; MTM, SPEC, and Overdrive self-tests PASS. A concurrent remediation API
+  change left one unrelated legacy drill-resolution assertion for that pass to
+  reconcile. Alert-model virtualization and live cosmetic-governor consumption
+  remain proposed pending Qt equivalence/load tests.
+
+## Cycle 3 / Round 2 — Bug Test
+
+- Final source compile **206/206 PASS**; module imports **64/64**, discovery
+  **63/63**, with zero import/discovery errors and zero duplicate names/codes.
+- Full project selfcheck **26/26 PASS**. Direct module self-tests returned 48
+  truthy passes and 15 expected stopped/idle/optional-driver false states, with
+  zero unexpected exceptions; module-level core/resilience/connector tests are
+  **29/29 PASS**. Repository regressions are **32/32 PASS**.
+- **Fixed:** Settings Save no longer crashes after the Mobile tab redirect;
+  legacy Mobile values are preserved. The exact historical `_mob_chk` traceback
+  was reproduced and the isolated save/persist/no-plaintext gate passes.
+- **Fixed:** resilience manager/supervisor/ecosystem self-tests now use bounded
+  observable readiness and a real throwaway restart instead of impossible fixed
+  Windows startup/spawn-lock timing assumptions. All three re-pass.
+- **Fixed:** the stale drill regression now enforces the proof-carrying two-run
+  contract: candidate install stays VULNERABLE; a distinct caught rerun marks
+  PATCHED.
+- Focused secure-store, Remote Bridge, Purple Guard T1059, performance lifecycle,
+  drill cancellation, shutdown ownership, scoped Ollama unload, YARA-X, and
+  voice no-auto-download gates pass.
+- **Reported:** Teams' nominally offline self-test contacts Microsoft JWKS when
+  PyJWT is installed; Posture History SQLite is captured blocking the GUI; and
+  the legacy AAR Remediation rate counts SOAR actions but not separately verified
+  detector-fix closure. Full evidence: `cycle3/round2/bugtest_results.md`.
+
+## Cycle 3 / Round 3 — Security, privacy, and performance convergence
+
+- **Evidence-based remediation:** `purple_guard.py` now recognizes only exact,
+  inert drill evidence in Angerona's dedicated sandbox (plus the exact tagged
+  T1059 process contract). Installing a candidate cannot certify the run that
+  produced the miss. A distinct caught rerun is required to change a tracked
+  finding from VULNERABLE to PATCHED. The AAR separately reports correlated
+  response success. This replaces the misleading same-run administrative closure
+  behind the reported 0% behavior without inflating coverage.
+- **Credential and cloud privacy:** optional credentials moved from a
+  working-directory `.env` to a current-user Windows DPAPI store with restricted
+  ACLs and explicit legacy migration. ARIA cloud fallback is default-off and, if
+  enabled, receives only a bounded redacted question plus minimal posture—not
+  live telemetry, runbooks, or raw host context.
+- **Transport and scanner hardening:** Remote Bridge RBRG2 mutually authenticates
+  peers and protects events with AES-GCM; Teams is loopback-default,
+  allowlist-required, bounded, and fail-closed on JWT/service-host validation;
+  SIEM forwarding defaults to verified TLS and redacts common identifiers; YARA
+  scanning uses the in-process YARA-X engine and compile-gates rules rather than
+  trusting an executable from the working directory or PATH.
+- **Consent-gated incident bundles:** support/IR exports now require affirmative
+  consent and enforce recursive secret/identity/path redaction, ephemeral network
+  pseudonyms, symlink-safe allowlisting, archive/member budgets, stable hashes,
+  and a privacy manifest. Raw command lines, executable paths, users/host names,
+  credentials, DPAPI blobs, databases, keys, and arbitrary files are excluded.
+  Focused privacy gates pass 9 tests with one unavailable Windows symlink-creation
+  case skipped; the platform-independent symlink rejection equivalent passes.
+- **Posture-history freeze fixed:** HUD reads now use a query-only zero-wait
+  connection, a 150 ms progress budget, bounded caches, and indexed lightweight
+  queries. On 100,000 points, the 32-column sparkline improved 393.088 → 82.785 ms
+  (**4.75×**) and trend 713.001 → 47.795 ms (**14.92×**). Forced contention
+  returns the cached value in 0.031 ms instead of reproducing the observed 5–8 s
+  GUI wait. Full evidence: `cycle3/round3/performance_final.md`.
+- **Settings, voice, and installer quality of life:** Settings gained search,
+  privacy-default restoration, connector validation, and a fixed Save path after
+  Mobile consolidation. The HUD has a direct **VOICE & MIC** setup button; model
+  download is explicit or installer-driven and GUI construction performs no
+  download. `Install-Angerona.bat` installs the constrained Windows/voice set and
+  verified offline model; release builds pin Actions to commits and publish a
+  checksum, SBOM, and build attestations.
+- **Final gates:** module discovery **63/63**; repository suite **57 passed / 1
+  platform skip**; headless `tools/selfcheck.py` **26/26 PASS**; ARIA self-tests
+  **13/13 PASS**. The current dashboard/module documentation now uses 63.
+- **Public-release blocker remains:** current-tree privacy cleanup does not erase
+  earlier Git commits. Historical screenshots, local identity/path data, or
+  removed artifacts may remain recoverable until the owner deliberately audits
+  and rewrites/replaces history. No documentation claims that history is already
+  scrubbed, and any credential ever exposed there must be rotated.
+- **Proposed, not shipped:** full Trust Passports, Driver Shield audit, a central
+  privacy-receipt broker, authoritative evidence-taint enforcement,
+  posture-history retention/compaction, and virtualized burst-table rendering.
+
+## Cycle 3 — Documentation complete (19 July 2026)
+
+- `README.md`, root `llms.txt`, `analysis/README.md`, and `analysis/llms.txt` now
+  distinguish shipped v1.9.3 behavior from the innovation backlog.
+- Security/privacy language reflects DPAPI credentials, consent-gated incident
+  export, authenticated/encrypted Remote Bridge, verified-TLS SIEM, bounded Teams
+  authentication, sanitized opt-in cloud fallback, and in-process YARA-X.
+- Verification totals are synchronized at 63 modules, 57 passed / 1 platform
+  skip, 26/26 headless phases, and 13/13 ARIA checks.
+- The protected one-click release install is the recommended route; the source
+  bootstrap is explicitly contributor/developer mode. Neither path claims an
+  Authenticode signature that does not exist.
+
+## Cycle 3 — Final installer and public-tree gate (19 July 2026)
+
+- The Windows installer now rejects Python below 3.10, avoids inherited
+  PATH/current-directory executable resolution, constrains build dependencies,
+  and fails instead of reporting success when the Angerona package is absent.
+- Vosk remains wheel-only: a deterministic repository-owned compatibility wheel
+  supplies its two used SRT APIs, followed by the audited Vosk wheel installed
+  with `--no-deps`. The compatibility wheel was built, installed to an isolated
+  target, metadata-checked as the Angerona-local `srt` compatibility distribution,
+  imported, and exercised successfully.
+- Frozen releases collect all dynamic Angerona modules and build both programs
+  one-file. The Black Box is built first and its SHA-256 is embedded in the main
+  executable; runtime launch requires an administrator-owned Program Files root,
+  non-writable ACLs, no reparse points, and an exact digest match. The release
+  installer re-verifies both files, installs them to `%ProgramFiles%\Angerona`,
+  and keeps mutable state in protected `D:\AngeronaData` on fixed D: volumes,
+  with protected ProgramData only as the no-D: fallback. Docs/playbooks and the
+  verified offline voice model are bundled.
+- Privileged native watchdogs require a valid Authenticode signature before
+  launch. The source installer no longer compiles an inherited-PATH Go tool or
+  creates an unelevated Black Box shortcut against administrator-only evidence.
+- The current public tree uses a synthetic `DEMO DATA` dashboard and no longer
+  contains the live dashboard captures, personal repository handle, local
+  workstation/backup paths, bundled YARA executable, or shell shortcut.
+- Twelve repository analysis DOCX files received a v1.9.3 appendix and path/
+  identity scrub. Together with two root files and ten Desktop analysis copies,
+  all 24 passed ZIP/XML, reopen, marker, body-text, and metadata privacy checks.
+  Visual DOCX render QA remains unavailable because LibreOffice is not installed.
+- The complete CPython 3.12 Windows release/tool dependency closure is pinned in
+  `constraints-release.txt`. Source launch rejects an untrusted pre-existing venv
+  and only accepts Authenticode-valid official Python/Ollama executables.
+- Final revalidation: Python compile PASS; pytest **57 passed / 1 skipped**;
+  application self-check **26/26**; ARIA **13/13**; tracked PowerShell syntax,
+  14 public PowerShell files, 22 embedded batch PowerShell blocks, and 7
+  release-workflow PowerShell blocks
+  all parse successfully; the wheel-only dependency dry run resolves.
+- Git history remains a release blocker: the audit confirms one personal author
+  email and one commit containing removed sensitive screenshots. Rewriting or
+  replacing history is intentionally deferred until the owner explicitly chooses
+  that destructive publication step.

@@ -74,9 +74,9 @@ The final offscreen `tools/selfcheck.py` run passed **26/26 phases**, 0 failed.
 
 Canonical path assertions passed:
 
-- Data: `D:\local-security-ai\AngeronaSuite\runtime-data`
+- Data: `<install-folder>\runtime-data`
 - `TEMP`, `TMP`, and `tempfile.gettempdir()`:
-  `D:\local-security-ai\AngeronaSuite\runtime-data\tmp`
+  `<install-folder>\runtime-data\tmp`
 
 An initial ad-hoc assertion used an over-escaped comparison literal and failed
 despite printing the correct D paths. The corrected canonical `Path` containment

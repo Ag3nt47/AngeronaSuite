@@ -38,14 +38,16 @@ _SENSOR_LABELS = {1: "process_creation"}
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    from angerona.core.data_paths import project_root
+    return project_root()
 
 
 def _watchdog_binary() -> Optional[Path]:
+    from angerona.core.executable_trust import executable_is_trusted
     for cand in ("frz/angerona_watchdog.exe", "frz/angerona_watchdog",
                  "frz/frz_watchdog.exe", "frz/frz_watchdog"):
         p = _repo_root() / cand
-        if p.exists():
+        if executable_is_trusted(p):
             return p
     return None
 
@@ -293,10 +295,20 @@ def self_test() -> tuple[bool, str]:
     try:
         mgr.start()
         _th.Thread(target=_churn, daemon=True).start()
-        time.sleep(3.0)
         scanner = mgr._sup.components["scanner"]
-        alive_ok = mgr._sup._is_running(scanner)
-        ingested_ok = mgr.frames_ingested >= 1
+        # Detached Windows processes can take more than a second to reach their
+        # first heartbeat while Defender/ETW inspects the new interpreter. Wait
+        # for observable readiness and an actual ring frame instead of relying
+        # on one fixed startup sleep.
+        ready_deadline = time.time() + 8.0
+        alive_ok = False
+        ingested_ok = False
+        while time.time() < ready_deadline:
+            alive_ok = mgr._sup._is_running(scanner)
+            ingested_ok = mgr.frames_ingested >= 1
+            if alive_ok and ingested_ok:
+                break
+            time.sleep(0.1)
         before = scanner.restarts
         mgr._sup._spawn(scanner)
         time.sleep(0.2)

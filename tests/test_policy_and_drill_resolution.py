@@ -65,8 +65,8 @@ class DrillResolutionTests(unittest.TestCase):
             report_path.write_text(json.dumps({
                 "run_id": "run-one",
                 "verdicts": [{
-                    "stage": "Benign Execution (simulated)",
-                    "technique": "T1059 tagged spawns",
+                    "stage": "Credential Access (simulated)",
+                    "technique": "T1003 marker",
                     "description": "inert process marker",
                     "ts_start": time.time(),
                     "category": "detection",
@@ -77,12 +77,30 @@ class DrillResolutionTests(unittest.TestCase):
             self.assertEqual(len(module.ingest_redteam_report(report_path)), 1)
             weakness = module.weaknesses("VULNERABLE")[0]
             self.assertEqual(weakness["source"], "redteam")
-            self.assertFalse(module.generate_remediation("T1059")["ok"])
+            self.assertFalse(module.generate_remediation("T1003")["ok"])
             result = module.resolve_redteam_report(report_path)
             self.assertTrue(result["ok"])
-            self.assertEqual(result["resolved"], 1)
-            self.assertEqual(module.weaknesses()[0]["status"], "PATCHED")
+            self.assertEqual(result["candidates"], 1)
+            self.assertTrue(result["verification_required"])
+            self.assertEqual(module.weaknesses()[0]["status"], "VULNERABLE")
             self.assertEqual(module.ingest_redteam_report(report_path), [])
+
+            # Installing a candidate must not certify its own fix. A later run
+            # carrying a real detector echo is the only PATCHED transition.
+            report_path.write_text(json.dumps({
+                "run_id": "run-two",
+                "verdicts": [{
+                    "stage": "Credential Access (simulated)",
+                    "technique": "T1003 marker",
+                    "description": "inert process marker",
+                    "ts_start": time.time(),
+                    "category": "detection",
+                    "caught": True,
+                    "detected_by": "Purple Remediation Guard",
+                }],
+            }), encoding="utf-8")
+            self.assertEqual(module.ingest_redteam_report(report_path), [])
+            self.assertEqual(module.weaknesses()[0]["status"], "PATCHED")
 
     def test_runtime_fim_target_and_process_pid_correlation(self):
         with tempfile.TemporaryDirectory() as td:

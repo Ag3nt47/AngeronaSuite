@@ -53,11 +53,8 @@ _SYSTEM_PROMPT = (
 
 
 def _repo_root() -> Path:
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        if (parent / "shared_logs").exists():
-            return parent
-    return Path(__file__).resolve().parents[3]
+    from angerona.core.data_paths import data_dir
+    return data_dir()
 
 
 def _applied_path() -> Path:

@@ -98,21 +98,24 @@ class AngeronaApp:
             import subprocess
             import sys
             from pathlib import Path
+            from angerona.core.data_paths import project_root
 
-            # blackbox_recorder.py lives at the repo root (…/AngeronaSuite/); fall
-            # back to the CWD in case the layout differs.
-            bb = None
-            for cand in (Path(__file__).resolve().parents[2] / "blackbox_recorder.py",
-                         Path.cwd() / "blackbox_recorder.py"):
-                try:
-                    if cand.exists():
-                        bb = cand
-                        break
-                except Exception:
-                    continue
-            if bb is None:
-                self._blackbox_note("blackbox_recorder.py not found — cannot launch.")
+            frozen = bool(getattr(sys, "frozen", False))
+            bb = project_root() / (
+                "AngeronaBlackBox.exe" if frozen else "blackbox_recorder.py"
+            )
+            if not bb.is_file():
+                self._blackbox_note(f"{bb.name} not found — cannot launch.")
                 return
+
+            if frozen:
+                from angerona.core.release_integrity import verify_frozen_blackbox
+                if not verify_frozen_blackbox(bb):
+                    self._blackbox_note(
+                        "packaged Black Box is not in a protected Program Files "
+                        "install or failed its embedded integrity check; refusing "
+                        "to launch it.")
+                    return
 
             # Single-instance guard: skip if a recorder is already running.
             if not force:
@@ -122,19 +125,26 @@ class AngeronaApp:
                     for p in psutil.process_iter(["pid", "cmdline"]):
                         if p.info["pid"] == me:
                             continue
-                        if "blackbox_recorder" in " ".join(p.info.get("cmdline") or []).lower():
+                        cmdline = " ".join(p.info.get("cmdline") or []).lower()
+                        if ("blackbox_recorder" in cmdline
+                                or "angeronablackbox" in cmdline):
                             return   # already up — leave it
                 except Exception:
                     pass
 
             # Prefer a windowless interpreter so no console flashes.
-            exe = sys.executable
             creationflags = 0
             if sys.platform.startswith("win"):
-                pyw = Path(exe).with_name("pythonw.exe")
-                if pyw.exists():
-                    exe = str(pyw)
                 creationflags = 0x08000000  # CREATE_NO_WINDOW
+            if frozen:
+                command = [str(bb), "--show"]
+            else:
+                exe = sys.executable
+                if sys.platform.startswith("win"):
+                    pyw = Path(exe).with_name("pythonw.exe")
+                    if pyw.exists():
+                        exe = str(pyw)
+                command = [exe, str(bb), "--show"]
 
             # Capture output so a crash-on-startup is recoverable.
             try:
@@ -145,7 +155,7 @@ class AngeronaApp:
                 logf = subprocess.DEVNULL
 
             self._blackbox_proc = subprocess.Popen(
-                [exe, str(bb), "--show"],
+                command,
                 cwd=str(bb.parent),
                 creationflags=creationflags,
                 stdin=subprocess.DEVNULL,

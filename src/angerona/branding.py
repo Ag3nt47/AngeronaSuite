@@ -12,10 +12,11 @@ solid-color placeholder instead of crashing on a missing file.
 """
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Optional
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+from angerona.core.data_paths import resource_root
+
+_REPO_ROOT = resource_root()
 _ICON_DIR = _REPO_ROOT / "assets" / "icons"
 
 ICON_ICO = _ICON_DIR / "angerona.ico"

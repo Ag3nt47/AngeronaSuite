@@ -3,13 +3,17 @@ from __future__ import annotations
 
 import sys
 
-# Establish D:-resident data/temp paths before crash logging, singleton locks,
-# Qt, or any scanner imports can create files.
-from angerona.core.data_paths import configure_runtime_environment
-configure_runtime_environment()
-
-
 def main() -> int:
+    # Elevate before creating or trusting any persistent packaged data path. A
+    # medium-token process must not prepare inputs for the elevated instance.
+    from angerona.core.privilege import ensure_admin
+    ensure_admin()
+
+    # Establish the canonical install-drive/ProgramData runtime boundary before
+    # crash logging, singleton locks, Qt, or scanner imports can create files.
+    from angerona.core.data_paths import configure_runtime_environment
+    configure_runtime_environment()
+
     # Stop child processes (netsh, tasklist, signal-cli, yara, git, …) from
     # flashing console windows every time a module runs one. Must happen before
     # any module loads. Best-effort; no-op off Windows.
@@ -22,17 +26,12 @@ def main() -> int:
     # Capture any crash (unhandled exception, background-thread exception, or a
     # native Qt fault) to a log file. Under pythonw there is no console, so this
     # is the only trace we'd otherwise get. Writes to
-    # <D: installation>\runtime-data\logs\crash.log and diagnostics\crash.log.
+    # <runtime-data>\logs\crash.log and diagnostics\crash.log.
     try:
         from angerona.core.crashlog import install as _install_crashlog
         _install_crashlog()
     except Exception:
         pass
-
-    # Ensure we're elevated for full-system telemetry (no-op if already admin
-    # or on a non-Windows dev box).
-    from angerona.core.privilege import ensure_admin
-    ensure_admin()
 
     # Self-harden this process (block legacy injection vectors, remote/low-IL
     # image loads, weak ASLR) before we load Qt and the module set. Best-effort;

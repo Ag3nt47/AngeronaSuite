@@ -1,33 +1,35 @@
 <#
 ================================================================================
   finalize-and-deploy.ps1
-  Moves the new Angerona Suite to its clean home and makes the backup copy.
-
-    1. Copies  D:\local-security-ai\AngeronaSuite  ->  D:\Angerona   (clean repo)
-    2. Initializes a git repo there (ready to push to GitHub) if git is present
-    3. Mirrors  D:\Angerona  ->  F:\Angerona-Backups\Angerona  (passive copy)
+  Copies Angerona to an explicitly selected clean home and optional backup.
 
   Safe + re-runnable: uses robocopy mirroring; excludes venv/__pycache__/.git
   from the backup. Nothing here auto-launches.
 
-  RUN (no admin needed):
-    powershell -NoProfile -ExecutionPolicy Bypass -File "D:\local-security-ai\AngeronaSuite\finalize-and-deploy.ps1"
+  Example:
+    .\finalize-and-deploy.ps1 -Home C:\Projects\Angerona -Backup E:\Backups\Angerona
 ================================================================================
 #>
 
+param(
+    [string]$Stage = $PSScriptRoot,
+    [Parameter(Mandatory=$true)][string]$Home,
+    [string]$Backup = ''
+)
 $ErrorActionPreference = 'Stop'
-$stage = 'D:\local-security-ai\AngeronaSuite'
-$home_ = 'D:\Angerona'
-$fbak  = 'F:\Angerona-Backups\Angerona'
+$stage = [IO.Path]::GetFullPath($Stage)
+$home_ = [IO.Path]::GetFullPath($Home)
+$fbak = if ($Backup) { [IO.Path]::GetFullPath($Backup) } else { '' }
+$robocopy = Join-Path $env:SystemRoot 'System32\robocopy.exe'
 
 function Say($m,$c='Gray'){ Write-Host $m -ForegroundColor $c }
 Say "=== Finalize & deploy Angerona Suite ===" Cyan
 
 if (-not (Test-Path $stage)) { Say "Staging folder not found: $stage" Red; exit 1 }
 
-# 1) Stage -> D:\Angerona ------------------------------------------------------
+# 1) Stage -> selected home ----------------------------------------------------
 Say "`n[1] Copying to $home_ ..." Cyan
-$rc = robocopy "$stage" "$home_" /MIR /XD __pycache__ venv .git /NFL /NDL /NP /NJH
+$rc = & $robocopy "$stage" "$home_" /MIR /XD __pycache__ venv .git runtime-data diagnostics /XF .env /NFL /NDL /NP /NJH
 if ($LASTEXITCODE -ge 8) { Say "robocopy error ($LASTEXITCODE)" Red; exit $LASTEXITCODE }
 Say "    done -> $home_" Green
 
@@ -49,18 +51,18 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
     Say "    git not installed - skipped. Install Git, then run 'git init' in $home_" Yellow
 }
 
-# 3) Mirror copy to F: --------------------------------------------------------
-Say "`n[3] Backup copy to My Passport (F:) ..." Cyan
-if (Test-Path 'F:\') {
-    $rc2 = robocopy "$home_" "$fbak" /MIR /XD __pycache__ venv .git /NFL /NDL /NP /NJH
+# 3) Optional mirror backup ---------------------------------------------------
+Say "`n[3] Optional backup copy ..." Cyan
+if ($fbak) {
+    $rc2 = & $robocopy "$home_" "$fbak" /MIR /XD __pycache__ venv .git runtime-data diagnostics /XF .env /NFL /NDL /NP /NJH
     if ($LASTEXITCODE -ge 8) { Say "    backup robocopy error ($LASTEXITCODE)" Red }
     else { Say "    backup done -> $fbak" Green }
 } else {
-    Say "    F: not connected - skipped. Plug in My Passport and re-run to back up." Yellow
+    Say "    no -Backup path supplied; skipped." DarkGray
 }
 
 Say "`n================ DONE ================" Green
 Say "Clean repo : $home_"
-Say "Backup     : $fbak  (if F: was connected)"
+Say "Backup     : $(if ($fbak) {$fbak} else {'not requested'})"
 Say "Run it     : cd $home_ ; .\install.bat ; .\run.bat"
 Say "You can delete the staging copy at $stage once you've confirmed $home_ works."

@@ -366,9 +366,9 @@ class MainWindow(QMainWindow):
         # GUI stack to diagnostics/not_responding.log so the blocking call is
         # identifiable without dumping every sleeping module. Best-effort only.
         try:
-            from pathlib import Path as _P
+            from angerona.core.data_paths import data_dir
             from angerona.core.uiwatchdog import UiWatchdog
-            _diag = _P(__file__).resolve().parents[3] / "diagnostics"
+            _diag = data_dir() / "diagnostics"
             self._ui_watchdog = UiWatchdog(_diag / "not_responding.log", stall_seconds=5.0)
             self._ui_watchdog.start()
             self._beat_timer = QTimer(self)
@@ -502,8 +502,8 @@ class MainWindow(QMainWindow):
         """Append a timestamped line to diagnostics/runtime_alerts.log — an
         out-of-band file the Black Box recorder tails. Best-effort; never raises."""
         try:
-            from pathlib import Path as _P
-            d = _P(__file__).resolve().parents[3] / "diagnostics"
+            from angerona.core.data_paths import data_dir
+            d = data_dir() / "diagnostics"
             d.mkdir(parents=True, exist_ok=True)
             with open(d / "runtime_alerts.log", "a", encoding="utf-8") as f:
                 f.write(f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] {text}\n")
@@ -594,6 +594,16 @@ class MainWindow(QMainWindow):
     def _enter_eco(self, startup: bool = False) -> None:
         # Pause each running heavy module, remembering which we touched so resume
         # restores exactly that set.
+        # If a sequential wake is still in flight, cancel it first. The worker's
+        # control lock guarantees it cannot start another module after cancel()
+        # returns, so ECO: ON cannot race with a late scanner wake-up.
+        worker = getattr(self, "_eco_worker", None)
+        if worker is not None:
+            try:
+                if worker.isRunning():
+                    worker.cancel()
+            except (RuntimeError, AttributeError):
+                pass
         self._eco_paused = []
         for name in self._ECO_HEAVY_MODULES:
             mod = self.manager.modules.get(name)
@@ -992,12 +1002,15 @@ class MainWindow(QMainWindow):
                 result = pm.resolve_redteam_report(report_path)
                 if not result.get("ok"):
                     return f"[Drill resolution] {result.get('error', 'failed')}"
-                count = int(result.get("resolved", 0))
-                return (f"[Drill resolution] Closed {count} missed finding(s) for run "
-                        f"{result.get('run_id') or 'unknown'} and cleaned {cleaned} inert "
-                        "marker/file(s). Historical duplicate alerts no longer affect posture. "
-                        "A future drill miss will reopen the finding. Re-run the report to see "
-                        "the run-scoped resolution status.")
+                count = int(result.get("candidates", 0))
+                unsupported = result.get("unsupported") or []
+                extra = (f" {len(unsupported)} unsupported technique(s) still need a detector."
+                         if unsupported else "")
+                return (f"[Purple remediation] Installed {count} reviewed detector "
+                        f"candidate(s) for run {result.get('run_id') or 'unknown'} and cleaned "
+                        f"{cleaned} inert marker/file(s). The findings remain open until a fresh "
+                        f"drill proves marker → detector → recorder → SOAR end to end.{extra} "
+                        "Run the simulation again to certify the fixes.")
             vuln = pm.weaknesses("VULNERABLE")
             if not vuln:
                 return "[Attempt Fix] No open weaknesses — posture is clean."
@@ -1079,7 +1092,8 @@ class MainWindow(QMainWindow):
             self._aria_last_score = None
 
             # Runbook RAG over any local playbooks (best-effort; empty is fine).
-            root = Path(__file__).resolve().parents[3]
+            from angerona.core.data_paths import project_root
+            root = project_root()
             self._aria_rag = RunbookRAG([str(root / "docs"),
                                          str(root / "playbooks"),
                                          str(Path(self.config.data_dir) / "runbooks")])
@@ -1178,6 +1192,9 @@ class MainWindow(QMainWindow):
                 stream_fn=self._aria_ask_stream,
                 compact=True,
             )
+            self.aria_hud.microphone_requested.connect(self._open_voice_settings)
+            self.aria_hud.set_microphone_state(
+                bool(getattr(self.config, "aria_voice_enabled", False)))
             # NOTE: intentionally NOT added to self._right_tabs — ARIA is in the
             # Console section now (see _build_console_section in __init__).
 
@@ -1829,10 +1846,12 @@ class MainWindow(QMainWindow):
             # anything if the operator configured a provider key (Settings ▸ API
             # Keys); consult_ai self-gates and returns an error otherwise, so no
             # egress happens by default. Full ARIA context is passed along.
-            if getattr(self.config, "aria_cloud_fallback", True):
+            if getattr(self.config, "aria_cloud_fallback", False):
                 try:
+                    from angerona.core.privacy import cloud_assistant_prompt
                     from angerona.engines.ai_consult import consult_ai
-                    online = consult_ai(prompt)
+                    online = consult_ai(cloud_assistant_prompt(
+                        question, score=p.get("score", "?"), label=p.get("label", "?")))
                     if isinstance(online, dict) and online.get("text"):
                         return (f"[ARIA · online:{online.get('provider', '?')}]\n"
                                 + str(online["text"]).strip())
@@ -2062,8 +2081,8 @@ class MainWindow(QMainWindow):
              "Run and inspect code safely, and edit module source with AI help.",
              self._open_sandbox),
             ("🧰  Collect IR Triage Bundle",
-             "One click: snapshot processes, connections, users, recent alerts and incidents "
-             "into a timestamped ZIP for incident response / after-action review.",
+             "Create a bounded, redacted diagnostics ZIP after an explicit privacy review. "
+             "Credentials, raw identities, paths, addresses and command lines are excluded.",
              self._open_ir_bundle),
         ]
 
@@ -2107,8 +2126,17 @@ class MainWindow(QMainWindow):
         import os
         import subprocess
         from angerona.core.ir_bundle import collect_triage_bundle
+        answer = QMessageBox.warning(
+            self, "Create privacy-sanitized IR bundle?",
+            "Angerona will create a bounded diagnostic ZIP for incident response.\n\n"
+            "It excludes credentials, encrypted secret stores, raw usernames, paths, "
+            "IP addresses and command lines, but you should still review the manifest "
+            "before sharing it.\n\nCreate the bundle now?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
         try:
-            path = collect_triage_bundle(bus=getattr(self, "bus", None))
+            path = collect_triage_bundle(bus=getattr(self, "bus", None), consent=True)
         except Exception as exc:
             QMessageBox.warning(self, "IR Triage Bundle",
                                 f"Could not collect bundle: {exc}")
@@ -2122,7 +2150,9 @@ class MainWindow(QMainWindow):
         if box.clickedButton() is open_btn:
             try:
                 if os.name == "nt":
-                    subprocess.Popen(["explorer", "/select,", str(path)])
+                    explorer = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                                            "explorer.exe")
+                    subprocess.Popen([explorer, "/select,", str(path)])
                 else:
                     subprocess.Popen(["xdg-open", str(path.parent)])
             except Exception:
@@ -2130,15 +2160,22 @@ class MainWindow(QMainWindow):
 
     # ── Settings ─────────────────────────────────────────────────────────────
     def _open_settings(self) -> None:
+        self._show_settings()
+
+    def _open_voice_settings(self) -> None:
+        self._show_settings("ARIA")
+
+    def _show_settings(self, initial_tab: str | None = None) -> None:
         # Wrapped so a construction error surfaces to the user instead of being
         # swallowed by Qt's slot dispatch — which looks exactly like "the Settings
         # button does nothing". The traceback also lands in the console for triage.
         try:
             dlg = SettingsDialog(self.config,
                                  lambda: check_for_updates(self.config.github_repo),
-                                 self.apply_theme, self)
+                                 self.apply_theme, self, initial_tab=initial_tab)
             dlg.setStyleSheet(self._qss())
-            dlg.exec()
+            if dlg.exec():
+                self._apply_voice_settings_live()
         except Exception as exc:
             import traceback
             tb = traceback.format_exc()
@@ -2150,6 +2187,42 @@ class MainWindow(QMainWindow):
                 self, "Settings",
                 f"The Settings window failed to open:\n\n{exc}\n\n"
                 "The full traceback was written to the console panel.")
+
+    def _apply_voice_settings_live(self) -> None:
+        """Apply microphone/voice choices immediately after Settings is saved."""
+        enabled = bool(getattr(self.config, "aria_voice_enabled", False))
+        hud = getattr(self, "aria_hud", None)
+        voice = getattr(self, "aria_voice", None)
+        if not enabled:
+            self._aria_voice_stop = True
+            if voice is not None:
+                voice.enabled = False
+            meter = getattr(hud, "mic_meter", None) if hud is not None else None
+            if meter is not None:
+                meter.set_active(False)
+            if hud is not None:
+                hud.set_microphone_state(False)
+            return
+
+        started_now = voice is None
+        if started_now:
+            self._enable_voice_live()
+            voice = getattr(self, "aria_voice", None)
+        if voice is not None:
+            voice.enabled = True
+            voice.allow_cloud_tts = bool(
+                getattr(self.config, "aria_voice_cloud_tts", False))
+            try:
+                voice.set_mic_device(getattr(self.config, "aria_mic_device", "") or None)
+            except Exception:
+                pass
+            self._aria_voice_stop = False
+            if not started_now and not getattr(self, "_voice_loop_alive", False):
+                threading.Thread(target=self._aria_voice_loop, name="AriaVoice",
+                                 daemon=True).start()
+            self._start_mic_meter()
+        if hud is not None:
+            hud.set_microphone_state(True, bool(getattr(self, "_voice_loop_alive", False)))
 
     # ── Self-test (off-thread) + fix prompt on failures ──────────────────────
     def _run_self_test(self) -> None:
@@ -2354,11 +2427,14 @@ class MainWindow(QMainWindow):
         me = os.getpid()
         try:
             import psutil
-            for p in psutil.process_iter(["pid", "name", "cmdline"]):
+            # Command-line reads are expensive and may retry on protected Windows
+            # processes. Query names for the whole process table, then request a
+            # command line only for the small set of Python candidates.
+            for p in psutil.process_iter(["pid", "name"]):
                 try:
                     if "python" not in (p.info.get("name") or "").lower():
                         continue
-                    cmd = " ".join(p.info.get("cmdline") or []).lower()
+                    cmd = " ".join(p.cmdline() or []).lower()
                     if ("angerona" in cmd or "local-security-ai" in cmd) and p.pid != me:
                         p.kill()
                 except Exception:

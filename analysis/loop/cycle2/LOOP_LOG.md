@@ -137,7 +137,7 @@
   **47 pass, 15 expected stopped/idle/Ollama skips, 0 genuine failures**. The
   benign live drill completed 30 steps over two phases and cleaned its marker.
 - Canonical data and temp paths were asserted under
-  `D:\local-security-ai\AngeronaSuite\runtime-data`; the current self-check
+  `<install-folder>\runtime-data`; the current self-check
   produced no new crash or watchdog record, and the self-test failure ledger is
   empty.
 - **New production bugs: 0; code changes in this phase: 0.** Round 2 QA is

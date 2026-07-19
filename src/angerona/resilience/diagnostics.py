@@ -27,8 +27,8 @@ from typing import Optional
 
 
 def _repo_root() -> Path:
-    # src/angerona/resilience/diagnostics.py → parents[3] == repo root
-    return Path(__file__).resolve().parents[3]
+    from angerona.core.data_paths import data_dir
+    return data_dir()
 
 
 def diag_dir() -> Path:

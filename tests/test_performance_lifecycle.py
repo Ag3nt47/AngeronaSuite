@@ -61,6 +61,19 @@ def test_default_runtime_data_is_on_installation_drive(monkeypatch) -> None:
     assert root.drive.casefold() == "d:"
 
 
+def test_frozen_runtime_prefers_configured_fixed_data_drive(monkeypatch) -> None:
+    from angerona.core import data_paths
+
+    monkeypatch.delenv("ANGERONA_DATA", raising=False)
+    monkeypatch.delenv("ANGERONA_STORAGE_AUTOMIGRATE", raising=False)
+    monkeypatch.setenv("ANGERONA_DATA_DRIVE", "D:")
+    monkeypatch.setattr(data_paths.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(data_paths, "_fixed_volume_available", lambda _root: True)
+    root = data_paths.data_dir(create=False)
+    assert root == data_paths.Path(r"D:\AngeronaData")
+    assert data_paths.os.environ["ANGERONA_STORAGE_AUTOMIGRATE"] == "1"
+
+
 def test_ollama_shutdown_unloads_only_running_angerona_models(monkeypatch) -> None:
     from angerona.core import ollama_lifecycle
 

@@ -150,7 +150,7 @@ class MemoryTimeMachineModule(BaseModule):
     def _carve(raw: bytes) -> list[str]:
         return [m.group().decode("ascii", "ignore") for m in _PRINTABLE.finditer(raw)]
 
-    def _process_strings(self, proc) -> list[str]:
+    def _process_strings(self, proc, connections=None) -> list[str]:
         out: list[str] = []
         try:
             info = proc.as_dict(attrs=["cmdline", "exe", "name", "cwd"])
@@ -170,9 +170,11 @@ class MemoryTimeMachineModule(BaseModule):
         # Both open_files (the KNOWN Py3.14 access violation) and environ (a
         # cross-process PEB read) are C-level fault risks on this build, so they
         # are opt-in behind the same flag after you've confirmed a stable psutil.
-        getters = ["connections"]
+        getters = [] if connections is not None else ["connections"]
         if os.environ.get("ANGERONA_MTM_OPEN_FILES") == "1":
-            getters = ["open_files", "connections", "environ"]
+            getters = ["open_files", "environ"] + getters
+        if connections is not None:
+            out += [f"{c.laddr}->{c.raddr}" for c in connections if c.raddr]
         for getter in getters:
             try:
                 val = getattr(proc, getter)()
@@ -245,11 +247,29 @@ class MemoryTimeMachineModule(BaseModule):
 
     def _sweep(self) -> None:
         batch = 0
+        # Process.connections() performs an OS connection-table query for every
+        # PID. On Windows that repeated the same expensive system enumeration
+        # hundreds of times per sweep. Take one equivalent inet snapshot and
+        # partition it by PID. If the platform cannot attribute every row (or the
+        # bulk call fails), fall back to the original per-process path so no
+        # telemetry is lost.
+        connections_by_pid: dict[int, list] | None = {}
+        try:
+            all_connections = psutil.net_connections(kind="inet")
+            if any(c.pid is None for c in all_connections):
+                connections_by_pid = None
+            else:
+                for conn in all_connections:
+                    connections_by_pid.setdefault(int(conn.pid), []).append(conn)
+        except Exception:
+            connections_by_pid = None
         for proc in psutil.process_iter(["pid"]):
             if self.stopping:
                 break
             pid = proc.info["pid"]
-            strings = self._process_strings(proc)
+            proc_connections = (None if connections_by_pid is None
+                                else connections_by_pid.get(pid, ()))
+            strings = self._process_strings(proc, proc_connections)
             if not strings:
                 continue
             delta = self.delta_for(pid, strings)

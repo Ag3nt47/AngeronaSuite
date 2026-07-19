@@ -50,7 +50,7 @@ triage is only as good as your local model, and it's a solo project — treat it
 learning/lab tool, not a certified enterprise product. Feedback from blue-teamers
 especially welcome.
 
-Repo: https://github.com/Ag3nt47/AngeronaSuite
+Repo: https://github.com/<owner>/AngeronaSuite
 
 ---
 
@@ -81,7 +81,7 @@ with a native desktop GUI.
 It's local-first and single-host — a lab / learning tool, not a fleet EDR. MIT
 licensed. Would love feedback on the detection logic and false-positive handling.
 
-Repo + screenshots: https://github.com/Ag3nt47/AngeronaSuite
+Repo + screenshots: https://github.com/<owner>/AngeronaSuite
 
 *(r/netsec note: their rules favor technical write-ups over "I made a tool" posts —
 link a specific detection deep-dive, e.g. the C2-beacon cadence heuristic or the
@@ -101,7 +101,7 @@ Angerona: a local-first EDR/NDR/SOAR for Windows, in Python.
 • built-in red-team drill
 
 MIT, open source 👇
-github.com/Ag3nt47/AngeronaSuite
+github.com/<owner>/AngeronaSuite
 ```
 
 ---

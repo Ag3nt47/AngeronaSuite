@@ -103,7 +103,7 @@ try:
     from PySide6.QtCore import Qt, QTimer, Signal
     from PySide6.QtGui import QColor, QPainter, QRadialGradient, QTextCursor
     from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-                                   QLineEdit, QTextEdit)
+                                   QLineEdit, QPushButton, QTextEdit)
     _HAVE_QT = True
 except Exception:  # pragma: no cover - environment dependent
     _HAVE_QT = False
@@ -174,6 +174,7 @@ if _HAVE_QT:
         submitted = Signal(str)
         response_ready = Signal(str)   # full answer posted back from the ask thread
         token_ready = Signal(str)      # one streamed chunk (live typing effect)
+        microphone_requested = Signal()  # direct jump to conversational settings
 
         def __init__(self, *, score_fn: Callable[[], int],
                      alerts_fn: Optional[Callable[[], int]] = None,
@@ -201,6 +202,10 @@ if _HAVE_QT:
             self._status.setWordWrap(True)
             self._spark = QLabel("")
             self._spark.setStyleSheet("font-family: 'Fira Code', monospace; color:#7fd0ff;")
+            self.mic_button = QPushButton("🎙  VOICE & MIC")
+            self.mic_button.setToolTip(
+                "Open ARIA's microphone, offline model, and conversation settings.")
+            self.mic_button.clicked.connect(self.microphone_requested.emit)
 
             # Live mic-level meter ("ARIA can hear you"). Only visible once voice
             # listening is active; the main window feeds it from the audio thread.
@@ -219,6 +224,7 @@ if _HAVE_QT:
                 root.addWidget(self._orb, 0, Qt.AlignHCenter)
                 root.addWidget(self._status)
                 root.addWidget(self._spark)
+                root.addWidget(self.mic_button)
                 if self.mic_meter is not None:
                     root.addWidget(self.mic_meter)
                 root.addStretch(1)
@@ -237,6 +243,7 @@ if _HAVE_QT:
             col = QVBoxLayout()
             col.addWidget(self._status)
             col.addWidget(self._spark)
+            col.addWidget(self.mic_button)
             top.addLayout(col)
             root = QVBoxLayout(self)
             root.addLayout(top)
@@ -244,6 +251,14 @@ if _HAVE_QT:
             root.addWidget(self._input)
 
             self.refresh()
+
+        def set_microphone_state(self, enabled: bool, listening: bool = False) -> None:
+            if listening:
+                self.mic_button.setText("🎙  LISTENING · SETTINGS")
+            elif enabled:
+                self.mic_button.setText("🎙  VOICE ON · SETTINGS")
+            else:
+                self.mic_button.setText("🎙  VOICE OFF · SET UP")
 
         def refresh(self) -> None:
             """Pull live values and repaint. Safe to call every slow tick."""

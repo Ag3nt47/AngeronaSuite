@@ -80,7 +80,7 @@ surfaces audited here are suitable for a final convergence recheck.
   windows, single-use evidence, and trigger timestamps; run-scoped resolution
   and severity-aware hard-bounded retention remain present.
 - **D-drive storage and responsiveness:** production and direct self-check temp
-  paths resolve under `D:\local-security-ai\AngeronaSuite\runtime-data`.
+  paths resolve under `<install-folder>\runtime-data`.
   Drill/verification markers default to its sandbox. Deception canaries remain
   intentionally tiny tripwires in protected user locations rather than runtime
   databases/reports. Current crash/watchdog logs contain no new application

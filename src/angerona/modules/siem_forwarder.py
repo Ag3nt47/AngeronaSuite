@@ -2,8 +2,8 @@
 
 Purpose
     Streams Angerona detections to a centralized SOC by translating EventBus
-    events into ArcSight Common Event Format (CEF) and shipping them over Syslog
-    (UDP or TCP). Lets Angerona act as a sensor inside a larger SIEM/XDR estate
+    events into ArcSight Common Event Format (CEF) and shipping them over
+    verified TLS Syslog by default. Lets Angerona act as a sensor inside a larger SIEM/XDR estate
     (Splunk, Sentinel, QRadar, Elastic) without exposing any host internals
     beyond the alert text itself.
 
@@ -11,14 +11,15 @@ Opt-in by design
     This module sends data OFF the host, so it is DISABLED by default and does
     nothing until a destination is configured via environment:
         ANGERONA_SIEM_HOST   destination IP/hostname   (required to activate)
-        ANGERONA_SIEM_PORT   default 514
-        ANGERONA_SIEM_PROTO  "udp" (default) or "tcp"
+        ANGERONA_SIEM_PORT   default 6514
+        ANGERONA_SIEM_PROTO  "tls" (default); plaintext tcp/udp require an
+                             additional explicit risk acknowledgement
         ANGERONA_SIEM_MINSEV minimum severity to forward: INFO/LOW/MEDIUM/HIGH/CRITICAL
                              (default MEDIUM)
     With no host set it stays idle and reports so — it never blasts a default IP.
 
 Resilience
-    UDP is fire-and-forget. TCP reconnects on failure. If forwarding fails, the
+    TLS/TCP reconnect on failure; opted-in UDP is fire-and-forget. If forwarding fails, the
     event is preserved locally (it already lives in the BlackBox/EventBus ring);
     SIEM forwarding is additive and never blocks or drops the local pipeline.
 
@@ -29,6 +30,7 @@ from __future__ import annotations
 
 import os
 import socket
+import ssl
 import threading
 import time
 
@@ -95,8 +97,9 @@ class SIEMForwarderModule(BaseModule):
         self._tcp: socket.socket | None = None
         self.host = ""
         self.port = 514
-        self.proto = "udp"
+        self.proto = "tls"
         self.min_sev = Severity.MEDIUM
+        self._config_refusal = ""
 
     @property
     def state(self) -> str:
@@ -113,7 +116,19 @@ class SIEMForwarderModule(BaseModule):
             self.port = int(os.environ.get("ANGERONA_SIEM_PORT", "514"))
         except ValueError:
             self.port = 514
-        self.proto = (os.environ.get("ANGERONA_SIEM_PROTO", "udp") or "udp").lower()
+        self.proto = (os.environ.get("ANGERONA_SIEM_PROTO", "tls") or "tls").lower()
+        if "ANGERONA_SIEM_PORT" not in os.environ and self.proto == "tls":
+            self.port = 6514
+        if self.proto not in {"tls", "tcp", "udp"}:
+            self._config_refusal = f"unsupported SIEM protocol: {self.proto}"
+            return False
+        if self.proto != "tls" and os.environ.get(
+                "ANGERONA_SIEM_ALLOW_PLAINTEXT", "").strip().lower() not in {
+                    "1", "true", "yes"}:
+            self._config_refusal = (
+                "plaintext SIEM transport refused; use TLS or explicitly set "
+                "ANGERONA_SIEM_ALLOW_PLAINTEXT=1")
+            return False
         sev_name = (os.environ.get("ANGERONA_SIEM_MINSEV", "MEDIUM") or "MEDIUM").upper()
         self.min_sev = getattr(Severity, sev_name, Severity.MEDIUM)
         return bool(self.host)
@@ -121,9 +136,19 @@ class SIEMForwarderModule(BaseModule):
     # ── transport ────────────────────────────────────────────────────────────
     def _send(self, payload: str) -> None:
         data = (payload + "\n").encode("utf-8", "replace")
-        if self.proto == "tcp":
+        if self.proto in {"tcp", "tls"}:
             if self._tcp is None:
-                self._tcp = socket.create_connection((self.host, self.port), timeout=5)
+                raw = socket.create_connection((self.host, self.port), timeout=5)
+                if self.proto == "tls":
+                    ca_file = (os.environ.get("ANGERONA_SIEM_CA_FILE") or "").strip()
+                    context = ssl.create_default_context(cafile=ca_file or None)
+                    try:
+                        self._tcp = context.wrap_socket(raw, server_hostname=self.host)
+                    except Exception:
+                        raw.close()
+                        raise
+                else:
+                    self._tcp = raw
             try:
                 self._tcp.sendall(data)
             except Exception:
@@ -143,17 +168,24 @@ class SIEMForwarderModule(BaseModule):
         module = getattr(ev, "module", "Angerona")
         sev = int(getattr(ev, "severity", Severity.INFO))
         event_id = str(details.get("eid") or details.get("event_type") or module)
+        message = getattr(ev, "message", "")
+        if os.environ.get("ANGERONA_SIEM_INCLUDE_RAW", "").strip().lower() not in {
+                "1", "true", "yes"}:
+            from angerona.core.privacy import redact_text
+            message = redact_text(message, limit=2000)
         payload = self._fmt.build(event_id=event_id, severity=sev, name=module,
-                                  msg=getattr(ev, "message", ""), mitre_tag=mitre,
+                                  msg=message, mitre_tag=mitre,
                                   extra={"sev": getattr(getattr(ev, "severity", None), "label", str(sev))})
         self._send(payload)
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def run(self) -> None:
         if not self._load_config():
-            self.set_health(60, "idle — no ANGERONA_SIEM_HOST configured")
-            self.emit("SIEM Forwarder idle — set ANGERONA_SIEM_HOST to enable off-host "
-                      "forwarding (CEF/Syslog).", Severity.LOW, idle=True)
+            note = self._config_refusal or "no ANGERONA_SIEM_HOST configured"
+            self.set_health(60, f"idle — {note}")
+            self.emit(f"SIEM Forwarder idle — {note}.",
+                      Severity.MEDIUM if self._config_refusal else Severity.LOW,
+                      idle=True)
             while not self.stopping:
                 self.sleep(30)
             return

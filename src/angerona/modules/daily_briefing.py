@@ -34,7 +34,8 @@ _SYSTEM_PROMPT = (
 
 
 def _shared_logs() -> Path:
-    return Path(__file__).resolve().parents[3] / "shared_logs"
+    from angerona.core.data_paths import data_dir
+    return data_dir() / "shared_logs"
 
 
 def _summarize_events(events) -> dict:

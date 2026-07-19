@@ -11,7 +11,7 @@ package below ships a prebuilt Windows wheel so no C++ build tools are needed.
 Safe by design:
     • Only an explicit, curated allow-list of packages can ever be installed —
       never arbitrary operator/LLM-supplied names.
-    • Installs go to the app's own environment; nothing runs as admin.
+    • Runtime package installation is refused while Angerona is elevated.
     • Output is captured and summarised; a failure degrades gracefully.
 """
 from __future__ import annotations
@@ -112,6 +112,19 @@ def install(caps: Optional[Iterable[str]] = None,
     pkgs = _resolve(caps)
     if not pkgs:
         return "Nothing to install — every requested capability is already present."
+
+    # Angerona normally runs as Administrator for sensors. Installing Internet
+    # packages inside that privileged process crosses a supply-chain boundary;
+    # the signed/one-click installer is the only supported elevated path.
+    try:
+        from angerona.core.privilege import is_admin
+        if is_admin():
+            return ("Runtime package installation is disabled while Angerona is running "
+                    "as Administrator. Re-run Install-Angerona.bat; the one-click "
+                    "installer includes voice, Teams authentication, YARA, and sensors.")
+    except Exception:
+        if sys.platform.startswith("win"):
+            return "Could not verify process privilege; runtime package installation refused."
 
     # Safety: never pip-install anything outside the curated allow-list.
     bad = [p for p in pkgs if p not in _ALLOWED_PACKAGES]

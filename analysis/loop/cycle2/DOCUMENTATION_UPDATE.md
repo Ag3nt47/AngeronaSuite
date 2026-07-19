@@ -45,12 +45,13 @@ preserved as historical records.
 - `analysis/Angerona_Vulnerabilities_Assessment_Remediation_v1.8.0.docx`
 - `analysis/Angerona_Capabilities_Bragsheet_v1.8.0.docx`
 
-The root and `analysis/` README files are byte-identical. The root and
-`analysis/` llms files are also byte-identical.
+The root README is the GitHub landing page; the historical `analysis/` copy
+uses its own correct relative screenshot path. The root and `analysis/` llms
+files are byte-identical.
 
 ## Desktop files published
 
-Destination: `C:\Users\Agent47\Desktop\Angerona Analysis`.
+Destination: `%USERPROFILE%\Desktop\Angerona Analysis`.
 
 - `Angerona_Capability_Doc_v1.8.0.docx`
 - `Angerona_Master_Manual_v1.8.0.docx`

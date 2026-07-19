@@ -39,6 +39,7 @@ touches a Qt widget, so it is safe to run in its own ``QThread``.
 """
 from __future__ import annotations
 
+import threading
 import time
 from typing import List, Sequence
 
@@ -86,11 +87,16 @@ class EcoWakeupWorker(QThread):
         self._poll = max(0.02, float(poll_interval))
         self._min_settle = max(0.0, float(min_settle))
         self._abort = False
+        self._control_lock = threading.Lock()
 
     # ── Public ────────────────────────────────────────────────────────────────
     def cancel(self) -> None:
-        """Request an early stop; the current module finishes its gate first."""
-        self._abort = True
+        """Request an early stop; no new module starts after this returns."""
+        # Synchronize with the tiny check+start critical section in run(). If a
+        # start won the race, cancel returns only after start() and the caller can
+        # safely stop it; if cancel won, no later module can start.
+        with self._control_lock:
+            self._abort = True
 
     # ── Health probe ────────────────────────────────────────────────────────
     @staticmethod
@@ -161,7 +167,10 @@ class EcoWakeupWorker(QThread):
                 self.module_ready.emit(name, False)
                 continue
             try:
-                mod.start()
+                with self._control_lock:
+                    if self._abort:
+                        break
+                    mod.start()
             except Exception:
                 failed += 1
                 self.module_ready.emit(name, False)

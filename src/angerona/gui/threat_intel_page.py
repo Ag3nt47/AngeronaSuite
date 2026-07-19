@@ -40,11 +40,8 @@ _MAX_REMEDIATION_CELL = 120 # truncate remediation text in the table cell
 
 
 def _repo_root() -> Path:
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        if (parent / "shared_logs").exists():
-            return parent
-    return Path.cwd()
+    from angerona.core.data_paths import data_dir
+    return data_dir()
 
 
 def _threats_path() -> Path:

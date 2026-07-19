@@ -84,6 +84,17 @@ class FlightRecorder:
         self._dlq_lock = threading.Lock()   # separate lock — DLQ must never deadlock primary
         self._writes   = 0
         self._init_schema()
+        # Interactive dashboard reads use their own read-only, zero-wait
+        # connection. A non-blocking Python lock around the writer connection is
+        # not sufficient: SQLite's busy handler can still sleep on an external
+        # lock. WAL gives this connection the last committed snapshot while
+        # timeout=0 guarantees the GUI skips a busy tick instead of freezing.
+        self._ui_lock = threading.Lock()
+        self._ui_db = sqlite3.connect(
+            str(self._path), check_same_thread=False, timeout=0.0,
+        )
+        self._ui_db.execute("PRAGMA query_only=ON")
+        self._ui_db.execute("PRAGMA busy_timeout=0")
 
     def _init_schema(self) -> None:
         with self._lock:
@@ -275,16 +286,24 @@ class FlightRecorder:
         its current view and retry on the next refresh. An empty list means the
         query completed and the ledger is empty.
         """
+        # Preserve the established "writer busy -> skip this tick" contract.
+        # The separate connection below additionally prevents SQLite's own busy
+        # handler from sleeping after this cheap in-process check succeeds.
         if not self._lock.acquire(blocking=False):
             return None
+        self._lock.release()
+        if not self._ui_lock.acquire(blocking=False):
+            return None
         try:
-            rows = self._db.execute(
+            rows = self._ui_db.execute(
                 "SELECT id, ts, module, severity, message, details, hmac_sig "
                 "FROM events ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
+        except sqlite3.OperationalError:
+            return None
         finally:
-            self._lock.release()
+            self._ui_lock.release()
         return [self._event_from_row(r) for r in rows]
 
     def events_in_window(self, start_ts: float, end_ts: float) -> List[Event]:
@@ -410,14 +429,21 @@ class FlightRecorder:
         """Return a count only if the writer lock is immediately available."""
         if not self._lock.acquire(blocking=False):
             return None
+        self._lock.release()
+        if not self._ui_lock.acquire(blocking=False):
+            return None
         try:
-            row = self._db.execute(
+            row = self._ui_db.execute(
                 "SELECT COUNT(*) FROM events WHERE ts >= ?", (ts,)
             ).fetchone()
             return int(row[0] if row else 0)
+        except sqlite3.OperationalError:
+            return None
         finally:
-            self._lock.release()
+            self._ui_lock.release()
 
     def close(self) -> None:
+        with self._ui_lock:
+            self._ui_db.close()
         with self._lock:
             self._db.close()

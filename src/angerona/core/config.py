@@ -1,8 +1,8 @@
 """Configuration + canonical filesystem paths.
 
-All runtime state lives under a per-user data directory so the app folder
-itself stays clean and read-only-friendly (important for a Program Files or
-release install). Secrets come only from a git-ignored .env.
+All runtime state lives under a dedicated data directory so the app folder
+itself stays clean and read-only-friendly. Credentials are persisted in a
+current-user DPAPI store; legacy plaintext imports require an explicit action.
 """
 from __future__ import annotations
 
@@ -21,25 +21,13 @@ def _data_dir() -> Path:
 
 
 def write_env_keys(updates: dict) -> Path:
-    """Upsert KEY=VALUE pairs into ./.env (persisted) and os.environ (live now,
-    so modules re-reading env pick them up without a restart). Blank values skip."""
-    path = Path.cwd() / ".env"
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    for key, val in updates.items():
-        if not val:
-            continue
-        os.environ[key] = val
-        newline = f"{key}={val}"
-        replaced = False
-        for i, ln in enumerate(lines):
-            if "=" in ln and not ln.strip().startswith("#") and ln.split("=", 1)[0].strip() == key:
-                lines[i] = newline
-                replaced = True
-                break
-        if not replaced:
-            lines.append(newline)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return path
+    """Persist credentials in the DPAPI store and publish them live.
+
+    The historical function name remains for UI compatibility, but this no
+    longer creates a plaintext ``.env`` in the elevated application checkout.
+    """
+    from angerona.core.secure_store import write_secret_map
+    return write_secret_map(updates, _data_dir())
 
 
 @dataclass
@@ -72,6 +60,7 @@ class Config:
     perf_governor_enabled: bool = False         # ARIA Overdrive adaptive UI-path governor
     aria_voice_enabled: bool = False            # spoken threat narration (local TTS)
     aria_voice_cloud_tts: bool = False          # allow ElevenLabs cloud TTS (opt-in egress)
+    aria_cloud_fallback: bool = False           # send a sanitized question to a configured cloud AI if local AI is offline
     # Microphone source for listening: "" / "default" = the computer's built-in
     # mic (default); otherwise the sounddevice input-device index (as a string)
     # of an added/external mic chosen in Settings.
@@ -87,7 +76,7 @@ class Config:
     # ── Microsoft Teams bot (two-way ARIA over Teams) — opt-in, default off ──
     teams_bot_enabled: bool = False
     teams_app_id: str = ""                       # Azure Bot App (client) ID; secret in .env
-    teams_allowed_users: str = ""                # comma/semicolon-separated Teams user id(s)/name(s)
+    teams_allowed_users: str = ""                # comma/semicolon-separated immutable Teams user IDs
     teams_bot_port: int = 3978                   # local Bot Framework messaging-endpoint port
     teams_bot_skip_auth: bool = False            # DEV ONLY: skip inbound JWT verification
     # ── ARIA model tuning ──
@@ -137,6 +126,7 @@ class Config:
                 cfg.perf_governor_enabled = data.get("perf_governor_enabled", cfg.perf_governor_enabled)
                 cfg.aria_voice_enabled    = data.get("aria_voice_enabled", cfg.aria_voice_enabled)
                 cfg.aria_voice_cloud_tts  = data.get("aria_voice_cloud_tts", cfg.aria_voice_cloud_tts)
+                cfg.aria_cloud_fallback   = data.get("aria_cloud_fallback", cfg.aria_cloud_fallback)
                 cfg.aria_mic_device       = str(data.get("aria_mic_device", cfg.aria_mic_device))
                 cfg.aria_push_enabled     = data.get("aria_push_enabled", cfg.aria_push_enabled)
                 cfg.aria_push_kind        = data.get("aria_push_kind", cfg.aria_push_kind)
@@ -190,6 +180,7 @@ class Config:
                     "perf_governor_enabled": self.perf_governor_enabled,
                     "aria_voice_enabled":    self.aria_voice_enabled,
                     "aria_voice_cloud_tts":  self.aria_voice_cloud_tts,
+                    "aria_cloud_fallback":   self.aria_cloud_fallback,
                     "aria_mic_device":       self.aria_mic_device,
                     "aria_push_enabled":     self.aria_push_enabled,
                     "aria_push_kind":        self.aria_push_kind,
@@ -213,12 +204,12 @@ class Config:
 
     @staticmethod
     def _load_dotenv(cfg: "Config") -> None:
-        """Load a local .env next to the app, if present (keys never committed)."""
-        for candidate in (Path.cwd() / ".env", cfg.data_dir / ".env"):
-            if candidate.exists():
-                for line in candidate.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    os.environ.setdefault(k.strip(), v.strip())
+        """Load only the protected canonical credential store.
+
+        The process working directory is intentionally never trusted as a
+        credential source: Angerona commonly runs elevated and a writable
+        checkout-level .env would become a privilege-boundary injection point.
+        Legacy import is an explicit operator/installer action.
+        """
+        from angerona.core.secure_store import load_into_environment
+        load_into_environment(cfg.data_dir)

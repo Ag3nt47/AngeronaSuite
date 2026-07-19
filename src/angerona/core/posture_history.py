@@ -18,8 +18,9 @@ import queue
 import sqlite3
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional, TypeVar
 
 
 _SCHEMA = """
@@ -31,7 +32,14 @@ CREATE TABLE IF NOT EXISTS posture_history (
     note  TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_posture_ts ON posture_history(ts);
+CREATE INDEX IF NOT EXISTS ix_posture_ts_score ON posture_history(ts, score);
 """
+
+
+_T = TypeVar("_T")
+_HUD_POINT_LIMIT = 100_000
+_HUD_QUERY_BUDGET_S = 0.150
+_HUD_CACHE_KEYS = 16
 
 
 @dataclass(frozen=True)
@@ -69,8 +77,40 @@ class PostureHistory:
         self._lock = threading.Lock()
         # check_same_thread=False: the GUI thread reads while a worker records.
         self._db = sqlite3.connect(db_path, check_same_thread=False)
+        # A posture write must not exclude a dashboard read. WAL keeps readers
+        # on the last committed snapshot while the writer appends the next one.
+        # These are the same low-contention settings used by FlightRecorder.
+        for pragma in (
+            "journal_mode=WAL",
+            "synchronous=NORMAL",
+            "busy_timeout=3000",
+            "wal_autocheckpoint=1000",
+        ):
+            try:
+                self._db.execute(f"PRAGMA {pragma}")
+            except sqlite3.Error:
+                pass
         self._db.executescript(_SCHEMA)
         self._db.commit()
+
+        # The old HUD path used the writer connection and its Python lock. A
+        # slow commit therefore parked Qt for 5-8 seconds in sparkline(). File
+        # stores now get a dedicated zero-wait, read-only snapshot connection.
+        # In-memory stores cannot be shared by a second connection, so tests and
+        # standalone callers use the writer connection through a non-blocking
+        # lock instead.
+        self._ui_lock = threading.Lock()
+        self._ui_db: Optional[sqlite3.Connection] = None
+        if str(db_path) != ":memory:":
+            self._ui_db = sqlite3.connect(
+                db_path, check_same_thread=False, timeout=0.0,
+            )
+            self._ui_db.execute("PRAGMA query_only=ON")
+            self._ui_db.execute("PRAGMA busy_timeout=0")
+
+        self._cache_lock = threading.Lock()
+        self._spark_cache: "OrderedDict[tuple[int, Optional[float]], str]" = OrderedDict()
+        self._trend_cache: "OrderedDict[float, dict]" = OrderedDict()
         # Writes are drained on a dedicated daemon thread so the INSERT+commit
         # (which can block for SECONDS behind a WAL checkpoint or a busy
         # flight-recorder.db lock) never runs on the caller. The GUI refresh
@@ -144,22 +184,106 @@ class PostureHistory:
         with self._lock:
             return int(self._db.execute("SELECT COUNT(*) FROM posture_history").fetchone()[0])
 
+    def _try_ui_read(self, fn: Callable[[sqlite3.Connection], _T]) -> Optional[_T]:
+        """Run a bounded interactive read, or return ``None`` immediately.
+
+        A busy SQLite snapshot and a query that exceeds the short dashboard
+        budget both mean "keep the last rendered value and retry next tick".
+        This is intentionally separate from :meth:`series`, whose blocking,
+        exact-read contract remains available to reports and tests.
+        """
+        if self._ui_db is None:
+            if not self._lock.acquire(blocking=False):
+                return None
+            try:
+                return fn(self._db)
+            except sqlite3.Error:
+                return None
+            finally:
+                self._lock.release()
+
+        if not self._ui_lock.acquire(blocking=False):
+            return None
+        deadline = time.perf_counter() + _HUD_QUERY_BUDGET_S
+        try:
+            # timeout=0 handles database locks; the progress handler also puts
+            # a hard bound on a very large local history scan.
+            self._ui_db.set_progress_handler(
+                lambda: 1 if time.perf_counter() >= deadline else 0, 1000,
+            )
+            return fn(self._ui_db)
+        except sqlite3.Error:
+            return None
+        finally:
+            try:
+                self._ui_db.set_progress_handler(None, 0)
+            except sqlite3.Error:
+                pass
+            self._ui_lock.release()
+
+    @staticmethod
+    def _remember(cache: OrderedDict, key, value) -> None:
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > _HUD_CACHE_KEYS:
+            cache.popitem(last=False)
+
     def trend(self, window_s: float = 86400.0) -> dict:
         """Change in score over the last ``window_s`` seconds.
 
         Returns ``{"delta": int, "start": int|None, "current": int|None,
         "direction": "up"|"down"|"flat"|"n/a", "samples": int}``. ``delta`` is
         current minus the earliest point still inside the window."""
-        cur = self.latest()
-        if cur is None:
-            return {"delta": 0, "start": None, "current": None, "direction": "n/a", "samples": 0}
-        cutoff = cur.ts - window_s
-        pts = self.series(limit=100000, since=cutoff)
-        start = pts[0].score if pts else cur.score
-        delta = cur.score - start
-        direction = "up" if delta > 0 else "down" if delta < 0 else "flat"
-        return {"delta": delta, "start": start, "current": cur.score,
-                "direction": direction, "samples": len(pts)}
+        window = float(window_s)
+
+        def _read(db: sqlite3.Connection) -> dict:
+            db.execute("BEGIN")
+            try:
+                row = db.execute(
+                    "SELECT ts, score FROM posture_history ORDER BY ts DESC LIMIT 1"
+                ).fetchone()
+                if row is None:
+                    return {"delta": 0, "start": None, "current": None,
+                            "direction": "n/a", "samples": 0}
+                current_ts, current = float(row[0]), int(row[1])
+                cutoff = current_ts - window
+                # OFFSET selects the oldest row only when the bounded window is
+                # full; COUNT is performed inside SQLite, so no 100k-row Python
+                # allocation is needed merely to calculate trend metadata.
+                start_row, samples = db.execute(
+                    "SELECT "
+                    "(SELECT score FROM posture_history WHERE ts >= ? "
+                    " ORDER BY ts DESC LIMIT 1 OFFSET ?), "
+                    "(SELECT COUNT(*) FROM "
+                    " (SELECT 1 FROM posture_history WHERE ts >= ? "
+                    "  ORDER BY ts DESC LIMIT ?))",
+                    (cutoff, _HUD_POINT_LIMIT - 1, cutoff, _HUD_POINT_LIMIT),
+                ).fetchone()
+                if start_row is None:
+                    first = db.execute(
+                        "SELECT score FROM posture_history WHERE ts >= ? "
+                        "ORDER BY ts ASC LIMIT 1", (cutoff,),
+                    ).fetchone()
+                    start = int(first[0]) if first else current
+                else:
+                    start = int(start_row)
+            finally:
+                db.execute("ROLLBACK")
+            delta = current - start
+            direction = "up" if delta > 0 else "down" if delta < 0 else "flat"
+            return {"delta": delta, "start": start, "current": current,
+                    "direction": direction, "samples": int(samples)}
+
+        result = self._try_ui_read(_read)
+        with self._cache_lock:
+            if result is not None:
+                self._remember(self._trend_cache, window, dict(result))
+                return result
+            cached = self._trend_cache.get(window)
+            if cached is not None:
+                return dict(cached)
+        return {"delta": 0, "start": None, "current": None,
+                "direction": "n/a", "samples": 0}
 
     def downsample(self, n: int = 60, since: Optional[float] = None) -> list[PosturePoint]:
         """Evenly pick ≤ ``n`` points across the series for a fixed-width chart."""
@@ -173,19 +297,56 @@ class PostureHistory:
         return picked
 
     def sparkline(self, width: int = 32, since: Optional[float] = None) -> str:
-        """A tiny unicode sparkline of recent scores for the HUD status line."""
+        """A tiny unicode sparkline of recent scores for the HUD status line.
+
+        The interactive path never waits for the writer connection. If the
+        read snapshot is momentarily busy, the last completed sparkline is
+        returned and refreshed on the next timer tick.
+        """
         blocks = "▁▂▃▄▅▆▇█"
-        pts = self.downsample(width, since=since)
-        if not pts:
+        n = int(width)
+        if n <= 0:
             return ""
-        lo = min(p.score for p in pts)
-        hi = max(p.score for p in pts)
-        span = (hi - lo) or 1
-        return "".join(blocks[min(7, (p.score - lo) * 7 // span)] for p in pts)
+        since_value = None if since is None else float(since)
+        key = (n, since_value)
+
+        def _read(db: sqlite3.Connection) -> str:
+            q = "SELECT score FROM posture_history"
+            args: list[object] = []
+            if since_value is not None:
+                q += " WHERE ts >= ?"
+                args.append(since_value)
+            q += " ORDER BY ts DESC LIMIT ?"
+            args.append(_HUD_POINT_LIMIT)
+            rows = db.execute(q, args).fetchall()
+            if not rows:
+                return ""
+            scores = [int(row[0]) for row in reversed(rows)]
+            if len(scores) > n:
+                step = len(scores) / float(n)
+                sampled = [scores[min(len(scores) - 1, int(i * step))]
+                           for i in range(n)]
+                sampled[-1] = scores[-1]
+                scores = sampled
+            lo = min(scores)
+            hi = max(scores)
+            span = (hi - lo) or 1
+            return "".join(blocks[min(7, (score - lo) * 7 // span)]
+                           for score in scores)
+
+        result = self._try_ui_read(_read)
+        with self._cache_lock:
+            if result is not None:
+                self._remember(self._spark_cache, key, result)
+                return result
+            return self._spark_cache.get(key, "")
 
     def close(self) -> None:
         self._wq.put(None)                  # tell the writer to stop
         self._writer.join(timeout=2.0)
+        if self._ui_db is not None:
+            with self._ui_lock:
+                self._ui_db.close()
         with self._lock:
             self._db.close()
 

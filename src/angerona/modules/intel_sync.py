@@ -62,7 +62,8 @@ _MITRE_HINTS = {
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    from angerona.core.data_paths import data_dir
+    return data_dir()
 
 
 # -- Ring 1: Driver-Intel Shield ----------------------------------------------

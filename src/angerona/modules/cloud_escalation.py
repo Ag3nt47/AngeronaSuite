@@ -5,7 +5,8 @@ asks a cloud model (Gemini) for a Tier-3 verdict to corroborate the local AI.
 Ported from Angerona's ``cloud_fallback.py``.
 
 Strictly opt-in and local-first: with no key, it stays idle and nothing leaves
-your machine. Keys come only from the git-ignored .env (GEMINI_API_KEYS).
+your machine. Keys come from Angerona's Windows DPAPI credential store. Only a
+bounded, identifier-redacted event summary is sent; event details stay local.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import time
 from typing import Optional
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.privacy import redact_text
 
 _SYSTEM = (
     "You are a Tier-3 SOC analyst. Review this security event triaged by a local "
@@ -38,6 +40,17 @@ def _extract_json(text: str) -> Optional[dict]:
     return None
 
 
+def _cloud_prompt(module: object, message: object) -> str:
+    """Build the only event payload permitted to leave through this module."""
+    safe_module = redact_text(module, limit=128)
+    safe_summary = redact_text(message, limit=1200)
+    return (
+        "Cloud second-opinion request. Host identifiers, network addresses, "
+        "local paths, URLs, and credentials were removed.\n"
+        f"Module label: {safe_module}\nEvent summary: {safe_summary}"
+    )
+
+
 class CloudEscalationModule(BaseModule):
     name = "Cloud CTI Escalation"
     description = "Opt-in: corroborates CRITICAL events with a cloud model (uses your own key)."
@@ -56,7 +69,7 @@ class CloudEscalationModule(BaseModule):
             self.emit("Cloud escalation needs 'google-genai' (pip install google-genai).", Severity.LOW)
             return None
         try:
-            client = genai.Client()  # reads GEMINI_API_KEY/credentials from env
+            client = genai.Client(api_key=self._keys[0])
             resp = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=prompt,
@@ -69,7 +82,7 @@ class CloudEscalationModule(BaseModule):
 
     def run(self) -> None:
         if not self._keys:
-            self.emit("Cloud escalation idle — no GEMINI_API_KEYS in .env (local-only mode).",
+            self.emit("Cloud escalation idle — no protected Gemini key (local-only mode).",
                       Severity.INFO)
             # Stay alive but dormant so the user can add a key without a restart.
             while not self.stopping:
@@ -107,7 +120,7 @@ class CloudEscalationModule(BaseModule):
                     continue
                 _capped = False
                 _calls.append(now)
-                verdict = self._ask_gemini(f"Event from {ev.module}: {ev.message}")
+                verdict = self._ask_gemini(_cloud_prompt(ev.module, ev.message))
                 if verdict:
                     self.emit(f"Cloud verdict: {verdict.get('verdict','?')} "
                               f"({verdict.get('confidence','?')}) — {verdict.get('justification','')}",

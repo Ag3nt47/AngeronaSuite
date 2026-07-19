@@ -44,7 +44,8 @@ from angerona.core.module_base import BaseModule, Severity
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    from angerona.core.data_paths import data_dir
+    return data_dir()
 
 
 def _hash_file(filepath: str | os.PathLike, chunk: int = 4096 * 1024) -> str:

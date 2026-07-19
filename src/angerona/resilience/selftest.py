@@ -52,14 +52,25 @@ def _dry_run_resurrection() -> bool:
     """Exercise the respawn path on a throwaway process — no real component is
     harmed. Spawns a quick-exit dummy, flags it dead, confirms a tick respawns it."""
     sup = ProcessSupervisor(poll_interval=0.1)
-    c = sup.add("selftest_dummy", [sys.executable, "-c", "import time; time.sleep(0.3)"],
-                stale_after_s=0.5, max_failures=99)
+    c = sup.add("selftest_dummy", [sys.executable, "-c", "import time; time.sleep(2)"],
+                stale_after_s=0.5, max_failures=99,
+                running_probe=lambda: c.proc is not None and c.proc.poll() is None)
     sup._spawn(c)
-    time.sleep(0.2)
+    started_deadline = time.time() + 3.0
+    while time.time() < started_deadline and not sup._is_running(c):
+        time.sleep(0.05)
     before = c.restarts
-    c._dead = True                       # simulate death WITHOUT killing anything real
-    for _ in range(6):
-        sup.tick(); time.sleep(0.1)
+    first = c.proc
+    if first is not None:
+        first.terminate()
+        try:
+            first.wait(timeout=2.0)
+        except Exception:
+            first.kill()
+    c._dead = True
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        sup.tick(); time.sleep(0.05)
         if c.restarts > before:
             break
     ok = c.restarts > before

@@ -1,30 +1,29 @@
-"""YARA signature scanner.
+"""In-process YARA signature scanner with bounded, symlink-safe traversal.
 
-Runs the bundled ``yara64.exe`` against hot directories (Downloads, Temp) on an
-interval. The binary and ``rules.yar`` ship with the app, so this works out of
-the box — it auto-locates both next to the app, with an env-var override
-(ANGERONA_YARA_RULES) for a custom ruleset.
+The scanner uses the maintained ``yara-python`` package instead of launching a
+writeable checkout/PATH executable from an elevated process. Rules are compiled
+before activation and only changed files generate repeat alerts.
 """
 from __future__ import annotations
 
 import os
-import shutil
+import sys
 import tempfile
 import threading
 from pathlib import Path
+from typing import Iterator
 
-from angerona.core.data_paths import data_dir
+from angerona.core.data_paths import data_dir, resource_root
 from angerona.core.module_base import BaseModule, Severity
-from angerona.core.win import run_hidden
 
-# Downloads only by default — scanning all of %TEMP% every cycle is slow and
-# noisy. Add more dirs here if you want broader coverage.
+
 SCAN_DIRS = [
-    os.path.join(os.environ.get("USERPROFILE", str(Path.home())), "Downloads"),
-    str(data_dir() / "drill-sandbox"),
+    Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Downloads",
+    data_dir() / "drill-sandbox",
 ]
+MAX_FILES_PER_ROOT = 10_000
+MAX_FILE_BYTES = 64 * 1024 * 1024
 
-# Map a matched rule name to a severity (falls back to HIGH).
 SEVERITY_HINTS = {
     "mimikatz": Severity.CRITICAL,
     "eicar": Severity.MEDIUM,
@@ -33,203 +32,214 @@ SEVERITY_HINTS = {
 
 class YaraScannerModule(BaseModule):
     name = "YARA Scanner"
-    description = "Scans Downloads/Temp against bundled YARA malware signatures."
+    description = "Scans Downloads and the isolated drill sandbox with in-process YARA."
     category = "Signatures"
     enabled_by_default = True
 
     def __init__(self) -> None:
         super().__init__()
         self._rules_lock = threading.RLock()
+        self._compiled_rules = None
+        self._scanner = None
+        self._active_rules = ""
+        self._seen_matches: dict[tuple[str, str], int] = {}
 
     def _repo_root(self) -> Path:
-        # src/angerona/modules/yara_scanner.py  ->  repo root
-        return Path(__file__).resolve().parents[3]
-
-    def _find_yara(self) -> str:
-        for cand in (Path.cwd() / "yara64.exe", self._repo_root() / "yara64.exe"):
-            if cand.exists():
-                return str(cand)
-        return shutil.which("yara64") or shutil.which("yara") or ""
+        return resource_root()
 
     def _find_rules(self) -> str:
-        env = os.environ.get("ANGERONA_YARA_RULES")
-        if env and os.path.exists(env):
-            return env
-        for cand in (Path.cwd() / "rules.yar", self._repo_root() / "rules.yar"):
-            if cand.exists():
-                return str(cand)
+        override = os.environ.get("ANGERONA_YARA_RULES", "").strip()
+        if override:
+            candidate = Path(override).expanduser().resolve()
+            if candidate.is_file():
+                return str(candidate)
+        candidates = [
+            self._repo_root() / "rules.yar",
+            Path(sys.executable).resolve().parent / "rules.yar",
+        ]
+        bundle = getattr(sys, "_MEIPASS", "")
+        if bundle:
+            candidates.append(Path(bundle) / "rules.yar")
+        for candidate in candidates:
+            if candidate.is_file():
+                return str(candidate.resolve())
         return ""
 
-    def _compile_rules(self, rules_path: Path) -> tuple[bool, str]:
-        yara = self._find_yara()
-        if not yara:
-            return False, "yara engine not found"
-        fd, sample = tempfile.mkstemp(prefix="angerona_yara_compile_", suffix=".bin")
-        os.close(fd)
+    @staticmethod
+    def _compile_rules(rules_path: Path):
         try:
-            out = run_hidden([yara, "-w", str(rules_path), sample],
-                             capture_output=True, text=True, timeout=60)
-            if out.returncode != 0:
-                return False, (out.stderr or out.stdout or "compile failed").strip()
-            return True, "compiled"
-        except Exception as exc:
-            return False, str(exc)
-        finally:
-            try:
-                os.remove(sample)
-            except OSError:
-                pass
+            import yara_x
+        except ImportError as exc:
+            raise RuntimeError("yara-x is not installed") from exc
+        path = rules_path.resolve()
+        compiler = yara_x.Compiler()
+        compiler.add_include_dir(str(path.parent))
+        compiler.add_source(path.read_text(encoding="utf-8", errors="strict"),
+                            origin=str(path))
+        return compiler.build()
+
+    @staticmethod
+    def _make_scanner(compiled):
+        import yara_x
+        scanner = yara_x.Scanner(compiled)
+        scanner.set_timeout(10)
+        scanner.max_matches_per_pattern(64)
+        scanner.fast_scan(True)
+        return scanner
+
+    def _activate(self, path: Path):
+        compiled = self._compile_rules(path)
+        scanner = self._make_scanner(compiled)
+        with self._rules_lock:
+            self._compiled_rules = compiled
+            self._scanner = scanner
+            self._active_rules = str(path.resolve())
+        return compiled
 
     def reload_rules(self, candidate_text: str | None = None) -> bool:
-        """Re-index the ruleset, merging the Evolution Engine's auto_generated.yar
-        into the active set so new signatures take effect on the next scan cycle.
-        Called by evolution_engine after it deploys a fresh rule."""
+        """Compile-gate base + generated rules, then atomically activate them."""
         base = self._find_rules()
-        auto = self._repo_root() / "rules" / "auto_generated.yar"
+        # Bundled rules are immutable application resources. Evolution output is
+        # runtime state and must remain writable in frozen/protected installs.
+        auto = data_dir() / "rules" / "auto_generated.yar"
         try:
             auto_text = (candidate_text if candidate_text is not None else
                          (auto.read_text(encoding="utf-8", errors="strict")
-                          if auto.exists() else None))
-            if auto_text is not None and base:
-                combined = self._repo_root() / "rules" / "_active_runtime.yar"
-                candidate = combined.with_suffix(".candidate")
-                combined.parent.mkdir(parents=True, exist_ok=True)
-                candidate.write_text(
-                    Path(base).read_text(encoding="utf-8", errors="ignore")
-                    + "\n\n// ── auto-generated (evolution engine) ──\n"
-                    + auto_text,
-                    encoding="utf-8")
-                ok, detail = self._compile_rules(candidate)
-                if not ok:
-                    candidate.unlink(missing_ok=True)
-                    self.last_error = detail
-                    self.set_health(20, "generated YARA rejected by compile gate")
-                    self.emit(f"YARA candidate rejected: {detail}", Severity.HIGH)
-                    return False
-                with self._rules_lock:
-                    if candidate_text is not None:
-                        auto_candidate = auto.with_suffix(".candidate")
-                        auto_candidate.write_text(candidate_text, encoding="utf-8")
-                        os.replace(auto_candidate, auto)
-                    os.replace(candidate, combined)
-                self._active_rules = str(combined)
+                          if auto.exists() else ""))
+            if not base:
+                raise RuntimeError("rules.yar not found")
+            if not auto_text:
+                self._activate(Path(base))
             else:
-                self._active_rules = base
+                runtime = data_dir() / "rules"
+                runtime.mkdir(parents=True, exist_ok=True)
+                active = runtime / "active-runtime.yar"
+                candidate = runtime / "active-runtime.candidate.yar"
+                candidate.write_text(
+                    Path(base).read_text(encoding="utf-8", errors="strict")
+                    + "\n\n// auto-generated (evolution engine)\n" + auto_text,
+                    encoding="utf-8")
+                compiled = self._compile_rules(candidate)
+                if candidate_text is not None:
+                    auto.parent.mkdir(parents=True, exist_ok=True)
+                    auto_candidate = auto.with_suffix(".candidate")
+                    auto_candidate.write_text(candidate_text, encoding="utf-8")
+                    os.replace(auto_candidate, auto)
+                os.replace(candidate, active)
+                with self._rules_lock:
+                    self._compiled_rules = compiled
+                    self._scanner = self._make_scanner(compiled)
+                    self._active_rules = str(active.resolve())
+            self.set_health(100, "validated rules active")
             self.emit(f"YARA rules reloaded ({Path(self._active_rules).name}).", Severity.INFO)
             return True
         except Exception as exc:
             self.last_error = str(exc)
+            self.set_health(20, "generated YARA rejected by compile gate")
+            self.emit(f"YARA candidate rejected: {exc}", Severity.HIGH)
             return False
 
-    def _severity_for(self, line: str) -> Severity:
-        low = line.lower()
-        for token, sev in SEVERITY_HINTS.items():
+    @staticmethod
+    def _iter_files(root: Path) -> Iterator[Path]:
+        """Bound traversal and never follow junctions/symlinks outside a scan root."""
+        stack = [root]
+        yielded = 0
+        while stack and yielded < MAX_FILES_PER_ROOT:
+            current = stack.pop()
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        if yielded >= MAX_FILES_PER_ROOT:
+                            return
+                        try:
+                            if entry.is_symlink():
+                                continue
+                            if entry.is_dir(follow_symlinks=False):
+                                stack.append(Path(entry.path))
+                            elif entry.is_file(follow_symlinks=False):
+                                yielded += 1
+                                yield Path(entry.path)
+                        except OSError:
+                            continue
+            except OSError:
+                continue
+
+    @staticmethod
+    def _severity_for(rule: str) -> Severity:
+        low = rule.lower()
+        for token, severity in SEVERITY_HINTS.items():
             if token in low:
-                return sev
+                return severity
         return Severity.HIGH
 
-    def self_test(self) -> tuple[bool, str]:
-        """Inject a known-bad EICAR file and confirm YARA detects it.
-
-        Two-stage verification so a single broken rule in the live ruleset can't
-        falsely fail the whole capability:
-          1. PRIMARY  — scan with the active rules.yar.
-          2. SECONDARY — if primary doesn't fire, scan with a minimal standalone
-             EICAR rule. If THAT detects, the engine works and the test PASSES;
-             we just flag that the active ruleset failed to compile/match (and
-             include yara's stderr so the offending rule can be fixed).
-        """
-        import tempfile
-        yara = self._find_yara()
-        rules = getattr(self, "_active_rules", None) or self._find_rules()
-        if not yara:
-            return False, "yara64.exe not found"
-
-        marker = "EICAR-STANDARD-ANTIVIRUS-TEST-FILE"
-        d = tempfile.mkdtemp(prefix="angerona_yara_")
-        sample = os.path.join(d, "eicar_test.txt")
-        minimal = os.path.join(d, "_eicar_only.yar")
+    def _scan_file(self, scanner, path: Path) -> None:
         try:
-            with open(sample, "w", encoding="ascii") as fh:
-                fh.write(f"{marker} :: Angerona self-test sample")
-
-            # ── Primary: the live ruleset ───────────────────────────────────
-            primary_err = ""
-            if rules:
-                out = run_hidden([yara, "-w", rules, sample],
-                                 capture_output=True, text=True, timeout=60)
-                if out.returncode != 0:
-                    return False, ("FAIL - active ruleset does not compile: "
-                                   + ((out.stderr or out.stdout or "no detail").strip()))
-                if marker.split("-")[0] in out.stdout or "eicar" in out.stdout.lower():
-                    return True, "PASS — active ruleset detected the EICAR sample"
-                primary_err = (out.stderr or "").strip()
-
-            # ── Secondary: minimal standalone EICAR rule ────────────────────
-            with open(minimal, "w", encoding="ascii") as fh:
-                fh.write('rule EICAR_Min { strings: $e = "'
-                         + marker + '" condition: $e }')
-            out2 = run_hidden([yara, "-w", minimal, sample],
-                              capture_output=True, text=True, timeout=60)
-            if "EICAR" in out2.stdout:
-                why = f" (active ruleset issue: {primary_err})" if primary_err else \
-                      " (active ruleset did not match)"
-                return True, "PASS via secondary check — YARA engine detects EICAR" + why
-
-            err2 = (out2.stderr or "").strip()
-            return False, f"FAIL — YARA did not detect EICAR even with a minimal rule: {err2 or 'no output'}"
+            stat = path.stat()
+            if stat.st_size > MAX_FILE_BYTES:
+                return
+            results = scanner.scan_file(str(path))
+            for match in results.matching_rules:
+                rule = str(match.identifier)
+                key = (str(path), rule)
+                if self._seen_matches.get(key) == stat.st_mtime_ns:
+                    continue
+                self._seen_matches[key] = stat.st_mtime_ns
+                self.emit(f"YARA match: {rule} {path}", self._severity_for(rule))
         except Exception as exc:
-            return False, f"error: {exc}"
-        finally:
-            for p in (sample, minimal):
-                try:
-                    os.remove(p)
-                except Exception:
-                    pass
-            try:
-                os.rmdir(d)
-            except Exception:
-                pass
+            # Unreadable/transient files are expected in Downloads; a rule timeout
+            # is recorded for diagnostics but does not collapse scanner health.
+            self.last_error = str(exc)
+
+    def self_test(self) -> tuple[bool, str]:
+        marker = "EICAR-STANDARD-ANTIVIRUS-TEST-FILE"
+        try:
+            import yara_x
+            rule = yara_x.compile(
+                'rule EICAR_Min { strings: $e = "' + marker + '" condition: $e }')
+            with tempfile.TemporaryDirectory(prefix="angerona_yara_") as folder:
+                sample = Path(folder) / "eicar_test.txt"
+                sample.write_text(marker + " :: Angerona benign self-test", encoding="ascii")
+                scanner = self._make_scanner(rule)
+                matches = scanner.scan_file(str(sample)).matching_rules
+            if not any(str(m.identifier) == "EICAR_Min" for m in matches):
+                return False, "FAIL - in-process YARA did not detect the EICAR marker"
+            active = self._find_rules()
+            if active:
+                self._compile_rules(Path(active))
+            return True, "PASS - in-process YARA compiled rules and detected EICAR"
+        except Exception as exc:
+            return False, f"FAIL - {exc}"
 
     def run(self) -> None:
-        yara = self._find_yara()
         rules = self._find_rules()
-        if not yara:
-            self.status = "error"
-            self.set_health(0, "yara64.exe not found")
-            self.emit("YARA disabled: yara64.exe not found next to the app or on PATH.",
-                      Severity.MEDIUM)
-            return
         if not rules:
             self.status = "error"
             self.set_health(0, "rules.yar not found")
-            self.emit("YARA disabled: rules.yar not found. Set ANGERONA_YARA_RULES "
-                      "or place rules.yar next to the app.", Severity.MEDIUM)
+            self.emit("YARA disabled: rules.yar not found.", Severity.MEDIUM)
+            return
+        try:
+            compiled = self._activate(Path(rules))
+        except Exception as exc:
+            self.status = "error"
+            self.last_error = str(exc)
+            self.set_health(0, "in-process YARA unavailable")
+            self.emit(f"YARA disabled: {exc}", Severity.MEDIUM)
             return
 
         self.set_health(100, "")
-        self._active_rules = rules          # reload_rules() can swap this live
         self.emit(f"YARA scanner active ({Path(rules).name}).", Severity.INFO)
         while not self.stopping:
-            active = getattr(self, "_active_rules", None) or rules
-            for d in SCAN_DIRS:
-                if not d or not os.path.isdir(d) or self.stopping:
+            with self._rules_lock:
+                scanner = self._scanner
+            for root in SCAN_DIRS:
+                if self.stopping:
+                    break
+                if not root.is_dir():
                     continue
-                try:
-                    out = run_hidden([yara, "-r", "-w", active, d],
-                                     capture_output=True, text=True, timeout=180)
-                    if out.returncode != 0:
-                        detail = (out.stderr or out.stdout or "YARA scan failed").strip()
-                        self.last_error = detail
-                        self.set_health(15, "active YARA rules failed to compile/scan")
-                        self.emit(f"YARA health failure: {detail}", Severity.HIGH)
-                        continue
-                    if self.health < 100:
-                        self.set_health(100, "validated rules active")
-                    for line in out.stdout.splitlines():
-                        line = line.strip()
-                        if line:
-                            self.emit(f"YARA match: {line}", self._severity_for(line))
-                except Exception as exc:
-                    self.last_error = str(exc)
+                for path in self._iter_files(root):
+                    if self.stopping:
+                        break
+                    self._scan_file(scanner, path)
+            if len(self._seen_matches) > 4096:
+                self._seen_matches.clear()
             self.sleep(300)

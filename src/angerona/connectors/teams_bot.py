@@ -13,8 +13,8 @@ Azure setup (one-time; do this on your side):
      ngrok / Azure relay). The endpoint must be HTTPS and reachable by Azure.
   3. Channels → add Microsoft Teams.
   4. In Angerona Settings ▸ Teams Bot: enable it, paste the App ID, set the port
-     (default 3978) and your allowed Teams user id(s)/name(s). Put the App password
-     in .env as ANGERONA_TEAMS_APP_PASSWORD (secrets belong in .env).
+     (default 3978) and your allowed Teams AAD object ID(s). Put the App password
+     in Angerona's encrypted credential store as ANGERONA_TEAMS_APP_PASSWORD.
   5. Install the bot to your Teams (Upload a custom app / App Studio) and DM it.
 
 Security:
@@ -33,6 +33,7 @@ injectable (``token_fn`` / ``reply_fn``) so ``self_test`` never touches the netw
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import urllib.parse
@@ -53,6 +54,24 @@ _LOGIN_TOKEN_URL = ("https://login.microsoftonline.com/botframework.com/"
 _TOKEN_SCOPE = "https://api.botframework.com/.default"
 # OpenID metadata for validating tokens the Bot Connector sends us.
 _OPENID_URL = "https://login.botframework.com/v1/.well-known/openidconfiguration"
+_MAX_ACTIVITY_BYTES = 64 * 1024
+_SERVICE_HOST_SUFFIXES = (
+    ".trafficmanager.net",
+    ".botframework.com",
+    ".teams.microsoft.com",
+)
+
+
+def _trusted_service_url(value: str) -> bool:
+    """Only send bearer tokens to HTTPS Bot Framework service hosts."""
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        return (parsed.scheme == "https" and parsed.username is None and
+                parsed.password is None and any(
+                    host.endswith(suffix) for suffix in _SERVICE_HOST_SUFFIXES))
+    except Exception:
+        return False
 
 
 class TeamsBot:
@@ -79,6 +98,8 @@ class TeamsBot:
         self._thread = None
         self._token = ""
         self._token_exp = 0.0
+        self._request_slots = threading.BoundedSemaphore(16)
+        self._connection_slots = threading.BoundedSemaphore(16)
         self.last_error = ""
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -86,6 +107,13 @@ class TeamsBot:
         """Start the local messaging endpoint if enabled and configured. Returns
         True if listening. Safe to call when disabled (no-op)."""
         if not self.enabled or not (self.app_id and self.app_password):
+            return False
+        if not self.allowed:
+            self.last_error = "Teams bot requires at least one allowed operator"
+            return False
+        bind = os.environ.get("ANGERONA_TEAMS_BIND", "127.0.0.1").strip() or "127.0.0.1"
+        if self.skip_auth and bind not in {"127.0.0.1", "::1", "localhost"}:
+            self.last_error = "Teams development auth override is restricted to loopback"
             return False
         try:
             from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -102,10 +130,20 @@ class TeamsBot:
             def do_POST(self):                 # noqa: N802 (http.server signature)
                 if self.path.rstrip("/") != bot.path.rstrip("/"):
                     self.send_response(404); self.end_headers(); return
+                if not bot._request_slots.acquire(blocking=False):
+                    self.send_response(503); self.end_headers(); return
+                try:
+                    self._handle_post()
+                finally:
+                    bot._request_slots.release()
+
+            def _handle_post(self):
                 if not bot._verify_auth(self.headers.get("Authorization", "")):
                     self.send_response(401); self.end_headers(); return
                 try:
                     length = int(self.headers.get("Content-Length", "0") or 0)
+                    if length < 0 or length > _MAX_ACTIVITY_BYTES:
+                        self.send_response(413); self.end_headers(); return
                     raw = self.rfile.read(length) if length else b""
                     activity = json.loads(raw.decode("utf-8", "replace") or "{}")
                 except Exception:
@@ -116,14 +154,41 @@ class TeamsBot:
                     bot.last_error = f"activity handling failed: {exc}"
                 self.send_response(200); self.end_headers()
 
+        class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
+            """Cap connections before a handler thread or header parser exists."""
+
+            daemon_threads = True
+            request_queue_size = 16
+
+            def get_request(self):
+                request, client_address = super().get_request()
+                request.settimeout(10.0)
+                return request, client_address
+
+            def process_request(self, request, client_address):
+                if not bot._connection_slots.acquire(blocking=False):
+                    self.shutdown_request(request)
+                    return
+                worker = threading.Thread(
+                    target=self._bounded_process_request,
+                    args=(request, client_address),
+                    name="TeamsBot-request", daemon=True,
+                )
+                worker.start()
+
+            def _bounded_process_request(self, request, client_address):
+                try:
+                    super().process_request_thread(request, client_address)
+                finally:
+                    bot._connection_slots.release()
+
         # Hardening: bind LOOPBACK by default, not 0.0.0.0. Angerona runs elevated,
         # so exposing this HTTP endpoint on every interface needlessly offered the
         # LAN a foothold. A Teams tunnel (dev tunnel / ngrok) forwards to localhost,
         # so 127.0.0.1 is sufficient. Advanced users who terminate the tunnel on
         # another host can opt back in with ANGERONA_TEAMS_BIND=0.0.0.0.
-        bind = os.environ.get("ANGERONA_TEAMS_BIND", "127.0.0.1").strip() or "127.0.0.1"
         try:
-            self._server = ThreadingHTTPServer((bind, self.port), _Handler)
+            self._server = _BoundedThreadingHTTPServer((bind, self.port), _Handler)
         except Exception as exc:
             self.last_error = f"cannot bind {bind}:{self.port}: {exc}"
             return False
@@ -148,8 +213,7 @@ class TeamsBot:
             return None
         frm = activity.get("from") or {}
         sender_id = str(frm.get("aadObjectId") or frm.get("id") or "").strip().lower()
-        sender_name = str(frm.get("name") or "").strip().lower()
-        if self.allowed and not (sender_id in self.allowed or sender_name in self.allowed):
+        if not self.allowed or sender_id not in self.allowed:
             return None                        # not an allow-listed operator
         text = str(activity.get("text") or "").strip()
         if not text:
@@ -167,7 +231,8 @@ class TeamsBot:
     def _reply(self, activity: dict, text: str) -> Optional[dict]:
         service_url = str(activity.get("serviceUrl") or "").rstrip("/")
         conv = (activity.get("conversation") or {}).get("id") or ""
-        if not service_url or not conv:
+        if not service_url or not conv or not _trusted_service_url(service_url):
+            self.last_error = "untrusted Teams serviceUrl refused"
             return None
         reply = {
             "type": "message",
@@ -241,9 +306,10 @@ class TeamsBot:
                               .read().decode("utf-8", "replace"))
             jwks_uri = meta["jwks_uri"]
             signing_key = PyJWKClient(jwks_uri).get_signing_key_from_jwt(token)
-            jwt.decode(token, signing_key.key, algorithms=meta.get(
-                "id_token_signing_alg_values_supported", ["RS256"]),
-                audience=self.app_id)
+            issuer = str(meta.get("issuer") or "https://api.botframework.com")
+            jwt.decode(token, signing_key.key, algorithms=["RS256"],
+                       audience=self.app_id, issuer=issuer,
+                       options={"require": ["exp", "iss", "aud"]})
             return True
         except Exception as exc:
             self.last_error = f"inbound JWT rejected: {exc}"
@@ -267,7 +333,7 @@ class TeamsBot:
                 return f"ARIA: re '{text}', posture is Elevated."
 
             bot = TeamsBot(enabled=True, app_id="app-123", app_password="secret",
-                           allowed_users=["op-aad-id", "Operator Name"],
+                            allowed_users=["op-aad-id"],
                            handler=handler, token_fn=fake_token, reply_fn=fake_reply)
 
             base = {"type": "message", "serviceUrl": "https://smba.trafficmanager.net/",
@@ -289,16 +355,32 @@ class TeamsBot:
             assert bot.handle_activity(a2) is None and sent == [] and asked == [], \
                 "unknown sender is ignored"
 
+            # A mutable display name matching an allowed ID is not authorization.
+            a3 = dict(base, **{"from": {"aadObjectId": "attacker", "name": "op-aad-id"}})
+            assert bot.handle_activity(a3) is None and sent == [] and asked == [], \
+                "display-name impersonation is ignored"
+
             # 3 ── non-message activity ignored
             assert bot.handle_activity({"type": "conversationUpdate"}) is None, "non-message ignored"
 
-            # 4 ── auth fails closed without PyJWT / override; opens with dev override
-            assert bot._verify_auth("Bearer sometoken") is False or _have("jwt"), \
-                "no PyJWT ⇒ inbound refused (fail closed)"
-            dev = TeamsBot(enabled=True, app_id="x", app_password="y", skip_auth=True)
-            assert dev._verify_auth("Bearer sometoken") is True, "dev override allows (opt-in)"
-            assert dev._verify_auth("") is True and TeamsBot()._verify_auth("") is False, \
-                "empty auth follows skip_auth"
+            # 4 — auth fail-closed/offline behavior. Force the dependency probe
+            # false so this self-test never fetches Microsoft metadata/JWKS.
+            original_have = globals()["_have"]
+            try:
+                globals()["_have"] = lambda mod: False if mod == "jwt" else original_have(mod)
+                assert bot._verify_auth("Bearer sometoken") is False, \
+                    "unverifiable inbound JWT is refused"
+                dev = TeamsBot(enabled=True, app_id="x", app_password="y", skip_auth=True)
+                assert dev._verify_auth("Bearer sometoken") is True, \
+                    "loopback development override allows (opt-in)"
+                assert dev._verify_auth("") is True and TeamsBot()._verify_auth("") is False, \
+                    "empty auth follows the explicit override"
+            finally:
+                globals()["_have"] = original_have
+
+            # 5 — never send our bearer token to an attacker-controlled URL.
+            evil = dict(a1, serviceUrl="https://example.com/steal")
+            assert bot.handle_activity(evil) is None, "untrusted reply serviceUrl refused"
 
             return True, ("OK — allowed sender's message is answered by ARIA and the reply "
                           "is posted to the conversation with a bearer token; unknown senders "

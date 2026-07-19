@@ -11,7 +11,7 @@ Features:
   - Call edr_logger.tail(n) to get the last n entries for the dashboard
 
 FIX APPLIED:
-  The original hardcoded LOG_DIR to D:\\local-security-ai\\logs and called
+  The original logger used a machine-specific absolute path and called
   RotatingFileHandler at module import time. If that drive or folder didn't
   exist yet when agent.py first imported edr_logger, Python threw a
   FileNotFoundError during import — before agent.py even reached main() —
@@ -39,13 +39,13 @@ from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 import logging
 
+from angerona.core.data_paths import data_dir
+
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
-# FIX: Derive the log directory relative to this file instead of hardcoding
-# D:\local-security-ai\logs. If you set EDR_LOG_DIR in your .env, that wins.
-_SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
-LOG_DIR      = os.getenv("EDR_LOG_DIR", os.path.join(_SCRIPT_DIR, "logs"))
+# EDR_LOG_DIR remains an explicit override; otherwise stay inside runtime-data.
+LOG_DIR      = os.getenv("EDR_LOG_DIR", str(data_dir() / "logs" / "edr"))
 LOG_FILE     = os.path.join(LOG_DIR, "edr.log")
 MAX_BYTES    = 5 * 1024 * 1024   # 5 MB per file
 BACKUP_COUNT = 3                  # keep edr.log, edr.log.1, edr.log.2, edr.log.3

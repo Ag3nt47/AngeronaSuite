@@ -119,18 +119,25 @@ from PySide6.QtWidgets import (
 #  Paths & constants
 # ─────────────────────────────────────────────────────────────────────────────
 APP_NAME = "Angerona Black Box"
-APP_DIR = Path(__file__).resolve().parent
-DIAG_DIR = APP_DIR / "diagnostics"
-ARCHIVE_DIR = APP_DIR / "archive"
+APP_DIR = (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
+           else Path(__file__).resolve().parent)
+RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
 
 
 def _angerona_data_dir() -> Path:
-    """Resolve the same D:-resident runtime root used by the suite."""
-    return Path(os.environ.get("ANGERONA_DATA") or (APP_DIR / "runtime-data"))
+    """Resolve the same protected runtime root used by the suite."""
+    configured = os.environ.get("ANGERONA_DATA", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    if getattr(sys, "frozen", False):
+        return Path(os.environ.get("PROGRAMDATA", str(APP_DIR))) / "Angerona"
+    return APP_DIR / "runtime-data"
 
 
 DATA_DIR = _angerona_data_dir()
-DATA_DIAG = DATA_DIR / "diagnostics"
+DIAG_DIR = Path(os.environ.get("ANGERONA_DIAG_DIR") or (DATA_DIR / "diagnostics"))
+ARCHIVE_DIR = DATA_DIR / "archive"
+DATA_DIAG = DIAG_DIR
 
 # Repo-side (next to the suite source) — uiwatchdog, status.json, flow_metrics,
 # runtime_alerts, and a mirror of crash.log are written here.
@@ -144,9 +151,9 @@ RUNTIME_ALERTS = DIAG_DIR / "runtime_alerts.log"         # CRITICAL/stall feed f
 STATUS_JSON = DIAG_DIR / "status.json"
 DATA_STATUS_JSON = DATA_DIAG / "status.json"
 FLOW_METRICS = DIAG_DIR / "flow_metrics.json"
-SETTINGS_JSON = APP_DIR / "settings.json"
-ENV_FILE = APP_DIR / ".env"
-RINGBUFFER = APP_DIR / "telemetry_ringbuffer.mmap"
+SETTINGS_JSON = DATA_DIR / "settings.json"
+ENV_FILE = DATA_DIR / ".env"
+RINGBUFFER = DATA_DIR / "telemetry_ringbuffer.mmap"
 FLIGHT_RECORDER = DATA_DIR / "flight-recorder.db"        # real DB lives in the data dir
 THREAD_DUMP = DIAG_DIR / "thread_dump.json"
 TRACEMALLOC_SNAP = DIAG_DIR / "tracemalloc.json"
@@ -851,7 +858,7 @@ def make_icon(color: str = ACCENT) -> QIcon:
     blue background — matches the desktop shortcut); fall back to a runtime-drawn
     glyph if the asset is missing."""
     try:
-        ico = APP_DIR / "assets" / "icons" / "blackbox.ico"
+        ico = RESOURCE_DIR / "assets" / "icons" / "blackbox.ico"
         if ico.exists():
             icon = QIcon(str(ico))
             if not icon.isNull():
@@ -1605,7 +1612,6 @@ class SoarEventsTab(QWidget):
         # Walk every known data dir for soar_queue.json
         paths = []
         for candidate in [
-            APP_DIR / "shared_logs" / "soar_queue.json",
             DATA_DIR / "shared_logs" / "soar_queue.json",
         ]:
             if candidate.exists():
@@ -2110,7 +2116,7 @@ class BlackBoxWindow(QMainWindow):
     @Slot()
     def on_export_bundle(self) -> None:
         """Requirement #12 — comprehensive timestamped .zip diagnostic bundle."""
-        default = str(APP_DIR / f"Angerona_DiagBundle_{now_stamp()}.zip")
+        default = str(ARCHIVE_DIR / f"Angerona_DiagBundle_{now_stamp()}.zip")
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Diagnostic Bundle", default, "Zip archive (*.zip)")
         if not path:
@@ -2187,7 +2193,7 @@ class BlackBoxWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No)
         if confirm != QMessageBox.Yes:
             return
-        archive = APP_DIR / "archive"
+        archive = ARCHIVE_DIR
         archive.mkdir(exist_ok=True)
         moved = 0
         for src in DIAG_DIR.glob("*"):
@@ -2226,13 +2232,12 @@ def main() -> None:
                    help="Show the window immediately (default: start minimised)")
     args = p.parse_args()
 
-    # Write any startup crash to a log beside the script so silent pythonw
-    # failures are diagnosable (no console under pythonw).
-    _crash_log = APP_DIR / "diagnostics" / "blackbox_startup.log"
+    # Keep silent pythonw/frozen startup failures inside protected runtime data.
+    _crash_log = DIAG_DIR / "blackbox_startup.log"
     try:
         _crash_log.parent.mkdir(parents=True, exist_ok=True)
     except Exception:
-        _crash_log = APP_DIR / "blackbox_startup.log"
+        _crash_log = DATA_DIR / "blackbox_startup.log"
 
     try:
         app = QApplication(sys.argv)

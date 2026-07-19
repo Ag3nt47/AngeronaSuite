@@ -142,8 +142,8 @@ class CommandConsole:
         """Summarise the latest CISA KEV threat intel the INTL module correlated
         to this host (shared_logs/upstream_threats.json). Read-only."""
         import json as _json
-        from pathlib import Path as _Path
-        repo_root = _Path(__file__).resolve().parents[3]
+        from angerona.core.data_paths import data_dir
+        repo_root = data_dir()
         path = repo_root / "shared_logs" / "upstream_threats.json"
         if not path.exists():
             return ("No threat-intel file yet (shared_logs/upstream_threats.json). "
@@ -1066,4 +1066,3 @@ class CommandConsole:
         if not args:
             return "usage: ask <your question>"
         return self._ai(" ".join(args))
-

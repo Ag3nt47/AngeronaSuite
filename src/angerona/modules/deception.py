@@ -53,7 +53,8 @@ _BURN_KEYWORDS = ("discovery", "lateral", "credential", "lsass", "cred",
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    from angerona.core.data_paths import data_dir
+    return data_dir()
 
 
 class DeceptionModule(BaseModule):

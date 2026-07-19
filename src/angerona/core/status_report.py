@@ -9,8 +9,7 @@ alerts, counts, threat level) to two files:
 This is the bridge that lets a person (or an assistant) who can't see the GUI
 understand exactly what's on screen — just read status.txt.
 
-Files are written both to the per-user data dir and to ``<cwd>/diagnostics`` so
-they're easy to find next to the app.
+Files are written only to the configured runtime-data diagnostics directory.
 """
 from __future__ import annotations
 
@@ -36,13 +35,12 @@ class StatusReporter:
         self._thread: threading.Thread | None = None
 
         self._dirs: List[Path] = []
-        for base in (config.data_dir, Path.cwd()):
-            try:
-                d = Path(base) / "diagnostics"
-                d.mkdir(parents=True, exist_ok=True)
-                self._dirs.append(d)
-            except Exception:
-                continue
+        try:
+            d = Path(config.data_dir) / "diagnostics"
+            d.mkdir(parents=True, exist_ok=True)
+            self._dirs.append(d)
+        except Exception:
+            pass
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
     def start(self) -> None:

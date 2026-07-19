@@ -263,7 +263,8 @@ class PostureHardening(BaseModule):
         diagnostics/remediation_attempts.log so an operator can review exactly
         what the local AI proposed and whether it was staged / applied / blocked."""
         try:
-            path = Path(__file__).resolve().parents[3] / "diagnostics" / "remediation_attempts.log"
+            from angerona.core.data_paths import data_dir
+            path = data_dir() / "diagnostics" / "remediation_attempts.log"
             path.parent.mkdir(parents=True, exist_ok=True)
             rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "action": action,
                    "mitre": mitre_id, **fields}
@@ -338,16 +339,43 @@ class PostureHardening(BaseModule):
         except Exception:
             return []
         new = []
+        verified = 0
         run_id = str(report.get("run_id") or "")
-        from angerona.core import drill_resolution
-        resolutions = drill_resolution.resolution_snapshot(self.data_dir)
+        try:
+            from angerona.modules.purple_guard import _read_policy
+            purple_policies = _read_policy(self.data_dir).get("techniques", {})
+            if not isinstance(purple_policies, dict):
+                purple_policies = {}
+        except Exception:
+            purple_policies = {}
         for v in report.get("verdicts", []):
-            if v.get("category") != "detection" or v.get("caught"):
-                continue                       # caught, or not a detection test → not a weakness
+            if v.get("category") != "detection":
+                continue
             tech = str(v.get("technique", "")).strip()
             mitre = tech.split()[0] if tech[:1].upper() == "T" else ("RT-" + str(v.get("stage", "?")))
-            if drill_resolution.already_resolved(
-                    mitre, run_id, self.data_dir, resolutions):
+            if v.get("caught"):
+                # Proof must come from the exact installed candidate in a fresh
+                # run. Re-rendering the candidate's source AAR must never
+                # self-certify a fix, nor may an unrelated detector close it.
+                candidate = purple_policies.get(mitre)
+                candidate_run = (str(candidate.get("candidate_from_run") or "")
+                                 if isinstance(candidate, dict) else "")
+                fresh_candidate_proof = (
+                    bool(run_id and candidate_run and run_id != candidate_run)
+                    and v.get("detected_by") == "Purple Remediation Guard"
+                )
+                if not fresh_candidate_proof:
+                    continue
+                with closing(sqlite3.connect(self.db_path)) as c, c:
+                    changed = c.execute(
+                        "UPDATE system_weaknesses SET status='PATCHED', last_tested_epoch=? "
+                        "WHERE mitre_technique_id=? AND source='redteam'",
+                        (int(time.time()), mitre)).rowcount
+                if changed:
+                    verified += int(changed)
+                    self._log_attempt("drill_fix_verified", mitre, run_id=run_id,
+                                      detected_by=v.get("detected_by"),
+                                      latency=v.get("detect_latency_s"))
                 continue
             key = ("redteam", mitre, v.get("ts_start"))
             if key in self._seen:
@@ -358,10 +386,12 @@ class PostureHardening(BaseModule):
             self.record_weakness(mitre, name, "High", None, source="redteam")
             new.append({"mitre": mitre, "name": name})
             self.emit(f"NEW WEAKNESS (Red Team): {name} ({mitre}) slipped past detection — "
-                      f"deterministic finding resolution available", Severity.HIGH,
-                      mitre=mitre, run_id=run_id, remediation="drill-resolution")
-        if new:
+                      f"a reviewed detector candidate can be installed and verified by rerun",
+                      Severity.HIGH, mitre=mitre, run_id=run_id,
+                      remediation="purple-guard-candidate")
+        if new or verified:
             self._recompute_health()
+        if new:
             # Opt-in active patching: after a drill records weaknesses, apply the
             # VETTED, reversible remediation library automatically. Default OFF —
             # set ANGERONA_AUTO_REMEDIATE=1 to enable real host changes.
@@ -374,9 +404,12 @@ class PostureHardening(BaseModule):
         return new
 
     def resolve_redteam_report(self, path=None) -> dict:
-        """Close one simulated run's missed findings without generating host
-        PowerShell. Historical alerts close at the resolution timestamp; a
-        later run that misses the same technique becomes active again."""
+        """Install exact detector candidates for misses; never self-certify.
+
+        The current run's duplicate alerts are acknowledged, but its database
+        weaknesses stay VULNERABLE. Only a later AAR containing a real detector
+        echo can transition them to PATCHED.
+        """
         report_path = Path(path or self.redteam_aar_path)
         try:
             report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -392,25 +425,27 @@ class PostureHardening(BaseModule):
             findings.append({"mitre": mitre,
                              "name": verdict.get("stage") or tech or "Red Team finding"})
         if not findings:
-            return {"ok": True, "resolved": 0, "findings": [],
-                    "message": "No missed detection findings need resolution."}
+            return {"ok": True, "candidates": 0, "findings": [],
+                    "message": "No missed detection findings need a candidate."}
 
         from angerona.core import drill_resolution
+        from angerona.modules.purple_guard import install_policies
         run_id = str(report.get("run_id") or "")
-        resolved = drill_resolution.resolve(findings, run_id, self.data_dir)
-        ids = [row["mitre"] for row in resolved]
-        with closing(sqlite3.connect(self.db_path)) as c, c:
-            c.executemany(
-                "UPDATE system_weaknesses SET status='PATCHED' WHERE mitre_technique_id=?",
-                [(mitre,) for mitre in ids])
+        # Acknowledge this run's alert burst so it no longer dominates the threat
+        # banner, while retaining VULNERABLE status until a rerun proves the fix.
+        acknowledged = drill_resolution.resolve(findings, run_id, self.data_dir)
+        installed = install_policies(findings, run_id, self.data_dir)
+        ids = list(installed.get("installed", []))
         self._recompute_health()
-        self._log_attempt("resolve_drill_findings", "-", run_id=run_id,
-                          report=str(report_path), techniques=ids)
-        self.emit(f"Resolved {len(ids)} simulated drill finding(s) for run "
-                  f"{run_id or 'unknown'}; a future missed run will reopen them.",
-                  Severity.INFO, run_id=run_id, resolved_techniques=ids)
-        return {"ok": True, "resolved": len(ids), "findings": resolved,
-                "run_id": run_id}
+        self._log_attempt("install_drill_detector_candidates", "-", run_id=run_id,
+                          report=str(report_path), techniques=ids,
+                          unsupported=installed.get("unsupported", []))
+        self.emit(f"Installed {len(ids)} reviewed Purple Guard detector candidate(s) for "
+                  f"run {run_id or 'unknown'}; rerun the drill to verify them.",
+                  Severity.INFO, run_id=run_id, candidate_techniques=ids)
+        return {"ok": True, "candidates": len(ids), "findings": acknowledged,
+                "unsupported": installed.get("unsupported", []), "run_id": run_id,
+                "verification_required": True}
 
     def _recompute_health(self) -> None:
         vuln = len(self.weaknesses("VULNERABLE"))

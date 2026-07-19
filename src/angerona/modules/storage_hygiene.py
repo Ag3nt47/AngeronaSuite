@@ -38,7 +38,7 @@ from angerona.core.module_base import BaseModule, Severity
 
 
 def default_c_location() -> Path:
-    """The fallback data location the suite uses when ANGERONA_DATA is unset:
+    """Legacy per-user spill location checked for collision-safe migration:
     ``%LOCALAPPDATA%\\Angerona`` (or ~/Angerona off-Windows)."""
     base = os.environ.get("LOCALAPPDATA", str(Path.home()))
     return Path(base) / "Angerona"

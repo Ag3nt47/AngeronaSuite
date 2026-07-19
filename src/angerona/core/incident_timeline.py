@@ -155,7 +155,8 @@ def build_timeline(bus, lookback: int = 400, min_events: int = 1) -> list[dict]:
 def write_timeline(bus, path: str | Path | None = None) -> Path:
     """Build the timeline and persist it as JSON for dashboards / mobile."""
     if path is None:
-        path = Path(__file__).resolve().parents[3] / "shared_logs" / "incident_timeline.json"
+        from angerona.core.data_paths import data_dir
+        path = data_dir() / "shared_logs" / "incident_timeline.json"
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"generated": time.strftime("%Y-%m-%dT%H:%M:%S"),

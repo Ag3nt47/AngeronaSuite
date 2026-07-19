@@ -20,6 +20,8 @@ import threading
 import time
 from pathlib import Path
 
+from angerona.core.data_paths import data_dir
+
 # Volatile tokens that make otherwise-identical alerts look unique (per-run canary
 # IDs, hashes, counters). Normalising them means ignoring ONE alert also suppresses
 # future repeats of the same CLASS — e.g. a flood of DRILLCANARY_<hex> / "N
@@ -44,16 +46,7 @@ _REPO_ROOT: Path | None = None
 
 
 def _repo_root() -> Path:
-    global _REPO_ROOT
-    if _REPO_ROOT is not None:
-        return _REPO_ROOT
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        if (parent / "shared_logs").exists():
-            _REPO_ROOT = parent
-            return _REPO_ROOT
-    _REPO_ROOT = here.parents[3]
-    return _REPO_ROOT
+    return data_dir()
 
 
 def _store_path() -> Path:

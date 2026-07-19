@@ -17,10 +17,107 @@ Backends (all optional, auto-detected, never required):
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import os
+import shutil
+import urllib.request
+import zipfile
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Optional
+
+
+_VOSK_MODEL_NAME = "vosk-model-small-en-us-0.15"
+_VOSK_MODEL_URL = f"https://alphacephei.com/vosk/models/{_VOSK_MODEL_NAME}.zip"
+_VOSK_MODEL_SHA256 = "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498"
+_VOSK_MODEL_MAX_BYTES = 48 * 1024 * 1024
+
+
+def offline_model_path() -> Path:
+    """Bundled model when frozen, otherwise the canonical Angerona data root."""
+    import sys
+    from angerona.core.data_paths import data_dir, resource_root
+    if getattr(sys, "frozen", False):
+        bundled = resource_root() / "runtime-data" / "models" / "vosk" / _VOSK_MODEL_NAME
+        if bundled.is_dir():
+            return bundled
+    return data_dir() / "models" / "vosk" / _VOSK_MODEL_NAME
+
+
+def offline_model_status() -> tuple[bool, str]:
+    override = os.environ.get("ANGERONA_VOSK_MODEL", "").strip()
+    path = Path(override).expanduser() if override else offline_model_path()
+    ready = path.is_dir() and (path / "am").is_dir()
+    return ready, (str(path) if ready else "Not installed (offline model is 39 MB)")
+
+
+def install_offline_model() -> str:
+    """Explicitly download, verify, and safely extract the offline STT model."""
+    final = offline_model_path()
+    if final.is_dir() and (final / "am").is_dir():
+        os.environ["ANGERONA_VOSK_MODEL"] = str(final)
+        return f"Offline speech model already ready at {final}"
+
+    root = final.parent
+    root.mkdir(parents=True, exist_ok=True)
+    archive = root / f"{_VOSK_MODEL_NAME}.zip.part"
+    from angerona.core.data_paths import data_dir
+    cached_archive = data_dir() / "tmp" / f"{_VOSK_MODEL_NAME}.zip"
+    staging = root / f".install-{os.getpid()}"
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        digest = hashlib.sha256()
+        total = 0
+        if cached_archive.is_file() and cached_archive.stat().st_size <= _VOSK_MODEL_MAX_BYTES:
+            with cached_archive.open("rb") as source, archive.open("wb") as out:
+                while chunk := source.read(1024 * 1024):
+                    total += len(chunk); digest.update(chunk); out.write(chunk)
+        else:
+            request = urllib.request.Request(_VOSK_MODEL_URL,
+                                             headers={"User-Agent": "Angerona-Installer/1"})
+            with urllib.request.urlopen(request, timeout=30) as response, archive.open("wb") as out:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > _VOSK_MODEL_MAX_BYTES:
+                        raise RuntimeError("speech model exceeded the approved size limit")
+                    digest.update(chunk)
+                    out.write(chunk)
+        if digest.hexdigest().lower() != _VOSK_MODEL_SHA256:
+            raise RuntimeError("speech model checksum verification failed")
+
+        staging.mkdir(parents=True, exist_ok=False)
+        with zipfile.ZipFile(archive) as bundle:
+            for member in bundle.infolist():
+                name = member.filename.replace("\\", "/")
+                target = (staging / name).resolve()
+                if not target.is_relative_to(staging.resolve()):
+                    raise RuntimeError("unsafe path in speech model archive")
+                mode = (member.external_attr >> 16) & 0o170000
+                if mode == 0o120000:
+                    raise RuntimeError("speech model archive contains a symlink")
+                if member.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with bundle.open(member) as source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output, length=1024 * 1024)
+        extracted = staging / _VOSK_MODEL_NAME
+        if not (extracted / "am").is_dir():
+            raise RuntimeError("speech model archive did not contain the expected model")
+        if final.exists():
+            shutil.rmtree(final)
+        os.replace(extracted, final)
+        os.environ["ANGERONA_VOSK_MODEL"] = str(final)
+        return f"Offline speech model installed at {final}"
+    finally:
+        archive.unlink(missing_ok=True)
+        cached_archive.unlink(missing_ok=True)
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def _have(mod: str) -> bool:
@@ -250,9 +347,6 @@ class Voice:
     def narration_history(self, n: int = 10) -> list[str]:
         return list(self._spoken)[-n:]
 
-    def narration_history(self, n: int = 10) -> list[str]:
-        return list(self._spoken)[-n:]
-
     # ── Input (STT + wake word) ───────────────────────────────────────────────
     def listen(self, timeout: float = 5.0) -> Optional[str]:
         """Return recognised text, or None if disabled / no backend / silence."""
@@ -272,9 +366,8 @@ class Voice:
         both are installed. Never required: returns None (→ listen() no-ops) when
         the libraries or a model are absent, so voice input is purely opt-in.
 
-        Install to enable:  pip install vosk sounddevice
-        and either set ANGERONA_VOSK_MODEL to a downloaded model directory, or let
-        vosk fetch the small en-us model on first use."""
+        Installation never happens here. The model must already exist in the
+        canonical data folder or be selected with ANGERONA_VOSK_MODEL."""
         if self._stt_fn is not None:
             return self._stt_fn
         if not (_have("vosk") and _have("sounddevice")):
@@ -288,7 +381,11 @@ class Voice:
             import sounddevice as sd  # type: ignore
 
             model_path = os.environ.get("ANGERONA_VOSK_MODEL", "").strip()
-            model = vosk.Model(model_path) if model_path else vosk.Model(lang="en-us")
+            candidate = Path(model_path).expanduser() if model_path else offline_model_path()
+            if not candidate.is_dir():
+                self.last_error = "offline speech model is not installed"
+                return None
+            model = vosk.Model(model_path=str(candidate.resolve()))
             rec = vosk.KaldiRecognizer(model, 16000)
 
             def _listen(timeout: float) -> Optional[str]:

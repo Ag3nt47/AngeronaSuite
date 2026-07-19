@@ -33,8 +33,8 @@ def _data_log() -> Path:
 
 def _repo_log() -> Path | None:
     try:
-        repo = Path(__file__).resolve().parents[3]   # core→angerona→src→<repo>
-        d = repo / "diagnostics"
+        from angerona.core.data_paths import data_dir
+        d = data_dir() / "diagnostics"
         d.mkdir(parents=True, exist_ok=True)
         return d / "crash.log"
     except Exception:

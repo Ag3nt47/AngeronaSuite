@@ -216,7 +216,8 @@ class TopTalkersDialog(QDialog):
         import json, time
         from pathlib import Path
         try:
-            root = Path(__file__).resolve().parents[3] / "shared_logs"
+            from angerona.core.data_paths import data_dir
+            root = data_dir() / "shared_logs"
             root.mkdir(parents=True, exist_ok=True)
             p = root / fname
             data = []

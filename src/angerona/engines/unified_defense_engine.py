@@ -11,6 +11,7 @@ from queue import Queue
 import psutil
 import requests
 from dotenv import load_dotenv
+from angerona.core.data_paths import data_dir
 
 load_dotenv()
 
@@ -25,7 +26,7 @@ PAGE_EXECUTE_READWRITE = 0x40
 
 WATCH_DIRECTORIES = [
     os.path.expandvars(r"%USERPROFILE%\AppData\Local\Temp"),
-    r"D:\local-security-ai"
+    str(data_dir()),
 ]
 
 engine_state = {

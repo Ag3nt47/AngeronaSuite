@@ -40,6 +40,7 @@ import subprocess
 import sys
 import threading
 import time
+from functools import lru_cache
 
 from angerona.core.config import Config
 from angerona.core.jitter import jittered
@@ -55,15 +56,23 @@ _WATCHDOG_NAME = "frz_watchdog.exe"
 
 def _watchdog_path() -> pathlib.Path:
     """Look for the compiled watchdog next to the package root / app dir."""
+    from angerona.core.data_paths import project_root
     # Try: next to __main__ frozen exe, then repo frz/ subdir
     candidates = [
         pathlib.Path(sys.executable).parent / _WATCHDOG_NAME,
-        pathlib.Path(__file__).resolve().parents[4] / "frz" / _WATCHDOG_NAME,
+        project_root() / "frz" / _WATCHDOG_NAME,
     ]
     for p in candidates:
         if p.exists():
             return p
     return candidates[-1]  # return canonical path even if missing (self_test notes it)
+
+
+@lru_cache(maxsize=1)
+def _trusted_watchdog_path() -> pathlib.Path | None:
+    from angerona.core.executable_trust import executable_is_trusted
+    path = _watchdog_path()
+    return path if executable_is_trusted(path) else None
 
 
 def _mmap_path() -> pathlib.Path:
@@ -147,14 +156,13 @@ class FrzHeartbeatModule(BaseModule):
 
     # ── watchdog management ──────────────────────────────────────────────────
     def _launch_watchdog(self) -> None:
-        exe = _watchdog_path()
-        if not exe.exists():
+        exe = _trusted_watchdog_path()
+        if exe is None:
             self.emit(
-                f"FRZ watchdog binary not found at {exe}. "
-                "Compile frz/frz_watchdog.go → frz_watchdog.exe and place it next "
-                "to the app.  Heartbeat mmap is still active for external tooling.",
+                "A validly signed FRZ watchdog binary was not found. Heartbeat "
+                "remains active; external termination is disabled.",
                 Severity.LOW,
-                watchdog_path=str(exe),
+                watchdog_path="",
             )
             return
         try:
@@ -192,7 +200,7 @@ class FrzHeartbeatModule(BaseModule):
             return
 
         self._launch_watchdog()
-        watchdog_missing_warned = not _watchdog_path().exists()
+        watchdog_missing_warned = _trusted_watchdog_path() is None
 
         self.emit(
             f"FRZ online — heartbeat every {HEARTBEAT_MS} ms to "
@@ -214,7 +222,7 @@ class FrzHeartbeatModule(BaseModule):
                     self.set_health(40, f"mmap write errors: {exc}")
 
             # Check watchdog health
-            if _watchdog_path().exists():
+            if _trusted_watchdog_path() is not None:
                 if not self._watchdog_alive():
                     # Watchdog died — relaunch
                     self._launch_watchdog()
@@ -262,8 +270,8 @@ class FrzHeartbeatModule(BaseModule):
             tmp.unlink()
             ok = (ts_r == ts2) and (pid_r == os.getpid()) and (flag_r == 1) and (ts2 > ts1)
             watchdog_note = (
-                "watchdog binary present" if _watchdog_path().exists()
-                else f"watchdog binary absent — compile frz/frz_watchdog.go"
+                "signed watchdog binary present" if _trusted_watchdog_path() is not None
+                else "signed watchdog binary absent"
             )
             return (ok, f"mmap round-trip OK ({watchdog_note})" if ok
                     else f"mmap read mismatch: ts={ts_r} pid={pid_r} flag={flag_r}")

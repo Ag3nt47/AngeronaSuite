@@ -208,7 +208,11 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
     findings_resolved = sum(1 for v in verdicts if v.finding_resolved)
     detection = [v for v in verdicts if v.category == "detection"]
     det_caught = sum(1 for v in detection if v.catch)
-    lines.append(f" Steps run  : {n}     Raw catches: {caught}/{n}     Remediated: {remediated}/{n}")
+    det_remediated = sum(1 for v in detection if v.remediation)
+    verified_upgrades = sum(
+        1 for v in detection if v.catch and v.catch.module == "Purple Remediation Guard")
+    lines.append(f" Steps run  : {n}     Raw catches: {caught}/{n}     "
+                 f"Correlated SOAR actions: {remediated}/{caught}")
     lines.append(f" (\"Raw catches\" includes every step regardless of what a pass looks like for "
                  "it — see the scorecard below for the number that actually matters: detection "
                  "coverage over the steps a detector is meant to catch.)")
@@ -248,11 +252,9 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
                 lines.append(f"           remediated by {v.remediation.module} in "
                              f"{v.remediation_latency:.2f}s — \"{v.remediation.message}\"")
             else:
-                lines.append(f"           not remediated — {v.catch.severity.label} severity "
-                             f"didn't meet Active Response SOAR's threshold (CRITICAL by "
-                             "default; it deliberately won't auto-delete a merely-suspicious "
-                             "new file). See ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY to "
-                             "test a more aggressive policy.")
+                lines.append(f"           not remediated — the {v.catch.severity.label} "
+                             "detection did not produce a correlated, successful SOAR action "
+                             "inside this run's evidence window.")
         elif v.finding_resolved:
             lines.append("           finding closed for this drill run after operator review and "
                          "marker cleanup. Detection coverage is still shown as MISSED; a later "
@@ -279,7 +281,11 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
     lines.append(f"   Detection coverage : {det_caught}/{len(detection)}  "
                  f"({(det_caught / len(detection) * 100 if detection else 0):.0f}%)   "
                  "— Initial Access / Persistence / Exfiltration-style steps only")
-    lines.append(f"   Remediation rate   : {remediated}/{n}  ({(remediated / n * 100 if n else 0):.0f}%)")
+    lines.append(f"   Response success   : {det_remediated}/{det_caught} detected threat(s)  "
+                 f"({(det_remediated / det_caught * 100 if det_caught else 0):.0f}%)")
+    if verified_upgrades:
+        lines.append(f"   Detector fixes proven by rerun: {verified_upgrades}  "
+                     "(Purple Guard evidence; not same-run self-certification)")
     if findings_resolved:
         lines.append(f"   Drill findings closed: {findings_resolved}  "
                      "(run-scoped; future misses reopen)")
@@ -302,15 +308,8 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
 
 
 def _report_dirs(data_dir: Path) -> List[Path]:
-    """Same dual-location pattern core/status_report.py already uses: the
-    configured D: runtime-data directory AND <cwd>/diagnostics, which sits next
-    to the app — so the latest report is easy to find directly off disk."""
-    dirs = [Path(data_dir)]
-    try:
-        dirs.append(Path.cwd() / "diagnostics")
-    except Exception:
-        pass
-    return dirs
+    """Keep AAR artifacts inside the configured runtime-data boundary."""
+    return [Path(data_dir)]
 
 
 def _prune_report_history(hist_dir: Path, basename: str) -> None:
@@ -352,6 +351,10 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
     remediated = sum(1 for v in verdicts if v.remediation)
     findings_resolved = sum(1 for v in verdicts if v.finding_resolved)
     detection = [v for v in verdicts if v.category == "detection"]
+    det_caught = sum(1 for v in detection if v.catch)
+    det_remediated = sum(1 for v in detection if v.remediation)
+    verified_upgrades = sum(
+        1 for v in detection if v.catch and v.catch.module == "Purple Remediation Guard")
     payload = {
         "run_id": history.get("run_id"),
         "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -360,7 +363,11 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
         "remediated": remediated,
         "findings_resolved": findings_resolved,
         "detection_steps": len(detection),      # steps where a detector SHOULD fire
-        "detection_caught": sum(1 for v in detection if v.catch),
+        "detection_caught": det_caught,
+        "detection_remediated": det_remediated,
+        "remediation_eligible": det_caught,
+        "response_success_rate": (det_remediated / det_caught if det_caught else 0.0),
+        "verified_detector_upgrades": verified_upgrades,
         "verdicts": [
             {
                 "stage": v.stage,
@@ -439,23 +446,6 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
         recorder.close()
 
     verdicts = evaluate(history, events, stage_category)
-    if report_basename == "redteam_aar":
-        try:
-            from angerona.core.drill_resolution import (
-                already_resolved, resolution_snapshot,
-            )
-            run_id = str(history.get("run_id") or "")
-            resolutions = resolution_snapshot(data_dir)
-            for verdict in verdicts:
-                tech = str(verdict.technique or "").strip()
-                mitre = tech.split()[0] if tech[:1].upper() == "T" else (
-                    "RT-" + str(verdict.stage or "?"))
-                verdict.finding_resolved = (
-                    verdict.category == "detection" and verdict.catch is None
-                    and already_resolved(
-                        mitre, run_id, data_dir, resolutions))
-        except Exception:
-            pass
     text = render(history, verdicts, title)
     _write_report(data_dir, history, verdicts, text, report_basename)
     return text

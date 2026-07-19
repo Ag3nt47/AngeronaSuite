@@ -176,7 +176,7 @@ def consult_ai(prompt: str, system: str = DEFAULT_SYSTEM,
                allow_local_fallback: bool = True) -> dict:
     """Try each provider in order; return the first successful answer. Never raises."""
     errors: list[str] = []
-    for name, fn in _PROVIDERS:
+    for name, fn in _ordered_providers():
         if name == "ollama" and not allow_local_fallback:
             continue
         try:

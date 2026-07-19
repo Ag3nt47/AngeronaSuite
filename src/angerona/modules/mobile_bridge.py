@@ -416,7 +416,8 @@ class MobileResponseBridge(BaseModule):
     def _soar_event(self, action: str, pid, reason: str) -> None:
         try:
             from pathlib import Path
-            repo = Path(__file__).resolve().parents[3]
+            from angerona.core.data_paths import data_dir
+            repo = data_dir()
             d = repo / "shared_logs"
             d.mkdir(parents=True, exist_ok=True)
             ev = {"ts": time.time(), "type": action, "severity": "Critical",

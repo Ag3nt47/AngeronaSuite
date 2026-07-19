@@ -262,7 +262,8 @@ class SOARModule(BaseModule):
         try:
             import json
             from pathlib import Path
-            root = Path(__file__).resolve().parents[3] / "shared_logs"
+            from angerona.core.data_paths import data_dir
+            root = data_dir() / "shared_logs"
             root.mkdir(parents=True, exist_ok=True)
             (root / "remediation_stats.json").write_text(json.dumps({
                 "contained": self._contained,

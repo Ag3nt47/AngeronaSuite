@@ -6,7 +6,10 @@ psutil>=5.9
 pywin32>=306 ; sys_platform == "win32"
 WMI>=1.5 ; sys_platform == "win32"
 scapy>=2.5 ; sys_platform == "win32"     # packet sniffer (also needs Npcap installed)
-pywintrace>=0.3 ; sys_platform == "win32"  # ETW real-time process sensor (ETWR); needs elevation
+pywintrace>=0.2 ; sys_platform == "win32"  # ETW real-time process sensor (ETWR); needs elevation
+yara-x>=1.15 ; sys_platform == "win32"       # in-process rules engine; stable ABI wheel
+PyJWT[crypto]>=2.8 ; sys_platform == "win32" # authenticated Microsoft Teams connector
+cryptography>=42.0                           # DPAPI-adjacent secure transports (AES-GCM/HKDF)
 
 # ── AI triage ────────────────────────────────────────────────────────────────
 requests>=2.31
@@ -18,3 +21,9 @@ requests>=2.31
 
 # ── Utilities ────────────────────────────────────────────────────────────────
 python-dotenv>=1.0
+
+# ── Local voice conversation (installed by the one-click installer) ──────────
+sounddevice>=0.5
+pyttsx3>=2.90
+tqdm>=4.68
+websockets>=16

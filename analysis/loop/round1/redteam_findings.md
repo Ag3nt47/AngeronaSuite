@@ -77,7 +77,7 @@ filed as new findings rather than re-raising A-03.
 - **Description:** `mitigation_gate.ps1` lives in the repo root and statically dot-sources
   `playbooks\dynamic_block_*.ps1`; both are executed with `-ExecutionPolicy Bypass` at
   Administrator. Angerona is deployed from a non-`Program Files` location
-  (e.g. `D:\local-security-ai\AngeronaSuite`). Directory roots like `D:\` frequently
+  (e.g. `<install-folder>`). Drive roots frequently
   inherit ACLs that grant **Users: Write**. If that is the case here, any non-admin local
   user can modify `mitigation_gate.ps1` or drop a `playbooks\dynamic_block_*.ps1`, and
   their code will run as Administrator the next time the SOAR gate fires -- a classic

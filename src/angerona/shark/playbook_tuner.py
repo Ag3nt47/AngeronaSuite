@@ -32,7 +32,8 @@ _SYS = ("Analyze this failed containment timeline and process tree behavior. Gen
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]   # src/angerona/shark -> repo root
+    from angerona.core.data_paths import data_dir
+    return data_dir()
 
 
 def _ollama_block(timeline: dict) -> str | None:

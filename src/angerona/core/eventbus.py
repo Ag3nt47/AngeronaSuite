@@ -38,6 +38,7 @@ import secrets
 import threading
 import time
 from collections import deque
+from itertools import islice
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
@@ -195,7 +196,12 @@ class EventBus:
 
     def subscribe(self, fn: Subscriber) -> None:
         with self._lock:
-            self._subs.append(fn)
+            # Several modules subscribe from run(), so an operator stop/start or
+            # Eco pause/resume used to append the same bound method repeatedly.
+            # Every later event was then delivered N times, multiplying CPU and
+            # state updates for the rest of the process lifetime.
+            if fn not in self._subs:
+                self._subs.append(fn)
 
     def publish(self, event: Event) -> None:
         # G3-A: sign the event if an authority is registered
@@ -219,5 +225,10 @@ class EventBus:
 
     def recent(self, limit: int = 100) -> List[Event]:
         with self._lock:
+            if limit > 0:
+                # Copy only what the caller requested. The old implementation
+                # copied the whole ring on every poll and then sliced it.
+                return list(islice(reversed(self._ring), limit))
+            # Retain the historical zero/negative-limit semantics exactly.
             items = list(self._ring)
         return items[-limit:][::-1]  # newest first

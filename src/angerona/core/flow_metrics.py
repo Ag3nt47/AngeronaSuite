@@ -12,6 +12,8 @@ import json
 import time
 from pathlib import Path
 
+from angerona.core.data_paths import data_dir
+
 _SENSOR_MODULES = {
     "Packet Sniffer", "ETW Core Listener", "File Integrity Monitor",
     "Process Monitor", "Network Monitor", "Network Protocol Deep Decoder",
@@ -108,12 +110,12 @@ def build_metrics(manager, bus, config) -> dict:
 
     # AI guardrail audit-log line count — cached by (mtime,size)
     audit_n = _audit_line_count(
-        Path(__file__).resolve().parents[3] / "diagnostics" / "ai_security_audit.log")
+        data_dir() / "diagnostics" / "ai_security_audit.log")
 
     # UI not-responding watchdog
     ui_err = False
     try:
-        nr = Path(__file__).resolve().parents[3] / "diagnostics" / "not_responding.log"
+        nr = data_dir() / "diagnostics" / "not_responding.log"
         ui_err = nr.exists() and (now - nr.stat().st_mtime) < 30
     except Exception:
         pass
@@ -192,7 +194,7 @@ def build_metrics(manager, bus, config) -> dict:
 def write(manager, bus, config, path=None) -> None:
     try:
         if path is None:
-            path = Path(__file__).resolve().parents[3] / "diagnostics" / "flow_metrics.json"
+            path = data_dir() / "diagnostics" / "flow_metrics.json"
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(build_metrics(manager, bus, config), default=str),

@@ -84,8 +84,8 @@ import statistics as _stats
 
 
 def _shared_logs_dir() -> "_Path":
-    # engines/reporter.py -> src/angerona/engines -> repo root/shared_logs
-    return _Path(__file__).resolve().parents[3] / "shared_logs"
+    from angerona.core.data_paths import data_dir
+    return data_dir() / "shared_logs"
 
 
 def _mttr_trend(rounds: list) -> str:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "angerona"
-version = "1.6.1"
+version = "1.9.3"
 description = "Modular local-first endpoint security suite for Windows with a native GUI."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,10 +15,24 @@ dependencies = [
     "psutil>=5.9",
     "requests>=2.31",
     "python-dotenv>=1.0",
+    "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]
-windows = ["pywin32>=306", "WMI>=1.5", "scapy>=2.5"]
+windows = [
+    "pywin32>=306",
+    "WMI>=1.5",
+    "scapy>=2.5",
+    "yara-x>=1.15",
+    "PyJWT[crypto]>=2.8",
+    "pywintrace>=0.2",
+]
+voice = [
+    "sounddevice>=0.5",
+    "pyttsx3>=2.90",
+    "tqdm>=4.68",
+    "websockets>=16",
+]
 cloud = ["google-genai", "groq", "openai"]
 
 [project.gui-scripts]
@@ -26,3 +40,4 @@ angerona = "angerona.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["angerona*"]

@@ -37,12 +37,13 @@ import subprocess
 import sys
 import time
 
+from angerona.core.data_paths import project_root
 from angerona.core.module_base import BaseModule, Severity
 
-_BUILD_BAT = pathlib.Path(__file__).resolve().parents[4] / "hermetic" / "build-hermetic.bat"
+_BUILD_BAT = project_root() / "hermetic" / "build-hermetic.bat"
 _BIN_CANDIDATES = [
     pathlib.Path(sys.executable).parent / "angerona.exe",
-    pathlib.Path(__file__).resolve().parents[4] / "dist" / "angerona.exe",
+    project_root() / "dist" / "angerona.exe",
     pathlib.Path(sys.executable).parent / "angerona",          # Linux/macOS hermetic
 ]
 
@@ -64,11 +65,15 @@ def _check_signature(path: pathlib.Path) -> tuple[bool, str]:
     if os.name != "nt":
         return (False, "signature check requires Windows")
     try:
+        powershell = pathlib.Path(os.environ.get("SystemRoot", r"C:\Windows")) / (
+            "System32/WindowsPowerShell/v1.0/powershell.exe")
+        env = os.environ.copy()
+        env["ANGERONA_SIGNATURE_PATH"] = str(path)
         result = subprocess.run(
-            [
-                "powershell", "-NoProfile", "-NonInteractive", "-Command",
-                f"(Get-AuthenticodeSignature '{path}').Status",
-            ],
+            [str(powershell), "-NoProfile", "-NonInteractive", "-Command",
+             "(Get-AuthenticodeSignature -LiteralPath "
+             "$env:ANGERONA_SIGNATURE_PATH).Status"],
+            env=env,
             capture_output=True, text=True, timeout=10,
         )
         status = result.stdout.strip()

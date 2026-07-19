@@ -61,6 +61,7 @@ class SpeculativeTriageModule(BaseModule):
         self._q: "queue.Queue[dict]" = queue.Queue(maxsize=256)
         self._primed: dict[int, dict] = {}     # pid -> {prompt, ts}
         self._last_prewarm: dict[int, float] = {}
+        self._last_cooldown_cleanup = 0.0
         self._workers: list[threading.Thread] = []
         self.prewarms = 0
         self.hits = 0
@@ -96,6 +97,16 @@ class SpeculativeTriageModule(BaseModule):
         pid = marker.get("pid") or -1
         now = time.time()
         with self.state_lock:
+            # Keep cooldown state only for the interval in which it can affect a
+            # decision. Unique short-lived PIDs otherwise accumulated forever in
+            # long sessions even though their entries became inert after 8 s.
+            if now - self._last_cooldown_cleanup >= self._COOLDOWN:
+                cutoff = now - self._COOLDOWN
+                self._last_prewarm = {
+                    old_pid: stamp for old_pid, stamp in self._last_prewarm.items()
+                    if stamp > cutoff
+                }
+                self._last_cooldown_cleanup = now
             if now - self._last_prewarm.get(pid, 0.0) < self._COOLDOWN:
                 return False
             self._last_prewarm[pid] = now

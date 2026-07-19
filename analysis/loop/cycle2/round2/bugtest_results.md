@@ -64,10 +64,10 @@ confirmed action.
 The final run asserted the canonical paths after the production environment
 setup:
 
-- Project: `D:\local-security-ai\AngeronaSuite`
-- Persistent data: `D:\local-security-ai\AngeronaSuite\runtime-data`
+- Project: `<install-folder>`
+- Persistent data: `<install-folder>\runtime-data`
 - `TEMP`/`TMP` and `tempfile.gettempdir()`:
-  `D:\local-security-ai\AngeronaSuite\runtime-data\tmp`
+  `<install-folder>\runtime-data\tmp`
 
 The self-check's current tamper-test artifacts in
 `diagnostics/remediation_attempts.log` are consequently D-resident. Older
@@ -93,4 +93,3 @@ All four Round 2 remediations passed independent focused, module, ARIA, shutdown
 research, and full-application gates. Round 2 QA is converged; the overall
 three-round loop still requires its planned Round 2 performance/visionary and
 Round 3 gates.
-

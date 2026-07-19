@@ -30,7 +30,8 @@ from angerona.core.module_base import BaseModule, Severity
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    from angerona.core.data_paths import data_dir
+    return data_dir()
 
 
 _TECH_RE = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")

@@ -7,27 +7,25 @@ REM  rights to terminate them.
 REM ============================================================================
 
 REM ── Self-elevate (the whole point — normal shells get Access Denied) ────────
-net session >nul 2>&1
+"%SystemRoot%\System32\net.exe" session >nul 2>&1
 if errorlevel 1 (
     echo [*] Requesting Administrator privileges ...
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    set "ANGERONA_ELEVATE_PATH=%~f0"
+    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "Start-Process -FilePath $env:ANGERONA_ELEVATE_PATH -Verb RunAs"
     exit /b
 )
 
 echo [*] Terminating Angerona-owned Python processes only ...
 set "ANGERONA_ROOT=%~dp0"
-powershell -NoProfile -ExecutionPolicy Bypass -Command ". '%~dp0tools\angerona_process_owner.ps1'; $root=[IO.Path]::GetFullPath($env:ANGERONA_ROOT); Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'python.exe' -or $_.Name -eq 'pythonw.exe') -and (Test-AngeronaProcessOwnership -Process $_ -Root $root) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+set "ANGERONA_OWNER_SCRIPT=%~dp0tools\angerona_process_owner.ps1"
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command ". $env:ANGERONA_OWNER_SCRIPT; $root=[IO.Path]::GetFullPath($env:ANGERONA_ROOT); Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'python.exe' -or $_.Name -eq 'pythonw.exe') -and (Test-AngeronaProcessOwnership -Process $_ -Root $root) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 
 echo [*] Unloading Angerona's llama3 model ...
-set "OLLAMA_CLI=ollama"
-if exist "%LOCALAPPDATA%\Programs\Ollama\ollama.exe" set "OLLAMA_CLI=%LOCALAPPDATA%\Programs\Ollama\ollama.exe"
-"%OLLAMA_CLI%" stop llama3 2>nul
-"%OLLAMA_CLI%" stop llama3:8b 2>nul
-"%OLLAMA_CLI%" stop llama3:latest 2>nul
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "$ProgressPreference='SilentlyContinue'; foreach($m in @('llama3','llama3:8b','llama3:latest')) {try {$body=@{model=$m;prompt='';keep_alive=0;stream=$false}|ConvertTo-Json -Compress; Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:11434/api/generate' -ContentType 'application/json' -Body $body -TimeoutSec 4|Out-Null} catch {}}" >nul 2>&1
 REM Never image-kill Ollama runners: other local applications may be using them.
 REM If graceful model unload fails, report it and leave unrelated work alone.
 
 echo.
 echo [+] Done. All instances stopped. Launch ONE clean copy with start-angerona.bat
 echo.
-timeout /t 4 >nul
+"%SystemRoot%\System32\timeout.exe" /t 4 >nul

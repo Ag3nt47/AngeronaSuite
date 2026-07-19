@@ -81,9 +81,11 @@ class AngeronaUpgradeConsole(QMainWindow):
 
     def _data_dir(self) -> Path:
         try:
-            return Path(getattr(self.config, "data_dir", None) or os.getcwd())
+            from angerona.core.data_paths import data_dir
+            return Path(getattr(self.config, "data_dir", None) or data_dir())
         except Exception:
-            return Path(os.getcwd())
+            from angerona.core.data_paths import data_dir
+            return data_dir()
 
     # ── 1. Mobile Integration ────────────────────────────────────────────────
     def _init_mobile_tab(self):

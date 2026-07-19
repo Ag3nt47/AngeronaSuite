@@ -31,13 +31,13 @@ from PySide6.QtWidgets import (
 
 HELP_TEXT_SHORT = (
     "Gemini & Groq offer free keys. Paste a key in the API Keys tab and Save — "
-    "it's stored locally in .env and used only for opt-in cloud escalation."
+    "it's encrypted for your Windows account and used only for opt-in cloud escalation."
 )
 HELP_TEXT_FULL = """ANGERONA — API KEY SETUP
 
 Angerona runs fully local by default (Ollama). Cloud keys are OPTIONAL and only
 used for the 'Cloud CTI Escalation' second-opinion on CRITICAL events. Keys are
-stored locally in a .env file next to the app and are NEVER committed or sent
+stored in Angerona's current-user encrypted credential store and are NEVER committed or sent
 anywhere except the provider you choose.
 
 WHERE TO GET KEYS
@@ -53,12 +53,12 @@ HOW TO ADD THEM
   3. In the 'API Keys' tab, paste it into the matching field.
      - Gemini supports a comma-separated POOL of keys for rotation, e.g.
        key1,key2,key3
-  4. Click 'Save keys'. They're written to .env and loaded live.
+  4. Click 'Save keys'. They're encrypted with Windows DPAPI and loaded live.
   5. The Cloud CTI Escalation module picks them up within ~30 seconds — no
      restart needed. Its health/Overview tab will show it active.
 
 SECURITY NOTES
-  • .env is git-ignored; keys never leave your machine except to the provider.
+  • The credential store is user+machine-bound; keys leave only for your chosen provider.
   • Remove a key anytime by clearing its field and saving.
   • Without any key, Angerona stays 100% local — nothing is sent externally.
 """
@@ -197,8 +197,8 @@ def _copy_event_to_clipboard(event) -> None:
 
 
 def _soar_queue_path():
-    from pathlib import Path as _P
-    d = _P(__file__).resolve().parents[3] / "shared_logs"
+    from angerona.core.data_paths import data_dir
+    d = data_dir() / "shared_logs"
     d.mkdir(parents=True, exist_ok=True)
     return d / "soar_queue.json"
 
@@ -977,7 +977,8 @@ class CollisionView(QDialog):
     @staticmethod
     def _aar_paths() -> list:
         try:
-            repo = Path(__file__).resolve().parents[3]
+            from angerona.core.data_paths import data_dir
+            repo = data_dir()
         except Exception:
             repo = Path(".")
         return [repo / "diagnostics" / "redteam_aar.json",
@@ -1131,7 +1132,8 @@ class RedTeamSimulationDialog(QDialog):
             self.setStyleSheet(parent.styleSheet())
         self._cfg = None
         if store_path is None:
-            store_path = Path(__file__).resolve().parents[3] / "custom_techniques.json"
+            from angerona.core.data_paths import data_dir
+            store_path = data_dir() / "custom_techniques.json"
         self.store = CustomTechniqueStore(store_path)
         root = QVBoxLayout(self)
         head = QLabel("Run Red Team Simulation")
@@ -1620,8 +1622,8 @@ class ModuleInspector(QDialog):
 
     def _api_keys_tab(self) -> QWidget:
         w = QWidget(); lay = QVBoxLayout(w)
-        info = QLabel("Enter your own cloud API keys (optional). Stored locally in "
-                      ".env, never committed. Used only for opt-in cloud escalation.")
+        info = QLabel("Enter your own cloud API keys (optional). Encrypted for this "
+                      "Windows user, never committed, and used only for opt-in escalation.")
         info.setWordWrap(True); lay.addWidget(info)
         self._key_fields = {}
         grid = QGridLayout()
@@ -3099,11 +3101,11 @@ class AARDialog(QDialog):
         row.addWidget(refresh)
         row.addStretch(1)
         self._fix_btn = QPushButton("\U0001F6E0  " +
-                                    ("Resolve Findings" if self._redteam else "Attempt Fix"))
+                                    ("Build & Verify Fixes" if self._redteam else "Attempt Fix"))
         self._fix_btn.setObjectName("Primary")
         self._fix_btn.setToolTip(
-            "Close this run's simulated findings and clean its inert markers. A future miss "
-            "will reopen the finding." if self._redteam else
+            "Install reviewed detector candidates and clean inert markers. Findings stay open "
+            "until a fresh drill proves the fixes end to end." if self._redteam else
             "Ask the local AI to generate a remediation for each open weakness, then "
             "optionally apply it (with your confirmation).")
         self._fix_btn.clicked.connect(self._attempt_fix)
@@ -3141,8 +3143,8 @@ class AARDialog(QDialog):
             return
         self._fix_btn.setEnabled(False)
         if self._redteam:
-            self.body.appendPlainText("\n[Resolve Findings] Closing this run's simulated "
-                                      "findings and cleaning inert markers…")
+            self.body.appendPlainText("\n[Purple remediation] Building reviewed detector "
+                                      "candidates and cleaning inert markers…")
         else:
             self.body.appendPlainText("\n[Attempt Fix] Asking the local AI for a remediation "
                                       "(temperature 0) — this may take a few seconds…")
@@ -3204,8 +3206,10 @@ class SettingsDialog(QDialog):
 
     # Background ARIA setup tests post their result here (thread-safe → GUI).
     aria_test_result = Signal(str)
+    voice_model_result = Signal(str, bool)
 
-    def __init__(self, config, check_updates_fn, apply_theme_fn, parent=None):
+    def __init__(self, config, check_updates_fn, apply_theme_fn, parent=None,
+                 initial_tab: str | None = None):
         super().__init__(parent)
         self._cfg            = config
         self._check_updates  = check_updates_fn
@@ -3219,7 +3223,17 @@ class SettingsDialog(QDialog):
         root.setSpacing(10)
         root.setContentsMargins(16, 16, 16, 16)
 
-        tabs = QTabWidget()
+        search_row = QHBoxLayout()
+        self._settings_search = QLineEdit()
+        self._settings_search.setClearButtonEnabled(True)
+        self._settings_search.setPlaceholderText(
+            "Find a setting — try microphone, privacy, cloud, trusted app, performance…")
+        search_row.addWidget(QLabel("Find:"))
+        search_row.addWidget(self._settings_search, 1)
+        root.addLayout(search_row)
+
+        self.tabs = QTabWidget()
+        tabs = self.tabs
         root.addWidget(tabs)
 
         def _scroll(inner: QWidget) -> QScrollArea:
@@ -3245,9 +3259,15 @@ class SettingsDialog(QDialog):
         _lbl.setWordWrap(True); _mv.addWidget(_lbl); _mv.addStretch()
         tabs.addTab(_scroll(_mob), "Mobile Integration")
         tabs.addTab(_scroll(self._tab_apikeys()), "API Keys")
+        self._settings_search.textChanged.connect(self._find_setting)
 
         # ── button row ──
         btn_row = QHBoxLayout()
+        self._privacy_btn = QPushButton("Restore privacy defaults")
+        self._privacy_btn.setToolTip(
+            "Turns off optional cloud, mailbox, channel, Teams, and research egress.")
+        self._privacy_btn.clicked.connect(self._restore_privacy_defaults)
+        btn_row.addWidget(self._privacy_btn)
         btn_row.addStretch()
         self._btn_save   = QPushButton("Save")
         self._btn_cancel = QPushButton("Cancel")
@@ -3263,8 +3283,48 @@ class SettingsDialog(QDialog):
         # Route background ARIA-test results back to the status label on the GUI thread.
         try:
             self.aria_test_result.connect(self._aria_test_status.setText)
+            self.voice_model_result.connect(self._voice_model_finished)
         except Exception:
             pass
+        if initial_tab:
+            wanted = str(initial_tab).casefold()
+            for i in range(tabs.count()):
+                if wanted in tabs.tabText(i).casefold():
+                    tabs.setCurrentIndex(i)
+                    break
+
+    def _find_setting(self, query: str) -> None:
+        """Jump to the most relevant settings area without hiding any controls."""
+        text = (query or "").strip().casefold()
+        if not text:
+            return
+        routes = (
+            (("mic", "microphone", "voice", "speech", "cloud", "mail", "teams",
+              "research", "webhook", "aria"), "ARIA"),
+            (("trusted", "allow", "process", "vpn", "false positive"), "Trusted Processes"),
+            (("performance", "eco", "startup", "mcp", "black box", "ebpf"), "System"),
+            (("key", "api", "credential", "secret", "provider"), "API Keys"),
+            (("theme", "ollama", "model", "github", "update"), "General"),
+            (("mobile", "signal", "phone", "ntfy", "sms"), "Mobile Integration"),
+        )
+        for words, tab_name in routes:
+            if any(word in text for word in words):
+                for i in range(self.tabs.count()):
+                    if self.tabs.tabText(i) == tab_name:
+                        self.tabs.setCurrentIndex(i)
+                        return
+
+    def _restore_privacy_defaults(self) -> None:
+        """Stage safe local-only defaults; Save applies them."""
+        for name in ("_aria_voice_cloud_chk", "_aria_cloud_fallback_chk",
+                     "_aria_push_chk", "_aria_inbox_chk", "_aria_egress_chk",
+                     "_teams_chk", "_teams_skip_chk"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setChecked(False)
+        self.tabs.setCurrentIndex(2)
+        self._aria_test_status.setText(
+            "Privacy defaults staged: optional cloud and remote egress are off. Click Save.")
 
     # ── Tab builders ──────────────────────────────────────────────────────────
 
@@ -3460,6 +3520,14 @@ class SettingsDialog(QDialog):
         self._aria_voice_cloud_chk = QCheckBox("Allow ElevenLabs cloud TTS (opt-in egress; else local SAPI/pyttsx3)")
         self._aria_voice_cloud_chk.setChecked(getattr(self._cfg, "aria_voice_cloud_tts", False))
         lay.addWidget(self._aria_voice_cloud_chk)
+        self._aria_cloud_fallback_chk = QCheckBox(
+            "Allow sanitized cloud-AI fallback when local Ollama is offline")
+        self._aria_cloud_fallback_chk.setChecked(
+            getattr(self._cfg, "aria_cloud_fallback", False))
+        self._aria_cloud_fallback_chk.setToolTip(
+            "Default off. Sends only the redacted question and posture band; never live "
+            "alerts, runbooks, usernames, local paths, or raw telemetry.")
+        lay.addWidget(self._aria_cloud_fallback_chk)
         # Microphone source: computer mic by default, or an added/external device.
         mrow = QHBoxLayout()
         mrow.addWidget(QLabel("Microphone:"))
@@ -3476,6 +3544,21 @@ class SettingsDialog(QDialog):
         self._aria_mic_combo.setCurrentIndex(_mi if _mi >= 0 else 0)
         mrow.addWidget(self._aria_mic_combo, 1)
         lay.addLayout(mrow)
+        model_row = QHBoxLayout()
+        self._aria_model_btn = QPushButton("Download verified offline speech model (39 MB)")
+        self._aria_model_btn.clicked.connect(self._install_voice_model)
+        try:
+            from angerona.connectors.voice import offline_model_status
+            _model_ready, _model_note = offline_model_status()
+        except Exception:
+            _model_ready, _model_note = False, "Speech model status unavailable"
+        self._aria_model_btn.setEnabled(not _model_ready)
+        self._aria_model_status = QLabel(
+            ("Ready — " if _model_ready else "Not ready — ") + _model_note)
+        self._aria_model_status.setWordWrap(True)
+        model_row.addWidget(self._aria_model_btn)
+        model_row.addWidget(self._aria_model_status, 1)
+        lay.addLayout(model_row)
         _note("Uses your computer's built-in microphone by default; pick an added/external mic "
               "here if you have one. A live level bar next to ARIA shows when it can hear you. "
               "Needs a local TTS/STT backend (pyttsx3/SAPI, vosk/whisper) — install via ARIA "
@@ -3518,7 +3601,7 @@ class SettingsDialog(QDialog):
         igrid.addWidget(QLabel("Password / app-password:"), 2, 0)
         self._aria_imap_pass = QLineEdit(os.environ.get("ARIA_IMAP_PASS", ""))
         self._aria_imap_pass.setEchoMode(QLineEdit.Password)
-        self._aria_imap_pass.setPlaceholderText("stored in .env — never in settings.json")
+        self._aria_imap_pass.setPlaceholderText("encrypted with Windows DPAPI")
         igrid.addWidget(self._aria_imap_pass, 2, 1)
         igrid.addWidget(QLabel("Scan every (min):"), 3, 0)
         self._aria_inbox_interval = QLineEdit(str(getattr(self._cfg, "aria_inbox_interval_min", 5)))
@@ -3549,11 +3632,11 @@ class SettingsDialog(QDialog):
         tgrid.addWidget(QLabel("App password:"), 1, 0)
         self._teams_pw = QLineEdit(os.environ.get("ANGERONA_TEAMS_APP_PASSWORD", ""))
         self._teams_pw.setEchoMode(QLineEdit.Password)
-        self._teams_pw.setPlaceholderText("stored in .env — never in settings.json")
+        self._teams_pw.setPlaceholderText("encrypted with Windows DPAPI")
         tgrid.addWidget(self._teams_pw, 1, 1)
-        tgrid.addWidget(QLabel("Allowed Teams user(s):"), 2, 0)
+        tgrid.addWidget(QLabel("Allowed Teams AAD object ID(s):"), 2, 0)
         self._teams_users = QLineEdit(getattr(self._cfg, "teams_allowed_users", ""))
-        self._teams_users.setPlaceholderText("your AAD object id or display name (comma-separated)")
+        self._teams_users.setPlaceholderText("immutable AAD object IDs (comma-separated)")
         tgrid.addWidget(self._teams_users, 2, 1)
         tgrid.addWidget(QLabel("Endpoint port:"), 3, 0)
         self._teams_port = QLineEdit(str(getattr(self._cfg, "teams_bot_port", 3978)))
@@ -3589,6 +3672,27 @@ class SettingsDialog(QDialog):
         return w
 
     # ── ARIA setup: live verification (each runs off-thread; result via signal) ─
+    def _install_voice_model(self) -> None:
+        """The only in-app path that may download a Vosk model: explicit click."""
+        self._aria_model_btn.setEnabled(False)
+        self._aria_model_status.setText("Downloading and verifying 39 MB to Angerona data…")
+
+        def _run() -> None:
+            try:
+                from angerona.connectors.voice import install_offline_model, offline_model_status
+                message = install_offline_model()
+                ready, _path = offline_model_status()
+            except Exception as exc:
+                message = f"Speech model setup failed: {exc}"
+                ready = False
+            self.voice_model_result.emit(message, ready)
+        threading.Thread(target=_run, name="VoiceModelInstall", daemon=True).start()
+
+    def _voice_model_finished(self, message: str, ready: bool) -> None:
+        self._aria_model_status.setText(message)
+        self._aria_model_btn.setEnabled(not ready)
+        self._aria_test_status.setText(message)
+
     def _aria_test_voice(self) -> None:
         self._aria_test_status.setText("Speaking a test line…")
 
@@ -3865,8 +3969,8 @@ class SettingsDialog(QDialog):
         grid.addWidget(self._mob_pin, 3, 1, 1, 2)
         lay.addLayout(grid)
 
-        note = QLabel("The PIN is DPAPI-wrapped (user+machine bound) and stored in .env — "
-                      "never in plain text. Type HELP from your phone for the command menu.")
+        note = QLabel("The PIN is DPAPI-wrapped (user+machine bound) in Angerona's "
+                      "credential store. Type HELP from your phone for the command menu.")
         note.setWordWrap(True); note.setStyleSheet("color: #94a3b8; font-size: 11px;")
         lay.addWidget(note)
 
@@ -4004,8 +4108,8 @@ class SettingsDialog(QDialog):
         try:
             write_env_keys(updates)
             QMessageBox.information(self, "Keys saved",
-                                    "API keys written to .env. Active modules pick them up "
-                                    "within ~30 s — no restart needed.")
+                                    "API keys encrypted for this Windows user. Active "
+                                    "modules pick them up within ~30 s — no restart needed.")
         except Exception as exc:
             QMessageBox.warning(self, "Save failed", str(exc))
 
@@ -4026,6 +4130,26 @@ class SettingsDialog(QDialog):
     def _save(self) -> None:
         from angerona.core.autostart import enable_autostart as _autostart_enable, \
             disable_autostart as _autostart_disable
+
+        if self._teams_chk.isChecked() and not self._teams_users.text().strip():
+            self.tabs.setCurrentIndex(2)
+            QMessageBox.warning(
+                self, "Teams allowlist required",
+                "Add at least one immutable Teams AAD object ID. The bot "
+                "fails closed when its allowlist is empty.")
+            return
+        if self._aria_push_chk.isChecked() and not self._aria_push_url.text().strip():
+            self.tabs.setCurrentIndex(2)
+            QMessageBox.warning(self, "Channel URL required",
+                                "Enter the approved channel/webhook URL or turn push off.")
+            return
+        if self._aria_inbox_chk.isChecked() and not (
+                self._aria_imap_host.text().strip() and
+                self._aria_imap_user.text().strip()):
+            self.tabs.setCurrentIndex(2)
+            QMessageBox.warning(self, "Mailbox settings required",
+                                "Enter the IMAP host and mailbox, or turn inbox triage off.")
+            return
 
         self._cfg.ollama_host  = self._ollama_host.text().strip()
         self._cfg.ollama_model = self._ollama_model.text().strip()
@@ -4057,6 +4181,7 @@ class SettingsDialog(QDialog):
         self._cfg.perf_governor_enabled = self._aria_perf_chk.isChecked()
         self._cfg.aria_voice_enabled    = self._aria_voice_chk.isChecked()
         self._cfg.aria_voice_cloud_tts  = self._aria_voice_cloud_chk.isChecked()
+        self._cfg.aria_cloud_fallback   = self._aria_cloud_fallback_chk.isChecked()
         self._cfg.aria_mic_device       = str(self._aria_mic_combo.currentData() or "")
         self._cfg.aria_push_enabled     = self._aria_push_chk.isChecked()
         self._cfg.aria_push_kind        = self._aria_push_kind.currentText()
@@ -4068,14 +4193,13 @@ class SettingsDialog(QDialog):
             self._cfg.aria_inbox_interval_min = max(1, int(self._aria_inbox_interval.text().strip() or "5"))
         except ValueError:
             pass
-        # The mailbox password is a secret → .env (git-ignored), never settings.json.
+        # The mailbox password is DPAPI-protected, never stored in settings.json.
         _imap_pw = self._aria_imap_pass.text()
-        if _imap_pw:
-            try:
-                from angerona.core.config import write_env_keys
-                write_env_keys({"ARIA_IMAP_PASS": _imap_pw})
-            except Exception:
-                pass
+        try:
+            from angerona.core.config import write_env_keys
+            write_env_keys({"ARIA_IMAP_PASS": _imap_pw})
+        except Exception:
+            pass
         self._cfg.aria_research_egress  = self._aria_egress_chk.isChecked()
 
         # ── Teams bot ──
@@ -4088,18 +4212,22 @@ class SettingsDialog(QDialog):
         except ValueError:
             pass
         _teams_pw = self._teams_pw.text()
-        if _teams_pw:                       # secret → .env, never settings.json
-            try:
-                from angerona.core.config import write_env_keys
-                write_env_keys({"ANGERONA_TEAMS_APP_PASSWORD": _teams_pw})
-            except Exception:
-                pass
+        try:                                # empty text deliberately clears it
+            from angerona.core.config import write_env_keys
+            write_env_keys({"ANGERONA_TEAMS_APP_PASSWORD": _teams_pw})
+        except Exception:
+            pass
 
-        self._cfg.mobile_enabled     = self._mob_chk.isChecked()
-        self._cfg.mobile_signal_cli  = self._mob_cli.text().strip()
-        self._cfg.mobile_host_number = self._mob_host.text().strip()
-        self._cfg.mobile_dest_number = self._mob_dest.text().strip()
-        self._save_mobile_pin()
+        # Mobile configuration moved to the Advanced Management Console.  Older
+        # Settings layouts still create these controls, but the redirect-only
+        # layout intentionally does not. Preserve the existing config when the
+        # controls are absent instead of failing every Settings save.
+        if hasattr(self, "_mob_chk"):
+            self._cfg.mobile_enabled     = self._mob_chk.isChecked()
+            self._cfg.mobile_signal_cli  = self._mob_cli.text().strip()
+            self._cfg.mobile_host_number = self._mob_host.text().strip()
+            self._cfg.mobile_dest_number = self._mob_dest.text().strip()
+            self._save_mobile_pin()
 
         order = [self._ai_order_list.item(i).data(Qt.UserRole)
                  for i in range(self._ai_order_list.count())

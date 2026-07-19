@@ -89,7 +89,8 @@ def _kev_penalty() -> tuple[int, int]:
     """Return (penalty, kev_count) from shared_logs/upstream_threats.json (cached)."""
     try:
         now = time.time()
-        repo_root = Path(__file__).resolve().parents[3]
+        from angerona.core.data_paths import data_dir
+        repo_root = data_dir()
         path = repo_root / "shared_logs" / "upstream_threats.json"
         if not path.exists():
             _KEV_CACHE.update(count=0, mtime=-1.0, ts=now)

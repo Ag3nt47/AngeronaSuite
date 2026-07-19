@@ -426,7 +426,9 @@ def self_test() -> tuple[bool, str]:
         with open(child, "w") as f:
             f.write(
                 "import sys,time\n"
-                "sys.path.insert(0, %r)\n" % os.path.join(os.getcwd(), "src") +
+                "sys.path.insert(0, %r)\n" % str(__import__(
+                    "angerona.core.data_paths", fromlist=["project_root"]
+                ).project_root() / "src") +
                 "from angerona.resilience import heartbeat as hb\n"
                 "name=sys.argv[1]; beats=int(sys.argv[2])\n"
                 "w=hb.HeartbeatWriter(name)\n"
@@ -440,8 +442,13 @@ def self_test() -> tuple[bool, str]:
         c = sup.add("scanner", [py, child, "scanner", "40"], stale_after_s=1.0,
                     max_failures=3, window_s=60.0, window="normal")
         sup._spawn(c)
-        time.sleep(0.6)
-        alive_ok = sup._is_running(c)
+        ready_deadline = time.time() + 4.0
+        alive_ok = False
+        while time.time() < ready_deadline:
+            alive_ok = sup._is_running(c)
+            if alive_ok:
+                break
+            time.sleep(0.05)
 
         # adopt-if-alive: a second _spawn must NOT start another instance.
         before_restarts = c.restarts

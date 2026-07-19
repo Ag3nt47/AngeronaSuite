@@ -20,7 +20,8 @@ from angerona.core.eventbus import Event, EventBus, Severity
 
 def _failure_log_path() -> Path:
     # Repo diagnostics/ dir (mounted / user-visible). Best-effort.
-    return Path(__file__).resolve().parents[3] / "diagnostics" / "selftest_failures.json"
+    from angerona.core.data_paths import data_dir
+    return data_dir() / "diagnostics" / "selftest_failures.json"
 
 
 class SelfTestRunner:
