@@ -99,13 +99,23 @@ def test_purple_candidate_requires_a_distinct_later_run(tmp_path):
     assert any(row["mitre_id"] == "T1003" for row in module.weaknesses("PATCHED"))
 
 
-def test_launchers_harden_before_local_code_and_do_not_grant_medium_user():
+def test_release_installer_hardens_before_local_code_and_does_not_grant_medium_user():
     root = os.path.dirname(os.path.dirname(__file__))
-    for name in ("Install-Angerona.bat", "start-angerona.bat"):
-        text = open(os.path.join(root, name), encoding="utf-8").read()
-        assert text.index("call :harden_trust_root") < text.index(":harden_trust_root")
-        assert text.index("call :harden_trust_root") < text.index("-m pip")
-        assert ".install-trust-v2" in text
-        assert "DirectorySecurity" in text
-        assert "S-1-5-18" in text and "S-1-5-32-544" in text
-        assert "ANGERONA_PRINCIPAL%:(OI)(CI)F" not in text
+    text = open(os.path.join(root, "Install-Angerona.bat"), encoding="utf-8").read()
+    assert text.index("call :harden_trust_root") < text.index(":harden_trust_root")
+    assert text.index("call :harden_trust_root") < text.index("-m pip")
+    assert ".install-trust-v2" in text
+    assert "DirectorySecurity" in text
+    assert "S-1-5-18" in text and "S-1-5-32-544" in text
+    assert "ANGERONA_PRINCIPAL%:(OI)(CI)F" not in text
+
+
+def test_source_launcher_is_bounded_and_reports_early_startup_failures():
+    root = os.path.dirname(os.path.dirname(__file__))
+    text = open(os.path.join(root, "start-angerona.bat"), encoding="utf-8").read()
+    assert "call :harden_trust_root" not in text
+    assert 'icacls.exe" "%~dp0*" /reset /T' not in text
+    assert "Removing an untrusted pre-existing virtual environment" not in text
+    assert text.index(":validate") < text.index(":launch")
+    assert "launcher-preflight.log" in text
+    assert "launcher-stderr.log" in text
