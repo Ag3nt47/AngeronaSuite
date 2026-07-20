@@ -6,12 +6,12 @@ REM  can't kill them (they run elevated). This self-elevates, so it has the
 REM  rights to terminate them.
 REM ============================================================================
 
-REM ── Self-elevate (the whole point — normal shells get Access Denied) ────────
+REM Self-elevate because normal shells may get Access Denied.
 "%SystemRoot%\System32\net.exe" session >nul 2>&1
 if errorlevel 1 (
     echo [*] Requesting Administrator privileges ...
     set "ANGERONA_ELEVATE_PATH=%~f0"
-    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "Start-Process -FilePath $env:ANGERONA_ELEVATE_PATH -Verb RunAs"
+    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "Start-Process -FilePath $env:ComSpec -ArgumentList @('/d','/c',('"' + $env:ANGERONA_ELEVATE_PATH + '"')) -Verb RunAs"
     exit /b
 )
 

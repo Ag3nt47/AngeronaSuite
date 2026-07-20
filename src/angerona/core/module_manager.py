@@ -138,23 +138,60 @@ class ModuleManager:
         "Zero-Trust Local IPC Guard", "SOAR Automation",
     }
 
-    def start_enabled(self) -> None:
-        # Stagger the first poll of each non-critical module by a small,
-        # increasing offset. Starting ~40 threads in a tight loop means they all
-        # run their first (often full process/connection) scan at once — a CPU
-        # spike that froze the freshly-shown window. Spreading the first polls
-        # over a few seconds keeps the GUI responsive during boot; steady-state
-        # behaviour is unchanged. Capped so late modules still start promptly.
-        step, cap = 0.15, 6.0
-        i = 0
+    def start_enabled(
+        self,
+        deferred_names: set[str] | None = None,
+        *,
+        sequential_cycles: bool = True,
+        cycle_timeout: float = 30.0,
+        min_settle: float = 0.10,
+    ) -> list[str]:
+        """Start enabled modules without creating a first-scan stampede.
+
+        Safety-critical response modules are brought online immediately. Remaining
+        modules start one at a time and, by default, must reach a real first-cycle
+        boundary before the next module starts. A bounded timeout prevents one
+        broken sensor from blocking the entire suite forever.
+
+        Returning the skipped names lets Eco Mode wake exactly those modules later.
+        Deferred modules never create a thread or begin their first scan.
+        """
+        deferred = set(deferred_names or ())
+        skipped: list[str] = []
+        critical: list[BaseModule] = []
+        staged: list[BaseModule] = []
         for name, mod in self.modules.items():
             if not self.is_enabled(name):
                 continue
+            if name in deferred:
+                skipped.append(name)
+                continue
             if name in self._NO_STAGGER:
-                mod.start()
+                critical.append(mod)
             else:
-                mod.start(initial_delay=min(i * step, cap))
-                i += 1
+                staged.append(mod)
+
+        # Do not make containment, IPC protection, or the watchdog wait behind a
+        # slow scanner. These modules are intentionally lightweight.
+        for mod in critical:
+            mod.start()
+
+        for mod in staged:
+            mod.start()
+            if not sequential_cycles:
+                continue
+            waiter = getattr(mod, "wait_for_first_cycle", None)
+            if callable(waiter):
+                timeout = max(
+                    0.1,
+                    float(getattr(mod, "startup_cycle_timeout", cycle_timeout)),
+                )
+                waiter(timeout=timeout)
+            # Keep adjacent setup work from landing in the same scheduler slice,
+            # even when a module completes almost instantly.
+            if min_settle > 0:
+                time.sleep(min_settle)
+        return skipped
 
     def set_enabled(self, name: str, enabled: bool) -> None:
         self.config.module_states[name] = enabled

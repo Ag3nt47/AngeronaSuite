@@ -38,6 +38,18 @@ if /I "%DST:~0,2%"=="F:" if not exist "F:\" (
   set "RC=2"
   goto finish
 )
+if defined PAUSE_ON_EXIT if /I "%DST:~0,2%"=="F:" (
+  "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "$v=Get-Volume -DriveLetter F -ErrorAction SilentlyContinue; if ($v -and $v.HealthStatus -eq 'Healthy' -and $v.OperationalStatus -contains 'OK') {exit 0}; exit 1" >nul 2>&1
+  if errorlevel 1 (
+    echo [WARNING] Windows reports that F: needs repair.
+    echo           Backing up to an unhealthy filesystem can damage the backup.
+    "%SystemRoot%\System32\choice.exe" /C YN /N /M "Continue anyway? [Y/N] "
+    if errorlevel 2 (
+      set "RC=3"
+      goto finish
+    )
+  )
+)
 if not exist "%DST%" (
   mkdir "%DST%"
   if errorlevel 1 (

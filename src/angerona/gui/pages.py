@@ -331,6 +331,8 @@ class StatCard(QFrame):
 
 
 class DashboardCards(QWidget):
+    count_loaded = Signal(object, object)
+
     def __init__(self, bus, storage, manager) -> None:
         super().__init__()
         self.bus, self.storage, self.manager = bus, storage, manager
@@ -352,16 +354,26 @@ class DashboardCards(QWidget):
         # waits behind a SQLite writer/checkpoint on the GUI thread.
         self._last_storage_revision: int = -1
         self._cached_count: int = 0
+        self._count_load_busy = False
+        self.count_loaded.connect(self._apply_count)
 
     def refresh(self) -> None:
         running = sum(1 for m in self.manager.modules.values() if m.status == "running")
         self.c_modules.set(f"{running}/{len(self.manager.modules)}")
         revision = self.storage.revision()
-        if revision != self._last_storage_revision:
-            count = self.storage.try_count_since(time.time() - 86400)
-            if count is not None:
-                self._cached_count = count
-                self._last_storage_revision = revision
+        if revision != self._last_storage_revision and not self._count_load_busy:
+            self._count_load_busy = True
+
+            def _load_count(_revision=revision) -> None:
+                try:
+                    count = self.storage.try_count_since(time.time() - 86400)
+                    self.count_loaded.emit(_revision, count)
+                except Exception:
+                    self.count_loaded.emit(_revision, None)
+
+            threading.Thread(
+                target=_load_count, name="DashboardCountReader", daemon=True
+            ).start()
         self.c_alerts.set(str(self._cached_count))
 
         events = self.bus.recent(200)
@@ -371,6 +383,14 @@ class DashboardCards(QWidget):
 
         label, color = threat_label(events)
         self.c_threat.set(label, color)
+
+    def _apply_count(self, revision, count) -> None:
+        self._count_load_busy = False
+        if count is None:
+            return
+        self._cached_count = int(count)
+        self._last_storage_revision = int(revision)
+        self.c_alerts.set(str(self._cached_count))
 
     # ── Drill-down windows ───────────────────────────────────────────────────
     def _open_modules(self) -> None:
@@ -1795,6 +1815,22 @@ class _SeverityItem(QTableWidgetItem):
         return super().__lt__(other)
 
 
+def _restore_alert_scroll(table: QTableWidget, sort_col: int, sort_ord,
+                          previous_value: int, has_new_events: bool) -> None:
+    """Keep the live feed's viewport deterministic after row insertion/sort.
+
+    QTableWidget adjusts its scrollbar while rows are prepended and can leave the
+    viewport at the oldest row after sorting is re-enabled.  In the default
+    newest-first view, a new event must remain visible at row zero.  For an
+    operator-selected custom sort, retain their prior scroll position instead.
+    """
+    bar = table.verticalScrollBar()
+    if has_new_events and sort_col == 0 and sort_ord == Qt.DescendingOrder:
+        bar.setValue(bar.minimum())
+        return
+    bar.setValue(max(bar.minimum(), min(previous_value, bar.maximum())))
+
+
 class AlertDetailDialog(QDialog):
     """Full granular detail for one alert, incl. a SHA-256 fingerprint.
 
@@ -1961,6 +1997,8 @@ class AlertDetailDialog(QDialog):
 
 
 class AlertsPanel(QFrame):
+    events_loaded = Signal(object, object)
+
     def __init__(self, storage) -> None:
         super().__init__()
         self.setObjectName("Panel")
@@ -1969,6 +2007,8 @@ class AlertsPanel(QFrame):
         self._newest_ts: float = 0.0
         self._last_storage_revision: int = -1
         self._last_gap_rebuild: float = 0.0
+        self._events_load_busy = False
+        self.events_loaded.connect(self._apply_loaded_events)
         # Modules the operator has allowed — excluded from future rows.
         self._suppressed: set[str] = set()
         # Live "Analyze" deep-triage workers, kept alive across row rebuilds.
@@ -2259,10 +2299,23 @@ class AlertsPanel(QFrame):
         # The pre-check is an in-memory committed revision. If a writer is busy,
         # keep the current table and retry on the next two-second refresh.
         revision = self.storage.revision()
-        if revision == self._last_storage_revision:
+        if revision == self._last_storage_revision or self._events_load_busy:
             return
+        self._events_load_busy = True
 
-        events = self.storage.try_recent(120)
+        def _load_events(_revision=revision) -> None:
+            try:
+                events = self.storage.try_recent(120)
+                self.events_loaded.emit(_revision, events)
+            except Exception:
+                self.events_loaded.emit(_revision, None)
+
+        threading.Thread(
+            target=_load_events, name="DashboardAlertReader", daemon=True
+        ).start()
+
+    def _apply_loaded_events(self, revision, events) -> None:
+        self._events_load_busy = False
         if events is None:
             return
         if not events:
@@ -2278,6 +2331,7 @@ class AlertsPanel(QFrame):
         hdr = self.table.horizontalHeader()
         sort_col = hdr.sortIndicatorSection()
         sort_ord = hdr.sortIndicatorOrder()
+        previous_scroll = self.table.verticalScrollBar().value()
 
         prev_ts = self._newest_ts
         new_events = [e for e in events if e.ts > prev_ts] if prev_ts else events
@@ -2308,9 +2362,12 @@ class AlertsPanel(QFrame):
             for e in reversed(new_events):
                 self._insert_row(0, e)
             self._trim_to_cap()
-        self.table.setUpdatesEnabled(True)
         self.table.setSortingEnabled(True)
         self.table.sortByColumn(sort_col, sort_ord)
+        _restore_alert_scroll(
+            self.table, sort_col, sort_ord, previous_scroll, bool(new_events)
+        )
+        self.table.setUpdatesEnabled(True)
 
         self._events = events
         self._newest_ts = newest_ts

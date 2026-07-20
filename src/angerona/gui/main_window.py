@@ -613,14 +613,23 @@ class MainWindow(QMainWindow):
                     self._eco_paused.append(name)
                 except Exception:
                     pass
+            elif startup and mod is not None:
+                # Startup Eco defers these modules before they create a worker
+                # thread. Remember enabled ones so ECO OFF can wake them later.
+                try:
+                    if self.manager.is_enabled(name):
+                        self._eco_paused.append(name)
+                except Exception:
+                    pass
         self._eco_on = True
         self.eco_btn.setText("🌿  ECO: ON")
         self.eco_btn.setStyleSheet(
             "background:#166534; color:#dcfce7; font-weight:800; border:none;"
             "border-radius:6px; padding:7px 16px;")
         prefix = "[eco] Startup in Eco Mode — " if startup else "[eco] "
+        verb = "Deferred" if startup else "Paused"
         self.console._append(
-            f"{prefix}Paused {len(self._eco_paused)} background scanner(s) — "
+            f"{prefix}{verb} {len(self._eco_paused)} background scanner(s) — "
             "core response path stays live. Tap ECO again to resume.")
 
     def _toggle_eco_mode(self) -> None:

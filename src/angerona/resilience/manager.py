@@ -117,6 +117,17 @@ class ResilienceManager:
         self._stop.clear()
         self._reader = ipc_ring.RingReader(ipc_ring.ring_path("telemetry"))
 
+        # Publish core liveness BEFORE the watchdog process is allowed to assess
+        # us. The previous ordering spawned the watchdog first; during a busy boot
+        # it saw no core heartbeat and launched replacement cores into SAFE_MODE.
+        self._core_beat.beat()
+        self._spawn_thread(self._heartbeat_loop, "core-heartbeat")
+        # Diagnostics and telemetry draining must not wait behind helper-process
+        # discovery/spawn. If Windows takes time probing an existing sidecar, the
+        # core remains observable and continues consuming scanner frames.
+        self._spawn_thread(self._ring_loop, "ring-drain")
+        self._spawn_thread(self._status_loop, "core-status")
+
         py = sys.executable
         pyw = _pythonw()
         # The watchdog (Go or Python) inherits how to relaunch Angerona.
@@ -156,7 +167,10 @@ class ResilienceManager:
 
         # 3) BlackBox — decoupled recorder, its own themed self-minimizing window.
         bb = _blackbox_script()
-        if bb is not None:
+        blackbox_enabled = os.environ.get(
+            "ANGERONA_BLACKBOX_ENABLED", "1"
+        ).strip().lower() not in ("0", "false", "no", "off")
+        if bb is not None and blackbox_enabled:
             self._sup.add("blackbox", [pyw, str(bb)], window="hidden",
                           running_probe=_cmdline_probe("blackbox_recorder.py"))
 
@@ -182,9 +196,6 @@ class ResilienceManager:
 
         self._sup.start()          # adopt-if-alive: never double-spawns
 
-        self._spawn_thread(self._heartbeat_loop, "core-heartbeat")
-        self._spawn_thread(self._ring_loop, "ring-drain")
-        self._spawn_thread(self._status_loop, "core-status")
         self.status = "running"
         self._publish("Resilience Manager",
                       "Ecosystem online — watchdog + scanner + BlackBox supervised (minimized), "

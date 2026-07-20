@@ -48,6 +48,7 @@ class AngeronaApp:
 
         self.manager  = ModuleManager(self.bus, self.config)
         self.reporter = StatusReporter(self.bus, self.storage, self.manager, self.config)
+        self._resilience = None
 
         # MCP server — opt-in loopback tool server for Claude Desktop / Claude Code.
         # Exposes six read-only security-data tools; nothing leaves the machine.
@@ -76,10 +77,14 @@ class AngeronaApp:
         # has composited the first frame; a short delay guarantees a clean, centered
         # first paint so the app *feels* up immediately.
         QTimer.singleShot(120, self._deferred_start)
-        # Launch the decoupled Black Box diagnostic recorder alongside the suite
-        # (separate process, read-only, survives a suite deadlock). Slightly later
-        # so it never competes with the suite's own first paint.
-        QTimer.singleShot(800, self._launch_blackbox)
+        # The resilience supervisor owns Black Box when enabled. Launching it here
+        # as well raced the supervisor and created two 150 MB Qt processes. Retain
+        # the direct launcher only for deliberately resilience-free operation.
+        import os
+        if os.environ.get("ANGERONA_RESILIENCE", "1").strip().lower() in (
+            "0", "false", "no", "off"
+        ):
+            QTimer.singleShot(800, self._launch_blackbox)
 
     # ── Black Box diagnostic recorder (decoupled sidecar) ────────────────────
     def _launch_blackbox(self, force: bool = False) -> None:
@@ -207,8 +212,33 @@ class AngeronaApp:
         """Background thread — no Qt widget access here, only thread-safe
         bus/manager calls. Qt signals emitted by modules are automatically
         queued to the main thread by the Qt runtime."""
+        # Bring the out-of-process watchdog and telemetry scanner online first.
+        # They used to wait behind every module's initial scan, so during staged
+        # startup their windows could appear minutes late (or not at all if one
+        # sensor was slow). The core heartbeat now starts before supervision, so
+        # early launch is safe and cannot create replacement Angerona instances.
+        import os as _os
+        _os.environ["ANGERONA_BLACKBOX_ENABLED"] = (
+            "1" if getattr(self.config, "blackbox_enabled", True) else "0"
+        )
+        if _os.environ.get("ANGERONA_RESILIENCE", "1") not in (
+            "0", "false", "no", "off"
+        ):
+            try:
+                from angerona.resilience.manager import start_resilience
+                from angerona.resilience import shutdown_token as _tok
+                _tok.clear_standdown()
+                self._resilience = start_resilience(self.bus)
+            except Exception:
+                self._resilience = None
+
         self.manager.discover()        # find built-in + drop-in modules
-        self.manager.start_enabled()   # launch the ones that are enabled
+        # In startup Eco Mode, do not start heavy scanners merely to stop them a
+        # moment later. Their first scans were racing at boot and starving Qt.
+        deferred = set()
+        if getattr(self.config, "eco_mode", True):
+            deferred.update(getattr(self.window, "_ECO_HEAVY_MODULES", ()))
+        self.manager.start_enabled(deferred_names=deferred)
         # If the user's saved preference is Eco Mode, pause the heavy scanners now
         # (hops to the GUI thread via a queued signal — no widget access here).
         try:
@@ -222,21 +252,6 @@ class AngeronaApp:
                 self._mcp.start()
             except Exception:
                 self._mcp = None   # port bind failure → silently disable
-
-        # Decoupled resilience ecosystem: launch the Watchdog + Scanner + BlackBox
-        # as separate, MINIMIZED processes that keep each other and Angerona alive
-        # and never open duplicates (adopt-if-alive). On by default; set
-        # ANGERONA_RESILIENCE=0 to skip.
-        self._resilience = None
-        import os as _os
-        if _os.environ.get("ANGERONA_RESILIENCE", "1") not in ("0", "false", "no", "off"):
-            try:
-                from angerona.resilience.manager import start_resilience
-                from angerona.resilience import shutdown_token as _tok
-                _tok.clear_standdown()          # fresh launch = intent to run
-                self._resilience = start_resilience(self.bus)
-            except Exception:
-                self._resilience = None
 
     def shutdown(self) -> None:
         # Clean shutdown: tell the ecosystem to STAND DOWN so the watchdog does

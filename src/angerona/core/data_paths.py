@@ -6,10 +6,14 @@ import stat
 import subprocess
 import sys
 import ctypes
+import threading
+from functools import lru_cache
 from pathlib import Path
 
 
 _hardened_roots: set[str] = set()
+_ready_source_roots: set[str] = set()
+_data_path_lock = threading.RLock()
 
 
 def _is_reparse_point(path: Path) -> bool:
@@ -144,6 +148,34 @@ def resource_root() -> Path:
     return Path(bundle).resolve() if bundle else project_root()
 
 
+@lru_cache(maxsize=32)
+def _canonical_data_path(
+    configured: str,
+    frozen: bool,
+    _home: str,
+    _data_drive: str,
+    _program_data: str,
+    _executable: str,
+    _cwd: str,
+) -> Path:
+    """Resolve the runtime root once per effective environment.
+
+    ``Path.resolve()`` calls the filesystem and was previously executed by every
+    dashboard refresh and queue read. Under scanner I/O pressure a single call
+    blocked the Qt thread for several seconds. The environment fields are part of
+    the cache key so tests, portable installs, and operator overrides stay correct.
+    """
+    if configured:
+        path = Path(configured).expanduser()
+    elif frozen:
+        path = _frozen_default_data_root()
+    else:
+        path = project_root() / "runtime-data"
+    if frozen:
+        return Path(os.path.abspath(path))
+    return path.resolve()
+
+
 def data_dir(create: bool = True) -> Path:
     """Return the sole persistent runtime root.
 
@@ -152,23 +184,22 @@ def data_dir(create: bool = True) -> Path:
     fixed D: volume, with protected ProgramData as the no-D: fallback.
     ``ANGERONA_DATA`` remains an explicit override.
     """
-    configured = os.environ.get("ANGERONA_DATA", "").strip()
-    if configured:
-        path = Path(configured).expanduser()
-    elif getattr(sys, "frozen", False):
-        # Packaged code may live under Program Files and must stay read-only.
-        # Runtime state belongs on the fixed data drive where available; both
-        # that root and the ProgramData fallback are created admin/SYSTEM-only.
-        path = _frozen_default_data_root()
-    else:
-        path = project_root() / "runtime-data"
     frozen = getattr(sys, "frozen", False)
+    configured = os.environ.get("ANGERONA_DATA", "").strip()
+    path = _canonical_data_path(
+        configured,
+        frozen,
+        os.environ.get("ANGERONA_HOME", ""),
+        os.environ.get("ANGERONA_DATA_DRIVE", "D:"),
+        os.environ.get("PROGRAMDATA", ""),
+        sys.executable,
+        os.getcwd(),
+    )
     if frozen and str(path).casefold().startswith("d:\\"):
         # Relocate any legacy per-user C: spill into the canonical fixed data
         # drive on the Storage Hygiene module's first pass (collision-safe).
         os.environ.setdefault("ANGERONA_STORAGE_AUTOMIGRATE", "1")
     if frozen:
-        path = Path(os.path.abspath(path))
         if not path.parent.is_dir() or _is_reparse_point(path.parent):
             raise PermissionError(f"Refusing unsafe Angerona data parent: {path.parent}")
         if create:
@@ -184,12 +215,16 @@ def data_dir(create: bool = True) -> Path:
                     raise PermissionError(f"Refusing unsafe Angerona data directory: {path}")
                 path = path.resolve(strict=True)
     else:
-        path = path.resolve()
-        existed = path.exists()
+        existed = False
     os.environ.setdefault("ANGERONA_DATA", str(path))
     if create:
         if not frozen:
-            path.mkdir(parents=True, exist_ok=True)
+            key = str(path).casefold()
+            if key not in _ready_source_roots:
+                with _data_path_lock:
+                    if key not in _ready_source_roots:
+                        path.mkdir(parents=True, exist_ok=True)
+                        _ready_source_roots.add(key)
         else:
             _harden_frozen_data_root(path, existed)
     return path

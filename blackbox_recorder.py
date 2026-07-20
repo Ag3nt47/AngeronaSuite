@@ -180,6 +180,39 @@ THREAD_POLL_S = 3.0
 CONFIG_POLL_S = 4.0
 MEM_POLL_S = 5.0
 
+
+def _selftest_failures(data) -> List[Dict]:
+    """Accept both historical self-test report schemas.
+
+    Older reports are dictionaries containing ``failures``; newer runs may write
+    the failure records as the top-level list. Black Box is a reader and must
+    tolerate either shape rather than killing its worker threads.
+    """
+    if isinstance(data, dict):
+        rows = data.get("failures", [])
+    elif isinstance(data, list):
+        rows = data
+    else:
+        rows = []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _acquire_single_instance():
+    """Hold a process-lifetime Windows mutex; return ``None`` for a duplicate."""
+    if not sys.platform.startswith("win"):
+        return True
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_mutex = kernel.CreateMutexW
+    create_mutex.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+    create_mutex.restype = ctypes.c_void_p
+    handle = create_mutex(None, False, r"Local\AngeronaBlackBox")
+    if not handle:
+        return None
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+        kernel.CloseHandle(handle)
+        return None
+    return handle
+
 CHART_WINDOW = 120          # rolling samples kept on the telemetry graphs
 FRESH_STATUS_S = 20.0       # status.json newer than this ⇒ event bus "moving"
 
@@ -476,11 +509,12 @@ class LogTailWorker(QThread):
             data = json.loads(SELFTEST_FAILURES.read_text("utf-8", "replace"))
         except (OSError, json.JSONDecodeError):
             return
-        fails = data.get("failures", [])
+        fails = _selftest_failures(data)
         if not fails:
             return
-        lines = [f"selftest: {data.get('failed', '?')} failed / "
-                 f"{data.get('passed', '?')} passed  (gen {data.get('generated', '?')})"]
+        meta = data if isinstance(data, dict) else {}
+        lines = [f"selftest: {meta.get('failed', len(fails))} failed / "
+                 f"{meta.get('passed', '?')} passed  (gen {meta.get('generated', '?')})"]
         for f in fails:
             lines.append(f"  ✗ {f.get('module', '?')}: {f.get('detail', '')}")
         self._emit_text("selftest_failures.json", "\n".join(lines))
@@ -616,7 +650,7 @@ class SuiteHealthWorker(QThread):
         try:
             if SELFTEST_FAILURES.exists():
                 d = json.loads(SELFTEST_FAILURES.read_text("utf-8", "replace"))
-                for f in d.get("failures", []):
+                for f in _selftest_failures(d):
                     out.append({"name": f.get("module", "?"),
                                 "detail": f.get("detail", ""), "src": "selftest"})
         except (OSError, json.JSONDecodeError):
@@ -626,7 +660,10 @@ class SuiteHealthWorker(QThread):
             sp = cls._pick_status()
             if sp:
                 d = json.loads(sp.read_text("utf-8", "replace"))
-                for m in d.get("modules", []):
+                modules = d.get("modules", []) if isinstance(d, dict) else []
+                for m in modules:
+                    if not isinstance(m, dict):
+                        continue
                     err = m.get("last_error") or ""
                     bad_state = m.get("health_state") in ("error", "crit")
                     if err or bad_state:
@@ -643,7 +680,7 @@ class SuiteHealthWorker(QThread):
             sp = cls._pick_status()
             if sp:
                 d = json.loads(sp.read_text("utf-8", "replace"))
-                return d.get("counts", {})
+                return d.get("counts", {}) if isinstance(d, dict) else {}
         except (OSError, json.JSONDecodeError):
             pass
         return {}
@@ -2232,6 +2269,13 @@ def main() -> None:
                    help="Show the window immediately (default: start minimised)")
     args = p.parse_args()
 
+    # The app and resilience supervisor can notice an absent recorder at nearly
+    # the same instant. The OS mutex makes that race harmless and guarantees one
+    # Black Box process even when process-command-line inspection is restricted.
+    _instance_guard = _acquire_single_instance()
+    if _instance_guard is None:
+        return
+
     # Keep silent pythonw/frozen startup failures inside protected runtime data.
     _crash_log = DIAG_DIR / "blackbox_startup.log"
     try:
@@ -2244,13 +2288,26 @@ def main() -> None:
         app.setApplicationName(APP_NAME)
         app.setQuitOnLastWindowClosed(True)
 
+        # Diagnose this independent window independently. Starting before the
+        # window constructor also captures an expensive tab/widget constructor,
+        # not only stalls that occur after the event loop begins.
+        from angerona.core.uiwatchdog import UiWatchdog
+        ui_watchdog = UiWatchdog(
+            DIAG_DIR / "blackbox_not_responding.log", stall_seconds=5.0
+        )
+        ui_watchdog.start()
         win = BlackBoxWindow()
+        beat_timer = QTimer()
+        beat_timer.timeout.connect(ui_watchdog.beat)
+        beat_timer.start(1000)
         if args.show:
             win.show()
         else:
             win.showMinimized()
 
-        sys.exit(app.exec())
+        exit_code = app.exec()
+        ui_watchdog.stop()
+        sys.exit(exit_code)
     except Exception:
         import datetime
         msg = f"[{datetime.datetime.now().isoformat()}] BLACKBOX STARTUP CRASH\n{traceback.format_exc()}\n"

@@ -121,7 +121,7 @@ if _HAVE_QT:
             self._phase = 0.0
             self._timer = QTimer(self)
             self._timer.timeout.connect(self._tick)
-            self._timer.start(33)  # ~30 fps cosmetic animation
+            self._timer.start(100)  # 10 fps is smooth without competing with alert paint
 
         def set_state(self, state: OrbState) -> None:
             self._state = state
@@ -129,7 +129,7 @@ if _HAVE_QT:
 
         def _tick(self) -> None:
             # advance phase using the state's pulse period
-            self._phase = (self._phase + 33.0 / max(1, self._state.pulse_ms)) % 1.0
+            self._phase = (self._phase + 100.0 / max(1, self._state.pulse_ms)) % 1.0
             self.update()
 
         def paintEvent(self, _evt) -> None:  # noqa: N802 (Qt signature)
