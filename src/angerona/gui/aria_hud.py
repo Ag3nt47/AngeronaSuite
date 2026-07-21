@@ -116,7 +116,10 @@ if _HAVE_QT:
 
         def __init__(self, parent: Optional["QWidget"] = None) -> None:
             super().__init__(parent)
-            self.setMinimumSize(160, 160)
+            # Small floor (was 160×160) so the whole ARIA column can be squeezed
+            # right down beside the prompt bar. The orb and its score number are
+            # drawn from the live widget size, so they stay crisp at any size.
+            self.setMinimumSize(64, 64)
             self._state = orb_state(100)
             self._phase = 0.0
             self._timer = QTimer(self)
@@ -152,7 +155,11 @@ if _HAVE_QT:
             p.setPen(Qt.NoPen)
             p.drawEllipse(int(cx - r), int(cy - r), int(2 * r), int(2 * r))
             p.setPen(QColor("#e8f4ff"))
-            f = p.font(); f.setPointSize(20); f.setBold(True); p.setFont(f)
+            # Score font scales with the orb so the number stays readable whether
+            # the HUD is squeezed tiny beside the prompt or opened up wide.
+            f = p.font()
+            f.setPixelSize(max(9, int(min(w, h) * 0.22)))
+            f.setBold(True); p.setFont(f)
             p.drawText(self.rect(), Qt.AlignCenter, str(self._state.score))
             p.end()
 

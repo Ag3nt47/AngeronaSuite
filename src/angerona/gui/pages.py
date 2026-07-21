@@ -2894,8 +2894,10 @@ class CommandConsolePanel(QFrame):
 
         row = QHBoxLayout()
         self.spin = QLabel("")
+        # No fixed min-width (was 150px) so the prompt bar can shrink; the label
+        # sizes to its transient "WORKING…" text only while a command runs.
         self.spin.setStyleSheet("color:#1f9cff; font-weight:800; font-size:14px; "
-                                "letter-spacing:1px; min-width:150px;")
+                                "letter-spacing:1px;")
         row.addWidget(self.spin)
         prompt = QLabel("ARIA#")
         prompt.setStyleSheet("color:#22c55e; font-weight:700; font-family:Consolas;")

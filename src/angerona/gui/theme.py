@@ -71,7 +71,22 @@ def available_themes():
     return [(k, v["label"]) for k, v in THEMES.items()]
 
 
-def build_qss(name: str = "cyber", accent: str | None = None) -> str:
+def clamp_scale(scale: float) -> float:
+    """Clamp a raw UI-scale factor into a readable band.
+
+    The window feeds in a factor derived from its current size; we never let it
+    drop so far that text becomes illegible, nor blow up so large that buttons
+    stop fitting. 1.0 == the original design size. Kept as a module function so
+    the main window and the QSS builder agree on the exact same band."""
+    try:
+        s = float(scale)
+    except (TypeError, ValueError):
+        s = 1.0
+    return max(0.75, min(1.35, s))
+
+
+def build_qss(name: str = "cyber", accent: str | None = None,
+              scale: float = 1.0) -> str:
     p = dict(THEMES.get(name, THEMES["cyber"]))
     # Fill in optional keys that older theme dicts may not have.
     p.setdefault("alt_row", "#ffffff08")
@@ -79,26 +94,59 @@ def build_qss(name: str = "cyber", accent: str | None = None) -> str:
     if accent:
         p["accent"] = accent
     r = p["radius"]
+
+    # ── Responsive scale ──────────────────────────────────────────────────
+    # Every font-size and padding below is derived from the design value times
+    # a clamped scale factor, so the whole surface — buttons, labels, table
+    # text — grows and shrinks together with the window while staying readable.
+    s = clamp_scale(scale)
+
+    def px(v: float) -> str:
+        return f"{max(1, round(v * s))}px"
+
+    fs_base   = px(13)   # global default text
+    fs_brand  = px(26)
+    fs_tag    = px(11)
+    fs_page   = px(20)
+    fs_sect   = px(13)
+    fs_card_v = px(30)
+    fs_card_l = px(11)
+    fs_hdr    = px(11)   # table header sections
+    # Button paddings (vertical, horizontal) for normal + pressed states.
+    pad_pri   = f"{px(9)} {px(16)}"
+    pad_pri_p = f"{px(11)} {px(16)} {px(7)} {px(16)}"
+    pad_btn   = f"{px(7)} {px(14)}"
+    pad_btn_p = f"{px(9)} {px(14)} {px(5)} {px(14)}"
+    pad_pill  = f"{px(5)} {px(14)}"
+    pad_input = px(7)
+    ind_wh    = px(18)   # checkbox indicator
+    # Status-strip chip height scales too so chips don't clip larger text.
+    try:
+        chip_px = int(str(p['chip_h']).replace("px", "").strip())
+    except (TypeError, ValueError):
+        chip_px = 44
+    chip_h = px(chip_px)
+
     return f"""
 /* ── Base ─────────────────────────────────────────────────────────────── */
-* {{ font-family: {p['font']}; font-size: 13px; color: {p['text']}; }}
+* {{ font-family: {p['font']}; font-size: {fs_base}; color: {p['text']}; }}
 QMainWindow, QWidget {{ background: {p['bg']}; }}
 
 /* ── Typography helpers ────────────────────────────────────────────────── */
-#Brand     {{ font-size: 26px; font-weight: 800; letter-spacing: 6px; color: {p['accent']}; }}
-#Tagline   {{ color: {p['dim']}; font-size: 11px; }}
-#PageTitle {{ font-size: 20px; font-weight: 800; letter-spacing: 2px; color: {p['text']}; }}
-#SectionTitle {{ font-size: 13px; font-weight: 700; letter-spacing: 1px;
+#Brand     {{ font-size: {fs_brand}; font-weight: 800; letter-spacing: 6px; color: {p['accent']}; }}
+#Tagline   {{ color: {p['dim']}; font-size: {fs_tag}; }}
+#PageTitle {{ font-size: {fs_page}; font-weight: 800; letter-spacing: 2px; color: {p['text']}; }}
+#SectionTitle {{ font-size: {fs_sect}; font-weight: 700; letter-spacing: 1px;
                  color: {p['accent']}; padding: 2px 2px 6px 2px; }}
-#Pill {{ border-radius: {r}; padding: 5px 14px; font-weight: 700; }}
+#Pill {{ border-radius: {r}; padding: {pad_pill}; font-weight: 700; }}
 
 /* ── Panels / cards ────────────────────────────────────────────────────── */
 #Panel {{ background: {p['panel']}; border: 1px solid {p['border']};
           border-radius: {r}; }}
 #Card  {{ background: {p['panel']}; border: 1px solid {p['border']};
           border-left: 3px solid {p['accent']}; border-radius: {r}; }}
-#CardValue {{ font-size: 30px; font-weight: 800; color: {p['text']}; }}
-#CardLabel {{ color: {p['dim']}; font-size: 11px; letter-spacing: 1px; }}
+#CardValue {{ font-size: {fs_card_v}; font-weight: 800; color: {p['text']}; }}
+#CardLabel {{ color: {p['dim']}; font-size: {fs_card_l}; letter-spacing: 1px; }}
 
 /* ── Tables — alternating zebra, compact header, hover row ────────────── */
 QTableWidget {{
@@ -130,7 +178,7 @@ QHeaderView::section {{
     padding: 6px 8px;
     font-weight: 700;
     letter-spacing: 1px;
-    font-size: 11px;
+    font-size: {fs_hdr};
     text-transform: uppercase;
 }}
 
@@ -138,22 +186,36 @@ QHeaderView::section {{
 QPushButton#Primary {{
     background: {p['accent']}; color: {p['bg']};
     border: none; border-radius: {r};
-    padding: 9px 16px; font-weight: 700;
+    padding: {pad_pri}; font-weight: 700;
     border-bottom: 2px solid {p['accent2']};   /* subtle raised edge */
 }}
 QPushButton#Primary:hover {{ background: {p['accent2']}; }}
 /* Pressed: content dips ~2px and the raised edge collapses → tactile "push". */
 QPushButton#Primary:pressed {{
     background: {p['accent2']};
-    padding: 11px 16px 7px 16px;
+    padding: {pad_pri_p};
     border-bottom: 0px;
 }}
+/* Danger / Critical — the two red header actions (Red Team sim, Stop). Styled
+   here (not inline) so they scale with the rest of the surface. */
+QPushButton#Danger {{
+    background: #dc2626; color: white; font-weight: 800;
+    border: none; border-radius: {r}; padding: {pad_pri};
+}}
+QPushButton#Danger:hover {{ background: #ef4444; }}
+QPushButton#Danger:pressed {{ background: #b91c1c; padding: {pad_pri_p}; }}
+QPushButton#Critical {{
+    background: #ef4444; color: white; font-weight: 800;
+    border: none; border-radius: {r}; padding: {pad_pri};
+}}
+QPushButton#Critical:hover {{ background: #f87171; }}
+QPushButton#Critical:pressed {{ background: #dc2626; padding: {pad_pri_p}; }}
 QPushButton {{
     background: {p['panel2']};
     border: 1px solid {p['border']};
     border-bottom: 2px solid {p['border']};    /* raised edge for depth */
     border-radius: {r};
-    padding: 7px 14px;
+    padding: {pad_btn};
     color: {p['text']};
 }}
 QPushButton:hover {{
@@ -166,7 +228,7 @@ QPushButton:pressed {{
     background: {p['accent']}44;
     border: 1px solid {p['accent']};
     border-bottom: 0px;
-    padding: 9px 14px 5px 14px;
+    padding: {pad_btn_p};
 }}
 QPushButton:checked {{
     background: {p['accent']}33;
@@ -178,7 +240,7 @@ QLineEdit, QComboBox, QPlainTextEdit {{
     background: {p['bg']};
     border: 1px solid {p['border']};
     border-radius: {r};
-    padding: 7px;
+    padding: {pad_input};
     color: {p['text']};
 }}
 QComboBox QAbstractItemView {{
@@ -186,7 +248,7 @@ QComboBox QAbstractItemView {{
     color: {p['text']};
     selection-background-color: {p['accent']}44;
 }}
-QCheckBox::indicator {{ width: 18px; height: 18px; }}
+QCheckBox::indicator {{ width: {ind_wh}; height: {ind_wh}; }}
 QScrollBar:vertical  {{ background: {p['panel']}; width: 10px; }}
 QScrollBar::handle:vertical {{ background: {p['border']}; border-radius: 5px; }}
 QScrollBar:horizontal {{ background: {p['panel']}; height: 8px; }}
@@ -197,7 +259,7 @@ QScrollBar::handle:horizontal {{ background: {p['border']}; border-radius: 4px; 
     background: {p['panel']};
     border-top: 1px solid {p['border']};
     border-radius: 0px;
-    min-height: {p['chip_h']};
+    min-height: {chip_h};
 }}
 
 /* ── Splitter handles: 3px visible grab lines ─────────────────────────── */

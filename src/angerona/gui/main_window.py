@@ -32,7 +32,7 @@ from angerona.gui.pages import (
 )
 from angerona.gui.sandbox_editor import launch_sandbox_editor
 from angerona.gui.upgrade_console import launch_upgrade_console
-from angerona.gui.theme import build_qss
+from angerona.gui.theme import build_qss, clamp_scale
 from angerona.gui.threat_intel_page import ThreatIntelDashboard
 from angerona.shark.shark_attack import SharkAttackEngine
 from angerona.shark.red_team import RedTeamEngine, REDTEAM_STAGE_CATEGORY
@@ -82,7 +82,15 @@ class MainWindow(QMainWindow):
         # so the window itself stays freely resizable down to this floor;
         # content below its comfortable size just compresses/scrolls instead
         # of blocking the resize.
-        self.setMinimumSize(640, 420)
+        # Lowered floor (was 640×420) so the whole window — ARIA orb, prompt bar
+        # and alerts — can be dragged much smaller before content starts to
+        # compress. The responsive UI-scale (see resizeEvent) keeps text legible
+        # as the window shrinks toward this floor.
+        self.setMinimumSize(480, 340)
+        # Live UI-scale factor (1.0 == the 1200×780 design size). resizeEvent
+        # recomputes it and re-applies the stylesheet so buttons and text grow
+        # and shrink with the window while staying inside a readable band.
+        self._ui_scale = 1.0
         self.setStyleSheet(self._qss())
 
         central = QWidget()
@@ -114,9 +122,9 @@ class MainWindow(QMainWindow):
             "Configure and run an unannounced, non-destructive adversary simulation "
             "(Shark and/or APT Red-Team scenarios) with a difficulty level, a target, "
             "and an optional custom benign technique — tests detect + respond end to end.")
-        sim_btn.setStyleSheet(
-            "background:#dc2626; color:white; font-weight:800; border:none;"
-            "border-radius:6px; padding:7px 16px;")
+        # Styled via QSS object name (#Danger) so it scales with the UI-scale
+        # factor instead of being frozen at fixed inline pixels.
+        sim_btn.setObjectName("Danger")
         sim_btn.clicked.connect(self._open_simulation)
         # Eco Mode — one tap to shed heavy background scan load. Pauses the
         # expensive pollers/scanners (process/mem/yara/net enumeration) while
@@ -196,9 +204,8 @@ class MainWindow(QMainWindow):
         settings_btn.clicked.connect(self._open_settings)
         stop_btn = QPushButton("⏹  STOP")
         stop_btn.setToolTip("Stop all modules and shut Angerona down completely")
-        stop_btn.setStyleSheet(
-            "background:#ef4444; color:white; font-weight:800; border:none;"
-            "border-radius:6px; padding:7px 16px;")
+        # Styled via QSS object name (#Critical) so it scales with the UI.
+        stop_btn.setObjectName("Critical")
         stop_btn.clicked.connect(self._full_shutdown)
         rl.addStretch(1)
         rl.addWidget(worldview_btn); rl.addWidget(attack_heatmap_btn)
@@ -254,8 +261,10 @@ class MainWindow(QMainWindow):
         # to build, the Console fills the space alone.
         if getattr(self, "aria_hud", None) is not None:
             self._console_section = QSplitter(Qt.Horizontal)
-            self.aria_hud.setMinimumWidth(150)
-            self.aria_hud.setMaximumWidth(340)
+            # Lowered from 150 so the ARIA orb column can be squeezed right down
+            # beside the prompt; raised the ceiling a little for wide displays.
+            self.aria_hud.setMinimumWidth(88)
+            self.aria_hud.setMaximumWidth(420)
             self._console_section.addWidget(self.aria_hud)
             self._console_section.addWidget(self.console)
             self._console_section.setStretchFactor(0, 2)
@@ -283,9 +292,12 @@ class MainWindow(QMainWindow):
         # a wider handle is easier to grab and disabling collapse stops panels
         # from snapping shut when dragged to an edge. Min sizes give each panel a
         # sane floor so the handle can't be pushed "past" a widget.
-        self.modules_panel.setMinimumWidth(220)
-        self._right_tabs.setMinimumWidth(280)
-        self.console.setMinimumHeight(120)
+        # Lowered floors (were 220 / 280 / 120): the Modules panel can now be
+        # squeezed narrower, which lets you drag the Live Alerts panel much
+        # wider, and the Console/prompt can shrink further vertically.
+        self.modules_panel.setMinimumWidth(150)
+        self._right_tabs.setMinimumWidth(190)
+        self.console.setMinimumHeight(84)
         for _sp in (top_split, body):
             _sp.setOpaqueResize(False)
             _sp.setChildrenCollapsible(False)
@@ -379,7 +391,42 @@ class MainWindow(QMainWindow):
 
     # ── Theme ────────────────────────────────────────────────────────────────
     def _qss(self) -> str:
-        return build_qss(self.config.theme, self.config.accent or None)
+        return build_qss(self.config.theme, self.config.accent or None,
+                         scale=getattr(self, "_ui_scale", 1.0))
+
+    # ── Responsive UI scale ───────────────────────────────────────────────────
+    def _compute_ui_scale(self) -> float:
+        """Derive a UI-scale factor from the current window size.
+
+        Both dimensions are compared against the 1200×780 design size and the
+        smaller ratio wins, so text never overflows the shorter axis. The raw
+        factor is clamped into a readable band by ``clamp_scale`` (0.75–1.35)."""
+        try:
+            w = max(1, self.width())
+            h = max(1, self.height())
+            raw = min(w / 1200.0, h / 780.0)
+        except Exception:
+            raw = 1.0
+        return clamp_scale(raw)
+
+    def _maybe_rescale_ui(self) -> None:
+        """Recompute the scale and, if it moved enough to matter, re-apply the
+        stylesheet. Quantised to 0.05 steps so a drag-resize doesn't rebuild the
+        (fairly large) stylesheet on every single pixel."""
+        new = round(self._compute_ui_scale() / 0.05) * 0.05
+        if abs(new - getattr(self, "_ui_scale", 1.0)) >= 0.049:
+            self._ui_scale = new
+            try:
+                self.setStyleSheet(self._qss())
+            except Exception:
+                pass
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt signature)
+        try:
+            self._maybe_rescale_ui()
+        except Exception:
+            pass
+        super().resizeEvent(event)
 
     def apply_theme(self, theme: str | None = None) -> None:
         # SettingsDialog passes the newly-chosen theme here; callers that just
