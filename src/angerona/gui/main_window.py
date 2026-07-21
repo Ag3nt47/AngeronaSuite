@@ -400,7 +400,16 @@ class MainWindow(QMainWindow):
 
         Both dimensions are compared against the 1200×780 design size and the
         smaller ratio wins, so text never overflows the shorter axis. The raw
-        factor is clamped into a readable band by ``clamp_scale`` (0.75–1.35)."""
+        factor is clamped into a readable band by ``clamp_scale`` (0.75–1.35).
+
+        When the operator has chosen a FIXED scale in Settings, that value is
+        used verbatim (still clamped) and the window size is ignored — handy on
+        very large or high-DPI displays where auto-scaling feels off."""
+        try:
+            if str(getattr(self.config, "ui_scale_mode", "auto")).lower() == "fixed":
+                return clamp_scale(float(getattr(self.config, "ui_scale_fixed", 1.0)))
+        except (TypeError, ValueError):
+            pass
         try:
             w = max(1, self.width())
             h = max(1, self.height())
@@ -435,6 +444,12 @@ class MainWindow(QMainWindow):
         # dialog neither closed nor applied — the "settings button isn't working".
         if theme:
             self.config.theme = theme
+        # Recompute the scale here too so a Settings change to UI-scale mode/value
+        # (auto ↔ fixed) takes effect immediately, not only on the next resize.
+        try:
+            self._ui_scale = self._compute_ui_scale()
+        except Exception:
+            pass
         self.setStyleSheet(self._qss())
 
     # ── Refresh ──────────────────────────────────────────────────────────────

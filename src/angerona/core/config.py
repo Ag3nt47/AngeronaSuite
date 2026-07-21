@@ -82,6 +82,25 @@ class Config:
     # ── ARIA model tuning ──
     ollama_keep_alive: str = "30m"               # keep the local model warm for fast replies
 
+    # ── UI scale (responsive buttons/text) ─────────────────────────────────
+    # "auto"  = scale the whole UI with the window size (default; clamped to a
+    #           readable band in gui/theme.clamp_scale).
+    # "fixed" = pin the UI at ui_scale_fixed regardless of window size — useful
+    #           on very large or very high-DPI monitors where auto feels off.
+    ui_scale_mode: str = "auto"                  # "auto" | "fixed"
+    ui_scale_fixed: float = 1.0                  # honored only when mode == "fixed"
+
+    # ── Self-hardening input integrity ─────────────────────────────────────
+    # When True, After-Action Reports that aren't HMAC-authenticated (unsigned
+    # or unverifiable) are REFUSED by the self-hardening loop, not just flagged
+    # (see core/report_attest.py). Published to ANGERONA_REQUIRE_SIGNED_AAR so
+    # the stdlib attestation layer honours it without a config handle.
+    require_signed_aar: bool = False
+    # Experimental: offload ransomware entropy scanning to worker processes so
+    # the CPU-bound hashing runs off the main interpreter's GIL. Default off —
+    # see core/entropy_pool.py. Published to ANGERONA_ENTROPY_POOL.
+    entropy_pool_enabled: bool = False
+
     # ── Derived paths ───────────────────────────────────────────────────────
     @property
     def db_path(self) -> Path:
@@ -142,6 +161,13 @@ class Config:
                 cfg.teams_bot_port        = int(data.get("teams_bot_port", cfg.teams_bot_port))
                 cfg.teams_bot_skip_auth   = data.get("teams_bot_skip_auth", cfg.teams_bot_skip_auth)
                 cfg.ollama_keep_alive     = data.get("ollama_keep_alive", cfg.ollama_keep_alive)
+                cfg.ui_scale_mode         = str(data.get("ui_scale_mode", cfg.ui_scale_mode))
+                try:
+                    cfg.ui_scale_fixed    = float(data.get("ui_scale_fixed", cfg.ui_scale_fixed))
+                except (TypeError, ValueError):
+                    pass
+                cfg.require_signed_aar    = bool(data.get("require_signed_aar", cfg.require_signed_aar))
+                cfg.entropy_pool_enabled  = bool(data.get("entropy_pool_enabled", cfg.entropy_pool_enabled))
             except Exception:
                 pass
         # OLLAMA_HOST env var (set by the D-drive Ollama install) wins.
@@ -151,6 +177,16 @@ class Config:
         try:
             if cfg.ai_provider_order:
                 os.environ["ANGERONA_AI_ORDER"] = ",".join(cfg.ai_provider_order)
+        except Exception:
+            pass
+        # Publish integrity/perf toggles to the environment for the stdlib layers
+        # that read them (report_attest, entropy_pool). Only publish when enabled
+        # so a manually-set env var isn't clobbered off by a default-false config.
+        try:
+            if cfg.require_signed_aar:
+                os.environ["ANGERONA_REQUIRE_SIGNED_AAR"] = "1"
+            if cfg.entropy_pool_enabled:
+                os.environ["ANGERONA_ENTROPY_POOL"] = "1"
         except Exception:
             pass
         return cfg
@@ -196,6 +232,10 @@ class Config:
                     "teams_bot_port":        self.teams_bot_port,
                     "teams_bot_skip_auth":   self.teams_bot_skip_auth,
                     "ollama_keep_alive":     self.ollama_keep_alive,
+                    "ui_scale_mode":         self.ui_scale_mode,
+                    "ui_scale_fixed":        self.ui_scale_fixed,
+                    "require_signed_aar":    self.require_signed_aar,
+                    "entropy_pool_enabled":  self.entropy_pool_enabled,
                 },
                 indent=2,
             ),

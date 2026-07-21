@@ -3428,6 +3428,49 @@ class SettingsDialog(QDialog):
         theme_row.addStretch()
         lay.addLayout(theme_row)
 
+        # UI scale — Auto grows/shrinks buttons + text with the window; Fixed
+        # pins a size (useful on large or high-DPI monitors). Values match the
+        # readable clamp band in gui/theme.clamp_scale (75–135%).
+        scale_row = QHBoxLayout()
+        scale_row.addWidget(QLabel("UI scale:"))
+        self._ui_scale_combo = QComboBox()
+        self._ui_scale_combo.addItem("Auto (fit to window)", "auto")
+        for _pct in (75, 90, 100, 110, 125, 135):
+            self._ui_scale_combo.addItem(f"Fixed · {_pct}%", _pct)
+        self._ui_scale_combo.setToolTip(
+            "Auto scales buttons and text with the window size. Fixed pins the "
+            "size regardless of the window — handy on large or high-DPI screens.")
+        if str(getattr(self._cfg, "ui_scale_mode", "auto")).lower() == "fixed":
+            _want = int(round(float(getattr(self._cfg, "ui_scale_fixed", 1.0)) * 100))
+            _sidx = self._ui_scale_combo.findData(_want)
+            self._ui_scale_combo.setCurrentIndex(_sidx if _sidx >= 0 else 0)
+        else:
+            self._ui_scale_combo.setCurrentIndex(0)
+        scale_row.addWidget(self._ui_scale_combo)
+        scale_row.addStretch()
+        lay.addLayout(scale_row)
+
+        # ── Integrity / performance (advanced) ──────────────────────────────
+        lay.addWidget(self._section("Integrity & Performance"))
+        self._require_signed_aar_chk = QCheckBox(
+            "Require signed After-Action Reports (refuse unsigned/forged self-hardening input)")
+        self._require_signed_aar_chk.setToolTip(
+            "Strict mode: the self-hardening loop refuses to learn from any AAR that "
+            "isn't HMAC-authenticated. Tampered reports are always refused regardless; "
+            "this also blocks unsigned/legacy reports instead of just warning. "
+            "Recommended once you've run at least one drill so signed reports exist.")
+        self._require_signed_aar_chk.setChecked(bool(getattr(self._cfg, "require_signed_aar", False)))
+        lay.addWidget(self._require_signed_aar_chk)
+        self._entropy_pool_chk = QCheckBox(
+            "Offload ransomware entropy scanning to worker processes (experimental)")
+        self._entropy_pool_chk.setToolTip(
+            "Runs the CPU-bound entropy/hash scan in a small pool of worker processes "
+            "so it no longer competes for the main interpreter's GIL — keeps the UI and "
+            "response path snappier during big scans on multi-core hosts. Experimental; "
+            "leave off if you prefer the in-process path.")
+        self._entropy_pool_chk.setChecked(bool(getattr(self._cfg, "entropy_pool_enabled", False)))
+        lay.addWidget(self._entropy_pool_chk)
+
         lay.addWidget(self._section("Updates"))
         repo_row = QHBoxLayout()
         repo_row.addWidget(QLabel("GitHub repo:"))
@@ -4215,9 +4258,35 @@ class SettingsDialog(QDialog):
         self._cfg.github_repo  = self._github_repo.text().strip()
         theme_key = self._theme_combo.currentData() or self._theme_combo.currentText()
         self._cfg.theme = theme_key or self._cfg.theme
+        # UI scale mode/value — set BEFORE apply_theme so the restyle below picks
+        # up the new scale immediately (apply_theme recomputes _ui_scale).
+        _sc = self._ui_scale_combo.currentData()
+        if _sc == "auto" or _sc is None:
+            self._cfg.ui_scale_mode = "auto"
+        else:
+            self._cfg.ui_scale_mode = "fixed"
+            try:
+                self._cfg.ui_scale_fixed = float(int(_sc)) / 100.0
+            except (TypeError, ValueError):
+                pass
         if callable(self._apply_theme):
             try: self._apply_theme(self._cfg.theme)
             except Exception: pass
+
+        # Integrity / performance toggles — persist AND publish to the env vars
+        # the stdlib layers read, so the change is live this session (not just
+        # after a restart).
+        import os as _os
+        self._cfg.require_signed_aar = self._require_signed_aar_chk.isChecked()
+        if self._cfg.require_signed_aar:
+            _os.environ["ANGERONA_REQUIRE_SIGNED_AAR"] = "1"
+        else:
+            _os.environ.pop("ANGERONA_REQUIRE_SIGNED_AAR", None)
+        self._cfg.entropy_pool_enabled = self._entropy_pool_chk.isChecked()
+        if self._cfg.entropy_pool_enabled:
+            _os.environ["ANGERONA_ENTROPY_POOL"] = "1"
+        else:
+            _os.environ.pop("ANGERONA_ENTROPY_POOL", None)
 
         want_autostart = self._autostart_chk.isChecked()
         self._cfg.autostart_enabled = want_autostart

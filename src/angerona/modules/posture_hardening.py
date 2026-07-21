@@ -273,6 +273,36 @@ class PostureHardening(BaseModule):
         except Exception:
             pass
 
+    # ── INPUT ATTESTATION (anti-poisoning) ───────────────────────────────────
+    def _aar_trusted(self, doc: dict, path) -> bool:
+        """Verify an AAR's HMAC stamp before learning weaknesses from it.
+
+        A signed report that fails verification (tampered) is always refused and
+        surfaced as a HIGH alert. An unsigned/unverifiable report is refused only
+        in strict mode (ANGERONA_REQUIRE_SIGNED_AAR); otherwise it's ingested with
+        a one-time MEDIUM warning so legacy/first-run reports keep working. See
+        core/report_attest.py for the full policy."""
+        try:
+            from angerona.core import report_attest
+            trust, sev, reason = report_attest.classify_for_ingest(doc)
+        except Exception:
+            # Attestation unavailable → never block the loop; behave as before.
+            return True
+        if sev:
+            # Throttle so an unchanged unsigned report can't repeat-alert.
+            warned = getattr(self, "_aar_warned", None)
+            if warned is None:
+                warned = self._aar_warned = set()
+            wkey = (str(path), sev, reason[:40])
+            if wkey not in warned:
+                warned.add(wkey)
+                severity = Severity.HIGH if sev == "HIGH" else Severity.MEDIUM
+                self.emit(f"⚠ AAR integrity ({Path(path).name}): {reason}",
+                          severity, path=str(path), fail_closed=(not trust))
+                self._log_attempt("aar_integrity", "-", path=str(path),
+                                  severity=sev, trusted=trust, reason=reason)
+        return trust
+
     # ── 2. FILE-OBSERVER AUTOMATION ──────────────────────────────────────────
     def run(self) -> None:
         mtimes: dict = {}
@@ -294,6 +324,9 @@ class PostureHardening(BaseModule):
         try:
             session = json.loads(Path(path).read_text(encoding="utf-8"))
         except Exception:
+            return []
+        # Anti-poisoning: prove the AAR is authentic before trusting its verdicts.
+        if not self._aar_trusted(session, path):
             return []
         new = []
         for r in session.get("rounds", []):
@@ -337,6 +370,9 @@ class PostureHardening(BaseModule):
         try:
             report = json.loads(Path(path).read_text(encoding="utf-8"))
         except Exception:
+            return []
+        # Anti-poisoning: prove the AAR is authentic before trusting its verdicts.
+        if not self._aar_trusted(report, path):
             return []
         new = []
         verified = 0

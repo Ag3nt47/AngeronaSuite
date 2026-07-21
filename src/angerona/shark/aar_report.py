@@ -388,11 +388,22 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
             for v in verdicts
         ],
     }
+    # Attest the structured payload with the per-install HMAC key so the
+    # self-hardening loop can prove this AAR wasn't forged or tampered with
+    # before it learns weaknesses from it (see core/report_attest.py). Signing
+    # is best-effort: if the key isn't available the payload is written unsigned
+    # and the ingest side flags it — writing the report must never fail here.
+    try:
+        from angerona.core import report_attest
+        signed_payload = report_attest.attest(payload)
+    except Exception:
+        signed_payload = payload
+
     for d in _report_dirs(data_dir):
         try:
             d.mkdir(parents=True, exist_ok=True)
             (d / f"{basename}.txt").write_text(text, encoding="utf-8")
-            (d / f"{basename}.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            (d / f"{basename}.json").write_text(json.dumps(signed_payload, indent=2), encoding="utf-8")
         except Exception:
             continue  # best-effort — a write failure here should never break the report itself
 
@@ -404,7 +415,7 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
         stamp = time.strftime("%Y%m%d_%H%M%S")
         (hist_dir / f"{basename}_{stamp}.txt").write_text(text, encoding="utf-8")
         (hist_dir / f"{basename}_{stamp}.json").write_text(
-            json.dumps(payload, indent=2), encoding="utf-8")
+            json.dumps(signed_payload, indent=2), encoding="utf-8")
         _prune_report_history(hist_dir, basename)
     except Exception:
         pass
