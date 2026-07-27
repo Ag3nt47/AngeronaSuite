@@ -55,6 +55,7 @@ WEB_PORTS = {80, 443, 8080, 8443}
 # peer, but "seen once, forever trusted" would quietly stop watching after
 # the first day of uptime.
 NOVELTY_WINDOW_S = float(os.environ.get("ANGERONA_NETMON_NOVELTY_WINDOW_MIN", "60")) * 60
+_STATE_MAX = 10_000
 
 
 def _is_local(ip: str) -> bool:
@@ -83,7 +84,33 @@ class NetworkMonitorModule(BaseModule):
         super().__init__()
         self._seen: Set[Tuple] = set()
         self._known_hosts: Dict[str, float] = {}  # ip -> last-seen ts (any process)
-        self._known_pid_hosts: Set[Tuple[int, str]] = set()  # (pid, ip) this process has hit
+        self._known_pid_hosts: Dict[Tuple[int, str], float] = {}
+
+    @staticmethod
+    def _trim_recent(mapping: Dict, maximum: int = _STATE_MAX) -> Dict:
+        """Keep the newest bounded entries without changing novelty semantics."""
+        if len(mapping) <= maximum:
+            return mapping
+        newest = sorted(mapping.items(), key=lambda item: item[1], reverse=True)
+        return dict(newest[:maximum])
+
+    def _prune_state(self, active_connections: Set[Tuple], now: float) -> None:
+        """Drop closed sockets and expired PID/host identities.
+
+        This both bounds long-running state and lets a reused PID be assessed as
+        a new process instead of inheriting an old process's network history.
+        """
+        self._seen.intersection_update(active_connections)
+        pid_cutoff = now - NOVELTY_WINDOW_S
+        host_cutoff = now - (NOVELTY_WINDOW_S * 2)
+        self._known_pid_hosts = self._trim_recent({
+            key: seen_at for key, seen_at in self._known_pid_hosts.items()
+            if seen_at >= pid_cutoff
+        })
+        self._known_hosts = self._trim_recent({
+            host: seen_at for host, seen_at in self._known_hosts.items()
+            if seen_at >= host_cutoff
+        })
 
     def run(self) -> None:
         now0 = time.time()
@@ -96,7 +123,7 @@ class NetworkMonitorModule(BaseModule):
                 ip = c["raddr"].rsplit(":", 1)[0]
                 if not _is_local(ip):
                     self._known_hosts[ip] = now0
-                    self._known_pid_hosts.add((c["pid"], ip))
+                    self._known_pid_hosts[(c["pid"], ip)] = now0
         self.set_health(100, "")
         self.emit("Network monitor active.", Severity.INFO)
 
@@ -104,13 +131,16 @@ class NetworkMonitorModule(BaseModule):
         new_external = 0
         while not self.stopping:
             self.sleep(4)
-            for c in list_connections():
+            connections = list_connections()
+            active_connections: Set[Tuple] = set()
+            for c in connections:
                 if c["status"] != "ESTABLISHED" or not c["raddr"]:
                     continue
                 ip = c["raddr"].rsplit(":", 1)[0]
                 if _is_local(ip):
                     continue
                 key = (c["pid"], c["raddr"])
+                active_connections.add(key)
                 if key in self._seen:
                     continue
                 self._seen.add(key)
@@ -129,9 +159,14 @@ class NetworkMonitorModule(BaseModule):
                 now = time.time()
                 last_seen = self._known_hosts.get(ip)
                 is_novel_host = last_seen is None or (now - last_seen) > NOVELTY_WINDOW_S
-                is_novel_for_pid = (c["pid"], ip) not in self._known_pid_hosts
+                pid_host = (c["pid"], ip)
+                last_pid_seen = self._known_pid_hosts.get(pid_host)
+                is_novel_for_pid = (
+                    last_pid_seen is None or
+                    (now - last_pid_seen) > NOVELTY_WINDOW_S
+                )
                 self._known_hosts[ip] = now
-                self._known_pid_hosts.add((c["pid"], ip))
+                self._known_pid_hosts[pid_host] = now
 
                 if rport in SUSPICIOUS_PORTS:
                     self.emit(f"Connection to suspicious port {rport}: {c['raddr']} "
@@ -154,6 +189,8 @@ class NetworkMonitorModule(BaseModule):
                     self.emit(f"Process {c['pid']} made its first connection to already-known "
                               f"host {ip}:{rport} — new to this process, not to the machine.",
                               Severity.LOW, **c)
+
+            self._prune_state(active_connections, time.time())
 
             # One quiet rollup per minute for everything else (repeat
             # connections to already-known hosts on ordinary ports).

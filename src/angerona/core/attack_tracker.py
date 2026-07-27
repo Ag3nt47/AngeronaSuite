@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import math
 import time
+from collections import deque
 from dataclasses import dataclass, field
+from itertools import islice
 from typing import Sequence
 
 # ── 14-tactic order (ATT&CK Enterprise v14) ─────────────────────────────────
@@ -285,7 +287,7 @@ class TechniqueHeat:
     fullname: str         # "PowerShell"
     count:    int   = 0
     last_ts:  float = 0.0
-    event_ids: list[str] = field(default_factory=list)
+    event_ids: deque[str] = field(default_factory=lambda: deque(maxlen=100))
 
     @property
     def heat(self) -> float:
@@ -301,8 +303,6 @@ class TechniqueHeat:
         self.count += 1
         self.last_ts = time.time()
         self.event_ids.append(event_id)
-        if len(self.event_ids) > 100:
-            self.event_ids = self.event_ids[-100:]
 
 
 # ── Tracker ──────────────────────────────────────────────────────────────────
@@ -390,7 +390,9 @@ class AttackTracker:
                                   time.localtime(cell.last_ts))
                     if cell.last_ts else None
                 ),
-                "event_ids": cell.event_ids[-10:],  # last 10 only
+                # ``event_ids`` is an O(1) bounded deque on the event hot path;
+                # expose the same oldest-to-newest list of the last 10 IDs.
+                "event_ids": list(islice(reversed(cell.event_ids), 10))[::-1],
             }
         active = {tid: v for tid, v in matrix.items() if v["heat"] > 0}
         top = max(active, key=lambda t: active[t]["heat"]) if active else None

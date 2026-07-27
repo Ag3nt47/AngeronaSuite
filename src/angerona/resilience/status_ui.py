@@ -141,6 +141,15 @@ def build_status_widget(component: str, title: str | None = None):
             b_restart = QPushButton(f"Restart {self.component.capitalize()}")
             b_restart.clicked.connect(self._restart)
             btns.addWidget(b_sandbox); btns.addWidget(b_diag); btns.addWidget(b_restart)
+            if self.component == "watchdog":
+                b_core = QPushButton("Restart Angerona Core")
+                b_core.setObjectName("Danger")
+                b_core.setToolTip(
+                    "Authenticated manual recovery: clears Core SAFE_MODE and "
+                    "asks the Watchdog to terminate and relaunch Angerona."
+                )
+                b_core.clicked.connect(self._restart_core)
+                btns.addWidget(b_core)
             lay.addLayout(btns)
             return w
 
@@ -162,25 +171,41 @@ def build_status_widget(component: str, title: str | None = None):
                 QMessageBox.warning(self, "Diagnostics", f"Could not open the folder:\n{exc}")
 
         def _restart(self):
-            # Kill the component by PID; its supervisor (core manager / watchdog)
-            # respawns it automatically.
-            st = _read_status(self.component)
-            pid = st.get("pid")
-            if not pid:
-                QMessageBox.information(self, "Restart", "No live PID reported yet.")
+            if QMessageBox.question(
+                    self, "Restart",
+                    f"Restart {self.component}? This clears SAFE_MODE and asks its "
+                    "supervisor to relaunch it.") != QMessageBox.Yes:
                 return
-            if QMessageBox.question(self, "Restart",
-                                    f"Terminate {self.component} (PID {pid})? "
-                                    "It will be restarted automatically.") != QMessageBox.Yes:
+            self._request_restart(self.component, self.component.capitalize())
+
+        def _restart_core(self):
+            if QMessageBox.question(
+                    self, "Restart Angerona Core",
+                    "Restart the Angerona Core and dashboard now?\n\n"
+                    "The Watchdog will clear Core SAFE_MODE, stop the current Core "
+                    "if it is still present, and launch a clean replacement."
+                    ) != QMessageBox.Yes:
                 return
+            self._request_restart("core", "Angerona Core")
+
+        def _request_restart(self, target: str, label: str):
             try:
-                import psutil
-                psutil.Process(int(pid)).terminate()
-                QMessageBox.information(self, "Restart",
-                                        f"{self.component} (PID {pid}) terminated — the supervisor "
-                                        "will bring it back.")
+                from angerona.resilience.supervisor import request_restart
+                written = request_restart(target)
+                if not written:
+                    raise RuntimeError(
+                        "the authenticated restart request could not be written"
+                    )
+                QMessageBox.information(
+                    self, "Restart requested",
+                    f"{label} restart requested. The supervisor will clear "
+                    "SAFE_MODE and relaunch it on the next watchdog tick.",
+                )
             except Exception as exc:
-                QMessageBox.warning(self, "Restart", f"Could not terminate PID {pid}:\n{exc}")
+                QMessageBox.warning(
+                    self, "Restart",
+                    f"Could not request the {label} restart:\n{exc}",
+                )
 
         # ── refresh ──────────────────────────────────────────────────────────
         def refresh(self):

@@ -30,6 +30,7 @@ def _get_snapshot_dir() -> Path:
 
 _MAX_RESTARTS   = 3
 _RESTART_DELAYS = (5, 30, 120)   # seconds to wait between successive restart attempts
+_RESTART_JOIN_TIMEOUT = 0.25      # keep an operator restart responsive
 
 
 class BaseModule:
@@ -39,11 +40,22 @@ class BaseModule:
     category: str = "General"
     version: str = "1.0.0"
     enabled_by_default: bool = True
+    _RESTART_JOIN_TIMEOUT: float = _RESTART_JOIN_TIMEOUT
 
     def __init__(self) -> None:
         self._bus: Optional[EventBus] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        # Lifecycle generations prevent a restarted module from clearing the
+        # stop token underneath its exiting predecessor. ``stop()`` remains
+        # non-blocking; ``start()`` performs only a short join and, when needed,
+        # hands the restart to one daemon waiter.
+        self._lifecycle_lock = threading.RLock()
+        self._lifecycle_serial = 0
+        self._lifecycle_generation = 0
+        self._restart_request: Optional[tuple[int, float]] = None
+        self._restart_waiter: Optional[threading.Thread] = None
+        self._run_context = threading.local()
         self.status: str = "stopped"
         self.last_error: str = ""
         self.health: int = 100        # 0-100; how well the module is actually working
@@ -88,26 +100,118 @@ class BaseModule:
         note = self.health_note or self.last_error
         return False, f"status={self.status}, health={self.health}%" + (f" — {note}" if note else "")
 
-    def start(self, initial_delay: float = 0.0) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._initial_delay = max(0.0, float(initial_delay))
-        self._stop.clear()
+    def _spawn_generation_locked(self, initial_delay: float) -> None:
+        """Start one generation. Caller must hold ``_lifecycle_lock``."""
+        self._lifecycle_generation += 1
+        generation = self._lifecycle_generation
+        stop_event = threading.Event()
+        self._stop = stop_event
+        self._initial_delay = initial_delay
         self._first_cycle_complete.clear()
         self._cycle_count = 0
         self._last_cycle_completed_at = 0.0
-        self._thread = threading.Thread(target=self._wrapped_run, name=self.name, daemon=True)
-        self._thread.start()
+        self._restart_request = None
+        thread = threading.Thread(
+            target=self._wrapped_run,
+            args=(generation, stop_event, initial_delay),
+            name=self.name,
+            daemon=True,
+        )
+        self._thread = thread
         self.status = "running"
+        thread.start()
+
+    def _await_stopped_generation(self, old_thread: threading.Thread) -> None:
+        """Complete a deferred restart after the prior generation exits."""
+        old_thread.join()
+        with self._lifecycle_lock:
+            if self._restart_waiter is threading.current_thread():
+                self._restart_waiter = None
+            if self._thread is not old_thread:
+                return
+            request = self._restart_request
+            if request is None or request[0] != self._lifecycle_serial:
+                return
+            self._spawn_generation_locked(request[1])
+
+    def _ensure_restart_waiter_locked(self, old_thread: threading.Thread) -> None:
+        waiter = self._restart_waiter
+        if waiter is not None and waiter.is_alive():
+            return
+        waiter = threading.Thread(
+            target=self._await_stopped_generation,
+            args=(old_thread,),
+            name=f"{self.name}-restart",
+            daemon=True,
+        )
+        self._restart_waiter = waiter
+        waiter.start()
+
+    def start(self, initial_delay: float = 0.0) -> None:
+        """Start the module, or safely restart an exiting generation.
+
+        A normal duplicate ``start()`` is still a no-op. If ``stop()`` has
+        already signalled a live generation, wait briefly for its interruptible
+        loop to finish. A slow blocking operation never holds the caller beyond
+        the bounded join: one daemon waiter starts the requested generation only
+        after the old main thread (and its generation-owned helpers) has exited.
+        """
+        delay = max(0.0, float(initial_delay))
+        with self._lifecycle_lock:
+            old_thread = self._thread
+            if old_thread is None or not old_thread.is_alive():
+                self._lifecycle_serial += 1
+                self._spawn_generation_locked(delay)
+                return
+            if not self._stop.is_set():
+                return
+            self._lifecycle_serial += 1
+            request_serial = self._lifecycle_serial
+            self._restart_request = (request_serial, delay)
+            self.status = "restarting"
+
+        # Never join ourselves. The deferred waiter is safe for the uncommon
+        # case where a module requests its own restart.
+        if old_thread is not threading.current_thread():
+            old_thread.join(timeout=max(0.0, float(self._RESTART_JOIN_TIMEOUT)))
+
+        with self._lifecycle_lock:
+            if self._thread is not old_thread:
+                return
+            request = self._restart_request
+            if request is None or request[0] != request_serial:
+                return
+            if not old_thread.is_alive():
+                self._spawn_generation_locked(request[1])
+                return
+            self._ensure_restart_waiter_locked(old_thread)
 
     def stop(self) -> None:
-        self._stop.set()
-        self.status = "stopped"
+        """Signal the active generation and return without waiting for it."""
+        with self._lifecycle_lock:
+            self._lifecycle_serial += 1
+            self._restart_request = None
+            self._stop.set()
+            self.status = "stopped"
 
     # ── Helpers available to subclasses ─────────────────────────────────────
     @property
     def stopping(self) -> bool:
-        return self._stop.is_set()
+        return self.generation_stop_event().is_set()
+
+    def generation_stop_event(self) -> threading.Event:
+        """Return the immutable stop token for the calling run generation.
+
+        The module's main thread receives a thread-local token. Helper threads
+        should capture this value in ``run()`` and receive it explicitly; they
+        must not consult the mutable ``self._stop`` after a restart.
+        """
+        return getattr(self._run_context, "stop_event", self._stop)
+
+    @property
+    def lifecycle_generation(self) -> int:
+        """Monotonic generation identifier, useful for diagnostics/tests."""
+        return self._lifecycle_generation
 
     def sleep(self, seconds: float) -> None:
         """Interruptible sleep — returns early if the module is stopping.
@@ -122,7 +226,9 @@ class BaseModule:
         # Publishing that boundary here gives lifecycle orchestration one
         # uniform first-cycle signal across all scanner implementations.
         self.mark_cycle_complete()
-        self._stop.wait(timeout=seconds * getattr(self, "_throttle", 1.0))
+        self.generation_stop_event().wait(
+            timeout=seconds * getattr(self, "_throttle", 1.0)
+        )
 
     def mark_cycle_complete(self) -> None:
         """Publish completion of one module work cycle."""
@@ -155,7 +261,12 @@ class BaseModule:
         raise NotImplementedError
 
     # ── Internal ────────────────────────────────────────────────────────────
-    def _wrapped_run(self) -> None:
+    def _wrapped_run(
+        self,
+        generation: int,
+        stop_event: threading.Event,
+        initial_delay: float,
+    ) -> None:
         """Fault-isolated run wrapper with 3-try throttled restart and crash snapshot.
 
         On each unhandled exception:
@@ -170,9 +281,11 @@ class BaseModule:
         # (often full process/connection scan) at t=0 — that simultaneous burst
         # is what made the window unresponsive right after launch. Interruptible
         # so stop() during the delay still exits cleanly.
-        if self._initial_delay:
-            self._stop.wait(timeout=self._initial_delay)
-            if self.stopping:
+        self._run_context.generation = generation
+        self._run_context.stop_event = stop_event
+        if initial_delay:
+            stop_event.wait(timeout=initial_delay)
+            if stop_event.is_set():
                 return
         for attempt in range(_MAX_RESTARTS):
             try:
@@ -193,8 +306,8 @@ class BaseModule:
                         traceback=tb[:500],
                     )
                     # Interruptible delay — respect stop() during the back-off period
-                    self._stop.wait(timeout=delay)
-                    if self.stopping:
+                    stop_event.wait(timeout=delay)
+                    if stop_event.is_set():
                         break
                     self.status = "running"
                 else:

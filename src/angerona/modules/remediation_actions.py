@@ -690,7 +690,7 @@ def apply_remediation(weaknesses: list[dict], quarantine_dir, apply: bool = Fals
     def _audit(mitre, action, outcome, verified=-1, rec=None):
         if _rlog is not None:
             try:
-                _rlog.log(
+                return _rlog.log(
                     trigger=trigger or "remediation_actions",
                     mitre=mitre or "-",
                     action_key=action.key if action else "none",
@@ -702,6 +702,7 @@ def apply_remediation(weaknesses: list[dict], quarantine_dir, apply: bool = Fals
                 )
             except Exception:
                 pass
+        return None
 
     for w in weaknesses:
         mitre = w.get("mitre_id") or w.get("mitre") or "-"
@@ -728,13 +729,19 @@ def apply_remediation(weaknesses: list[dict], quarantine_dir, apply: bool = Fals
                 rb = action.rollback(rec)
                 rec["rolled_back"] = rb.get("ok")
                 _log("CRITICAL", f"{action.key} FAILED verify — rolled back: {rec}")
-                _audit(mitre, action, "rolled_back", verified=0, rec=rec)
+                proof = _audit(
+                    mitre, action, "rolled_back", verified=0, rec=rec
+                )
+                if proof:
+                    rec["proof_receipt"] = proof
                 skipped += 1
             else:
                 applied += 1
-                records.append(rec)
                 _log("INFO", f"APPLIED {action.key}: {rec}")
-                _audit(mitre, action, "applied", verified=1, rec=rec)
+                proof = _audit(mitre, action, "applied", verified=1, rec=rec)
+                if proof:
+                    rec["proof_receipt"] = proof
+                records.append(rec)
         except Exception as exc:
             skipped += 1
             _log("CRITICAL", f"{action.key} errored: {exc}")

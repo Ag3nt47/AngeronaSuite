@@ -29,7 +29,7 @@ AI_SYSTEM = (
     "run: help, ps, find <name>, kill <pid>, suspend <pid>, resume <pid>, "
     "prio <pid> <low|normal|high>, conns [pid], tree <pid>, modules, "
     "module <name> <on|off|restart>, threat, incidents, incident <id>, coverage, "
-    "remlog [n|<T####>], aar, schtasks, services [filter], asn <ip>, lateral, "
+    "enterprise, remlog [n|<T####>], aar, schtasks, services [filter], asn <ip>, lateral, "
     "reg <key>, dump <pid>, autoruns, portmap, "
     "academy (explain/stages/style/coach/"
     "achievements/profile/tune), ask <question>, clear. When a user "
@@ -67,6 +67,8 @@ class CommandConsole:
             "uptime": self._uptime, "env": self._env, "status": self._env,
             "incidents": self._incidents, "incident": self._incident,
             "coverage": self._coverage, "attack": self._coverage, "mitre": self._coverage,
+            "enterprise": self._enterprise_readiness,
+            "readiness": self._enterprise_readiness,
             "remlog": self._remlog, "remediationlog": self._remlog, "actions": self._remlog,
             # Enterprise additions
             "schtasks": self._schtasks, "tasks": self._schtasks,
@@ -239,6 +241,7 @@ class CommandConsole:
             "  incidents [n]             correlated incidents, newest first (risk-scored)\n"
             "  incident <id>             full timeline of one incident (id fragment ok)\n"
             "  coverage                  MITRE ATT&CK detect/simulate/remediate heatmap (alias: attack, mitre)\n"
+            "  enterprise                evidence-based enterprise readiness and remaining fleet gaps\n"
             "  test [module]             run a self-test / stress drill (all, or one)\n"
             "  query <SELECT ...>        SQL threat-hunting over processes/connections/ports\n"
             "  aar                       print the latest Shark Attack After-Action Report\n"
@@ -660,6 +663,14 @@ class CommandConsole:
     def _coverage(self, args: List[str]) -> str:
         from angerona.core import attack_coverage
         return attack_coverage.render()
+
+    def _enterprise_readiness(self, args: List[str]) -> str:
+        from angerona.core.enterprise_readiness import assess, render_text
+        from angerona.core.remediation_log import get_log
+
+        return render_text(
+            assess(self.manager, self.bus, self.config, get_log())
+        )
 
     def _remlog(self, args: List[str]) -> str:
         """remlog [n|<T####>]  — show remediation action audit log."""

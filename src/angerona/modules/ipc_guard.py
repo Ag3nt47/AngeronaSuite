@@ -85,6 +85,59 @@ def authenticate(key: bytes, host: str = _HOST, port: int = _PORT,
         return resp == "OK"
 
 
+class _IpcGeneration:
+    """Socket and helper ownership for one module run generation."""
+
+    def __init__(self, generation_stop: threading.Event) -> None:
+        self.generation_stop = generation_stop
+        self.helper_stop = threading.Event()
+        self.lock = threading.RLock()
+        self.srv: socket.socket | None = None
+        self.accept_thread: threading.Thread | None = None
+        self.connections: set[socket.socket] = set()
+        self.helpers: set[threading.Thread] = set()
+
+    def stopping(self) -> bool:
+        return self.generation_stop.is_set() or self.helper_stop.is_set()
+
+    def retire(self) -> None:
+        """Wake/close this generation without mutating a later generation."""
+        self.helper_stop.set()
+        with self.lock:
+            srv = self.srv
+            self.srv = None
+            conns = list(self.connections)
+        if srv is not None:
+            try:
+                srv.close()
+            except OSError:
+                pass
+        for conn in conns:
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def join_helpers(self) -> None:
+        """Wait off the caller thread until every owned helper has exited."""
+        current = threading.current_thread()
+        accept_thread = self.accept_thread
+        if accept_thread is not None and accept_thread is not current:
+            accept_thread.join()
+        while True:
+            with self.lock:
+                helpers = [thread for thread in self.helpers
+                           if thread is not current]
+            if not helpers:
+                return
+            for thread in helpers:
+                thread.join()
+
+
 class IpcGuardModule(BaseModule):
     CODE = "AUTH"
     NAME = "Zero-Trust Local IPC Guard"
@@ -99,6 +152,8 @@ class IpcGuardModule(BaseModule):
         self.state_lock = threading.Lock()
         self._key: bytes = b""
         self._srv: socket.socket | None = None
+        self._server_lock = threading.RLock()
+        self._server_generation: _IpcGeneration | None = None
         self.accepted = 0
         self.denied = 0
 
@@ -136,18 +191,67 @@ class IpcGuardModule(BaseModule):
             except Exception:
                 pass
 
-    def _accept_loop(self) -> None:
-        while not self.stopping and self._srv is not None:
+    def _serve_generation_conn(
+        self,
+        generation: _IpcGeneration,
+        conn: socket.socket,
+        addr,
+    ) -> None:
+        try:
+            if not generation.stopping():
+                self._serve_conn(conn, addr)
+        finally:
             try:
-                conn, addr = self._srv.accept()
+                conn.close()
+            except OSError:
+                pass
+            with generation.lock:
+                generation.connections.discard(conn)
+                generation.helpers.discard(threading.current_thread())
+
+    def _accept_loop(self, generation: _IpcGeneration) -> None:
+        srv = generation.srv
+        if srv is None:
+            return
+        while not generation.stopping():
+            try:
+                conn, addr = srv.accept()
             except socket.timeout:
                 continue
             except OSError:
                 break
-            threading.Thread(target=self._serve_conn, args=(conn, addr),
-                             name="AUTH-conn", daemon=True).start()
+            with generation.lock:
+                if generation.stopping():
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
+                    break
+                helper = threading.Thread(
+                    target=self._serve_generation_conn,
+                    args=(generation, conn, addr),
+                    name="AUTH-conn",
+                    daemon=True,
+                )
+                generation.connections.add(conn)
+                generation.helpers.add(helper)
+                helper.start()
 
     def run(self) -> None:
+        generation = _IpcGeneration(self.generation_stop_event())
+        with self._server_lock:
+            self._server_generation = generation
+        try:
+            self._run_generation(generation)
+        finally:
+            generation.retire()
+            generation.join_helpers()
+            with self._server_lock:
+                if self._server_generation is generation:
+                    self._server_generation = None
+                    self._srv = None
+
+    def _run_generation(self, generation: _IpcGeneration) -> None:
         from angerona.core.config import Config
         self._key = _load_or_create_key(Config().data_dir / "ipc_auth.key")
         try:
@@ -156,8 +260,16 @@ class IpcGuardModule(BaseModule):
             srv.bind((_HOST, _PORT))     # loopback only
             srv.listen(16)
             srv.settimeout(1.0)
-            self._srv = srv
+            with generation.lock:
+                generation.srv = srv
+            with self._server_lock:
+                if self._server_generation is generation:
+                    self._srv = srv
         except OSError as exc:
+            try:
+                srv.close()
+            except (OSError, UnboundLocalError):
+                pass
             self.last_error = str(exc)
             self.set_health(40, f"could not bind {_HOST}:{_PORT} ({exc}) — is a guard already up?")
             # keep module alive but idle; sign/verify helpers still usable
@@ -166,7 +278,14 @@ class IpcGuardModule(BaseModule):
             return
         self.emit(f"AUTH online — zero-trust HMAC guard on {_HOST}:{_PORT} (default-deny).",
                   Severity.INFO)
-        threading.Thread(target=self._accept_loop, name="AUTH-accept", daemon=True).start()
+        accept_thread = threading.Thread(
+            target=self._accept_loop,
+            args=(generation,),
+            name="AUTH-accept",
+            daemon=True,
+        )
+        generation.accept_thread = accept_thread
+        accept_thread.start()
         while not self.stopping:
             with self.state_lock:
                 a, d = self.accepted, self.denied
@@ -175,12 +294,10 @@ class IpcGuardModule(BaseModule):
 
     def stop(self) -> None:
         super().stop()
-        if self._srv is not None:
-            try:
-                self._srv.close()
-            except Exception:
-                pass
-            self._srv = None
+        with self._server_lock:
+            generation = self._server_generation
+        if generation is not None:
+            generation.retire()
 
     def self_test(self) -> tuple[bool, str]:
         """Prove HMAC verify (accept valid / reject tampered) AND a real loopback

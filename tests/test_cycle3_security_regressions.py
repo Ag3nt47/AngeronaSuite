@@ -4,7 +4,7 @@ import json
 import os
 
 from angerona.connectors.teams_bot import TeamsBot
-from angerona.core import privacy, secure_store
+from angerona.core import privacy, report_attest, secure_store
 from angerona.engines import ai_consult
 from angerona.modules.cloud_escalation import _cloud_prompt
 from angerona.modules.posture_hardening import PostureHardening
@@ -74,7 +74,10 @@ def test_teams_display_name_cannot_impersonate_allowed_id():
     assert bot.handle_activity(activity) is None
 
 
-def test_purple_candidate_requires_a_distinct_later_run(tmp_path):
+def test_purple_candidate_requires_a_distinct_later_run(tmp_path, monkeypatch):
+    key_path = tmp_path / "bus.key"
+    key_path.write_text(bytes(range(32)).hex(), encoding="ascii")
+    monkeypatch.setattr(report_attest, "_key_path", lambda: key_path)
     module = PostureHardening(data_dir=tmp_path)
     module.record_weakness("T1003", "Credential Access", "High", None,
                            source="redteam")
@@ -89,12 +92,12 @@ def test_purple_candidate_requires_a_distinct_later_run(tmp_path):
         }],
     }
     aar = tmp_path / "redteam_aar.json"
-    aar.write_text(json.dumps(report), encoding="utf-8")
+    report_attest.write_signed_json(aar, report)
     module.ingest_redteam_report(aar)
     assert module.weaknesses("VULNERABLE")
 
     report["run_id"] = "run-b"
-    aar.write_text(json.dumps(report), encoding="utf-8")
+    report_attest.write_signed_json(aar, report)
     module.ingest_redteam_report(aar)
     assert any(row["mitre_id"] == "T1003" for row in module.weaknesses("PATCHED"))
 

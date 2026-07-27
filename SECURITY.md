@@ -5,7 +5,11 @@
 Security fixes are made against the current release line. Use the newest
 checksummed, provenance-attested GitHub release and verify its published
 SHA-256 checksum and build attestation. Current builds are not Authenticode
-signed, so Windows may display **Unknown Publisher**.
+signed, so Windows may display **Unknown Publisher**. The release bundle's
+checksum manifest detects corruption but does not establish publisher identity
+when the archive, manifest, and installer come from the same unsigned source.
+Publisher authentication remains open until the project signs the installer and
+executables (or ships an equivalently signed MSIX).
 
 ## Reporting a vulnerability
 
@@ -31,3 +35,8 @@ with explicit destinations and allowlists.
 Red-team simulations create inert markers only. They are not authorization to
 run real exploits, steal credentials, establish persistence, or test systems you
 do not own or administer.
+
+After-Action Reports used by Posture Hardening are HMAC-authenticated and strict
+verification is enabled by default. Unsigned, tampered, or unverifiable reports
+fail closed. Automatic response during a simulation is limited to recognized
+drill artifacts and tagged drill processes inside the selected scope.

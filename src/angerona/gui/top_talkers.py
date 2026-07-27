@@ -10,13 +10,14 @@ psutil only for the connection walk; enrichment reuses core.net_interfaces.
 from __future__ import annotations
 
 import socket
+import weakref
 from collections import defaultdict
-from typing import Optional
+from typing import Callable, Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QDialog, QHBoxLayout, QHeaderView, QLabel, QPushButton, QTableWidget,
+    QDialog, QHBoxLayout, QHeaderView, QLabel, QMessageBox, QPushButton, QTableWidget,
     QTableWidgetItem, QVBoxLayout,
 )
 
@@ -33,6 +34,133 @@ except Exception:   # pragma: no cover
 
     def interface_type_for_local_ip(ip: str) -> str:  # type: ignore
         return "Physical"
+
+
+def _rdns(ip: str) -> str:
+    try:
+        return socket.gethostbyaddr(ip)[0]
+    except Exception:
+        return "no PTR"
+
+
+def _collect_top_talkers(resolve_hostnames: bool) -> dict:
+    """Collect and enrich one connection snapshot away from the Qt thread."""
+    if psutil is None:
+        return {"error": "psutil unavailable — cannot enumerate connections."}
+
+    by_pid: dict = defaultdict(lambda: {
+        "name": "?",
+        "conns": 0,
+        "ext": 0,
+        "remotes": [],
+        "remote_ips": [],
+        "iface": "",
+    })
+    total_ext = 0
+    try:
+        conns = psutil.net_connections(kind="inet")
+    except Exception as exc:
+        return {"error": f"Could not read connections: {exc}"}
+
+    for conn in conns:
+        if conn.status != psutil.CONN_ESTABLISHED or not conn.raddr:
+            continue
+        pid = conn.pid or 0
+        rec = by_pid[pid]
+        rec["conns"] += 1
+        remote_ip = conn.raddr.ip
+        rec["remotes"].append(f"{remote_ip}:{conn.raddr.port}")
+        rec["remote_ips"].append(remote_ip)
+        if not rec["iface"]:
+            try:
+                local_ip = conn.laddr.ip if conn.laddr else ""
+                rec["iface"] = interface_type_for_local_ip(local_ip)
+            except Exception:
+                rec["iface"] = ""
+        if is_untrusted_external(remote_ip):
+            rec["ext"] += 1
+            total_ext += 1
+
+    for pid, rec in by_pid.items():
+        if pid:
+            try:
+                rec["name"] = psutil.Process(pid).name()
+            except Exception:
+                rec["name"] = "?"
+        else:
+            rec["name"] = "(system)"
+
+    rows = []
+    ordered = sorted(
+        by_pid.items(),
+        key=lambda item: -item[1]["ext"] or -item[1]["conns"],
+    )
+    for pid, rec in ordered:
+        top = rec["remotes"][0] if rec["remotes"] else ""
+        if top and resolve_hostnames:
+            top = f"{top}  ({_rdns(rec['remote_ips'][0])})"
+        rows.append({
+            "pid": pid,
+            "name": rec["name"],
+            "conns": rec["conns"],
+            "ext": rec["ext"],
+            "top": top,
+            "iface": rec["iface"],
+        })
+    return {"rows": rows, "process_count": len(by_pid), "total_ext": total_ext}
+
+
+class _TopTalkersWorkerSignals(QObject):
+    finished = Signal(object)
+
+
+class _TopTalkersWorker(QRunnable):
+    """One-shot collector. Its signal is delivered back on the Qt thread."""
+
+    def __init__(self, resolve_hostnames: bool) -> None:
+        super().__init__()
+        self._resolve_hostnames = resolve_hostnames
+        self.signals = _TopTalkersWorkerSignals()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            snapshot = _collect_top_talkers(self._resolve_hostnames)
+        except Exception as exc:
+            snapshot = {"error": f"Could not collect connections: {exc}"}
+        self.signals.finished.emit(snapshot)
+
+
+class _AskAiWorkerSignals(QObject):
+    finished = Signal(int, object)
+
+
+class _AskAiWorker(QRunnable):
+    """Run one potentially slow local-AI request without touching Qt widgets."""
+
+    def __init__(
+        self,
+        token: int,
+        request: Callable[[str, int, str], str],
+        name: str,
+        pid: int,
+        dest: str,
+    ) -> None:
+        super().__init__()
+        self._token = token
+        self._request = request
+        self._name = name
+        self._pid = pid
+        self._dest = dest
+        self.signals = _AskAiWorkerSignals()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = self._request(self._name, self._pid, self._dest)
+        except Exception as exc:
+            result = f"Local AI request failed: {exc}"
+        self.signals.finished.emit(self._token, result)
 
 
 class TopTalkersDialog(QDialog):
@@ -87,6 +215,16 @@ class TopTalkersDialog(QDialog):
         row.addWidget(close)
         root.addLayout(row)
 
+        # Running jobs belong to the application pool, so closing this dialog
+        # never waits on a slow OS connection walk or PTR lookup.
+        self._pool = QThreadPool.globalInstance()
+        self._refresh_in_flight = False
+        self._ai_in_flight = False
+        self._ai_request_token = 0
+        self._ai_context: Optional[dict] = None
+        self._accept_results = True
+        self.finished.connect(self._stop_refreshes)
+
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
         self._timer.start(4000)
@@ -97,62 +235,52 @@ class TopTalkersDialog(QDialog):
         if psutil is None:
             self.summary.setText("psutil unavailable — cannot enumerate connections.")
             return
-        by_pid: dict = defaultdict(lambda: {"name": "?", "conns": 0, "ext": 0,
-                                            "remotes": [], "iface": ""})
-        total_ext = 0
-        try:
-            conns = psutil.net_connections(kind="inet")
-        except Exception as exc:
-            self.summary.setText(f"Could not read connections: {exc}")
+        if not self._accept_results or self._refresh_in_flight:
             return
-        for c in conns:
-            if c.status != psutil.CONN_ESTABLISHED or not c.raddr:
-                continue
-            pid = c.pid or 0
-            rec = by_pid[pid]
-            rec["conns"] += 1
-            rip = c.raddr.ip
-            rec["remotes"].append(f"{rip}:{c.raddr.port}")
-            if not rec["iface"]:
-                try:
-                    rec["iface"] = interface_type_for_local_ip(c.laddr.ip if c.laddr else "")
-                except Exception:
-                    rec["iface"] = ""
-            if is_untrusted_external(rip):
-                rec["ext"] += 1
-                total_ext += 1
+        self._refresh_in_flight = True
+        worker = _TopTalkersWorker(self._resolve_chk.isChecked())
+        worker.signals.finished.connect(self._apply_snapshot)
+        try:
+            self._pool.start(worker)
+        except Exception as exc:
+            self._refresh_in_flight = False
+            self.summary.setText(f"Could not start connection refresh: {exc}")
 
-        # names
-        for pid, rec in by_pid.items():
-            if pid:
-                try:
-                    rec["name"] = psutil.Process(pid).name()
-                except Exception:
-                    rec["name"] = "?"
-            else:
-                rec["name"] = "(system)"
-
+    @Slot(object)
+    def _apply_snapshot(self, snapshot: object) -> None:
+        """Render a completed snapshot; Qt widgets are touched only here."""
+        self._refresh_in_flight = False
+        if not self._accept_results or not isinstance(snapshot, dict):
+            return
+        error = snapshot.get("error")
+        if error:
+            self.summary.setText(str(error))
+            return
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
-        for pid, rec in sorted(by_pid.items(), key=lambda kv: -kv[1]["ext"] or -kv[1]["conns"]):
+        for rec in snapshot.get("rows", []):
             r = self.table.rowCount()
             self.table.insertRow(r)
             self.table.setItem(r, 0, QTableWidgetItem(rec["name"]))
-            self.table.setItem(r, 1, self._num(pid))
+            self.table.setItem(r, 1, self._num(rec["pid"]))
             self.table.setItem(r, 2, self._num(rec["conns"]))
             ext_item = self._num(rec["ext"])
             if rec["ext"]:
                 ext_item.setForeground(QColor("#ef4444"))
             self.table.setItem(r, 3, ext_item)
-            top = rec["remotes"][0] if rec["remotes"] else ""
-            if top and self._resolve_chk.isChecked():
-                top = f"{top}  ({self._rdns(top.rsplit(':', 1)[0])})"
-            self.table.setItem(r, 4, QTableWidgetItem(top))
+            self.table.setItem(r, 4, QTableWidgetItem(rec["top"]))
             self.table.setItem(r, 5, QTableWidgetItem(rec["iface"]))
         self.table.setSortingEnabled(True)
         self.summary.setText(
-            f"{len(by_pid)} process(es) with live outbound connections · "
-            f"{total_ext} connection(s) to untrusted external hosts")
+            f"{snapshot.get('process_count', 0)} process(es) with live outbound connections · "
+            f"{snapshot.get('total_ext', 0)} connection(s) to untrusted external hosts")
+
+    @Slot(int)
+    def _stop_refreshes(self, _result: int) -> None:
+        self._accept_results = False
+        self._timer.stop()
+        if self._ai_context is not None:
+            self._ai_context["abandoned"] = True
 
     # ── per-process actions ──────────────────────────────────────────────────
     def _on_process(self, row: int, _col: int) -> None:
@@ -173,6 +301,9 @@ class TopTalkersDialog(QDialog):
         lay = QVBoxLayout(dlg)
         lay.addWidget(QLabel(f"<b>{name}</b>  (PID {pid})<br>Top remote: {dest or '—'}"))
         lay.addWidget(QLabel("Choose an action for this process's network activity:"))
+        ai_status = QLabel("")
+        ai_status.setStyleSheet("color:#93c5fd;")
+        lay.addWidget(ai_status)
         rowb = QHBoxLayout()
         b_allow = QPushButton("✓ Allow"); b_block = QPushButton("⛔ Block")
         b_ai = QPushButton("🤖 Ask AI"); b_close = QPushButton("Close")
@@ -204,13 +335,99 @@ class TopTalkersDialog(QDialog):
             self.refresh()
 
         def _ai():
-            QMessageBox.information(dlg, "AI recommendation", self._ask_ai(name, pid, dest))
+            self._start_ai_request(name, pid, dest, dlg, b_ai, ai_status)
 
         b_allow.clicked.connect(_allow)
         b_block.clicked.connect(_block)
         b_ai.clicked.connect(_ai)
         b_close.clicked.connect(dlg.accept)
         dlg.exec()
+
+    def _start_ai_request(
+        self,
+        name: str,
+        pid: int,
+        dest: str,
+        action_dialog: QDialog,
+        button: QPushButton,
+        status: QLabel,
+    ) -> bool:
+        """Start one Ask-AI action and return immediately to the Qt event loop."""
+        if not self._accept_results:
+            return False
+        if self._ai_in_flight:
+            status.setText("An AI recommendation is already in progress.")
+            return False
+
+        self._ai_request_token += 1
+        token = self._ai_request_token
+        self._ai_in_flight = True
+        self._ai_context = {
+            "token": token,
+            "dialog": weakref.ref(action_dialog),
+            "button": weakref.ref(button),
+            "status": weakref.ref(status),
+            "abandoned": False,
+        }
+        button.setEnabled(False)
+        button.setText("Asking AI…")
+        status.setText("Contacting local AI…")
+        action_dialog.finished.connect(
+            lambda _result, request_token=token: self._abandon_ai_result(request_token)
+        )
+
+        worker = _AskAiWorker(token, self._ask_ai, name, pid, dest)
+        worker.signals.finished.connect(self._handle_ai_result)
+        try:
+            self._pool.start(worker)
+        except Exception as exc:
+            self._ai_in_flight = False
+            self._ai_context = None
+            button.setEnabled(True)
+            button.setText("🤖 Ask AI")
+            status.setText(f"Could not start AI request: {exc}")
+            return False
+        return True
+
+    @Slot(int, object)
+    def _handle_ai_result(self, token: int, result: object) -> None:
+        """Apply an AI result on Qt only if its action dialog is still valid."""
+        context = self._ai_context
+        if context is None or token != context.get("token"):
+            return
+        self._ai_in_flight = False
+        self._ai_context = None
+        if not self._accept_results or context.get("abandoned"):
+            return
+
+        dialog = self._live_widget(context["dialog"])
+        button = self._live_widget(context["button"])
+        status = self._live_widget(context["status"])
+        if dialog is None or button is None or status is None:
+            return
+
+        button.setEnabled(True)
+        button.setText("🤖 Ask AI")
+        status.setText("Recommendation ready.")
+        QMessageBox.information(dialog, "AI recommendation", str(result))
+
+    def _abandon_ai_result(self, token: int) -> None:
+        context = self._ai_context
+        if context is not None and token == context.get("token"):
+            # Keep the request marked in-flight until its worker actually exits,
+            # but never target widgets belonging to this closed dialog.
+            context["abandoned"] = True
+
+    @staticmethod
+    def _live_widget(ref: weakref.ReferenceType):
+        widget = ref()
+        if widget is None:
+            return None
+        try:
+            from shiboken6 import isValid
+            return widget if isValid(widget) else None
+        except Exception:
+            return widget
 
     def _record_list(self, fname: str, pid: int, name: str, dest: str) -> None:
         import json, time
@@ -260,7 +477,4 @@ class TopTalkersDialog(QDialog):
 
     @staticmethod
     def _rdns(ip: str) -> str:
-        try:
-            return socket.gethostbyaddr(ip)[0]
-        except Exception:
-            return "no PTR"
+        return _rdns(ip)

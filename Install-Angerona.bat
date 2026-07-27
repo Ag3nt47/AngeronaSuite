@@ -18,7 +18,7 @@ setlocal EnableExtensions
 title Angerona Installer
 cd /d "%~dp0"
 set "ANGERONA_DATA=%~dp0runtime-data"
-set "ANGERONA_DIAG_DIR=%~dp0diagnostics"
+set "ANGERONA_DIAG_DIR=%~dp0runtime-data\diagnostics"
 set "TEMP=%~dp0runtime-data\tmp"
 set "TMP=%TEMP%"
 set "ANGERONA_INSTALL_ROOT=%~dp0"

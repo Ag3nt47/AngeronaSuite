@@ -557,3 +557,122 @@ not-responding evidence. Full measurements and gates are in
   email and one commit containing removed sensitive screenshots. Rewriting or
   replacing history is intentionally deferred until the owner explicitly chooses
   that destructive publication step.
+
+## Round 1 — Innovation
+
+Cycle 4 research/design refresh completed 27 July 2026. Six defensive-only
+proposals were checked against the 63-module tree and the prior innovation
+backlog; no product code was changed. Full data flows, UI placement, safety
+gates, tests, phases, limitations, and primary-source citations are in
+`analysis/loop/innovation_ideas.md`.
+
+- **1 / S–M — NTFS Journal Ransomware Pulse:** consume the native USN change
+  stream for early, content-free burst detection; journal-only evidence can
+  alert but can never invent a PID or trigger containment.
+- **2 / S–M — NTLM Exit Radar:** build a pseudonymized local compatibility graph
+  before Windows disables NTLM by default; hardening remains audit-first and
+  review-gated.
+- **3 / M — Stack-to-Image Provenance Fuse:** score the Sysmon call traces
+  Angerona already captures and add targeted image/ETW enrichment, never
+  always-on whole-host stack profiling.
+- **4 / M–L — Local Model Airlock:** centralize model calls, then place a
+  dedicated worker behind restricted-token/AppContainer filesystem, process,
+  UI, and network boundaries.
+- **5 / M — QUIC Sightline:** correlate MsQuic/SMB audit metadata, UDP ownership,
+  DNS, and cadence without decrypting or retaining payloads.
+- **6 / L — Split-Token Angerona:** keep UI/ARIA unelevated, isolate privileged
+  read-only sensors, and use a short-lived typed action broker for approved host
+  changes.
+
+Research anchors include MITRE ATT&CK's May 2026 detection updates, Microsoft's
+2026 NTLM and Administrator Protection direction, the June 2026 experimental
+Windows sandbox API, Windows USN/Sysmon/MsQuic documentation, NIST AI 600-1, and
+the HTTP/3 standard.
+
+## Cycle 4 / Round 1 — Performance
+
+- Inspected both diagnostics trees: 125 total recorded GUI stalls (root 101,
+  runtime-data 24), including repeated table rebuild, SQLite, posture-history,
+  allow-list, threat-intel, and heatmap stacks. Current runtime core status is
+  340.8 MiB RSS / 38 threads; older stall dumps listed 80–87 mostly sleeping or
+  queue-blocked threads. Native access-violation dumps remain non-attributable.
+- **Applied:** ATT&CK technique event-ID retention now uses an O(1) bounded deque
+  (**14.17×** saturated-hit micro-benchmark); Compliance Mapper's exact
+  newest-2,000 history uses O(1) deque eviction (**3.90×**); HEAL skips unchanged
+  crash-directory globs (**816×** at 2,000 filenames); StatusReporter reuses one
+  consistent EventBus snapshot (**19%** lower snapshot time).
+- **Proposed:** move Top Talkers connection/PTR work off Qt; retention/reuse-safe
+  cleanup for network and forensics PID state; explicit Scapy sniffer stop/join;
+  and a separately authorized fix for newest-first EventBus cursor consumers.
+- Gates: changed-source `py_compile` PASS; focused performance tests **4/4**;
+  combined performance regressions **26/26**; Compliance Mapper and HEAL module
+  self-tests PASS. Full evidence:
+  `analysis/loop/cycle4/round1/performance_summary.md`.
+
+## Cycle 4 / Rounds 2–3 — Security, Purple proof, lifecycle, and recovery
+
+- **Security/privacy:** live-alert cloud analysis now has its own default-off
+  consent and a recursively redacted, bounded provider payload. Signed AAR
+  verification and manual report resolution fail closed. Failed response events
+  cannot inflate remediation, and temporary drill response is restricted to
+  recognized drill artifacts/tagged drill processes inside the selected scope.
+- **Blue/Purple:** Top Talkers OS/PTR and AI work plus Upgrade Console model
+  discovery/checks run asynchronously with single-flight and stale-result
+  guards. ARP capture uses generation-local shutdown. Purple candidates still
+  require exact proof from a distinct later drill and a future miss reopens them.
+- **Lifecycle/performance:** BaseModule restart is join-aware and monotonic.
+  SPEC workers, AI recovery pingers, IPC acceptors/clients, and ARP helpers
+  cannot overlap a new generation. Network socket/PID knowledge, Forensics
+  capture memory, and HEAL filename state are pruned and bounded.
+- **Watchdog/Core recovery:** the Watchdog window now has **Restart Angerona
+  Core**. Target-specific authenticated command files prevent another supervisor
+  from consuming the request. The watchdog clears SAFE_MODE, binds an adopted
+  heartbeat PID to the configured executable and Angerona command identity,
+  terminates that Core, and relaunches it. A failed identity-safe termination
+  refuses the restart instead of spawning a duplicate. Dead/suspended Core
+  respawn remains automatic.
+- **Final integrated gates:** repository pytest **133 passed / 1 skipped / 0
+  failed**; focused Cycle 4 regressions **49/49**; headless self-check **26/26**;
+  ARIA **13/13**; compile and diff checks PASS; module discovery **63**; offscreen
+  watchdog-window control smoke test PASS.
+- **Public-release scan:** no tracked runtime database/log/settings/secret dump
+  paths and no live operator screenshots were found in the current tree. Future
+  commits use a GitHub noreply identity. Existing commit history still contains
+  the prior personal author email and requires an intentional rewrite or a clean
+  public repository. Current release bundles are not Authenticode publisher
+  signed; checksums, SBOMs, and provenance do not replace that identity boundary.
+
+## Cycle 4 / Enterprise foundation implementation
+
+- **Manifest-gated extensions:** external Python modules are verified before
+  import against a detached Capability Manifest v1. The signed record binds the
+  exact source hash, compatibility, entrypoint, permissions, event/MITRE
+  declarations, privacy/egress/retention, resource budgets, and publisher.
+  Trusted Ed25519 keys are explicit; unsigned external modules fail closed unless
+  the operator deliberately enables hash-pinned development mode.
+- **Causal incident reasoning:** a pure read-side builder consumes bounded recent
+  facts and produces bounded process/file/network/response/proof graphs. PID
+  generations and TTL gaps prevent unrelated process reuse from merging.
+  Structural and temporal edges are distinct, and each relationship includes
+  its evidence basis and confidence. The graph neither subscribes to the hot bus
+  nor authorizes containment.
+- **Proof receipts:** remediation-log entries now carry privacy-minimized,
+  HMAC-authenticated receipts chained to the predecessor. The receipt binds the
+  canonical record digest and verification state; an applied action without a
+  passed postcondition cannot validate as proof. Retention checkpoints preserve
+  verification after bounded log pruning.
+- **Operator/API surface:** Settings adds an Enterprise readiness tab plus
+  bounded causal snapshot. Console `enterprise`/`readiness` and local MCP
+  readiness/causal tools expose the same read-only evidence. Existing MCP alert,
+  health, and incident outputs were corrected to use canonical model fields.
+- **Enterprise limits kept explicit:** fleet enrollment/mTLS, organization RBAC
+  and audit, signed central policy distribution, cross-endpoint search/storage,
+  high availability, and analyst case management are not claimed as shipped.
+  Manifest permission declarations are auditable contracts, not yet an OS
+  sandbox; receipt authenticity does not defend against a fully compromised
+  in-process authority.
+- **Verification:** repository pytest **133 passed / 1 platform skip / 0
+  failed**; self-check **26/26**; ARIA **13/13**; module discovery **63 / 0
+  errors**; compile scan and diff check PASS. A synthetic 100,000-event graph
+  run completed in **2.958 s** (**29.58 μs/input event**), retained 1,000 events,
+  respected the 2,500-node cap, and added about **3.81 MiB RSS**.

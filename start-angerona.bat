@@ -12,7 +12,7 @@ title Angerona launcher
 
 REM Keep every persistent/runtime write on the D: installation drive.
 set "ANGERONA_DATA=%~dp0runtime-data"
-set "ANGERONA_DIAG_DIR=%~dp0diagnostics"
+set "ANGERONA_DIAG_DIR=%~dp0runtime-data\diagnostics"
 set "ANGERONA_STORAGE_AUTOMIGRATE=1"
 set "TEMP=%~dp0runtime-data\tmp"
 set "TMP=%TEMP%"

@@ -54,6 +54,7 @@ class SpeculativeTriageModule(BaseModule):
     _MAX_INFLIGHT = 2          # concurrent prewarm workers
     _COOLDOWN = 8.0            # per-PID re-prewarm cooldown (s)
     _KEEP_ALIVE = "10m"        # keep the model resident between frames
+    _WORKER_IDLE_POLL = 0.1    # prompt stop response while the queue is idle
 
     def __init__(self) -> None:
         super().__init__()
@@ -155,29 +156,64 @@ class SpeculativeTriageModule(BaseModule):
                   f"({'model resident' if primed['warmed'] else 'queued (Ollama offline)'}).",
                   Severity.INFO, pid=pid, warmed=primed["warmed"])
 
-    def _worker(self) -> None:
-        while not self.stopping:
+    def _worker(
+        self,
+        generation_stop: threading.Event,
+        helper_stop: threading.Event,
+    ) -> None:
+        """Consume only for the generation that created this worker."""
+        while not generation_stop.is_set() and not helper_stop.is_set():
             try:
-                marker = self._q.get(timeout=1.0)
+                marker = self._q.get(timeout=self._WORKER_IDLE_POLL)
             except queue.Empty:
                 continue
+            if generation_stop.is_set() or helper_stop.is_set():
+                # Preserve a marker that arrived during a stop so a later
+                # generation can pre-warm it; this worker must not act after its
+                # generation has been retired.
+                try:
+                    self._q.put_nowait(marker)
+                except queue.Full:
+                    pass
+                return
             self._prewarm(marker)
 
     def run(self) -> None:
+        stop_event = self.generation_stop_event()
+        helper_stop = threading.Event()
         if self._bus is not None:
             try:
                 self._bus.subscribe(self._on_event)
             except Exception:
                 pass
+        workers: list[threading.Thread] = []
         for _ in range(self._MAX_INFLIGHT):
-            t = threading.Thread(target=self._worker, name="SPEC-prewarm", daemon=True)
+            t = threading.Thread(
+                target=self._worker,
+                args=(stop_event, helper_stop),
+                name="SPEC-prewarm",
+                daemon=True,
+            )
             t.start()
-            self._workers.append(t)
+            workers.append(t)
+        # Keep only the current generation's bounded worker set. BaseModule will
+        # not start the next main generation until this run() has joined them.
+        self._workers = workers
         self.emit("SPEC online — speculatively pre-warming the triage model.", Severity.INFO)
-        while not self.stopping:
-            hit_rate = (self.hits / self.prewarms * 100) if self.prewarms else 0.0
-            self.set_health(100, f"{self.prewarms} prewarms, {round(hit_rate,1)}% reused")
-            self.sleep(5.0)
+        try:
+            while not stop_event.is_set():
+                hit_rate = (self.hits / self.prewarms * 100) if self.prewarms else 0.0
+                self.set_health(100, f"{self.prewarms} prewarms, {round(hit_rate,1)}% reused")
+                self.sleep(5.0)
+        finally:
+            helper_stop.set()
+            # _prewarm() has a bounded HTTP timeout. Waiting here keeps the main
+            # generation alive until its helpers are gone; stop() itself remains
+            # non-blocking because this cleanup runs on the module thread.
+            for worker in workers:
+                worker.join()
+            if self._workers is workers:
+                self._workers = []
 
     def self_test(self) -> tuple[bool, str]:
         """Verify marker detection fires for a temp-dir spawn and not for noise."""

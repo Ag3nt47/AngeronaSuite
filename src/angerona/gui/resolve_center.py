@@ -91,15 +91,18 @@ class ResolveCenter(QDialog):
         from angerona.gui.pages import NOISE_MODULES
         now = time.time()
         try:
-            evs = self.storage.recent_in_window(
+            evs = self.storage.try_recent_in_window(
                 now - self.window_s, now, Severity.HIGH, self._SCAN_CAP)
+            if evs is None:
+                evs = self.bus.recent(500)
         except Exception:
             evs = self.bus.recent(500)
         # Cheap filters + sort FIRST, then cap, THEN the expensive per-event ack
         # signature check — so a critical storm (thousands of HIGH+ events) can't
         # make this O(all events) in sha1 on every 2 s tick.
         out = [e for e in evs
-               if getattr(e, "severity", Severity.INFO) >= Severity.HIGH
+               if now - self.window_s <= getattr(e, "ts", 0) <= now
+               and getattr(e, "severity", Severity.INFO) >= Severity.HIGH
                and getattr(e, "module", "") not in NOISE_MODULES]
         out.sort(key=lambda e: getattr(e, "ts", 0), reverse=True)
         out = out[:self._SCAN_CAP]
@@ -133,7 +136,7 @@ class ResolveCenter(QDialog):
                     return path.stat().st_mtime_ns
                 except OSError:
                     return -1
-            key = (self.storage.max_ts_for_severity(Severity.HIGH),
+            key = (self.storage.revision(),
                    len(alert_ack.acked_signatures()),
                    _stamp(process_allowlist.policy_path()),
                    _stamp(drill_resolution.state_path()))

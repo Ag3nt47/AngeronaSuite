@@ -50,6 +50,8 @@ class AITriageModule(BaseModule):
         # Circuit breaker — "closed" = normal, "open" = Ollama hung/dead
         self._cb_state = "closed"             # type: str
         self._cb_lock  = threading.Lock()
+        self._recovery_lock = threading.Lock()
+        self._recovery_thread: Optional[threading.Thread] = None
 
     def _ask(self, prompt: str) -> Optional[str]:
         """Send a prompt to Ollama, respecting the circuit breaker.
@@ -134,23 +136,32 @@ class AITriageModule(BaseModule):
         except Exception:
             return False
 
-    def _start_recovery_pinger(self) -> None:
+    def _start_recovery_pinger(
+        self,
+        generation_stop: threading.Event,
+        helper_stop: threading.Event,
+    ) -> threading.Thread:
         """Background daemon thread that closes the circuit when Ollama recovers.
 
         Sleeps for _CB_RECOVERY_S seconds, then pings Ollama directly (bypassing
         the circuit breaker).  On success, closes the circuit and emits INFO.
-        The thread respects self.stopping for clean shutdown.
+        Both stop tokens are immutable for this run attempt, so a later module
+        generation cannot revive this pinger.
         """
         def _pinger() -> None:
-            while not self.stopping:
-                self._stop.wait(timeout=self._CB_RECOVERY_S)
-                if self.stopping:
+            while not generation_stop.is_set() and not helper_stop.is_set():
+                helper_stop.wait(timeout=self._CB_RECOVERY_S)
+                if generation_stop.is_set() or helper_stop.is_set():
                     break
                 with self._cb_lock:
                     circuit_open = (self._cb_state == "open")
                 if not circuit_open:
                     continue   # nothing to recover, go back to sleep
-                if self._ping_ollama():
+                recovered = self._ping_ollama()
+                # Discard a late health result from a retired generation.
+                if generation_stop.is_set() or helper_stop.is_set():
+                    break
+                if recovered:
                     with self._cb_lock:
                         self._cb_state = "closed"
                     self.set_health(100, "")
@@ -160,17 +171,41 @@ class AITriageModule(BaseModule):
                         cb_state="closed",
                     )
 
-        threading.Thread(
+        thread = threading.Thread(
             target=_pinger, name=f"{self.name}-cb-recovery", daemon=True,
-        ).start()
+        )
+        with self._recovery_lock:
+            self._recovery_thread = thread
+        thread.start()
+        return thread
 
     def run(self) -> None:
-        self._check_health()
-        self._start_recovery_pinger()   # background thread closes circuit when Ollama recovers
+        generation_stop = self.generation_stop_event()
+        helper_stop = threading.Event()
+        pinger: Optional[threading.Thread] = None
+        try:
+            self._check_health()
+            if generation_stop.is_set():
+                return
+            pinger = self._start_recovery_pinger(
+                generation_stop, helper_stop
+            )
+            self._run_generation()
+        finally:
+            helper_stop.set()
+            if pinger is not None:
+                pinger.join()
+            with self._recovery_lock:
+                if self._recovery_thread is pinger:
+                    self._recovery_thread = None
+
+    def _run_generation(self) -> None:
         ticks = 0
         while not self.stopping:
             self.sleep(8)
             ticks += 1
+            if self.stopping:
+                break
             if ticks % 8 == 0:   # ~every 64s, re-verify the model is usable
                 self._check_health()
             if self._bus is None:

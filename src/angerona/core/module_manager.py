@@ -16,8 +16,9 @@ import os
 import pkgutil
 import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
+from angerona.core.capability_manifest import verify_external_module
 from angerona.core.config import Config
 from angerona.core.eventbus import EventBus
 from angerona.core.module_base import BaseModule
@@ -29,6 +30,11 @@ class ModuleManager:
         self.config = config
         self.modules: Dict[str, BaseModule] = {}
         self.discovery_errors: List[str] = []
+        # Enterprise extension inventory. Built-ins inherit the release trust
+        # boundary; external modules are recorded only after their detached
+        # manifest and source digest pass before-import verification.
+        self.module_trust: Dict[str, dict[str, Any]] = {}
+        self.external_rejections: List[dict[str, str]] = []
 
     # ── Discovery ───────────────────────────────────────────────────────────
     def discover(self) -> None:
@@ -49,6 +55,31 @@ class ModuleManager:
                 except Exception:
                     pass
             self.modules[inst.name] = inst
+            manifest = getattr(cls, "_angerona_manifest", None)
+            origin = "external" if manifest is not None else "builtin"
+            trust = str(getattr(cls, "_angerona_trust", "release"))
+            setattr(inst, "_angerona_origin", origin)
+            setattr(inst, "_angerona_trust", trust)
+            setattr(inst, "_angerona_manifest", manifest)
+            self.module_trust[inst.name] = {
+                "origin": origin,
+                "trust": trust,
+                "capability_id": (
+                    manifest.capability_id if manifest is not None
+                    else f"angerona.builtin.{cls.__module__.rsplit('.', 1)[-1]}"
+                ),
+                "version": (
+                    manifest.version if manifest is not None
+                    else str(getattr(inst, "version", "1.0.0"))
+                ),
+                "permissions": (
+                    list(manifest.permissions) if manifest is not None else []
+                ),
+                "high_risk_permissions": (
+                    list(manifest.high_risk_permissions) if manifest is not None else []
+                ),
+                "publisher": manifest.publisher if manifest is not None else "Angerona",
+            }
 
     def _builtin_classes(self) -> List[type]:
         import angerona.modules as pkg
@@ -100,24 +131,59 @@ class ModuleManager:
 
     def _external_classes(self) -> List[type]:
         # A-04: importing a drop-in executes arbitrary top-level Python with the
-        # suite's elevated token. Keep the extensibility feature explicit opt-in
-        # rather than silently trusting every file under a user-writable folder.
+        # suite's elevated token. Keep the extensibility feature explicit opt-in,
+        # then verify a detached manifest and source digest before Python ever
+        # sees the file. Signed publisher trust is the default; a hash-pinned
+        # unsigned mode exists only behind an explicit development override.
         if os.environ.get("ANGERONA_EXTERNAL_MODULES", "0").strip().lower() not in {
             "1", "true", "yes", "on"
         }:
             return []
         found: List[type] = []
-        for path in sorted(self.config.external_modules_dir.glob("*.py")):
+        allow_unsigned = os.environ.get(
+            "ANGERONA_ALLOW_UNSIGNED_EXTERNAL_MODULES", "0"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        root = self.config.external_modules_dir.resolve()
+        trust_store = self.config.data_dir / "trust" / "module_publishers.json"
+        for path in sorted(root.glob("*.py")):
             if path.name.startswith("_"):
                 continue
             try:
+                resolved = path.resolve()
+                if resolved.parent != root:
+                    raise ValueError("module resolves outside the external module directory")
+            except Exception as exc:
+                reason = f"unsafe module path: {exc}"
+                self.discovery_errors.append(f"{path}: {reason}")
+                self.external_rejections.append({"path": str(path), "reason": reason})
+                continue
+            decision = verify_external_module(
+                path,
+                trust_store,
+                allow_unsigned=allow_unsigned,
+            )
+            if not decision.accepted or decision.manifest is None:
+                self.discovery_errors.append(
+                    f"{path}: external capability rejected before import: {decision.reason}"
+                )
+                self.external_rejections.append(
+                    {"path": str(path), "reason": decision.reason}
+                )
+                continue
+            try:
                 spec = importlib.util.spec_from_file_location(f"angerona_ext_{path.stem}", path)
+                if spec is None or spec.loader is None:
+                    raise ImportError("Python could not create an import specification")
                 mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)  # type: ignore[union-attr]
+                spec.loader.exec_module(mod)
             except Exception as exc:
                 self.discovery_errors.append(f"{path}: {exc}")
                 continue
-            found.extend(self._subclasses_in(mod))
+            classes = self._subclasses_in(mod)
+            for cls in classes:
+                setattr(cls, "_angerona_manifest", decision.manifest)
+                setattr(cls, "_angerona_trust", decision.trust)
+            found.extend(classes)
         return found
 
     @staticmethod
@@ -204,3 +270,38 @@ class ModuleManager:
     def stop_all(self) -> None:
         for mod in self.modules.values():
             mod.stop()
+
+    # ── Enterprise trust/readiness inventory ───────────────────────────────
+    def capability_inventory(self) -> List[dict[str, Any]]:
+        """Return a stable, serialisable trust inventory for UI/API/export."""
+        rows: List[dict[str, Any]] = []
+        for name in sorted(self.modules):
+            mod = self.modules[name]
+            trust = dict(self.module_trust.get(name, {}))
+            trust.update({
+                "name": name,
+                "category": str(getattr(mod, "category", "General")),
+                "status": str(getattr(mod, "status", "unknown")),
+                "health": int(getattr(mod, "health", 0)),
+                "enabled": bool(self.is_enabled(name)),
+            })
+            rows.append(trust)
+        return rows
+
+    def extension_security_summary(self) -> dict[str, Any]:
+        external = [
+            row for row in self.capability_inventory()
+            if row.get("origin") == "external"
+        ]
+        return {
+            "external_loading_enabled": os.environ.get(
+                "ANGERONA_EXTERNAL_MODULES", "0"
+            ).strip().lower() in {"1", "true", "yes", "on"},
+            "unsigned_development_override": os.environ.get(
+                "ANGERONA_ALLOW_UNSIGNED_EXTERNAL_MODULES", "0"
+            ).strip().lower() in {"1", "true", "yes", "on"},
+            "loaded_external": len(external),
+            "signed_external": sum(1 for row in external if row.get("trust") == "signed"),
+            "rejected_external": len(self.external_rejections),
+            "rejections": list(self.external_rejections),
+        }

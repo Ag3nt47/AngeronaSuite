@@ -1225,6 +1225,7 @@ class TelemetryTab(QWidget):
         self._cpu_hist: Deque = deque(maxlen=CHART_WINDOW)
         self._ram_hist: Deque = deque(maxlen=CHART_WINDOW)
         self._marker_series: List = []
+        self._visible_marker_key: tuple[float, ...] = ()
         if _HAS_CHARTS:
             self.cpu_series = QLineSeries()
             self.cpu_series.setName("CPU %")
@@ -1291,6 +1292,11 @@ class TelemetryTab(QWidget):
             return
         self._cpu_hist.append(QPointF(t, m["cpu_total"]))
         self._ram_hist.append(QPointF(t, m["ram_pct"]))
+        # A hidden telemetry tab does not need to repaint its chart every two
+        # seconds. Keep collecting the bounded history and draw the newest state
+        # on the next visible sample.
+        if not self.isVisible():
+            return
         self.cpu_series.replace(list(self._cpu_hist))
         self.ram_series.replace(list(self._ram_hist))
         lo = self._cpu_hist[0].x() if self._cpu_hist else 0
@@ -1326,13 +1332,15 @@ class TelemetryTab(QWidget):
     def _refresh_markers(self, lo: float, hi: float) -> None:
         if not _HAS_CHARTS:
             return
+        visible = tuple(x for x in self._event_marks if lo <= x <= hi)
+        if visible == self._visible_marker_key:
+            return
+        self._visible_marker_key = visible
         # Clear old marker series
         for s in self._marker_series:
             self.chart.removeSeries(s)
         self._marker_series.clear()
-        for x in self._event_marks:
-            if x < lo:
-                continue
+        for x in visible:
             s = QLineSeries()
             s.append(x, 0)
             s.append(x, 100)

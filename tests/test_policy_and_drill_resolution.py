@@ -6,7 +6,7 @@ import time
 import unittest
 from pathlib import Path
 
-from angerona.core import drill_resolution, process_allowlist
+from angerona.core import drill_resolution, process_allowlist, report_attest
 from angerona.core.eventbus import Event, Severity
 from angerona.modules.posture_hardening import PostureHardening
 from angerona.modules.file_integrity import (
@@ -62,7 +62,12 @@ class DrillResolutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             data = Path(td)
             report_path = data / "redteam_aar.json"
-            report_path.write_text(json.dumps({
+            key_path = data / "bus.key"
+            key_path.write_text(bytes(range(32)).hex(), encoding="ascii")
+            original_key_path = report_attest._key_path
+            report_attest._key_path = lambda: key_path
+            self.addCleanup(setattr, report_attest, "_key_path", original_key_path)
+            report_attest.write_signed_json(report_path, {
                 "run_id": "run-one",
                 "verdicts": [{
                     "stage": "Credential Access (simulated)",
@@ -72,7 +77,7 @@ class DrillResolutionTests(unittest.TestCase):
                     "category": "detection",
                     "caught": False,
                 }],
-            }), encoding="utf-8")
+            })
             module = PostureHardening(data)
             self.assertEqual(len(module.ingest_redteam_report(report_path)), 1)
             weakness = module.weaknesses("VULNERABLE")[0]
@@ -87,7 +92,7 @@ class DrillResolutionTests(unittest.TestCase):
 
             # Installing a candidate must not certify its own fix. A later run
             # carrying a real detector echo is the only PATCHED transition.
-            report_path.write_text(json.dumps({
+            report_attest.write_signed_json(report_path, {
                 "run_id": "run-two",
                 "verdicts": [{
                     "stage": "Credential Access (simulated)",
@@ -98,7 +103,7 @@ class DrillResolutionTests(unittest.TestCase):
                     "caught": True,
                     "detected_by": "Purple Remediation Guard",
                 }],
-            }), encoding="utf-8")
+            })
             self.assertEqual(module.ingest_redteam_report(report_path), [])
             self.assertEqual(module.weaknesses()[0]["status"], "PATCHED")
 

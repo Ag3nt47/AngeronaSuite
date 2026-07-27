@@ -12,6 +12,58 @@ Ollama; cloud escalation is opt-in.
 
 ---
 
+## Cycle 4 verified capability delta (v1.9.4)
+
+- Capability Manifest v1 gates every external module before Python import. The
+  detached manifest binds the exact source SHA-256, API compatibility,
+  entrypoint, permissions, telemetry/MITRE declarations, privacy/egress policy,
+  performance budgets, and a trusted Ed25519 publisher. Unsigned external code
+  remains denied unless an explicit hash-pinned development override is set.
+- A bounded, read-side causal incident graph links process-generation, file,
+  network, parent, response, and remediation-proof evidence. It treats temporal
+  ordering as a weaker relation, includes an evidence basis/confidence per edge,
+  and prevents PID reuse from merging unrelated activity.
+- Remediation records now carry privacy-minimized HMAC-authenticated receipts
+  chained to the preceding record. The receipt binds the record digest and
+  verification state; an `applied` action without a passed postcondition cannot
+  validate as proof.
+- Settings, the console, and the local MCP surface expose an evidence-based
+  enterprise readiness assessment. Local trust, integrity, response, privacy,
+  and bounded-runtime controls are measured; fleet enrollment, RBAC, signed
+  central policy, fleet search, and HA remain explicit gaps rather than being
+  implied as shipped.
+- Authenticated proof-carrying drill remediation with strict signed-AAR
+  verification, manual-resolution authentication, distinct-later-run proof, and
+  future-miss reopening.
+- Honest remediation accounting: failed response attempts do not count, normal
+  autonomous response requires CRITICAL severity, and temporary drill response
+  is limited to recognized artifacts/tagged processes inside an explicit scope.
+- Separate default-off consent for cloud live-alert analysis. Its provider
+  payload is recursively redacted and bounded independently from the full local
+  Ollama prompt.
+- One in-flight background Top Talkers collector; connection/process/interface
+  and PTR calls no longer block Qt. Top Talkers AI and Upgrade Console model
+  calls are asynchronous. ARP Scapy capture has generation-specific stop state
+  and overlap prevention.
+- Join-aware module generations retire SPEC workers, AI recovery pingers, IPC
+  acceptors/clients, and capture helpers before a replacement generation starts.
+- The Watchdog window has an authenticated **Restart Angerona Core** action that
+  clears SAFE_MODE, validates an adopted Core's process identity, terminates it,
+  and relaunches it without allowing an unsafe duplicate.
+- O(1) bounded histories, cached directory stamps, EventBus snapshot reuse,
+  hidden-chart repaint suppression, bounded network/forensics/HEAL state, and
+  immediate-only dashboard reads improve long-session responsiveness without
+  lowering detection coverage.
+- Launcher diagnostics and all mutable scanner/drill/report state remain within
+  the canonical D-drive `runtime-data` root.
+- Verified gates: compile scan, 133 pytest passes plus one platform skip,
+  selfcheck 26/26, ARIA 13/13, Cycle 4 regressions 49/49, and 63 modules
+  discovered without error. A 100,000-event causal-graph run averaged 29.58 μs
+  per input event, retained the configured 1,000-event window, respected the
+  2,500-node cap, and added about 3.81 MiB RSS.
+
+---
+
 ## 1. Architecture
 
 A strict, small core; everything else is a **module**. Modules never import each
@@ -30,9 +82,13 @@ other — they communicate only through the **EventBus**.
 | Wiring | `app.py` | Build services + window, lifecycle |
 | Event bus | `core/eventbus.py` | Thread-safe pub/sub + recent ring |
 | Module API | `core/module_base.py` | `BaseModule`: threading, health, `self_test()` |
-| Supervisor | `core/module_manager.py` | Auto-discover + start/stop modules |
+| Supervisor | `core/module_manager.py` | Auto-discover + start/stop modules; verify external capability manifests before import |
+| Extension trust | `core/capability_manifest.py` | Source-hash, compatibility, privacy/budget, and Ed25519 publisher verification |
 | Config | `core/config.py` | Settings, paths, theme, `.env` |
 | Storage | `core/storage.py` | Flight-recorder ledger (with details) |
+| Causal graph | `core/causal_incident_graph.py` | Bounded read-side process/file/network/response/proof correlation |
+| Remediation proof | `core/remediation_log.py`, `core/remediation_receipts.py` | Authenticated, chained remediation receipts and verification checks |
+| Enterprise status | `core/enterprise_readiness.py` | Evidence-based local control score with explicit fleet/RBAC/HA gaps |
 | Threat calc | `core/threat.py` | Calibrated threat level (no false highs) |
 | Status export | `core/status_report.py` | Live `diagnostics/status.txt` + `.json` |
 | Console backend | `core/commands.py` | Commands + AI + SQL hunting |
@@ -46,7 +102,7 @@ other — they communicate only through the **EventBus**.
 
 ---
 
-## 2. Security Modules (55)
+## 2. Security Modules (63)
 
 Each module reports a **health %** and state (OK / degraded / critical / failed /
 off) and exposes a **self-test**.
@@ -208,8 +264,13 @@ routine connections) and self-test/console output never raise it. Idle = **SECUR
 
 ## 10. Data Locations
 
-`%LOCALAPPDATA%\Angerona\` — flight-recorder DB, settings, logs, drop-in modules,
-`diagnostics/status.txt` + `status.json` (live full-state snapshot), forensic case folders.
+- Source/developer install: `<install-folder>\runtime-data\`
+- Packaged release: protected `D:\AngeronaData` on a fixed D: volume; protected
+  `%PROGRAMDATA%\Angerona` only when D: is unavailable.
+
+The canonical root contains the flight recorder, settings, logs, diagnostics,
+watchdog state, temporary work, drill reports/artifacts, scanner evidence,
+models, and forensic case folders. Runtime files are excluded from Git.
 
 ---
 
@@ -231,6 +292,14 @@ These are designed-for but queued for the next phases:
 ---
 
 ## Changelog
+
+- **v1.9.4 (Cycle 4 security, proof, privacy, performance, and release pass)**
+  - Strict signed-AAR learning and manual resolution; distinct-later-run Purple proof; future-miss reopening.
+  - Honest remediation scoring and explicit drill-only automatic-response scope.
+  - Separate default-off cloud consent for recursively redacted live-alert analysis.
+  - Off-thread Top Talkers/Upgrade Console work, join-aware module generations, generation-safe ARP/SPEC/AI/IPC helpers, immediate-only GUI reads, hidden-chart repaint suppression, bounded O(1) histories/state, and HEAL directory stamps.
+  - Authenticated Watchdog-window Core restart with adopted-process identity validation, SAFE_MODE recovery, and duplicate-spawn refusal.
+  - Canonical D-drive diagnostics/runtime paths, public-release privacy guidance, and final gates: 116 pytest passes + 1 skip, selfcheck 26/26, ARIA 13/13, 63 modules.
 
 - **v1.6.1 (remediation-routing fix, selfcheck grid assertions, cold-start self_test parity, syntax warnings)**
   - **Fixed — remediation misrouting (`modules/remediation_actions.py`):** `RegistryHardeningAction._matches()` used a bare `"t1562"` substring match, which also covers T1562.011 (script-block-logging defense evasion) and so shadowed AMSI-bypass alerts before they could reach `DefenderHardeningAction`. Narrowed to require the specific `t1562.011` sub-technique or explicit script-block/logging keywords; T1562/AMSI-bypass now correctly routes to Defender hardening.

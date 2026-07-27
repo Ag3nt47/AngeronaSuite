@@ -64,9 +64,13 @@ def install_policies(findings: list[dict], run_id: str,
     supported = {mitre: label for _token, mitre, label in _PATTERNS}
     supported[_PROCESS_TECHNIQUE] = _PROCESS_LABEL
     installed, unsupported = [], []
+    seen: set[str] = set()
     now = time.time()
     for finding in findings:
         mitre = str(finding.get("mitre") or "").strip().upper()
+        if mitre in seen:
+            continue
+        seen.add(mitre)
         if mitre not in supported:
             unsupported.append(mitre or "unknown")
             continue
@@ -201,7 +205,10 @@ class PurpleGuard(BaseModule):
             note = (f"{count} reviewed signature(s); {self.detected} verified hit(s)"
                     if count else "learning mode — no reviewed drill fixes installed")
             self.set_health(100, note)
-            self.sleep(0.25 if count else 5.0)
+            # File/process evidence persists long enough for a one-second cycle;
+            # a 250 ms full sandbox + 500-event rescan wasted CPU without
+            # improving detection coverage.
+            self.sleep(1.0 if count else 5.0)
 
     def self_test(self) -> tuple[bool, str]:
         import tempfile

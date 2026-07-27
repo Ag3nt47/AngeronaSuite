@@ -23,8 +23,9 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from typing import Callable
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
@@ -45,6 +46,37 @@ _PROVIDER_ENV = {
     "Groq": "GROQ_API_KEY",
     "Google Gemini": "GOOGLE_API_KEY",
 }
+_DEFAULT_OLLAMA_MODELS = ["llama3:8b", "mistral:7b", "phi3:latest"]
+
+
+class _UpgradeWorkerSignals(QObject):
+    finished = Signal(str, int, object)
+
+
+class _UpgradeWorker(QRunnable):
+    """One-shot background call whose result is routed back through Qt."""
+
+    def __init__(
+        self,
+        operation: str,
+        token: int,
+        call: Callable,
+        *args,
+    ) -> None:
+        super().__init__()
+        self._operation = operation
+        self._token = token
+        self._call = call
+        self._args = args
+        self.signals = _UpgradeWorkerSignals()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = self._call(*self._args)
+        except Exception as exc:
+            result = {"error": str(exc)}
+        self.signals.finished.emit(self._operation, self._token, result)
 
 
 class AngeronaUpgradeConsole(QMainWindow):
@@ -53,6 +85,14 @@ class AngeronaUpgradeConsole(QMainWindow):
         self.manager = manager
         self.config = config
         self.bus = bus
+        self._async_pool = QThreadPool.globalInstance()
+        self._accept_async_results = True
+        self._async_token = 0
+        self._model_list_in_flight = False
+        self._model_list_token = 0
+        self._model_check_in_flight = False
+        self._model_check_token = 0
+        self._model_check_name = ""
         self.setWindowTitle("Project Angerona — Advanced Management Console")
         self.resize(860, 620)
 
@@ -205,10 +245,18 @@ class AngeronaUpgradeConsole(QMainWindow):
 
         modg = QGroupBox("Local LLM Control (Ollama)"); ml = QHBoxLayout(modg)
         self.model_box = QComboBox(); self.model_box.setEditable(True)
-        self.model_box.addItems(self._list_ollama_models())
-        check_btn = QPushButton("Check for Updates"); check_btn.clicked.connect(self._check_model)
-        ml.addWidget(QLabel("Model:")); ml.addWidget(self.model_box); ml.addWidget(check_btn)
+        self.model_box.addItem("Loading local models…")
+        self.model_box.setEnabled(False)
+        self._model_check_btn = QPushButton("Check for Updates")
+        self._model_check_btn.setEnabled(False)
+        self._model_check_btn.clicked.connect(self._check_model)
+        ml.addWidget(QLabel("Model:"))
+        ml.addWidget(self.model_box)
+        ml.addWidget(self._model_check_btn)
         layout.addWidget(modg)
+        self._model_status = QLabel("Loading local Ollama models…")
+        self._model_status.setStyleSheet("color:#93c5fd;")
+        layout.addWidget(self._model_status)
 
         sbg = QGroupBox("AI Sandbox — Implement Code"); sl = QVBoxLayout(sbg)
         self.ai_proposed_code = QTextEdit()
@@ -220,6 +268,7 @@ class AngeronaUpgradeConsole(QMainWindow):
         layout.addWidget(sbg)
 
         self.tabs.addTab(tab, "AI Sandbox & Models")
+        self._start_model_listing()
 
     def _save_api_key(self):
         provider = self.custom_provider.currentText()
@@ -246,30 +295,119 @@ class AngeronaUpgradeConsole(QMainWindow):
             names = [m.get("name") for m in data.get("models", []) if m.get("name")]
             if names:
                 return names
-        except Exception:
-            pass
-        return ["llama3:8b", "mistral:7b", "phi3:latest"]
+            return []
+        except Exception as exc:
+            raise RuntimeError("could not query local Ollama models") from exc
+
+    def _start_model_listing(self) -> None:
+        """Populate the model box asynchronously during window construction."""
+        if not self._accept_async_results or self._model_list_in_flight:
+            return
+        token = self._new_async_token()
+        self._model_list_token = token
+        self._model_list_in_flight = True
+        worker = _UpgradeWorker("list_models", token, self._list_ollama_models)
+        worker.signals.finished.connect(self._handle_async_result)
+        try:
+            self._async_pool.start(worker)
+        except Exception as exc:
+            self._handle_async_result("list_models", token, {"error": str(exc)})
 
     def _check_model(self):
         model = self.model_box.currentText().strip()
-        cmd = f"ollama pull {model}"
-        installed = False
+        if not self._accept_async_results:
+            return
+        if self._model_list_in_flight:
+            self._model_status.setText("Wait for the local model list to finish loading.")
+            return
+        if not model:
+            self._model_status.setText("Enter a model name to check.")
+            return
+        if self._model_check_in_flight:
+            self._model_status.setText("A model availability check is already running.")
+            return
+
+        token = self._new_async_token()
+        self._model_check_token = token
+        self._model_check_name = model
+        self._model_check_in_flight = True
+        self._model_check_btn.setEnabled(False)
+        self._model_status.setText(f"Checking {model}…")
+        worker = _UpgradeWorker("check_model", token, self._model_is_available, model)
+        worker.signals.finished.connect(self._handle_async_result)
         try:
-            import json, urllib.request
-            req = urllib.request.Request("http://127.0.0.1:11434/api/show",
-                                         data=json.dumps({"name": model}).encode(),
-                                         headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=3) as r:
-                r.read()
-            installed = True
-        except Exception:
-            installed = False
+            self._async_pool.start(worker)
+        except Exception as exc:
+            self._handle_async_result("check_model", token, {"error": str(exc)})
+
+    def _model_is_available(self, model: str) -> bool:
+        import json, urllib.request
+        req = urllib.request.Request(
+            "http://127.0.0.1:11434/api/show",
+            data=json.dumps({"name": model}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=3) as response:
+            response.read()
+        return True
+
+    def _new_async_token(self) -> int:
+        self._async_token += 1
+        return self._async_token
+
+    @Slot(str, int, object)
+    def _handle_async_result(self, operation: str, token: int, result: object) -> None:
+        """Apply worker results on the owning Qt thread only."""
+        if operation == "list_models":
+            if token != self._model_list_token:
+                return
+            self._model_list_in_flight = False
+            if not self._accept_async_results:
+                return
+            failed = isinstance(result, dict) and "error" in result
+            has_models = isinstance(result, list) and bool(result)
+            models = result if has_models else list(_DEFAULT_OLLAMA_MODELS)
+            self.model_box.clear()
+            self.model_box.addItems([str(model) for model in models])
+            self.model_box.setEnabled(True)
+            self._model_check_btn.setEnabled(True)
+            if failed or not has_models:
+                self._model_status.setText(
+                    "Ollama unavailable or no local models found; showing common model names."
+                )
+            else:
+                self._model_status.setText(f"Loaded {len(models)} local model(s).")
+            return
+
+        if operation != "check_model" or token != self._model_check_token:
+            return
+        self._model_check_in_flight = False
+        if not self._accept_async_results:
+            return
+        self._model_check_btn.setEnabled(True)
+        model = self._model_check_name
+        installed = result is True
+        self._model_status.setText(
+            f"{model} is installed locally."
+            if installed else
+            f"{model} is not reachable or not installed."
+        )
+        cmd = f"ollama pull {model}"
         body = (f"Model:  {model}\n"
                 f"Status: {'installed locally' if installed else 'NOT reachable / not installed'}\n\n"
                 f"To install or update this model, run this command in PowerShell:\n\n"
                 f"    {cmd}\n\n"
                 f"Tip: click 'Copy command', then 'Open PowerShell', paste (Ctrl+V) and press Enter.")
         self._copy_dialog("Model Status", body, cmd)
+
+    def closeEvent(self, event) -> None:
+        """Ignore late worker results and stop periodic refreshes after close."""
+        self._accept_async_results = False
+        for name in ("_wd_timer", "_t_timer"):
+            timer = getattr(self, name, None)
+            if timer is not None:
+                timer.stop()
+        super().closeEvent(event)
 
     def _copy_dialog(self, title: str, body: str, command: str | None = None):
         """Info dialog whose text is selectable/copyable, with optional

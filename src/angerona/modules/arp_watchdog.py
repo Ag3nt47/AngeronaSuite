@@ -45,6 +45,8 @@ from angerona.core.module_base import BaseModule, Severity
 from angerona.core.win import check_output_hidden
 
 _POLL_INTERVAL = 20.0   # seconds between `arp -a` checks
+_SCAPY_SNIFF_TIMEOUT = 0.5
+_SCAPY_STOP_TIMEOUT = 1.5
 
 # Parse lines like: 192.168.1.1           00-50-56-c0-00-01     dynamic
 _RE_ARP = re.compile(
@@ -113,6 +115,12 @@ class ARPWatchdogModule(BaseModule):
         # ip → last-alerted MAC (to avoid re-alerting on every tick)
         self._alerted:  dict[str, str] = {}
         self._scapy_ok  = False
+        self._scapy_lock = threading.Lock()
+        self._scapy_helper: Optional[object] = None
+        self._scapy_helper_kind = ""
+        # This is deliberately separate from BaseModule._stop. BaseModule.start()
+        # clears that event, which must never revive an older capture on restart.
+        self._scapy_stop_event: Optional[threading.Event] = None
 
     def run(self) -> None:
         # Seed baseline
@@ -126,12 +134,21 @@ class ARPWatchdogModule(BaseModule):
         )
         self.set_health(100, "")
 
-        # Try to start scapy sniffer (optional real-time layer)
-        self._try_start_scapy()
+        try:
+            # Try to start scapy sniffer (optional real-time layer)
+            self._try_start_scapy()
 
-        while not self.stopping:
-            self.sleep(_POLL_INTERVAL)
-            self._check_cache()
+            while not self.stopping:
+                self.sleep(_POLL_INTERVAL)
+                if not self.stopping:
+                    self._check_cache()
+        finally:
+            self._stop_scapy()
+
+    def stop(self) -> None:
+        """Stop polling and promptly wake any Scapy capture helper."""
+        super().stop()
+        self._stop_scapy()
 
     # ── ARP cache diff ────────────────────────────────────────────────────────
     def _check_cache(self) -> None:
@@ -163,16 +180,57 @@ class ARPWatchdogModule(BaseModule):
 
     # ── Scapy real-time sniffer (optional) ───────────────────────────────────
     def _try_start_scapy(self) -> None:
+        capture_stop: Optional[threading.Event] = None
+        previous_capture_stopping = False
         try:
             import scapy.all as scapy  # type: ignore[import]
-            t = threading.Thread(
-                target=self._scapy_sniffer,
-                args=(scapy,),
-                name="arp-watchdog-scapy",
-                daemon=True,
-            )
-            t.start()
-            self._scapy_ok = True
+
+            with self._scapy_lock:
+                if self.stopping:
+                    return
+                if self._capture_is_active_locked():
+                    if self._scapy_stop_event is not None and not self._scapy_stop_event.is_set():
+                        # Duplicate start request for this run; the current
+                        # capture already provides real-time coverage.
+                        return
+                    # A previous capture that has not stopped yet owns the single
+                    # helper slot. Poll-only mode is safer than overlapping it.
+                    self._scapy_ok = False
+                    previous_capture_stopping = True
+                else:
+                    capture_stop = threading.Event()
+                    handler = self._make_scapy_handler(capture_stop)
+                    async_sniffer = getattr(scapy, "AsyncSniffer", None)
+                    if callable(async_sniffer):
+                        helper = async_sniffer(
+                            filter="arp",
+                            prn=handler,
+                            store=False,
+                        )
+                        self._scapy_helper = helper
+                        self._scapy_helper_kind = "async"
+                        self._scapy_stop_event = capture_stop
+                        helper.start()
+                    else:
+                        helper = threading.Thread(
+                            target=self._scapy_sniffer,
+                            args=(scapy, capture_stop, handler),
+                            name="arp-watchdog-scapy",
+                            daemon=True,
+                        )
+                        self._scapy_helper = helper
+                        self._scapy_helper_kind = "thread"
+                        self._scapy_stop_event = capture_stop
+                        helper.start()
+                    self._scapy_ok = True
+            if previous_capture_stopping:
+                self.emit(
+                    "ARP Watchdog: previous scapy capture is still stopping — "
+                    "running poll-only mode.",
+                    Severity.INFO,
+                    scapy_available=True,
+                )
+                return
             self.emit("ARP Watchdog: scapy sniffer active (real-time mode).", Severity.INFO)
         except ImportError:
             self.emit(
@@ -182,16 +240,19 @@ class ARPWatchdogModule(BaseModule):
                 scapy_available=False,
             )
         except Exception as exc:
+            with self._scapy_lock:
+                if capture_stop is not None and self._scapy_stop_event is capture_stop:
+                    self._clear_capture_locked()
             self.emit(
                 f"ARP Watchdog: scapy sniffer failed to start ({exc}) — poll-only mode.",
                 Severity.INFO,
                 scapy_available=False,
             )
 
-    def _scapy_sniffer(self, scapy: object) -> None:
-        """Sniff ARP packets and detect gratuitous ARP replies."""
+    def _make_scapy_handler(self, capture_stop: threading.Event):
+        """Build a packet callback tied to exactly one capture generation."""
         def _handle(pkt: object) -> None:
-            if self.stopping:
+            if self.stopping or capture_stop.is_set():
                 return
             try:
                 arp_layer = pkt.getlayer("ARP")  # type: ignore[union-attr]
@@ -226,14 +287,87 @@ class ARPWatchdogModule(BaseModule):
                 )
             except Exception:
                 pass
+        return _handle
 
+    def _scapy_sniffer(self, scapy: object, capture_stop: threading.Event, handler) -> None:
+        """Compatibility capture loop for Scapy versions without AsyncSniffer."""
         try:
-            scapy.sniff(filter="arp", prn=_handle, store=False, stop_filter=lambda _: self.stopping)  # type: ignore[union-attr]
+            while not self.stopping and not capture_stop.is_set():
+                # timeout bounds idle-interface shutdown; stop_filter handles
+                # active interfaces without waiting for the timeout.
+                scapy.sniff(  # type: ignore[union-attr]
+                    filter="arp",
+                    prn=handler,
+                    store=False,
+                    timeout=_SCAPY_SNIFF_TIMEOUT,
+                    stop_filter=lambda _: self.stopping or capture_stop.is_set(),
+                )
         except Exception as exc:
             self.emit(
                 f"ARP Watchdog scapy sniffer stopped: {exc}",
                 Severity.MEDIUM,
             )
+        finally:
+            current = threading.current_thread()
+            with self._scapy_lock:
+                if self._scapy_helper is current:
+                    self._clear_capture_locked()
+
+    def _capture_is_active_locked(self) -> bool:
+        helper = self._scapy_helper
+        if helper is None:
+            return False
+        if self._scapy_helper_kind == "thread":
+            active = bool(helper.is_alive())  # type: ignore[union-attr]
+        else:
+            active = bool(getattr(helper, "running", False))
+        if not active:
+            self._clear_capture_locked()
+        return active
+
+    def _clear_capture_locked(self) -> None:
+        self._scapy_helper = None
+        self._scapy_helper_kind = ""
+        self._scapy_stop_event = None
+        self._scapy_ok = False
+
+    def _stop_scapy(self) -> None:
+        """Request capture shutdown and wait only for a short, fixed bound."""
+        with self._scapy_lock:
+            helper = self._scapy_helper
+            kind = self._scapy_helper_kind
+            capture_stop = self._scapy_stop_event
+            already_stopping = capture_stop is not None and capture_stop.is_set()
+            if capture_stop is not None:
+                capture_stop.set()
+
+        if helper is None:
+            self._scapy_ok = False
+            return
+        if already_stopping:
+            self._scapy_ok = False
+            return
+
+        try:
+            if kind == "async":
+                if bool(getattr(helper, "running", False)):
+                    helper.stop(join=False)  # type: ignore[union-attr]
+                join = getattr(helper, "join", None)
+                if callable(join):
+                    join(timeout=_SCAPY_STOP_TIMEOUT)
+            else:
+                helper.join(timeout=_SCAPY_STOP_TIMEOUT)  # type: ignore[union-attr]
+        except Exception:
+            # Capture shutdown is best-effort. Keeping the live helper reference
+            # below prevents a replacement from overlapping it.
+            pass
+
+        with self._scapy_lock:
+            if self._scapy_helper is helper:
+                if not self._capture_is_active_locked():
+                    self._clear_capture_locked()
+                else:
+                    self._scapy_ok = False
 
     def self_test(self) -> tuple[bool, str]:
         cache = _parse_arp_cache()

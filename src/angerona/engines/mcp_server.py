@@ -292,15 +292,30 @@ def _make_tools(storage, bus, manager, config) -> dict[str, _Tool]:
         limit = max(1, min(int(limit), 200))
         events = bus.recent(limit)
         result = []
-        for e in events[-limit:]:
+        for e in events:
+            details = getattr(e, "details", None)
+            if not isinstance(details, dict):
+                details = {}
+            signature = str(getattr(e, "hmac_sig", "") or "")
+            mitre = (
+                details.get("mitre")
+                or details.get("mitre_tags")
+                or details.get("mitre_id")
+                or details.get("technique_id")
+                or []
+            )
+            if not isinstance(mitre, (list, tuple, set)):
+                mitre = [mitre] if mitre else []
+            severity = getattr(e, "severity", 0)
             result.append({
-                "id":        getattr(e, "id",         getattr(e, "uuid", str(id(e)))),
+                "id":        signature[:24] or f"volatile-{int(getattr(e, 'ts', 0) * 1_000_000)}",
                 "ts":        getattr(e, "ts",         None),
-                "kind":      str(getattr(e, "kind",   getattr(e, "event_type", "?"))),
-                "severity":  str(getattr(e, "severity", "?")),
-                "message":   str(getattr(e, "message",  getattr(e, "msg", ""))),
-                "data":      getattr(e, "data",       {}),
-                "mitre_tags": getattr(e, "mitre_tags", []),
+                "module":    str(getattr(e, "module", "?")),
+                "severity":  getattr(severity, "label", str(severity)),
+                "message":   str(getattr(e, "message", "")),
+                "details":   details,
+                "mitre_tags": [str(value) for value in mitre],
+                "integrity_verified": bool(bus.verify(e)),
             })
         return result
 
@@ -329,7 +344,7 @@ def _make_tools(storage, bus, manager, config) -> dict[str, _Tool]:
             rows.append({
                 "name":         name,
                 "status":       getattr(mod, "status",       "unknown"),
-                "health_pct":   getattr(mod, "health_pct",   None),
+                "health_pct":   int(getattr(mod, "health", 0)),
                 "health_state": getattr(mod, "health_state", None),
                 "health_note":  getattr(mod, "health_note",  ""),
                 "category":     getattr(mod, "category",     ""),
@@ -390,20 +405,7 @@ def _make_tools(storage, bus, manager, config) -> dict[str, _Tool]:
         try:
             from angerona.core.incidents import get_correlator
             correlator = get_correlator()
-            incidents  = correlator.recent(limit)
-            result = []
-            for inc in incidents:
-                result.append({
-                    "id":          getattr(inc, "id",           "?"),
-                    "risk_score":  getattr(inc, "risk_score",   0),
-                    "opened":      getattr(inc, "opened_at",    None),
-                    "closed":      getattr(inc, "closed_at",    None),
-                    "event_count": getattr(inc, "event_count",  0),
-                    "tactics":     getattr(inc, "tactics",      []),
-                    "techniques":  getattr(inc, "techniques",   []),
-                    "summary":     getattr(inc, "summary",      ""),
-                })
-            return result
+            return [incident.as_dict() for incident in correlator.incidents(limit)]
         except Exception as exc:
             return [{"error": str(exc)}]
 
@@ -512,6 +514,53 @@ def _make_tools(storage, bus, manager, config) -> dict[str, _Tool]:
         },
         required=["query"],
         fn=_search_events,
+    )
+
+    def _get_enterprise_readiness() -> dict:
+        from angerona.core.enterprise_readiness import assess
+        from angerona.core.remediation_log import get_log
+
+        return assess(manager, bus, config, get_log())
+
+    register(
+        name="get_enterprise_readiness",
+        description=(
+            "Return Angerona's evidence-based enterprise readiness assessment, "
+            "including signed extension trust, remediation proof integrity, "
+            "runtime health, privacy posture, and explicit fleet-scale gaps."
+        ),
+        properties={},
+        required=[],
+        fn=_get_enterprise_readiness,
+    )
+
+    def _get_causal_incident_graph(max_events: int = 300) -> dict:
+        from angerona.core.causal_incident_graph import build_graph
+
+        bounded = max(1, min(int(max_events), 500))
+        return build_graph(
+            bus.recent(bounded),
+            max_events=bounded,
+            max_nodes=min(1_250, bounded * 4),
+            max_edges=min(2_500, bounded * 8),
+        )
+
+    register(
+        name="get_causal_incident_graph",
+        description=(
+            "Build a bounded, read-only causal graph from recent authenticated "
+            "events. Edges distinguish explicit entity relationships from mere "
+            "temporal ordering and include evidence basis and confidence."
+        ),
+        properties={
+            "max_events": {
+                "type": "integer",
+                "description": "Recent events to consider (1-500, default 300)",
+                "default": 300,
+            },
+        },
+        required=[],
+        fn=_get_causal_incident_graph,
     )
 
     return tools

@@ -10,7 +10,7 @@ cd /d "%~dp0"
 
 REM Keep agent data, watchdog state, diagnostics, and temp files on D:.
 set "ANGERONA_DATA=%~dp0runtime-data"
-set "ANGERONA_DIAG_DIR=%~dp0diagnostics"
+set "ANGERONA_DIAG_DIR=%~dp0runtime-data\diagnostics"
 set "ANGERONA_STORAGE_AUTOMIGRATE=1"
 set "TEMP=%~dp0runtime-data\tmp"
 set "TMP=%TEMP%"

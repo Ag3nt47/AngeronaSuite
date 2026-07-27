@@ -1,445 +1,662 @@
-# Innovation Ideas - Round 1 (2026-07-19)
+# Innovation Ideas — Cycle 4, Round 1 (2026-07-27)
 
-This brief is defensive-only and ranked by expected **impact divided by effort**.
-It was checked against the current Angerona tree before proposing work. Angerona
-already has behavioral baselining, exact-path trusted processes, deterministic
-drill-resolution records, telemetry expectation contracts, ARIA voice I/O,
-confirm-before-write assistant actions, OCSF/D3FEND foundations, and a release ZIP.
-The proposals below extend those foundations rather than relabeling work that
-already exists.
+This is a defensive-only research and design brief for Angerona's local-first
+Windows EDR/NDR/SOAR. It is ranked by expected **impact divided by effort**.
+For a transparent comparison, impact is scored 1–5 and effort is weighted
+S=1, M=2, L=3; range estimates use their midpoint. The score is directional,
+not a delivery promise.
 
-The most important current-state observation is that
-`PostureHardening.resolve_redteam_report()` calls `drill_resolution.resolve()` and
-then marks matching `system_weaknesses` rows as `PATCHED`. That closes an alert, but
-it does not install or validate a detector. This is consistent with the reported
-failure mode where an After-Action Report remains at 0% after "remediation." The
-first proposal directly replaces that administrative closure with proof of a
-working detection path.
+## Scope and non-duplication check
 
----
+The current tree already has 63 auto-discovered modules; Windows Security,
+Kernel-Process ETW and Sysmon bridges; WFP/packet/DNS sensors; process lineage;
+RWX-memory scanning; ransomware entropy, rename, canary, delta-cache and VSS
+protections; BYOVD signals; behavioral baselining; Evidence Lattice/Cortex
+correlation; proof-required Purple Guard remediation; OCSF/D3FEND/Sigma
+foundations; guarded local Ollama use; confirm-before-write ARIA actions; and
+encrypted Remote Bridge transport. The earlier backlog also already covers
+Trust Passports, a driver-hardening audit, central privacy receipts, typed
+settings, release attestation, and evidence-taint enforcement.
 
-## 1. Proof-Carrying Purple Remediation
+The six proposals below do not relabel those features. They close different
+gaps found in the current code:
 
-**Pitch:** A drill finding is not "fixed" until the same benign micro-probe is
-re-run and Angerona proves the complete marker -> sensor -> detector -> signed
-ledger chain succeeded.
+- ransomware change detection still walks selected directories and compares
+  snapshots instead of consuming the volume's native change stream;
+- Windows identity-protocol fallback is not modeled, despite NTLM's removal
+  trajectory;
+- Sysmon EID 10 `CallTrace` is captured as text but is not scored as execution
+  provenance, while non-Sysmon image-tampering evidence remains weak;
+- local-model prompts are filtered, but the model runtime is not an OS-isolated
+  security boundary and several call sites still bypass the guarded client;
+- UDP/443 ownership exists, but QUIC is not identified or correlated as its own
+  encrypted-transport lane; and
+- the GUI, AI, sensors, and response surface still share an always-elevated
+  application trust domain.
 
-**Why now:** The Center for Threat-Informed Defense recommends continuous,
-behavior-based emulation: safely emulate behavior, observe telemetry, refine the
-detection, and re-test regularly. NIST's 2025 SP 800-53 update likewise added root
-cause analysis and emphasized update testing, integrity validation, and cyber
-resiliency.
+Deliberate exclusions: no custom kernel driver, no protected ETW Threat
+Intelligence provider that Angerona cannot legitimately access as PPL, no
+always-on whole-system stack sampling, no TLS/QUIC decryption, no credential
+capture, and no offensive emulation or counterattack capability.
 
-- [CTID - Can You Detect What You Can't Predict? Continuous Emulation as Detection Validation](https://ctid.mitre.org/blog/2025/08/04/lessons-from-sharepoint-vulnerability-cve-2025-53770/)
-- [NIST - Revises Security and Privacy Control Catalog to Improve Software Update and Patch Releases](https://www.nist.gov/news-events/news/2025/08/nist-revises-security-and-privacy-control-catalog-improve-software-update)
-- [CTID - Micro Emulation Plans](https://ctid.mitre.org/projects/micro-emulation-plans/)
+## Ranked shortlist
 
-**Fit:** Extend `core/drill_resolution.py`, `core/telemetry_contracts.py`,
-`core/purple_loop.py`, `modules/posture_hardening.py`, and the Shark After-Action
-Report GUI. This is **Detect + Harden + Visualize**. It is core orchestration, not a
-new polling `BaseModule`.
-
-**Architecture and implementation slices:**
-
-1. Upgrade the resolution record to a versioned state machine:
-   `OPEN -> ACKNOWLEDGED -> CANDIDATE_READY -> VERIFIED`. Only `VERIFIED` contributes
-   to detection coverage or changes a weakness to `PATCHED`.
-2. Give every drill technique a local manifest containing the benign probe,
-   responsible detector/module, required trusted event fields, expected severity,
-   cleanup routine, and deadline. Opaque run/step tokens must be present at every
-   hop; display text can never satisfy a contract.
-3. Change **Resolve Findings** to **Repair and re-test**. A vetted Sigma/YARA/config
-   candidate can be staged, compiled, and operator-approved, then only that
-   technique's harmless micro-probe runs. No full drill is required.
-4. Require multiple exact echoes before verification: marker created, native sensor
-   observation, detector alert carrying the same token, and signed Flight Recorder
-   persistence. A missing echo leaves the finding open and explains which hop failed.
-5. Store a compact proof receipt: run ID, technique, detector/rule digest, expected
-   and observed echoes, timestamps, and ledger event signature. If the rule digest
-   later changes or a future probe misses, reopen automatically.
-
-**Effort:** **M.** The expectation engine and deterministic report path exist; the
-main work is the technique manifest, state migration, targeted replay, and GUI.
-Limit first delivery to the drill techniques that already have safe reversible
-markers, then expand.
-
-**Suitable for this pass:** **Yes - highest priority.** First slice: stop marking an
-acknowledged miss as patched; add `VERIFIED` and targeted re-test for 3-4 reliable
-techniques before broadening to all stages.
-
-**Safety:** Defensive and non-destructive. Only Angerona's existing benign markers
-may be replayed. Model output never becomes PowerShell or an active rule without
-compile checks and explicit approval. Failure is fail-closed: the finding stays open.
+| Rank | Proposal | Impact | Effort | Impact / effort | Primary mode |
+|---:|---|---:|:---:|---:|---|
+| 1 | NTFS Journal Ransomware Pulse | 5.0 | S–M | 3.33 | Detect / Respond / Visualize |
+| 2 | NTLM Exit Radar | 4.5 | S–M | 3.00 | Detect / Harden / Visualize |
+| 3 | Stack-to-Image Provenance Fuse | 5.0 | M | 2.50 | Detect / Visualize |
+| 4 | Local Model Airlock | 5.0 | M–L | 2.00 | Harden |
+| 5 | QUIC Sightline | 3.8 | M | 1.90 | Detect / Visualize |
+| 6 | Split-Token Angerona | 5.0 | L | 1.67 | Harden / Respond |
 
 ---
 
-## 2. Trust Passports - Evidence-Based, Revocable Process Trust
+## 1. NTFS Journal Ransomware Pulse
 
-**Pitch:** Replace "this filename is safe" with a local, reviewable passport that
-binds publisher, signature, canonical path, hash, parent lineage, install origin,
-and normal network boundary - then expires or revokes trust when any key fact drifts.
+**Pitch:** Replace repeated directory snapshots with a bounded reader of the
+native NTFS USN change journal, detecting destructive file-change bursts earlier
+while reading no file contents.
 
-**Why now:** Microsoft App Control supports trust decisions using signing
-certificate, signed file metadata, hash, path, managed-install origin, and launching
-process. Microsoft also recommends audit mode to discover legitimate applications
-before enforcing a policy. That is a strong model for Angerona's local learner,
-without relying on Microsoft's cloud reputation service.
+### Why now
 
-- [Microsoft - App Control and AppLocker overview](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/appcontrol-and-applocker-overview)
-- [Microsoft - Understand App Control policy rules and file rules](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/design/select-types-of-rules-to-create)
-- [Microsoft - Use audit events to create App Control policy rules](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/deployment/audit-appcontrol-policies)
+MITRE's May 2026 update to Data Encrypted for Impact names high-frequency writes,
+uncommon extensions, ransom notes, recovery tampering, and repeated
+delete/replace behavior as a detection strategy. Windows already exposes the
+ordered change records needed to measure those behaviors through
+`FSCTL_READ_USN_JOURNAL`; the journal ID is an explicit integrity check that
+changes if the journal is stopped, deleted, or recreated.
 
-**Fit:** Add `core/trust_passport.py`; enhance `core/process_allowlist.py`,
-`modules/behavioral_tuner.py`, process/network telemetry enrichment, Resolve Center,
-and Settings -> Trusted Processes. This is **Detect + Harden + Visualize**.
+- [MITRE ATT&CK — Data Encrypted for Impact (T1486), v1.5, modified 2026-05-12](https://attack.mitre.org/techniques/T1486/)
+- [Microsoft — FSCTL_READ_USN_JOURNAL](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_read_usn_journal)
+- [Microsoft — Using the Change Journal Identifier](https://learn.microsoft.com/en-us/windows/win32/fileio/using-the-change-journal-identifier)
 
-**Architecture and implementation slices:**
+### Fit
 
-1. Build a local passport from canonical path, SHA-256, Authenticode chain/publisher,
-   parent-child lineage, first-seen installer/process, user/session, and bounded
-   network profile. Use `WinVerifyTrust`/Code Integrity logs locally; no reputation
-   upload is required.
-2. Add trust tiers: `OBSERVED`, `CANDIDATE`, `APPROVED`, `DRIFTED`, `REVOKED`.
-   Learning creates candidates only. Promotion requires review or a separately
-   trusted installer/publisher rule; it is never automatic because an attack could
-   occur during the learning window.
-3. Make trust a capped risk-reduction signal, not an invisibility cloak. It may skip
-   repetitive INFO display and local-LLM triage, but it must never suppress memory
-   scanning, telemetry-blinding alerts, credential access, a corroborated HIGH/
-   CRITICAL chain, or a signature/hash mismatch.
-4. For self-updating apps such as ProtonVPN, accept a new hash only when publisher,
-   signed metadata, canonical install root, update lineage, and expected network
-   profile remain valid. Otherwise move the passport to `DRIFTED` and ask once.
-5. Add **Learn my normal apps for 24 hours** and a review queue showing exactly why
-   each candidate earned trust, plus one-click revoke and an immutable local audit
-   trail.
+Add `modules/usn_ransomware_sensor.py` as a Windows-only `BaseModule`. Feed its
+normalized burst evidence to `modules/ransomware_heuristics.py`,
+`modules/evidence_lattice.py`, `core/cortex.py`, and the existing incident/SOAR
+path. Keep `smart_deception.py`, `shadowcopy_guard.py`, and `shadow_shield.py` as
+independent corroborators. This is **Detect + Respond + Visualize**; the journal
+sensor itself remains read-only.
 
-**Effort:** **M.** Uses existing process allowlist, baseline database, telemetry,
-and Settings surfaces. Authenticode verification and schema migration are the main
-new work. Windows-version differences must degrade to hash/path/lineage without
-silently granting stronger trust.
+**Data flow:** per-volume USN cursor and journal ID → `CLOSE`-qualified change
+records → bounded per-parent/per-extension windows → aggregate
+`ransomware_change_burst` evidence → Evidence Lattice/Cortex → existing SOAR
+only when a separate trusted signal supplies a PID → compact Flight Recorder
+receipt.
 
-**Suitable for this pass:** **Yes.** Implement the passport store, candidate review,
-and the "trust reduces noise but cannot suppress critical controls" policy first;
-automatic updater continuity can follow after field data.
+### Buildable design and phases
 
-**Safety:** Defensive-only. No process is started, injected, or modified. Trust is
-revocable, time-bounded, evidence-based, local, and never sufficient by itself to
-override corroborated malicious behavior.
+1. **Phase A — read-only sensor.** Open only explicitly configured fixed NTFS
+   volumes, query the journal ID, and asynchronously read forward from a stored
+   cursor. Track unique file IDs and reason masks for overwrite/extend,
+   rename-old/rename-new, create, delete, and close. Never create, resize, or
+   delete the system journal.
+2. **Phase B — burst classifier.** Score change velocity, unique-file count,
+   directory spread, novel-extension concentration, delete→create/rename pairs,
+   and repeated small partial writes. Require `CLOSE` where possible to avoid
+   overcounting one logical operation. Feed only aggregate evidence into the
+   current lattice; retain the existing entropy and canary detectors as
+   orthogonal signals.
+3. **Phase C — controlled response.** Journal data has no PID, so it can raise a
+   HIGH volume-level alarm but cannot identify or contain a process by itself.
+   CRITICAL/automatic SOAR eligibility requires a PID-bearing second source:
+   Sysmon file activity, a tripped decoy, ETW process evidence, shadow-copy
+   tamper, or a known malicious process chain.
 
----
+### Operator and UI value
 
-## 3. Push-to-Talk ARIA with a Deterministic Settings Pilot
+Add a **Ransomware Pulse** strip to the incident timeline: changed files/second,
+unique file IDs, affected protected roots, extension churn, and which
+corroborator supplied process attribution. The operator sees
+`Journal-only: alert, no process action` versus
+`Corroborated: PID 1234 eligible for containment`. Persist root aliases and
+counts by default, not raw personal filenames; raw paths remain memory-only
+unless the operator opens a local incident detail.
 
-**Pitch:** Add a visible microphone button: press and hold, speak, review the local
-transcript, then let ARIA change approved settings through the same typed settings
-service as the GUI.
+### Tests
 
-**Why now:** Windows exposes explicit microphone privacy controls and prominent
-indicators when the microphone is active. Microsoft's System.Speech API can use the
-default local audio device, while Angerona already has offline Vosk/sounddevice input
-and Windows SAPI output. Push-to-talk provides clearer consent and lower idle CPU than
-permanent wake-word listening.
+- Pure parser fixtures for USN_RECORD V2/V3, split buffers, malformed record
+  lengths, UTF-16 names, cursor continuation, and journal-ID rollover.
+- Synthetic windows proving benign compiler/package-manager bursts remain below
+  threshold while wide overwrite+rename+extension churn crosses it.
+- A gate proving journal-only evidence can never call SOAR or invent a PID.
+- Restart/cursor tests proving no replay storm, and a journal-reset test that
+  reports telemetry degradation without labeling the reset malicious.
+- Performance gate on a large synthetic journal: bounded memory, no file-content
+  reads, and no GUI-thread work.
 
-- [Microsoft - Windows 11 privacy controls](https://learn.microsoft.com/en-us/windows/security/book/privacy-controls)
-- [Microsoft - Privacy Policy CSP: microphone control remains user-controlled](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-Privacy)
-- [Microsoft - SpeechRecognitionEngine.SetInputToDefaultAudioDevice](https://learn.microsoft.com/en-us/dotnet/api/system.speech.recognition.speechrecognitionengine.setinputtodefaultaudiodevice?view=netframework-4.8.1)
+### Effort and limits
 
-**Fit:** Enhance `gui/aria_hud.py`, the ARIA console row in
-`gui/main_window.py`, `connectors/voice.py`, and the settings service proposed in
-#4. This is **Harden + Quality of Life** in GUI/core; it is not a detector module.
+**Effort: S–M.** `DeviceIoControl` structures can be implemented with `ctypes`
+or a small signed native helper. First delivery should be NTFS on fixed local
+volumes. It needs elevation and does not cover FAT/exFAT; ReFS requires its
+versioned record support and should be separately gated. USN records do not
+contain a responsible PID, and the design must say so visibly.
 
-**Architecture and implementation slices:**
+### Safety
 
-1. Place a microphone button beside the ARIA prompt. Press begins capture; release,
-   Escape, focus loss, or a 15-second ceiling stops it. Show an unmistakable active
-   color, timer, and level meter. No background listening is needed for this mode.
-2. Keep PCM in a bounded memory buffer, transcribe locally, then zero/drop the buffer.
-   Do not write audio to disk. Display the transcript in the prompt so the user can
-   edit or cancel before sending.
-3. Add a deterministic, schema-driven settings grammar for approved intents such as
-   "use my headset microphone," "turn Eco Mode on," or "open privacy settings."
-   The LLM may explain an intent but cannot invent a setting key or value.
-4. Read-only requests can answer immediately. Any change displays a canonical diff
-   generated from trusted setting metadata, then requires a physical click or typed
-   confirmation. Voice alone cannot confirm its own privileged change.
-5. If microphone permission/backend/model is missing, the button opens the exact
-   ARIA settings section with **Test microphone** and dependency status; it must never
-   spin or repeatedly retry in the background.
-
-**Effort:** **M.** Audio capture and meter code exist. The work is button lifecycle,
-transcript preview, a bounded intent grammar, and safe settings integration.
-
-**Suitable for this pass:** **Yes.** Ship push-to-talk + transcript preview first;
-enable a very small allowlist of voice-changeable settings only after the settings
-service in #4 is available.
-
-**Safety:** Opt-in, visibly active, local by default, memory-only audio, hard timeout,
-and no voice-only authorization for writes. No offensive capability is exposed.
+Defensive-only and read-only. It never edits a journal, reads document contents,
+creates encryption samples, or attempts ransomware behavior. No volume-level
+signal alone may kill, suspend, quarantine, or block a process.
 
 ---
 
-## 4. Settings Capability Cockpit with Preview, Test, and Rollback
+## 2. NTLM Exit Radar
 
-**Pitch:** Turn the long settings dialog into a searchable control center where each
-feature shows prerequisites, privacy/CPU impact, live health, pending changes, test
-results, restart needs, and one-click rollback.
+**Pitch:** Build a local compatibility graph of where Windows still falls back
+to NTLM, detect suspicious downgrade/relay conditions, and stage a reversible
+audit-first path toward Kerberos or NTLM blocking.
 
-**Why now:** NIST CM-3 calls for documented, reviewed, security/privacy-aware,
-controlled configuration changes. CISA's Secure by Design guidance says product
-makers should carry the burden of safe defaults instead of assuming customers will
-discover insecure configuration steps.
+### Why now
 
-- [NIST SP 800-53 Rev. 5 - CM-3 Configuration Change Control](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-53r5.pdf)
-- [CISA - Product Security Bad Practices (2025)](https://www.cisa.gov/sites/default/files/2025-01/joint-guidance-product-security-bad-practices-508c_0.pdf)
-- [CISA - Secure by Design: Shifting the Balance](https://www.cisa.gov/sites/default/files/2023-10/SecureByDesign_508c.pdf)
+Microsoft announced in January 2026 that Windows is moving from NTLM
+deprecation toward disabling NTLM by default, with enhanced auditing and
+transition tools planned for Windows 11 24H2 and Windows Server 2025. Those
+versions already support SMB-client NTLM blocking. MITRE's May 2026 update
+continues to identify captured or relayed NTLM responses over SMB, LDAP, MSSQL,
+and HTTP as a credential-access risk.
 
-**Fit:** Add `core/settings_registry.py` and `core/settings_transaction.py`; replace
-the monolithic construction/save logic in `gui/pages.py` incrementally with a
-searchable `SettingsCenter`. Reuse `setup_wizard.py` field metadata. This is
-**Harden + Visualize + Quality of Life**.
+- [Microsoft — Advancing Windows security: Disabling NTLM by default (2026-01-29)](https://techcommunity.microsoft.com/blog/windows-itpro-blog/advancing-windows-security-disabling-ntlm-by-default/4489526)
+- [Microsoft — Block NTLM connections on SMB](https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-ntlm-blocking)
+- [Microsoft — Configure Windows event auditing / NTLM event 8004](https://learn.microsoft.com/en-us/defender-for-identity/deploy/configure-windows-event-collection)
+- [MITRE ATT&CK — Name Resolution Poisoning and SMB Relay (T1557.001), modified 2026-05-12](https://attack.mitre.org/techniques/T1557/001/)
 
-**Architecture and implementation slices:**
+### Fit
 
-1. Define each setting once: typed key, range/choices, default, category, sensitivity,
-   dependency, live/restart behavior, privacy/CPU impact, validator, tester, and
-   reversible apply callback. GUI, Setup, console, and voice all consume the schema.
-2. Save atomically as a transaction: validate all -> show diff -> apply safe live
-   changes -> persist -> health-test. On failure, restore the last-known-good snapshot
-   and explain the exact item that failed.
-3. Add search and capability cards: `Ready`, `Needs dependency`, `Needs permission`,
-   `Restart required`, `Degraded`, `Off`. Provide **Fix setup**, **Test**, **Restore
-   default**, and **Undo last save**.
-4. Add profiles (`Privacy first`, `Balanced`, `Full scan`, `Battery/Eco`) as previews,
-   not blind bulk toggles. Every changed control remains visible before Apply.
-5. Separate secrets from ordinary settings and never echo existing secret values in
-   diffs, logs, screenshots, or voice responses.
+Add a read-only `modules/identity_protocol_monitor.py` `BaseModule` plus a pure
+`core/ntlm_compat_graph.py`. Reuse the Event Log parser patterns in
+`etw_listener.py` and `sysmon_listener.py`, network ownership from
+`wfp_controller.py`, Evidence Lattice correlation, posture history, and vetted
+reversible remediation plumbing. Put the UI card under **World View → Identity
+Security** with a link from Resolve Center. This is **Detect + Harden +
+Visualize**.
 
-**Effort:** **M-L.** The schema can be adopted tab by tab. Start with ARIA/voice,
-privacy/egress, and performance because those are the user's highest-friction areas.
+**Data flow:** NTLM Operational 8001–8004, Security 4624/4625, SMB client
+connectivity/audit events, and optional Sysmon network events → normalized local
+authentication edges → account pseudonym + server/service/protocol/result →
+compatibility graph → downgrade/relay analytics and an operator-reviewed
+hardening plan.
 
-**Suitable for this pass:** **Yes, as an incremental foundation.** Implement the
-registry/transaction layer and migrate ARIA voice + performance first; keep legacy
-tabs working while the remaining categories move over.
+### Buildable design and phases
 
-**Safety:** Configuration only. Risky or egress-enabling settings default off, show
-impact before applying, and are reversible. No setting bypasses existing confirmation
-or response safety gates.
+1. **Phase A — inventory.** Parse only existing local logs. Record source host
+   class, destination, service/protocol, NTLM version when the event reliably
+   supplies it, first/last seen, and count. Pseudonymize account names with a
+   per-install keyed digest before persistence. Never store challenge/response
+   material, password hashes, tickets, or credentials.
+2. **Phase B — detection.** Raise a downgrade signal for a newly seen NTLM edge
+   where Kerberos was previously normal, outbound authentication to an
+   untrusted external address, NTLM shortly after LLMNR/NBT-NS activity, or an
+   SMB signing/encryption regression. Attribute a process only when an exact
+   PID/process GUID and tight time window are present; otherwise label the edge
+   `process unknown`.
+3. **Phase C — migration coach.** Generate an audit report listing dependencies
+   and likely remediations (`Negotiate`, SPN/DNS correction, SMB NTLM block,
+   narrow exception). On Windows 11 24H2/Server 2025, offer a separately
+   confirmed, reversible `Set-SmbClientConfiguration -BlockNTLM` change only
+   after a clean observation window. Global/domain NTLM denial stays manual and
+   outside the MVP.
 
----
+### Operator and UI value
 
-## 5. Driver Shield Audit and Safe Hardening Advisor
+The Identity card answers: **What still needs NTLM? What changed today? What
+will break if I block it?** Show a local edge graph with protocol, destination,
+last use, confidence, and exception expiry. A readiness meter is based on
+observed dependencies, not an AI guess. The local model may explain an edge but
+cannot enable a policy or manufacture an exception.
 
-**Pitch:** Tell the user whether Windows' vulnerable-driver defenses are truly active,
-surface Code Integrity evidence, and offer audit-first hardening guidance without
-silently changing boot-critical policy.
+### Tests
 
-**Why now:** Microsoft's August 2025 guidance says attackers abuse legitimate signed
-but vulnerable drivers, recommends the vulnerable-driver blocklist plus the ASR rule,
-and warns that driver blocking can break devices or rarely cause a blue screen. Its
-2026 tamper-resiliency guidance recommends audit mode before block mode.
+- XML fixtures for 4624/4625 and NTLM 8001–8004, including missing fields,
+  anonymous sessions, IPv6, local/workgroup, and domain cases.
+- Deterministic graph tests for deduplication, keyed pseudonyms, expiry, and
+  `unknown process` handling.
+- Correlation tests that require the MITRE combination of name-resolution
+  poisoning plus relay/downgrade evidence before CRITICAL.
+- Dry-run/revert tests for the SMB-client setting with all PowerShell/host
+  mutation stubbed.
+- A privacy assertion that no raw account, challenge, response, ticket, or hash
+  reaches SQLite, logs, AI prompts, or exports.
 
-- [Microsoft - Recommended driver block rules](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/design/microsoft-recommended-driver-block-rules)
-- [Microsoft - Tamper resiliency with Defender for Endpoint](https://learn.microsoft.com/en-us/defender-endpoint/tamper-resiliency)
-- [Microsoft - Code Integrity event logging and system auditing](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/enabling-code-integrity-event-logging-and-system-auditing)
+### Effort and limits
 
-**Fit:** Add a read-mostly `BaseModule` such as `modules/driver_shield_audit.py`,
-reuse `intel_sync`, Code Integrity/Defender event readers, and add a card to Threat
-Intel or Settings -> Hardening. This is **Detect + Harden + Visualize**.
+**Effort: S–M.** The event-log and posture machinery exists. Coverage depends on
+local audit policy and OS version; domain-wide visibility would require
+explicitly configured remote nodes and is not assumed. Some NTLM events do not
+identify the originating process, so process attribution must remain
+confidence-labeled. Windows 10 and standalone workgroups need compatible
+guidance rather than a blanket "disable everything" message.
 
-**Architecture and implementation slices:**
+### Safety
 
-1. Inspect HVCI/Memory Integrity, Smart App Control, vulnerable-driver blocklist,
-   relevant ASR audit/block state, policy age, and Code Integrity 3076/3077/3099
-   events. Cache the slow inventory and refresh only on policy/event change.
-2. Correlate a new driver service/load with blocklist/signature evidence and death or
-   tamper of Angerona/Defender processes. High confidence requires at least two
-   independent signals.
-3. Show **Audit first**. Export a reviewed plan and open the relevant Windows control;
-   never deploy an enforced WDAC policy automatically. Require reboot/compatibility
-   warnings and a recovery plan before any operator-approved enforcement.
-
-**Effort:** **S-M.** Read-only posture and event correlation are straightforward;
-enforcement remains outside the first pass.
-
-**Suitable for this pass:** **Yes for audit and visualization.** Defer policy
-enforcement until representative hardware testing exists.
-
-**Safety:** Defensive-only and audit-first. No driver is loaded, unloaded, disabled,
-or blocked automatically; Angerona reports evidence and guides the operator.
-
----
-
-## 6. Privacy Receipt Broker and Remote Bridge v2
-
-**Pitch:** Route every optional outbound action through one fail-closed consent gate
-and show a local receipt stating what category left, where it went, why, and which
-redactions were applied - without storing the sensitive payload itself.
-
-**Why now:** NIST's 2025 Privacy Framework update focuses on managing privacy risk as
-personal data flows through complex systems. TLS 1.3 provides authenticated encrypted
-transport. Angerona's current opt-in connectors are individually gated, but there is
-no single enforceable boundary or operator-visible egress history; the current Remote
-Bridge also uses plaintext event JSON and authenticates only one side of the session.
-
-- [NIST - Privacy Framework](https://www.nist.gov/privacy-framework)
-- [NIST - Privacy Framework 1.1 update](https://www.nist.gov/news-events/news/2025/04/nist-updates-privacy-framework-tying-it-recent-cybersecurity-guidelines)
-- [IETF RFC 8446 - TLS 1.3](https://datatracker.ietf.org/doc/html/rfc8446)
-
-**Fit:** Add `core/egress_broker.py` and `core/privacy_receipts.py`; adapt cloud
-escalation, research fetches, email/channel/Teams/mobile connectors, update checks,
-and `modules/remote_bridge.py`. Add a Privacy tab/status chip. This is **Harden +
-Visualize** in core/GUI.
-
-**Architecture and implementation slices:**
-
-1. Every outbound call declares destination, purpose, data classes, size ceiling,
-   redactor, consent setting, timeout, and whether raw host identifiers are included.
-   Unregistered sockets/HTTP helpers fail closed in production paths.
-2. Store only a receipt: time, connector, destination class, purpose, payload digest,
-   byte count, redaction count, consent source, and result. The UI can truthfully say
-   **No data left this device** or list recent approved egress.
-3. Add global offline mode and per-purpose consent with expiry. A connector cannot
-   reuse "threat research" consent to send mailbox or host telemetry.
-4. Immediate Remote Bridge containment: keep disabled, require an explicit bind
-   address instead of defaulting to `0.0.0.0`, suppress hostname unless opted in, and
-   label the existing protocol legacy/insecure.
-5. Remote Bridge v2 uses TLS 1.3 mutual certificate authentication, payload size/schema
-   limits, replay-resistant message IDs, and encrypted authenticated transport. Do not
-   offer automatic plaintext downgrade.
-
-**Effort:** **L** for complete connector migration and protocol v2; **S-M** for the
-broker skeleton, UI receipts, and immediate bridge containment.
-
-**Suitable for this pass:** **Partly.** Apply the bridge containment and broker API
-now; migrate connectors in bounded batches. Treat mTLS as a versioned protocol change
-with compatibility tests, not a rushed patch.
-
-**Safety:** Privacy-preserving and defensive. Egress remains opt-in, receipts omit raw
-payloads/secrets, and failure denies transmission rather than weakening a detector.
+Defensive-only. The module observes authentication metadata and proposes safer
+configuration. It never captures reusable authentication material, probes
+servers, coerces authentication, tests relay, or automatically disables a
+protocol that could lock out the operator.
 
 ---
 
-## 7. Attested One-Click Windows Installer
+## 3. Stack-to-Image Provenance Fuse
 
-**Pitch:** Publish one verified installer that bundles required runtime dependencies,
-puts privileged code in an administrator-owned location, lets the user choose the
-data drive, and proves which GitHub workflow built it.
+**Pitch:** Turn call stacks and process-image identity into a high-confidence
+answer to “did trusted code really make this sensitive access?” instead of
+treating every process handle or RWX page equally.
 
-**Why now:** GitHub artifact attestations provide signed build provenance and can
-include an SBOM. Microsoft notes that consistently signed releases carry publisher
-identity and reduce SmartScreen friction; unsigned files rebuild reputation from zero.
-This also fixes Angerona's public-release trust-boundary problem: elevated code should
-not run from a broadly writable development checkout.
+### Why now
 
-- [GitHub - Artifact attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations)
-- [GitHub - Establish build provenance with artifact attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)
-- [Microsoft - SmartScreen reputation for Windows app developers](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)
+Microsoft's 2026 Sysmon guidance calls CreateRemoteThread low-volume/high-signal,
+exposes a `CallTrace` for ProcessAccess, and identifies ProcessTampering EID 25
+with hollowing/herpaderping. MITRE's May 2026 process-hollowing strategy focuses
+on the suspended-process → unmap → write → set-context → resume chain.
+Windows ETW can also attach call stacks to selected kernel events through
+`TraceSetInformation`, and `GetMappedFileName` can identify the file backing a
+mapped address.
 
-**Fit:** Harden `.github/workflows/release.yml`; add a Windows installer definition
-(WiX/Inno Setup/MSIX as selected), dependency lock/hashes, SBOM generation, release
-manifest, install/uninstall tests, and first-run setup. This is **Harden + Quality of
-Life** in packaging/CI, not a runtime module.
+- [Microsoft — Sysmon events (2026): ProcessAccess, CreateRemoteThread, ProcessTampering](https://learn.microsoft.com/en-us/windows/security/operating-system-security/sysmon/sysmon-events)
+- [MITRE ATT&CK — Process Hollowing (T1055.012), v2.0, modified 2026-05-12](https://attack.mitre.org/techniques/T1055/012/)
+- [Microsoft — TraceSetInformation / TraceStackTracingInfo](https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-tracesetinformation)
+- [Microsoft — Memory-Mapped File Information / GetMappedFileName](https://learn.microsoft.com/en-us/windows/win32/psapi/memory-mapped-file-information)
 
-**Architecture and implementation slices:**
+### Fit
 
-1. Pin Actions by full commit SHA and Python dependencies by locked version + hash.
-   Verify the provenance/license/checksum of bundled third-party binaries such as
-   YARA before they enter the package.
-2. Build a self-contained executable/installer; never run general `pip install` as
-   administrator on the user's machine. Put binaries under an administrator-owned
-   program directory and runtime data under the user-selected data root (offer D:\
-   when present, with a safe Windows fallback).
-3. Publish SHA-256, SBOM, GitHub provenance attestation, and code signature. The
-   installer verifies its manifest before elevation and aborts on mismatch.
-4. First run shows exact optional download sizes for Ollama/model, offline speech
-   model, and integrations. Required components install in one flow; optional large
-   or cloud-capable pieces remain explicit choices.
-5. CI tests clean install, launch, self-check, upgrade with data preservation,
-   uninstall, and a standard-user attempt to modify privileged program files.
+Add pure `core/stack_provenance.py` and an event-driven
+`modules/stack_image_guard.py` `BaseModule`. Consume the `call_trace`,
+`start_address`, `start_module`, source/target PID, access mask, and EID 25 fields
+already emitted by `sysmon_listener.py`; on a high-suspicion trigger, enrich
+with the existing executable-trust, process-allowlist, memory-scanner, and
+process-provenance engines. Feed only the resulting evidence into Evidence
+Lattice/Cortex and the incident timeline. This is **Detect + Visualize**.
 
-**Effort:** **L.** CI hardening is M; polished signed installer/upgrader and clean-VM
-tests make the full item L. Code signing also needs an appropriate certificate or
-documented unsigned-community-build expectation.
+**Data flow:** Sysmon EID 8/10/25 or a Memory Injection alert → frame tokenizer
+and access-mask decoder → cached module path/signature/mapping identities →
+optional targeted image check → provenance verdict with confidence and reasons
+→ lattice/correlation → operator-visible compact stack.
 
-**Suitable for this pass:** **Partly.** Pin/lock/attest the release and build an
-installer prototype now; production signing and broad clean-machine compatibility
-testing may require follow-up.
+### Buildable design and phases
 
-**Safety:** Supply-chain hardening only. No dependencies are downloaded from floating
-or unverified URLs during elevated install, optional network/model downloads require
-consent, and uninstall preserves or explicitly offers to erase user evidence.
+1. **Phase A — score the telemetry already present.** Parse EID 10 `CallTrace`
+   into ordered module+offset frames. Mark frames as system-signed,
+   third-party-signed, unsigned, user-writable, missing/unbacked, or unresolved.
+   Decode access rights and score only sensitive combinations such as
+   VM_WRITE/VM_OPERATION/CREATE_THREAD/DUP_HANDLE against LSASS, Angerona,
+   browsers, credential managers, or protected system processes.
+2. **Phase B — image truth on trigger.** For the source and target PID, compare
+   the canonical executable path with the `MEM_IMAGE` mapping that backs the
+   main image; validate PE layout invariants and the mapped-file identity. Do
+   not hash an entire relocated in-memory image and call normal relocations
+   malicious. An executable private region, missing backing image, EID 25, or a
+   remote-thread start outside known mapped code becomes independent evidence.
+3. **Phase C — optional five-second ETW capture.** On supported systems and only
+   after a strong precursor, start a small in-memory session for a narrow set of
+   Process/Thread/Image kernel events with stack tracing, bounded by time,
+   event count, and process filter. This is an enrichment path, not a permanent
+   whole-host profiler; symbol download is never required for detection.
+
+### Operator and UI value
+
+Replace opaque “ProcessAccess CRITICAL” text with a **Why this stack is
+suspicious** foldout:
+
+`unsigned user-writable frame → ntdll → target LSASS; VM_WRITE; start address
+not in a mapped image`.
+
+Display basenames, signer, mapping class, and stable local digests by default.
+Raw paths remain in memory for local drill-down and are excluded from routine
+exports. A confidence badge distinguishes `Sysmon-confirmed tamper`,
+`multi-signal provenance mismatch`, and `unresolved`.
+
+### Tests
+
+- Pure stack fixtures: normal Microsoft chain, signed security tool, JIT frame,
+  unsigned AppData frame, missing module, malformed/truncated trace, WOW64, and
+  access-mask combinations.
+- PE/mapping fixtures proving relocations and legitimate hotpatch/JIT behavior
+  do not create an image mismatch.
+- Correlation gates requiring a sensitive access right plus untrusted frame (or
+  independent EID 25) for CRITICAL; an unresolved stack alone is not malicious.
+- Bounded-session tests for exact PID/event/time caps, stop-on-error, no symbol
+  network access, and no registry change such as `DisablePagingExecutive`.
+- Performance test showing signature/mapping results are cached by file ID,
+  mtime, and digest rather than recomputed per frame.
+
+### Effort and limits
+
+**Effort: M.** Phase A uses data Angerona already collects. Phase B needs careful
+Windows process/memory APIs and access-denied handling. Phase C is optional and
+may need a small signed Rust/C helper; ETW stack availability varies, stacks can
+be incomplete, protected processes may deny inspection, and JIT/security
+products legitimately create unusual frames. Confidence must degrade rather
+than silently infer.
+
+### Safety
+
+Defensive-only, targeted, and read-only. No thread suspension, memory write,
+remote thread, injection, credential read, or full-memory dump is permitted.
+The optional ETW trace is short, in memory, process-scoped, and never enables
+dangerous diagnostic registry settings.
 
 ---
 
-## 8. Evidence-Taint Firewall for AI and Voice Actions
+## 4. Local Model Airlock
 
-**Pitch:** Mark all model context by provenance and prevent untrusted email, web,
-telemetry, report, or speech text from becoming an executable action or misleading
-confirmation dialog.
+**Pitch:** Put the local model behind an OS-enforced sandbox with no ambient
+files, credentials, desktop, or network—so prompt filtering is not the only
+boundary between untrusted telemetry and an elevated security suite.
 
-**Why now:** OWASP ranks prompt injection LLM01:2025 and recommends separating
-untrusted content, least privilege, and human approval. OWASP's Excessive Agency
-guidance warns that an email or other external record can steer an over-privileged
-assistant. This is directly relevant to ARIA's inbox, research, telemetry, voice,
-and remediation-advice surfaces.
+### Why now
 
-- [OWASP - LLM01:2025 Prompt Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/)
-- [OWASP - LLM06:2025 Excessive Agency](https://genai.owasp.org/llmrisk/llm062025-excessive-agency/)
-- [OWASP - LLM Prompt Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/LLM_Prompt_Injection_Prevention_Cheat_Sheet.html)
+Microsoft documented an experimental Windows 11 `CreateProcessInSandbox` API in
+June 2026. Its AppContainer mode is default-deny for system resources and
+network, exposes explicit read-only/read-write paths, supports low integrity and
+Win32k/UI restrictions, and fails rather than silently weakening an invalid
+policy. NIST's GenAI profile identifies prompt injection and the possibility of
+stealing data or running code as risks that require layered controls, not prompt
+wording alone.
 
-**Fit:** Add `core/provenance_labels.py`; enhance `core/assistant.py`,
-`core/action_policy.py`, runbook/research/inbox adapters, ARIA Settings Pilot, and all
-confirmation dialogs. This is **Harden** in core/GUI.
+- [Microsoft — Create Process In Sandbox APIs (experimental, updated 2026-06-01)](https://learn.microsoft.com/en-us/windows/win32/secauthz/createprocessinsandbox)
+- [Microsoft — AppContainer isolation](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation)
+- [Microsoft — CreateRestrictedToken](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken)
+- [NIST AI 600-1 — Generative AI Profile](https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.600-1.pdf)
 
-**Architecture and implementation slices:**
+### Fit
 
-1. Wrap context fragments as typed records: `TRUSTED_POLICY`, `LOCAL_OPERATOR`,
-   `HOST_TELEMETRY`, `REMOTE_CONTENT`, `EMAIL`, `MODEL_OUTPUT`, or `SPEECH_TRANSCRIPT`.
-   Preserve labels through retrieval, summarization, and tool proposal creation.
-2. Only deterministic code can construct an action name and typed arguments. Model
-   output can select among registered intents or explain a proposal, but raw text
-   cannot become a shell command, URL, file path, setting key, or confirmation body.
-3. Generate approval dialogs from canonical action metadata, not model-authored text;
-   always show the real target, changed values, data destination, and rollback path.
-4. Promote the current shadow action-policy experiment to an authoritative gate only
-   for a small, tested action class first (settings changes), with denial telemetry and
-   no silent fallback. Expand after adversarial tests.
+Add `core/model_airlock.py` plus a small signed `native/model_host` helper.
+First route every local-model caller through `engines/ollama_client.py`; current
+direct callers in AI triage, briefings, coaching, CVE advice, evolution, and
+posture hardening must not retain alternate unguarded HTTP paths. ARIA and the
+assistant continue to use the existing deterministic action registry. Add the
+airlock state to **World View → Local AI Deep Diagnostics**. This is core
+**Harden**, not a `BaseModule`.
 
-**Effort:** **M.** The assistant registry and shadow evaluator exist. The challenge is
-propagating labels through every context adapter without breaking conversation quality.
+**Data flow:** deterministic feature extraction/redaction in the privileged
+process → bounded typed request over stdio or a private authenticated pipe →
+low-integrity isolated model worker → schema-limited text/JSON result →
+post-inference redaction and validation → assistant/action policy. The model
+never receives a capability to call Angerona actions.
 
-**Suitable for this pass:** **After #4's typed settings service.** Protect voice-driven
-settings first, then research/inbox-derived proposals and remediation advice.
+### Buildable design and phases
 
-**Safety:** Defensive-only. This removes agency from untrusted/model-authored text,
-retains explicit operator approval, and cannot create offensive tooling.
+1. **Phase A — one choke point.** Enforce a single guarded local-model client,
+   block non-loopback model URLs by default, cap prompt/context/output, and mark
+   model output `UNTRUSTED_GENERATED_TEXT`. Any failure uses the existing
+   deterministic non-AI fallback; it does not silently call an unguarded
+   backend.
+2. **Phase B — downlevel airlock.** Launch a dedicated headless inference
+   worker with a restricted token, low integrity, a Job Object with kill-on-
+   close/CPU/RAM/child limits, no inherited handles, no desktop/clipboard, a
+   clean environment, a read-only model directory, and one bounded scratch
+   directory. Use stdio/private-pipe IPC so the worker needs no network.
+3. **Phase C — Windows 11 sandbox.** When the experimental API is present and
+   passes a startup self-test, use AppContainer with no network capabilities,
+   `disallow_win32k_system_calls`, explicit model read-only and scratch
+   read-write paths, and a unique Angerona sandbox identity. Because the API is
+   experimental and GPU/runtime compatibility is unknown, this mode is
+   version-gated. A signed dedicated llama.cpp-style worker may be required;
+   Angerona must not grant broad filesystem/network capabilities merely to keep
+   a legacy Ollama daemon working.
+
+### Operator and UI value
+
+The Local AI card reports independently verifiable properties:
+
+- `Network: denied`, `Files: model read-only + scratch only`,
+- `Token: low/restricted`, `Child processes: bounded`,
+- `Backend: sandbox / restricted-token / legacy-disabled`,
+- last containment self-test and model digest.
+
+An explicit **Allow legacy local Ollama** escape hatch may exist for
+compatibility, but it is off by default in high-security mode and clearly
+states which boundary is lost.
+
+### Tests
+
+- A sandbox canary worker tries to read a DPAPI blob, settings, clipboard,
+  arbitrary user document, environment secret, and external/loopback socket;
+  every forbidden attempt must fail while model-file read and bounded scratch
+  write succeed.
+- Job tests prove child escape is denied/bounded, RAM/CPU/output limits trip,
+  and closing the broker kills the whole worker tree.
+- Routing test enumerates all model call sites and fails if one bypasses the
+  guarded client.
+- Prompt-injection fixtures prove a malicious event can influence prose but
+  cannot produce a trusted action object or cross the action-policy boundary.
+- Version/feature gates prove missing or changed experimental APIs fail closed
+  to restricted mode or deterministic fallback, never unsandboxed execution.
+
+### Effort and limits
+
+**Effort: M–L.** Centralizing calls is M; a production-quality isolated backend
+and GPU compatibility make the full feature M–L. `CreateProcessInSandbox` is
+Windows 11-only, experimental, dynamically loaded from `processmodel.dll`, and
+has no public header. AppContainer, model runtimes, GPU drivers, and loopback
+servers may not compose cleanly, which is why stdio and a dedicated worker are
+the preferred design rather than broad network exceptions.
+
+### Safety
+
+Defensive-only. The airlock reduces the model's authority and data access. It
+does not ask the model to generate attacks, executable remediation, shell
+commands, or offensive content. Model output remains advisory and can never
+authorize its own privileged action.
 
 ---
 
-## Ranked shortlist (impact / effort)
+## 5. QUIC Sightline
 
-| Rank | Proposal | Effort | Best fit | This pass |
-|---:|---|:---:|---|---|
-| 1 | Proof-Carrying Purple Remediation | M | Core drill resolution + telemetry contracts + AAR | **Yes - first** |
-| 2 | Trust Passports | M | Process allowlist + behavioral tuner + Trusted Processes UI | **Yes** |
-| 3 | Push-to-Talk ARIA + Settings Pilot | M | ARIA HUD/console + local voice + typed settings | **Yes** |
-| 4 | Settings Capability Cockpit | M-L | Shared settings registry/transaction + searchable GUI | **Yes, incremental** |
-| 5 | Driver Shield Audit | S-M | New read-mostly module + Hardening view | **Yes, audit only** |
-| 6 | Privacy Receipt Broker + Remote Bridge v2 | L | Central egress gate + Privacy UI + encrypted bridge | **Contain now; phase migration** |
-| 7 | Attested One-Click Installer | L | Release CI + installer + provenance/SBOM | **CI/prototype now** |
-| 8 | Evidence-Taint Firewall | M | Assistant/action policy + provenance-aware adapters | **After typed settings** |
+**Pitch:** Attribute QUIC/UDP 443 to a process and score its metadata without
+decrypting traffic, closing a blind lane in beaconing, DNS, and Top Talkers.
 
-### Recommended implementation order for the current improvement pass
+### Why now
 
-1. Stop administrative drill closure from masquerading as a fix; add `VERIFIED` and
-   targeted proof for a small reliable technique set.
-2. Add the typed settings transaction foundation, then the push-to-talk button and
-   a tiny allowlist of confirmable settings intents.
-3. Add Trust Passport candidates and safety caps so normal signed apps reduce noise
-   without becoming invisible.
-4. Apply immediate Remote Bridge containment and release-workflow provenance/pinning.
-5. If time remains, add the read-only Driver Shield posture card.
+HTTP/3 carries HTTP semantics over QUIC and embeds TLS 1.3 at the transport
+layer. Windows Server 2025 expands SMB over QUIC and records explicit client/
+server connectivity events. Microsoft MsQuic provides manifested ETW with a
+documented low-volume `Basic.Light` profile, connection events, and a stable
+provider GUID. These are useful local metadata sources precisely because a
+TCP-oriented or cleartext packet path cannot interpret encrypted UDP/443.
 
-These slices deliver the user's most visible problems in this pass while keeping the
-larger protocol, installer, and all-connector migrations reviewable and testable.
+- [IETF/RFC Editor — RFC 9114: HTTP/3](https://www.rfc-editor.org/rfc/rfc9114.html)
+- [Microsoft — SMB over QUIC](https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-over-quic)
+- [Microsoft MsQuic — Diagnosing Issues with MsQuic / ETW](https://microsoft.github.io/msquic/msquicdocs/docs/Diagnostics.html)
+- [Microsoft — Sysmon events: UDP network connection and DNS Query telemetry](https://learn.microsoft.com/en-us/windows/security/operating-system-security/sysmon/sysmon-events)
+
+### Fit
+
+Add Windows-only `modules/quic_sightline.py` as a `BaseModule`. Reuse UDP
+ownership from `wfp_controller.py`, Sysmon EID 3 and (after a narrow bridge
+extension) EID 22, `network_protocol_decoder.py`, `beacon_detector.py`,
+`net_interfaces.py`, threat-intel lookup, and Cortex. Show the protocol in
+`gui/top_talkers.py` and incident timelines. This is **Detect + Visualize**.
+
+**Data flow:** low-volume MsQuic connection ETW + SMB QUIC audit events + UDP
+owner table + Sysmon DNS/network events → normalized
+`pid/process/remote/port/interface/transport/start-stop/bytes-if-available` flow
+→ local cadence/rarity/baseline analysis → NDRD/beacon/Cortex → metadata-only
+incident receipt.
+
+### Buildable design and phases
+
+1. **Phase A — honest classification.** Identify Windows MsQuic connections and
+   SMB-over-QUIC events directly. For other implementations (for example,
+   browsers with a different QUIC library), label sustained UDP/443
+   `probable_quic` only when flow shape and DNS timing support it. Never claim
+   the Microsoft provider sees every QUIC implementation.
+2. **Phase B — process-aware analytics.** Learn a bounded local baseline of
+   process signer/path, destination prefix/domain token, interface, connection
+   duration, byte bucket, and reconnect cadence. Flag a rare non-browser using
+   UDP/443 only when joined with another signal such as unsigned/path drift,
+   high-entropy DNS, a flagged destination, regular beacon cadence, or an
+   anomalous parent.
+3. **Phase C — protocol-aware UX.** Recognize SMB-over-QUIC client Event 30832
+   and server Event 1913 where available, so legitimate secure file access is
+   labeled rather than misclassified as generic C2. Add a QUIC lane to Top
+   Talkers and the kill-chain view, with `confirmed`, `probable`, or `UDP only`
+   confidence.
+
+### Operator and UI value
+
+The operator sees `browser → example → HTTP/3`, `System → file server → SMB over
+QUIC`, or `unsigned child of script host → rare endpoint → probable QUIC,
+regular 37 s cadence`. The UI explicitly says **payload not inspected**. Store
+IP/domain tokens, coarse byte buckets, cadence, and signer/path identity; never
+store packet bodies, TLS secrets, QUIC keys, URLs, or application content.
+
+### Tests
+
+- Synthetic MsQuic and SMB connectivity event fixtures, including manifest
+  version drift and missing fields.
+- UDP ownership reuse/PID-exit tests and DNS→flow time-window correlation.
+- Classifier tests for ordinary browser HTTP/3, known SMB over QUIC, generic
+  game/video UDP, VPN interfaces, and a rare periodic probable-QUIC flow.
+- A confidence test proving UDP/443 alone cannot produce a QUIC-confirmed or
+  CRITICAL verdict.
+- Load test with high browser flow volume proving bounded per-process state,
+  sampling, deduplication, and no raw packet/payload persistence.
+
+### Effort and limits
+
+**Effort: M.** UDP ownership and network correlation exist; the work is ETW
+parsing, honest confidence labeling, and UI integration. MsQuic manifests and
+event availability vary by Windows/runtime version, not all QUIC uses MsQuic,
+NAT can obscure destination continuity, and some useful metadata may be absent.
+The feature must degrade to `UDP only`, not infer an application protocol.
+
+### Safety
+
+Defensive-only and metadata-only. No decryption, TLS interception, key logging,
+certificate substitution, traffic injection, replay, protocol fuzzing, or
+content capture is proposed. Automatic network isolation still requires the
+suite's existing corroboration and protected-process gates.
+
+---
+
+## 6. Split-Token Angerona
+
+**Pitch:** Keep the operator UI and AI at medium integrity, move continuous
+privileged sensing into a read-only service, and grant host-changing authority
+only to an ephemeral, typed, operator-approved broker.
+
+### Why now
+
+Angerona currently documents that it always runs elevated, which makes every GUI,
+connector, parser, and local-model bug part of the administrator trust domain.
+Microsoft's Administrator Protection architecture (currently preview) is moving
+Windows 11 toward deprivileged sessions, Windows Hello-approved just-in-time
+elevation, isolated admin profiles, and destruction of the admin token when the
+task ends. It also adds Microsoft-Windows-LUA ETW 15031/15032 for approved and
+denied elevations. Ordinary UAC has the same core goal of limiting the access
+malicious code has to administrator privileges.
+
+- [Microsoft — Administrator Protection for Windows 11](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/administrator-protection/)
+- [Microsoft — User Account Control overview](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/)
+- [Microsoft — CreateRestrictedToken](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken)
+
+### Fit
+
+This is an architectural core change, not a `BaseModule`. Split
+`core/privilege.py`, autostart, module hosting, `core/action_policy.py`, IPC
+Guard, SOAR/remediation actions, and the PySide GUI into explicit trust domains:
+
+1. **Angerona UI/ARIA** — medium integrity, no privileged handles or secrets;
+2. **Sensor service** — elevated/SYSTEM as required, read-only telemetry APIs,
+   no Internet and no general host-change command surface; and
+3. **Action broker** — short-lived elevated helper accepting only versioned
+   typed operations already present in `action_policy`, then exiting.
+
+This is **Harden + Respond**.
+
+**Data flow:** sensor service → ACL-protected, bounded, one-way event stream →
+medium-integrity UI/Flight Recorder view. UI action preview → canonical typed
+manifest → separate UAC/Administrator Protection approval → ephemeral broker
+revalidates target/policy/current state → vetted action → verification/rollback
+receipt → broker destroys token and exits.
+
+### Buildable design and phases
+
+1. **Phase A — privilege inventory and read-only split.** Mark every module/API
+   `USER`, `ELEVATED_READ`, or `ELEVATED_WRITE`. Move the GUI, ARIA, connectors,
+   model, exports, and ordinary settings to the user process. Host only sensors
+   that genuinely need privileged read access in an installed, digest-verified
+   service. Preserve reduced-visibility user-mode operation when the service is
+   absent.
+2. **Phase B — remove writes from the service.** The sensor service publishes
+   events but exposes no generic subprocess, PowerShell, registry, file, or
+   firewall method. A separate signed action broker understands only fixed
+   opcodes and typed fields (for example `isolate_pid`, `restore_firewall_rule`,
+   `apply_vetted_registry_change`). It rejects shell strings, unknown versions,
+   stale previews, PID reuse, path drift, and caller-supplied executable paths.
+3. **Phase C — just-in-time authorization.** Each material host change launches
+   the broker through UAC; when stable Administrator Protection is available,
+   consume its 15031/15032 ETW receipts and Hello-backed approval. Bind the
+   canonical preview digest to the broker request, re-evaluate action policy in
+   the elevated process, verify/rollback, emit a signed receipt, and exit.
+
+### Operator and UI value
+
+The header gains a small **Privilege** chip:
+
+`UI: standard | Sensors: protected/read-only | Actions: locked`.
+
+An action preview explains why elevation is needed and exactly which typed
+change will occur. Routine viewing, AI questions, triage, searches, and exports
+never show a UAC prompt. Continuous detection keeps running if the GUI closes.
+The World View trust-boundary diagram shows which process owns each capability
+and its last integrity self-test.
+
+### Tests
+
+- Capability-matrix test fails if a USER component imports privileged write
+  adapters or if the sensor service exposes an untyped mutation method.
+- IPC adversary tests: malformed length, replay, stale nonce, PID reuse,
+  alternate same-user client, path swap, unknown opcode, oversized payload,
+  and event flood/backpressure.
+- Broker tests prove shell/PowerShell text is impossible in the wire schema,
+  action policy is re-run after elevation, target identity is revalidated, and
+  rollback/receipt behavior is deterministic.
+- Integration test runs the GUI medium-integrity against a stub sensor service,
+  then proves read-only operation survives service loss without silently
+  claiming full coverage.
+- Windows-version gates for classic UAC versus Administrator Protection
+  15031/15032; preview absence must not weaken authentication.
+
+### Effort and limits
+
+**Effort: L.** This touches startup, packaging, IPC, module ownership, actions,
+and tests. It should be migrated by capability slice, beginning with an
+unelevated read-only GUI against a compatibility service while the current
+single-process mode remains a clearly labeled transition option. Administrator
+Protection is preview/not universally deployed and changes profile/SSO
+semantics, so it is an enhancement rather than a prerequisite. Some sensors may
+need SYSTEM while others need only an administrator token; least privilege must
+be measured, not assumed.
+
+### Safety
+
+Defensive-only and least-privilege. The broker exposes only Angerona's existing
+vetted defensive actions, never arbitrary command execution. Each material
+change remains previewed, interactively approved, revalidated, verified,
+audited, and reversible where Windows permits. No offensive response,
+counterattack, persistence implant, or credential use is added.
+
+---
+
+## Recommended delivery order
+
+1. Build the USN reader/parser and journal-only safety invariant.
+2. Ship NTLM inventory and the Identity card with no policy mutation.
+3. Score existing Sysmon call traces before adding targeted image/ETW
+   enrichment.
+4. Centralize local-model calls immediately, then prototype the restricted
+   worker and Windows 11 sandbox behind a feature gate.
+5. Add confirmed MsQuic/SMB classification, then conservative probable-QUIC
+   correlation.
+6. Start the split-token migration with a written capability matrix and
+   unelevated GUI prototype; do not combine the service/action-broker cutover
+   into one release.
+
+The first three proposals can deliver independent operator value without
+changing Angerona's privilege model. The final three are architectural hardening
+tracks and should remain gated until their containment and compatibility tests
+pass on supported Windows versions.

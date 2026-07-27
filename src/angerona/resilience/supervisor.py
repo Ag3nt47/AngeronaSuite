@@ -42,6 +42,9 @@ from angerona.resilience import shutdown_token as tok
 # After a component hits SAFE_MODE (crash-loop), wait this long, then retry once —
 # so supervision recovers automatically instead of giving up permanently.
 _SAFE_MODE_COOLDOWN = 120.0
+_VALID_RESTART_TARGETS = {
+    "core", "scanner", "blackbox", "watchdog", "watchdog_ui", "scanner_ui", "*",
+}
 
 
 # ── detached, windowed spawning ──────────────────────────────────────────────
@@ -112,7 +115,7 @@ def release_spawn(name: str) -> None:
         pass
 
 
-def request_restart(*names: str) -> None:
+def request_restart(*names: str) -> list[Path]:
     """Ask the supervisor(s) to force-restart the named components on the next tick
     (clears SAFE_MODE too). Pass '*' or no name for ALL. Cross-process via a file.
 
@@ -125,21 +128,35 @@ def request_restart(*names: str) -> None:
     import json
     import secrets
     import time as _t
+    written: list[Path] = []
     try:
         from angerona.resilience import shutdown_token as _tok
         key = _tok._load_key()
-        targets = [str(n).strip() for n in (names or ("*",)) if str(n).strip()] or ["*"]
-        nonce = secrets.token_hex(16)
-        ts = int(_t.time())
-        payload = f"{nonce}\x00{ts}\x00{','.join(targets)}"
-        sig = hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
-        cmd = {"nonce": nonce, "ts": ts, "targets": targets, "sig": sig}
-        p = _ipc_dir() / "restart.cmd"
-        tmp = p.with_suffix(".cmd.tmp")
-        tmp.write_text(json.dumps(cmd), encoding="utf-8")
-        os.replace(tmp, p)          # atomic publish
+        requested = [
+            str(n).strip().lower() for n in (names or ("*",))
+            if str(n).strip().lower() in _VALID_RESTART_TARGETS
+        ] or ["*"]
+        # Use one target-specific inbox per explicit component. Multiple
+        # supervisors share the runtime directory; a single restart.cmd let the
+        # wrong supervisor consume and delete a "core" request before the
+        # watchdog saw it. Only a supervisor that owns the target now reads its
+        # file. Wildcard keeps the legacy shared inbox.
+        groups = [["*"]] if "*" in requested else [[target] for target in requested]
+        for targets in groups:
+            nonce = secrets.token_hex(16)
+            ts = int(_t.time())
+            payload = f"{nonce}\x00{ts}\x00{','.join(targets)}"
+            sig = hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+            cmd = {"nonce": nonce, "ts": ts, "targets": targets, "sig": sig}
+            suffix = "" if targets == ["*"] else f".{targets[0]}"
+            p = _ipc_dir() / f"restart{suffix}.cmd"
+            tmp = p.with_suffix(p.suffix + ".tmp")
+            tmp.write_text(json.dumps(cmd), encoding="utf-8")
+            os.replace(tmp, p)          # atomic publish
+            written.append(p)
     except Exception:
-        pass
+        return []
+    return written
 
 
 @dataclass
@@ -277,7 +294,15 @@ class ProcessSupervisor:
             if name in forced or "*" in forced:
                 c.safe_mode = False
                 c._failures.clear()
-                self._terminate(c)
+                if not self._terminate(c):
+                    actions[name] = "manual_restart_failed"
+                    self._emit(
+                        "HIGH",
+                        f"{name}: manual restart refused because the current "
+                        "process could not be safely terminated.",
+                        component=name,
+                    )
+                    continue
                 self._spawn(c)
                 actions[name] = "manual_restart"
                 self._emit("INFO", f"{name}: manual restart — respawned.", component=name)
@@ -317,49 +342,61 @@ class ProcessSupervisor:
         return _ipc_dir() / "restart.cmd"
 
     def _pop_restart_requests(self) -> set:
-        p = self._restart_cmd_path()
-        try:
-            if not p.exists():
-                return set()
-            raw = p.read_text(encoding="utf-8")
-            p.unlink()
-        except Exception:
-            return set()
+        paths = [self._restart_cmd_path()]
+        paths.extend(
+            _ipc_dir() / f"restart.{name}.cmd"
+            for name in sorted(self.components)
+        )
         import hashlib
         import hmac
         import json
         import time as _t
-        try:
-            from angerona.resilience import shutdown_token as _tok
-            cmd = json.loads(raw)
-            nonce = str(cmd.get("nonce", ""))
-            ts = int(cmd.get("ts", 0))
-            targets = cmd.get("targets", [])
-            sig = str(cmd.get("sig", ""))
-            if not isinstance(targets, list):
-                return set()
-            # A restart is immediate; ignore anything older than 30s (anti-replay).
-            if _t.time() - ts > 30:
-                return set()
-            payload = f"{nonce}\x00{ts}\x00{','.join(str(x) for x in targets)}"
-            expected = hmac.new(_tok._load_key(), payload.encode("utf-8"),
-                                hashlib.sha256).hexdigest()
-            if not hmac.compare_digest(expected, sig):
-                # Unsigned/forged restart file → treat as a local tamper attempt.
-                self._emit("HIGH",
-                           "Rejected an UNSIGNED/forged restart command in ipc/ — a "
-                           "lower-privileged local process may be probing the supervisor.",
-                           component="supervisor")
-                return set()
-            valid = {str(n).strip() for n in targets if str(n).strip() == "*"
-                     or str(n).strip() in self.components}
-            if valid:
-                self._emit("INFO",
-                           f"Authenticated restart command for: {', '.join(sorted(valid))}.",
-                           component="supervisor")
-            return valid
-        except Exception:
-            return set()
+        forced: set[str] = set()
+        for p in paths:
+            try:
+                if not p.exists():
+                    continue
+                raw = p.read_text(encoding="utf-8")
+                p.unlink()
+            except Exception:
+                continue
+            try:
+                from angerona.resilience import shutdown_token as _tok
+                cmd = json.loads(raw)
+                nonce = str(cmd.get("nonce", ""))
+                ts = int(cmd.get("ts", 0))
+                targets = cmd.get("targets", [])
+                sig = str(cmd.get("sig", ""))
+                if not isinstance(targets, list):
+                    continue
+                # A restart is immediate; ignore anything older than 30s.
+                if _t.time() - ts > 30:
+                    continue
+                payload = f"{nonce}\x00{ts}\x00{','.join(str(x) for x in targets)}"
+                expected = hmac.new(_tok._load_key(), payload.encode("utf-8"),
+                                    hashlib.sha256).hexdigest()
+                if not hmac.compare_digest(expected, sig):
+                    self._emit(
+                        "HIGH",
+                        "Rejected an UNSIGNED/forged restart command in ipc/ — a "
+                        "lower-privileged local process may be probing the supervisor.",
+                        component="supervisor",
+                    )
+                    continue
+                valid = {
+                    str(n).strip() for n in targets
+                    if str(n).strip() == "*" or str(n).strip() in self.components
+                }
+                if valid:
+                    forced.update(valid)
+                    self._emit(
+                        "INFO",
+                        f"Authenticated restart command for: {', '.join(sorted(valid))}.",
+                        component="supervisor",
+                    )
+            except Exception:
+                continue
+        return forced
 
     def _assess(self, c: Component) -> str:
         # Heartbeat-less components (BlackBox): liveness is the process probe.
@@ -393,7 +430,7 @@ class ProcessSupervisor:
             c.safe_mode = False
             self._emit("INFO", f"{c.name} left SAFE_MODE (healthy again).", component=c.name)
 
-    def _terminate(self, c: Component) -> None:
+    def _terminate(self, c: Component) -> bool:
         if c.proc and c.proc.poll() is None:
             try:
                 c.proc.terminate()
@@ -401,8 +438,66 @@ class ProcessSupervisor:
                     c.proc.wait(timeout=3)
                 except Exception:
                     c.proc.kill()
+                c._dead = True
+                return True
             except Exception:
-                pass
+                return False
+        # A peer supervisor commonly *adopts* the already-running Core from its
+        # heartbeat, so it has no Popen handle. Manual restart and suspended-core
+        # recovery must still be able to stop that exact process before _spawn(),
+        # otherwise the fresh heartbeat makes _spawn() re-adopt it and the
+        # restart button appears to do nothing.
+        try:
+            rec = c.reader.read() if c.reader else None
+            pid = int((rec or {}).get("pid") or 0)
+            if not pid or not hb.pid_alive(pid):
+                return True
+            import psutil
+            proc = psutil.Process(pid)
+            actual_exe = os.path.normcase(os.path.abspath(proc.exe()))
+            expected_exe = (
+                os.path.normcase(os.path.abspath(str(c.argv[0])))
+                if c.argv else ""
+            )
+            cmdline = [str(part) for part in (proc.cmdline() or [])]
+            joined = " ".join(cmdline).casefold()
+            # Bind the heartbeat PID to the configured executable. For the Core,
+            # also require the Angerona module/app identity before terminating an
+            # adopted process. A tampered heartbeat file must not become an
+            # arbitrary elevated PID-kill primitive.
+            if expected_exe and actual_exe != expected_exe:
+                self._emit(
+                    "HIGH",
+                    f"Refused to terminate adopted {c.name}: executable identity mismatch.",
+                    component=c.name,
+                    pid=pid,
+                )
+                return False
+            if c.name == "core":
+                frozen_app = os.path.basename(actual_exe).casefold().startswith("angerona")
+                module_app = "angerona" in joined and "-m" in cmdline
+                if not (frozen_app or module_app):
+                    self._emit(
+                        "HIGH",
+                        "Refused to terminate adopted core: command identity mismatch.",
+                        component=c.name,
+                        pid=pid,
+                    )
+                    return False
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except Exception:
+                proc.kill()
+            c._dead = True
+            return True
+        except Exception as exc:
+            self._emit(
+                "ERROR",
+                f"Could not terminate adopted {c.name}: {exc}",
+                component=c.name,
+            )
+            return False
 
     def stop(self, terminate_children: bool = True) -> None:
         self._stop.set()

@@ -26,6 +26,71 @@ kernel driver required — so it is powerful **and** safe to install.
 > Secrets, settings, telemetry, diagnostics, and runtime state are excluded by
 > `.gitignore`; review staged files and Git history before publishing a fork.
 
+## What's new (v1.9.4 — Cycle 4 security, proof, and responsiveness)
+
+- **Enterprise trust foundation.** External modules now fail closed before
+  import unless a detached Capability Manifest v1 binds the exact source,
+  compatibility, permissions, privacy/egress declaration, telemetry contract,
+  performance budget, and a trusted Ed25519 publisher. Settings includes a live,
+  evidence-based **Enterprise** page that reports proven controls and keeps
+  enrollment, RBAC, central policy, and fleet-scale storage visible as honest
+  gaps.
+- **Causal incident reasoning.** A bounded read-side graph separates unrelated
+  simultaneous processes, accounts for PID reuse, connects process/file/network
+  evidence, labels temporal ordering separately from stronger causal evidence,
+  and links response and proof nodes with an explicit basis and confidence.
+- **Proof-carrying remediation.** Every remediation-log entry receives a
+  privacy-minimized, HMAC-authenticated receipt chained to its predecessor.
+  The chain binds the action-record digest and refuses to certify an `applied`
+  outcome without a passed postcondition. Verified fixes publish a receipt
+  reference that can appear in the causal graph.
+- **Enterprise read APIs.** The local MCP surface now exposes bounded
+  `get_enterprise_readiness` and `get_causal_incident_graph` tools. Its existing
+  alerts, module-health, and incident tools now use Angerona's canonical event
+  and incident fields.
+- **Drill remediation now fails closed.** Signed AAR enforcement is on by
+  default. Unsigned, tampered, or unverifiable reports cannot teach Posture
+  Hardening or use the manual resolution path. A candidate still requires an
+  exact detector echo from a distinct later run, and a future miss reopens it.
+- **Remediation scores reflect real outcomes.** Failed Active Response attempts
+  do not count as remediation. Temporary automated response during a drill is
+  limited to recognized drill artifacts and tagged drill processes inside the
+  selected sandbox; the normal automatic-response floor remains CRITICAL.
+- **Cloud alert analysis has separate consent.** Analyze stays local by default.
+  Its optional cloud second stage has a dedicated default-off setting and
+  receives only a recursively redacted, depth/node/container/size-bounded alert
+  summary. The general ARIA cloud setting cannot silently authorize live-alert
+  evidence.
+- **Long-session UI freezes are reduced.** Top Talkers moves Windows connection,
+  process, interface, and PTR collection off the Qt thread with one in-flight
+  worker, and Upgrade Console model discovery/checks are asynchronous. ARP
+  Watchdog prevents overlapping Scapy generations. SPEC, AI recovery, and IPC
+  helpers are generation-owned so a restarted module cannot inherit duplicate
+  workers. Hidden Black Box charts skip repaint work, immediate-only database
+  reads preserve the last complete view, and Live Alerts keeps the operator's
+  viewport.
+- **Watchdog recovery is operator-controllable.** The Watchdog window includes
+  **Restart Angerona Core**. Restart requests are authenticated and
+  target-specific; the watchdog clears SAFE_MODE, proves the adopted Core's
+  executable/command identity, stops it, and launches a clean replacement. It
+  refuses to spawn a duplicate if safe termination cannot be established.
+- **Measured hot-path improvements.** Bounded deques made saturated ATT&CK and
+  compliance retention 14.17× and 3.90× faster; unchanged HEAL directory polls
+  improved 816×; status reporting performs about 19% less work. Network,
+  forensics, and HEAL long-session/PID state is now pruned and bounded.
+- **Runtime and public-release hygiene.** Launcher diagnostics now live under
+  `<install-folder>\runtime-data\diagnostics`, alongside the other bounded
+  D-drive state. Future repository commits use a GitHub noreply identity. The
+  existing Git history and unsigned-publisher boundary still require deliberate
+  owner action before publication; see [Privacy](PRIVACY.md) and
+  [Security](SECURITY.md).
+- **Verification.** Auto-discovery remains **63 modules**. The repository suite
+  passes **133 tests with 1 platform skip**, the headless harness passes
+  **26/26**, ARIA passes **13/13**, and the focused Cycle 4 gate passes
+  **49/49**. A synthetic 100,000-event causal-graph run averaged **29.58 μs per
+  input event**, retained its configured **1,000-event** window, respected the
+  **2,500-node** cap, and added about **3.81 MiB** RSS.
+
 ## What's new (v1.9.3 — proof-driven remediation and release hardening)
 
 - **Red-team fixes must prove themselves.** Remediation installs narrow Purple
@@ -132,8 +197,15 @@ SOAR decisions. Public screenshots intentionally omit local usernames and paths.
 ## ✨ Features
 
 - **Native desktop GUI** (PySide6/Qt) — dashboard, live alerts, module control, settings.
-- **Module system** — bundled modules are auto-discovered. External `.py` drop-ins are disabled by default because they execute with Angerona's privileges; trusted development environments can opt in with `ANGERONA_EXTERNAL_MODULES=1`.
-- **Local AI triage** — security events are explained and scored by a local LLM (Ollama `llama3`), with optional cloud escalation.
+- **Manifest-gated module system** — bundled modules are auto-discovered.
+  External `.py` capabilities are disabled by default and require a detached
+  Capability Manifest v1 whose source SHA-256, API compatibility, permissions,
+  privacy posture, telemetry contract, and resource budget validate before
+  Python import. Trusted publishers use Ed25519 signatures; an unsigned
+  hash-pinned mode exists only as an explicit development override.
+- **Local AI triage** — security events are explained and scored by a local LLM
+  (Ollama `llama3`). Live-alert cloud escalation is a separate, default-off
+  consent surface and receives only bounded, recursively sanitized evidence.
 - **ARIA — conversational security copilot (v1.8.0)** — a talk-to-it HUD with a local-LLM chat (grounded in your runbooks + live posture), spoken threat narration, live read-only email/phishing scanning, on-command indicator research, and adaptive UI performance tuning. Local, gated, defensive-only, and off by default — enable and live-test each piece in **Settings ▸ ARIA**. See "What's new in v1.8.0" below.
 - **Core protections, ported from the original Angerona engines:**
   - File Integrity Monitoring (FIM)

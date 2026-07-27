@@ -61,6 +61,7 @@ class Config:
     aria_voice_enabled: bool = False            # spoken threat narration (local TTS)
     aria_voice_cloud_tts: bool = False          # allow ElevenLabs cloud TTS (opt-in egress)
     aria_cloud_fallback: bool = False           # send a sanitized question to a configured cloud AI if local AI is offline
+    alert_analysis_cloud_fallback: bool = False # send privacy-sanitized alert evidence only after a separate explicit opt-in
     # Microphone source for listening: "" / "default" = the computer's built-in
     # mic (default); otherwise the sounddevice input-device index (as a string)
     # of an added/external mic chosen in Settings.
@@ -95,7 +96,7 @@ class Config:
     # or unverifiable) are REFUSED by the self-hardening loop, not just flagged
     # (see core/report_attest.py). Published to ANGERONA_REQUIRE_SIGNED_AAR so
     # the stdlib attestation layer honours it without a config handle.
-    require_signed_aar: bool = False
+    require_signed_aar: bool = True
     # Experimental: offload ransomware entropy scanning to worker processes so
     # the CPU-bound hashing runs off the main interpreter's GIL. Default off —
     # see core/entropy_pool.py. Published to ANGERONA_ENTROPY_POOL.
@@ -146,6 +147,10 @@ class Config:
                 cfg.aria_voice_enabled    = data.get("aria_voice_enabled", cfg.aria_voice_enabled)
                 cfg.aria_voice_cloud_tts  = data.get("aria_voice_cloud_tts", cfg.aria_voice_cloud_tts)
                 cfg.aria_cloud_fallback   = data.get("aria_cloud_fallback", cfg.aria_cloud_fallback)
+                cfg.alert_analysis_cloud_fallback = data.get(
+                    "alert_analysis_cloud_fallback",
+                    cfg.alert_analysis_cloud_fallback,
+                )
                 cfg.aria_mic_device       = str(data.get("aria_mic_device", cfg.aria_mic_device))
                 cfg.aria_push_enabled     = data.get("aria_push_enabled", cfg.aria_push_enabled)
                 cfg.aria_push_kind        = data.get("aria_push_kind", cfg.aria_push_kind)
@@ -217,6 +222,7 @@ class Config:
                     "aria_voice_enabled":    self.aria_voice_enabled,
                     "aria_voice_cloud_tts":  self.aria_voice_cloud_tts,
                     "aria_cloud_fallback":   self.aria_cloud_fallback,
+                    "alert_analysis_cloud_fallback": self.alert_analysis_cloud_fallback,
                     "aria_mic_device":       self.aria_mic_device,
                     "aria_push_enabled":     self.aria_push_enabled,
                     "aria_push_kind":        self.aria_push_kind,

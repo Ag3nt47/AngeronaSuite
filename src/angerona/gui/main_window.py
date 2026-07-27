@@ -236,7 +236,10 @@ class MainWindow(QMainWindow):
 
         # ── Body: (Modules | Live Alerts) over Console ───────────────────────
         self.modules_panel = ModulesPanel(manager, bus)
-        self.alerts_panel = AlertsPanel(storage)
+        self.alerts_panel = AlertsPanel(
+            storage,
+            allow_cloud=getattr(config, "alert_analysis_cloud_fallback", False),
+        )
         # Right side is now tabbed: Live Alerts + the persistent SOAR Queue.
         self.soar_panel = SoarPanel(bus, manager)
         self._right_tabs = QTabWidget()
@@ -762,6 +765,7 @@ class MainWindow(QMainWindow):
         import os
         self._shark_prev_armed = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK")
         self._shark_prev_minsev = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY")
+        self._shark_prev_scope = os.environ.get("ANGERONA_SOAR_RESPONSE_SCOPE")
         # Auto-remediation (ON by default): arm SOAR's kill+rollback tier and lower
         # the response threshold for the drill so it actually contains the benign
         # MEDIUM/HIGH marker detections (the self-kill guard means this only rolls
@@ -770,6 +774,13 @@ class MainWindow(QMainWindow):
         if self._sim_auto_remediate:
             os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = "1"
             os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY"] = "MEDIUM"
+            scope_roots = [str(self.config.data_dir / "drill-sandbox")]
+            selected_target = str(cfg.get("target_dir") or "").strip()
+            if selected_target:
+                scope_roots.append(selected_target)
+            os.environ["ANGERONA_SOAR_RESPONSE_SCOPE"] = os.pathsep.join(
+                dict.fromkeys(scope_roots)
+            )
         # Analogy coaching (Flight Instructor) — ON by default for the drill.
         self._fi_enabled = bool(cfg.get("analogy", True))
         try:
@@ -851,7 +862,9 @@ class MainWindow(QMainWindow):
             for key, previous in (
                     ("ANGERONA_SOAR_KILL_AND_ROLLBACK", self._shark_prev_armed),
                     ("ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY",
-                     getattr(self, "_shark_prev_minsev", None))):
+                     getattr(self, "_shark_prev_minsev", None)),
+                    ("ANGERONA_SOAR_RESPONSE_SCOPE",
+                     getattr(self, "_shark_prev_scope", None))):
                 if previous is None:
                     os.environ.pop(key, None)
                 else:

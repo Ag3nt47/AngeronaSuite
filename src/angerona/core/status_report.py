@@ -89,7 +89,7 @@ class StatusReporter:
             "recent_events": [
                 {"time": e.time_str, "module": e.module,
                  "severity": e.severity.label, "message": e.message}
-                for e in self.bus.recent(60)
+                for e in events[:60]
             ],
         }
 

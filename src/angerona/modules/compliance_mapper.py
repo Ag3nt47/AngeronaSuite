@@ -23,6 +23,7 @@ import json
 import re
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -116,7 +117,9 @@ class ComplianceMapperModule(BaseModule):
         self.state_lock = threading.Lock()
         self._out = _repo_root() / "diagnostics" / "compliance_report.json"
         self._last_ts = 0.0
-        self._incidents: list[dict] = []
+        # Keep exactly the newest 2,000 records with O(1) eviction. The former
+        # list slice copied all retained references after every saturated drain.
+        self._incidents: deque[dict] = deque(maxlen=2000)
         self._seen_techniques: set[str] = set()
 
     @property
@@ -158,10 +161,6 @@ class ComplianceMapperModule(BaseModule):
                 "severity": int(sev) if isinstance(sev, int) else str(sev),
             })
             self._seen_techniques.add(tid)
-        # Cap retained incidents so the artifact/memory stays bounded.
-        if len(self._incidents) > 2000:
-            self._incidents = self._incidents[-2000:]
-
     # ── lifecycle ────────────────────────────────────────────────────────────
     def run(self) -> None:
         self.emit("CMAP online — mapping detections to NIST 800-53 / DoD STIG.", Severity.INFO)

@@ -31,7 +31,9 @@ during a drill, without changing the real-world default.
 from __future__ import annotations
 
 import os
+import re
 import time
+import zipfile
 from pathlib import Path
 
 from angerona.core.module_base import BaseModule, Severity
@@ -62,7 +64,9 @@ class ActiveResponseSOAR(BaseModule):
 
     @staticmethod
     def _min_severity() -> Severity:
-        name = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY", "HIGH").strip().upper()
+        name = os.environ.get(
+            "ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY", "CRITICAL"
+        ).strip().upper()
         try:
             return Severity[name]
         except KeyError:
@@ -96,13 +100,90 @@ class ActiveResponseSOAR(BaseModule):
                 self._last_ts = max(self._last_ts, ev.ts)
                 if _process_event_allowed(ev, policy=process_policy):
                     continue
+                if not self._event_in_response_scope(ev):
+                    continue
                 self._kill_and_rollback(ev)
 
     # ── Response playbook ────────────────────────────────────────────────
+    @staticmethod
+    def _event_path(ev) -> str:
+        details = getattr(ev, "details", {}) or {}
+        for key in ("path", "artifact_path", "exe", "process_path", "image"):
+            value = details.get(key)
+            if value:
+                return str(value)
+        return ""
+
+    @staticmethod
+    def _scope_roots() -> tuple[Path, ...]:
+        raw = os.environ.get("ANGERONA_SOAR_RESPONSE_SCOPE", "").strip()
+        if not raw:
+            return ()
+        roots = []
+        for value in raw.split(os.pathsep):
+            try:
+                roots.append(Path(value.strip()).expanduser().resolve(strict=False))
+            except (OSError, RuntimeError, ValueError):
+                continue
+        return tuple(roots)
+
+    @staticmethod
+    def _inside(path: Path, roots: tuple[Path, ...]) -> bool:
+        try:
+            resolved = path.resolve(strict=False)
+            return any(resolved == root or root in resolved.parents for root in roots)
+        except (OSError, RuntimeError, ValueError):
+            return False
+
+    @staticmethod
+    def _is_known_drill_artifact(path: Path) -> bool:
+        """Prove a scoped file is one of Angerona's inert drill markers."""
+        name = path.name.casefold()
+        if name.startswith(("_redteam_", "_shark_")):
+            return True
+        try:
+            if path.suffix.casefold() == ".zip":
+                with zipfile.ZipFile(path) as archive:
+                    for member in archive.infolist()[:20]:
+                        if member.file_size > 262_144:
+                            continue
+                        if b"Angerona Shark Attack drill sample" in archive.read(member):
+                            return True
+                return False
+            if path.stat().st_size > 262_144:
+                return False
+            sample = path.read_bytes()
+        except (OSError, ValueError, zipfile.BadZipFile):
+            return False
+        return any(
+            marker in sample
+            for marker in (
+                b"Angerona Shark Attack drill sample",
+                b"simulated persistence artifact",
+                b"ANGERONA custom drill marker",
+                b"simulated BYOVD driver drop",
+            )
+        )
+
+    def _event_in_response_scope(self, ev) -> bool:
+        """Constrain temporary drill arming to proven drill evidence."""
+        roots = self._scope_roots()
+        if not roots:
+            return True
+        details = getattr(ev, "details", {}) or {}
+        command = str(details.get("cmdline") or details.get("command_line") or "")
+        if re.search(r"\bANGERONA_REDTEAM_[0-9a-f]{8}\b", command, re.I):
+            return True
+        raw_path = self._event_path(ev)
+        if not raw_path:
+            return False
+        path = Path(raw_path)
+        return self._inside(path, roots) and self._is_known_drill_artifact(path)
+
     def _kill_and_rollback(self, ev) -> None:
         t0 = time.time()
         pid = ev.details.get("pid")
-        path = ev.details.get("path")
+        path = self._event_path(ev) or None
         # SAFETY: never terminate Angerona's own process (or its parent) even if a
         # detection/drill event happens to carry our PID — that would be suicide.
         if isinstance(pid, int) and pid in (os.getpid(), os.getppid()):

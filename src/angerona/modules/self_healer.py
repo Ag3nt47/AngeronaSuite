@@ -96,24 +96,57 @@ class SelfHealer(BaseModule):
     def __init__(self) -> None:
         super().__init__()
         self._seen: set[str] = set()
+        self._snapshot_dir_stamp: Optional[tuple[int, int]] = None
         self._staged = 0
+
+    @staticmethod
+    def _dir_stamp(snap_dir: Path) -> Optional[tuple[int, int]]:
+        """Cheap invalidation token for the crash-snapshot directory."""
+        try:
+            stat = snap_dir.stat()
+            return stat.st_mtime_ns, stat.st_ctime_ns
+        except OSError:
+            return None
+
+    def _prime_snapshot_dir(self, snap_dir: Path) -> None:
+        """Ignore pre-launch snapshots and establish the directory watermark."""
+        # Capture the stamp before globbing. If a file is created concurrently,
+        # either this glob sees it or the changed stamp forces another scan.
+        stamp = self._dir_stamp(snap_dir)
+        try:
+            self._seen = {p.name for p in snap_dir.glob("*.json")}
+        except Exception:
+            self._seen = set()
+        self._snapshot_dir_stamp = stamp
+
+    def _new_snapshots(self, snap_dir: Path) -> list[Path]:
+        """Return newly-created snapshots, avoiding a glob when unchanged."""
+        stamp = self._dir_stamp(snap_dir)
+        if stamp is not None and stamp == self._snapshot_dir_stamp:
+            return []
+        try:
+            snapshots = sorted(snap_dir.glob("*.json"))
+        except Exception:
+            return []
+        self._snapshot_dir_stamp = stamp
+        new = [snap for snap in snapshots if snap.name not in self._seen]
+        # Mark before processing, preserving the historical at-most-once
+        # behavior even if parsing or local-model diagnosis fails. Mirror the
+        # current directory instead of retaining names of already-pruned files
+        # forever during a long-running session.
+        self._seen = {snap.name for snap in snapshots}
+        return new
 
     # ── Phase 1: catch (tail the crash-snapshot dir) ─────────────────────────
     def run(self) -> None:
         snap_dir = _snapshot_dir()
         # Don't retro-heal snapshots that predate this launch.
-        try:
-            self._seen = {p.name for p in snap_dir.glob("*.json")}
-        except Exception:
-            self._seen = set()
+        self._prime_snapshot_dir(snap_dir)
 
         while not self.stopping:
             self.sleep(self.POLL_S)
             try:
-                for snap in sorted(snap_dir.glob("*.json")):
-                    if snap.name in self._seen:
-                        continue
-                    self._seen.add(snap.name)
+                for snap in self._new_snapshots(snap_dir):
                     self._handle_snapshot(snap)
             except Exception as exc:
                 self.set_health(70, f"poll error: {exc}")

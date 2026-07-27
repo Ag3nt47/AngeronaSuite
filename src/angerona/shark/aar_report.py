@@ -141,7 +141,17 @@ def _matches_remediation(step: dict, catch: Event, ev: Event) -> bool:
 
 
 def _is_remediation(ev: Event) -> bool:
-    return ev.module in ("Active Response SOAR", "SOAR Automation")
+    details = ev.details or {}
+    if ev.module == "Active Response SOAR":
+        # New response events report an explicit success flag. Historical
+        # events predate that field, so absence remains compatible; an explicit
+        # False is never allowed to inflate the response score.
+        return details.get("mitigated", True) is True
+    if ev.module == "SOAR Automation":
+        return str(details.get("action") or "").casefold() in {
+            "suspend", "terminate", "isolate", "block",
+        }
+    return False
 
 
 def evaluate(history: dict, events: List[Event],

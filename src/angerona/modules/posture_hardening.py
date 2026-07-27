@@ -285,9 +285,17 @@ class PostureHardening(BaseModule):
         try:
             from angerona.core import report_attest
             trust, sev, reason = report_attest.classify_for_ingest(doc)
-        except Exception:
-            # Attestation unavailable → never block the loop; behave as before.
-            return True
+        except Exception as exc:
+            # The verifier is part of the authorization boundary. Import,
+            # key-access, canonicalization, or verifier failures cannot turn an
+            # unauthenticated report into a trusted remediation input.
+            trust, sev = False, "HIGH"
+            detail = str(exc).replace("\r", " ").replace("\n", " ")[:200]
+            reason = (
+                f"AAR authenticity verifier failed ({type(exc).__name__}: {detail}) "
+                "— refusing the report because its integrity cannot be established."
+            )
+            self.last_error = reason
         if sev:
             # Throttle so an unchanged unsigned report can't repeat-alert.
             warned = getattr(self, "_aar_warned", None)
@@ -451,6 +459,16 @@ class PostureHardening(BaseModule):
             report = json.loads(report_path.read_text(encoding="utf-8"))
         except Exception as exc:
             return {"ok": False, "error": f"could not read drill report: {exc}"}
+        # Manual resolution installs detector policy and acknowledges findings,
+        # so it is an authorization path, not a display-only report read. Apply
+        # the same HMAC/strict-mode gate as automatic ingestion before any write.
+        if not self._aar_trusted(report, report_path):
+            return {
+                "ok": False,
+                "error": "drill report authenticity verification failed",
+                "authentication_failed": True,
+                "fail_closed": True,
+            }
         findings = []
         for verdict in report.get("verdicts", []):
             if verdict.get("category") != "detection" or verdict.get("caught"):
@@ -579,6 +597,18 @@ class PostureHardening(BaseModule):
         for rec in res.get("records", []):
             if rec.get("verified") and rec.get("mitre"):
                 self.mark_patched(rec["mitre"])   # it's actually fixed now
+                proof = rec.get("proof_receipt") or {}
+                if proof.get("receipt_id"):
+                    self.emit(
+                        f"Verified remediation proof issued for {rec['mitre']}.",
+                        Severity.INFO,
+                        mitre=rec["mitre"],
+                        verified=True,
+                        relation="verification-proof",
+                        receipt_id=proof.get("receipt_id"),
+                        receipt_hash=proof.get("receipt_hash"),
+                        correlation_id=proof.get("receipt_id"),
+                    )
         return res
 
     # ── 4. SECURITY AUTHORIZATION GATE & SANDBOX INTERFACE ───────────────────
@@ -767,6 +797,11 @@ class PostureHardening(BaseModule):
                                   "severity": "High", "verdict": "SUCCESS",
                                   "objective": "run key",
                                   "attempts": [{"attack_epoch": 111}]}]}
+            # Authenticity is exercised independently by report_attest.self_test
+            # and the strict AAR regression suite. This isolated probe validates
+            # the post-trust ingestion/business path without touching the live
+            # installation key or changing process-wide verifier policy.
+            probe._aar_trusted = lambda _doc, _path: True
             probe.aar_path.parent.mkdir(parents=True, exist_ok=True)
             probe.aar_path.write_text(json.dumps(sample), encoding="utf-8")
             new = probe.ingest_report(probe.aar_path)

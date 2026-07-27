@@ -35,6 +35,12 @@ import time
 from pathlib import Path
 from typing import List
 
+from angerona.core.remediation_receipts import (
+    GENESIS_HASH,
+    create_receipt,
+    verify_receipt,
+)
+
 MAX_ROWS = 10_000
 PRUNE_EVERY = 500
 
@@ -87,15 +93,35 @@ class RemediationLog:
                     outcome      TEXT    NOT NULL DEFAULT 'dry_run',
                     verified     INTEGER NOT NULL DEFAULT -1,
                     host_level   INTEGER NOT NULL DEFAULT 0,
-                    record_json  TEXT
+                    record_json  TEXT,
+                    receipt_json TEXT,
+                    receipt_hash TEXT
                 )
                 """
             )
+            columns = {
+                str(row[1])
+                for row in self._db.execute(
+                    "PRAGMA table_info(remediation_log)"
+                ).fetchall()
+            }
+            if "receipt_json" not in columns:
+                self._db.execute(
+                    "ALTER TABLE remediation_log ADD COLUMN receipt_json TEXT"
+                )
+            if "receipt_hash" not in columns:
+                self._db.execute(
+                    "ALTER TABLE remediation_log ADD COLUMN receipt_hash TEXT"
+                )
             self._db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_remlog_ts    ON remediation_log(ts)"
             )
             self._db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_remlog_mitre ON remediation_log(mitre)"
+            )
+            self._db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_remlog_receipt_hash "
+                "ON remediation_log(receipt_hash) WHERE receipt_hash IS NOT NULL"
             )
             self._db.commit()
 
@@ -111,7 +137,7 @@ class RemediationLog:
         verified: int = -1,
         host_level: bool = False,
         record: dict | None = None,
-    ) -> None:
+    ) -> dict:
         """Append one remediation-action entry.
 
         outcome values:
@@ -122,17 +148,42 @@ class RemediationLog:
           ``error``       — action raised an exception
         """
         with self._lock:
+            ts = time.time()
+            prior = self._db.execute(
+                """
+                SELECT receipt_hash
+                FROM remediation_log
+                WHERE receipt_hash IS NOT NULL AND receipt_hash != ''
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            previous_hash = str(prior[0]) if prior and prior[0] else GENESIS_HASH
+            receipt, chain_hash = create_receipt(
+                ts=ts,
+                trigger=trigger,
+                mitre=mitre or "-",
+                action_key=action_key,
+                outcome=outcome,
+                verified=verified,
+                host_level=host_level,
+                record=record,
+                previous_hash=previous_hash,
+            )
             self._db.execute(
                 """
                 INSERT INTO remediation_log
                   (ts, trigger, mitre, action_key, action_title,
-                   outcome, verified, host_level, record_json)
-                VALUES (?,?,?,?,?,?,?,?,?)
+                   outcome, verified, host_level, record_json,
+                   receipt_json, receipt_hash)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    time.time(), trigger, mitre or "-", action_key,
+                    ts, trigger, mitre or "-", action_key,
                     action_title, outcome, int(verified), int(bool(host_level)),
-                    json.dumps(record) if record is not None else None,
+                    json.dumps(record, default=str) if record is not None else None,
+                    json.dumps(receipt, sort_keys=True, default=str),
+                    chain_hash,
                 ),
             )
             self._db.commit()
@@ -140,6 +191,11 @@ class RemediationLog:
             if self._writes >= PRUNE_EVERY:
                 self._writes = 0
                 self._prune_locked()
+            return {
+                "receipt_id": receipt.get("receipt_id"),
+                "receipt_hash": chain_hash,
+                "receipt_authenticated": "_angerona_hmac" in receipt,
+            }
 
     def _prune_locked(self) -> None:
         try:
@@ -162,7 +218,8 @@ class RemediationLog:
             rows = self._db.execute(
                 """
                 SELECT ts, trigger, mitre, action_key, action_title,
-                       outcome, verified, host_level, record_json
+                       outcome, verified, host_level, record_json,
+                       receipt_json, receipt_hash
                 FROM   remediation_log
                 ORDER  BY id DESC
                 LIMIT  ?
@@ -177,7 +234,8 @@ class RemediationLog:
             rows = self._db.execute(
                 """
                 SELECT ts, trigger, mitre, action_key, action_title,
-                       outcome, verified, host_level, record_json
+                       outcome, verified, host_level, record_json,
+                       receipt_json, receipt_hash
                 FROM   remediation_log
                 WHERE  lower(mitre) = lower(?)
                 ORDER  BY id DESC
@@ -203,10 +261,96 @@ class RemediationLog:
         counts = {r[0]: r[1] for r in rows}
         return {"total": total, **counts}
 
+    def verify_receipt_chain(self, limit: int = MAX_ROWS) -> dict:
+        """Verify the retained proof chain from its oldest checkpoint."""
+        bounded = max(1, min(MAX_ROWS, int(limit)))
+        with self._lock:
+            legacy = self._db.execute(
+                "SELECT COUNT(*) FROM remediation_log WHERE receipt_json IS NULL"
+            ).fetchone()[0]
+            rows = self._db.execute(
+                """
+                SELECT id, record_json, receipt_json, receipt_hash
+                FROM remediation_log
+                WHERE receipt_json IS NOT NULL
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (bounded,),
+            ).fetchall()
+        if not rows:
+            return {
+                "valid": True,
+                "verified_receipts": 0,
+                "legacy_rows": int(legacy),
+                "head_hash": "",
+                "reason": "no proof receipts recorded yet",
+            }
+
+        try:
+            first_receipt = json.loads(rows[0][2])
+            expected = str(
+                first_receipt.get("previous_receipt_hash") or GENESIS_HASH
+            )
+        except Exception:
+            return {
+                "valid": False,
+                "verified_receipts": 0,
+                "legacy_rows": int(legacy),
+                "broken_id": int(rows[0][0]),
+                "head_hash": "",
+                "reason": "first receipt is not valid JSON",
+            }
+
+        verified_count = 0
+        head_hash = ""
+        for row_id, record_json, receipt_json, stored_hash in rows:
+            try:
+                record = json.loads(record_json) if record_json else None
+                receipt = json.loads(receipt_json)
+            except Exception:
+                return {
+                    "valid": False,
+                    "verified_receipts": verified_count,
+                    "legacy_rows": int(legacy),
+                    "broken_id": int(row_id),
+                    "head_hash": head_hash,
+                    "reason": "receipt or bound action record is not valid JSON",
+                }
+            result = verify_receipt(
+                receipt,
+                record=record,
+                expected_previous_hash=expected,
+                stored_hash=str(stored_hash or ""),
+            )
+            if not result.valid:
+                return {
+                    "valid": False,
+                    "verified_receipts": verified_count,
+                    "legacy_rows": int(legacy),
+                    "broken_id": int(row_id),
+                    "head_hash": head_hash,
+                    "reason": result.reason,
+                }
+            verified_count += 1
+            expected = result.receipt_hash
+            head_hash = result.receipt_hash
+        return {
+            "valid": True,
+            "verified_receipts": verified_count,
+            "legacy_rows": int(legacy),
+            "head_hash": head_hash,
+            "reason": "retained receipt chain verified",
+        }
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 def _row_to_dict(r) -> dict:
-    ts, trigger, mitre, action_key, action_title, outcome, verified, host_level, rj = r
+    (
+        ts, trigger, mitre, action_key, action_title, outcome, verified,
+        host_level, rj, receipt_json, receipt_hash,
+    ) = r
+    receipt = json.loads(receipt_json) if receipt_json else None
     return {
         "ts": ts,
         "trigger": trigger,
@@ -217,4 +361,9 @@ def _row_to_dict(r) -> dict:
         "verified": None if verified == -1 else bool(verified),
         "host_level": bool(host_level),
         "record": json.loads(rj) if rj else None,
+        "receipt_id": receipt.get("receipt_id") if receipt else None,
+        "receipt_hash": receipt_hash or None,
+        "receipt_authenticity": (
+            receipt.get("_angerona_hmac") is not None if receipt else None
+        ),
     }

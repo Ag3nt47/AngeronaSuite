@@ -194,6 +194,11 @@ class EventBus:
             return True   # unarmed bus — all events pass
         return self._authority.verify(event)
 
+    @property
+    def integrity_enabled(self) -> bool:
+        """Whether newly published events are HMAC authenticated."""
+        return self._authority is not None
+
     def subscribe(self, fn: Subscriber) -> None:
         with self._lock:
             # Several modules subscribe from run(), so an operator stop/start or

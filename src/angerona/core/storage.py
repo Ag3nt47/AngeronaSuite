@@ -306,6 +306,38 @@ class FlightRecorder:
             self._ui_lock.release()
         return [self._event_from_row(r) for r in rows]
 
+    def try_recent_in_window(
+        self,
+        start_ts: float,
+        end_ts: float,
+        min_severity: Severity = Severity.INFO,
+        limit: int = 500,
+    ) -> List[Event] | None:
+        """Return a bounded window only when the UI reader is immediately free.
+
+        Interactive dialogs must never wait behind a telemetry burst, retention
+        checkpoint, or another dashboard reader. ``None`` tells the caller to
+        keep its current view (or use the in-memory bus) and retry later.
+        """
+        limit = max(1, min(int(limit), 5000))
+        if not self._lock.acquire(blocking=False):
+            return None
+        self._lock.release()
+        if not self._ui_lock.acquire(blocking=False):
+            return None
+        try:
+            rows = self._ui_db.execute(
+                "SELECT id, ts, module, severity, message, details, hmac_sig FROM events "
+                "WHERE ts >= ? AND ts <= ? AND severity >= ? "
+                "ORDER BY id DESC LIMIT ?",
+                (start_ts, end_ts, int(min_severity), limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return None
+        finally:
+            self._ui_lock.release()
+        return [self._event_from_row(r) for r in rows]
+
     def events_in_window(self, start_ts: float, end_ts: float) -> List[Event]:
         """Return ALL events between start_ts and end_ts (inclusive), ordered
         chronologically.  Unlike recent(), this is not capped by a row limit,

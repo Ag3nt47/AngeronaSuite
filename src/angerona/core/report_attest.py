@@ -28,9 +28,10 @@ Policy (read side):
   • ``ok``       → verified, trust it.
   • ``bad``      → signature present but WRONG → active tampering. Always refused
                    and surfaced as a HIGH alert, regardless of mode.
-  • ``unsigned`` / ``no_key`` → cannot prove authenticity. Default (lenient) is
-    ingest-with-a-loud-warning so legacy/first-run reports keep working; set
-    ``ANGERONA_REQUIRE_SIGNED_AAR=1`` for strict mode (refuse + alert).
+  • ``unsigned`` / ``no_key`` → cannot prove authenticity. Angerona's runtime
+    configuration enables strict mode by default (refuse + alert). A reviewed
+    legacy source deployment can explicitly disable that setting to import an
+    older unsigned report with a loud warning.
 
 Deliberately dependency-light and import-guarded so it's testable anywhere.
 """
@@ -158,6 +159,7 @@ def classify_for_ingest(doc: dict) -> Tuple[bool, str, str]:
 
 def self_test() -> "tuple[bool, str]":
     """Prove sign/verify round-trips, detects tampering, and survives no-key."""
+    previous_strict = os.environ.get("ANGERONA_REQUIRE_SIGNED_AAR")
     try:
         test_key = bytes(range(32))
         doc = {"run_id": "r1", "verdicts": [{"technique": "T1055", "caught": False}],
@@ -194,6 +196,11 @@ def self_test() -> "tuple[bool, str]":
         return False, f"FAIL — {exc}"
     except Exception as exc:  # pragma: no cover
         return False, f"ERROR — {type(exc).__name__}: {exc}"
+    finally:
+        if previous_strict is None:
+            os.environ.pop("ANGERONA_REQUIRE_SIGNED_AAR", None)
+        else:
+            os.environ["ANGERONA_REQUIRE_SIGNED_AAR"] = previous_strict
 
 
 if __name__ == "__main__":

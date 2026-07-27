@@ -97,6 +97,7 @@ STATUS_COLOR = {"running": "#22c55e", "stopped": "#6b7280", "error": "#ef4444"}
 HEALTH_COLOR = {"ok": "#22c55e", "degraded": "#f59e0b", "critical": "#ef4444",
                 "failed": "#b91c1c", "off": "#6b7280"}
 
+
 # Per-module avatar icons (by category).
 CATEGORY_AVATAR = {
     "Integrity": "\U0001F9EC",   # 🧬
@@ -490,13 +491,16 @@ class EventsWindow(QDialog):
     def _events(self) -> list:
         now = time.time()
         try:
-            evs = self.storage.recent_in_window(
+            evs = self.storage.try_recent_in_window(
                 now - self.window_s, now, self.min_sev, self.MAX_ROWS
             )
+            if evs is None:
+                evs = self.bus.recent(self.MAX_ROWS)
         except Exception:
             evs = self.bus.recent(self.MAX_ROWS)
         out = [e for e in evs
-               if getattr(e, "severity", Severity.INFO) >= self.min_sev
+               if now - self.window_s <= getattr(e, "ts", 0) <= now
+               and getattr(e, "severity", Severity.INFO) >= self.min_sev
                and getattr(e, "module", "") not in NOISE_MODULES]
         out.sort(key=lambda e: getattr(e, "ts", 0), reverse=True)
         return out
@@ -1001,7 +1005,11 @@ class CollisionView(QDialog):
             repo = data_dir()
         except Exception:
             repo = Path(".")
-        return [repo / "diagnostics" / "redteam_aar.json",
+        # Current reports live at the canonical runtime root. Retain the old
+        # diagnostics locations as read-only fallbacks for pre-migration runs.
+        return [repo / "redteam_aar.json",
+                repo / "shark_aar.json",
+                repo / "diagnostics" / "redteam_aar.json",
                 repo / "diagnostics" / "shark_aar.json"]
 
     def _load_verdicts(self) -> tuple:
@@ -1958,7 +1966,7 @@ class AlertDetailDialog(QDialog):
                  "memory_strings": d.get("memory_strings") or [], "details": e.message,
                  "type": e.module}
         self._b_analyze.setEnabled(False); self._b_analyze.setText("Analyzing…")
-        self._analyze_worker = AnalysisWorker(alert, allow_cloud=True, parent=self)
+        self._analyze_worker = AnalysisWorker(alert, parent=self)
         self._analyze_worker.progress.connect(self._action_status.setText)
         self._analyze_worker.finished.connect(self._on_standalone_analyze)
         self._analyze_worker.error.connect(
@@ -1999,10 +2007,11 @@ class AlertDetailDialog(QDialog):
 class AlertsPanel(QFrame):
     events_loaded = Signal(object, object)
 
-    def __init__(self, storage) -> None:
+    def __init__(self, storage, allow_cloud=False) -> None:
         super().__init__()
         self.setObjectName("Panel")
         self.storage = storage
+        self._allow_cloud = allow_cloud is True
         self._events: list = []
         self._newest_ts: float = 0.0
         self._last_storage_revision: int = -1
@@ -2019,7 +2028,7 @@ class AlertsPanel(QFrame):
             "Live Alerts  —  click a header to sort · click a row for detail  "
             "· Allow = suppress future events from this module  "
             "· Block = queue SOAR containment for review  "
-            "· Analyze = deep AI triage (local → cloud)"
+            "· Analyze = local AI triage (sanitized cloud fallback only if enabled)"
         ))
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
@@ -2112,9 +2121,11 @@ class AlertsPanel(QFrame):
         return btn
 
     def _analyze_event(self, event, btn) -> None:
-        """Run operator-triggered deep triage off the GUI thread (local Ollama →
-        cloud fallback). The button disables while running so the local GPU queue
-        can't be spammed; results land in the status line. Fail-open."""
+        """Run operator-triggered deep triage off the GUI thread.
+
+        Local Ollama is always tried first. Sanitized cloud fallback is used only
+        when the operator explicitly enabled it in Settings.
+        """
         try:
             from angerona.core.analysis_worker import AnalysisWorker
         except Exception as exc:
@@ -2136,7 +2147,11 @@ class AlertsPanel(QFrame):
             "details":        event.message,
             "type":           event.module,
         }
-        worker = AnalysisWorker(alert, allow_cloud=True, parent=self)
+        worker = AnalysisWorker(
+            alert,
+            allow_cloud=self._allow_cloud,
+            parent=self,
+        )
         self._analyze_workers.append(worker)
         worker.progress.connect(self._status.setText)
         worker.finished.connect(lambda res, b=btn, w=worker: self._on_analyze_done(res, b, w))
@@ -3305,6 +3320,7 @@ class SettingsDialog(QDialog):
 
         tabs.addTab(_scroll(self._tab_general()), "General")
         tabs.addTab(_scroll(self._tab_system()),  "System")
+        tabs.addTab(_scroll(self._tab_enterprise()), "Enterprise")
         tabs.addTab(_scroll(self._tab_aria()),    "ARIA")
         tabs.addTab(_scroll(self._tab_trusted_processes()), "Trusted Processes")
         # Mobile Integration is consolidated into the Advanced Management Console so
@@ -3362,6 +3378,8 @@ class SettingsDialog(QDialog):
               "research", "webhook", "aria"), "ARIA"),
             (("trusted", "allow", "process", "vpn", "false positive"), "Trusted Processes"),
             (("performance", "eco", "startup", "mcp", "black box", "ebpf"), "System"),
+            (("enterprise", "readiness", "manifest", "signature", "receipt",
+              "fleet", "rbac", "causal"), "Enterprise"),
             (("key", "api", "credential", "secret", "provider"), "API Keys"),
             (("theme", "ollama", "model", "github", "update"), "General"),
             (("mobile", "signal", "phone", "ntfy", "sms"), "Mobile Integration"),
@@ -3376,12 +3394,16 @@ class SettingsDialog(QDialog):
     def _restore_privacy_defaults(self) -> None:
         """Stage safe local-only defaults; Save applies them."""
         for name in ("_aria_voice_cloud_chk", "_aria_cloud_fallback_chk",
+                     "_alert_analysis_cloud_chk",
                      "_aria_push_chk", "_aria_inbox_chk", "_aria_egress_chk",
                      "_teams_chk", "_teams_skip_chk"):
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.setChecked(False)
-        self.tabs.setCurrentIndex(2)
+        for index in range(self.tabs.count()):
+            if self.tabs.tabText(index) == "ARIA":
+                self.tabs.setCurrentIndex(index)
+                break
         self._aria_test_status.setText(
             "Privacy defaults staged: optional cloud and remote egress are off. Click Save.")
 
@@ -3459,7 +3481,7 @@ class SettingsDialog(QDialog):
             "isn't HMAC-authenticated. Tampered reports are always refused regardless; "
             "this also blocks unsigned/legacy reports instead of just warning. "
             "Recommended once you've run at least one drill so signed reports exist.")
-        self._require_signed_aar_chk.setChecked(bool(getattr(self._cfg, "require_signed_aar", False)))
+        self._require_signed_aar_chk.setChecked(bool(getattr(self._cfg, "require_signed_aar", True)))
         lay.addWidget(self._require_signed_aar_chk)
         self._entropy_pool_chk = QCheckBox(
             "Offload ransomware entropy scanning to worker processes (experimental)")
@@ -3589,6 +3611,112 @@ class SettingsDialog(QDialog):
         lay.addStretch()
         return w
 
+    def _tab_enterprise(self) -> QWidget:
+        """Evidence-based readiness, extension trust, and proof status."""
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setSpacing(10)
+
+        lay.addWidget(self._section("Enterprise readiness"))
+        intro = QLabel(
+            "This is a live engineering assessment, not a marketing grade. It "
+            "shows which local controls are proven and keeps fleet-scale gaps "
+            "visible until they are actually implemented."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#94a3b8; font-size:11px;")
+        lay.addWidget(intro)
+
+        self._enterprise_score = QLabel("Assessing...")
+        self._enterprise_score.setStyleSheet(
+            "font-size:18px; font-weight:700; color:#38bdf8;"
+        )
+        lay.addWidget(self._enterprise_score)
+
+        self._enterprise_report = QPlainTextEdit()
+        self._enterprise_report.setReadOnly(True)
+        self._enterprise_report.setMinimumHeight(360)
+        self._enterprise_report.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        lay.addWidget(self._enterprise_report, 1)
+
+        buttons = QHBoxLayout()
+        refresh = QPushButton("Refresh assessment")
+        causal = QPushButton("Build current causal snapshot")
+        refresh.clicked.connect(self._refresh_enterprise_assessment)
+        causal.clicked.connect(self._refresh_enterprise_causal)
+        buttons.addWidget(refresh)
+        buttons.addWidget(causal)
+        buttons.addStretch()
+        lay.addLayout(buttons)
+
+        note = QLabel(
+            "External Python capabilities are checked before import against a "
+            "detached manifest, exact source digest, declared permissions/privacy "
+            "budget, and trusted Ed25519 publisher. Remediation closures use "
+            "signed, hash-chained proof receipts."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#94a3b8; font-size:11px;")
+        lay.addWidget(note)
+        self._refresh_enterprise_assessment()
+        return w
+
+    def _enterprise_context(self):
+        window = self.parent()
+        return (
+            getattr(window, "manager", None),
+            getattr(window, "bus", None),
+        )
+
+    def _refresh_enterprise_assessment(self) -> None:
+        manager, bus = self._enterprise_context()
+        if manager is None or bus is None:
+            self._enterprise_score.setText("Assessment unavailable")
+            self._enterprise_report.setPlainText(
+                "The main runtime services are not attached to this Settings window."
+            )
+            return
+        try:
+            from angerona.core.enterprise_readiness import assess, render_text
+            from angerona.core.remediation_log import get_log
+
+            report = assess(manager, bus, self._cfg, get_log())
+            self._enterprise_score.setText(
+                f"{report['percent']}% - {report['band']}"
+            )
+            self._enterprise_report.setPlainText(render_text(report))
+        except Exception as exc:
+            self._enterprise_score.setText("Assessment error")
+            self._enterprise_report.setPlainText(str(exc))
+
+    def _refresh_enterprise_causal(self) -> None:
+        manager, bus = self._enterprise_context()
+        if manager is None or bus is None:
+            return
+        try:
+            from angerona.core.causal_incident_graph import build_graph
+
+            graph = build_graph(
+                bus.recent(500),
+                max_events=500,
+                max_nodes=1_250,
+                max_edges=2_500,
+            )
+            stats = graph["stats"]
+            self._refresh_enterprise_assessment()
+            self._enterprise_report.appendPlainText(
+                "\n\nCURRENT CAUSAL SNAPSHOT\n"
+                f"  incidents: {stats['incidents']}\n"
+                f"  evidence nodes: {stats['nodes']}\n"
+                f"  explained edges: {stats['edges']}\n"
+                f"  dropped by bounds: "
+                f"{stats['dropped_events'] + stats['dropped_nodes'] + stats['dropped_edges']}"
+            )
+        except Exception as exc:
+            self._enterprise_report.appendPlainText(
+                f"\n\nCausal snapshot failed: {exc}"
+            )
+
     def _tab_aria(self) -> QWidget:
         """ARIA assistant layer — HUD, Overdrive, voice, auto-brief, inbox, research.
         Everything here is local-first and off by default (except the HUD itself)."""
@@ -3630,6 +3758,15 @@ class SettingsDialog(QDialog):
             "Default off. Sends only the redacted question and posture band; never live "
             "alerts, runbooks, usernames, local paths, or raw telemetry.")
         lay.addWidget(self._aria_cloud_fallback_chk)
+        self._alert_analysis_cloud_chk = QCheckBox(
+            "Allow privacy-sanitized live-alert evidence to use cloud AI after local triage")
+        self._alert_analysis_cloud_chk.setChecked(
+            getattr(self._cfg, "alert_analysis_cloud_fallback", False))
+        self._alert_analysis_cloud_chk.setToolTip(
+            "Separate, default-off consent. When enabled, Analyze may send a bounded, "
+            "recursively redacted alert summary to the configured cloud provider. "
+            "Credentials, identities, local paths, URLs, and network addresses are removed.")
+        lay.addWidget(self._alert_analysis_cloud_chk)
         # Microphone source: computer mic by default, or an added/external device.
         mrow = QHBoxLayout()
         mrow.addWidget(QLabel("Microphone:"))
@@ -4310,6 +4447,9 @@ class SettingsDialog(QDialog):
         self._cfg.aria_voice_enabled    = self._aria_voice_chk.isChecked()
         self._cfg.aria_voice_cloud_tts  = self._aria_voice_cloud_chk.isChecked()
         self._cfg.aria_cloud_fallback   = self._aria_cloud_fallback_chk.isChecked()
+        self._cfg.alert_analysis_cloud_fallback = (
+            self._alert_analysis_cloud_chk.isChecked()
+        )
         self._cfg.aria_mic_device       = str(self._aria_mic_combo.currentData() or "")
         self._cfg.aria_push_enabled     = self._aria_push_chk.isChecked()
         self._cfg.aria_push_kind        = self._aria_push_kind.currentText()

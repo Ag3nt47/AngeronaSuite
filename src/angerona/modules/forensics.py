@@ -13,8 +13,9 @@ from __future__ import annotations
 import ctypes
 import os
 import re
+import time
 from pathlib import Path
-from typing import Set
+from typing import Dict, Tuple
 
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.win import run_hidden
@@ -22,6 +23,8 @@ from angerona.core.win import run_hidden
 PROCESS_VM_READ = 0x0010
 PROCESS_QUERY_INFORMATION = 0x0400
 MEM_COMMIT = 0x1000
+_CAPTURE_TTL_S = 24 * 60 * 60
+_CAPTURE_MAX = 2_048
 
 
 def _evidence_root() -> Path:
@@ -39,8 +42,42 @@ class ForensicsModule(BaseModule):
 
     def __init__(self) -> None:
         super().__init__()
-        self._captured: Set[int] = set()
+        self._captured: Dict[Tuple[int, float | None], float] = {}
         self._last_ts = 0.0
+
+    @staticmethod
+    def _process_identity(pid: int, details: dict) -> Tuple[int, float | None]:
+        """Prefer a process birth time so PID reuse cannot inherit old state."""
+        for key in ("create_time", "process_create_time", "start_time"):
+            try:
+                value = details.get(key)
+                if value is not None:
+                    return pid, float(value)
+            except (TypeError, ValueError):
+                pass
+        try:
+            import psutil
+            return pid, float(psutil.Process(pid).create_time())
+        except Exception:
+            return pid, None
+
+    def _capture_needed(self, pid: int, details: dict, now: float | None = None) -> bool:
+        now = time.time() if now is None else now
+        cutoff = now - _CAPTURE_TTL_S
+        self._captured = {
+            identity: seen_at for identity, seen_at in self._captured.items()
+            if seen_at >= cutoff
+        }
+        if len(self._captured) > _CAPTURE_MAX:
+            newest = sorted(
+                self._captured.items(), key=lambda item: item[1], reverse=True
+            )
+            self._captured = dict(newest[:_CAPTURE_MAX])
+        identity = self._process_identity(pid, details)
+        if identity in self._captured:
+            return False
+        self._captured[identity] = now
+        return True
 
     def run(self) -> None:
         self.emit("Forensics capture armed (watching for serious events).", Severity.INFO)
@@ -55,8 +92,10 @@ class ForensicsModule(BaseModule):
                     continue
                 self._last_ts = max(self._last_ts, ev.ts)
                 pid = ev.details.get("pid")
-                if isinstance(pid, int) and pid not in self._captured:
-                    self._captured.add(pid)
+                if (
+                    isinstance(pid, int) and
+                    self._capture_needed(pid, ev.details or {})
+                ):
                     self._capture(pid)
 
     # ── Capture pipeline ─────────────────────────────────────────────────────
