@@ -24,6 +24,7 @@ import time
 from angerona.core.config import Config
 from angerona.core.eventbus import EventBus
 from angerona.core.module_manager import ModuleManager
+from angerona.core.platforms import current_platform
 from angerona.core.status_report import StatusReporter
 from angerona.core.storage import FlightRecorder
 
@@ -64,7 +65,10 @@ def run_headless() -> int:
     # core heartbeat, feeding raw telemetry back onto the bus). Off by default;
     # enable with ANGERONA_RESILIENCE=1. Never fatal to core startup.
     _resilience = None
-    if os.environ.get("ANGERONA_RESILIENCE", "") in ("1", "true", "yes", "on"):
+    if (
+        current_platform() == "windows"
+        and os.environ.get("ANGERONA_RESILIENCE", "") in ("1", "true", "yes", "on")
+    ):
         try:
             from angerona.resilience.manager import start_resilience
             _resilience = start_resilience(bus)

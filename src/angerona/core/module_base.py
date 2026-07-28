@@ -40,6 +40,12 @@ class BaseModule:
     category: str = "General"
     version: str = "1.0.0"
     enabled_by_default: bool = True
+    # Existing modules predate the platform contract and are therefore treated
+    # as Windows-only until they explicitly opt into another platform.  This is
+    # a safety property: an unavailable sensor must not inflate protection.
+    supported_platforms = frozenset({"windows"})
+    capability_mode: str = "protect"
+    platform_requirements: tuple[str, ...] = ()
     _RESTART_JOIN_TIMEOUT: float = _RESTART_JOIN_TIMEOUT
 
     def __init__(self) -> None:

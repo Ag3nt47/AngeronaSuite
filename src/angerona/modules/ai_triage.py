@@ -10,6 +10,8 @@ events on a timer to avoid recursive feedback (AI verdicts are emitted at INFO).
 """
 from __future__ import annotations
 
+SUPPORTED_PLATFORMS = ("windows", "macos", "linux")
+
 import json
 import os
 import threading
@@ -31,6 +33,8 @@ class AITriageModule(BaseModule):
     name = "AI Triage (Ollama)"
     description = "Explains and scores serious events using a local LLM (Ollama)."
     category = "AI"
+    supported_platforms = SUPPORTED_PLATFORMS
+    capability_mode = "detect"
 
     # ── Circuit breaker constants ────────────────────────────────────────────
     # If Ollama doesn't respond within _CB_TIMEOUT_S seconds the circuit trips.

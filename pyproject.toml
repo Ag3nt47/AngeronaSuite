@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "angerona"
 version = "1.9.4"
-description = "Modular local-first endpoint security suite for Windows with a native GUI."
+description = "Local-first endpoint security suite: Windows protection with a macOS Observe preview."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -26,6 +26,9 @@ windows = [
     "yara-x>=1.15",
     "PyJWT[crypto]>=2.8",
     "pywintrace>=0.2",
+]
+macos = [
+    "yara-x>=1.15",
 ]
 voice = [
     "sounddevice>=0.5",

@@ -10,6 +10,8 @@ headers / root, it degrades to health 10% and idles — it never crashes the thr
 """
 from __future__ import annotations
 
+SUPPORTED_PLATFORMS = ("linux",)
+
 import os
 import sys
 from typing import Optional
@@ -85,6 +87,9 @@ class EbpfSensorNode(BaseModule):
                    "forwards to the main instance over the Remote Bridge. Linux-only, opt-in.")
     category = "Sensor"
     version = "1.0.0"
+    supported_platforms = SUPPORTED_PLATFORMS
+    capability_mode = "observe"
+    platform_requirements = ("Linux", "BCC", "eBPF-capable kernel")
     # Thread runs but self-gates on config.ebpf_enabled so the Settings toggle
     # takes effect without a restart. Inert (healthy) on non-Linux hosts.
     enabled_by_default = True

@@ -1,8 +1,9 @@
 # 🛡️ Angerona — Cyber Security Suite
 
-**Local-first EDR / NDR / SOAR for Windows — MITRE ATT&CK detection, YARA, ETW/AMSI/WFP telemetry, and local-AI triage. Cloud integrations are optional and off by default. No kernel driver.**
+**Local-first EDR / NDR / SOAR: full Windows protection plus a source-available macOS Observe preview. Cloud integrations are optional and off by default. No unsigned kernel driver.**
 
-![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
+![Windows](https://img.shields.io/badge/Windows-Protect-0078D6)
+![macOS](https://img.shields.io/badge/macOS-Observe%20preview-555555)
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)
 ![GUI](https://img.shields.io/badge/GUI-PySide6%2FQt-41CD52)
 ![EDR·NDR·SOAR](https://img.shields.io/badge/EDR·NDR·SOAR-endpoint%20defense-1f6feb)
@@ -10,10 +11,19 @@
 ![Local AI](https://img.shields.io/badge/AI-local%20Ollama-000000)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-A modular, local-first endpoint security suite for Windows with a clean native
-desktop GUI. Angerona runs elevated in user mode and pulls kernel-sourced
-telemetry through Windows' supported APIs (ETW / WMI / AMSI / WFP) — no custom
-kernel driver required — so it is powerful **and** safe to install.
+A modular, local-first endpoint security suite with a clean native desktop GUI.
+The production Windows edition runs elevated in user mode and pulls
+kernel-sourced telemetry through supported APIs (ETW / WMI / AMSI / WFP) — no
+custom kernel driver required. The macOS edition is an honest **Observe
+preview**: it shares Angerona's core, event model, local AI, and resource
+governance while using privacy-minimized process/network snapshots. It does not
+claim Endpoint Security or Network Extension enforcement.
+
+| Platform | Current level | Honest capability boundary |
+| --- | --- | --- |
+| Windows | **Protect** | Full shipped EDR/NDR/SOAR sensor and response path |
+| macOS | **Observe preview** | Process-start and established-flow observation; Keychain secrets; no native enforcement yet |
+| Linux | **Headless sensor** | Explicit eBPF/BCC sensor path and shared-core services |
 
 ![Angerona Cycle 5 public demo dashboard with synthetic alerts, icon navigation, ARIA console, System Pulse, posture score, and module health](docs/screenshots/dashboard-public-demo.png)
 
@@ -29,6 +39,17 @@ kernel driver required — so it is powerful **and** safe to install.
 ## ✨ Capabilities
 
 - **Native desktop GUI** (PySide6/Qt) — dashboard, live alerts, module control, settings.
+- **Explicit platform capability contracts** — every module reports its supported
+  platforms, availability, requirements, and `observe` / `detect` / `protect` /
+  `respond` mode. Legacy modules fail closed as Windows-only; an unavailable
+  sensor cannot start or inflate the protection score.
+- **Platform-neutral sensor events** — Windows, macOS, Linux, and future native
+  collectors normalize process, file, network, authentication, and security
+  observations into one bounded, versioned schema before EventBus publication.
+- **macOS Observe preview** — low-overhead, privacy-minimized process and network
+  baselining with command-line collection off by default, macOS Keychain secret
+  storage, an authenticated/replay-protected native event boundary, and Xcode
+  source scaffolding for a future signed Endpoint Security system extension.
 - **Manifest-gated module system** — bundled modules are auto-discovered.
   External `.py` capabilities are disabled by default and require a detached
   Capability Manifest v1 whose source SHA-256, API compatibility, permissions,
@@ -74,7 +95,7 @@ kernel driver required — so it is powerful **and** safe to install.
   checksummed, provenance-attested build.
 - **Elevated user-mode access** — UAC elevation on launch for full-system visibility, without the risk of an unsigned kernel driver.
 
-## 🚀 One-click install from GitHub (recommended)
+## 🚀 One-click Windows install from GitHub (recommended)
 
 1. Download `Angerona-<version>-win64.zip` and its adjacent `.sha256` from the
    [Releases](../../releases) page, then verify the SHA-256 and GitHub build
@@ -107,6 +128,24 @@ reviewed development trees; use the protected release installer for normal use.
 
 `kill-all-angerona.bat` stops only suite-owned Python entry points and unloads
 Angerona's resident llama3 model.
+
+### macOS Observe developer preview
+
+The macOS preview is currently source-only; there is no signed/notarized `.app`
+release yet. On a reviewed clone with Python 3.10 or later:
+
+```sh
+python3 -m venv venv
+./venv/bin/python -m pip install -e '.[macos,voice]'
+./venv/bin/python -m angerona
+```
+
+This starts only capabilities whose platform contract includes macOS. Secrets
+are stored in the current user's Keychain. The Python observer does not install
+a daemon, system extension, content filter, authorization event handler, or
+network blocker. See [`native/macos/README.md`](native/macos/README.md) for the
+Developer ID, entitlement, system-extension, privacy-review, and notarization
+gates required before a Protect edition can be distributed.
 
 ## 🎯 Use cases — who it's for
 
@@ -158,18 +197,28 @@ SOAR decisions. Public screenshots intentionally omit local usernames and paths.
 
 See [`docs/architecture.md`](docs/architecture.md). In short: independent
 **modules** run on background threads and publish events to a thread-safe
-**EventBus**; the bus persists alerts to the **flight-recorder** store and feeds
-the **GUI**, which polls for updates. A **ModuleManager** discovers and
-supervises modules; an **updater** checks GitHub for new releases.
+**EventBus**; platform sensors cross a bounded, versioned normalized-event
+contract before the bus persists alerts to the **flight-recorder** and feeds the
+**GUI**. A **ModuleManager** discovers modules, applies their explicit platform
+availability contract, and supervises only supported capabilities; an
+**updater** checks GitHub for new releases.
 
 ## 🔐 Security model
 
-- Runs as Administrator (UAC prompt on launch) for full visibility.
+- The Windows Protect edition runs as Administrator (UAC prompt on launch) for
+  full visibility. The macOS Observe preview does not silently elevate itself.
 - Telemetry via **ETW, WMI/CIM, AMSI, WFP** — kernel-sourced data through
   Microsoft-supported interfaces. A documented `KernelSensor` seam exists if a
   *signed* driver is ever added; no unsigned driver ships here.
-- Secrets are encrypted with Windows DPAPI in the runtime data directory. The
-  elevated app never trusts a working-directory `.env`.
+- Secrets use the current-user Windows DPAPI store on Windows and the current
+  user's macOS Keychain on macOS. Unsupported platforms fail closed instead of
+  writing plaintext. The app never trusts a working-directory `.env`.
+- Native macOS frames are size-bounded, schema-validated, HMAC-authenticated,
+  freshness-checked, and replay-protected before entering the shared core.
+- The macOS native source is observe-only and contains no `AUTH` subscription.
+  A future Protect build requires Apple-approved entitlements, a signed host and
+  system extension, hardened runtime, privacy review, notarization, and tested
+  uninstall/rollback behavior.
 - Optional network services fail closed: Teams requires an explicit user
   allowlist, Remote Bridge uses mutual authentication and AES-GCM, and SIEM
   forwarding requires verified TLS unless the operator explicitly enables the
@@ -184,10 +233,14 @@ enable external discovery with `ANGERONA_EXTERNAL_MODULES=1`. See
 ```python
 from angerona.core.module_base import BaseModule, Severity
 
+SUPPORTED_PLATFORMS = ("windows", "macos", "linux")
+
 class PingModule(BaseModule):
     name = "Heartbeat"
     description = "Emits a heartbeat event every 30s."
     category = "Diagnostics"
+    supported_platforms = SUPPORTED_PLATFORMS
+    capability_mode = "observe"
 
     def run(self):
         while not self.stopping:
@@ -600,3 +653,42 @@ email scanning, channel push, research) — each has a one-click test button.
   1 platform skip**; the headless dashboard/module harness passes **26/26**;
   ARIA passes **13/13**; the compile gate scans **223 files with 0 failures**;
   module discovery finds **63 modules**.
+
+### Current development — macOS Observe architecture foundation
+
+- **One core, explicit sensor editions.** Angerona now has a canonical
+  Windows/macOS/Linux platform vocabulary. Modules declare both supported
+  platforms and their honest `observe`, `detect`, `protect`, or `respond` mode.
+  Non-Windows discovery AST-checks that declaration before importing a module;
+  undeclared legacy modules fail closed as Windows-only.
+- **No phantom protection.** Unsupported capabilities remain unavailable, never
+  start, and cannot be counted as enabled protection. The inventory reports the
+  target platform, requirements, supported platforms, mode, and availability
+  reason for each capability.
+- **Shared event model.** Platform collectors normalize observations into a
+  bounded, versioned process/file/network/authentication/system/security event
+  schema before entering Angerona's authenticated EventBus.
+- **macOS Observe preview.** The first sensor baselines processes and established
+  network flows, then emits only new observations on a conservative cadence.
+  Command lines and usernames are excluded by default. The module clearly
+  reports observe-only/degraded coverage until native telemetry is installed.
+- **Native-extension seam.** Frames from a future native host must pass exact
+  schema, size, HMAC, freshness, nonce-replay, and macOS-source checks.
+  [`native/macos`](native/macos) contains source scaffolding for a signed host,
+  `SMAppService` lifecycle, FSEvents file observation, system-extension
+  activation, and a NOTIFY-only Endpoint Security client. It deliberately
+  contains no authorization/blocking subscription.
+- **Native secret custody.** Windows credentials remain current-user DPAPI
+  protected; macOS credentials use the current user's Keychain through
+  Security.framework without placing secret values in command arguments or
+  temporary plaintext files.
+- **Honest release status.** Windows remains the packaged one-click Protect
+  edition. macOS is source-only until Apple entitlement approval, native Xcode
+  integration, Developer ID signing, hardened runtime, notarization, tested
+  upgrades/uninstall, and physical Apple Silicon validation are complete.
+- **Verification.** The repository suite passes **193 tests with 1 platform
+  skip**. The focused platform contract passes **8/8**, and the compile gate
+  scans **230 Python files with 0 failures**. Windows discovery reports **64
+  declared modules, 62 available, and 0 discovery errors**; a simulated macOS
+  target imports only its **4 explicitly compatible capabilities** with 0
+  discovery errors.

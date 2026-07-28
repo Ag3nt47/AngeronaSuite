@@ -1,16 +1,17 @@
-"""DPAPI-protected storage for Angerona credentials.
+"""OS-protected storage for Angerona credentials.
 
 The UI needs a small persistent key/value store for optional provider tokens,
 mail credentials, and connector secrets.  Keeping those values in a project
 ``.env`` file made them readable to every account that inherited access to the
-checkout.  This module stores the same values as one current-user DPAPI blob
-under Angerona's runtime-data directory and applies a private Windows ACL as a
-second layer of protection.
+checkout. Windows stores one current-user DPAPI blob under Angerona's
+runtime-data directory and applies a private ACL as a second layer. macOS stores
+the same logical map as one current-user Keychain item.
 
-Legacy ``.env`` files remain readable for compatibility.  On Windows they are
-migrated only after an encrypt/decrypt verification succeeds; the plaintext
-source is then removed.  On platforms without DPAPI, writes fail closed instead
-of silently creating another plaintext credential file.
+Windows uses a current-user DPAPI blob with a private ACL. macOS uses one
+generic-password item in the current user's Keychain through Security.framework.
+Legacy ``.env`` files are migrated only after a protected write/read verification
+succeeds; the plaintext source is then removed. Other platforms fail closed
+instead of silently creating another plaintext credential file.
 """
 from __future__ import annotations
 
@@ -24,13 +25,17 @@ from typing import Mapping
 
 _ENTROPY = b"Angerona-SecretStore-v1"
 _FILENAME = "secrets.dpapi"
+_MACOS_REFERENCE_FILENAME = "secrets.keychain-reference"
+_MACOS_KEYCHAIN_SERVICE = "org.angerona.security-suite"
+_MACOS_KEYCHAIN_ACCOUNT = "runtime-secrets-v1"
 
 
 def secure_store_path(data_root: Path | None = None) -> Path:
     if data_root is None:
         from angerona.core.data_paths import data_dir
         data_root = data_dir()
-    return Path(data_root) / _FILENAME
+    filename = _MACOS_REFERENCE_FILENAME if sys.platform == "darwin" else _FILENAME
+    return Path(data_root) / filename
 
 
 def _protect_bytes(data: bytes) -> bytes | None:
@@ -72,7 +77,30 @@ def _private_acl(path: Path) -> None:
         pass
 
 
+def _read_macos_secret_map(*, strict: bool = False) -> dict[str, str]:
+    try:
+        from angerona.platforms.macos.keychain import read_blob
+        raw = read_blob(_MACOS_KEYCHAIN_SERVICE, _MACOS_KEYCHAIN_ACCOUNT)
+        if raw is None:
+            return {}
+        value = json.loads(raw.decode("utf-8"))
+        if not isinstance(value, dict) or any(
+            not isinstance(key, str) or not isinstance(item, str)
+            for key, item in value.items()
+        ):
+            raise ValueError("Keychain secret map has an invalid shape")
+        return dict(value)
+    except (OSError, UnicodeError, ValueError, TypeError, RuntimeError) as exc:
+        if strict:
+            raise RuntimeError(
+                "macOS Keychain secrets are unreadable; refusing to overwrite them"
+            ) from exc
+        return {}
+
+
 def read_secret_map(data_root: Path | None = None) -> dict[str, str]:
+    if sys.platform == "darwin":
+        return _read_macos_secret_map()
     path = secure_store_path(data_root)
     if not path.exists():
         return {}
@@ -94,7 +122,11 @@ def read_secret_map(data_root: Path | None = None) -> dict[str, str]:
 
 def write_secret_map(updates: Mapping[str, object], data_root: Path | None = None) -> Path:
     path = secure_store_path(data_root)
-    values = read_secret_map(data_root)
+    values = (
+        _read_macos_secret_map(strict=True)
+        if sys.platform == "darwin"
+        else read_secret_map(data_root)
+    )
     removed: set[str] = set()
     for key, value in updates.items():
         key = str(key).strip()
@@ -106,9 +138,24 @@ def write_secret_map(updates: Mapping[str, object], data_root: Path | None = Non
         else:
             values[key] = str(value)
     payload = json.dumps(values, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if sys.platform == "darwin":
+        from angerona.platforms.macos.keychain import write_blob
+        write_blob(_MACOS_KEYCHAIN_SERVICE, _MACOS_KEYCHAIN_ACCOUNT, payload)
+        if _read_macos_secret_map(strict=True) != values:
+            raise RuntimeError(
+                "macOS Keychain verification failed; credentials were not accepted"
+            )
+        for key, value in values.items():
+            os.environ[key] = value
+        for key in removed:
+            os.environ.pop(key, None)
+        # Kept as a stable API return value; no secret is written at this path.
+        return path
     blob = _protect_bytes(payload)
     if blob is None:
-        raise RuntimeError("Windows DPAPI is unavailable; credentials were not written")
+        raise RuntimeError(
+            "No supported OS credential store is available; credentials were not written"
+        )
     # Verify before replacing the previous store.  A DPAPI or account-context
     # problem must never destroy the only readable credential copy.
     if _unprotect_bytes(blob) != payload:

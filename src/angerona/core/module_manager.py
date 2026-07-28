@@ -22,12 +22,24 @@ from angerona.core.capability_manifest import verify_external_module
 from angerona.core.config import Config
 from angerona.core.eventbus import EventBus
 from angerona.core.module_base import BaseModule
+from angerona.core.platforms import (
+    availability_for,
+    declared_platforms_from_source,
+    normalize_platform,
+)
 
 
 class ModuleManager:
-    def __init__(self, bus: EventBus, config: Config) -> None:
+    def __init__(
+        self,
+        bus: EventBus,
+        config: Config,
+        *,
+        target_platform: str | None = None,
+    ) -> None:
         self.bus = bus
         self.config = config
+        self.platform = normalize_platform(target_platform)
         self.modules: Dict[str, BaseModule] = {}
         self.discovery_errors: List[str] = []
         # Enterprise extension inventory. Built-ins inherit the release trust
@@ -47,6 +59,11 @@ class ModuleManager:
             if inst.name in self.modules:
                 continue
             inst.bind(self.bus)
+            platform = availability_for(inst, self.platform)
+            setattr(inst, "_angerona_platform_availability", platform)
+            if not platform.available:
+                inst.status = "unavailable"
+                inst.set_health(0, platform.reason)
             # Optional: give supervisor-type modules (e.g. Watchdog Monitor) a
             # handle to the manager so they can see/restart their siblings.
             if hasattr(inst, "bind_manager"):
@@ -85,11 +102,38 @@ class ModuleManager:
         import angerona.modules as pkg
         found: List[type] = []
         seen: set[str] = set()
+        roots = list(getattr(pkg, "__path__", []) or [])
+        pkg_file = getattr(pkg, "__file__", None)
+        if pkg_file:
+            roots.append(os.path.dirname(pkg_file))
+
+        def _source_path(name: str) -> Path | None:
+            for root in roots:
+                try:
+                    candidate = Path(root) / f"{name}.py"
+                    if candidate.is_file():
+                        return candidate
+                except (OSError, TypeError):
+                    continue
+            return None
 
         def _load(name: str) -> None:
             if name in seen or name.startswith("_"):
                 return
             seen.add(name)
+            # On non-Windows hosts, preflight the literal declaration without
+            # importing the file.  Legacy modules default to Windows-only, which
+            # prevents top-level imports such as winreg/ETW/AMSI from crashing a
+            # macOS or Linux startup.
+            if self.platform != "windows":
+                source_path = _source_path(name)
+                supported = (
+                    declared_platforms_from_source(source_path)
+                    if source_path is not None
+                    else frozenset({"windows"})
+                )
+                if self.platform not in supported:
+                    return
             try:
                 mod = importlib.import_module(f"angerona.modules.{name}")
             except Exception as exc:
@@ -108,10 +152,6 @@ class ModuleManager:
         # package's real directory too so new modules discover without reinstalling.
         # Derive the dir from __file__ (the physical __init__.py) — reliable even
         # when the editable finder gives __path__ a non-filesystem value.
-        roots = list(getattr(pkg, "__path__", []) or [])
-        pkg_file = getattr(pkg, "__file__", None)
-        if pkg_file:
-            roots.append(os.path.dirname(pkg_file))
         scanned: set[str] = set()
         for root in roots:
             try:
@@ -202,7 +242,10 @@ class ModuleManager:
 
     # ── Lifecycle ───────────────────────────────────────────────────────────
     def is_enabled(self, name: str) -> bool:
-        return self.config.module_states.get(name, self.modules[name].enabled_by_default)
+        mod = self.modules[name]
+        if not availability_for(mod, self.platform).available:
+            return False
+        return self.config.module_states.get(name, mod.enabled_by_default)
 
     # Safety-critical modules must come up immediately — never staggered.
     _NO_STAGGER = {
@@ -266,11 +309,16 @@ class ModuleManager:
         return skipped
 
     def set_enabled(self, name: str, enabled: bool) -> None:
-        self.config.module_states[name] = enabled
-        self.config.save()
         mod = self.modules.get(name)
         if not mod:
             return
+        platform = availability_for(mod, self.platform)
+        if enabled and not platform.available:
+            mod.status = "unavailable"
+            mod.set_health(0, platform.reason)
+            return
+        self.config.module_states[name] = enabled
+        self.config.save()
         mod.start() if enabled else mod.stop()
 
     def stop_all(self) -> None:
@@ -291,6 +339,7 @@ class ModuleManager:
                 "health": int(getattr(mod, "health", 0)),
                 "enabled": bool(self.is_enabled(name)),
             })
+            trust.update(availability_for(mod, self.platform).as_dict())
             rows.append(trust)
         return rows
 

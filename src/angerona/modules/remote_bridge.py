@@ -32,6 +32,8 @@ dependency or a strong key is absent, the module fails closed.
 """
 from __future__ import annotations
 
+SUPPORTED_PLATFORMS = ("windows", "macos", "linux")
+
 import hashlib
 import hmac
 import json
@@ -158,6 +160,8 @@ class RemoteBridge(BaseModule):
                    "mutual authentication and AES-256-GCM encryption. Off by default.")
     category = "Integrity"
     version = "1.0.0"
+    supported_platforms = SUPPORTED_PLATFORMS
+    capability_mode = "respond"
     enabled_by_default = False   # never open the network without explicit opt-in
 
     def __init__(self) -> None:

@@ -9,6 +9,7 @@ from angerona.core.config import Config
 from angerona.core.eventbus import EventBus
 from angerona.core.storage import FlightRecorder
 from angerona.core.module_manager import ModuleManager
+from angerona.core.platforms import current_platform
 from angerona.core.status_report import StatusReporter
 from angerona.gui.main_window import MainWindow
 
@@ -221,8 +222,11 @@ class AngeronaApp:
         _os.environ["ANGERONA_BLACKBOX_ENABLED"] = (
             "1" if getattr(self.config, "blackbox_enabled", True) else "0"
         )
-        if _os.environ.get("ANGERONA_RESILIENCE", "1") not in (
-            "0", "false", "no", "off"
+        if (
+            current_platform() == "windows"
+            and _os.environ.get("ANGERONA_RESILIENCE", "1") not in (
+                "0", "false", "no", "off"
+            )
         ):
             try:
                 from angerona.resilience.manager import start_resilience

@@ -20,6 +20,8 @@ Standard library + psutil only.
 """
 from __future__ import annotations
 
+SUPPORTED_PLATFORMS = ("windows", "macos", "linux")
+
 import time
 from typing import Optional
 
@@ -62,6 +64,8 @@ class ResourceGovernor(BaseModule):
                    "Never slows the real-time protection path.")
     category = "Performance"
     version = "1.0.0"
+    supported_platforms = SUPPORTED_PLATFORMS
+    capability_mode = "protect"
 
     def __init__(self) -> None:
         super().__init__()
