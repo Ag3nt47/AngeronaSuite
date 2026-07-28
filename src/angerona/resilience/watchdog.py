@@ -32,6 +32,9 @@ from angerona.resilience import diagnostics as diag
 from angerona.resilience import shutdown_token as tok
 from angerona.resilience.supervisor import ProcessSupervisor
 
+_CORE_STALE_AFTER_SECONDS = 12.0
+_SCANNER_STALE_AFTER_SECONDS = 8.0
+
 
 def _repo_root() -> Path:
     from angerona.core.data_paths import project_root
@@ -103,11 +106,25 @@ def main(argv: list[str] | None = None) -> int:
         # interpreter so the core is still supervised instead of never spawning.
         if not core_argv or (os.sep in core_argv[0] and not os.path.exists(core_argv[0])):
             core_argv = [pyw, "-m", "angerona"]
-        sup.add("core", core_argv, stale_after_s=3.0, window="hidden")
+        # Core can briefly hold Python's GIL during boot-time sensor work. Three
+        # seconds produced false "suspended" decisions, duplicate launch
+        # attempts, and SAFE_MODE while the original Core was healthy. A real
+        # exit is still detected immediately by HeartbeatReader's PID check;
+        # only a live-but-delayed process receives this scheduling grace.
+        sup.add(
+            "core",
+            core_argv,
+            stale_after_s=_CORE_STALE_AFTER_SECONDS,
+            window="hidden",
+        )
 
     # Scanner + BlackBox (also watched by the core manager; spawn lock avoids dups).
-    sup.add("scanner", [pyw, "-m", "angerona.resilience.scanner"],
-            stale_after_s=3.0, window="hidden")
+    sup.add(
+        "scanner",
+        [pyw, "-m", "angerona.resilience.scanner"],
+        stale_after_s=_SCANNER_STALE_AFTER_SECONDS,
+        window="hidden",
+    )
     bb = _blackbox_script()
     if bb is not None:
         sup.add("blackbox", [pyw, str(bb)], window="hidden",

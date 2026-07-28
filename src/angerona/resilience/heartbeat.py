@@ -191,14 +191,20 @@ class HeartbeatReader:
             self._prev_change_ts = now
             return "alive"
 
+        # A longer suspension threshold is necessary for a busy Python Core,
+        # but it must not delay recovery from a real process exit. Check the PID
+        # as soon as one expected beat is missed; only a still-live process gets
+        # the scheduling-jitter grace period below.
+        if not pid_alive(rec["pid"]):
+            return "dead"
+
         frozen_for = now - self._prev_change_ts
         if frozen_for < stale_after_s:
             return "alive"
 
-        # Tick has been frozen. Is the process gone (dead) or suspended (alive)?
-        if pid_alive(rec["pid"]):
-            return "suspended"
-        return "dead"
+        # The process is still present but its heartbeat has remained frozen
+        # beyond the grace window.
+        return "suspended"
 
 
 def self_test() -> tuple[bool, str]:

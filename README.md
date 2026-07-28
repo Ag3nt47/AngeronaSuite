@@ -117,11 +117,21 @@ kernel driver required — so it is powerful **and** safe to install.
   workers. Hidden Black Box charts skip repaint work, immediate-only database
   reads preserve the last complete view, and Live Alerts keeps the operator's
   viewport.
+- **Packet capture cannot crash Core.** The optional Packet Sniffer runs
+  Scapy/Npcap decoding in a bounded subprocess. A native driver/decoder access
+  violation degrades and restarts only that worker, while Angerona, the globe,
+  and the watchdog remain online. Detection events include endpoints and the
+  credential type, but never the captured secret value.
 - **Watchdog recovery is operator-controllable.** The Watchdog window includes
   **Restart Angerona Core**. Restart requests are authenticated and
   target-specific; the watchdog clears SAFE_MODE, proves the adopted Core's
   executable/command identity, stops it, and launches a clean replacement. It
   refuses to spawn a duplicate if safe termination cannot be established.
+- **Watchdog recovery resists false restart loops.** A dead heartbeat PID is
+  detected immediately, while a still-live Core receives a 12-second scheduling
+  grace window for heavy boot-time sensor work. This prevents a healthy but
+  briefly GIL-delayed Core from being misclassified as suspended and launched
+  again.
 - **Measured hot-path improvements.** Bounded deques made saturated ATT&CK and
   compliance retention 14.17× and 3.90× faster; unchanged HEAL directory polls
   improved 816×; status reporting performs about 19% less work. Network,

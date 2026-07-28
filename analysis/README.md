@@ -39,8 +39,8 @@ kernel driver required — so it is powerful **and** safe to install.
 - Minimized Angerona windows collapse through an outline-to-line-to-dot
   transition into a draggable holographic globe. Its radial controls open Core,
   Watchdog, Scanner, and Black Box; reduced-motion mode keeps a static token.
-- The integrated gate is green: **179 passed / 1 platform skip**, headless
-  self-check **26/26**, ARIA **13/13**, compile scan **221/221**, and
+- The integrated gate is green: **185 passed / 1 platform skip**, headless
+  self-check **26/26**, ARIA **13/13**, compile scan **223/223**, and
   auto-discovery **63 modules**.
 
 ## What's new (v1.9.4 — Cycle 4 security, proof, and responsiveness)
@@ -70,6 +70,13 @@ kernel driver required — so it is powerful **and** safe to install.
   generations cannot overlap; SPEC/AI/IPC helpers retire with their owning
   lifecycle generation; hidden Black Box charts skip repaint work; immediate-
   only history reads keep the last complete view.
+- Packet Sniffer Scapy/Npcap dissection is isolated in a bounded subprocess.
+  Native capture faults cannot terminate Core, and captured credential values
+  are redacted before the worker protocol reaches Angerona.
+- Watchdog liveness now distinguishes immediate PID death from live-process
+  scheduling jitter. Core has a 12-second anti-flap window and Scanner matches
+  its established 8-second tolerance, avoiding duplicate restarts during heavy
+  startup without delaying recovery from a real process exit.
 - The Watchdog window can issue an authenticated, target-specific **Restart
   Angerona Core** request. Adopted Core identity is verified before termination,
   SAFE_MODE is cleared, and a duplicate is never launched after a refused stop.

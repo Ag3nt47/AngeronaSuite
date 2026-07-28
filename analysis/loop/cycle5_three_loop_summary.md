@@ -33,6 +33,14 @@ with the dashboard-wide animated detail-view pass and verified together.
 - Made MCP startup idempotent and queue shutdown reliable.
 - Batched FlightCache commits; the focused 20,000-put benchmark improved from
   1.494 seconds to 0.796 seconds while commits fell from 20,000 to 157.
+- Isolated Packet Sniffer's Scapy/Npcap decoder in a bounded subprocess after
+  live crash records proved repeated `0xC0000005` faults in its capture thread.
+  A decoder/driver crash now degrades only the worker instead of restarting
+  Core, and captured credential values are stripped from the worker protocol.
+- Corrected the watchdog's three-second live-process threshold, which was
+  classifying boot-time Core scheduling jitter as suspension and attempting a
+  duplicate launch. Dead PIDs are now detected immediately, while a still-live
+  Core gets 12 seconds and Scanner gets 8 seconds before suspension recovery.
 
 ## Loop 3 — visionary enterprise upgrade
 
@@ -95,14 +103,14 @@ the transitions. Disabling it in Settings restores collapsed windows first.
 
 ## Verification
 
-- Repository pytest: 179 passed, 1 platform skip, 0 failed
+- Repository pytest: 185 passed, 1 platform skip, 0 failed
 - Focused fresh sweep: 40 passed
 - Holographic orb and dashboard UI: 14 passed
 - Orb, dashboard UI, and fresh security: 21 passed
 - Enterprise drill-contract gate: 9 passed
 - Headless self-check: 26 passed, 0 failed
 - ARIA self-tests: 13 passed, 0 failed
-- Compile gate: 221 Python files scanned, 0 failed
+- Compile gate: 223 Python files scanned, 0 failed
 - Module discovery: 63 modules
 
 Expected stopped/idle/local-model module outcomes printed inside the headless

@@ -2,7 +2,31 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from types import SimpleNamespace
+
+
+def test_watchdog_allows_busy_core_heartbeat_jitter() -> None:
+    from angerona.resilience import watchdog
+
+    assert watchdog._CORE_STALE_AFTER_SECONDS >= 10.0
+    assert watchdog._SCANNER_STALE_AFTER_SECONDS >= 8.0
+
+
+def test_dead_heartbeat_pid_bypasses_live_process_grace(
+    tmp_path, monkeypatch
+) -> None:
+    from angerona.resilience import heartbeat
+
+    path = tmp_path / "core.hb"
+    writer = heartbeat.HeartbeatWriter("core", path=path)
+    reader = heartbeat.HeartbeatReader("core", path=path)
+    assert reader.classify(stale_after_s=12.0) == "alive"
+    monkeypatch.setattr(heartbeat, "pid_alive", lambda _pid: False)
+    reader._prev_change_ts = time.time()
+
+    assert reader.classify(stale_after_s=12.0) == "dead"
+    writer.close()
 
 
 def test_core_restart_uses_a_target_specific_authenticated_inbox(
