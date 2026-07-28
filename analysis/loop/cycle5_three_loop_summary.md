@@ -76,14 +76,33 @@ a scroll area, the kill-chain wraps into two rows, and Launch/Stop live in a
 sticky footer outside the scroll area. The controls remain reachable at the
 700×520 minimum window size.
 
+## Holographic minimized-window extension
+
+Angerona windows now minimize into a draggable holographic globe through a
+window-outline to vertical-line to dot transition. The reverse transition
+restores exact client geometry without cumulative title-bar growth. Clicking
+the token extends four radial service controls:
+
+- Core restores the main dashboard.
+- Watchdog opens live guardian status and recovery controls.
+- Scanner opens standalone telemetry-scanner status.
+- Black Box opens the out-of-band diagnostic-recorder status.
+
+The globe is painted from Qt vector primitives, starts no process, reads no
+telemetry, and advances at 20 FPS only while visible. Placement persists and is
+clamped to the active monitor. Reduced-motion makes the token static and skips
+the transitions. Disabling it in Settings restores collapsed windows first.
+
 ## Verification
 
-- Repository pytest: 173 passed, 1 platform skip, 0 failed
+- Repository pytest: 179 passed, 1 platform skip, 0 failed
 - Focused fresh sweep: 40 passed
+- Holographic orb and dashboard UI: 14 passed
+- Orb, dashboard UI, and fresh security: 21 passed
 - Enterprise drill-contract gate: 9 passed
 - Headless self-check: 26 passed, 0 failed
 - ARIA self-tests: 13 passed, 0 failed
-- Compile gate: 220 Python files scanned, 0 failed
+- Compile gate: 221 Python files scanned, 0 failed
 - Module discovery: 63 modules
 
 Expected stopped/idle/local-model module outcomes printed inside the headless

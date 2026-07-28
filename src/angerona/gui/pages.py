@@ -3694,7 +3694,8 @@ class SettingsDialog(QDialog):
               "fleet", "rbac", "causal"), "Enterprise"),
             (("key", "api", "credential", "secret", "provider"), "API Keys"),
             (("theme", "ollama", "model", "github", "update", "animation",
-              "motion", "appearance"), "General"),
+              "motion", "appearance", "orb", "holographic", "minimize",
+              "token"), "General"),
             (("mobile", "signal", "phone", "ntfy", "sms"), "Mobile Integration"),
         )
         for words, tab_name in routes:
@@ -3793,6 +3794,16 @@ class SettingsDialog(QDialog):
         self._ui_motion_chk.setChecked(
             bool(getattr(self._cfg, "ui_motion_enabled", True)))
         lay.addWidget(self._ui_motion_chk)
+        self._holographic_orb_chk = QCheckBox(
+            "Show the holographic Angerona Orb when windows minimize")
+        self._holographic_orb_chk.setToolTip(
+            "Collapses Angerona windows into a lightweight spinning globe. "
+            "Click it for radial Core, Watchdog, Scanner, and Black Box controls. "
+            "Reduced-motion mode keeps the token but removes spinning and "
+            "transition motion.")
+        self._holographic_orb_chk.setChecked(
+            bool(getattr(self._cfg, "holographic_orb_enabled", True)))
+        lay.addWidget(self._holographic_orb_chk)
 
         # ── Integrity / performance (advanced) ──────────────────────────────
         lay.addWidget(self._section("Integrity & Performance"))
@@ -4729,6 +4740,9 @@ class SettingsDialog(QDialog):
             except (TypeError, ValueError):
                 pass
         self._cfg.ui_motion_enabled = self._ui_motion_chk.isChecked()
+        self._cfg.holographic_orb_enabled = (
+            self._holographic_orb_chk.isChecked()
+        )
         if callable(self._apply_theme):
             try: self._apply_theme(self._cfg.theme)
             except Exception: pass

@@ -36,8 +36,11 @@ kernel driver required — so it is powerful **and** safe to install.
 - Shark and Red Team runs use a fail-closed bounded preflight and write
   HMAC-attested, SHA-256-chained ground truth. AAR and Evolution refuse tampered
   or unsigned drill histories.
-- The integrated gate is green: **173 passed / 1 platform skip**, headless
-  self-check **26/26**, ARIA **13/13**, compile scan **220/220**, and
+- Minimized Angerona windows collapse through an outline-to-line-to-dot
+  transition into a draggable holographic globe. Its radial controls open Core,
+  Watchdog, Scanner, and Black Box; reduced-motion mode keeps a static token.
+- The integrated gate is green: **179 passed / 1 platform skip**, headless
+  self-check **26/26**, ARIA **13/13**, compile scan **221/221**, and
   auto-discovery **63 modules**.
 
 ## What's new (v1.9.4 — Cycle 4 security, proof, and responsiveness)

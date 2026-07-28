@@ -27,6 +27,7 @@ from angerona.gui.animations import (
     ClashingSwords, RunSpinner, SharkSwimBanner, SharkSwimIndicator, ThreatOverlay)
 from angerona.gui.header_controls import (
     HeaderActionButton, PanelRevealOverlay, motion_allowed)
+from angerona.gui.holographic_orb import HolographicOrbController
 from angerona.gui.dashboard_details import (
     AriaDetailDialog,
     SystemPulseDetailDialog,
@@ -477,6 +478,7 @@ class MainWindow(QMainWindow):
         self.shark_monitor.fi_style.currentTextChanged.connect(self._on_fi_style_change)
 
         self._build_tray()
+        self._holographic_orb = HolographicOrbController(self, self.config)
 
         # ── Two-tier refresh: fast strip (1 s) + full panels (2 s) ──────────
         # Splitting the timer lets the status strip and threat check stay snappy
@@ -594,6 +596,10 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.setStyleSheet(self._qss())
+        try:
+            self._holographic_orb.sync_config()
+        except Exception:
+            pass
 
     def _run_header_action(self, source: QWidget, callback, color: str) -> None:
         """Route a top-row action through the real destination reveal."""
@@ -2606,13 +2612,28 @@ class MainWindow(QMainWindow):
         self.tray = QSystemTrayIcon(self._app_icon, self)
         self.tray.setToolTip("Angerona — running")
         menu = QMenu()
-        show = QAction("Open Angerona", self); show.triggered.connect(self.showNormal)
+        show = QAction("Open Angerona", self)
+        show.triggered.connect(self._restore_from_background)
         quit_ = QAction("Quit", self); quit_.triggered.connect(self._quit)
         menu.addAction(show); menu.addSeparator(); menu.addAction(quit_)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(
-            lambda r: self.showNormal() if r == QSystemTrayIcon.Trigger else None)
+            lambda r: (
+                self._restore_from_background()
+                if r == QSystemTrayIcon.Trigger
+                else None
+            )
+        )
         self.tray.show()
+
+    def _restore_from_background(self) -> None:
+        controller = getattr(self, "_holographic_orb", None)
+        if controller is not None:
+            controller.restore_main()
+            return
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
 
     def showEvent(self, event) -> None:
         # Center the window the first time it is shown. Qt otherwise drops it at a
@@ -2642,9 +2663,17 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         event.ignore()
-        self.hide()
-        self.tray.showMessage("Angerona", "Still protecting in the background.",
-                              QSystemTrayIcon.Information, 2500)
+        controller = getattr(self, "_holographic_orb", None)
+        if controller is not None and controller.enabled():
+            controller.collapse_window(self)
+        else:
+            self.hide()
+            self.tray.showMessage(
+                "Angerona",
+                "Still protecting in the background.",
+                QSystemTrayIcon.Information,
+                2500,
+            )
 
     def _quit(self) -> None:
         """Tray → Quit. Must guarantee the process actually dies and releases
@@ -2674,6 +2703,10 @@ class MainWindow(QMainWindow):
                 getattr(self.config, "ollama_host", "http://localhost:11434"),
                 getattr(self.config, "ollama_model", "llama3"),
             )
+        except Exception:
+            pass
+        try:
+            self._holographic_orb.shutdown()
         except Exception:
             pass
         try:

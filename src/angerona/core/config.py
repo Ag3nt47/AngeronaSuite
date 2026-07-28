@@ -106,6 +106,9 @@ class Config:
     ui_scale_mode: str = "auto"                  # "auto" | "fixed"
     ui_scale_fixed: float = 1.0                  # honored only when mode == "fixed"
     ui_motion_enabled: bool = True                # polished panel reveals; OS reduced-motion still wins
+    holographic_orb_enabled: bool = True          # minimized-window token + radial service controls
+    holographic_orb_x: int = -1                   # global center; -1 selects the active screen corner
+    holographic_orb_y: int = -1
 
     # ── Self-hardening input integrity ─────────────────────────────────────
     # When True, After-Action Reports that aren't HMAC-authenticated (unsigned
@@ -211,6 +214,21 @@ class Config:
                     pass
                 cfg.ui_motion_enabled = _bool_setting(
                     data, "ui_motion_enabled", cfg.ui_motion_enabled)
+                cfg.holographic_orb_enabled = _bool_setting(
+                    data,
+                    "holographic_orb_enabled",
+                    cfg.holographic_orb_enabled,
+                )
+                try:
+                    cfg.holographic_orb_x = int(
+                        data.get("holographic_orb_x", cfg.holographic_orb_x)
+                    )
+                    cfg.holographic_orb_y = int(
+                        data.get("holographic_orb_y", cfg.holographic_orb_y)
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    cfg.holographic_orb_x = -1
+                    cfg.holographic_orb_y = -1
                 cfg.require_signed_aar = _bool_setting(
                     data, "require_signed_aar", cfg.require_signed_aar)
                 cfg.entropy_pool_enabled = _bool_setting(
@@ -292,6 +310,9 @@ class Config:
                     "ui_scale_mode":         self.ui_scale_mode,
                     "ui_scale_fixed":        self.ui_scale_fixed,
                     "ui_motion_enabled":     self.ui_motion_enabled,
+                    "holographic_orb_enabled": self.holographic_orb_enabled,
+                    "holographic_orb_x":     self.holographic_orb_x,
+                    "holographic_orb_y":     self.holographic_orb_y,
                     "require_signed_aar":    self.require_signed_aar,
                     "entropy_pool_enabled":  self.entropy_pool_enabled,
                 },

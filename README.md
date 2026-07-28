@@ -59,9 +59,19 @@ kernel driver required — so it is powerful **and** safe to install.
   with run/step identities, ATT&CK IDs, privacy-minimized artifact receipts, and
   atomic writes. AAR and Evolution rule synthesis reject altered, unsigned, or
   over-budget drill history.
-- **Verification.** The integrated repository suite passes **173 tests with
+- **Holographic minimized token.** Minimizing an Angerona window now collapses
+  its outline into a vertical line and then a dot inside a lightweight spinning
+  holographic globe. Click the globe to extend live radial controls for Core,
+  Watchdog, Scanner, and Black Box; double-click it to restore the most recent
+  window. Restoration plays the transition in reverse. The orb is draggable,
+  remembers its screen position, stays inside multi-monitor work areas, and
+  becomes static when reduced-motion is active. It paints at 20 FPS only while
+  visible and performs no telemetry collection.
+
+  ![Angerona holographic minimized orb with radial Core, Watchdog, Scanner, and Black Box controls](docs/screenshots/holographic-orb.png)
+- **Verification.** The integrated repository suite passes **179 tests with
   1 platform skip**; the headless dashboard/module harness passes **26/26**;
-  ARIA passes **13/13**; the compile gate scans **220 files with 0 failures**;
+  ARIA passes **13/13**; the compile gate scans **221 files with 0 failures**;
   module discovery finds **63 modules**.
 
 ## What's new (v1.9.4 — Cycle 4 security, proof, and responsiveness)
