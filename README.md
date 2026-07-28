@@ -26,233 +26,7 @@ kernel driver required — so it is powerful **and** safe to install.
 > Secrets, settings, telemetry, diagnostics, and runtime state are excluded by
 > `.gitignore`; review staged files and Git history before publishing a fork.
 
-## Current development — Cycle 5 interactive dashboard and hardening
-
-- **Every dashboard surface now drills down.** Modules Running, Alerts, Critical,
-  Threat Level, Modules, Live Alerts, SOAR Queue, ARIA, Console, System Pulse,
-  both module-status rows, and per-module resource chips open a live detail view.
-  The same accent-line reveal now grows into the real destination window, whose
-  bounded scanning header and live metrics continue the motion rather than
-  switching to an unrelated dialog. The existing reduced-motion controls remain
-  a hard override; Self-Test and Eco remain immediate actions without animation.
-- **No new telemetry pressure.** Expanded views reuse bounded data already held
-  by the dashboard. System Pulse retains only 90 samples, console text is capped,
-  resource activity is capped, and each detail timer stops with its window.
-- **Extension and evidence hardening.** External modules are imported from the
-  exact bytes that passed manifest verification, remediation receipts now verify
-  their underlying signed/hash-chained records, causal-graph receipt references
-  are explicitly marked unverified until checked, incident exports redact IPv6,
-  UNC paths, URLs and hostnames, and malformed security booleans fail closed.
-- **Long-session performance pass.** Provenance graphs, mobile digests, connection
-  snapshots, MCP shutdown queues and flight-cache commits are bounded or batched.
-  Ledger and attack-feed reads avoid repeated full-history work.
-- **Capability Drift Auditor.** A new read-only enterprise auditor compares
-  extension source behavior with declared permissions and manifest identity
-  without importing or executing the inspected extension.
-- **Responsive Red Team console.** The simulation window is fully resizable,
-  opens within the usable desktop area, scrolls its configuration on smaller
-  displays, wraps the live kill-chain into two rows, and keeps Launch/Stop in a
-  sticky footer that remains reachable at the 700×520 minimum size.
-- **Enterprise drill evidence.** Shark and Red Team requests now pass a bounded,
-  fail-closed safety preflight before any worker or marker starts. Completed and
-  cancelled runs produce versioned, HMAC-attested, SHA-256-chained ground truth
-  with run/step identities, ATT&CK IDs, privacy-minimized artifact receipts, and
-  atomic writes. AAR and Evolution rule synthesis reject altered, unsigned, or
-  over-budget drill history.
-- **Holographic minimized token.** Minimizing an Angerona window now collapses
-  its outline into a vertical line and then a dot inside a lightweight spinning
-  holographic globe. Click the globe to extend live radial controls for Core,
-  Watchdog, Scanner, and Black Box; double-click it to restore the most recent
-  window. Restoration plays the transition in reverse. The orb is draggable,
-  remembers its screen position, stays inside multi-monitor work areas, and
-  becomes static when reduced-motion is active. It paints at 20 FPS only while
-  visible and performs no telemetry collection.
-
-  ![Angerona holographic minimized orb with radial Core, Watchdog, Scanner, and Black Box controls](docs/screenshots/holographic-orb.png)
-- **Verification.** The integrated repository suite passes **179 tests with
-  1 platform skip**; the headless dashboard/module harness passes **26/26**;
-  ARIA passes **13/13**; the compile gate scans **221 files with 0 failures**;
-  module discovery finds **63 modules**.
-
-## What's new (v1.9.4 — Cycle 4 security, proof, and responsiveness)
-
-- **Enterprise trust foundation.** External modules now fail closed before
-  import unless a detached Capability Manifest v1 binds the exact source,
-  compatibility, permissions, privacy/egress declaration, telemetry contract,
-  performance budget, and a trusted Ed25519 publisher. Settings includes a live,
-  evidence-based **Enterprise** page that reports proven controls and keeps
-  enrollment, RBAC, central policy, and fleet-scale storage visible as honest
-  gaps.
-- **Causal incident reasoning.** A bounded read-side graph separates unrelated
-  simultaneous processes, accounts for PID reuse, connects process/file/network
-  evidence, labels temporal ordering separately from stronger causal evidence,
-  and links response and proof nodes with an explicit basis and confidence.
-- **Proof-carrying remediation.** Every remediation-log entry receives a
-  privacy-minimized, HMAC-authenticated receipt chained to its predecessor.
-  The chain binds the action-record digest and refuses to certify an `applied`
-  outcome without a passed postcondition. Verified fixes publish a receipt
-  reference that can appear in the causal graph.
-- **Enterprise read APIs.** The local MCP surface now exposes bounded
-  `get_enterprise_readiness` and `get_causal_incident_graph` tools. Its existing
-  alerts, module-health, and incident tools now use Angerona's canonical event
-  and incident fields.
-- **Drill remediation now fails closed.** Signed AAR enforcement is on by
-  default. Unsigned, tampered, or unverifiable reports cannot teach Posture
-  Hardening or use the manual resolution path. A candidate still requires an
-  exact detector echo from a distinct later run, and a future miss reopens it.
-- **Remediation scores reflect real outcomes.** Failed Active Response attempts
-  do not count as remediation. Temporary automated response during a drill is
-  limited to recognized drill artifacts and tagged drill processes inside the
-  selected sandbox; the normal automatic-response floor remains CRITICAL.
-- **Cloud alert analysis has separate consent.** Analyze stays local by default.
-  Its optional cloud second stage has a dedicated default-off setting and
-  receives only a recursively redacted, depth/node/container/size-bounded alert
-  summary. The general ARIA cloud setting cannot silently authorize live-alert
-  evidence.
-- **Long-session UI freezes are reduced.** Top Talkers moves Windows connection,
-  process, interface, and PTR collection off the Qt thread with one in-flight
-  worker, and Upgrade Console model discovery/checks are asynchronous. ARP
-  Watchdog prevents overlapping Scapy generations. SPEC, AI recovery, and IPC
-  helpers are generation-owned so a restarted module cannot inherit duplicate
-  workers. Hidden Black Box charts skip repaint work, immediate-only database
-  reads preserve the last complete view, and Live Alerts keeps the operator's
-  viewport.
-- **Packet capture cannot crash Core.** The optional Packet Sniffer runs
-  Scapy/Npcap decoding in a bounded subprocess. A native driver/decoder access
-  violation degrades and restarts only that worker, while Angerona, the globe,
-  and the watchdog remain online. Detection events include endpoints and the
-  credential type, but never the captured secret value.
-- **Watchdog recovery is operator-controllable.** The Watchdog window includes
-  **Restart Angerona Core**. Restart requests are authenticated and
-  target-specific; the watchdog clears SAFE_MODE, proves the adopted Core's
-  executable/command identity, stops it, and launches a clean replacement. It
-  refuses to spawn a duplicate if safe termination cannot be established.
-- **Watchdog recovery resists false restart loops.** A dead heartbeat PID is
-  detected immediately, while a still-live Core receives a 12-second scheduling
-  grace window for heavy boot-time sensor work. This prevents a healthy but
-  briefly GIL-delayed Core from being misclassified as suspended and launched
-  again.
-- **Measured hot-path improvements.** Bounded deques made saturated ATT&CK and
-  compliance retention 14.17× and 3.90× faster; unchanged HEAL directory polls
-  improved 816×; status reporting performs about 19% less work. Network,
-  forensics, and HEAL long-session/PID state is now pruned and bounded.
-- **Runtime and public-release hygiene.** Launcher diagnostics now live under
-  `<install-folder>\runtime-data\diagnostics`, alongside the other bounded
-  D-drive state. Future repository commits use a GitHub noreply identity. The
-  existing Git history and unsigned-publisher boundary still require deliberate
-  owner action before publication; see [Privacy](PRIVACY.md) and
-  [Security](SECURITY.md).
-- **Verification.** Auto-discovery remains **63 modules**. The repository suite
-  passes **133 tests with 1 platform skip**, the headless harness passes
-  **26/26**, ARIA passes **13/13**, and the focused Cycle 4 gate passes
-  **49/49**. A synthetic 100,000-event causal-graph run averaged **29.58 μs per
-  input event**, retained its configured **1,000-event** window, respected the
-  **2,500-node** cap, and added about **3.81 MiB** RSS.
-
-## What's new (v1.9.3 — proof-driven remediation and release hardening)
-
-- **Red-team fixes must prove themselves.** Remediation installs narrow Purple
-  Guard candidates; it cannot mark its own run fixed. A fresh drill must produce
-  an exact detector echo before the finding closes; correlated SOAR response is
-  reported separately rather than being folded into detector coverage.
-- **Long-run responsiveness.** Non-blocking dashboard/history reads, bounded
-  EventBus queries, subscription deduplication, sequential Eco wake-up, and
-  faster process/network collection close the confirmed freeze paths. Measured
-  wins include 4.04× faster bounded EventBus reads, 60.97× faster Memory
-  Time-Machine connection collection, 4.75× faster posture sparklines, and
-  14.92× faster posture trends.
-- **Privacy-first conversation.** The dashboard has a direct **VOICE & MIC**
-  setup button. The verified offline speech model is installed only by the
-  installer or an explicit click. Cloud fallback is default-off and sends a
-  bounded redacted question—not live telemetry.
-- **Safer exports and integrations.** Incident bundles require affirmative
-  consent and are bounded, redacted, pseudonymized, and manifest-audited.
-  Remote Bridge uses mutual authentication plus AES-GCM; Teams fails closed
-  without an allowlist; SIEM transport defaults to verified TLS.
-- **Public release trust chain.** Credentials use current-user DPAPI, YARA runs
-  in-process with YARA-X, SIEM defaults to TLS, workflow actions are commit-
-  pinned, and releases include checksums, an SBOM, and build attestations.
-- **Final verification.** Auto-discovery finds **63 modules**. The repository
-  suite passes **54 tests with 1 platform skip**, the full headless harness
-  passes **26/26**, and the ARIA checks pass **13/13**.
-
-## What's new (v1.9.2 — self-defense hardening)
-
-- **Local-tamper & privilege hardening.** A fresh weakness hunt closed several
-  elevated-privilege gaps: the cross-process restart channel is now HMAC-signed
-  (a forged one raises a tamper alert), the Teams bot binds loopback instead of
-  every interface, elevated runtime package installation is disabled and the
-  installer uses wheels-only + isolated pip, and a startup audit flags a writable state
-  directory — the misconfiguration that would let a standard user read `bus.key`
-  and forge signed commands against the elevated agent.
-
-## What's new (v1.9.1)
-
-- **ARIA lives in the Console.** The assistant is no longer a tab competing with your
-  alerts — a compact posture orb sits beside a single prompt bar. Ask in plain
-  language ("what's my posture?", "kill 1234", "trust my running apps") and replies
-  **stream in live**, while Live Alerts and the SOAR queue stay visible beside it.
-- **One-click capabilities.** Voice, Teams authentication, YARA-X, and Windows
-  sensors are bundled in the recommended release or installed for contributors
-  by `Install-Angerona.bat`. For
-  supply-chain safety, the elevated running app no longer installs Internet
-  packages into itself.
-- **Live progress wheels.** Self-Test, Eco-Mode wake-up, and Red-Team drills now show a
-  smooth spinning ring with a **red → amber → green percentage** so you can see work
-  actively running to completion.
-- **Crash & resilience hardening.** Removed an uncatchable `psutil.open_files()` C-level
-  access violation (Python 3.14) that could crash-loop the core; the watchdog now
-  **auto-recovers from SAFE_MODE after a cooldown** and supports **manual restart**
-  (`wd-restart core|scanner|blackbox|watchdog|*`). Quieter alerting: routine web
-  browsing and a slow local LLM no longer inflate the threat level.
-
-## Red Team Drill
-
-Angerona can exercise its detection-and-response pipeline with an unannounced,
-non-destructive adversary simulation. Every technique uses a benign, reversible
-marker—no real exploit, secret, or persistence mechanism is touched.
-
-The drill console lets you configure campaign intensity and watch the live
-ATT&CK kill chain while Angerona correlates the benign activity into alerts and
-SOAR decisions. Public screenshots intentionally omit local usernames and paths.
-
-| After-Action Report | Scorecard and remediation |
-| --- | --- |
-| ![Shark Attack After-Action Report timeline](docs/screenshots/red-team-after-action-report.png) | ![After-Action Report scorecard and deterministic finding resolution](docs/screenshots/red-team-after-action-scorecard.png) |
-| Review each simulated technique, its detection result, and the reason behind the outcome. | Build exact Purple Guard candidates, then run a fresh drill for proof. A later miss remains open or reopens the finding. |
-
----
-
-## 🎯 Use cases — who it's for
-
-- **Home-lab & self-hosted defense** — put enterprise-style **EDR/NDR/SOAR** on a
-  personal Windows workstation or home server without per-seat licensing, cloud
-  accounts, or an unsigned kernel driver. Detection, response, and AI triage all
-  run locally.
-- **Privacy-conscious / near-air-gapped setups** — **100% local AI** (Ollama) and
-  **zero telemetry egress by default**; every outbound path (cloud escalation,
-  channel push, threat-intel pull) is strictly opt-in. Nothing leaves the box
-  unless you turn it on.
-- **Learning detection engineering & MITRE ATT&CK** — watch **Sigma** rules and
-  **YARA** signatures fire in real time, explore the live **ATT&CK coverage
-  heatmap** (86 techniques / 14 tactics), and read incident **kill-chain
-  timelines** — a hands-on way to learn blue-team fundamentals.
-- **Blue-team / SOC practice** — triage live alerts, tune false positives via the
-  Resolve Center, run the **local-AI security briefing**, and generate a
-  **one-click IR triage bundle** for after-action review.
-- **Safe adversary emulation / purple teaming** — fire an unannounced,
-  **non-destructive 14-stage ATT&CK kill chain** (benign reversible markers),
-  then read the **after-action report** to validate and close detection gaps.
-- **Phishing & threat-intel triage** — point ARIA at a mailbox for **local,
-  read-only phishing scoring**, and let the **CISA KEV** correlation + AI CVE fix
-  advisor tell you which vulnerabilities actually apply to your host.
-- **A conversational security copilot** — ask **ARIA** anything in plain English;
-  it answers from your own runbooks and your local model, and can open vetted
-  indicator lookups (VirusTotal / NVD / CISA KEV / AbuseIPDB / URLhaus) on command.
-- **A portfolio / résumé project** — a substantial, self-tested security-engineering
-  codebase (Python · Rust · Go) demonstrating detection, response, and secure SDLC.
-
-## ✨ Features
+## ✨ Capabilities
 
 - **Native desktop GUI** (PySide6/Qt) — dashboard, live alerts, module control, settings.
 - **Manifest-gated module system** — bundled modules are auto-discovered.
@@ -300,7 +74,265 @@ SOAR decisions. Public screenshots intentionally omit local usernames and paths.
   checksummed, provenance-attested build.
 - **Elevated user-mode access** — UAC elevation on launch for full-system visibility, without the risk of an unsigned kernel driver.
 
-## 🆕 What's new in v1.8.0 — ARIA (a local, gated "JARVIS")
+## 🚀 One-click install from GitHub (recommended)
+
+1. Download `Angerona-<version>-win64.zip` and its adjacent `.sha256` from the
+   [Releases](../../releases) page, then verify the SHA-256 and GitHub build
+   attestation.
+2. Extract the ZIP and double-click **`Install-Angerona-Release.bat`**. It
+   verifies the packaged executables again, installs the one-file app and
+   exact-hash-gated Black Box under protected `%ProgramFiles%\Angerona`, and
+   creates the desktop shortcut.
+3. Launch from that shortcut. Mutable data defaults to protected
+   `D:\AngeronaData` on a fixed D: volume, with protected
+   `%ProgramData%\Angerona` only when D: is unavailable. Legacy per-user C:
+   spill is migrated collision-safely on the first storage-hygiene pass.
+
+Python, YARA-X, voice libraries, and the verified offline speech model are
+bundled; no terminal commands or dependency downloads are required. Releases
+also publish a complete locked dependency set, an SBOM, and build attestations.
+
+The automated release currently provides checksum/provenance verification, not
+an Authenticode publisher certificate, so Windows may display **Unknown
+Publisher**. Verify the SHA-256 file and GitHub attestation before approving UAC.
+
+## 🧰 Source/developer install
+
+Contributors can clone the repository and double-click `Install-Angerona.bat`.
+It accepts only Authenticode-valid official Python/Ollama executables, uses the
+locked binary-wheel dependency set, discards a pre-existing virtual environment
+unless the checkout was already administrator-protected, and then hardens the
+checkout. Source scripts are not signed release installers, so this route is for
+reviewed development trees; use the protected release installer for normal use.
+
+`kill-all-angerona.bat` stops only suite-owned Python entry points and unloads
+Angerona's resident llama3 model.
+
+## 🎯 Use cases — who it's for
+
+- **Home-lab & self-hosted defense** — put enterprise-style **EDR/NDR/SOAR** on a
+  personal Windows workstation or home server without per-seat licensing, cloud
+  accounts, or an unsigned kernel driver. Detection, response, and AI triage all
+  run locally.
+- **Privacy-conscious / near-air-gapped setups** — **100% local AI** (Ollama) and
+  **zero telemetry egress by default**; every outbound path (cloud escalation,
+  channel push, threat-intel pull) is strictly opt-in. Nothing leaves the box
+  unless you turn it on.
+- **Learning detection engineering & MITRE ATT&CK** — watch **Sigma** rules and
+  **YARA** signatures fire in real time, explore the live **ATT&CK coverage
+  heatmap** (86 techniques / 14 tactics), and read incident **kill-chain
+  timelines** — a hands-on way to learn blue-team fundamentals.
+- **Blue-team / SOC practice** — triage live alerts, tune false positives via the
+  Resolve Center, run the **local-AI security briefing**, and generate a
+  **one-click IR triage bundle** for after-action review.
+- **Safe adversary emulation / purple teaming** — fire an unannounced,
+  **non-destructive 14-stage ATT&CK kill chain** (benign reversible markers),
+  then read the **after-action report** to validate and close detection gaps.
+- **Phishing & threat-intel triage** — point ARIA at a mailbox for **local,
+  read-only phishing scoring**, and let the **CISA KEV** correlation + AI CVE fix
+  advisor tell you which vulnerabilities actually apply to your host.
+- **A conversational security copilot** — ask **ARIA** anything in plain English;
+  it answers from your own runbooks and your local model, and can open vetted
+  indicator lookups (VirusTotal / NVD / CISA KEV / AbuseIPDB / URLhaus) on command.
+- **A portfolio / résumé project** — a substantial, self-tested security-engineering
+  codebase (Python · Rust · Go) demonstrating detection, response, and secure SDLC.
+
+## Red Team Drill
+
+Angerona can exercise its detection-and-response pipeline with an unannounced,
+non-destructive adversary simulation. Every technique uses a benign, reversible
+marker—no real exploit, secret, or persistence mechanism is touched.
+
+The drill console lets you configure campaign intensity and watch the live
+ATT&CK kill chain while Angerona correlates the benign activity into alerts and
+SOAR decisions. Public screenshots intentionally omit local usernames and paths.
+
+| After-Action Report | Scorecard and remediation |
+| --- | --- |
+| ![Shark Attack After-Action Report timeline](docs/screenshots/red-team-after-action-report.png) | ![After-Action Report scorecard and deterministic finding resolution](docs/screenshots/red-team-after-action-scorecard.png) |
+| Review each simulated technique, its detection result, and the reason behind the outcome. | Build exact Purple Guard candidates, then run a fresh drill for proof. A later miss remains open or reopens the finding. |
+
+---
+
+## 🏗️ Architecture
+
+See [`docs/architecture.md`](docs/architecture.md). In short: independent
+**modules** run on background threads and publish events to a thread-safe
+**EventBus**; the bus persists alerts to the **flight-recorder** store and feeds
+the **GUI**, which polls for updates. A **ModuleManager** discovers and
+supervises modules; an **updater** checks GitHub for new releases.
+
+## 🔐 Security model
+
+- Runs as Administrator (UAC prompt on launch) for full visibility.
+- Telemetry via **ETW, WMI/CIM, AMSI, WFP** — kernel-sourced data through
+  Microsoft-supported interfaces. A documented `KernelSensor` seam exists if a
+  *signed* driver is ever added; no unsigned driver ships here.
+- Secrets are encrypted with Windows DPAPI in the runtime data directory. The
+  elevated app never trusts a working-directory `.env`.
+- Optional network services fail closed: Teams requires an explicit user
+  allowlist, Remote Bridge uses mutual authentication and AES-GCM, and SIEM
+  forwarding requires verified TLS unless the operator explicitly enables the
+  legacy plaintext compatibility mode.
+
+## 🧩 Writing a module
+
+Create a trusted file in `modules/` that subclasses `BaseModule`, then explicitly
+enable external discovery with `ANGERONA_EXTERNAL_MODULES=1`. See
+[`docs/writing-modules.md`](docs/writing-modules.md). Minimal example:
+
+```python
+from angerona.core.module_base import BaseModule, Severity
+
+class PingModule(BaseModule):
+    name = "Heartbeat"
+    description = "Emits a heartbeat event every 30s."
+    category = "Diagnostics"
+
+    def run(self):
+        while not self.stopping:
+            self.emit("Heartbeat OK", severity=Severity.INFO)
+            self.sleep(30)
+```
+
+## 🔁 Reproducible checkout & first GitHub push
+
+The current tree is intended to contain only source — local, build, and runtime state (`venv/`,
+`__pycache__/`, `*.db`, `logs/`, `diagnostics/`, `remediations/`, `.env`) is
+git-ignored. To publish a clean, reproducible repository:
+
+```bat
+powershell -ExecutionPolicy Bypass -File cleanup.ps1   :: purge rebuildable junk
+git init
+git add .
+git commit -m "Angerona v1.0.0"
+git branch -M main
+git remote add origin https://github.com/<you>/angerona.git
+git push -u origin main
+```
+
+A reviewed development clone reproduces the app with `Install-Angerona.bat`,
+using the locked `constraints-release.txt` set. Add optional credentials through Settings, where
+Windows DPAPI binds them to the current user and machine.
+
+> **Public-release blocker:** removing a file from the current checkout does not
+> remove it from existing Git commits. Historical commits may still contain old
+> screenshots, local identity/path data, or artifacts removed during this privacy
+> pass. Before making the repository public, audit and deliberately rewrite or
+> replace that history, then rotate any credential that ever appeared in it.
+
+> This repository is **`AngeronaSuite/`** only. The older Rich-terminal prototype
+> that lives beside it (`agent.py` / `ui.py` at the parent folder) is a separate,
+> superseded project and is **not** part of this repo — keep it out of the commit.
+
+## 🔎 Keywords & GitHub Topics
+
+Angerona is a Windows **EDR / NDR / SOAR** platform for **endpoint detection and response**,
+**network detection**, **threat hunting**, and **incident response** — with **MITRE ATT&CK**
+mapping, **YARA** scanning, **ETW / AMSI / WFP / Sysmon** telemetry, **ransomware** and
+**LSASS credential-dumping** detection, **C2 beacon** detection, and **local-LLM (Ollama)**
+alert triage. Built in **Python** with a **PySide6** desktop GUI.
+
+**Copy these into the repo's _About ▸ Topics_ field** (Settings not required — it's the gear next to *About*):
+
+```
+edr ndr soar endpoint-security blue-team threat-hunting incident-response
+mitre-attack yara etw amsi sysmon ransomware-detection c2-detection
+malware-detection windows-security siem ollama local-llm python pyside6 security-tools
+```
+
+> Topics are the #1 on-platform discovery lever — a search for `edr` or `mitre-attack` can
+> only surface Angerona if these are set. Also fill in the one-line **About** description with
+> the tagline at the top of this README.
+
+## 📄 License
+
+MIT — see [LICENSE](LICENSE).
+
+## Development and release history
+
+Release notes are ordered from oldest to newest so the latest additions are always at the bottom.
+
+### 🆕 What's new in v1.3.0
+
+- **Threat Posture score** — a composite 0–100 security indicator under the brand (active threats + module health + KEV exposure + ATT&CK heat); click for a breakdown.
+- **Eco Mode on by default** — fast, responsive launch; turning it off wakes heavy scanners **one at a time** (no more startup freeze).
+- **Adaptive Resource Governor** — automatically slows heavy, non-security-critical module loops when the machine is under load (and speeds them back up when idle), in both Eco and normal mode. The real-time protection path is never throttled.
+- **Black Box recorder (auto-launched)** — a separate, strictly read-only diagnostic process (`blackbox_recorder.py`, or the packaged `AngeronaBlackBox.exe`) that starts with the elevated suite and survives even if the main GUI deadlocks. It reads the protected runtime diagnostics and writes only its own bounded archives under runtime-data. Toggle it in Settings ▸ Performance.
+- **Crash resilience** — global crash logging (exceptions, native faults, Qt-fatal, UI stalls), a fully guarded UI refresh so a data flood can't take the window down, and a memory-aware Adaptive Resource Governor that hard-throttles heavy modules before the machine thrashes.
+- **Mobile Response Bridge (Signal, opt-in)** — E2EE remote control from your phone via `signal-cli`: `HELP`, `STATUS`, `DIAG`, `ECO ON/OFF`, `LOCKDOWN <PIN>`, and token+PIN-gated `KILL`/`SUSPEND`/`ROLLBACK`/`MUTE`. DPAPI-wrapped PIN, single-use expiring tokens, spoof logging. Configure in Settings ▸ Mobile Integration.
+- **Linux eBPF sensor node (opt-in)** — a headless-Linux `BaseModule` using BCC to hook `execve`/`tcp_sendmsg` in-kernel and forward events to the Windows GUI over the Remote Bridge; degrades gracefully without BCC/root.
+- **Confidential Compute (Intel SGX / Gramine)** — optional: run the suite inside an SGX enclave (`angerona.manifest.template`) so the in-memory flight cache and IPC key are hardware-protected; `core/sgx_guard.py` detects the enclave and encrypts the MEMC cache.
+- **Live-Fire Sandbox & Editor** — isolate all sensors and view/edit/hot-reload any module's `.py` behind an AST syntax gate, with revert + history.
+- **Online AI consult (Claude-first)** — Threat-Intel "Consult AI" / CVE "AI Proposed Solution" build a full fix/patch you can save; alert "Research" with a follow-up chat. Falls back through OpenAI/OpenRouter/Gemini/local Ollama.
+- **Alert actions everywhere** — Allow/Block/Analyze/Research on alert detail windows and module alert feeds.
+- **Awareness panels** — clickable status chips → full module window; a per-module resource-intensity row; **Top Talkers** outbound-network view; CRITICAL tray notifications; module sort by On/Off, Status, Category.
+- **New console commands** — `intel`, `consult`, `resources`.
+- **Deception hygiene** — honeytokens/canaries are hidden (`HIDDEN|SYSTEM`); the red-team drill auto-cleans all markers so it never litters your machine.
+- **UX fixes** — reliable panel-resize dragging; Settings-button errors now surface instead of failing silently.
+
+### 🆕 What's new in v1.7.x
+
+**Detection & response**
+
+- **Four v1.7.0 detection modules** — LSASS credential-dumping (T1003.001), C2 beaconing (T1071/T1571), shadow-copy/recovery tampering (T1490, a ransomware precursor), and removable-media/USB (T1091/T1200) brought the suite to 60 modules; v1.7.5 ELAT brought that release to **61 modules** (v1.9.3 discovers 63).
+- **Active-defense network isolation** — when SOAR contains a corroborated threat it also blocks that process's outbound traffic with a hidden firewall rule, turning a "suspend" into real containment (protected-process allowlist + 2-signal corroboration still enforced).
+- **Incident kill-chain timeline** — per-process ATT&CK-ordered incident view (🎯 Forensics), with severity, progress, and MITRE links; exportable to JSON.
+- **One-click IR triage bundle** — 🎯 Forensics ▸ collect a timestamped forensic ZIP (processes, connections, users, events, incidents).
+- **Scheduled AI security briefing (BRIEF)** — daily local-AI briefing with a deterministic fallback, written to `shared_logs/daily_briefing.*`.
+
+**Triage & alerts**
+
+- **Resolve Center** — the dashboard Threat-level box opens a Resolve Center listing the CRITICAL/HIGH alerts driving the level, each with **Detail** (Allow / Block / Analyze / Research / Apply) and **Ignore**. Ignoring acknowledges the alert (and identical repeats) and **excludes it from the threat level**, so you can clear false positives and get back to **Secure** — every ignore is revertable.
+- **Threat Intel — CVE ignore / revert + local-AI fix advisor** — ignore un-actionable CVEs (kept with per-ID history) so they stop inflating the threat level; the local model compares each CVE to your system and, where a scriptable fix exists, offers confirm-then-execute **Apply** with an auto-captured **Revert**, plus **Mass Flag & Ignore** for the no-fix ones.
+
+**MITRE ATT&CK heatmap (tabbed)**
+
+- **Live Heat** matrix, plus a **Coverage** tab (honest Detect / Simulate / Remediate map with an overall coverage % and blind spots flagged, cross-checked against the real vetted-action allow-list) and a **Top Techniques** tab (hottest techniques ranked; double-click → MITRE page).
+- **Richer cell detail** (MITRE link + which modules cover the technique), a technique **search** box, an **Active-only** toggle, and an **Explain posture** button (plain-English summary via local AI, heuristic fallback).
+
+**Red Team Simulation overhaul**
+
+- **New console** — an **Intensity** slider (Low→Extreme, one knob scaling phases/jitter/noise/threat/process bursts), **Campaign** mode (techniques chained in kill-chain order), a **live ATT&CK kill-chain** strip, a marker-location picker, an embedded **sandbox editor** for the engine, and a **History** tab of past After-Action Reports with timestamps.
+- **14 chained techniques** (added Initial Access, Privilege Escalation, C2 Beacon, Data Destruction). Analogy coaching (Flight Instructor) and post-run auto-remediation are **on by default**; the legacy Live Offense Monitor no longer pops up (the console shows events).
+- **Working settle-window remediation** — the selected marker folder is registered with live File Integrity Monitoring, spawned PIDs are retained for telemetry correlation, and SOAR remains armed through the 45-second detector settle window instead of being disabled before delayed detections arrive.
+- **After-Action Report ▸ 🧹 Clean & Close** — erases every benign drill marker / persistence-marker file as the report closes, so a drill never leaves artifacts behind.
+
+**Security hardening (from a whole-project self-assessment)**
+
+- AI self-compilation is **off by default** behind a static denylist gate; the loopback MCP server dropped wildcard CORS and enforces a Host check + optional bearer token; the CVE fix advisor refuses destructive PowerShell; forensics no longer shells out. (See `analysis/Angerona_Security_Assessment_*.docx`.)
+
+### 🆕 What's new in v1.7.5
+
+- **Evidence Lattice Fusion (ELAT)** — a bounded, local, response-free module that promotes MEDIUM evidence only after three modules across two sensor domains corroborate the same structured PID, path/hash, or IP within 90 seconds. Angerona now auto-discovers **61 modules**.
+- **Telemetry Expectation Contracts (TECT)** — DRILL now requires an exact trusted ETW/EID 4688 echo before its canary succeeds. Its own announcement can no longer self-acknowledge, and real consecutive misses are preserved for the existing escalation path.
+- **Security loop** — 12 new findings were reviewed across three rounds: nine fixed and three deferred. Fixes cover AI-to-PowerShell staging, Authenticode path binding, complete persisted event signatures, bounded concurrent MCP serving, strict generated-containment validation, and compile-before-activate YARA with last-known-good preservation. Deferred work is the Remote Bridge encrypted protocol migration, an Administrator-owned packaged trust root, and privileged ledger-key custody.
+- **Measured performance work** — Flight Cache inserts improved 1.57×; redundant static ATT&CK Coverage refresh work fell about 99.9%; recorder preparation saves 13.61 µs/event by reusing the bus HMAC; concurrent shared sensor misses fell from 12 scans to 1, and valid empty snapshots from 8 scans to 1. Long-run GUI work and diagnostic logs are also bounded.
+- **Verification** — 177/177 Python files compiled in the final combined Claude/Codex tree, 61 modules discovered with zero errors or duplicate codes, and the full self-check passed 26/26 phases with zero failures.
+
+### 🆕 What's new in v1.7.6 — the "Legendary Upgrades" (next-gen engines)
+
+Seven **additive, read-only, self-tested** engines that turn Angerona's ~61 independent detectors into one correlating, learning, explaining, self-improving system. Each is a `core/` engine + `self_test()` and is **not yet wired into startup** — zero behavior/detection risk until enabled (roadmap foundations, review-gated). Full vision: `analysis/loop/visionary/legendary_upgrades.md`.
+
+- **Angerona Cortex (`core/cortex.py`) ★** — a live entity graph (process/file/user/IP) where every event adds a decay-weighted signal and a per-entity **malice score** rises as *independent weak signals converge on the same entity* — three MEDIUMs from three modules across three tactics on one process fuse into one explainable HIGH. It unifies the ATT&CK tracker, provenance graph, incident timeline, evidence lattice and SOAR into one verdict (self-test: fused entity 65.5 vs a lone HIGH 16.8 — the 1+1=3).
+- **One Angerona Score (`core/angerona_score.py`)** — collapses threat level + posture + coverage % + Cortex top-entity into a single 0–100 safety score plus one ranked "do this now" action.
+- **Sigma engine (`core/sigma_engine.py`)** — a Sigma-subset matcher so you can import the public community rule library (hundreds of detections, standards-native).
+- **OCSF export (`core/ocsf_export.py`)** — maps events to OCSF Detection Findings for real SIEM/XDR interop.
+- **D3FEND overlay (`core/d3fend_map.py`)** — the defensive countermeasure for each ATT&CK technique, and whether Angerona implements it.
+- **Self-hardening purple-team loop (`core/purple_loop.py`)** — finds detection-coverage gaps and drafts review-gated candidate rules (proposals only; nothing auto-installed).
+- **Angerona Copilot (`core/copilot.py`)** — a local, read-only "talk to your EDR" query layer over the Cortex graph and event feed.
+
+### 🆕 What's new in v1.7.8
+
+- **No-overlap scanner wake-up** — turning Eco Mode off now waits for each heavy module to finish one complete baseline/scan cycle before starting the next. ETW, Sysmon, AMSI, Defender telemetry, and the lightweight network decoder remain awake continuously.
+- **Alert-storm responsiveness** — Live Alerts no longer creates hundreds of button widgets, and Resolve Center reads only a bounded recent HIGH/CRITICAL window instead of rebuilding from a full day of INFO telemetry.
+- **Install-drive runtime storage** — databases, drill/AAR output, scanner reports, settings, allowlists, diagnostics, watchdog state, Black Box data, and temporary work live under `<install-folder>\runtime-data` for source installs. SQLite retention releases unused pages and caps its WAL footprint.
+- **Bounded drill/report growth** — benign markers default to `runtime-data\drill-sandbox` (also watched by FIM and YARA); timestamped AAR history keeps at most 40 runs and 30 days. The UI watchdog keeps one bounded 4 MiB archive instead of preserving oversized legacy thread dumps.
+- **Clean local-AI stop** — closing/stopping Angerona immediately unloads resident llama3 models; `kill-all-angerona.bat` also handles a wedged Ollama model runner.
+
+The legacy `%LOCALAPPDATA%\Angerona` folder is no longer used for runtime writes.
+
+### 🆕 What's new in v1.8.0 — ARIA (a local, gated "JARVIS")
 
 ARIA is a defensive-only assistant layer for Angerona: a HUD you can talk to, a
 brain that answers from your own runbooks, and opt-in connectors — all local,
@@ -360,7 +392,7 @@ email scanning, channel push, research) — each has a one-click test button.
   local plan; opening browser sources is a separate confirmed WRITE/egress action
   and defaults off.
 
-### v1.8.0 three-loop hardening and performance convergence
+#### v1.8.0 three-loop hardening and performance convergence
 
 - **Reliable drills and remediation** — After-Action correlation now requires
   an exact full path or PID plus an opaque drill token, uses bounded step
@@ -390,210 +422,181 @@ email scanning, channel push, research) — each has a one-click test button.
   Raw module diagnostics reported 47 pass and 15 expected stopped/idle/Ollama
   skips, with zero genuine failures.
 
-## 🆕 What's new in v1.7.6 — the "Legendary Upgrades" (next-gen engines)
+### What's new (v1.9.1)
 
-Seven **additive, read-only, self-tested** engines that turn Angerona's ~61 independent detectors into one correlating, learning, explaining, self-improving system. Each is a `core/` engine + `self_test()` and is **not yet wired into startup** — zero behavior/detection risk until enabled (roadmap foundations, review-gated). Full vision: `analysis/loop/visionary/legendary_upgrades.md`.
+- **ARIA lives in the Console.** The assistant is no longer a tab competing with your
+  alerts — a compact posture orb sits beside a single prompt bar. Ask in plain
+  language ("what's my posture?", "kill 1234", "trust my running apps") and replies
+  **stream in live**, while Live Alerts and the SOAR queue stay visible beside it.
+- **One-click capabilities.** Voice, Teams authentication, YARA-X, and Windows
+  sensors are bundled in the recommended release or installed for contributors
+  by `Install-Angerona.bat`. For
+  supply-chain safety, the elevated running app no longer installs Internet
+  packages into itself.
+- **Live progress wheels.** Self-Test, Eco-Mode wake-up, and Red-Team drills now show a
+  smooth spinning ring with a **red → amber → green percentage** so you can see work
+  actively running to completion.
+- **Crash & resilience hardening.** Removed an uncatchable `psutil.open_files()` C-level
+  access violation (Python 3.14) that could crash-loop the core; the watchdog now
+  **auto-recovers from SAFE_MODE after a cooldown** and supports **manual restart**
+  (`wd-restart core|scanner|blackbox|watchdog|*`). Quieter alerting: routine web
+  browsing and a slow local LLM no longer inflate the threat level.
 
-- **Angerona Cortex (`core/cortex.py`) ★** — a live entity graph (process/file/user/IP) where every event adds a decay-weighted signal and a per-entity **malice score** rises as *independent weak signals converge on the same entity* — three MEDIUMs from three modules across three tactics on one process fuse into one explainable HIGH. It unifies the ATT&CK tracker, provenance graph, incident timeline, evidence lattice and SOAR into one verdict (self-test: fused entity 65.5 vs a lone HIGH 16.8 — the 1+1=3).
-- **One Angerona Score (`core/angerona_score.py`)** — collapses threat level + posture + coverage % + Cortex top-entity into a single 0–100 safety score plus one ranked "do this now" action.
-- **Sigma engine (`core/sigma_engine.py`)** — a Sigma-subset matcher so you can import the public community rule library (hundreds of detections, standards-native).
-- **OCSF export (`core/ocsf_export.py`)** — maps events to OCSF Detection Findings for real SIEM/XDR interop.
-- **D3FEND overlay (`core/d3fend_map.py`)** — the defensive countermeasure for each ATT&CK technique, and whether Angerona implements it.
-- **Self-hardening purple-team loop (`core/purple_loop.py`)** — finds detection-coverage gaps and drafts review-gated candidate rules (proposals only; nothing auto-installed).
-- **Angerona Copilot (`core/copilot.py`)** — a local, read-only "talk to your EDR" query layer over the Cortex graph and event feed.
+### What's new (v1.9.2 — self-defense hardening)
 
-## 🆕 What's new in v1.7.8
+- **Local-tamper & privilege hardening.** A fresh weakness hunt closed several
+  elevated-privilege gaps: the cross-process restart channel is now HMAC-signed
+  (a forged one raises a tamper alert), the Teams bot binds loopback instead of
+  every interface, elevated runtime package installation is disabled and the
+  installer uses wheels-only + isolated pip, and a startup audit flags a writable state
+  directory — the misconfiguration that would let a standard user read `bus.key`
+  and forge signed commands against the elevated agent.
 
-- **No-overlap scanner wake-up** — turning Eco Mode off now waits for each heavy module to finish one complete baseline/scan cycle before starting the next. ETW, Sysmon, AMSI, Defender telemetry, and the lightweight network decoder remain awake continuously.
-- **Alert-storm responsiveness** — Live Alerts no longer creates hundreds of button widgets, and Resolve Center reads only a bounded recent HIGH/CRITICAL window instead of rebuilding from a full day of INFO telemetry.
-- **Install-drive runtime storage** — databases, drill/AAR output, scanner reports, settings, allowlists, diagnostics, watchdog state, Black Box data, and temporary work live under `<install-folder>\runtime-data` for source installs. SQLite retention releases unused pages and caps its WAL footprint.
-- **Bounded drill/report growth** — benign markers default to `runtime-data\drill-sandbox` (also watched by FIM and YARA); timestamped AAR history keeps at most 40 runs and 30 days. The UI watchdog keeps one bounded 4 MiB archive instead of preserving oversized legacy thread dumps.
-- **Clean local-AI stop** — closing/stopping Angerona immediately unloads resident llama3 models; `kill-all-angerona.bat` also handles a wedged Ollama model runner.
+### What's new (v1.9.3 — proof-driven remediation and release hardening)
 
-The legacy `%LOCALAPPDATA%\Angerona` folder is no longer used for runtime writes.
+- **Red-team fixes must prove themselves.** Remediation installs narrow Purple
+  Guard candidates; it cannot mark its own run fixed. A fresh drill must produce
+  an exact detector echo before the finding closes; correlated SOAR response is
+  reported separately rather than being folded into detector coverage.
+- **Long-run responsiveness.** Non-blocking dashboard/history reads, bounded
+  EventBus queries, subscription deduplication, sequential Eco wake-up, and
+  faster process/network collection close the confirmed freeze paths. Measured
+  wins include 4.04× faster bounded EventBus reads, 60.97× faster Memory
+  Time-Machine connection collection, 4.75× faster posture sparklines, and
+  14.92× faster posture trends.
+- **Privacy-first conversation.** The dashboard has a direct **VOICE & MIC**
+  setup button. The verified offline speech model is installed only by the
+  installer or an explicit click. Cloud fallback is default-off and sends a
+  bounded redacted question—not live telemetry.
+- **Safer exports and integrations.** Incident bundles require affirmative
+  consent and are bounded, redacted, pseudonymized, and manifest-audited.
+  Remote Bridge uses mutual authentication plus AES-GCM; Teams fails closed
+  without an allowlist; SIEM transport defaults to verified TLS.
+- **Public release trust chain.** Credentials use current-user DPAPI, YARA runs
+  in-process with YARA-X, SIEM defaults to TLS, workflow actions are commit-
+  pinned, and releases include checksums, an SBOM, and build attestations.
+- **Final verification.** Auto-discovery finds **63 modules**. The repository
+  suite passes **54 tests with 1 platform skip**, the full headless harness
+  passes **26/26**, and the ARIA checks pass **13/13**.
 
-## 🆕 What's new in v1.7.5
+### What's new (v1.9.4 — Cycle 4 security, proof, and responsiveness)
 
-- **Evidence Lattice Fusion (ELAT)** — a bounded, local, response-free module that promotes MEDIUM evidence only after three modules across two sensor domains corroborate the same structured PID, path/hash, or IP within 90 seconds. Angerona now auto-discovers **61 modules**.
-- **Telemetry Expectation Contracts (TECT)** — DRILL now requires an exact trusted ETW/EID 4688 echo before its canary succeeds. Its own announcement can no longer self-acknowledge, and real consecutive misses are preserved for the existing escalation path.
-- **Security loop** — 12 new findings were reviewed across three rounds: nine fixed and three deferred. Fixes cover AI-to-PowerShell staging, Authenticode path binding, complete persisted event signatures, bounded concurrent MCP serving, strict generated-containment validation, and compile-before-activate YARA with last-known-good preservation. Deferred work is the Remote Bridge encrypted protocol migration, an Administrator-owned packaged trust root, and privileged ledger-key custody.
-- **Measured performance work** — Flight Cache inserts improved 1.57×; redundant static ATT&CK Coverage refresh work fell about 99.9%; recorder preparation saves 13.61 µs/event by reusing the bus HMAC; concurrent shared sensor misses fell from 12 scans to 1, and valid empty snapshots from 8 scans to 1. Long-run GUI work and diagnostic logs are also bounded.
-- **Verification** — 177/177 Python files compiled in the final combined Claude/Codex tree, 61 modules discovered with zero errors or duplicate codes, and the full self-check passed 26/26 phases with zero failures.
+- **Enterprise trust foundation.** External modules now fail closed before
+  import unless a detached Capability Manifest v1 binds the exact source,
+  compatibility, permissions, privacy/egress declaration, telemetry contract,
+  performance budget, and a trusted Ed25519 publisher. Settings includes a live,
+  evidence-based **Enterprise** page that reports proven controls and keeps
+  enrollment, RBAC, central policy, and fleet-scale storage visible as honest
+  gaps.
+- **Causal incident reasoning.** A bounded read-side graph separates unrelated
+  simultaneous processes, accounts for PID reuse, connects process/file/network
+  evidence, labels temporal ordering separately from stronger causal evidence,
+  and links response and proof nodes with an explicit basis and confidence.
+- **Proof-carrying remediation.** Every remediation-log entry receives a
+  privacy-minimized, HMAC-authenticated receipt chained to its predecessor.
+  The chain binds the action-record digest and refuses to certify an `applied`
+  outcome without a passed postcondition. Verified fixes publish a receipt
+  reference that can appear in the causal graph.
+- **Enterprise read APIs.** The local MCP surface now exposes bounded
+  `get_enterprise_readiness` and `get_causal_incident_graph` tools. Its existing
+  alerts, module-health, and incident tools now use Angerona's canonical event
+  and incident fields.
+- **Drill remediation now fails closed.** Signed AAR enforcement is on by
+  default. Unsigned, tampered, or unverifiable reports cannot teach Posture
+  Hardening or use the manual resolution path. A candidate still requires an
+  exact detector echo from a distinct later run, and a future miss reopens it.
+- **Remediation scores reflect real outcomes.** Failed Active Response attempts
+  do not count as remediation. Temporary automated response during a drill is
+  limited to recognized drill artifacts and tagged drill processes inside the
+  selected sandbox; the normal automatic-response floor remains CRITICAL.
+- **Cloud alert analysis has separate consent.** Analyze stays local by default.
+  Its optional cloud second stage has a dedicated default-off setting and
+  receives only a recursively redacted, depth/node/container/size-bounded alert
+  summary. The general ARIA cloud setting cannot silently authorize live-alert
+  evidence.
+- **Long-session UI freezes are reduced.** Top Talkers moves Windows connection,
+  process, interface, and PTR collection off the Qt thread with one in-flight
+  worker, and Upgrade Console model discovery/checks are asynchronous. ARP
+  Watchdog prevents overlapping Scapy generations. SPEC, AI recovery, and IPC
+  helpers are generation-owned so a restarted module cannot inherit duplicate
+  workers. Hidden Black Box charts skip repaint work, immediate-only database
+  reads preserve the last complete view, and Live Alerts keeps the operator's
+  viewport.
+- **Watchdog recovery is operator-controllable.** The Watchdog window includes
+  **Restart Angerona Core**. Restart requests are authenticated and
+  target-specific; the watchdog clears SAFE_MODE, proves the adopted Core's
+  executable/command identity, stops it, and launches a clean replacement. It
+  refuses to spawn a duplicate if safe termination cannot be established.
+- **Measured hot-path improvements.** Bounded deques made saturated ATT&CK and
+  compliance retention 14.17× and 3.90× faster; unchanged HEAL directory polls
+  improved 816×; status reporting performs about 19% less work. Network,
+  forensics, and HEAL long-session/PID state is now pruned and bounded.
+- **Runtime and public-release hygiene.** Launcher diagnostics now live under
+  `<install-folder>\runtime-data\diagnostics`, alongside the other bounded
+  D-drive state. Future repository commits use a GitHub noreply identity. The
+  existing Git history and unsigned-publisher boundary still require deliberate
+  owner action before publication; see [Privacy](PRIVACY.md) and
+  [Security](SECURITY.md).
+- **Verification.** Auto-discovery remains **63 modules**. The repository suite
+  passes **133 tests with 1 platform skip**, the headless harness passes
+  **26/26**, ARIA passes **13/13**, and the focused Cycle 4 gate passes
+  **49/49**. A synthetic 100,000-event causal-graph run averaged **29.58 μs per
+  input event**, retained its configured **1,000-event** window, respected the
+  **2,500-node** cap, and added about **3.81 MiB** RSS.
 
-## 🆕 What's new in v1.7.x
+### Current development — Cycle 5 interactive dashboard and hardening
 
-**Detection & response**
+- **Every dashboard surface now drills down.** Modules Running, Alerts, Critical,
+  Threat Level, Modules, Live Alerts, SOAR Queue, ARIA, Console, System Pulse,
+  both module-status rows, and per-module resource chips open a live detail view.
+  The same accent-line reveal now grows into the real destination window, whose
+  bounded scanning header and live metrics continue the motion rather than
+  switching to an unrelated dialog. The existing reduced-motion controls remain
+  a hard override; Self-Test and Eco remain immediate actions without animation.
+- **No new telemetry pressure.** Expanded views reuse bounded data already held
+  by the dashboard. System Pulse retains only 90 samples, console text is capped,
+  resource activity is capped, and each detail timer stops with its window.
+- **Extension and evidence hardening.** External modules are imported from the
+  exact bytes that passed manifest verification, remediation receipts now verify
+  their underlying signed/hash-chained records, causal-graph receipt references
+  are explicitly marked unverified until checked, incident exports redact IPv6,
+  UNC paths, URLs and hostnames, and malformed security booleans fail closed.
+- **Long-session performance pass.** Provenance graphs, mobile digests, connection
+  snapshots, MCP shutdown queues and flight-cache commits are bounded or batched.
+  Ledger and attack-feed reads avoid repeated full-history work.
+- **Capability Drift Auditor.** A new read-only enterprise auditor compares
+  extension source behavior with declared permissions and manifest identity
+  without importing or executing the inspected extension.
+- **Responsive Red Team console.** The simulation window is fully resizable,
+  opens within the usable desktop area, scrolls its configuration on smaller
+  displays, wraps the live kill-chain into two rows, and keeps Launch/Stop in a
+  sticky footer that remains reachable at the 700×520 minimum size.
+- **Enterprise drill evidence.** Shark and Red Team requests now pass a bounded,
+  fail-closed safety preflight before any worker or marker starts. Completed and
+  cancelled runs produce versioned, HMAC-attested, SHA-256-chained ground truth
+  with run/step identities, ATT&CK IDs, privacy-minimized artifact receipts, and
+  atomic writes. AAR and Evolution rule synthesis reject altered, unsigned, or
+  over-budget drill history.
+- **Holographic minimized token.** Minimizing an Angerona window now collapses
+  its outline into a vertical line and then a dot inside a lightweight spinning
+  holographic globe. Click the globe to extend live radial controls for Core,
+  Watchdog, Scanner, and Black Box; double-click it to restore the most recent
+  window. Restoration plays the transition in reverse. The orb is draggable,
+  remembers its screen position, stays inside multi-monitor work areas, and
+  becomes static when reduced-motion is active. It paints at 20 FPS only while
+  visible and performs no telemetry collection.
 
-- **Four v1.7.0 detection modules** — LSASS credential-dumping (T1003.001), C2 beaconing (T1071/T1571), shadow-copy/recovery tampering (T1490, a ransomware precursor), and removable-media/USB (T1091/T1200) brought the suite to 60 modules; v1.7.5 ELAT brought that release to **61 modules** (v1.9.3 discovers 63).
-- **Active-defense network isolation** — when SOAR contains a corroborated threat it also blocks that process's outbound traffic with a hidden firewall rule, turning a "suspend" into real containment (protected-process allowlist + 2-signal corroboration still enforced).
-- **Incident kill-chain timeline** — per-process ATT&CK-ordered incident view (🎯 Forensics), with severity, progress, and MITRE links; exportable to JSON.
-- **One-click IR triage bundle** — 🎯 Forensics ▸ collect a timestamped forensic ZIP (processes, connections, users, events, incidents).
-- **Scheduled AI security briefing (BRIEF)** — daily local-AI briefing with a deterministic fallback, written to `shared_logs/daily_briefing.*`.
-
-**Triage & alerts**
-
-- **Resolve Center** — the dashboard Threat-level box opens a Resolve Center listing the CRITICAL/HIGH alerts driving the level, each with **Detail** (Allow / Block / Analyze / Research / Apply) and **Ignore**. Ignoring acknowledges the alert (and identical repeats) and **excludes it from the threat level**, so you can clear false positives and get back to **Secure** — every ignore is revertable.
-- **Threat Intel — CVE ignore / revert + local-AI fix advisor** — ignore un-actionable CVEs (kept with per-ID history) so they stop inflating the threat level; the local model compares each CVE to your system and, where a scriptable fix exists, offers confirm-then-execute **Apply** with an auto-captured **Revert**, plus **Mass Flag & Ignore** for the no-fix ones.
-
-**MITRE ATT&CK heatmap (tabbed)**
-
-- **Live Heat** matrix, plus a **Coverage** tab (honest Detect / Simulate / Remediate map with an overall coverage % and blind spots flagged, cross-checked against the real vetted-action allow-list) and a **Top Techniques** tab (hottest techniques ranked; double-click → MITRE page).
-- **Richer cell detail** (MITRE link + which modules cover the technique), a technique **search** box, an **Active-only** toggle, and an **Explain posture** button (plain-English summary via local AI, heuristic fallback).
-
-**Red Team Simulation overhaul**
-
-- **New console** — an **Intensity** slider (Low→Extreme, one knob scaling phases/jitter/noise/threat/process bursts), **Campaign** mode (techniques chained in kill-chain order), a **live ATT&CK kill-chain** strip, a marker-location picker, an embedded **sandbox editor** for the engine, and a **History** tab of past After-Action Reports with timestamps.
-- **14 chained techniques** (added Initial Access, Privilege Escalation, C2 Beacon, Data Destruction). Analogy coaching (Flight Instructor) and post-run auto-remediation are **on by default**; the legacy Live Offense Monitor no longer pops up (the console shows events).
-- **Working settle-window remediation** — the selected marker folder is registered with live File Integrity Monitoring, spawned PIDs are retained for telemetry correlation, and SOAR remains armed through the 45-second detector settle window instead of being disabled before delayed detections arrive.
-- **After-Action Report ▸ 🧹 Clean & Close** — erases every benign drill marker / persistence-marker file as the report closes, so a drill never leaves artifacts behind.
-
-**Security hardening (from a whole-project self-assessment)**
-
-- AI self-compilation is **off by default** behind a static denylist gate; the loopback MCP server dropped wildcard CORS and enforces a Host check + optional bearer token; the CVE fix advisor refuses destructive PowerShell; forensics no longer shells out. (See `analysis/Angerona_Security_Assessment_*.docx`.)
-
-## 🆕 What's new in v1.3.0
-
-- **Threat Posture score** — a composite 0–100 security indicator under the brand (active threats + module health + KEV exposure + ATT&CK heat); click for a breakdown.
-- **Eco Mode on by default** — fast, responsive launch; turning it off wakes heavy scanners **one at a time** (no more startup freeze).
-- **Adaptive Resource Governor** — automatically slows heavy, non-security-critical module loops when the machine is under load (and speeds them back up when idle), in both Eco and normal mode. The real-time protection path is never throttled.
-- **Black Box recorder (auto-launched)** — a separate, strictly read-only diagnostic process (`blackbox_recorder.py`, or the packaged `AngeronaBlackBox.exe`) that starts with the elevated suite and survives even if the main GUI deadlocks. It reads the protected runtime diagnostics and writes only its own bounded archives under runtime-data. Toggle it in Settings ▸ Performance.
-- **Crash resilience** — global crash logging (exceptions, native faults, Qt-fatal, UI stalls), a fully guarded UI refresh so a data flood can't take the window down, and a memory-aware Adaptive Resource Governor that hard-throttles heavy modules before the machine thrashes.
-- **Mobile Response Bridge (Signal, opt-in)** — E2EE remote control from your phone via `signal-cli`: `HELP`, `STATUS`, `DIAG`, `ECO ON/OFF`, `LOCKDOWN <PIN>`, and token+PIN-gated `KILL`/`SUSPEND`/`ROLLBACK`/`MUTE`. DPAPI-wrapped PIN, single-use expiring tokens, spoof logging. Configure in Settings ▸ Mobile Integration.
-- **Linux eBPF sensor node (opt-in)** — a headless-Linux `BaseModule` using BCC to hook `execve`/`tcp_sendmsg` in-kernel and forward events to the Windows GUI over the Remote Bridge; degrades gracefully without BCC/root.
-- **Confidential Compute (Intel SGX / Gramine)** — optional: run the suite inside an SGX enclave (`angerona.manifest.template`) so the in-memory flight cache and IPC key are hardware-protected; `core/sgx_guard.py` detects the enclave and encrypts the MEMC cache.
-- **Live-Fire Sandbox & Editor** — isolate all sensors and view/edit/hot-reload any module's `.py` behind an AST syntax gate, with revert + history.
-- **Online AI consult (Claude-first)** — Threat-Intel "Consult AI" / CVE "AI Proposed Solution" build a full fix/patch you can save; alert "Research" with a follow-up chat. Falls back through OpenAI/OpenRouter/Gemini/local Ollama.
-- **Alert actions everywhere** — Allow/Block/Analyze/Research on alert detail windows and module alert feeds.
-- **Awareness panels** — clickable status chips → full module window; a per-module resource-intensity row; **Top Talkers** outbound-network view; CRITICAL tray notifications; module sort by On/Off, Status, Category.
-- **New console commands** — `intel`, `consult`, `resources`.
-- **Deception hygiene** — honeytokens/canaries are hidden (`HIDDEN|SYSTEM`); the red-team drill auto-cleans all markers so it never litters your machine.
-- **UX fixes** — reliable panel-resize dragging; Settings-button errors now surface instead of failing silently.
-
-## 🚀 One-click install from GitHub (recommended)
-
-1. Download `Angerona-<version>-win64.zip` and its adjacent `.sha256` from the
-   [Releases](../../releases) page, then verify the SHA-256 and GitHub build
-   attestation.
-2. Extract the ZIP and double-click **`Install-Angerona-Release.bat`**. It
-   verifies the packaged executables again, installs the one-file app and
-   exact-hash-gated Black Box under protected `%ProgramFiles%\Angerona`, and
-   creates the desktop shortcut.
-3. Launch from that shortcut. Mutable data defaults to protected
-   `D:\AngeronaData` on a fixed D: volume, with protected
-   `%ProgramData%\Angerona` only when D: is unavailable. Legacy per-user C:
-   spill is migrated collision-safely on the first storage-hygiene pass.
-
-Python, YARA-X, voice libraries, and the verified offline speech model are
-bundled; no terminal commands or dependency downloads are required. Releases
-also publish a complete locked dependency set, an SBOM, and build attestations.
-
-The automated release currently provides checksum/provenance verification, not
-an Authenticode publisher certificate, so Windows may display **Unknown
-Publisher**. Verify the SHA-256 file and GitHub attestation before approving UAC.
-
-## 🧰 Source/developer install
-
-Contributors can clone the repository and double-click `Install-Angerona.bat`.
-It accepts only Authenticode-valid official Python/Ollama executables, uses the
-locked binary-wheel dependency set, discards a pre-existing virtual environment
-unless the checkout was already administrator-protected, and then hardens the
-checkout. Source scripts are not signed release installers, so this route is for
-reviewed development trees; use the protected release installer for normal use.
-
-`kill-all-angerona.bat` stops only suite-owned Python entry points and unloads
-Angerona's resident llama3 model.
-
-## 🧩 Writing a module
-
-Create a trusted file in `modules/` that subclasses `BaseModule`, then explicitly
-enable external discovery with `ANGERONA_EXTERNAL_MODULES=1`. See
-[`docs/writing-modules.md`](docs/writing-modules.md). Minimal example:
-
-```python
-from angerona.core.module_base import BaseModule, Severity
-
-class PingModule(BaseModule):
-    name = "Heartbeat"
-    description = "Emits a heartbeat event every 30s."
-    category = "Diagnostics"
-
-    def run(self):
-        while not self.stopping:
-            self.emit("Heartbeat OK", severity=Severity.INFO)
-            self.sleep(30)
-```
-
-## 🏗️ Architecture
-
-See [`docs/architecture.md`](docs/architecture.md). In short: independent
-**modules** run on background threads and publish events to a thread-safe
-**EventBus**; the bus persists alerts to the **flight-recorder** store and feeds
-the **GUI**, which polls for updates. A **ModuleManager** discovers and
-supervises modules; an **updater** checks GitHub for new releases.
-
-## 🔐 Security model
-
-- Runs as Administrator (UAC prompt on launch) for full visibility.
-- Telemetry via **ETW, WMI/CIM, AMSI, WFP** — kernel-sourced data through
-  Microsoft-supported interfaces. A documented `KernelSensor` seam exists if a
-  *signed* driver is ever added; no unsigned driver ships here.
-- Secrets are encrypted with Windows DPAPI in the runtime data directory. The
-  elevated app never trusts a working-directory `.env`.
-- Optional network services fail closed: Teams requires an explicit user
-  allowlist, Remote Bridge uses mutual authentication and AES-GCM, and SIEM
-  forwarding requires verified TLS unless the operator explicitly enables the
-  legacy plaintext compatibility mode.
-
-## 🔁 Reproducible checkout & first GitHub push
-
-The current tree is intended to contain only source — local, build, and runtime state (`venv/`,
-`__pycache__/`, `*.db`, `logs/`, `diagnostics/`, `remediations/`, `.env`) is
-git-ignored. To publish a clean, reproducible repository:
-
-```bat
-powershell -ExecutionPolicy Bypass -File cleanup.ps1   :: purge rebuildable junk
-git init
-git add .
-git commit -m "Angerona v1.0.0"
-git branch -M main
-git remote add origin https://github.com/<you>/angerona.git
-git push -u origin main
-```
-
-A reviewed development clone reproduces the app with `Install-Angerona.bat`,
-using the locked `constraints-release.txt` set. Add optional credentials through Settings, where
-Windows DPAPI binds them to the current user and machine.
-
-> **Public-release blocker:** removing a file from the current checkout does not
-> remove it from existing Git commits. Historical commits may still contain old
-> screenshots, local identity/path data, or artifacts removed during this privacy
-> pass. Before making the repository public, audit and deliberately rewrite or
-> replace that history, then rotate any credential that ever appeared in it.
-
-> This repository is **`AngeronaSuite/`** only. The older Rich-terminal prototype
-> that lives beside it (`agent.py` / `ui.py` at the parent folder) is a separate,
-> superseded project and is **not** part of this repo — keep it out of the commit.
-
-## 🔎 Keywords & GitHub Topics
-
-Angerona is a Windows **EDR / NDR / SOAR** platform for **endpoint detection and response**,
-**network detection**, **threat hunting**, and **incident response** — with **MITRE ATT&CK**
-mapping, **YARA** scanning, **ETW / AMSI / WFP / Sysmon** telemetry, **ransomware** and
-**LSASS credential-dumping** detection, **C2 beacon** detection, and **local-LLM (Ollama)**
-alert triage. Built in **Python** with a **PySide6** desktop GUI.
-
-**Copy these into the repo's _About ▸ Topics_ field** (Settings not required — it's the gear next to *About*):
-
-```
-edr ndr soar endpoint-security blue-team threat-hunting incident-response
-mitre-attack yara etw amsi sysmon ransomware-detection c2-detection
-malware-detection windows-security siem ollama local-llm python pyside6 security-tools
-```
-
-> Topics are the #1 on-platform discovery lever — a search for `edr` or `mitre-attack` can
-> only surface Angerona if these are set. Also fill in the one-line **About** description with
-> the tagline at the top of this README.
-
-## 📄 License
-
-MIT — see [LICENSE](LICENSE).
+  ![Angerona holographic minimized orb with radial Core, Watchdog, Scanner, and Black Box controls](docs/screenshots/holographic-orb.png)
+- **Crash-isolated packet inspection.** The optional Packet Sniffer runs
+  Scapy/Npcap decoding in a bounded subprocess. A native driver or decoder fault
+  degrades and restarts only that worker, while Core, the globe, and the
+  watchdog remain online. Detection events retain endpoints and credential type
+  but never the captured secret value.
+- **Watchdog anti-flapping.** Dead heartbeat PIDs are detected immediately,
+  while a still-live Core receives a 12-second scheduling grace window for
+  heavy boot-time sensor work. A healthy but briefly GIL-delayed Core is no
+  longer misclassified as suspended or launched twice.
+- **Verification.** The integrated repository suite passes **185 tests with
+  1 platform skip**; the headless dashboard/module harness passes **26/26**;
+  ARIA passes **13/13**; the compile gate scans **223 files with 0 failures**;
+  module discovery finds **63 modules**.
