@@ -35,12 +35,15 @@ _FORBIDDEN_RE = re.compile(r"\b(insert|update|delete|drop|alter|attach|pragma|cr
 class FlightCache:
     """Thread-safe bounded in-memory mirror of the events ledger."""
 
+    _COMMIT_EVERY = 128
+
     def __init__(self, cap: int = 5000) -> None:
         self.cap = cap
         self._lock = threading.Lock()
         self._db = sqlite3.connect(":memory:", check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._closed = False
+        self._pending_writes = 0
         self._seq = 0
         self._nrows = 0   # authoritative live row count (put() is the only mutator)
         self.hits = 0
@@ -75,11 +78,22 @@ class FlightCache:
                         "DELETE FROM events WHERE id IN "
                         "(SELECT id FROM events ORDER BY id ASC LIMIT ?)", (over,))
                     self._nrows -= over
-                self._db.commit()
+                # This cache is process-local and all access uses this one
+                # connection under the lock, so readers see pending writes
+                # immediately. Batch transaction finalization to keep EventBus
+                # producers from paying a SQLite COMMIT for every event.
+                self._pending_writes += 1
+                if self._pending_writes >= self._COMMIT_EVERY:
+                    self._commit_locked()
             except sqlite3.Error:
                 # A concurrent close() (Eco pause / stop) can race an in-flight
                 # put(). Never let it crash the producer or quarantine the module.
                 pass
+
+    def _commit_locked(self) -> None:
+        if self._pending_writes:
+            self._db.commit()
+            self._pending_writes = 0
 
     def _count_locked(self) -> int:
         return self._db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
@@ -125,12 +139,16 @@ class FlightCache:
             return 0
         for ts, module, severity, message, details in reversed(rows):
             self.put(ts, module, severity, message, details)
+        with self._lock:
+            if not self._closed:
+                self._commit_locked()
         return len(rows)
 
     def close(self) -> None:
         with self._lock:
             self._closed = True   # idempotent; reads/writes short-circuit after this
             try:
+                self._commit_locked()
                 self._db.close()
             except Exception:
                 pass

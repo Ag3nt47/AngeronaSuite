@@ -22,16 +22,21 @@ and the After-Action Report honestly records whether a detector noticed.
 from __future__ import annotations
 
 import ctypes
-import json
 import os
 import random
 import sys
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional
+
+from angerona.shark.run_manifest import (
+    build_run_history,
+    preflight_run,
+    write_run_history,
+)
 
 # Every marker this drill drops starts with this prefix, so a glob sweep can
 # reliably find and remove ALL of them — including orphans from a prior run that
@@ -189,11 +194,7 @@ class RedTeamEngine:
         if self.is_running or (self._thread is not None and self._thread.is_alive()):
             return False
         self._cancel.clear()
-        if target_dir:
-            try:
-                self.documents_dir = Path(target_dir)
-            except Exception:
-                pass
+        candidate_target = target_dir if target_dir is not None else self.documents_dir
         preset = INTENSITY_LEVELS.get(str(intensity)) if intensity else None
         if preset:
             self._complexity = preset["cycles"]
@@ -203,12 +204,40 @@ class RedTeamEngine:
             noise_chance = preset["noise"]
             self._intensity = str(intensity)
         else:
-            self._complexity = max(1, int(complexity))
-            self._threat_level = self._complexity
+            # Validation and normalization happen in the safety preflight below.
+            self._complexity = complexity
+            self._threat_level = 1
             self._proc_mult = 1
-            self._intensity = f"complexity={self._complexity}"
+            self._intensity = f"complexity={complexity}"
+        preflight = preflight_run(
+            kind="red_team",
+            cycles=self._complexity,
+            jitter_range=jitter_range,
+            noise_chance=noise_chance,
+            target_dir=candidate_target,
+            custom=custom,
+        )
+        if not preflight.accepted:
+            self._narrate(
+                "Red Team drill refused by the safety contract: "
+                + "; ".join(preflight.violations)
+            )
+            return False
+        self.documents_dir = Path(candidate_target)
+        self._run_contract = preflight
+        self._complexity = preflight.cycles
+        if not preset:
+            self._threat_level = preflight.cycles
+        jitter_range = preflight.jitter
+        noise_chance = preflight.noise_chance
         self._campaign = bool(campaign)
-        self._custom = custom if (custom and custom.get("name") and custom.get("payload")) else None
+        self._custom = (
+            {
+                "name": str(custom["name"]).strip(),
+                "payload": str(custom["payload"]),
+            }
+            if preflight.custom is not None else None
+        )
         self.run_id = f"redteam-{int(time.time())}-{uuid.uuid4().hex[:6]}"
         self.steps = []
         # Pre-clean: nuke any leftover markers from a prior run that never got
@@ -295,9 +324,12 @@ class RedTeamEngine:
         except _DrillCancelled:
             cancelled = True
         finally:
-            self._write_history()
+            run_cancelled = cancelled or self._cancel.is_set()
+            self._write_history(
+                status="cancelled" if run_cancelled else "completed"
+            )
             n, ok = len(self.steps), sum(1 for s in self.steps if s.ok)
-            if cancelled or self._cancel.is_set():
+            if run_cancelled:
                 self._running.clear()
                 self._narrate(f"Red Team Attack cancelled - {ok}/{n} steps executed; cleaning markers.")
                 self._sweep_markers()
@@ -544,18 +576,27 @@ class RedTeamEngine:
         self._record("Data Destruction (simulated)", "T1485 marker",
                      "Inert wiper-named marker written.", ts, artifact_paths=[str(p)])
 
-    def _write_history(self) -> None:
+    def _write_history(self, status: str = "completed") -> None:
         try:
-            self.data_dir.mkdir(parents=True, exist_ok=True)
-            payload = {
-                "run_id": self.run_id,
-                "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "kind": "red_team",
-                "steps": [asdict(s) for s in self.steps],
-            }
-            self.history_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+            payload = build_run_history(
+                kind="red_team",
+                run_id=self.run_id,
+                generated=time.strftime("%Y-%m-%d %H:%M:%S"),
+                steps=self.steps,
+                preflight=self._run_contract,
+                status=status,
+            )
+            signed = write_run_history(self.history_path, payload)
+            if not signed:
+                self._narrate(
+                    "⚠ Red Team ground-truth history was written without an "
+                    "install-key HMAC; strict AAR generation will refuse it."
+                )
+        except Exception as exc:
+            self._narrate(
+                f"⚠ Red Team ground-truth history could not be secured: "
+                f"{type(exc).__name__}"
+            )
 
 
 REDTEAM_STAGE_CATEGORY = {

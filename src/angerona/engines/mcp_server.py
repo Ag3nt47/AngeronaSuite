@@ -600,6 +600,8 @@ class AngeronaMCPServer:
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def start(self) -> int:
         """Start the server; returns the port it bound to."""
+        if self.is_running:
+            return int(self._httpd.server_address[1])
         port  = int(getattr(self._config, "mcp_port", 47923))
         tools = _make_tools(self._storage, self._bus, self._manager, self._config)
 
@@ -631,11 +633,27 @@ class AngeronaMCPServer:
         """Gracefully shut down the server and close all SSE sessions."""
         with self._sessions_lock:
             queues = list(self._sessions.values())
+            # Handler ``finally`` blocks also discard their own key. Clearing
+            # here makes the externally visible session registry bounded at
+            # shutdown even if a client socket is slow to notice closure.
+            self._sessions.clear()
         for q in queues:
+            # A full response queue used to make put_nowait(None) fail, leaving
+            # the SSE handler alive indefinitely. Shutdown may discard pending
+            # responses, so drain it and guarantee the stop sentinel fits.
             try:
-                q.put_nowait(None)   # signal each SSE stream to close
-            except Exception:
+                while True:
+                    q.get_nowait()
+            except queue.Empty:
                 pass
+            try:
+                q.put_nowait(None)
+            except queue.Full:  # defensive: another producer raced the drain
+                try:
+                    q.get_nowait()
+                    q.put_nowait(None)
+                except (queue.Empty, queue.Full):
+                    pass
         if self._httpd is not None:
             httpd = self._httpd
             httpd.shutdown()

@@ -13,6 +13,21 @@ from pathlib import Path
 from typing import Dict
 
 
+_ARIA_PUSH_URL_KEY = "ANGERONA_ARIA_PUSH_URL"
+
+
+def _bool_setting(data: dict, key: str, default: bool) -> bool:
+    """Load a JSON boolean without truth-coercing strings or numbers.
+
+    Security/privacy switches must fail to their declared default when a hand-
+    edited or corrupted settings file contains ``"false"``, ``1``, or another
+    non-boolean value. Python's normal ``bool("false")`` result is True, which
+    can otherwise enable egress or the Teams development auth bypass.
+    """
+    value = data.get(key, default)
+    return value if type(value) is bool else bool(default)
+
+
 def _data_dir() -> Path:
     from angerona.core.data_paths import data_dir
     p = data_dir()
@@ -132,51 +147,74 @@ class Config:
                 cfg.theme = data.get("theme", cfg.theme)
                 cfg.accent = data.get("accent", cfg.accent)
                 cfg.module_states = data.get("module_states", {})
-                cfg.autostart_enabled = data.get("autostart_enabled", cfg.autostart_enabled)
-                cfg.eco_mode = data.get("eco_mode", cfg.eco_mode)
-                cfg.blackbox_enabled = data.get("blackbox_enabled", cfg.blackbox_enabled)
-                cfg.mobile_enabled = data.get("mobile_enabled", cfg.mobile_enabled)
+                cfg.autostart_enabled = _bool_setting(
+                    data, "autostart_enabled", cfg.autostart_enabled)
+                cfg.eco_mode = _bool_setting(data, "eco_mode", cfg.eco_mode)
+                cfg.blackbox_enabled = _bool_setting(
+                    data, "blackbox_enabled", cfg.blackbox_enabled)
+                cfg.mobile_enabled = _bool_setting(
+                    data, "mobile_enabled", cfg.mobile_enabled)
                 cfg.mobile_signal_cli = data.get("mobile_signal_cli", cfg.mobile_signal_cli)
                 cfg.mobile_host_number = data.get("mobile_host_number", cfg.mobile_host_number)
                 cfg.mobile_dest_number = data.get("mobile_dest_number", cfg.mobile_dest_number)
-                cfg.ebpf_enabled = data.get("ebpf_enabled", cfg.ebpf_enabled)
+                cfg.ebpf_enabled = _bool_setting(
+                    data, "ebpf_enabled", cfg.ebpf_enabled)
                 cfg.ai_provider_order = data.get("ai_provider_order", cfg.ai_provider_order)
-                cfg.mcp_enabled = data.get("mcp_enabled", cfg.mcp_enabled)
+                cfg.mcp_enabled = _bool_setting(
+                    data, "mcp_enabled", cfg.mcp_enabled)
                 cfg.mcp_port    = int(data.get("mcp_port", cfg.mcp_port))
-                cfg.aria_enabled          = data.get("aria_enabled", cfg.aria_enabled)
-                cfg.perf_governor_enabled = data.get("perf_governor_enabled", cfg.perf_governor_enabled)
-                cfg.aria_voice_enabled    = data.get("aria_voice_enabled", cfg.aria_voice_enabled)
-                cfg.aria_voice_cloud_tts  = data.get("aria_voice_cloud_tts", cfg.aria_voice_cloud_tts)
-                cfg.aria_cloud_fallback   = data.get("aria_cloud_fallback", cfg.aria_cloud_fallback)
-                cfg.alert_analysis_cloud_fallback = data.get(
+                cfg.aria_enabled = _bool_setting(
+                    data, "aria_enabled", cfg.aria_enabled)
+                cfg.perf_governor_enabled = _bool_setting(
+                    data, "perf_governor_enabled", cfg.perf_governor_enabled)
+                cfg.aria_voice_enabled = _bool_setting(
+                    data, "aria_voice_enabled", cfg.aria_voice_enabled)
+                cfg.aria_voice_cloud_tts = _bool_setting(
+                    data, "aria_voice_cloud_tts", cfg.aria_voice_cloud_tts)
+                cfg.aria_cloud_fallback = _bool_setting(
+                    data, "aria_cloud_fallback", cfg.aria_cloud_fallback)
+                cfg.alert_analysis_cloud_fallback = _bool_setting(
+                    data,
                     "alert_analysis_cloud_fallback",
                     cfg.alert_analysis_cloud_fallback,
                 )
                 cfg.aria_mic_device       = str(data.get("aria_mic_device", cfg.aria_mic_device))
-                cfg.aria_push_enabled     = data.get("aria_push_enabled", cfg.aria_push_enabled)
+                cfg.aria_push_enabled = _bool_setting(
+                    data, "aria_push_enabled", cfg.aria_push_enabled)
                 cfg.aria_push_kind        = data.get("aria_push_kind", cfg.aria_push_kind)
-                cfg.aria_push_url         = data.get("aria_push_url", cfg.aria_push_url)
-                cfg.aria_inbox_enabled    = data.get("aria_inbox_enabled", cfg.aria_inbox_enabled)
+                # Webhook URLs contain bearer-like channel credentials. Prefer
+                # the DPAPI store and read the settings value only as a legacy
+                # in-memory fallback that the next successful save migrates.
+                cfg.aria_push_url = os.environ.get(
+                    _ARIA_PUSH_URL_KEY,
+                    data.get("aria_push_url", cfg.aria_push_url),
+                )
+                cfg.aria_inbox_enabled = _bool_setting(
+                    data, "aria_inbox_enabled", cfg.aria_inbox_enabled)
                 cfg.aria_imap_host        = data.get("aria_imap_host", cfg.aria_imap_host)
                 cfg.aria_imap_user        = data.get("aria_imap_user", cfg.aria_imap_user)
                 cfg.aria_inbox_interval_min = int(data.get("aria_inbox_interval_min", cfg.aria_inbox_interval_min))
-                cfg.aria_research_egress  = data.get("aria_research_egress", cfg.aria_research_egress)
-                cfg.teams_bot_enabled     = data.get("teams_bot_enabled", cfg.teams_bot_enabled)
+                cfg.aria_research_egress = _bool_setting(
+                    data, "aria_research_egress", cfg.aria_research_egress)
+                cfg.teams_bot_enabled = _bool_setting(
+                    data, "teams_bot_enabled", cfg.teams_bot_enabled)
                 cfg.teams_app_id          = data.get("teams_app_id", cfg.teams_app_id)
                 cfg.teams_allowed_users   = data.get("teams_allowed_users", cfg.teams_allowed_users)
                 cfg.teams_bot_port        = int(data.get("teams_bot_port", cfg.teams_bot_port))
-                cfg.teams_bot_skip_auth   = data.get("teams_bot_skip_auth", cfg.teams_bot_skip_auth)
+                cfg.teams_bot_skip_auth = _bool_setting(
+                    data, "teams_bot_skip_auth", cfg.teams_bot_skip_auth)
                 cfg.ollama_keep_alive     = data.get("ollama_keep_alive", cfg.ollama_keep_alive)
                 cfg.ui_scale_mode         = str(data.get("ui_scale_mode", cfg.ui_scale_mode))
                 try:
                     cfg.ui_scale_fixed    = float(data.get("ui_scale_fixed", cfg.ui_scale_fixed))
                 except (TypeError, ValueError):
                     pass
-                cfg.ui_motion_enabled = bool(
-                    data.get("ui_motion_enabled", cfg.ui_motion_enabled)
-                )
-                cfg.require_signed_aar    = bool(data.get("require_signed_aar", cfg.require_signed_aar))
-                cfg.entropy_pool_enabled  = bool(data.get("entropy_pool_enabled", cfg.entropy_pool_enabled))
+                cfg.ui_motion_enabled = _bool_setting(
+                    data, "ui_motion_enabled", cfg.ui_motion_enabled)
+                cfg.require_signed_aar = _bool_setting(
+                    data, "require_signed_aar", cfg.require_signed_aar)
+                cfg.entropy_pool_enabled = _bool_setting(
+                    data, "entropy_pool_enabled", cfg.entropy_pool_enabled)
             except Exception:
                 pass
         # OLLAMA_HOST env var (set by the D-drive Ollama install) wins.
@@ -201,6 +239,16 @@ class Config:
         return cfg
 
     def save(self) -> None:
+        # Persist the push webhook before replacing settings.json. If DPAPI is
+        # unavailable, fail the save rather than falling back to a plaintext
+        # credential in the general settings file.
+        if self.aria_push_url or os.environ.get(_ARIA_PUSH_URL_KEY):
+            from angerona.core.secure_store import write_secret_map
+
+            write_secret_map(
+                {_ARIA_PUSH_URL_KEY: self.aria_push_url},
+                self.data_dir,
+            )
         self.settings_path.write_text(
             json.dumps(
                 {
@@ -230,7 +278,6 @@ class Config:
                     "aria_mic_device":       self.aria_mic_device,
                     "aria_push_enabled":     self.aria_push_enabled,
                     "aria_push_kind":        self.aria_push_kind,
-                    "aria_push_url":         self.aria_push_url,
                     "aria_inbox_enabled":    self.aria_inbox_enabled,
                     "aria_imap_host":        self.aria_imap_host,
                     "aria_imap_user":        self.aria_imap_user,

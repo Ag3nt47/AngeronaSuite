@@ -25,6 +25,11 @@ import threading
 import time
 from pathlib import Path
 
+from angerona.shark.run_manifest import (
+    DrillHistoryIntegrityError,
+    load_verified_history,
+)
+
 try:
     from angerona.core.module_base import BaseModule
     from angerona.core.eventbus import Severity
@@ -87,6 +92,34 @@ def _edr(level: str, msg: str) -> None:
 def _repo_root() -> Path:
     from angerona.core.data_paths import data_dir
     return data_dir()
+
+
+def _reverse_lines(path: Path, block_size: int = 64 * 1024):
+    """Yield UTF-8 lines newest-first without loading the whole file.
+
+    ``attack_feed.log`` is append-only and can be large after a long-running
+    deployment.  Reading it into a list made one evolution activation allocate
+    several times the complete file size.  Working backward in fixed blocks
+    preserves the exact newest-match semantics with bounded scratch memory.
+    """
+    with path.open("rb") as stream:
+        stream.seek(0, os.SEEK_END)
+        position = stream.tell()
+        carry = b""
+        while position > 0:
+            size = min(max(1, int(block_size)), position)
+            position -= size
+            stream.seek(position)
+            parts = (stream.read(size) + carry).split(b"\n")
+            carry = parts[0]
+            for raw in reversed(parts[1:]):
+                if raw.endswith(b"\r"):
+                    raw = raw[:-1]
+                yield raw.decode("utf-8")
+        if carry:
+            if carry.endswith(b"\r"):
+                carry = carry[:-1]
+            yield carry.decode("utf-8")
 
 
 class EvolutionEngine(BaseModule):
@@ -197,8 +230,9 @@ class EvolutionEngine(BaseModule):
         # attack_feed.log (JSON-lines), newest matching entry
         try:
             if self.attack_feed.exists():
-                lines = [l for l in self.attack_feed.read_text(encoding="utf-8").splitlines() if l.strip()]
-                for l in reversed(lines):
+                for l in _reverse_lines(self.attack_feed):
+                    if not l.strip():
+                        continue
                     try:
                         e = json.loads(l)
                     except Exception:
@@ -214,12 +248,12 @@ class EvolutionEngine(BaseModule):
             data_dir = Path(".")
         for hname in ("redteam_history.json", "shark_history.json"):
             try:
-                h = json.loads((Path(data_dir) / hname).read_text(encoding="utf-8"))
+                h = load_verified_history(Path(data_dir) / hname)
                 for step in reversed(h.get("steps", [])):
                     blob = json.dumps(step)
                     if technique_id in blob or technique_id in step.get("technique", ""):
                         return step
-            except Exception:
+            except (DrillHistoryIntegrityError, OSError, TypeError, ValueError):
                 continue
         return {"technique": technique_id, "detail": "no footprint found"}
 

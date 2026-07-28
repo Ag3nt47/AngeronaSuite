@@ -27,6 +27,10 @@ from angerona.gui.animations import (
     ClashingSwords, RunSpinner, SharkSwimBanner, SharkSwimIndicator, ThreatOverlay)
 from angerona.gui.header_controls import (
     HeaderActionButton, PanelRevealOverlay, motion_allowed)
+from angerona.gui.dashboard_details import (
+    AriaDetailDialog,
+    SystemPulseDetailDialog,
+)
 from angerona.gui.pages import (
     AARDialog, AlertsPanel, CommandConsolePanel, DashboardCards, ModuleInspector,
     ModulesPanel, ResourceStrip, SettingsDialog, SharkMonitorDialog, SoarPanel,
@@ -333,6 +337,7 @@ class MainWindow(QMainWindow):
         self.alerts_panel = AlertsPanel(
             storage,
             allow_cloud=getattr(config, "alert_analysis_cloud_fallback", False),
+            bus=bus,
         )
         # Right side is now tabbed: Live Alerts + the persistent SOAR Queue.
         self.soar_panel = SoarPanel(bus, manager)
@@ -356,7 +361,11 @@ class MainWindow(QMainWindow):
         # monitor samples in a background worker, so CPU/Wi-Fi queries cannot
         # stall the prompt or dashboard repaint path.
         self.system_pulse = SystemPulseCard()
+        self.system_pulse.details_requested.connect(
+            self._open_system_pulse_details
+        )
         if getattr(self, "aria_hud", None) is not None:
+            self.aria_hud.details_requested.connect(self._open_aria_details)
             self._console_section = QSplitter(Qt.Horizontal)
             # Lowered from 150 so the ARIA orb column can be squeezed right down
             # beside the prompt; raised the ceiling a little for wide displays.
@@ -587,7 +596,16 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(self._qss())
 
     def _run_header_action(self, source: QWidget, callback, color: str) -> None:
-        """Route a top-row action through the lightweight panel reveal."""
+        """Route a top-row action through the real destination reveal."""
+        self._reveal_window_from(source, callback, color)
+
+    def _reveal_window_from(
+        self,
+        source: QWidget,
+        callback,
+        color: str = "#38bdf8",
+    ) -> None:
+        """Reveal the actual window created by any clickable dashboard surface."""
         if not motion_allowed(self.config):
             callback()
             return
@@ -598,6 +616,30 @@ class MainWindow(QMainWindow):
         # A second click while the destination reveal is active is deliberately
         # ignored so it cannot open duplicate modal windows.
         overlay.reveal(source, callback, color)
+
+    def _open_system_pulse_details(self) -> None:
+        def _show():
+            dialog = SystemPulseDetailDialog(self.system_pulse, self)
+            self._system_pulse_detail = dialog
+            dialog.show()
+            dialog.raise_()
+            return dialog
+
+        self._reveal_window_from(self.system_pulse, _show, "#38bdf8")
+
+    def _open_aria_details(self) -> None:
+        hud = getattr(self, "aria_hud", None)
+        if hud is None:
+            return
+
+        def _show():
+            dialog = AriaDetailDialog(self, self)
+            self._aria_detail = dialog
+            dialog.show()
+            dialog.raise_()
+            return dialog
+
+        self._reveal_window_from(hud, _show, "#c084fc")
 
     # ── Refresh ──────────────────────────────────────────────────────────────
     def _refresh(self) -> None:
@@ -2180,7 +2222,17 @@ class MainWindow(QMainWindow):
             return
         try:
             from angerona.gui.pages import _show_nonmodal
-            _show_nonmodal(ModuleInspector(self.manager, self.bus, mod, self))
+
+            source = self.sender()
+            if not isinstance(source, QWidget):
+                source = self.status_strip
+
+            def _show():
+                return _show_nonmodal(
+                    ModuleInspector(self.manager, self.bus, mod, self)
+                )
+
+            self._reveal_window_from(source, _show, "#22c55e")
         except Exception as exc:
             QMessageBox.warning(self, "Module", f"Could not open module window: {exc}")
 

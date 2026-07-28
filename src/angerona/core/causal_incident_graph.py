@@ -8,6 +8,9 @@ each edge states its relation, evidence basis, and confidence.
 Time proximity is represented as ``precedes`` and is never mislabeled as proof
 of causation. Stronger relations require explicit process/file/network identity,
 parentage, correlation identifiers, or a response event that names its trigger.
+A remediation receipt mentioned by an event remains only a proof *reference*:
+this pure builder has no ledger/key access and never claims it verified the
+receipt's signature or chain.
 """
 from __future__ import annotations
 
@@ -399,21 +402,35 @@ class _Builder:
         receipt_id = details.get("receipt_id")
         if receipt_id:
             receipt_text = str(receipt_id)[:128]
+            claimed_verified = (
+                details.get("verified") is True
+                or type(details.get("verified")) is int
+                and details.get("verified") == 1
+            )
+            receipt_hash = str(details.get("receipt_hash") or "").strip().lower()
+            hash_well_formed = (
+                len(receipt_hash) == 64
+                and all(char in "0123456789abcdef" for char in receipt_hash)
+            )
             proof_id = f"PROOF:{_canonical_digest(receipt_text)}"
             proof_node = self.node(
                 proof_id,
                 "proof",
                 receipt_text,
                 ts,
-                receipt_hash=str(details.get("receipt_hash") or "")[:64],
-                verification=bool(details.get("verified")),
+                receipt_hash=receipt_hash if hash_well_formed else "",
+                verification_claim=claimed_verified,
+                authenticity="not-verified-by-graph",
             )
             self.edge(
                 event_node,
                 proof_node,
                 "verification-proof",
-                basis="event names a signed remediation receipt",
-                confidence=1.0,
+                basis=(
+                    "event references a remediation receipt; authenticity and "
+                    "chain were not independently verified by this read-side graph"
+                ),
+                confidence=0.50,
                 evidence=[event_id],
             )
 

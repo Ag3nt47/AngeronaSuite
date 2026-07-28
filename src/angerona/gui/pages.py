@@ -66,6 +66,12 @@ SECURITY NOTES
 from angerona import __version__
 from angerona.core.eventbus import Severity
 from angerona.core.threat import threat_label
+from angerona.gui.dashboard_details import (
+    ConsoleDetailDialog,
+    FuturisticDetailDialog,
+    FuturisticHeader,
+    ModuleResourceDialog,
+)
 from angerona.gui.theme import SEVERITY_COLOR, available_themes
 
 
@@ -182,6 +188,25 @@ def _show_nonmodal(dlg):
     return dlg
 
 
+def _show_nonmodal_from(source: QWidget, factory, color: str = "#38bdf8"):
+    """Create and show a detail window through MainWindow's real-window reveal."""
+    owner: QWidget | None = source.window()
+    opener = None
+    while owner is not None:
+        opener = getattr(owner, "_reveal_window_from", None)
+        if callable(opener):
+            break
+        owner = owner.parentWidget()
+
+    def _show():
+        dialog = factory()
+        return _show_nonmodal(dialog)
+
+    if callable(opener):
+        return opener(source, _show, color)
+    return _show()
+
+
 def _copy_event_to_clipboard(event) -> None:
     """Copy a bus Event's full record to the clipboard as readable text."""
     try:
@@ -268,6 +293,23 @@ def _section(text: str) -> QLabel:
     lbl = QLabel(text)
     lbl.setObjectName("SectionTitle")
     return lbl
+
+
+class _ClickableSection(QLabel):
+    """Section title that clearly advertises an expanded detail destination."""
+
+    clicked = Signal()
+
+    def __init__(self, text: str, tooltip: str) -> None:
+        super().__init__(f"{text}   ›")
+        self.setObjectName("SectionTitle")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(tooltip)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
 
 # ── Stat cards ───────────────────────────────────────────────────────────────
@@ -395,21 +437,49 @@ class DashboardCards(QWidget):
 
     # ── Drill-down windows ───────────────────────────────────────────────────
     def _open_modules(self) -> None:
-        _show_nonmodal(ModulesStatusWindow(self.manager, self.bus, self))
+        _show_nonmodal_from(
+            self.c_modules,
+            lambda: ModulesStatusWindow(self.manager, self.bus, self.window()),
+            "#22c55e",
+        )
 
     def _open_alerts(self) -> None:
-        _show_nonmodal(EventsWindow("Alerts — last 24 hours", self.bus, self.storage,
-                                    min_sev=Severity.LOW, parent=self))
+        _show_nonmodal_from(
+            self.c_alerts,
+            lambda: EventsWindow(
+                "Alerts — last 24 hours",
+                self.bus,
+                self.storage,
+                min_sev=Severity.LOW,
+                parent=self.window(),
+            ),
+            "#38bdf8",
+        )
 
     def _open_critical(self) -> None:
-        _show_nonmodal(EventsWindow("Critical alerts — last 24 hours", self.bus, self.storage,
-                                    min_sev=Severity.CRITICAL, parent=self))
+        _show_nonmodal_from(
+            self.c_crit,
+            lambda: EventsWindow(
+                "Critical alerts — last 24 hours",
+                self.bus,
+                self.storage,
+                min_sev=Severity.CRITICAL,
+                parent=self.window(),
+            ),
+            "#ef4444",
+        )
 
     def _open_threat(self) -> None:
         # Resolve Center: list CRITICAL/HIGH alerts with Allow/Block/Research/Apply/
         # Ignore so the operator can clear false positives and get back to Secure.
         from angerona.gui.resolve_center import ResolveCenter
-        _show_nonmodal(ResolveCenter(self.bus, self.storage, self.manager, self))
+        _show_nonmodal_from(
+            self.c_threat,
+            lambda: ResolveCenter(
+                self.bus, self.storage, self.manager, self.window()
+            ),
+            "#fb923c",
+        )
 
 
 # ── Shared helper: fill a table with events ───────────────────────────────────
@@ -445,9 +515,15 @@ class EventsWindow(QDialog):
         if parent:
             self.setStyleSheet(parent.styleSheet())
         root = QVBoxLayout(self)
-        head = QLabel(title)
-        head.setObjectName("PageTitle")
-        root.addWidget(head)
+        root.addWidget(
+            FuturisticHeader(
+                title,
+                "Newest-first event evidence with full alert actions and bounded "
+                "24-hour retrieval.",
+                "#ef4444" if min_sev >= Severity.CRITICAL else "#38bdf8",
+                self,
+            )
+        )
         self.count_lbl = QLabel("")
         self.count_lbl.setStyleSheet("color:#9aa4b2;")
         root.addWidget(self.count_lbl)
@@ -486,7 +562,11 @@ class EventsWindow(QDialog):
             return
         ev = item.data(Qt.UserRole)
         if ev is not None:
-            _show_nonmodal(AlertDetailDialog(ev, self.window()))
+            _show_nonmodal_from(
+                self.table,
+                lambda: AlertDetailDialog(ev, self.window()),
+                _sev_color(getattr(ev, "severity", Severity.INFO)),
+            )
 
     def _events(self) -> list:
         now = time.time()
@@ -525,9 +605,15 @@ class ModulesStatusWindow(QDialog):
         if parent:
             self.setStyleSheet(parent.styleSheet())
         root = QVBoxLayout(self)
-        head = QLabel("Modules — status")
-        head.setObjectName("PageTitle")
-        root.addWidget(head)
+        root.addWidget(
+            FuturisticHeader(
+                "Modules · Live Status Matrix",
+                "Operational state, health, and category across every discovered "
+                "defensive capability.",
+                "#22c55e",
+                self,
+            )
+        )
         self.summary = QLabel("")
         self.summary.setStyleSheet("color:#9aa4b2;")
         root.addWidget(self.summary)
@@ -537,7 +623,9 @@ class ModulesStatusWindow(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setAlternatingRowColors(True)
+        self.table.cellClicked.connect(self._open_module)
         root.addWidget(self.table)
 
         row = QHBoxLayout()
@@ -574,7 +662,9 @@ class ModulesStatusWindow(QDialog):
             self.table.insertRow(r)
             status = getattr(mod, "status", "?")
             running += (status == "running")
-            self.table.setItem(r, 0, QTableWidgetItem(getattr(mod, "name", name)))
+            name_item = QTableWidgetItem(getattr(mod, "name", name))
+            name_item.setData(Qt.UserRole, name)
+            self.table.setItem(r, 0, name_item)
             st_item = QTableWidgetItem(status)
             st_item.setForeground(QColor(STATUS_COLOR.get(status, "#e5e7eb")))
             self.table.setItem(r, 1, st_item)
@@ -584,6 +674,20 @@ class ModulesStatusWindow(QDialog):
             self.table.setItem(r, 2, h_item)
             self.table.setItem(r, 3, QTableWidgetItem(getattr(mod, "category", "")))
         self.summary.setText(f"{running}/{len(mods)} modules running")
+
+    def _open_module(self, row: int, _column: int) -> None:
+        item = self.table.item(row, 0)
+        name = item.data(Qt.UserRole) if item is not None else None
+        module = self.manager.modules.get(name) if name else None
+        if module is None:
+            return
+        _show_nonmodal_from(
+            self.table,
+            lambda: ModuleInspector(
+                self.manager, self.bus, module, self.window()
+            ),
+            "#22c55e",
+        )
 
 
 # ── Threat drill-down window (with fix / harden actions) ──────────────────────
@@ -606,15 +710,12 @@ class ThreatWindow(QDialog):
         root = QVBoxLayout(self)
 
         label, color = threat_label(self.bus.recent(200))
-        head = QLabel(f"Threat level: {label}")
-        head.setObjectName("PageTitle")
-        head.setStyleSheet(f"color:{color};")
-        root.addWidget(head)
-        sub = QLabel("Only the HIGH / CRITICAL events driving this level are shown. "
-                     "Select one to see details and stage a fix.")
-        sub.setWordWrap(True)
-        sub.setStyleSheet("color:#9aa4b2;")
-        root.addWidget(sub)
+        root.addWidget(FuturisticHeader(
+            f"Threat level: {label}",
+            "Only the HIGH / CRITICAL events driving posture are shown; select one to inspect or stage a fix",
+            color,
+            self,
+        ))
 
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["Time", "Severity", "Module", "Message"])
@@ -1317,7 +1418,12 @@ class ModulesPanel(QFrame):
         self.bus = bus
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 12, 14, 14)
-        lay.addWidget(_section("Modules"))
+        self._title = _ClickableSection(
+            "Modules",
+            "Open the expanded live status matrix for every defensive module.",
+        )
+        self._title.clicked.connect(self._open_overview)
+        lay.addWidget(self._title)
         hint = QLabel("Click a row to inspect. Toggle to enable/disable.")
         hint.setStyleSheet("color:#6b7280; font-size:11px;")
         lay.addWidget(hint)
@@ -1405,7 +1511,22 @@ class ModulesPanel(QFrame):
             return
         mod = self.manager.modules.get(name_item.data(Qt.UserRole))
         if mod:
-            _show_nonmodal(ModuleInspector(self.manager, self.bus, mod, self))
+            _show_nonmodal_from(
+                self.table,
+                lambda: ModuleInspector(
+                    self.manager, self.bus, mod, self.window()
+                ),
+                "#22c55e",
+            )
+
+    def _open_overview(self) -> None:
+        _show_nonmodal_from(
+            self._title,
+            lambda: ModulesStatusWindow(
+                self.manager, self.bus, self.window()
+            ),
+            "#22c55e",
+        )
 
 
 # ── Module inspector ─────────────────────────────────────────────────────────
@@ -1421,11 +1542,12 @@ class ModuleInspector(QDialog):
             self.setStyleSheet(parent.styleSheet())
         root = QVBoxLayout(self)
 
-        title = QLabel(module.name); title.setObjectName("PageTitle")
-        root.addWidget(title)
-        meta = QLabel(f"{module.category} · v{module.version}")
-        meta.setStyleSheet("color:#9aa4b2;")
-        root.addWidget(meta)
+        root.addWidget(FuturisticHeader(
+            f"{module.name} · Module Inspector",
+            f"{module.category} · v{module.version} · live controls, events, health, and dependencies",
+            HEALTH_COLOR.get(module.health_state, "#38bdf8"),
+            self,
+        ))
 
         tabs = QTabWidget()
         tabs.addTab(self._overview_tab(),  "Overview")
@@ -1533,10 +1655,16 @@ class ModuleInspector(QDialog):
         self._hist_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._hist_table.setSelectionBehavior(QTableWidget.SelectRows)
         self._hist_table.cellClicked.connect(
-            lambda r, _: _show_nonmodal(AlertDetailDialog(
-                self._hist_table.item(r, 0).data(Qt.UserRole), self.window()))
-            if self._hist_table.item(r, 0) and
-               self._hist_table.item(r, 0).data(Qt.UserRole) else None
+            lambda r, _: _show_nonmodal_from(
+                self._hist_table,
+                lambda: AlertDetailDialog(
+                    self._hist_table.item(r, 0).data(Qt.UserRole), self.window()
+                ),
+                "#38bdf8",
+            )
+            if self._hist_table.item(r, 0)
+            and self._hist_table.item(r, 0).data(Qt.UserRole)
+            else None
         )
         lay.addWidget(self._hist_table)
         return w
@@ -1646,7 +1774,11 @@ class ModuleInspector(QDialog):
         if event is not None:
             # Module alerts now open the SAME detail window (with Allow/Block/
             # Analyze/Research) as the main Live Alerts feed.
-            _show_nonmodal(AlertDetailDialog(event, self.window()))
+            _show_nonmodal_from(
+                self.feed,
+                lambda: AlertDetailDialog(event, self.window()),
+                _sev_color(event.severity),
+            )
 
     def _api_keys_tab(self) -> QWidget:
         w = QWidget(); lay = QVBoxLayout(w)
@@ -1855,9 +1987,12 @@ class AlertDetailDialog(QDialog):
             self.setStyleSheet(parent.styleSheet())
         lay = QVBoxLayout(self)
 
-        title = QLabel(f"{event.severity.label} · {event.module}")
-        title.setObjectName("PageTitle")
-        lay.addWidget(title)
+        lay.addWidget(FuturisticHeader(
+            f"{event.severity.label} · {event.module}",
+            "Signed event evidence, cryptographic fingerprint, and explicit operator actions",
+            _sev_color(event.severity),
+            self,
+        ))
         ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(event.ts))
         lay.addWidget(QLabel(f"Time: {ts}"))
         # Long alert text slowly scrolls inside a fixed-height box so the whole
@@ -2007,10 +2142,11 @@ class AlertDetailDialog(QDialog):
 class AlertsPanel(QFrame):
     events_loaded = Signal(object, object)
 
-    def __init__(self, storage, allow_cloud=False) -> None:
+    def __init__(self, storage, allow_cloud=False, bus=None) -> None:
         super().__init__()
         self.setObjectName("Panel")
         self.storage = storage
+        self.bus = bus
         self._allow_cloud = allow_cloud is True
         self._events: list = []
         self._newest_ts: float = 0.0
@@ -2024,12 +2160,15 @@ class AlertsPanel(QFrame):
         self._analyze_workers: list = []
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 12, 14, 14)
-        lay.addWidget(_section(
+        self._title = _ClickableSection(
             "Live Alerts  —  click a header to sort · click a row for detail  "
             "· Allow = suppress future events from this module  "
             "· Block = queue SOAR containment for review  "
-            "· Analyze = local AI triage (sanitized cloud fallback only if enabled)"
-        ))
+            "· Analyze = local AI triage (sanitized cloud fallback only if enabled)",
+            "Open a full-size newest-first alert evidence window.",
+        )
+        self._title.clicked.connect(self._open_overview)
+        lay.addWidget(self._title)
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
             ["Time", "Module", "Severity", "Message", "Allow", "Block", "Analyze"]
@@ -2084,7 +2223,29 @@ class AlertsPanel(QFrame):
         elif col == 6:
             self._analyze_event(event, None)
         else:
-            _show_nonmodal(AlertDetailDialog(event, self.window(), panel=self))
+            _show_nonmodal_from(
+                self.table,
+                lambda: AlertDetailDialog(
+                    event, self.window(), panel=self
+                ),
+                _sev_color(getattr(event, "severity", Severity.INFO)),
+            )
+
+    def _open_overview(self) -> None:
+        if self.bus is None:
+            self._status.setText("Live alert overview is still initializing.")
+            return
+        _show_nonmodal_from(
+            self._title,
+            lambda: EventsWindow(
+                "Live Alerts · Expanded Evidence",
+                self.bus,
+                self.storage,
+                min_sev=Severity.LOW,
+                parent=self.window(),
+            ),
+            "#38bdf8",
+        )
 
     def _make_allow_btn(self, event) -> QPushButton:
         btn = QPushButton("Allow")
@@ -2420,8 +2581,12 @@ class SoarPanel(QFrame):
         self._count = 0
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 12, 14, 14)
-        lay.addWidget(_section(
-            "SOAR Queue  —  operator-blocked sources awaiting review (persisted history)"))
+        self._title = _ClickableSection(
+            "SOAR Queue  —  operator-blocked sources awaiting review (persisted history)",
+            "Open the expanded containment-review queue and evidence summary.",
+        )
+        self._title.clicked.connect(self._open_overview)
+        lay.addWidget(self._title)
 
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["Time", "Source module", "Severity", "Message", "Status"])
@@ -2431,6 +2596,7 @@ class SoarPanel(QFrame):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setAlternatingRowColors(True)
+        self.table.cellClicked.connect(self._open_record)
         # Right-click → per-alert AI analysis
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._row_context_menu)
@@ -2476,6 +2642,105 @@ class SoarPanel(QFrame):
             st.setForeground(QColor("#f59e0b"))
             self.table.setItem(r, 4, st)
         self._status.setText(f"{len(items)} item(s) in the SOAR queue.")
+
+    def _record_for_row(self, row: int) -> dict | None:
+        items = _read_soar_queue()
+        index = len(items) - 1 - int(row)
+        if 0 <= index < len(items):
+            return items[index]
+        return None
+
+    def _open_record(self, row: int, _column: int) -> None:
+        record = self._record_for_row(row)
+        if record is None:
+            return
+
+        def _build() -> FuturisticDetailDialog:
+            module = str(record.get("origin_module", "Unknown"))
+            dialog = FuturisticDetailDialog(
+                f"SOAR Evidence · {module}",
+                "Operator-requested containment evidence. This view is read-only; "
+                "AI consultation and response controls remain explicit actions.",
+                "#f59e0b",
+                self.window(),
+                (820, 560),
+            )
+            dialog.add_metric("Severity", str(record.get("severity", "")), "#ef4444")
+            dialog.add_metric("Status", str(record.get("status", "")), "#f59e0b")
+            dialog.add_metric("Source", module, "#38bdf8")
+            details = record.get("details", {}) or {}
+            dialog.add_metric("PID", str(details.get("pid", "—")), "#c084fc")
+            message = QLabel(str(record.get("message", "")))
+            message.setWordWrap(True)
+            message.setStyleSheet("font-size:14px; font-weight:700;")
+            dialog.content.addWidget(message)
+            evidence = QPlainTextEdit()
+            evidence.setReadOnly(True)
+            evidence.setPlainText(json.dumps(record, indent=2, default=str)[:40_000])
+            dialog.content.addWidget(evidence, 1)
+            dialog.footer_status.setText(
+                "Persisted queue record · use Ask AI (selected) for live enrichment"
+            )
+            return dialog
+
+        _show_nonmodal_from(self.table, _build, "#f59e0b")
+
+    def _open_overview(self) -> None:
+        def _build() -> FuturisticDetailDialog:
+            items = _read_soar_queue()
+            dialog = FuturisticDetailDialog(
+                "SOAR Queue · Containment Review",
+                "Newest-first operator Block requests. Queue entries are review "
+                "artifacts—not proof that a containment action succeeded.",
+                "#f59e0b",
+                self.window(),
+                (920, 620),
+            )
+            high = sum(
+                1
+                for record in items
+                if str(record.get("severity", "")).upper()
+                in {"HIGH", "CRITICAL"}
+            )
+            sources = {
+                str(record.get("origin_module", ""))
+                for record in items
+                if record.get("origin_module")
+            }
+            dialog.add_metric("Queued", str(len(items)), "#f59e0b")
+            dialog.add_metric("High / critical", str(high), "#ef4444")
+            dialog.add_metric("Source modules", str(len(sources)), "#38bdf8")
+            table = QTableWidget(0, 5)
+            table.setHorizontalHeaderLabels(
+                ["Time", "Source", "Severity", "Message", "Status"]
+            )
+            table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+            table.verticalHeader().setVisible(False)
+            table.setEditTriggers(QTableWidget.NoEditTriggers)
+            table.setSelectionBehavior(QTableWidget.SelectRows)
+            for record in reversed(items[-300:]):
+                table.insertRow(table.rowCount())
+                current = table.rowCount() - 1
+                when = time.strftime(
+                    "%m-%d %H:%M:%S",
+                    time.localtime(float(record.get("ts", 0.0))),
+                )
+                values = (
+                    when,
+                    str(record.get("origin_module", "")),
+                    str(record.get("severity", "")),
+                    str(record.get("message", "")),
+                    str(record.get("status", "")),
+                )
+                for column, value in enumerate(values):
+                    table.setItem(current, column, QTableWidgetItem(value))
+            dialog.content.addWidget(table, 1)
+            dialog.footer_status.setText(
+                "Showing newest 300 persisted review records"
+            )
+            return dialog
+
+        _show_nonmodal_from(self._title, _build, "#f59e0b")
 
     def _clear(self) -> None:
         try:
@@ -2837,9 +3102,10 @@ class ResourceStrip(QFrame):
         self._prev.clear()
         font = _chip_font()
         for name in sorted(self.manager.modules):
-            chip = QLabel()
+            chip = _ClickableChip(name)
             chip.setAlignment(Qt.AlignCenter)
             chip.setFont(font)
+            chip.clicked.connect(self._open_resource)
             self._chips[name] = chip
             self._lay.addWidget(chip, 1)
         self._built_count = len(self.manager.modules)
@@ -2881,6 +3147,40 @@ class ResourceStrip(QFrame):
                 f"border:1px solid {color}55; border-radius:8px;"
                 f"padding:1px 3px; font-weight:700;")
 
+    def _resource_snapshot(self, name: str) -> dict:
+        module = self.manager.modules.get(name)
+        if module is None:
+            return {}
+        recent = []
+        activity: dict[str, int] = {}
+        try:
+            all_recent = self.bus.recent(120)
+            for event in all_recent:
+                activity[event.module] = activity.get(event.module, 0) + 1
+            for event in reversed(all_recent):
+                if event.module == name and len(recent) < 25:
+                    recent.append(event)
+        except Exception:
+            pass
+        return {
+            "intensity": self._intensity(name, module, activity),
+            "health": int(getattr(module, "health", 0)),
+            "status": str(getattr(module, "status", "unknown")),
+            "events": recent,
+        }
+
+    def _open_resource(self, name: str) -> None:
+        source = self._chips.get(name)
+        if source is None:
+            return
+        _show_nonmodal_from(
+            source,
+            lambda: ModuleResourceDialog(
+                name, self._resource_snapshot, self.window()
+            ),
+            "#fb923c",
+        )
+
 
 # ── Command console (interactive prompt + AI) ────────────────────────────────
 class CommandConsolePanel(QFrame):
@@ -2899,7 +3199,12 @@ class CommandConsolePanel(QFrame):
         self._stream_ask = None          # optional fn(text, on_token)->str (ARIA)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 12, 14, 12)
-        lay.addWidget(_section("ARIA Console  —  ask ARIA in plain language, or type 'help' for commands"))
+        self._title = _ClickableSection(
+            "ARIA Console  —  ask ARIA in plain language, or type 'help' for commands",
+            "Open the expanded ARIA and guarded-command operations deck.",
+        )
+        self._title.clicked.connect(self._open_detail)
+        lay.addWidget(self._title)
 
         self.out = QPlainTextEdit()
         self.out.setReadOnly(True)
@@ -3014,6 +3319,13 @@ class CommandConsolePanel(QFrame):
 
     def refresh(self) -> None:
         pass  # console is event-driven; nothing to poll
+
+    def _open_detail(self) -> None:
+        _show_nonmodal_from(
+            self._title,
+            lambda: ConsoleDetailDialog(self, self.window()),
+            "#2dd4bf",
+        )
 
 
 # ── Shark Attack — live offense monitor (non-modal) ───────────────────────────

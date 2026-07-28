@@ -74,11 +74,20 @@ _HIGH_ENTROPY_VALUE = re.compile(
     r"(?<![A-Za-z0-9])(?:[A-Fa-f0-9]{40,}|[A-Za-z0-9+/_-]{48,}={0,2})(?![A-Za-z0-9])"
 )
 _EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+_URL = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+_UNC_PATH = re.compile(r"\\\\[^\\\s\"'<>]+\\[^\s\"'<>]+")
 _QUOTED_WIN_PATH = re.compile(r"(?i)([\"'])([A-Z]:\\[^\"'\r\n]+)\1")
 _WIN_PATH = re.compile(r"(?i)\b[A-Z]:\\[^\s\"'<>|]+")
 _USER_HOME_PATH = re.compile(r"(?i)\b[A-Z]:\\Users\\[^\\\s\"'<>|]+(?:\\[^\s\"'<>|]+)*")
 _POSIX_HOME_PATH = re.compile(r"(?<![\w.])/(?:home|Users)/[^/\s]+(?:/[^\s\"']+)*")
 _IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+_IPV6 = re.compile(
+    r"(?<![\w:])(?:[0-9A-Fa-f]{0,4}:){2,8}[0-9A-Fa-f]{0,4}(?![\w:])"
+)
+_HOSTNAME = re.compile(
+    r"\b(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+    r"[A-Za-z]{2,63}\b"
+)
 
 
 def _shared_logs() -> Path:
@@ -131,6 +140,8 @@ class _PrivacyFilter:
         text = _HIGH_ENTROPY_VALUE.sub(
             lambda m: self.token("credential", m.group(0)), text)
         text = _EMAIL.sub(lambda m: self.token("email", m.group(0).casefold()), text)
+        text = _URL.sub(lambda m: self.token("url", m.group(0)), text)
+        text = _UNC_PATH.sub(lambda m: self.token("path", m.group(0)), text)
         text = _USER_HOME_PATH.sub(lambda m: self.token("path", m.group(0)), text)
         text = _QUOTED_WIN_PATH.sub(
             lambda m: m.group(1) + self.token("path", m.group(2)) + m.group(1), text)
@@ -145,6 +156,10 @@ class _PrivacyFilter:
             return self.token("address", match.group(0))
 
         text = _IPV4.sub(_ip, text)
+        text = _IPV6.sub(_ip, text)
+        text = _HOSTNAME.sub(
+            lambda m: self.token("hostname", m.group(0).casefold()), text
+        )
         # Replace known local identities last, including standalone occurrences.
         for identity, kind in self._identities.items():
             text = re.sub(re.escape(identity), lambda m, k=kind: self.token(k, m.group(0)),

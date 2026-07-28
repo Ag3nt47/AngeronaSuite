@@ -114,12 +114,16 @@ if _HAVE_QT:
     class _Orb(QWidget):
         """The pulsing orb. Colour/period come from an :class:`OrbState`."""
 
+        clicked = Signal()
+
         def __init__(self, parent: Optional["QWidget"] = None) -> None:
             super().__init__(parent)
             # Small floor (was 160×160) so the whole ARIA column can be squeezed
             # right down beside the prompt bar. The orb and its score number are
             # drawn from the live widget size, so they stay crisp at any size.
             self.setMinimumSize(64, 64)
+            self.setCursor(Qt.PointingHandCursor)
+            self.setToolTip("Open ARIA's expanded local-intelligence detail view.")
             self._state = orb_state(100)
             self._phase = 0.0
             self._timer = QTimer(self)
@@ -163,6 +167,11 @@ if _HAVE_QT:
             p.drawText(self.rect(), Qt.AlignCenter, str(self._state.score))
             p.end()
 
+        def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt signature
+            if event.button() == Qt.LeftButton:
+                self.clicked.emit()
+            super().mousePressEvent(event)
+
     class AriaHud(QWidget):
         """The full HUD panel: orb + status line + sparkline + chat box.
 
@@ -182,6 +191,7 @@ if _HAVE_QT:
         response_ready = Signal(str)   # full answer posted back from the ask thread
         token_ready = Signal(str)      # one streamed chunk (live typing effect)
         microphone_requested = Signal()  # direct jump to conversational settings
+        details_requested = Signal()   # expand the compact orb into a detail deck
 
         def __init__(self, *, score_fn: Callable[[], int],
                      alerts_fn: Optional[Callable[[], int]] = None,
@@ -205,6 +215,7 @@ if _HAVE_QT:
             self._compact = compact
 
             self._orb = _Orb(self)
+            self._orb.clicked.connect(self.details_requested.emit)
             self._status = QLabel("ARIA online.")
             self._status.setWordWrap(True)
             self._spark = QLabel("")

@@ -174,8 +174,14 @@ class ModuleManager:
                 spec = importlib.util.spec_from_file_location(f"angerona_ext_{path.stem}", path)
                 if spec is None or spec.loader is None:
                     raise ImportError("Python could not create an import specification")
+                if decision.source_bytes is None:
+                    raise ImportError("verified external module source is unavailable")
                 mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
+                # Execute the exact byte snapshot whose digest and publisher
+                # signature were verified. Reopening the path here would permit
+                # a local verify-then-swap race against the elevated process.
+                code = compile(decision.source_bytes, str(path), "exec")
+                exec(code, mod.__dict__)
             except Exception as exc:
                 self.discovery_errors.append(f"{path}: {exc}")
                 continue

@@ -28,6 +28,7 @@ import re
 import sqlite3
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 from angerona.core.module_base import BaseModule, Severity
@@ -43,13 +44,22 @@ _NET_KEYS = ("dest_hostname", "dest_ip", "raddr", "remote", "remote_addr", "dst"
 
 
 class ProvenanceGraph:
-    """In-memory typed DAG. Thread-safe via a single lock (state_lock)."""
+    """Bounded in-memory typed DAG.
 
-    def __init__(self) -> None:
+    The graph is fed for the lifetime of the process, so its node and edge
+    stores must not grow with host uptime.  Ordered dictionaries give us O(1)
+    recency refresh and eviction while preserving normal ``dict`` behavior for
+    existing callers.
+    """
+
+    def __init__(self, max_nodes: int = 20_000, max_edges: int = 40_000) -> None:
         self.state_lock = threading.Lock()
-        self.nodes: dict[str, dict] = {}          # id -> {kind, label, ts, meta}
+        self.max_nodes = max(1, int(max_nodes))
+        self.max_edges = max(1, int(max_edges))
+        self.nodes: OrderedDict[str, dict] = OrderedDict()
         self.edges: dict[str, set[str]] = {}      # parent id -> {child ids}
         self.parents: dict[str, set[str]] = {}    # child id -> {parent ids}
+        self._edge_order: OrderedDict[tuple[str, str], None] = OrderedDict()
 
     @staticmethod
     def _safe_int(val) -> int | None:
@@ -78,9 +88,24 @@ class ProvenanceGraph:
                                    "ts": ts, "meta": meta}
         else:
             n["ts"] = max(n["ts"], ts)
+            self.nodes.move_to_end(node_id)
+        while len(self.nodes) > self.max_nodes:
+            retired, _ = self.nodes.popitem(last=False)
+            self._drop_node_links(retired)
 
     def add_edge(self, parent: str, child: str) -> None:
-        if parent == child:
+        if parent == child or parent not in self.nodes or child not in self.nodes:
+            return
+        edge = (parent, child)
+        children = self.edges.get(parent)
+        if children is not None and child in children:
+            # Ledger catch-up can replay an edge already received live. Avoid
+            # the ancestry walk: on a long process chain it made every periodic
+            # rebuild superlinear even though no graph state changed.
+            if edge in self._edge_order:
+                self._edge_order.move_to_end(edge)
+            else:
+                self._edge_order[edge] = None
             return
         # keep it acyclic: skip an edge that would close a cycle (child already
         # an ancestor of parent).
@@ -88,6 +113,30 @@ class ProvenanceGraph:
             return
         self.edges.setdefault(parent, set()).add(child)
         self.parents.setdefault(child, set()).add(parent)
+        self._edge_order[edge] = None
+        while len(self._edge_order) > self.max_edges:
+            (old_parent, old_child), _ = self._edge_order.popitem(last=False)
+            self._discard_edge(old_parent, old_child, remove_order=False)
+
+    def _discard_edge(self, parent: str, child: str, *, remove_order: bool = True) -> None:
+        children = self.edges.get(parent)
+        if children is not None:
+            children.discard(child)
+            if not children:
+                self.edges.pop(parent, None)
+        ancestors = self.parents.get(child)
+        if ancestors is not None:
+            ancestors.discard(parent)
+            if not ancestors:
+                self.parents.pop(child, None)
+        if remove_order:
+            self._edge_order.pop((parent, child), None)
+
+    def _drop_node_links(self, node_id: str) -> None:
+        for child in tuple(self.edges.get(node_id, ())):
+            self._discard_edge(node_id, child)
+        for parent in tuple(self.parents.get(node_id, ())):
+            self._discard_edge(parent, node_id)
 
     def _ancestor_ids(self, node_id: str) -> set[str]:
         seen: set[str] = set()
@@ -214,11 +263,14 @@ class ProvenanceGraphModule(BaseModule):
     version = "1.0.0"
 
     _REBUILD_INTERVAL = 20.0
+    _DB_PAGE = 1_000
 
     def __init__(self) -> None:
         super().__init__()
         self.graph = ProvenanceGraph()
         self._db_path: Path | None = None
+        self._last_db_id = 0
+        self._subscribed = False
 
     @property
     def state(self) -> str:
@@ -242,25 +294,45 @@ class ProvenanceGraphModule(BaseModule):
     def _rebuild_from_db(self) -> int:
         if self._db_path is None or not self._db_path.exists():
             return 0
+        db = None
+        total = 0
         try:
-            db = sqlite3.connect(str(self._db_path))
-            rows = db.execute(
-                "SELECT ts, module, message, details FROM events ORDER BY id ASC"
-            ).fetchall()
-            db.close()
+            db = sqlite3.connect(
+                f"file:{self._db_path}?mode=ro", uri=True, timeout=0.5,
+            )
+            db.execute("PRAGMA query_only=ON")
+            while True:
+                rows = db.execute(
+                    "SELECT id, ts, module, message, details FROM events "
+                    "WHERE id > ? ORDER BY id ASC LIMIT ?",
+                    (self._last_db_id, self._DB_PAGE),
+                ).fetchall()
+                if not rows:
+                    break
+                for record_id, ts, module, message, details in rows:
+                    # Advance across malformed rows too, otherwise one bad row
+                    # would be reparsed on every refresh forever.
+                    self._last_db_id = max(self._last_db_id, int(record_id))
+                    try:
+                        d = json.loads(details) if details else {}
+                    except Exception:
+                        d = {}
+                    try:
+                        self.graph.ingest(module, message, d, ts or time.time())
+                    except Exception:
+                        continue
+                total += len(rows)
+                if len(rows) < self._DB_PAGE:
+                    break
         except Exception as exc:
             self.last_error = str(exc)
-            return 0
-        for ts, module, message, details in rows:
+        finally:
             try:
-                d = json.loads(details) if details else {}
+                if db is not None:
+                    db.close()
             except Exception:
-                d = {}
-            try:
-                self.graph.ingest(module, message, d, ts or time.time())
-            except Exception:
-                continue   # one malformed row must not abort the whole rebuild
-        return len(rows)
+                pass
+        return total
 
     def _on_event(self, event) -> None:
         try:
@@ -271,15 +343,21 @@ class ProvenanceGraphModule(BaseModule):
     def run(self) -> None:
         from angerona.core.config import Config
         self._db_path = Config().db_path
-        if self._bus is not None:
+        if self._bus is not None and not self._subscribed:
             try:
                 self._bus.subscribe(self._on_event)      # live edges
+                self._subscribed = True
             except Exception:
                 pass
         self.emit("PROV online — mapping process/file/network provenance DAG.", Severity.INFO)
         while not self.stopping:
             n = self._rebuild_from_db()
-            self.set_health(100, f"{len(self.graph.nodes)} nodes / {n} events")
+            self.set_health(
+                100,
+                f"{len(self.graph.nodes)}/{self.graph.max_nodes} nodes / "
+                f"{len(self.graph._edge_order)}/{self.graph.max_edges} edges / "
+                f"{n} new ledger events",
+            )
             self.sleep(self._REBUILD_INTERVAL)
 
     def self_test(self) -> tuple[bool, str]:

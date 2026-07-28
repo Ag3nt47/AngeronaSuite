@@ -84,7 +84,10 @@ class MobileResponseBridge(BaseModule):
         self.pending_alerts: dict[str, dict] = {}
         self._muted: dict[str, float] = {}          # module name → mute-until epoch
         self._alert_times: list[float] = []          # for rate-limit window
-        self._digest: list[str] = []                 # aggregated alerts pending flush
+        # A digest renders only its first 15 samples. Keep those plus a scalar
+        # total instead of retaining every full alert line during a flood.
+        self._digest: list[str] = []
+        self._digest_count = 0
         self._cursor_ts = 0.0                        # bus read watermark
         self._last_sweep = 0.0
         self._last_digest_flush = 0.0
@@ -205,7 +208,9 @@ class MobileResponseBridge(BaseModule):
         self._alert_times = [t for t in self._alert_times if now - t <= _FLOOD_WINDOW]
         self._alert_times.append(now)
         if len(self._alert_times) > _FLOOD_MAX:
-            self._digest.append(line)
+            self._digest_count += 1
+            if len(self._digest) < 15:
+                self._digest.append(line)
         else:
             self._send(line)
 
@@ -215,11 +220,12 @@ class MobileResponseBridge(BaseModule):
         if time.time() - self._last_digest_flush < _FLOOD_WINDOW:
             return
         self._last_digest_flush = time.time()
-        n = len(self._digest)
+        n = self._digest_count
         body = (f"📥 Angerona digest — {n} alert(s) in the last minute "
                 "(individual texts suppressed to avoid flooding):\n\n"
-                + "\n".join(self._digest[:15]))
+                + "\n".join(self._digest))
         self._digest.clear()
+        self._digest_count = 0
         self._send(body)
 
     def _new_token(self) -> str:

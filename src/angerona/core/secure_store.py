@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -113,15 +114,47 @@ def write_secret_map(updates: Mapping[str, object], data_root: Path | None = Non
     if _unprotect_bytes(blob) != payload:
         raise RuntimeError("DPAPI verification failed; credentials were not written")
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    descriptor: int | None = None
+    tmp: Path | None = None
     try:
-        tmp.write_bytes(blob)
+        # Never use a predictable PID-only temporary name here. Angerona may be
+        # elevated while its data directory is writable by the desktop user; an
+        # attacker must not be able to pre-place a link and redirect a secret
+        # store write into an arbitrary file.
+        for _ in range(16):
+            candidate = path.with_name(
+                f".{path.name}.{secrets.token_hex(12)}.tmp"
+            )
+            try:
+                descriptor = os.open(
+                    candidate,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                    | getattr(os, "O_BINARY", 0),
+                    0o600,
+                )
+                tmp = candidate
+                break
+            except FileExistsError:
+                continue
+        if descriptor is None or tmp is None:
+            raise RuntimeError("could not allocate a private credential temp file")
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = None
+            stream.write(blob)
+            stream.flush()
+            os.fsync(stream.fileno())
         _private_acl(tmp)
         os.replace(tmp, path)
         _private_acl(path)
     finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
         try:
-            tmp.unlink(missing_ok=True)
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
         except OSError:
             pass
     for key, value in values.items():

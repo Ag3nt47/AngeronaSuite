@@ -15,7 +15,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -139,6 +141,10 @@ class ManifestDecision:
     trust: str
     reason: str
     manifest: CapabilityManifest | None = None
+    # The exact bytes whose digest was checked. ModuleManager executes this
+    # snapshot instead of reopening the path after verification, closing the
+    # verify-then-swap window for elevated external-module imports.
+    source_bytes: bytes | None = None
 
 
 def manifest_path_for(module_path: Path) -> Path:
@@ -194,21 +200,60 @@ def _read_json(path: Path) -> dict[str, Any]:
     return loaded
 
 
-def sha256_file(path: Path) -> str:
-    """Hash one bounded regular file without loading it into memory."""
+def read_module_source(path: Path) -> tuple[bytes, str]:
+    """Read one bounded module once and return its exact bytes plus SHA-256.
+
+    The caller must execute these returned bytes, not reopen ``path``. A path can
+    be replaced after this function returns, but that replacement will not
+    affect the already-verified code snapshot.
+    """
     path = Path(path)
     if path.is_symlink() or not path.is_file():
         raise ManifestError("external module must be a regular non-symlink file")
-    size = path.stat().st_size
-    if size <= 0 or size > MAX_MODULE_BYTES:
-        raise ManifestError(
-            f"external module size must be between 1 and {MAX_MODULE_BYTES} bytes"
+    descriptor: int | None = None
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(
+            os, "O_NOFOLLOW", 0
         )
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(128 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise ManifestError("external module must open as a regular file")
+        if opened.st_size <= 0 or opened.st_size > MAX_MODULE_BYTES:
+            raise ManifestError(
+                f"external module size must be between 1 and {MAX_MODULE_BYTES} bytes"
+            )
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(128 * 1024, MAX_MODULE_BYTES + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > MAX_MODULE_BYTES:
+                raise ManifestError(
+                    f"external module exceeds {MAX_MODULE_BYTES} bytes"
+                )
+        if total <= 0:
+            raise ManifestError("external module is empty")
+        source = b"".join(chunks)
+        return source, hashlib.sha256(source).hexdigest()
+    except ManifestError:
+        raise
+    except OSError as exc:
+        raise ManifestError(f"cannot read external module: {exc}") from exc
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def sha256_file(path: Path) -> str:
+    """Hash one bounded regular module file."""
+    return read_module_source(path)[1]
 
 
 def parse_manifest(data: Mapping[str, Any], module_path: Path) -> CapabilityManifest:
@@ -417,14 +462,20 @@ def verify_external_module(
     try:
         raw = _read_json(manifest_path_for(module_path))
         manifest = parse_manifest(raw, module_path)
-        actual = sha256_file(module_path)
+        source_bytes, actual = read_module_source(module_path)
         if actual != manifest.sha256:
             raise ManifestError(
                 "source digest does not match the manifest (module was changed)"
             )
         if manifest.signature:
             verify_signature(manifest, load_trusted_publishers(trust_store_path))
-            return ManifestDecision(True, "signed", "trusted Ed25519 publisher", manifest)
+            return ManifestDecision(
+                True,
+                "signed",
+                "trusted Ed25519 publisher",
+                manifest,
+                source_bytes,
+            )
         if not allow_unsigned:
             raise ManifestError(
                 "manifest is unsigned; use the explicit development override only "
@@ -435,6 +486,7 @@ def verify_external_module(
             "hash-pinned-dev",
             "unsigned development override; source digest verified",
             manifest,
+            source_bytes,
         )
     except ManifestError as exc:
         return ManifestDecision(False, "rejected", str(exc), None)

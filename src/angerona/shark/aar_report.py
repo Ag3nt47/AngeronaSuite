@@ -26,6 +26,10 @@ from typing import List, Optional
 from angerona.core.config import Config
 from angerona.core.eventbus import Event
 from angerona.core.storage import FlightRecorder
+from angerona.shark.run_manifest import (
+    DrillHistoryIntegrityError,
+    load_verified_history,
+)
 
 WIDTH = 84
 
@@ -94,7 +98,7 @@ class StepVerdict:
 
 
 def _load_history(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return load_verified_history(path)
 
 
 def _canonical_path(value: object) -> str:
@@ -452,7 +456,13 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
     history_path = data_dir / history_name
     if not history_path.exists():
         return f"No {history_name} found — run a drill first."
-    history = _load_history(history_path)
+    try:
+        history = _load_history(history_path)
+    except DrillHistoryIntegrityError as exc:
+        return (
+            "Drill history integrity check failed — "
+            f"{exc}. AAR not generated."
+        )
     if not history.get("steps"):
         return "Last run recorded zero steps — nothing to report."
 

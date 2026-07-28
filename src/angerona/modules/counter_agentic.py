@@ -48,6 +48,7 @@ except Exception:  # pragma: no cover
     psutil = None
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.telemetry.sensors import list_connections
 
 # The inference-pause window that characterizes an agentic thinking loop.
 _MIN_PAUSE, _MAX_PAUSE = 1.5, 4.0
@@ -174,31 +175,37 @@ class CounterAgenticModule(BaseModule):
         if psutil is None:
             return
         try:
-            conns = psutil.net_connections(kind="inet")
+            # Share the bounded telemetry snapshot with the other network
+            # modules instead of enumerating the kernel connection table every
+            # 2.5 seconds independently.
+            conns = list_connections()
         except Exception:
             return
         for c in conns:
-            laddr = getattr(c, "laddr", None)
-            raddr = getattr(c, "raddr", None)
-            port_hit = ((laddr and getattr(laddr, "port", None) == _OLLAMA_PORT) or
-                        (raddr and getattr(raddr, "port", None) == _OLLAMA_PORT))
-            if not port_hit or not c.pid:
+            laddr = c.get("laddr") or ""
+            raddr = c.get("raddr") or ""
+            port_hit = (
+                (laddr and laddr.rsplit(":", 1)[-1] == str(_OLLAMA_PORT))
+                or (raddr and raddr.rsplit(":", 1)[-1] == str(_OLLAMA_PORT))
+            )
+            pid = c.get("pid")
+            if not port_hit or not pid:
                 continue
             try:
-                pname = psutil.Process(c.pid).name().lower()
+                pname = psutil.Process(pid).name().lower()
             except Exception:
                 continue
             if pname not in _OLLAMA_ALLOW:
-                key = c.pid
+                key = pid
                 now = time.time()
                 if now - self._alerted.get(-key, 0.0) < _STALE_AFTER:
                     continue
                 self._alerted[-key] = now
                 self.emit(
-                    f"Unexpected process '{pname}' (PID {c.pid}) connected to the local "
+                    f"Unexpected process '{pname}' (PID {pid}) connected to the local "
                     f"inference port {_OLLAMA_PORT}. Possible attempt to hijack/abuse the "
                     f"local LLM. Review (detection only).",
-                    Severity.HIGH, pid=c.pid, process=pname, port=_OLLAMA_PORT,
+                    Severity.HIGH, pid=pid, process=pname, port=_OLLAMA_PORT,
                     mitre="T1071 (Application Layer Protocol) / T1059")
 
     # ── housekeeping ─────────────────────────────────────────────────────────

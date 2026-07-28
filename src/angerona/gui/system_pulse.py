@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -91,10 +92,12 @@ class SystemPulseCard(QFrame):
     """Live CPU/RAM/Wi-Fi/network card with sampling off the Qt thread."""
 
     sample_ready = Signal(object)
+    details_requested = Signal()
 
     def __init__(self, parent=None, interval_ms: int = 2000) -> None:
         super().__init__(parent)
         self.setObjectName("Card")
+        self.setCursor(Qt.PointingHandCursor)
         self.setMinimumWidth(205)
         self.setMaximumWidth(340)
         self.setToolTip(
@@ -113,6 +116,9 @@ class SystemPulseCard(QFrame):
         title_row.addWidget(title)
         title_row.addStretch()
         title_row.addWidget(self._state)
+        details = QLabel("›")
+        details.setStyleSheet("color:#38bdf8; font-size:16px; font-weight:800;")
+        title_row.addWidget(details)
         root.addLayout(title_row)
 
         grid = QGridLayout()
@@ -143,6 +149,8 @@ class SystemPulseCard(QFrame):
         self._last_net_at = 0.0
         self._wifi_cache: int | None = None
         self._sample_index = 0
+        self._latest: dict[str, object] = {}
+        self._history: deque[dict[str, object]] = deque(maxlen=90)
         self.sample_ready.connect(self._apply_sample)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.request_sample)
@@ -193,6 +201,19 @@ class SystemPulseCard(QFrame):
             self._busy.clear()
         self.sample_ready.emit(data)
 
+    def snapshot(self) -> dict[str, object]:
+        """Return a bounded GUI-owned snapshot for the expanded detail view."""
+        return {
+            "latest": dict(self._latest),
+            "history": [dict(sample) for sample in self._history],
+            "busy": self._busy.is_set(),
+        }
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        if event.button() == Qt.LeftButton:
+            self.details_requested.emit()
+        super().mousePressEvent(event)
+
     def _apply_sample(self, data: dict) -> None:
         if data.get("error"):
             self._state.setText("● WAIT")
@@ -200,6 +221,10 @@ class SystemPulseCard(QFrame):
             return
         self._state.setText("● LIVE")
         self._state.setStyleSheet("color:#2fe38a; font-size:10px; font-weight:800;")
+        sample = dict(data)
+        sample["ts"] = time.time()
+        self._latest = sample
+        self._history.append(sample)
         cpu = float(data.get("cpu", 0.0))
         ram = float(data.get("ram", 0.0))
         wifi = data.get("wifi")
@@ -211,4 +236,3 @@ class SystemPulseCard(QFrame):
             f"↓ {_rate(float(data.get('down', 0.0)))}   "
             f"↑ {_rate(float(data.get('up', 0.0)))}"
         )
-

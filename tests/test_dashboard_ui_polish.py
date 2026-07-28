@@ -4,8 +4,21 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QDialog, QWidget
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QPlainTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
+from angerona.gui.dashboard_details import (
+    ConsoleDetailDialog,
+    FuturisticDetailDialog,
+    SystemPulseDetailDialog,
+)
 from angerona.gui.header_controls import (
     HeaderActionButton,
     PanelRevealOverlay,
@@ -13,6 +26,8 @@ from angerona.gui.header_controls import (
     navigation_icon,
 )
 from angerona.gui.system_pulse import SystemPulseCard, _memory, _rate
+from angerona.gui.pages import _ClickableSection, _show_nonmodal_from
+from angerona.gui.red_team_console import RedTeamConsole
 
 
 def _app() -> QApplication:
@@ -103,3 +118,118 @@ def test_system_pulse_card_and_human_readable_units() -> None:
     assert _memory(3 * 1024 ** 3) == "3.0 GB"
     assert _rate(1024) == "1.0 KB/s"
     card.close()
+
+
+def test_system_pulse_click_and_history_power_expanded_detail() -> None:
+    app = _app()
+    card = SystemPulseCard(interval_ms=60_000)
+    card._timer.stop()
+    requested: list[bool] = []
+    card.details_requested.connect(lambda: requested.append(True))
+    for index in range(110):
+        card._apply_sample(
+            {
+                "cpu": float(index % 100),
+                "ram": 50.0,
+                "available": 4 * 1024 ** 3,
+                "wifi": 80,
+                "down": 2048.0,
+                "up": 1024.0,
+            }
+        )
+    QTest.mouseClick(card, Qt.LeftButton)
+    app.processEvents()
+    assert requested == [True]
+    snapshot = card.snapshot()
+    assert len(snapshot["history"]) == 90
+    assert snapshot["latest"]["cpu"] == 9.0
+
+    detail = SystemPulseDetailDialog(card)
+    detail.show()
+    app.processEvents()
+    assert detail.cpu.value.text() == "9%"
+    assert detail.available.value.text() == "4.0 GB"
+    assert detail.graph._samples
+    detail.close()
+    card.close()
+
+
+def test_clickable_section_routes_real_dialog_through_owner_reveal() -> None:
+    app = _app()
+
+    class Owner(QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = []
+
+        def _reveal_window_from(self, source, factory, color):
+            self.calls.append((source, color))
+            return factory()
+
+    owner = Owner()
+    layout = QVBoxLayout(owner)
+    section = _ClickableSection(
+        "Live Alerts", "Open the expanded signed event timeline."
+    )
+    layout.addWidget(section)
+    owner.show()
+    QTest.mouseClick(section, Qt.LeftButton)
+    app.processEvents()
+    assert section.toolTip()
+
+    detail = _show_nonmodal_from(
+        section,
+        lambda: FuturisticDetailDialog("Test", "Bounded detail", parent=owner),
+        "#22c55e",
+    )
+    app.processEvents()
+    assert owner.calls[-1] == (section, "#22c55e")
+    assert detail.isVisible()
+    assert detail.header._timer.isActive()
+    detail.close()
+    owner.close()
+
+
+def test_expanded_console_reuses_guarded_dashboard_command_path() -> None:
+    app = _app()
+
+    class FakeConsole:
+        def __init__(self) -> None:
+            self.out = QPlainTextEdit()
+            self.out.setPlainText("ready\n")
+            self._busy = 0
+            self.commands = []
+
+        def run_command(self, text: str) -> None:
+            self.commands.append(text)
+            self.out.appendPlainText(f"> {text}")
+
+    console = FakeConsole()
+    detail = ConsoleDetailDialog(console)
+    detail.command.setText("resources")
+    detail._run()
+    detail._refresh()
+    app.processEvents()
+    assert console.commands == ["resources"]
+    assert "resources" in detail.transcript.toPlainText()
+    assert int(detail.lines.value.text()) >= 2
+    detail.close()
+
+
+def test_red_team_run_footer_stays_reachable_at_minimum_window_size(tmp_path) -> None:
+    app = _app()
+    dialog = RedTeamConsole(None, default_target=str(tmp_path))
+    dialog.resize(700, 520)
+    dialog.show()
+    app.processEvents()
+
+    launch_origin = dialog.launch_btn.mapTo(dialog, QPoint(0, 0))
+    launch_bottom = launch_origin.y() + dialog.launch_btn.height()
+    assert dialog.minimumWidth() <= 700
+    assert dialog.minimumHeight() <= 520
+    assert dialog.isSizeGripEnabled()
+    assert dialog.launch_btn.isVisible()
+    assert launch_bottom <= dialog.contentsRect().bottom()
+    assert dialog.launch_btn.parentWidget() is not dialog._run_scroll.widget()
+    assert dialog._run_scroll.verticalScrollBar().maximum() > 0
+    dialog.close()

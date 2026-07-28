@@ -27,9 +27,10 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
-    QPushButton, QSlider, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
+    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSlider,
+    QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from angerona.core.data_paths import data_dir
@@ -64,8 +65,20 @@ class RedTeamConsole(QDialog):
         super().__init__(parent)
         self._parent = parent
         self.setWindowTitle("🗡️  Red Team Simulation — Console")
-        self.setMinimumSize(940, 720)
-        self.resize(1040, 800)
+        # Keep Launch reachable on scaled/small desktops. The Run tab scrolls
+        # independently while its action footer stays fixed at the bottom.
+        self.setMinimumSize(700, 520)
+        self.setSizeGripEnabled(True)
+        self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            self.resize(
+                max(700, min(1040, int(available.width() * 0.86))),
+                max(520, min(800, int(available.height() * 0.86))),
+            )
+        else:
+            self.resize(960, 720)
         try:
             if parent is not None:
                 self.setStyleSheet(parent._qss())
@@ -103,7 +116,20 @@ class RedTeamConsole(QDialog):
 
     # ── Run tab ──────────────────────────────────────────────────────────────
     def _build_run_tab(self, default_target: str | None) -> QWidget:
-        w = QWidget(); lay = QVBoxLayout(w); lay.setSpacing(10)
+        w = QWidget()
+        outer = QVBoxLayout(w)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
+        scroll = QScrollArea()
+        scroll.setObjectName("RedTeamRunScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        body = QWidget()
+        body.setMinimumWidth(650)
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(4, 4, 8, 4)
+        lay.setSpacing(10)
 
         # attack types
         types = QFrame(); types.setObjectName("Card")
@@ -182,11 +208,16 @@ class RedTeamConsole(QDialog):
         # live kill-chain strip
         lay.addWidget(self._h("Live kill-chain"))
         self._chip_wrap = QWidget(); self._chips: dict[str, QLabel] = {}
-        cl = QHBoxLayout(self._chip_wrap); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(4)
-        for key, label in _STAGES:
+        cl = QGridLayout(self._chip_wrap)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setHorizontalSpacing(4)
+        cl.setVerticalSpacing(4)
+        for index, (key, label) in enumerate(_STAGES):
             chip = QLabel(label); chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            chip.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             chip.setStyleSheet(self._chip_css(False))
-            self._chips[key] = chip; cl.addWidget(chip)
+            self._chips[key] = chip
+            cl.addWidget(chip, index // 7, index % 7)
         lay.addWidget(self._chip_wrap)
 
         # live log
@@ -196,7 +227,11 @@ class RedTeamConsole(QDialog):
         self.log.setMinimumHeight(150)
         lay.addWidget(self.log, 1)
 
-        # actions
+        scroll.setWidget(body)
+        outer.addWidget(scroll, 1)
+
+        # Sticky actions live outside the scrolling configuration body, keeping
+        # Launch and Stop & clean reachable at every supported window size.
         act = QHBoxLayout()
         # Live progress wheel — colours from red → amber → green as the drill runs.
         self.run_spinner = RunSpinner()
@@ -208,7 +243,8 @@ class RedTeamConsole(QDialog):
         self.stop_btn = QPushButton("■  Stop & clean")
         self.stop_btn.clicked.connect(self._stop)
         act.addStretch(); act.addWidget(self.stop_btn); act.addWidget(self.launch_btn)
-        lay.addLayout(act)
+        outer.addLayout(act)
+        self._run_scroll = scroll
         return w
 
     def finish_run(self) -> None:

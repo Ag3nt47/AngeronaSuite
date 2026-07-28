@@ -350,7 +350,32 @@ def _row_to_dict(r) -> dict:
         ts, trigger, mitre, action_key, action_title, outcome, verified,
         host_level, rj, receipt_json, receipt_hash,
     ) = r
-    receipt = json.loads(receipt_json) if receipt_json else None
+    record_valid = True
+    try:
+        record = json.loads(rj) if rj else None
+    except Exception:
+        record = None
+        record_valid = False
+    receipt_present = bool(receipt_json)
+    try:
+        receipt = json.loads(receipt_json) if receipt_json else None
+        if receipt is not None and not isinstance(receipt, dict):
+            receipt = None
+    except Exception:
+        receipt = None
+    authenticity = None
+    if receipt_present and (receipt is None or not record_valid):
+        authenticity = False
+    elif receipt is not None:
+        expected_previous = str(
+            receipt.get("previous_receipt_hash") or GENESIS_HASH
+        )
+        authenticity = verify_receipt(
+            receipt,
+            record=record,
+            expected_previous_hash=expected_previous,
+            stored_hash=str(receipt_hash or ""),
+        ).valid
     return {
         "ts": ts,
         "trigger": trigger,
@@ -360,10 +385,10 @@ def _row_to_dict(r) -> dict:
         "outcome": outcome,
         "verified": None if verified == -1 else bool(verified),
         "host_level": bool(host_level),
-        "record": json.loads(rj) if rj else None,
+        "record": record,
         "receipt_id": receipt.get("receipt_id") if receipt else None,
         "receipt_hash": receipt_hash or None,
-        "receipt_authenticity": (
-            receipt.get("_angerona_hmac") is not None if receipt else None
-        ),
+        # This is an actual signature/hash/record-binding verification, not
+        # merely the presence of a user-controlled signature field.
+        "receipt_authenticity": authenticity,
     }

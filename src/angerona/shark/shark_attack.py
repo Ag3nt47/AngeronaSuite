@@ -83,7 +83,6 @@ variants — only ``technique``/``description`` and the mechanics do.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import random
 import socket
@@ -91,9 +90,15 @@ import threading
 import time
 import uuid
 import zipfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional
+
+from angerona.shark.run_manifest import (
+    build_run_history,
+    preflight_run,
+    write_run_history,
+)
 
 try:
     import psutil
@@ -233,13 +238,33 @@ class SharkAttackEngine:
         if self.is_running or (self._thread is not None and self._thread.is_alive()):
             return False
         self._cancel.clear()
-        if target_dir:
-            try:
-                self.documents_dir = Path(target_dir)
-            except Exception:
-                pass
-        self._complexity = max(1, int(complexity))
-        self._custom = custom if (custom and custom.get("name") and custom.get("payload")) else None
+        candidate_target = target_dir if target_dir is not None else self.documents_dir
+        preflight = preflight_run(
+            kind="shark",
+            cycles=complexity,
+            jitter_range=jitter_range,
+            noise_chance=noise_chance,
+            target_dir=candidate_target,
+            custom=custom,
+        )
+        if not preflight.accepted:
+            self._narrate(
+                "Shark drill refused by the safety contract: "
+                + "; ".join(preflight.violations)
+            )
+            return False
+        self.documents_dir = Path(candidate_target)
+        self._run_contract = preflight
+        self._complexity = preflight.cycles
+        jitter_range = preflight.jitter
+        noise_chance = preflight.noise_chance
+        self._custom = (
+            {
+                "name": str(custom["name"]).strip(),
+                "payload": str(custom["payload"]),
+            }
+            if preflight.custom is not None else None
+        )
         self.run_id = f"shark-{int(time.time())}-{uuid.uuid4().hex[:6]}"
         self.steps = []
         self._running.set()
@@ -407,9 +432,12 @@ class SharkAttackEngine:
         except _DrillCancelled:
             cancelled = True
         finally:
-            self._write_history()
+            run_cancelled = cancelled or self._cancel.is_set()
+            self._write_history(
+                status="cancelled" if run_cancelled else "completed"
+            )
             n, ok = len(self.steps), sum(1 for s in self.steps if s.ok)
-            if cancelled or self._cancel.is_set():
+            if run_cancelled:
                 self._running.clear()
                 self._narrate(f"Shark Attack cancelled - {ok}/{n} steps executed; cleaning markers.")
                 self.stop_and_clean()
@@ -781,14 +809,24 @@ class SharkAttackEngine:
             self._record("Exfiltration", "T1041-style outbound test", f"failed: {exc}", ts, ok=False)
 
     # ── Logging ──────────────────────────────────────────────────────────
-    def _write_history(self) -> None:
+    def _write_history(self, status: str = "completed") -> None:
         try:
-            self.data_dir.mkdir(parents=True, exist_ok=True)
-            payload = {
-                "run_id": self.run_id,
-                "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "steps": [asdict(s) for s in self.steps],
-            }
-            self.history_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+            payload = build_run_history(
+                kind="shark",
+                run_id=self.run_id,
+                generated=time.strftime("%Y-%m-%d %H:%M:%S"),
+                steps=self.steps,
+                preflight=self._run_contract,
+                status=status,
+            )
+            signed = write_run_history(self.history_path, payload)
+            if not signed:
+                self._narrate(
+                    "⚠ Shark ground-truth history was written without an "
+                    "install-key HMAC; strict AAR generation will refuse it."
+                )
+        except Exception as exc:
+            self._narrate(
+                f"⚠ Shark ground-truth history could not be secured: "
+                f"{type(exc).__name__}"
+            )

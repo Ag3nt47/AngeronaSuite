@@ -26,6 +26,7 @@ except Exception:  # pragma: no cover
     psutil = None
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.telemetry.sensors import list_connections
 
 # Beacon band + regularity thresholds.
 _MIN_CALLBACKS   = 4       # need at least this many callbacks to judge
@@ -113,21 +114,26 @@ class BeaconDetectorModule(BaseModule):
         current: set[tuple] = set()
         names: dict[int, str] = {}
         try:
-            conns = psutil.net_connections(kind="inet")
+            # Reuse the suite's short-lived connection snapshot. Network
+            # Monitor and Counter-Agentic inspect the same OS table on nearby
+            # cadences; independently enumerating it is expensive on Windows.
+            conns = list_connections()
         except Exception:
             return
         for c in conns:
-            if not c.raddr or c.status not in ("ESTABLISHED", "SYN_SENT"):
+            raddr = c.get("raddr") or ""
+            if not raddr or c.get("status") not in ("ESTABLISHED", "SYN_SENT"):
                 continue
-            ip = getattr(c.raddr, "ip", "")
-            if not _is_external(ip) or not c.pid:
+            ip = raddr.rsplit(":", 1)[0]
+            pid = c.get("pid")
+            if not _is_external(ip) or not pid:
                 continue
-            current.add((c.pid, ip))
-            if c.pid not in names:
+            current.add((pid, ip))
+            if pid not in names:
                 try:
-                    names[c.pid] = psutil.Process(c.pid).name()
+                    names[pid] = psutil.Process(pid).name()
                 except Exception:
-                    names[c.pid] = "?"
+                    names[pid] = "?"
         # A NEW connection = present now but not on the previous poll.
         for (pid, ip) in current - self._seen_last:
             key = (names.get(pid, "?"), ip)
