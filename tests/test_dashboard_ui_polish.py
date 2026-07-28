@@ -4,7 +4,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QWidget
 
 from angerona.gui.header_controls import (
     HeaderActionButton,
@@ -36,22 +36,44 @@ def test_header_actions_have_distinct_vector_icons_and_definitions() -> None:
     assert button.accessibleDescription() == "Shows the live system flow."
     assert "<b" in button.toolTip()
     assert "Shows the live system flow." in button.toolTip()
+    button.set_compact(True, 38)
+    assert button.text() == ""
+    assert button.minimumWidth() == 38
+    assert button.maximumWidth() == 38
+    assert button.toolTip()
+    button.set_full_label("LIVE WORLD VIEW")
+    assert button.text() == ""
+    button.set_compact(False)
+    assert button.text() == "LIVE WORLD VIEW"
 
 
-def test_panel_reveal_starts_as_a_nonblocking_overlay() -> None:
-    _app()
+def test_panel_reveal_animates_the_real_destination_window() -> None:
+    app = _app()
     parent = QWidget()
     parent.resize(800, 500)
+    parent.show()
     source = HeaderActionButton("HELP", "help", "Help", "Explains the suite.", parent)
     source.resize(100, 30)
     overlay = PanelRevealOverlay(parent)
+    target = QDialog(parent)
+    target.resize(420, 260)
     called = []
-    assert overlay.reveal(source, lambda: called.append(True), "#38bdf8")
-    assert not overlay.isHidden()
+    assert overlay.reveal(
+        source,
+        lambda: (called.append(True), target.show()),
+        "#38bdf8",
+    )
+    app.processEvents()
+    assert called == [True]
+    assert target.isVisible()
+    assert overlay._target is target
+    assert not target.mask().isEmpty()
     assert not overlay.reveal(source, lambda: None)
-    overlay._animation.stop()
-    overlay.hide()
-    assert called == []
+    overlay._animation.setCurrentTime(overlay._animation.duration())
+    app.processEvents()
+    assert target.mask().isEmpty()
+    target.close()
+    parent.close()
 
 
 def test_reduced_motion_environment_is_a_hard_override(monkeypatch) -> None:

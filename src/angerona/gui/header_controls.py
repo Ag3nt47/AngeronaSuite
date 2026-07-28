@@ -14,17 +14,37 @@ from html import escape
 from typing import Callable
 
 from PySide6.QtCore import (
+    QEvent,
     Property,
     QEasingCurve,
     QPoint,
     QPointF,
     QPropertyAnimation,
+    QRect,
     QRectF,
     QSize,
+    QTimer,
     Qt,
 )
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import QPushButton, QToolTip, QWidget
+from PySide6.QtGui import (
+    QColor,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QRegion,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QPushButton,
+    QSizePolicy,
+    QStyle,
+    QStyleOptionButton,
+    QStylePainter,
+    QToolTip,
+    QWidget,
+)
 
 
 _ICON_COLORS = {
@@ -167,10 +187,14 @@ class HeaderActionButton(QPushButton):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(label, parent)
+        self._full_label = str(label)
+        self._compact = False
+        self._compact_extent = 42
         self._hover_title = str(title)
         self._hover_definition = str(definition)
         self.setIcon(navigation_icon(icon_kind))
         self.setIconSize(QSize(20, 20))
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.setCursor(Qt.PointingHandCursor)
         self.setAccessibleName(self._hover_title)
         self.setAccessibleDescription(self._hover_definition)
@@ -180,6 +204,95 @@ class HeaderActionButton(QPushButton):
             f"<span>{escape(self._hover_definition)}</span>"
             "</div>"
         )
+
+    def set_compact(self, compact: bool, extent: int = 42) -> None:
+        """Switch between a full label and a square, icon-only control."""
+        requested = bool(compact)
+        requested_extent = max(32, int(extent))
+        if requested == self._compact and (
+            not requested or requested_extent == self._compact_extent
+        ):
+            if not requested:
+                self._fit_label()
+            return
+        self._compact = requested
+        self._compact_extent = requested_extent
+        if self._compact:
+            self.setText("")
+            self.setMinimumWidth(self._compact_extent)
+            self.setMaximumWidth(self._compact_extent)
+            self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        else:
+            self.setMinimumWidth(0)
+            self.setMaximumWidth(16_777_215)
+            self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            # Restore the complete label before asking the layout for space.
+            # Eliding here would make sizeHint() request only the already-short
+            # string and could trap a button at its former compact width.
+            self.setText(self._full_label)
+        self.updateGeometry()
+
+    def is_compact(self) -> bool:
+        return self._compact
+
+    def set_full_label(self, label: str) -> None:
+        """Change the semantic label while preserving the responsive mode."""
+        self._full_label = str(label)
+        self.setText("" if self._compact else self._full_label)
+        self.updateGeometry()
+        if not self._compact:
+            QTimer.singleShot(0, self._fit_label)
+
+    def _fit_label(self) -> None:
+        """Elide a full-mode label instead of allowing hard visual clipping."""
+        if self._compact:
+            if self.text():
+                self.setText("")
+            return
+        # During construction Qt has not assigned a useful width yet. Keep the
+        # complete label so sizeHint() can request the correct natural width.
+        if self.width() < 40:
+            fitted = self._full_label
+        else:
+            icon_space = self.iconSize().width() + 30
+            available = max(12, self.width() - icon_space)
+            fitted = self.fontMetrics().elidedText(
+                self._full_label, Qt.ElideRight, available
+            )
+        if fitted != self.text():
+            self.setText(fitted)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        super().resizeEvent(event)
+        self._fit_label()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        if not self._compact:
+            super().paintEvent(event)
+            return
+        # Paint the normal themed button frame, then center the icon ourselves.
+        # This deliberately ignores text-button horizontal padding, which would
+        # otherwise squeeze a compact icon at smaller UI scales.
+        painter = QStylePainter(self)
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        option.text = ""
+        option.icon = QIcon()
+        painter.drawControl(QStyle.CE_PushButton, option)
+        icon_size = min(
+            self.iconSize().width(),
+            max(1, self.width() - 8),
+            max(1, self.height() - 8),
+        )
+        icon_rect = QRect(
+            (self.width() - icon_size) // 2,
+            (self.height() - icon_size) // 2,
+            icon_size,
+            icon_size,
+        )
+        mode = QIcon.Normal if self.isEnabled() else QIcon.Disabled
+        state = QIcon.On if self.isChecked() else QIcon.Off
+        self.icon().paint(painter, icon_rect, Qt.AlignCenter, mode, state)
 
     def enterEvent(self, event) -> None:  # noqa: N802 - Qt signature
         QToolTip.showText(
@@ -231,19 +344,71 @@ def motion_allowed(config=None) -> bool:
     return _windows_client_animations_enabled()
 
 
+class _RevealFrame(QWidget):
+    """Accent edge painted inside the window being revealed."""
+
+    def __init__(self, parent: QWidget, color: QColor) -> None:
+        super().__init__(parent)
+        self._color = QColor(color)
+        self._rect = QRect()
+        self._progress = 0.0
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.hide()
+
+    def set_reveal(self, rect: QRect, progress: float) -> None:
+        self._rect = QRect(rect)
+        self._progress = float(progress)
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802 - Qt signature
+        if self._rect.isEmpty():
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        edge = QColor(self._color)
+        edge.setAlpha(
+            max(0, int(235 * (1.0 - max(0.0, self._progress - 0.84) / 0.16)))
+        )
+        fill = QColor(self._color)
+        fill.setAlpha(max(0, int(24 * (1.0 - self._progress))))
+        painter.setPen(QPen(edge, 2.2))
+        painter.setBrush(fill)
+        outline = QRectF(self._rect).adjusted(1.2, 1.2, -1.2, -1.2)
+        painter.drawRoundedRect(outline, 9.0, 9.0)
+        if self._rect.width() <= 8:
+            glow = QColor(self._color)
+            glow.setAlpha(90)
+            painter.setPen(QPen(glow, 7.0))
+            painter.drawLine(
+                QPointF(outline.center().x(), outline.top()),
+                QPointF(outline.center().x(), outline.bottom()),
+            )
+        painter.end()
+
+
 class PanelRevealOverlay(QWidget):
-    """A vertical accent line that grows into a translucent panel outline."""
+    """Reveal the real destination window from a vertical accent line.
+
+    The previous implementation animated a dashboard overlay, removed it, and
+    only then opened an unrelated dialog. This coordinator watches for the
+    window produced by the action and applies the widening mask to that window
+    itself, so its live contents are visibly generated inside the expanding box.
+    """
 
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WA_TranslucentBackground)
         self._progress = 0.0
-        self._origin = QPointF()
+        self._origin = QPoint()
+        self._source_global = QPoint()
         self._color = QColor("#38bdf8")
-        self._after: Callable[[], None] | None = None
+        self._armed = False
+        self._target: QWidget | None = None
+        self._frame: _RevealFrame | None = None
+        self._previous_mask = QRegion()
         self._animation = QPropertyAnimation(self, b"revealProgress", self)
-        self._animation.setDuration(280)
+        self._animation.setDuration(360)
         self._animation.setEasingCurve(QEasingCurve.OutCubic)
         self._animation.finished.connect(self._finish)
         self.hide()
@@ -251,32 +416,149 @@ class PanelRevealOverlay(QWidget):
     def reveal(
         self,
         source: QWidget,
-        after: Callable[[], None],
+        after: Callable[[], object],
         color: str | QColor | None = None,
     ) -> bool:
-        """Play one reveal. Returns False when an animation is already active."""
-        if self._animation.state() == QPropertyAnimation.Running:
+        """Run an action and reveal the top-level window it creates."""
+        if (
+            self._armed
+            or self._target is not None
+            or self._animation.state() == QPropertyAnimation.Running
+        ):
             return False
-        self.setGeometry(self.parentWidget().rect())
-        source_center = source.mapToGlobal(source.rect().center())
-        self._origin = QPointF(self.mapFromGlobal(source_center))
+        app = QApplication.instance()
+        if app is None:
+            after()
+            return True
+        self._source_global = source.mapToGlobal(source.rect().center())
         self._color = QColor(color or "#38bdf8")
-        self._after = after
+        self._armed = True
+        app.installEventFilter(self)
+        try:
+            result = after()
+            if self._armed and isinstance(result, QWidget):
+                if not result.isVisible():
+                    result.show()
+                self._capture(result)
+        except Exception:
+            self._cancel_capture()
+            raise
+        # Actions that did not create a window must not leave a global event
+        # filter armed to accidentally capture some later notification.
+        if self._armed:
+            self._cancel_capture()
+        return True
+
+    def eventFilter(self, watched, event):  # noqa: N802 - Qt signature
+        if (
+            self._armed
+            and event.type() == QEvent.Show
+            and isinstance(watched, QWidget)
+            and watched.isWindow()
+            and watched is not self.window()
+            and watched.windowType() not in (Qt.ToolTip, Qt.Popup)
+        ):
+            self._capture(watched)
+        return super().eventFilter(watched, event)
+
+    def _capture(self, target: QWidget) -> None:
+        if not self._armed:
+            return
+        self._armed = False
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        self._target = target
+        self._previous_mask = QRegion(target.mask())
+        # Apply the first narrow slice during QEvent.Show itself. Waiting for
+        # the next event-loop turn would allow one fully painted dialog frame
+        # to flash before the reveal begins.
+        bounds = target.rect()
+        local = target.mapFromGlobal(self._source_global)
+        self._origin = QPoint(
+            max(0, min(bounds.width(), local.x())),
+            max(0, min(bounds.height(), local.y())),
+        )
+        initial = QRect(
+            self._origin.x() - 2,
+            self._origin.y() - 14,
+            4,
+            28,
+        ).intersected(bounds)
+        if not initial.isEmpty():
+            target.setMask(QRegion(initial))
+        # Let layouts and the window manager settle before taking the final
+        # dimensions. Modal exec() enters a nested event loop, so this also works
+        # for existing blocking dialogs without rewriting every destination.
+        QTimer.singleShot(0, self._start_target_reveal)
+
+    def _cancel_capture(self) -> None:
+        self._armed = False
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+
+    def _start_target_reveal(self) -> None:
+        target = self._target
+        if target is None or not target.isVisible():
+            if target is not None:
+                if self._previous_mask.isEmpty():
+                    target.clearMask()
+                else:
+                    target.setMask(self._previous_mask)
+            self._target = None
+            self._previous_mask = QRegion()
+            return
+        bounds = target.rect()
+        local = target.mapFromGlobal(self._source_global)
+        self._origin = QPoint(
+            max(0, min(bounds.width(), local.x())),
+            max(0, min(bounds.height(), local.y())),
+        )
+        self._frame = _RevealFrame(target, self._color)
+        self._frame.setGeometry(bounds)
+        self._frame.show()
+        self._frame.raise_()
         self._progress = 0.0
-        self.show()
-        self.raise_()
         self._animation.stop()
         self._animation.setStartValue(0.0)
         self._animation.setEndValue(1.0)
         self._animation.start()
-        return True
 
     def get_reveal_progress(self) -> float:
         return self._progress
 
     def set_reveal_progress(self, value: float) -> None:
         self._progress = max(0.0, min(1.0, float(value)))
-        self.update()
+        target = self._target
+        if target is None:
+            return
+        try:
+            bounds = target.rect()
+            vertical = min(1.0, self._progress / 0.30)
+            horizontal = max(0.0, min(1.0, (self._progress - 0.10) / 0.90))
+            center_x = self._origin.x() + (
+                bounds.center().x() - self._origin.x()
+            ) * horizontal
+            center_y = self._origin.y() + (
+                bounds.center().y() - self._origin.y()
+            ) * vertical
+            width = max(4, round(bounds.width() * horizontal))
+            height = max(28, round(bounds.height() * vertical))
+            rect = QRect(
+                round(center_x - width / 2),
+                round(center_y - height / 2),
+                width,
+                height,
+            ).intersected(bounds)
+            target.setMask(QRegion(rect))
+            if self._frame is not None:
+                if self._frame.geometry() != bounds:
+                    self._frame.setGeometry(bounds)
+                self._frame.set_reveal(rect, self._progress)
+        except RuntimeError:
+            self._animation.stop()
+            self._target = None
 
     revealProgress = Property(
         float,
@@ -284,52 +566,21 @@ class PanelRevealOverlay(QWidget):
         set_reveal_progress,
     )
 
-    def paintEvent(self, _event) -> None:  # noqa: N802 - Qt signature
-        if self._progress <= 0.0:
-            return
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-
-        margin_x = max(28.0, self.width() * 0.08)
-        margin_y = max(24.0, self.height() * 0.08)
-        target = QRectF(
-            margin_x,
-            margin_y,
-            max(10.0, self.width() - margin_x * 2.0),
-            max(10.0, self.height() - margin_y * 2.0),
-        )
-
-        # First grow a clean vertical line, then widen it into the panel.
-        vertical = min(1.0, self._progress / 0.34)
-        horizontal = max(0.0, min(1.0, (self._progress - 0.16) / 0.84))
-        center_x = self._origin.x() + (target.center().x() - self._origin.x()) * horizontal
-        center_y = self._origin.y() + (target.center().y() - self._origin.y()) * vertical
-        width = 3.0 + (target.width() - 3.0) * horizontal
-        height = 28.0 + (target.height() - 28.0) * vertical
-        rect = QRectF(center_x - width / 2.0, center_y - height / 2.0, width, height)
-
-        edge = QColor(self._color)
-        edge.setAlpha(int(235 * (1.0 - max(0.0, self._progress - 0.82) / 0.18)))
-        fill = QColor(self._color)
-        fill.setAlpha(int(34 * horizontal))
-        p.setBrush(fill)
-        p.setPen(QPen(edge, 2.2))
-        p.drawRoundedRect(rect, 10.0 * horizontal, 10.0 * horizontal)
-
-        if horizontal < 0.12:
-            glow = QColor(self._color)
-            glow.setAlpha(70)
-            p.setPen(QPen(glow, 7.0))
-            p.drawLine(
-                QPointF(center_x, rect.top()),
-                QPointF(center_x, rect.bottom()),
-            )
-        p.end()
-
     def _finish(self) -> None:
-        callback, self._after = self._after, None
-        self.hide()
+        target = self._target
+        try:
+            if target is not None:
+                if self._previous_mask.isEmpty():
+                    target.clearMask()
+                else:
+                    target.setMask(self._previous_mask)
+                target.raise_()
+                target.activateWindow()
+        except RuntimeError:
+            pass
+        if self._frame is not None:
+            self._frame.deleteLater()
+        self._frame = None
+        self._target = None
+        self._previous_mask = QRegion()
         self._progress = 0.0
-        if callback is not None:
-            callback()
-

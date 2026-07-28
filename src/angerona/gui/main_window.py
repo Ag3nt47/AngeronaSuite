@@ -122,9 +122,10 @@ class MainWindow(QMainWindow):
             "Checks every enabled defensive module and reports what passed, "
             "what failed, and what the operator can do next.",
         )
+        # Self-test reports progress in the header and does not open a window,
+        # so it uses the normal tactile button press without the window reveal.
         test_btn.clicked.connect(
-            lambda _checked=False: self._run_header_action(
-                test_btn, self._run_self_test, "#5eead4"))
+            lambda _checked=False: self._run_self_test())
         # Unified Red Team Simulation — the Shark Attack and APT Red-Team drills
         # are now scenarios inside one configurable simulation (difficulty,
         # target, custom benign technique), launched from this single button.
@@ -155,9 +156,9 @@ class MainWindow(QMainWindow):
             "Pauses heavy background scanners while keeping the safety-critical "
             "response path live. Tap again to wake scanners one at a time.",
         )
+        # Eco is an immediate state toggle, not a destination window.
         self.eco_btn.clicked.connect(
-            lambda _checked=False: self._run_header_action(
-                self.eco_btn, self._toggle_eco_mode, "#4ade80"))
+            lambda _checked=False: self._toggle_eco_mode())
         # Shark/sword animations removed per user request. No-op stubs keep the
         # existing start()/stop()/set_active() call sites harmless.
         self.red_swords = _NoAnim()
@@ -301,11 +302,27 @@ class MainWindow(QMainWindow):
         self._setup_btn = setup_btn
         self._settings_btn = settings_btn
         self._stop_btn = stop_btn
+        self._header_primary_buttons = [test_btn, sim_btn, self.eco_btn]
+        self._header_nav_buttons = [
+            worldview_btn,
+            attack_heatmap_btn,
+            self.threat_intel_btn,
+            forensics_btn,
+            console_btn,
+            setup_btn,
+            self._help_btn,
+            settings_btn,
+        ]
+        # The destructive Stop action keeps its label whenever the available
+        # width permits; at very narrow widths it remains uniquely identifiable
+        # by its red square icon and definition tooltip.
+        self._header_stop_button = stop_btn
 
         header.addWidget(left, 1)
         header.addWidget(brand_box, 1)
         header.addWidget(right, 1)
         root.addLayout(header)
+        QTimer.singleShot(0, self._update_header_button_modes)
 
         # ── Stat cards ───────────────────────────────────────────────────────
         self.cards = DashboardCards(bus, storage, manager)
@@ -522,9 +539,34 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+    def _update_header_button_modes(self) -> None:
+        """Keep the top row readable at every practical window width.
+
+        Navigation destinations become icon-only before Qt has any reason to
+        crop their labels. Primary operational actions retain text on a normal
+        desktop width and collapse only on smaller windows.
+        """
+        width = max(1, self.width())
+        scale = max(0.75, min(1.35, getattr(self, "_ui_scale", 1.0)))
+        icon_extent = round((40 if width >= 1900 else 34) * scale)
+        # Eight destination buttons need roughly one third of a 4K surface
+        # before their complete labels are genuinely comfortable. Everywhere
+        # else the unique icon + definition tooltip is clearer than truncation.
+        nav_compact = width < 3000
+        primary_compact = width < 1900
+        stop_compact = width < 1900
+        for button in getattr(self, "_header_nav_buttons", ()):
+            button.set_compact(nav_compact, icon_extent)
+        for button in getattr(self, "_header_primary_buttons", ()):
+            button.set_compact(primary_compact, icon_extent)
+        stop = getattr(self, "_header_stop_button", None)
+        if stop is not None:
+            stop.set_compact(stop_compact, icon_extent)
+
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt signature)
         try:
             self._maybe_rescale_ui()
+            self._update_header_button_modes()
         except Exception:
             pass
         super().resizeEvent(event)
@@ -553,7 +595,7 @@ class MainWindow(QMainWindow):
         if overlay is None:
             callback()
             return
-        # A second click while the 280 ms reveal is active is deliberately
+        # A second click while the destination reveal is active is deliberately
         # ignored so it cannot open duplicate modal windows.
         overlay.reveal(source, callback, color)
 
@@ -789,7 +831,7 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
         self._eco_on = True
-        self.eco_btn.setText("ECO: ON")
+        self.eco_btn.set_full_label("ECO: ON")
         self.eco_btn.setStyleSheet(
             "background:#166534; color:#dcfce7; font-weight:800; border:none;"
             "border-radius:6px; padding:7px 16px;")
@@ -810,7 +852,7 @@ class MainWindow(QMainWindow):
             mods = [self.manager.modules[n] for n in self._eco_paused
                     if n in self.manager.modules]
             self._eco_on = False
-            self.eco_btn.setText("ECO MODE")
+            self.eco_btn.set_full_label("ECO MODE")
             self.eco_btn.setStyleSheet("")
             if not mods:
                 self._eco_paused = []
