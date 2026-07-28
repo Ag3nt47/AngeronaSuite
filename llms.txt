@@ -27,6 +27,14 @@ Subclass `core.module_base.BaseModule`; set `name/description/category/version/e
 
 ## NEW / RECENT FEATURES
 
+## LATEST (2026-07-27 — dashboard polish, live resource telemetry, and documentation consolidation)
+- **Header controls:** every top-row action now uses a distinct Qt-rendered vector icon and a shared `HeaderActionButton`. Hover or keyboard focus immediately shows the action name and a plain-language definition; accessible name/description metadata is present for assistive technology.
+- **Motion with an accessible fallback:** top-row actions use a 280 ms vertical-line-to-panel reveal, suppress duplicate clicks during the transition, and bypass animation when `ui_motion_enabled` is disabled, `ANGERONA_REDUCE_MOTION` is set, or Windows client-area animation is disabled.
+- **System Pulse:** the dashboard now shows live CPU utilization, RAM utilization, available memory, aggregate network receive/send throughput, and Windows Wi-Fi signal beside ARIA. Sampling runs off the Qt GUI thread, Wi-Fi probing is single-flight and rate-limited, and the card stops its worker cleanly with the window.
+- **Operator setting:** Settings > General exposes a direct “Animate top-row buttons” control. Settings search recognizes animation, motion, and appearance terms.
+- **Enterprise engineering backlog:** `ENTERPRISE_UPGRADE_TODO.txt` is the comprehensive staged backlog and release-gate reference. Completed dashboard work is marked DONE; fleet identity, policy, ingestion, search, hunts, cases, high availability, supply-chain trust, platform depth, and guarded research remain explicitly separated from shipped behavior.
+- **Canonical documentation model:** `C:\Users\Agent47\Desktop\Angerona Analysis\Angerona_Master_Manual.docx` consolidates all six versioned Analysis DOCX files, preserves unique source content and the system-flow diagram, removes exact duplicate prose/tables, adds the current dashboard and enterprise direction, and leaves the versioned source documents untouched. This `llms.txt` remains the dense machine/agent contract.
+
 ## LATEST (v1.9.4 — Cycle 4 security, proof, performance, and public-release pass)
 - **Three-loop result:** visionary research, adversarial review, blue/purple remediation, bug testing, performance profiling, privacy review, and independent final gates completed against the integrated tree.
 - **Enterprise extension trust:** `core/capability_manifest.py` validates a detached `<module>.angerona.json` before `exec_module`. The manifest binds the exact source SHA-256, API/entrypoint, permissions, telemetry/MITRE declarations, privacy/egress/retention, performance budgets, publisher, and Ed25519 signature. Trusted keys live in `<data_dir>/trust/module_publishers.json`; unsigned external modules are denied unless the operator explicitly enables hash-pinned development mode with `ANGERONA_ALLOW_UNSIGNED_EXTERNAL_MODULES=1`.

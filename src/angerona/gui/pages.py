@@ -3381,7 +3381,8 @@ class SettingsDialog(QDialog):
             (("enterprise", "readiness", "manifest", "signature", "receipt",
               "fleet", "rbac", "causal"), "Enterprise"),
             (("key", "api", "credential", "secret", "provider"), "API Keys"),
-            (("theme", "ollama", "model", "github", "update"), "General"),
+            (("theme", "ollama", "model", "github", "update", "animation",
+              "motion", "appearance"), "General"),
             (("mobile", "signal", "phone", "ntfy", "sms"), "Mobile Integration"),
         )
         for words, tab_name in routes:
@@ -3471,6 +3472,15 @@ class SettingsDialog(QDialog):
         scale_row.addWidget(self._ui_scale_combo)
         scale_row.addStretch()
         lay.addLayout(scale_row)
+        self._ui_motion_chk = QCheckBox(
+            "Animate top-row buttons into their destination windows")
+        self._ui_motion_chk.setToolTip(
+            "Plays a short vertical-line-to-panel reveal before a top-row window "
+            "opens. Angerona still honors Windows reduced-motion accessibility "
+            "settings, and ANGERONA_REDUCE_MOTION=1 always disables it.")
+        self._ui_motion_chk.setChecked(
+            bool(getattr(self._cfg, "ui_motion_enabled", True)))
+        lay.addWidget(self._ui_motion_chk)
 
         # ── Integrity / performance (advanced) ──────────────────────────────
         lay.addWidget(self._section("Integrity & Performance"))
@@ -4406,6 +4416,7 @@ class SettingsDialog(QDialog):
                 self._cfg.ui_scale_fixed = float(int(_sc)) / 100.0
             except (TypeError, ValueError):
                 pass
+        self._cfg.ui_motion_enabled = self._ui_motion_chk.isChecked()
         if callable(self._apply_theme):
             try: self._apply_theme(self._cfg.theme)
             except Exception: pass

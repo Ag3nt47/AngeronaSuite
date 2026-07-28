@@ -1,0 +1,2491 @@
+ANGERONA ENTERPRISE UPGRADE MASTER TODO
+=======================================
+
+Document status : Canonical future-work roadmap
+Prepared        : 2026-07-27
+Repository      : AngeronaSuite
+Primary target  : Windows defensive endpoint security, local-first by default
+Related backlog : UPGRADES_BACKLOG.md (historical detail; reconcile into this file)
+
+PURPOSE
+-------
+
+This file captures the broadest practical upgrade path from Angerona's current
+single-host security suite into a defensible enterprise platform. It includes
+product, architecture, security, privacy, fleet, reliability, deployment,
+operations, compliance, usability, documentation, and long-range research work.
+
+This is a TODO, not a claim that unfinished capabilities exist. A checkbox may
+only be marked complete when its acceptance evidence is stored in the repository
+or in a release evidence pack. Marketing language must never outrun proof.
+
+
+HOW TO USE THIS FILE
+--------------------
+
+Status:
+  [DONE]      Implemented and verified in the current repository.
+  [PARTIAL]   Useful foundation exists, but the listed acceptance gate is open.
+  [TODO]      Approved engineering work that has not been implemented.
+  [DESIGN]    Architecture/threat model must be approved before implementation.
+  [RESEARCH]  Experimental work; never imply production readiness.
+  [BLOCKED]   Depends on a named external decision, credential, signer, or lab.
+  [DECLINED]  Intentionally excluded for safety, privacy, or product integrity.
+
+Priority:
+  P0  Release blocker, trust boundary, data safety, or serious reliability risk.
+  P1  Required for a credible enterprise fleet preview.
+  P2  Required for enterprise beta/general availability.
+  P3  Differentiating capability after the foundation is stable.
+  P4  Visionary research with explicit isolation and exit criteria.
+
+Evidence expected:
+  CODE    Reviewed implementation with a clear owner.
+  TEST    Automated unit/integration/security/performance tests.
+  THREAT  Threat model or abuse-case review.
+  PERF    Repeatable benchmark or soak report.
+  OPS     Deployment, rollback, backup, and recovery runbook.
+  PRIV    Data inventory, minimization, retention, and egress review.
+  DOC     User/admin/API documentation.
+  REL     Signed release artifact, SBOM, provenance, and verification evidence.
+
+Task convention:
+  Each task has a stable ID. Issues and commits should include that ID.
+  Example: ENT-FLT-001, ENT-POL-003, ENT-AI-008.
+
+
+NON-NEGOTIABLE PRODUCT RULES
+----------------------------
+
+[DONE/P0] DEF-001  Keep Angerona defensive and non-destructive.
+  - Simulations use inert, reversible markers and short-lived tagged processes.
+  - Never ship real credential theft, exploitation, covert persistence, wipers,
+    ransomware, destructive payloads, or denial-of-service behavior.
+
+[DONE/P0] DEF-002  Keep local-first and offline-capable behavior as the default.
+  - Optional egress is off until an operator enables a named integration.
+  - Cloud use must show exactly what data leaves the host.
+
+[PARTIAL/P0] DEF-003  Fail closed at every privilege and trust boundary.
+  - Untrusted extension, policy, update, identity, or remediation proof -> deny.
+  - Sensor read failure -> visible "unknown/degraded", never a false "healthy".
+
+[TODO/P0] DEF-004  Require human approval for destructive or high-impact response.
+  - AI may explain and recommend.
+  - AI must not silently kill, isolate, delete, change firewall policy, alter
+    startup state, or modify enterprise configuration.
+  - Emergency pre-authorized playbooks require scope, expiry, rollback, and audit.
+
+[TODO/P0] DEF-005  Separate detection evidence from conclusions.
+  - Preserve raw observation, normalized event, analytic result, confidence,
+    policy decision, operator decision, response action, and verification receipt.
+
+[TODO/P0] DEF-006  Make privacy a product boundary, not a settings footnote.
+  - Minimize by default, redact before export, bound retention, support deletion,
+    and document every optional outbound path.
+
+[TODO/P0] DEF-007  Never claim "enterprise ready", "tamper proof", "zero trust",
+  "AI-secured", or compliance/certification without objective release evidence.
+
+[DECLINED/P0] DEF-008  Do not use stealth process names, process ghosting, covert
+  collectors, hidden persistence, deceptive installers, or anti-analysis tricks.
+
+[DECLINED/P0] DEF-009  Do not add a kernel driver for marketing value. A driver is
+  only justified by a measured user-mode visibility or enforcement gap that
+  cannot be safely solved with supported OS facilities.
+
+
+CURRENT FOUNDATION TO PRESERVE AND REVALIDATE
+---------------------------------------------
+
+[DONE] BASE-001  Modular local defensive suite with module lifecycle controls.
+[DONE] BASE-002  Local event bus, bounded recent-event views, and persistent data.
+[DONE] BASE-003  HMAC event integrity and signed/hash-chained remediation receipts.
+[DONE] BASE-004  Signed external capability manifest schema with declared
+                 permissions, privacy classes, egress, retention, performance
+                 budgets, publisher identity, and exact source digest.
+[DONE] BASE-005  Bounded causal incident graph and signed After-Action Reports.
+[DONE] BASE-006  Non-destructive Shark/APT red-team simulations.
+[DONE] BASE-007  OCSF export foundation and SIEM forwarding foundation.
+[DONE] BASE-008  Local-first ARIA assistant with separately gated cloud paths.
+[DONE] BASE-009  Eco Mode and sequential scanner wake-up foundation.
+[DONE] BASE-010  Watchdog/Black Box/shared-memory/heartbeat resilience foundation.
+[DONE] BASE-011  Trusted-process and false-positive management foundation.
+[DONE] BASE-012  Settings evidence view for honest enterprise-readiness gaps.
+[DONE] BASE-013  Unique vector icons for every top-row action.
+[DONE] BASE-014  Immediate hover cards with accessible names and definitions.
+[DONE] BASE-015  Reduced-motion-aware vertical-line panel reveal animation.
+[DONE] BASE-016  Non-blocking System Pulse card for CPU, RAM, available memory,
+                 Wi-Fi signal, and aggregate network throughput.
+
+[TODO/P0] BASE-017  Re-run the full regression, security, performance, and privacy
+  suite before every release and archive results with the release manifest.
+
+
+TARGET PRODUCT SHAPE
+--------------------
+
+Preserve the standalone product. Add enterprise capabilities as optional layers:
+
+  angerona-agent
+    Windows endpoint service and local UI; remains useful while disconnected.
+
+  angerona-sensor-system
+    Low-footprint process/file/memory/event-log/AMSI/ETW sensor cluster.
+
+  angerona-sensor-network
+    Network/WFP/DNS/WLAN/connection sensor cluster.
+
+  angerona-control
+    Fleet enrollment, identity, policy, jobs, RBAC, audit, and admin API.
+
+  angerona-ingest
+    Authenticated event intake, validation, deduplication, buffering, routing.
+
+  angerona-search
+    Tenant-scoped indexed event store, hunts, timelines, retention, legal hold.
+
+  angerona-case
+    Incidents, evidence, tasks, response approvals, reports, exports.
+
+  angerona-update
+    Signed content and software distribution, canaries, rollback, health gates.
+
+  angerona-console
+    Multi-host web/desktop operator experience with SSO and scoped permissions.
+
+  angerona-ca
+    Device/workload identity issuance, rotation, revocation, and trust bundles.
+
+  angerona-connectors
+    Optional, sandboxed SIEM/SOAR/ITSM/identity/threat-intelligence adapters.
+
+Architecture rules:
+  - The local agent continues detecting and responding during control-plane loss.
+  - Control-plane compromise must not grant arbitrary endpoint code execution.
+  - Data and control planes use separate credentials, scopes, and rate limits.
+  - Every remote command is typed, signed, authorized, expiring, replay-resistant,
+    auditable, bounded, and mapped to a supported agent capability.
+  - No generic remote shell in the enterprise control plane.
+
+
+MASTER BUILD ORDER
+------------------
+
+PHASE 0 - TRUSTWORTHY PUBLIC RELEASE (P0)
+  [TODO] Public-repository privacy/secrets sweep.
+  [TODO] Reproducible packaged release and publisher identity.
+  [TODO] Signed installer/uninstaller/update foundation.
+  [TODO] Release SBOM, provenance, checksums, and verification instructions.
+  [TODO] Stable standalone reliability/performance/soak gates.
+
+PHASE 1 - FLEET PREVIEW FOUNDATION (P1)
+  [TODO] Device identity, enrollment, rotation, and revocation.
+  [TODO] Authenticated ingestion and durable offline queue.
+  [TODO] Minimal control plane with tenant, fleet, group, and host inventory.
+  [TODO] RBAC, SSO/OIDC, admin audit, and emergency access.
+  [TODO] Signed configuration/rule/content bundles with canary rollout.
+
+PHASE 2 - ENTERPRISE OPERATIONS (P2)
+  [TODO] Search, hunts, cases, evidence retention, and export.
+  [TODO] Remote signed upgrades with rollback and compatibility gates.
+  [TODO] High availability, backup/restore, disaster recovery, and SLOs.
+  [TODO] Standard APIs, webhooks, SIEM/SOAR/ITSM, STIX/TAXII.
+  [TODO] Enterprise deployment packages and air-gapped operation.
+
+PHASE 3 - ADVANCED DEFENSE (P3)
+  [TODO] Detection-as-code and fleet replay validation.
+  [TODO] Stronger process/network isolation using supported Windows primitives.
+  [TODO] Cross-host causal graph, identity-aware detections, exposure context.
+  [TODO] Windows/Linux/macOS sensor roadmap with honest per-platform coverage.
+
+PHASE 4 - VISIONARY RESEARCH (P4)
+  [RESEARCH] Privacy-preserving federated detection learning.
+  [RESEARCH] Hardware-attested workload identity and confidential analysis.
+  [RESEARCH] Counterfactual policy simulation and verifiable self-healing.
+  [RESEARCH] Deception fabric and autonomous investigation under strict gates.
+
+
+01. PRODUCT GOVERNANCE AND OWNERSHIP
+------------------------------------
+
+[TODO/P0] ENT-GOV-001  Assign owners for agent, control plane, data, update,
+  identity, UI, detection content, privacy, release, and incident response.
+
+[TODO/P0] ENT-GOV-002  Publish a supported-editions matrix.
+  - Community/Standalone: local host, local data, manual administration.
+  - Fleet Preview: experimental central management with explicit limitations.
+  - Enterprise: only after GA gates are passed.
+  - Never hide security fixes behind a paid tier.
+
+[TODO/P0] ENT-GOV-003  Define semantic versioning and compatibility policy.
+  - Agent/control plane protocol compatibility window.
+  - Schema compatibility window.
+  - Detection-content compatibility.
+  - Upgrade ordering and downgrade rules.
+  - Deprecation period and end-of-support policy.
+
+[TODO/P0] ENT-GOV-004  Create Architecture Decision Records (ADRs).
+  Required first ADRs:
+  - Fleet identity and trust roots.
+  - Control-plane deployment model.
+  - Event schema and storage.
+  - Remote command safety model.
+  - Signed update/content system.
+  - Multi-tenancy boundary.
+  - Plugin isolation boundary.
+
+[TODO/P0] ENT-GOV-005  Establish security response governance.
+  - SECURITY.md reporting path and response expectations.
+  - Private vulnerability intake.
+  - CVE assignment strategy.
+  - Coordinated disclosure and embargo handling.
+  - Supported-version patch policy.
+
+[TODO/P1] ENT-GOV-006  Establish detection-content governance.
+  - Author/reviewer ownership.
+  - Test evidence.
+  - false-positive risk.
+  - data prerequisites.
+  - ATT&CK/D3FEND mapping.
+  - version, changelog, rollback, and expiry.
+
+[TODO/P2] ENT-GOV-007  Establish enterprise support operations.
+  - Severity definitions and support hours.
+  - Diagnostic bundles with preview/redaction.
+  - Escalation runbooks.
+  - Known-issues and status communications.
+
+Acceptance gate:
+  CODE + THREAT + DOC. Every production component, trust root, policy, detection,
+  and incident has a named owner and change process.
+
+
+02. FLEET IDENTITY, ENROLLMENT, AND ZERO TRUST
+----------------------------------------------
+
+[DESIGN/P0] ENT-ID-001  Threat-model fleet enrollment.
+  Abuse cases: stolen token, cloned host, rogue control plane, replay, expired
+  bootstrap token, host reimage, key theft, clock skew, tenant confusion, CA loss.
+
+[TODO/P1] ENT-ID-002  Give each endpoint a unique cryptographic device identity.
+  - Generate private key locally.
+  - Prefer non-exportable TPM-backed keys when supported.
+  - Never use a shared fleet secret as the steady-state identity.
+  - Bind identity to tenant, device record, and enrollment metadata.
+
+[TODO/P1] ENT-ID-003  Implement one-time enrollment.
+  - Short-lived, single-use bootstrap token.
+  - Optional admin approval or pre-registration.
+  - Proof of key possession.
+  - Certificate/SVID issuance.
+  - Token consumed atomically.
+  - Clear re-enrollment and reimage workflow.
+
+[TODO/P1] ENT-ID-004  Implement mutual TLS on all fleet connections.
+  - Server identity pinning/trust bundle.
+  - Client identity validation.
+  - Modern TLS only.
+  - Separate identities for data and privileged control actions.
+
+[TODO/P1] ENT-ID-005  Rotate credentials automatically.
+  - Short-lived workload/device certificates.
+  - Overlapping rotation window.
+  - Clock-skew tolerance.
+  - Expiry telemetry.
+  - Fail-safe offline behavior.
+
+[TODO/P1] ENT-ID-006  Implement revocation and quarantine.
+  - Immediate device disable.
+  - Revocation distribution.
+  - Compromised-key workflow.
+  - Quarantined device can receive only recovery policy.
+
+[TODO/P2] ENT-ID-007  Evaluate SPIFFE-compatible workload identity.
+  - X.509/JWT SVID support.
+  - Trust-bundle rotation.
+  - Attestation plugin boundary.
+  - No dependency on network location for trust.
+
+[RESEARCH/P3] ENT-ID-008  Hardware/device posture attestation.
+  - TPM measured boot and key health where available.
+  - Secure Boot/VBS/HVCI state.
+  - Attestation freshness and replay defense.
+  - Treat missing attestation as "unknown", not malicious.
+
+Acceptance gate:
+  THREAT + TEST + OPS. A cloned database/token cannot impersonate a device;
+  revocation takes effect within the declared SLO; rotation survives offline hosts.
+
+
+03. TENANCY, SSO, RBAC, AND ADMINISTRATION
+-----------------------------------------
+
+[DESIGN/P0] ENT-AUTH-001  Define the tenant boundary before fleet data exists.
+  - Tenant ID is server-derived, never trusted from a client payload.
+  - Tenant scoping applies to rows, indexes, objects, jobs, logs, exports, caches.
+  - Cross-tenant tests are mandatory.
+
+[TODO/P1] ENT-AUTH-002  Implement OIDC SSO.
+  - Authorization Code + PKCE.
+  - Issuer/audience/nonce/state validation.
+  - Short sessions and secure cookies.
+  - Local emergency account is separately protected and audited.
+
+[TODO/P2] ENT-AUTH-003  Add SAML only if customer demand justifies the surface.
+
+[TODO/P2] ENT-AUTH-004  Add SCIM user/group lifecycle.
+  - Create/update/disable users and groups.
+  - Deprovisioning removes active sessions.
+  - Idempotent and tenant-scoped.
+
+[TODO/P1] ENT-AUTH-005  Define least-privilege roles.
+  Initial roles:
+  - Viewer.
+  - Analyst.
+  - Hunter.
+  - Responder.
+  - Detection Engineer.
+  - Fleet Operator.
+  - Tenant Administrator.
+  - Platform Administrator.
+  - Auditor.
+
+[TODO/P1] ENT-AUTH-006  Add resource and action scopes.
+  - Fleet/group/host.
+  - Event/case/evidence.
+  - Detection/policy.
+  - Remote collection.
+  - Remediation approval/execution.
+  - Export/integration/admin.
+
+[TODO/P1] ENT-AUTH-007  Add separation of duties.
+  - High-impact policy author cannot self-approve.
+  - Response requester and approver can be required to differ.
+  - Trust-root and release-key changes require two-person control.
+
+[TODO/P1] ENT-AUTH-008  Add immutable admin audit.
+  - Actor, tenant, session, source, action, target, before/after, decision,
+    approval, result, correlation ID, and timestamp.
+  - Signed/hash-chained or WORM-exportable.
+  - Searchable but not editable by ordinary admins.
+
+[TODO/P2] ENT-AUTH-009  Add just-in-time privileged access.
+  - Reason, ticket, scope, expiry, approval, session recording/audit.
+
+[TODO/P2] ENT-AUTH-010  Add emergency/break-glass access.
+  - Offline recovery procedure.
+  - Hardware-backed MFA where possible.
+  - Mandatory alert and retrospective review.
+
+Acceptance gate:
+  TEST + THREAT + PRIV. Automated negative tests prove no cross-tenant read,
+  write, search, cache, export, job, or audit access.
+
+
+04. CONTROL PLANE AND SAFE REMOTE JOBS
+--------------------------------------
+
+[DESIGN/P0] ENT-CTL-001  Define a typed remote-command protocol.
+  - No arbitrary shell.
+  - Every command has schema, capability, scope, limits, timeout, expiry,
+    idempotency key, signer, authorization decision, and expected receipt.
+
+[TODO/P1] ENT-CTL-002  Implement host/group/fleet inventory.
+  - Identity, hostname alias, OS/build, agent version, policy version, labels,
+    last seen, health, sensor capability, data freshness, and quarantine state.
+  - Avoid collecting usernames or sensitive inventory without a named need.
+
+[TODO/P1] ENT-CTL-003  Implement a durable job state machine.
+  States: draft -> approved -> queued -> delivered -> running -> succeeded /
+  failed / expired / cancelled / rollback-pending / rolled-back.
+
+[TODO/P1] ENT-CTL-004  Add job targeting and safety.
+  - Explicit host/group query preview.
+  - Estimated endpoint/data impact.
+  - Canary sample.
+  - Concurrency and rate limits.
+  - Maintenance windows.
+  - Stop/cancel.
+
+[TODO/P1] ENT-CTL-005  Add replay resistance.
+  - Nonce, sequence, expiry, signature, one-time execution record.
+  - Agent persists recent command IDs across restart.
+
+[TODO/P1] ENT-CTL-006  Add endpoint result receipts.
+  - Signed result, timestamps, evidence references, change proof, health state.
+  - Partial failure is explicit.
+
+[TODO/P2] ENT-CTL-007  Add safe fleet collections/hunts.
+  - Approved artifact catalog only.
+  - Parameter schemas and byte/time/CPU caps.
+  - Sensitive-field classification.
+  - Pause/expire/cancel.
+
+[TODO/P2] ENT-CTL-008  Add maintenance operations.
+  - Restart Angerona core.
+  - Restart named sensor.
+  - Capture diagnostics.
+  - Refresh policy/content.
+  - Verify installation.
+  - Never expose generic process execution.
+
+Acceptance gate:
+  THREAT + TEST + OPS. A compromised analyst account cannot convert a typed job
+  into arbitrary code execution; jobs are bounded, cancellable, and auditable.
+
+
+05. EVENT INGESTION AND OFFLINE DELIVERY
+----------------------------------------
+
+[TODO/P1] ENT-ING-001  Define a versioned event envelope.
+  Required fields:
+  - schema version, event ID, device ID, tenant ID (server attached), sensor ID,
+    sensor sequence, observed time, received time, severity, category, payload
+    type/version, integrity status, policy/content version, trace/correlation ID.
+
+[TODO/P1] ENT-ING-002  Build authenticated ingestion.
+  - mTLS device identity.
+  - Payload size/type validation.
+  - Decompression limits.
+  - Per-device and per-tenant rate limits.
+  - Reject unknown schemas safely.
+
+[TODO/P1] ENT-ING-003  Add durable endpoint buffering.
+  - Bounded encrypted queue on D:/configured data root.
+  - Priority lanes so critical events are not buried by info floods.
+  - Backpressure and drop accounting.
+  - Age/size retention.
+  - Crash-safe append/ack behavior.
+
+[TODO/P1] ENT-ING-004  Add deduplication and ordering semantics.
+  - Stable event IDs.
+  - Sensor sequence gaps visible.
+  - At-least-once delivery with server-side dedup.
+  - Never silently imply total ordering across sensors.
+
+[TODO/P1] ENT-ING-005  Add clock-quality handling.
+  - Track host offset and uncertainty.
+  - Keep observed and received times.
+  - Flag severe clock drift.
+
+[TODO/P2] ENT-ING-006  Add compression and batch negotiation.
+  - Bounded batches.
+  - Adaptive flow control.
+  - CPU/network budgets.
+
+[TODO/P2] ENT-ING-007  Add a durable server queue.
+  - Separate intake from indexing/analytics.
+  - Dead-letter queue with privacy-safe diagnostics.
+  - Replay with idempotency.
+
+[TODO/P2] ENT-ING-008  Add ingestion health dashboards.
+  - Lag, errors, duplicates, drops, sequence gaps, queue depth, schema rejects,
+    tenant usage, endpoint offline backlog, and oldest unprocessed event.
+
+Acceptance gate:
+  TEST + PERF + OPS. Network loss, duplicate batches, restart, full disk, schema
+  mismatch, event storm, and clock skew cannot corrupt or silently lose critical data.
+
+
+06. SCHEMA, NORMALIZATION, AND DATA QUALITY
+------------------------------------------
+
+[PARTIAL/P1] ENT-DATA-001  Make OCSF the canonical normalized export contract.
+
+[TODO/P1] ENT-DATA-002  Create an Angerona schema registry.
+  - Versioned JSON Schema/Protobuf contracts.
+  - Compatibility checks in CI.
+  - Examples and data classification.
+  - Unknown-field handling.
+
+[TODO/P1] ENT-DATA-003  Preserve source fidelity.
+  - Raw source reference/digest.
+  - Normalized event.
+  - Enrichment provenance and version.
+  - No destructive normalization that prevents later re-analysis.
+
+[TODO/P1] ENT-DATA-004  Add quality indicators.
+  - complete / partial / truncated / sampled / late / duplicate / unverifiable.
+  - Sensor health and data freshness.
+
+[TODO/P2] ENT-DATA-005  Add schema migration/reindex tooling.
+  - Preview.
+  - Checkpoint.
+  - Resume.
+  - Rollback.
+  - Storage estimate.
+
+[TODO/P2] ENT-DATA-006  Add enrichment governance.
+  - Source, timestamp, TTL, confidence, license, tenant visibility, and cache key.
+  - Expired intelligence must not remain silently authoritative.
+
+Acceptance gate:
+  TEST + DOC. Old agents remain ingestible through the compatibility window;
+  normalization can be traced back to source evidence.
+
+
+07. SIGNED POLICY, RULE, AND CONTENT DISTRIBUTION
+------------------------------------------------
+
+[DESIGN/P0] ENT-POL-001  Define policy/content trust roots and compromise recovery.
+
+[TODO/P1] ENT-POL-002  Use signed, versioned policy bundles.
+  Bundle includes:
+  - policy ID/version.
+  - minimum/maximum compatible agent.
+  - effective/expiry time.
+  - rules/modules/settings.
+  - data/egress/retention declarations.
+  - publisher and signature.
+  - rollback predecessor.
+
+[TODO/P1] ENT-POL-003  Build effective-policy resolution.
+  - Global -> tenant -> fleet -> group -> host.
+  - Deterministic precedence.
+  - Conflict detection.
+  - "Why is this setting active?" explanation.
+
+[TODO/P1] ENT-POL-004  Build policy simulation.
+  - Preview affected hosts.
+  - Required capabilities.
+  - expected CPU/RAM/storage/network impact.
+  - privacy/egress changes.
+  - detection coverage changes.
+
+[TODO/P1] ENT-POL-005  Build staged rollout.
+  - Lab -> canary -> ring -> broad fleet.
+  - Health gates and automatic pause.
+  - Manual and automatic rollback.
+  - Offline host handling.
+
+[TODO/P1] ENT-POL-006  Fail safely on invalid/expired policy.
+  - Keep last-known-good.
+  - Raise visible integrity alert.
+  - Do not silently revert to permissive defaults.
+
+[TODO/P2] ENT-POL-007  Separate content channels.
+  - Stable, rapid security fix, preview, customer-pinned.
+  - Independent rules/intelligence/model/software versions.
+
+[TODO/P2] ENT-POL-008  Add policy approval workflow and signed audit.
+
+Acceptance gate:
+  THREAT + TEST + OPS. Forged, replayed, incompatible, expired, or partial
+  bundles never become effective; fleet rollback is demonstrated.
+
+
+08. SOFTWARE UPDATE AND RELEASE CHANNEL
+---------------------------------------
+
+[DESIGN/P0] ENT-UPD-001  Design a compromise-resilient update system.
+  - Offline root keys.
+  - Separated signing roles.
+  - Key rotation/revocation.
+  - Threshold signatures for high-impact metadata.
+  - Expiry, rollback, freeze, and mix-and-match defenses.
+
+[TODO/P0] ENT-UPD-002  Authenticode-sign Windows executables/installers.
+  - Timestamp signatures.
+  - Publish signer identity and certificate transition process.
+
+[TODO/P0] ENT-UPD-003  Publish signed checksums and provenance.
+  - Artifact digest.
+  - Source revision.
+  - builder identity.
+  - build inputs.
+  - SBOM digest.
+
+[TODO/P1] ENT-UPD-004  Add agent-side verification before install.
+  - Metadata signature.
+  - artifact digest.
+  - publisher policy.
+  - compatibility.
+  - minimum secure version.
+  - disk-space and health preflight.
+
+[TODO/P1] ENT-UPD-005  Add staged remote upgrades.
+  - Canary rings.
+  - bandwidth windows.
+  - peer/cache option only after threat model.
+  - reboot coordination.
+  - offline retry.
+
+[TODO/P1] ENT-UPD-006  Add atomic install and rollback.
+  - Preserve last-known-good binaries/config.
+  - Health check before promotion.
+  - Failed start automatically rolls back.
+  - Never roll back below a declared security floor.
+
+[TODO/P2] ENT-UPD-007  Add update observability.
+  - Available/queued/downloading/verifying/installing/healthy/rolled-back.
+  - Fleet progress, failure reasons, and version drift.
+
+[TODO/P2] ENT-UPD-008  Add signed offline update bundles for air-gapped sites.
+
+Acceptance gate:
+  REL + THREAT + TEST + OPS. Tampered artifacts, stale metadata, key rotation,
+  interrupted install, full disk, bad release, and rollback attack are tested.
+
+
+09. SEARCH, RETENTION, AND STORAGE
+---------------------------------
+
+[DESIGN/P0] ENT-SEA-001  Select a tenant-safe search/storage architecture.
+  Evaluate:
+  - OpenSearch or equivalent indexed backend.
+  - Object storage for immutable evidence.
+  - Relational store for control/cases.
+  - Small single-node and HA deployment profiles.
+
+[TODO/P2] ENT-SEA-002  Build tenant-scoped search.
+  - Structured filters, full text, time range, host/group, ATT&CK, process,
+    hash, IP/domain, case, severity, integrity, and data quality.
+  - Saved searches and shareable queries with permission checks.
+
+[TODO/P2] ENT-SEA-003  Add retention tiers.
+  - Hot/warm/cold/delete.
+  - Per-tenant/class retention.
+  - Legal hold.
+  - Deletion proof.
+  - Capacity forecast.
+
+[TODO/P2] ENT-SEA-004  Add evidence object storage.
+  - Content address/digest.
+  - encryption.
+  - access log.
+  - tenant scope.
+  - legal hold.
+  - malware-safe download handling.
+
+[TODO/P2] ENT-SEA-005  Add encryption at rest and key management.
+  - Platform keys and optional customer-managed keys.
+  - Rotation.
+  - backup keys.
+  - revoked-user/session handling.
+
+[TODO/P2] ENT-SEA-006  Add query/resource governance.
+  - Timeout.
+  - result/scan caps.
+  - pagination.
+  - cancellation.
+  - per-tenant quota.
+  - expensive-query visibility.
+
+[TODO/P3] ENT-SEA-007  Add federated search across approved Angerona sites.
+  - Metadata-only planning.
+  - Data locality.
+  - per-site authorization.
+  - partial-result honesty.
+
+Acceptance gate:
+  TEST + PERF + PRIV + OPS. Cross-tenant leakage is impossible in tests; backup,
+  restore, retention expiry, legal hold, and large-query cancellation work.
+
+
+10. FLEET HUNTS AND LIVE RESPONSE COLLECTIONS
+---------------------------------------------
+
+[TODO/P2] ENT-HUNT-001  Create a signed artifact/collection catalog.
+  - Stable ID/version.
+  - Supported OS.
+  - exact inputs.
+  - required privileges.
+  - expected data class/volume.
+  - CPU/time/byte limits.
+  - tests and owner.
+
+[TODO/P2] ENT-HUNT-002  Create hunt targeting.
+  - Labels, OS, version, policy, capability, exposure, alert, explicit host list.
+  - Include/exclude preview.
+  - Dynamic and snapshot membership modes.
+
+[TODO/P2] ENT-HUNT-003  Create hunt lifecycle.
+  - Draft, test host, paused by default, approved, running, stopped, expired.
+  - Offline endpoints join within the allowed window.
+  - Each endpoint runs once unless explicitly re-collected.
+
+[TODO/P2] ENT-HUNT-004  Add collection budgets.
+  - Per-host and fleet byte caps.
+  - CPU/time/concurrency caps.
+  - bandwidth schedule.
+  - automatic pause on unexpected volume.
+
+[TODO/P2] ENT-HUNT-005  Add hunt notebooks/results.
+  - Progress and failures.
+  - Server-side bounded post-processing.
+  - evidence links.
+  - case promotion.
+  - export with audit.
+
+[TODO/P2] ENT-HUNT-006  Add a safe live-response session.
+  - Cataloged read-only queries first.
+  - Strong approval for changes.
+  - No unrestricted shell.
+  - Session expiry and complete transcript.
+
+Acceptance gate:
+  TEST + PERF + PRIV. A hunt against 10,000 simulated endpoints respects byte,
+  CPU, concurrency, expiry, offline, cancellation, and tenant limits.
+
+
+11. DETECTION-AS-CODE AND ANALYTIC QUALITY
+------------------------------------------
+
+[TODO/P1] ENT-DET-001  Create a versioned detection package format.
+  - ID, title, description, owner, version.
+  - inputs and schema.
+  - query/logic.
+  - ATT&CK detection strategy/techniques.
+  - D3FEND countermeasure relationship.
+  - severity/confidence.
+  - suppression and expiry.
+  - privacy requirements.
+  - test fixtures and expected results.
+
+[TODO/P1] ENT-DET-002  Add deterministic replay tests.
+  - Positive fixtures.
+  - benign/negative fixtures.
+  - corrupted/partial data.
+  - high-volume behavior.
+  - version regression.
+
+[TODO/P1] ENT-DET-003  Add detection coverage reporting.
+  - Distinguish "data source present", "analytic exists", "analytic tested",
+    "analytic observed", and "response verified".
+  - Never convert module count into coverage percentage.
+
+[TODO/P2] ENT-DET-004  Add Sigma import/export with explicit field mappings.
+
+[PARTIAL/P1] ENT-DET-005  Harden YARA lifecycle.
+  - Signed rule packs.
+  - compile before rollout.
+  - timeout/file-size/path limits.
+  - false-positive fixtures.
+  - canary and rollback.
+
+[TODO/P2] ENT-DET-006  Add behavior-chain analytics.
+  - Cross-sensor temporal joins.
+  - Identity/process/file/network causal evidence.
+  - Explicit missing-signal handling.
+
+[TODO/P2] ENT-DET-007  Add baseline learning with safe trust rules.
+  - Learning period is visible and resettable.
+  - Signed publisher/path/user/host context.
+  - Never auto-allow solely because behavior is frequent.
+  - Known malicious activity cannot poison the baseline.
+  - Changes have expiry and provenance.
+
+[TODO/P2] ENT-DET-008  Add false-positive feedback lifecycle.
+  - Allow once / suppress rule / trust publisher/path/hash with scope.
+  - Reason, owner, expiry, review, and hit count.
+  - Simulate impact before broad suppression.
+
+[TODO/P2] ENT-DET-009  Add analytic explainability.
+  - Signals used.
+  - conditions met/not met.
+  - confidence and uncertainty.
+  - related benign explanations.
+  - recommended next evidence.
+
+[TODO/P3] ENT-DET-010  Add cross-host identity-aware detections.
+  - Account behavior across endpoints.
+  - lateral movement.
+  - distributed password spray.
+  - rare signer/path.
+  - coordinated process/network sequence.
+
+[TODO/P3] ENT-DET-011  Add content marketplace mechanics only after signing,
+  sandboxing, moderation, permission review, and removal/revocation exist.
+
+Acceptance gate:
+  TEST + PERF + DOC. Every enabled production detection has fixtures, owner,
+  data requirements, performance budget, mapping, and rollback.
+
+
+12. WINDOWS SENSOR AND ENDPOINT DEPTH
+-------------------------------------
+
+[PARTIAL/P1] ENT-WIN-001  Consolidate ETW telemetry.
+  - Process/thread/image/file/registry/network providers as justified.
+  - Provider/session ownership.
+  - dropped-event metrics.
+  - version/build compatibility.
+  - bounded parsing and queues.
+
+[PARTIAL/P1] ENT-WIN-002  Harden Windows Event Log collection.
+  - Bookmarks and resume.
+  - channel health.
+  - rendered/raw preservation.
+  - subscription backpressure.
+  - security-log privilege handling.
+
+[PARTIAL/P1] ENT-WIN-003  Harden AMSI integration.
+  - Health/canary.
+  - provider/result provenance.
+  - bypass/tamper visibility.
+  - no assumption that absence equals clean.
+
+[PARTIAL/P1] ENT-WIN-004  Harden process and memory analytics.
+  - Access-denied/Protected Process visibility.
+  - signed image/path/parent/token context.
+  - bounded region scans.
+  - allowlists with scope and expiry.
+  - no unsafe arbitrary memory reads.
+
+[TODO/P2] ENT-WIN-005  Add PowerShell logging posture.
+  - Script block/module/transcription policy visibility.
+  - Health and tamper detection.
+  - privacy-aware content handling.
+
+[TODO/P2] ENT-WIN-006  Add identity/security posture.
+  - Local users/groups changes.
+  - privileged token/session changes.
+  - Windows Hello/Credential Guard/VBS/Secure Boot state.
+  - domain/cloud identity integration only with explicit scope.
+
+[TODO/P2] ENT-WIN-007  Add software/driver inventory.
+  - Publisher, version, install source, first/last seen.
+  - vulnerable/blocked driver correlation.
+  - privacy and storage bounds.
+
+[TODO/P2] ENT-WIN-008  Add application-control visibility.
+  - App Control for Business/WDAC and AppLocker audit/block events.
+  - Policy version/status.
+  - Simulation before enforcement.
+
+[TODO/P2] ENT-WIN-009  Add supported host firewall/WFP visibility.
+  - Rule/profile changes.
+  - filter ownership.
+  - blocked/allowed context.
+  - never bypass Windows security controls.
+
+Acceptance gate:
+  TEST + PERF. Supported Windows build matrix, dropped-event visibility, least
+  privilege, degraded-state honesty, and resource budgets are demonstrated.
+
+
+13. USER-MODE ISOLATION AND OPTIONAL KERNEL ROADMAP
+---------------------------------------------------
+
+[DESIGN/P1] ENT-ISO-001  Split high-risk work from the privileged core.
+  Candidate processes:
+  - untrusted plugin runner.
+  - file/YARA parser worker.
+  - document/archive parser.
+  - cloud connector.
+  - AI/tool broker.
+  - update verifier.
+
+[TODO/P1] ENT-ISO-002  Apply supported Windows least-privilege primitives.
+  - Restricted tokens.
+  - AppContainer/Win32 app isolation where compatible.
+  - Job Objects for CPU/memory/process count/kill-on-close.
+  - explicit filesystem/registry/network capabilities.
+  - low integrity for untrusted parsing.
+
+[TODO/P1] ENT-ISO-003  Add brokered access.
+  - Narrow typed IPC.
+  - authentication and request limits.
+  - no inherited handles.
+  - path canonicalization.
+  - TOCTOU-resistant file opening where possible.
+
+[TODO/P2] ENT-ISO-004  Package suitable components with MSIX.
+  - Read-only binaries.
+  - clean update/repair/uninstall.
+  - carefully document full-trust components.
+
+[DESIGN/P3] ENT-KRN-001  Produce a kernel-driver justification report.
+  Must name the exact blind spot, supported user-mode alternatives, threat model,
+  API/IOCTL surface, signing/service burden, compatibility risk, and kill switch.
+
+[RESEARCH/P3] ENT-KRN-002  If justified, prototype the smallest possible KMDF
+  sensor in an isolated branch/lab.
+  - Read-only telemetry first.
+  - strict IOCTL ACLs and input validation.
+  - memory-safe patterns.
+  - Driver Verifier, CodeQL/static analysis, fuzzing.
+  - HVCI compatibility.
+  - HLK testing.
+  - EV/attestation signing plan.
+
+[BLOCKED/P3] ENT-KRN-003  Production kernel deployment is blocked until:
+  - Independent driver security review.
+  - Full supported Windows build matrix.
+  - Crash dump/rollback/disable recovery.
+  - Remote kill switch that cannot weaken unrelated defenses.
+  - Documented safe-mode uninstall.
+
+Acceptance gate:
+  THREAT + TEST + PERF + OPS. Compromise of a parser/plugin cannot escape its
+  declared capability boundary. Kernel work requires separate release gates.
+
+
+14. NETWORK, DNS, WI-FI, VPN, AND NDR CAPABILITIES
+--------------------------------------------------
+
+[PARTIAL/P1] ENT-NET-001  Consolidate connection telemetry.
+  - Process identity, local/remote endpoint, interface, DNS context, signer,
+    direction, protocol, bytes, timing, and policy decision.
+
+[TODO/P2] ENT-NET-002  Add DNS analytics.
+  - Query/response correlation.
+  - rare/new domain.
+  - NXDOMAIN patterns.
+  - DNS-over-HTTPS posture.
+  - privacy-aware domain retention/redaction.
+
+[PARTIAL/P1] ENT-NET-003  Improve VPN awareness.
+  - Adapter identity and route changes.
+  - split-tunnel context.
+  - trusted VPN publisher/path.
+  - never flag a VPN merely because it is a VPN.
+
+[TODO/P2] ENT-NET-004  Expand Wi-Fi monitoring.
+  - Signal/SSID/BSSID changes with privacy controls.
+  - security/authentication mode.
+  - new/evil-twin heuristic with confirmation.
+  - disconnect/roam events.
+  - never store precise location history by default.
+
+[TODO/P2] ENT-NET-005  Add TLS metadata only where legally/technically appropriate.
+  - Certificate chain/fingerprint/expiry/SNI where visible.
+  - No TLS interception by default.
+  - No secret/session-key collection.
+
+[TODO/P2] ENT-NET-006  Add network containment safely.
+  - Windows-supported firewall/WFP rules.
+  - host/process/destination scope.
+  - duration and rollback.
+  - preserve control-plane/recovery channel.
+  - preflight and post-change verification.
+
+[TODO/P3] ENT-NET-007  Add optional remote network sensors.
+  - Zeek/Suricata integration via normalized events.
+  - signed connector.
+  - dedup/correlation with endpoint events.
+
+[RESEARCH/P4] ENT-NET-008  Encrypted-traffic behavioral analytics.
+  - Metadata only.
+  - transparent limitations.
+  - adversarial and privacy evaluation.
+
+Acceptance gate:
+  TEST + PRIV + PERF. VPN/Wi-Fi normal behavior does not inflate critical posture;
+  network containment is reversible and preserves recovery access.
+
+
+15. SOAR, REMEDIATION, AND VERIFIABLE RESPONSE
+----------------------------------------------
+
+[PARTIAL/P0] ENT-SOAR-001  Preserve the typed action registry and proof receipts.
+
+[TODO/P0] ENT-SOAR-002  Require an action contract.
+  - Preconditions.
+  - exact scope.
+  - authorization.
+  - safety checks.
+  - execute.
+  - verify.
+  - rollback.
+  - idempotency.
+  - evidence/receipt.
+
+[TODO/P0] ENT-SOAR-003  Fix simulated-drill closure semantics.
+  - Distinguish detector coverage from remediation.
+  - Map each benign marker to a deterministic cleanup/containment action.
+  - Do not ask an LLM to invent executable remediation.
+  - Re-run validation after action.
+  - Score only verified closures.
+  - Explain N/A/no-detector-by-design.
+
+[TODO/P1] ENT-SOAR-004  Add response approval policies.
+  - Manual.
+  - two-person.
+  - pre-authorized bounded.
+  - emergency.
+  - per action/fleet/tenant/severity.
+
+[TODO/P1] ENT-SOAR-005  Add change sets.
+  - Preview exact changes.
+  - conflict/precondition detection.
+  - all-or-explicit-partial results.
+  - rollback plan before execution.
+
+[TODO/P1] ENT-SOAR-006  Add containment primitives.
+  - Kill/suspend process with identity revalidation.
+  - quarantine file without deletion.
+  - isolate host/network with recovery path.
+  - block hash/publisher/path/destination with scope and expiry.
+  - disable compromised Angerona extension/policy.
+
+[TODO/P1] ENT-SOAR-007  Add remediation verification.
+  - Re-query state.
+  - attach before/after evidence.
+  - require independent signal where possible.
+  - unresolved remains open.
+
+[TODO/P2] ENT-SOAR-008  Add playbook-as-code.
+  - Signed/versioned.
+  - typed steps only.
+  - conditions and branches.
+  - dry run.
+  - timeouts/retries.
+  - compensation/rollback.
+  - test fixtures.
+
+[TODO/P2] ENT-SOAR-009  Add third-party action connectors only through the same
+  approval, scoping, secret, timeout, idempotency, audit, and rollback model.
+
+[RESEARCH/P3] ENT-SOAR-010  Counterfactual response simulation.
+  - Predict affected processes/users/connectivity before action.
+  - Never treat prediction as proof.
+
+Acceptance gate:
+  TEST + THREAT + OPS. A drill produces verified cleanup and a non-zero closure
+  score when appropriate; retries cannot duplicate harmful changes; every action
+  can be explained, scoped, cancelled when possible, and audited.
+
+
+16. CASE MANAGEMENT, FORENSICS, AND EVIDENCE
+--------------------------------------------
+
+[TODO/P2] ENT-CASE-001  Add incident/case objects.
+  - Tenant, title, severity, status, owner, collaborators, timeline, evidence,
+    hypotheses, tasks, approvals, actions, related alerts/hosts/users.
+
+[TODO/P2] ENT-CASE-002  Add evidence chain of custody.
+  - Collection method/version.
+  - collector/device identity.
+  - observed/collected times.
+  - digest.
+  - access history.
+  - transformations and derived artifacts.
+
+[TODO/P2] ENT-CASE-003  Add safe evidence handling.
+  - Quarantine by default.
+  - no preview execution.
+  - archive/decompression limits.
+  - malware warning.
+  - least-privilege download.
+
+[TODO/P2] ENT-CASE-004  Add case workflow.
+  - New/triage/investigating/contained/eradicated/recovered/closed.
+  - Reopen and retrospective review.
+  - SLA timers without hiding overdue work.
+
+[TODO/P2] ENT-CASE-005  Add collaboration.
+  - Notes, mentions, tasks, assignments, decision log.
+  - Permission and tenant checks on every linked object.
+
+[TODO/P2] ENT-CASE-006  Add exports.
+  - Human report.
+  - machine-readable evidence manifest.
+  - signed AAR.
+  - STIX bundle where appropriate.
+  - redaction preview.
+
+[TODO/P2] ENT-CASE-007  Add legal hold and retention exceptions.
+
+[TODO/P3] ENT-CASE-008  Add cross-host causal incident graph.
+  - Bounded nodes/edges.
+  - evidence-backed relations.
+  - uncertainty.
+  - graph version and reproducibility.
+
+Acceptance gate:
+  TEST + PRIV + DOC. Evidence integrity and access are provable; exports cannot
+  bypass tenant permissions or privacy/redaction controls.
+
+
+17. THREAT INTELLIGENCE AND EXPOSURE MANAGEMENT
+-----------------------------------------------
+
+[PARTIAL/P1] ENT-TI-001  Harden STIX/TAXII ingestion.
+  - TAXII 2.1 collections.
+  - source authentication.
+  - object/version semantics.
+  - markings/licensing.
+  - TTL and revocation.
+  - bounded import.
+
+[TODO/P2] ENT-TI-002  Add intelligence provenance and quality.
+  - Source, collection, first/last seen, confidence, sightings, expiry,
+    sharing marking, transformation history, and analyst disposition.
+
+[TODO/P2] ENT-TI-003  Add indicator lifecycle.
+  - Active/expired/revoked/false-positive.
+  - Scope and decay.
+  - Broad/noisy indicators require stronger corroboration.
+
+[TODO/P2] ENT-TI-004  Add local exposure inventory.
+  - OS/build, applications, packages, drivers, configurations, services.
+  - Minimize personally identifying inventory.
+
+[TODO/P2] ENT-TI-005  Add vulnerability prioritization.
+  - Affected version evidence.
+  - CISA KEV/exploitation.
+  - exposure/reachability.
+  - compensating controls.
+  - asset criticality.
+  - remediation status.
+
+[TODO/P2] ENT-TI-006  Add SBOM/VEX awareness.
+  - Product and internal component SBOM.
+  - Context-specific exploitability statements.
+  - Do not mark "not affected" without evidence.
+
+[TODO/P2] ENT-TI-007  Add patch/remediation tracking.
+  - Suggested fix source.
+  - admin approval.
+  - deployment ring.
+  - reboot need.
+  - verification.
+  - rollback.
+
+[TODO/P3] ENT-TI-008  Add intelligence sharing/export with explicit marking,
+  privacy review, destination allowlist, and operator approval.
+
+Acceptance gate:
+  TEST + PRIV. Expired/revoked/low-quality feeds cannot silently drive permanent
+  blocks; vulnerability state is evidence-based and version-specific.
+
+
+18. AI/ARIA SECURITY, GOVERNANCE, AND QUALITY
+---------------------------------------------
+
+[TODO/P0] ENT-AI-001  Treat all model input and output as untrusted.
+  - Prompt injection and malicious evidence cannot grant permissions.
+  - Model text never bypasses typed action validation.
+
+[TODO/P0] ENT-AI-002  Create an AI tool broker.
+  - Explicit allowlisted tools.
+  - JSON schema validation.
+  - per-tool scopes.
+  - timeout/rate/cost limits.
+  - operator confirmation.
+  - complete audit.
+
+[TODO/P0] ENT-AI-003  Separate explain/recommend/plan/execute modes.
+  - Default explain only.
+  - Recommendations cite evidence.
+  - Plans are previewable.
+  - Execution uses deterministic registered actions, never generated scripts.
+
+[TODO/P0] ENT-AI-004  Strengthen redaction and data classification.
+  - Recursive fields.
+  - paths, users, hostnames, IPs, URLs, secrets, tokens, evidence content.
+  - destination-specific policy.
+  - preview before cloud send.
+
+[TODO/P1] ENT-AI-005  Add model provenance.
+  - Provider/model/version/digest.
+  - quantization.
+  - prompt/template version.
+  - tool policy version.
+  - local/cloud decision.
+
+[TODO/P1] ENT-AI-006  Add model/evaluation BOM.
+  - Model weights/license/source.
+  - runtime dependencies.
+  - safety/privacy tests.
+  - supported use cases and known limits.
+
+[TODO/P1] ENT-AI-007  Create deterministic security evals.
+  - Prompt injection.
+  - data exfiltration request.
+  - forged alert.
+  - ambiguous PID.
+  - malicious rule/report.
+  - hallucinated command.
+  - cloud outage.
+  - model unavailable.
+  - multilingual input.
+
+[TODO/P1] ENT-AI-008  Require evidence citations inside Angerona.
+  - Event/case/host/policy identifiers.
+  - Never present an uncited model guess as telemetry.
+
+[TODO/P1] ENT-AI-009  Add confidence and abstention.
+  - "Insufficient evidence" is a valid result.
+  - Route uncertain/high-impact cases to human review.
+
+[TODO/P2] ENT-AI-010  Add per-tenant provider/model policy.
+  - Local only.
+  - approved cloud providers.
+  - region/retention constraints.
+  - token/cost budget.
+
+[TODO/P2] ENT-AI-011  Add local retrieval safely.
+  - Tenant-scoped index.
+  - permission filtering before retrieval.
+  - content provenance.
+  - prompt-injection labeling.
+
+[TODO/P2] ENT-AI-012  Add conversational privacy UI.
+  - Visible mic state.
+  - push-to-talk.
+  - hardware/device selector.
+  - local transcription indicator.
+  - one-click microphone settings.
+  - no background listening unless explicitly enabled.
+
+[RESEARCH/P3] ENT-AI-013  Multi-model adjudication for high-impact recommendations.
+  - Independent deterministic policy still decides permission.
+  - Measure whether added complexity improves outcomes.
+
+[RESEARCH/P4] ENT-AI-014  AI-assisted detection authoring in a sandbox.
+  - Generates proposal and tests only.
+  - human code review.
+  - signed content pipeline.
+  - no production self-modification.
+
+Acceptance gate:
+  THREAT + TEST + PRIV. Prompt injection cannot trigger an action or cloud egress;
+  output is attributable to model/prompt/evidence/tool versions.
+
+
+19. PRIVACY, DATA GOVERNANCE, AND CUSTOMER CONTROL
+--------------------------------------------------
+
+[TODO/P0] ENT-PRIV-001  Create a complete data inventory.
+  For every field/source:
+  - purpose.
+  - classification.
+  - collection condition.
+  - storage location.
+  - retention.
+  - access roles.
+  - export destinations.
+  - deletion behavior.
+
+[TODO/P0] ENT-PRIV-002  Default to data minimization.
+  - Do not collect content where metadata is sufficient.
+  - Do not retain raw evidence automatically without a defined need.
+  - Sample/drop low-value high-volume events visibly.
+
+[TODO/P0] ENT-PRIV-003  Centralize egress policy.
+  - Named destination.
+  - data classes.
+  - reason.
+  - tenant/admin approval.
+  - TLS and authentication.
+  - timeout/rate/size bounds.
+  - audit.
+
+[TODO/P1] ENT-PRIV-004  Add redaction/tokenization services.
+  - Reversible only where authorized and key-protected.
+  - Irreversible anonymization where identity is unnecessary.
+  - Structured-data aware.
+
+[TODO/P1] ENT-PRIV-005  Add retention and deletion controls.
+  - Per class/tenant.
+  - endpoint and central storage.
+  - backups and indexes.
+  - legal hold exception.
+  - deletion report.
+
+[TODO/P1] ENT-PRIV-006  Add operator-facing privacy previews.
+  - What a connector sends.
+  - What a diagnostic bundle contains.
+  - What an export includes.
+  - What microphone/cloud settings do.
+
+[TODO/P2] ENT-PRIV-007  Add data residency/deployment controls.
+  - Site-local storage.
+  - approved regions.
+  - customer-managed keys.
+  - connector routing.
+
+[TODO/P2] ENT-PRIV-008  Add subject/access support where applicable.
+  - Search/export/delete identity-linked records without exposing other tenants.
+  - Document security-record exceptions and legal constraints.
+
+[TODO/P2] ENT-PRIV-009  Add privacy impact review to CI/change templates for:
+  new fields, sensors, retention, exports, AI context, integrations, and telemetry.
+
+Acceptance gate:
+  PRIV + TEST + DOC. Every collected/exported field has a purpose and retention;
+  cloud/connector actions show a bounded redacted preview.
+
+
+20. PERFORMANCE, RESPONSIVENESS, AND RESOURCE GOVERNANCE
+--------------------------------------------------------
+
+[DONE/P0] ENT-PERF-001  Eco Mode defers heavy scanners and wakes them sequentially.
+
+[DONE/P0] ENT-PERF-002  System Pulse samples CPU/RAM/Wi-Fi/network off the UI thread.
+
+[TODO/P0] ENT-PERF-003  Establish performance budgets.
+  At minimum:
+  - idle CPU.
+  - active CPU.
+  - private working set.
+  - handle/thread counts.
+  - UI frame/interaction latency.
+  - queue depth.
+  - event loss.
+  - disk write rate.
+  - network rate.
+  - startup/shutdown/restart time.
+
+[TODO/P0] ENT-PERF-004  Build 8-hour, 24-hour, and 7-day soak tests.
+  - Eco on/off.
+  - all modules.
+  - event storm.
+  - repeated windows.
+  - sleep/resume.
+  - network offline/online.
+  - repeated drills.
+  - bounded database/report growth.
+
+[TODO/P0] ENT-PERF-005  Track leak indicators.
+  - RSS/private bytes.
+  - Python heap.
+  - Qt objects.
+  - threads/handles/timers.
+  - queues/caches/history.
+  - DB connections/cursors.
+
+[TODO/P0] ENT-PERF-006  Keep blocking work off the GUI thread.
+  - Database scans.
+  - process/network enumeration.
+  - local/cloud AI.
+  - PowerShell/netsh.
+  - file hashing/YARA.
+  - report generation.
+  - update checks.
+
+[TODO/P1] ENT-PERF-007  Add a shared scheduler/resource governor.
+  - Module priorities.
+  - jitter.
+  - concurrency caps.
+  - load-aware deferral.
+  - first-cycle sequencing.
+  - critical path exemption.
+
+[TODO/P1] ENT-PERF-008  Move suitable CPU-bound work out of the GIL.
+  - Worker process/native component after measurement.
+  - Fixed pool, bounded queue, cancellation, crash isolation.
+
+[TODO/P1] ENT-PERF-009  Bound every queue/cache/history/table.
+  - Drop/eviction policy.
+  - critical priority.
+  - visible counters.
+  - no unbounded UI row accumulation.
+
+[TODO/P1] ENT-PERF-010  Optimize database access.
+  - WAL/transaction strategy.
+  - indexes verified by query plan.
+  - pagination.
+  - batched writes.
+  - retention/vacuum windows.
+  - lock timeout and degradation behavior.
+
+[TODO/P1] ENT-PERF-011  Add profiling artifacts.
+  - CPU flame graphs.
+  - allocation snapshots.
+  - slow query log.
+  - UI latency trace.
+  - before/after benchmark per optimization.
+
+[TODO/P2] ENT-PERF-012  Add adaptive fidelity.
+  - Reduce cosmetic refresh first.
+  - Then lower low-priority collection frequency.
+  - Never silently throttle high-confidence detection/response.
+  - Display reduced-fidelity state.
+
+Initial benchmark targets (validate on defined reference hardware):
+  - Eco idle CPU median <= 2%.
+  - Full-monitoring idle CPU median <= 8%.
+  - GUI interaction p95 <= 150 ms under normal load.
+  - No > 1 second GUI stall during bounded background work.
+  - No monotonic RSS/thread/handle growth in 24-hour soak.
+  - Graceful stop <= 15 seconds; forced fallback is logged.
+
+Acceptance gate:
+  PERF + TEST. Targets are repeatable on named hardware; no regression is accepted
+  without a recorded tradeoff and approval.
+
+
+21. RESILIENCE, HIGH AVAILABILITY, BACKUP, AND DR
+-------------------------------------------------
+
+[PARTIAL/P0] ENT-RES-001  Preserve independent watchdog and Black Box diagnostics.
+
+[TODO/P0] ENT-RES-002  Make watchdog recovery stateful and safe.
+  - Detect hung vs busy.
+  - Capture thread/health diagnostics before restart.
+  - Exponential backoff and restart budget.
+  - safe mode after repeated failure.
+  - explicit core restart menu action.
+
+[TODO/P0] ENT-RES-003  Complete mutual service supervision.
+  - Core.
+  - telemetry scanner.
+  - watchdog.
+  - Black Box.
+  - owned Ollama instance.
+  - signed clean-shutdown marker prevents unwanted resurrection.
+
+[TODO/P1] ENT-RES-004  Add crash-safe local state.
+  - Atomic writes.
+  - corruption detection.
+  - schema migrations with backup.
+  - last-known-good configuration.
+  - disk-full behavior.
+
+[TODO/P2] ENT-RES-005  Add control-plane HA.
+  - Multiple stateless API/control nodes.
+  - durable shared state.
+  - leader election only where needed.
+  - no split-brain policy issuance.
+
+[TODO/P2] ENT-RES-006  Add data-plane HA.
+  - Redundant ingestion.
+  - queue replication.
+  - search/storage replica plan.
+  - documented consistency.
+
+[TODO/P2] ENT-RES-007  Add backup/restore.
+  - Encrypted backups.
+  - configuration, identity, audit, cases, indexes/object evidence.
+  - restore validation.
+  - key backup/recovery.
+  - tenant-level export where supported.
+
+[TODO/P2] ENT-RES-008  Define RPO/RTO and disaster recovery.
+  - Site loss.
+  - database corruption.
+  - CA/control-plane compromise.
+  - bad policy/update.
+  - lost signing key.
+
+[TODO/P2] ENT-RES-009  Run chaos/failure tests.
+  - Kill/restart nodes.
+  - suspend/resume.
+  - partial network.
+  - slow disk.
+  - full disk.
+  - clock skew.
+  - expired cert.
+  - corrupt queue.
+
+Acceptance gate:
+  OPS + TEST + PERF. Restore and failover are demonstrated, not documented only;
+  repeated endpoint crashes enter safe mode instead of a restart storm.
+
+
+22. OBSERVABILITY AND OPERATIONS
+--------------------------------
+
+[TODO/P1] ENT-OBS-001  Instrument components with structured logs, metrics, traces.
+  - Correlation/trace IDs across agent -> ingest -> analytic -> case -> response.
+  - OpenTelemetry-compatible export where practical.
+
+[TODO/P1] ENT-OBS-002  Define service-level indicators/objectives.
+  Examples:
+  - enrollment success.
+  - event acceptance/lag.
+  - policy convergence.
+  - command delivery.
+  - search latency.
+  - detection latency.
+  - remediation verification.
+  - console availability.
+
+[TODO/P1] ENT-OBS-003  Add health endpoints and dependency status.
+  - Live vs ready.
+  - last successful work cycle.
+  - queue/lag.
+  - credential expiry.
+  - data freshness.
+
+[TODO/P1] ENT-OBS-004  Add low-cardinality metrics discipline.
+  - Never put raw host/user/path/hash in metric labels.
+  - Cardinality budgets and overflow visibility.
+
+[TODO/P2] ENT-OBS-005  Add operator dashboards.
+  - Fleet health.
+  - data quality/lag.
+  - policy/update convergence.
+  - detection volume/quality.
+  - response success.
+  - storage/capacity.
+  - connector/AI egress.
+
+[TODO/P2] ENT-OBS-006  Add alerting and runbooks for the platform itself.
+  - Stalled ingestion.
+  - cert/signing expiry.
+  - queue saturation.
+  - search/storage pressure.
+  - failed backup.
+  - abnormal tenant access.
+
+[TODO/P2] ENT-OBS-007  Create privacy-safe support bundles.
+  - User preview.
+  - automatic redaction.
+  - bounded time window.
+  - checksums.
+  - explicit destination.
+
+Acceptance gate:
+  OPS + PRIV. An operator can diagnose unknown failures without enabling debug
+  logging or exporting sensitive raw data by default.
+
+
+23. API, SDK, WEBHOOK, AND INTEGRATION PLATFORM
+-----------------------------------------------
+
+[TODO/P1] ENT-API-001  Publish versioned OpenAPI for control/case/search APIs.
+  - Stable errors.
+  - pagination.
+  - filtering.
+  - idempotency.
+  - rate limits.
+  - tenant and permission documentation.
+
+[TODO/P1] ENT-API-002  Use gRPC/Protobuf internally only where it materially helps.
+  - Version compatibility.
+  - bounded messages.
+  - mTLS.
+  - deadlines/cancellation.
+
+[TODO/P1] ENT-API-003  Create service accounts and scoped API tokens.
+  - Short-lived where possible.
+  - Rotation/revocation.
+  - no user-password automation.
+  - complete audit.
+
+[TODO/P2] ENT-API-004  Add signed outbound webhooks.
+  - Destination allowlist.
+  - HMAC/signature.
+  - timestamp/replay protection.
+  - retries/idempotency.
+  - dead-letter visibility.
+
+[TODO/P2] ENT-API-005  Add SIEM exports.
+  - OCSF JSON.
+  - CEF/syslog.
+  - vendor-specific adapters only as optional plugins.
+  - buffering/backpressure and drop metrics.
+
+[TODO/P2] ENT-API-006  Add ITSM/case connectors.
+  - Jira/ServiceNow-style abstraction.
+  - secret store.
+  - bidirectional status mapping.
+  - loop prevention.
+  - redaction preview.
+
+[TODO/P2] ENT-API-007  Add identity/MDM integrations.
+  - OIDC/SCIM.
+  - Intune/Configuration Manager/GPO deployment status as demand warrants.
+
+[TODO/P2] ENT-API-008  Add STIX 2.1/TAXII 2.1 import/export interoperability tests.
+
+[TODO/P2] ENT-API-009  Provide supported SDKs after the API stabilizes.
+  - Python first.
+  - generated client plus safe higher-level helpers.
+  - examples never disable TLS or permissions.
+
+[TODO/P3] ENT-API-010  Add connector sandbox and marketplace governance.
+
+Acceptance gate:
+  TEST + THREAT + PRIV + DOC. Every integration is opt-in, scoped, bounded,
+  authenticated, observable, revocable, and redaction-aware.
+
+
+24. INSTALLATION, DEPLOYMENT, AND LIFECYCLE
+-------------------------------------------
+
+[PARTIAL/P0] ENT-DEP-001  Preserve one-click development bootstrapper.
+
+[TODO/P0] ENT-DEP-002  Create a signed production installer.
+  - MSI/MSIX or a documented combination.
+  - No execution from an unverified source archive.
+  - Publisher identity.
+  - clean install/repair/upgrade/uninstall.
+
+[TODO/P0] ENT-DEP-003  Verify all dependencies.
+  - Pinned versions/hashes.
+  - download over TLS.
+  - signature/digest checks.
+  - clear offline option.
+  - no silent curl|shell-style trust.
+
+[TODO/P0] ENT-DEP-004  Add installer preflight.
+  - Supported Windows/build/architecture.
+  - disk and data-root choice.
+  - admin rights.
+  - conflicting installation.
+  - required security services.
+  - proxy/offline configuration.
+
+[TODO/P0] ENT-DEP-005  Keep runtime data off C: when configured.
+  - One canonical resolver.
+  - migration preview.
+  - safe copy/verify/switch.
+  - no destructive cleanup without confirmation.
+  - tests scan for hard-coded C:/AppData writes.
+
+[TODO/P1] ENT-DEP-006  Add enterprise silent deployment.
+  - MSI properties/response file.
+  - GPO.
+  - Intune.
+  - Configuration Manager.
+  - noninteractive logs and exit codes.
+
+[TODO/P1] ENT-DEP-007  Add proxy and disconnected deployment.
+  - Authenticated proxy.
+  - custom trust bundle with explicit admin control.
+  - offline dependency/model/content bundle.
+
+[TODO/P1] ENT-DEP-008  Add service identity/permission hardening.
+  - Dedicated service account where appropriate.
+  - minimal ACLs.
+  - service recovery.
+  - no writable executable directories for unprivileged users.
+
+[TODO/P1] ENT-DEP-009  Add tamper-aware uninstall.
+  - Admin approval.
+  - clean service/process shutdown.
+  - optional evidence/data preservation.
+  - revokes device identity.
+  - does not obstruct legitimate owner removal.
+
+[TODO/P2] ENT-DEP-010  Add golden-image/VDI behavior.
+  - Identity generated after clone.
+  - non-persistent host handling.
+  - stable naming/labels.
+
+[TODO/P2] ENT-DEP-011  Add installer telemetry only as explicit opt-in and
+  privacy-minimized; installation must work without it.
+
+Acceptance gate:
+  REL + TEST + OPS. Fresh install, repair, upgrade, rollback, uninstall, proxy,
+  offline, non-C data root, non-admin failure, and enterprise silent deployment pass.
+
+
+25. SOFTWARE SUPPLY CHAIN AND PUBLIC GITHUB HARDENING
+-----------------------------------------------------
+
+[TODO/P0] ENT-SC-001  Run a public-release secrets/privacy sweep.
+  - Git history and current tree.
+  - .env/tokens/keys/cert private keys.
+  - usernames, phone/email, IPs, paths, reports, databases, crash dumps,
+    screenshots, model prompts, and customer-like telemetry.
+  - Replace examples with obvious synthetic values.
+
+[TODO/P0] ENT-SC-002  Lock down GitHub workflows.
+  - Minimal token permissions.
+  - Pin third-party actions to full commit digest.
+  - No untrusted PR code with write secrets.
+  - protected environments for release signing.
+
+[TODO/P0] ENT-SC-003  Enable branch protection/rulesets.
+  - Required review.
+  - required tests/security scans.
+  - no direct protected-branch push.
+  - signed commits/tags policy if adopted.
+
+[TODO/P0] ENT-SC-004  Add automated security analysis.
+  - CodeQL/static analysis.
+  - dependency scanning.
+  - secret scanning.
+  - license review.
+  - malicious dependency/name confusion review.
+
+[TODO/P0] ENT-SC-005  Generate CycloneDX/SPDX SBOM for every release.
+  - Python, native binaries, installer, models/content where applicable.
+
+[TODO/P0] ENT-SC-006  Publish vulnerability/exploitability status.
+  - VEX when supported by evidence.
+  - No unjustified "not affected" claims.
+
+[TODO/P0] ENT-SC-007  Generate SLSA-compatible build provenance.
+  - Builder identity.
+  - source revision.
+  - build definition/inputs.
+  - artifact digests.
+
+[TODO/P0] ENT-SC-008  Sign release artifacts and attestations.
+  - Authenticode for Windows packages.
+  - Sigstore/cosign bundle for release/SBOM/provenance where appropriate.
+  - Verification is enforced/documented, not merely generated.
+
+[TODO/P1] ENT-SC-009  Target progressively stronger isolated builds.
+  - Hermetic/pinned inputs.
+  - ephemeral build worker.
+  - protected signer.
+  - reproducibility comparison where feasible.
+
+[TODO/P1] ENT-SC-010  Add dependency update governance.
+  - Automated proposal.
+  - changelog/risk review.
+  - tests.
+  - staged merge.
+  - emergency security process.
+
+[TODO/P1] ENT-SC-011  Run OpenSSF Scorecard and track actionable checks.
+
+[TODO/P1] ENT-SC-012  Add public project hygiene.
+  - LICENSE.
+  - SECURITY.md.
+  - CONTRIBUTING.md.
+  - CODE_OF_CONDUCT.md.
+  - CODEOWNERS.
+  - issue/PR templates.
+  - support boundary.
+  - architecture and threat model.
+
+Acceptance gate:
+  REL + TEST + THREAT. A public user can verify artifact publisher, digest,
+  source/build provenance, SBOM, and security policy without trusting screenshots.
+
+
+26. TESTING AND SECURITY ASSURANCE
+----------------------------------
+
+[TODO/P0] ENT-QA-001  Define required test layers.
+  - Unit.
+  - property/invariant.
+  - integration.
+  - protocol compatibility.
+  - end-to-end.
+  - UI.
+  - performance/soak.
+  - failure/chaos.
+  - security/privacy.
+  - installer/update/rollback.
+
+[TODO/P0] ENT-QA-002  Maintain isolated deterministic tests.
+  - No real cloud/network by default.
+  - No host mutation outside temp sandbox.
+  - No unbounded sleeps.
+  - explicit opt-in integration/lab tests.
+
+[TODO/P0] ENT-QA-003  Add fuzzing.
+  Targets:
+  - event/schema parsers.
+  - IPC frames.
+  - signed bundle metadata.
+  - archive/document parsers.
+  - plugin manifests.
+  - API request validation.
+  - native/driver IOCTL if ever added.
+
+[TODO/P0] ENT-QA-004  Add concurrency/lifecycle tests.
+  - start/stop/restart.
+  - double click/job duplicate.
+  - shutdown during work.
+  - sleep/resume.
+  - stale worker result after window close.
+  - queue saturation.
+
+[TODO/P0] ENT-QA-005  Add security boundary tests.
+  - Forged identity/policy/update/receipt/AAR.
+  - cross-tenant access.
+  - replay.
+  - expired credentials.
+  - path traversal/symlink/reparse point.
+  - untrusted plugin.
+  - prompt injection/tool abuse.
+
+[TODO/P0] ENT-QA-006  Add privacy tests.
+  - redaction recursion.
+  - logs/support bundles.
+  - connector preview.
+  - retention/deletion.
+  - cloud disabled by default.
+
+[TODO/P1] ENT-QA-007  Add compatibility labs.
+  - Supported Windows versions/builds/architectures.
+  - upgrade paths from supported prior versions.
+  - common VPN/AV/EDR coexistence.
+  - domain/workgroup.
+  - sleep/hibernate.
+
+[TODO/P1] ENT-QA-008  Add independent penetration review before fleet beta/GA.
+
+[TODO/P1] ENT-QA-009  Add detection efficacy corpus.
+  - Safe simulations.
+  - benign enterprise software.
+  - false-positive regression.
+  - coverage claims trace to tests.
+
+[TODO/P2] ENT-QA-010  Add disaster recovery game days.
+
+Acceptance gate:
+  TEST + THREAT + PERF. Release checks are reproducible and publish an evidence
+  summary; flaky tests are quarantined visibly, never silently ignored.
+
+
+27. UI, ACCESSIBILITY, AND OPERATOR EXPERIENCE
+----------------------------------------------
+
+[DONE/P1] ENT-UX-001  Unique vector icon for every top-row action.
+
+[DONE/P1] ENT-UX-002  Hover name/definition cards plus accessibility metadata.
+
+[DONE/P1] ENT-UX-003  Vertical-line-to-panel click reveal.
+  - 280 ms.
+  - ignores duplicate clicks during reveal.
+  - honors app/Windows reduced-motion preferences.
+
+[DONE/P1] ENT-UX-004  System Pulse beside ARIA.
+  - CPU.
+  - RAM.
+  - available memory.
+  - Wi-Fi signal.
+  - receive/send throughput.
+  - background sampling.
+
+[TODO/P1] ENT-UX-005  Add compact/responsive header modes.
+  - Full label + icon.
+  - icon + short label.
+  - overflow menu at narrow widths.
+  - keyboard-accessible.
+
+[TODO/P1] ENT-UX-006  Complete keyboard and screen-reader accessibility.
+  - Logical tab order.
+  - visible focus.
+  - shortcuts.
+  - accessible names/descriptions/states.
+  - no color-only meaning.
+
+[TODO/P1] ENT-UX-007  Add motion and contrast settings.
+  - Reduced/no motion.
+  - animation speed.
+  - high contrast.
+  - color-vision-safe severity palette.
+  - persist and apply live.
+
+[TODO/P1] ENT-UX-008  Add data freshness/degraded indicators.
+  - "Last updated".
+  - sensor unavailable.
+  - partial results.
+  - offline mode.
+  - no healthy-looking stale values.
+
+[TODO/P1] ENT-UX-009  Add command/action safety affordances.
+  - Scope preview.
+  - consequences.
+  - approval.
+  - progress.
+  - cancel.
+  - result.
+  - rollback.
+
+[TODO/P2] ENT-UX-010  Build fleet console information architecture.
+  - Overview.
+  - fleet.
+  - hosts.
+  - alerts.
+  - hunts.
+  - cases.
+  - detections.
+  - policy.
+  - updates.
+  - integrations.
+  - audit.
+
+[TODO/P2] ENT-UX-011  Add analyst workspaces.
+  - Saved layout/queries.
+  - investigation timeline.
+  - evidence board.
+  - cross-host pivoting.
+  - no tenant-permission bypass through links.
+
+[TODO/P2] ENT-UX-012  Add user-facing error recovery.
+  - Plain language.
+  - technical detail expansion.
+  - copy-safe diagnostic ID.
+  - suggested next action.
+  - no secret leakage.
+
+[TODO/P2] ENT-UX-013  Add internationalization readiness.
+  - Externalize strings.
+  - locale-aware dates/numbers.
+  - layout tests.
+  - never parse localized command output where a stable API exists.
+
+[TODO/P2] ENT-UX-014  Add visual regression/screenshot tests for main workflows.
+
+[TODO/P3] ENT-UX-015  Add subtle graphical polish.
+  - Low-cost sparklines.
+  - causal/timeline transitions.
+  - staged-rollout animation.
+  - never animate high-volume table rows continuously.
+
+Acceptance gate:
+  TEST + PERF + DOC. UI remains responsive at event load, works without animation,
+  exposes all meaning without color alone, and is operable by keyboard.
+
+
+28. COMPLIANCE, ASSURANCE, AND EVIDENCE PACKS
+---------------------------------------------
+
+[TODO/P1] ENT-COMP-001  Map controls without claiming certification.
+  Initial mappings:
+  - NIST CSF 2.0.
+  - NIST SP 800-53 as applicable.
+  - NIST SSDF.
+  - CIS Controls.
+  - MITRE ATT&CK and D3FEND.
+  - organization/customer frameworks only with review.
+
+[TODO/P1] ENT-COMP-002  Link every claim to evidence.
+  - Code/test.
+  - configuration.
+  - audit.
+  - release attestation.
+  - operational procedure.
+  - owner and review date.
+
+[TODO/P2] ENT-COMP-003  Produce release evidence pack.
+  - Version/scope.
+  - threat model.
+  - SBOM/VEX.
+  - provenance/signatures.
+  - test/security/performance results.
+  - privacy inventory.
+  - known limitations.
+  - incident response/support policy.
+
+[TODO/P2] ENT-COMP-004  Add audit export.
+  - Time range/tenant/scope.
+  - signed manifest.
+  - redaction.
+  - chain-of-custody.
+
+[TODO/P2] ENT-COMP-005  Add configurable evidence retention/legal hold.
+
+[TODO/P2] ENT-COMP-006  Commission external review before making regulated or
+  certification claims (SOC 2, ISO 27001, HIPAA, PCI DSS, FedRAMP, etc.).
+
+Acceptance gate:
+  DOC + TEST + PRIV + REL. Compliance views say "mapped/evidence available",
+  not "certified", unless an authorized assessor has established that status.
+
+
+29. CROSS-PLATFORM, CLOUD, CONTAINER, AND OT EXPANSION
+------------------------------------------------------
+
+[TODO/P2] ENT-XPLAT-001  Publish an honest platform coverage matrix.
+  - Windows.
+  - Linux.
+  - macOS.
+  - server/workstation.
+  - data source and response differences.
+
+[PARTIAL/P3] ENT-XPLAT-002  Linux sensor.
+  - eBPF where supported.
+  - auditd/journald fallback.
+  - package/systemd/container context.
+  - capability/root minimization.
+
+[TODO/P3] ENT-XPLAT-003  macOS sensor.
+  - Endpoint Security framework/system extension.
+  - notarization/signing.
+  - TCC/privacy permissions.
+  - unified log.
+  - explicit feature differences.
+
+[TODO/P3] ENT-CLOUD-001  Cloud control-plane detections.
+  - AWS/Azure/GCP audit sources.
+  - read-only roles.
+  - tenant/account mapping.
+  - regional privacy.
+  - no standing broad credentials.
+
+[TODO/P3] ENT-CLOUD-002  Identity/SaaS detections.
+  - Entra/Okta-style logs as optional connectors.
+  - email/collaboration telemetry only with strict privacy scope.
+
+[TODO/P3] ENT-K8S-001  Kubernetes/container visibility.
+  - audit events.
+  - workload identity.
+  - image provenance/SBOM.
+  - runtime events through supported sensors.
+  - namespace/cluster tenant mapping.
+
+[RESEARCH/P4] ENT-OT-001  OT/ICS observation-only profile.
+  - Passive collection.
+  - strict no-response default.
+  - protocol expertise and safety review.
+  - separate release/support boundary.
+
+Acceptance gate:
+  Platform-specific TEST + THREAT + PRIV. Unsupported visibility is shown as
+  unavailable; Angerona never pretends all operating systems have equal coverage.
+
+
+30. ADVANCED AND VISIONARY RESEARCH
+-----------------------------------
+
+All P4 work must run in a lab, behind an explicit experimental flag, with no
+production claim, no autonomous destructive action, and a documented stop rule.
+
+[RESEARCH/P4] ENT-VIS-001  Privacy-preserving federated detection learning.
+  - Share bounded aggregate model/feature updates, not raw telemetry.
+  - Secure aggregation.
+  - differential privacy evaluation.
+  - poisoning/Sybil resilience.
+  - customer opt-in and rollback.
+
+[RESEARCH/P4] ENT-VIS-002  Hardware-attested analysis cells.
+  - TPM/VBS enclave/confidential-compute attestation.
+  - sealed keys.
+  - signed workload and model measurements.
+  - usefulness/operability study before productization.
+
+[RESEARCH/P4] ENT-VIS-003  Causal security knowledge graph.
+  - Evidence nodes, analytic hypotheses, identity, exposure, control, response.
+  - Confidence/uncertainty and alternative explanations.
+  - Reproducible graph build.
+
+[RESEARCH/P4] ENT-VIS-004  Counterfactual defense simulator.
+  - "What would this policy/action have changed?"
+  - Replay historical data against proposed rules.
+  - Measure alert reduction, coverage gain, and operational impact.
+
+[RESEARCH/P4] ENT-VIS-005  Shadow policy/detection deployment.
+  - Evaluate new policy/rules without enforcing.
+  - Compare old/new decisions.
+  - canary promotion based on evidence.
+
+[RESEARCH/P4] ENT-VIS-006  Verifiable self-healing.
+  - Deterministic diagnosis.
+  - pre-approved typed repair.
+  - before/after proof.
+  - rollback.
+  - action budget.
+  - no model-generated code execution.
+
+[RESEARCH/P4] ENT-VIS-007  Deception fabric.
+  - Benign honey artifacts/credentials/services with legal/privacy review.
+  - High-confidence access telemetry.
+  - safe cleanup.
+  - no entrapment/offensive payload.
+
+[RESEARCH/P4] ENT-VIS-008  Moving-target defensive configuration.
+  - Rotate defensive decoys/tokens, not production identity unpredictably.
+  - Operational impact and recovery study.
+
+[RESEARCH/P4] ENT-VIS-009  Autonomous investigation planner.
+  - Read-only cataloged queries.
+  - strict cost/data budgets.
+  - human-reviewable reasoning/evidence trail.
+  - no unrestricted shell or response.
+
+[RESEARCH/P4] ENT-VIS-010  Cross-site collaborative threat discovery.
+  - Data-local query execution.
+  - share minimized aggregates/signed findings.
+  - trust and poisoning model.
+
+[RESEARCH/P4] ENT-VIS-011  Continuous control validation.
+  - Safe micro-simulations.
+  - detector and response verification.
+  - maintenance windows/rate limits.
+  - auto-disable on instability.
+
+[RESEARCH/P4] ENT-VIS-012  Security digital twin.
+  - Model fleet identities, policies, data flows, detections, dependencies.
+  - Test updates/outages/compromise scenarios without touching production.
+
+[RESEARCH/P4] ENT-VIS-013  Cryptographic evidence transparency.
+  - Merkle inclusion proofs for release/content/audit evidence.
+  - Private deployment option.
+  - no sensitive record publication.
+
+[RESEARCH/P4] ENT-VIS-014  Memory-safe native sensor rewrite evaluation.
+  - Compare Rust/Go/C++ for selected high-rate components.
+  - Only migrate when measured reliability/performance/security gain justifies it.
+
+[RESEARCH/P4] ENT-VIS-015  Post-quantum migration inventory.
+  - Crypto agility.
+  - identify long-lived signatures/evidence.
+  - wait for stable standards/platform support before speculative replacement.
+
+Research promotion gate:
+  Demonstrated value, threat model, privacy review, stable tests, resource budget,
+  rollback, operator comprehension, and independent review.
+
+
+31. DOCUMENTATION, TRAINING, AND SUPPORT
+---------------------------------------
+
+[TODO/P0] ENT-DOC-001  Keep README honest and current.
+  - What Angerona is/is not.
+  - supported platforms.
+  - verified install.
+  - privacy/default egress.
+  - safe simulations.
+  - screenshots from current build.
+  - limitations.
+
+[TODO/P0] ENT-DOC-002  Keep llms.txt current.
+  - architecture.
+  - safety boundaries.
+  - canonical commands.
+  - data paths.
+  - tests.
+  - extension rules.
+  - current limitations.
+
+[TODO/P1] ENT-DOC-003  Maintain operator/admin manuals.
+  - Install/upgrade/rollback/uninstall.
+  - enrollment.
+  - policy.
+  - hunts.
+  - cases.
+  - response.
+  - backup/restore/DR.
+  - troubleshooting.
+
+[TODO/P1] ENT-DOC-004  Maintain developer architecture.
+  - Components and trust boundaries.
+  - schemas/protocols.
+  - ADRs.
+  - extension SDK.
+  - test strategy.
+  - performance budgets.
+
+[TODO/P1] ENT-DOC-005  Maintain security/privacy documentation.
+  - Threat model.
+  - secure defaults.
+  - data inventory/flows.
+  - egress.
+  - retention.
+  - vulnerability response.
+  - release verification.
+
+[TODO/P2] ENT-DOC-006  Add role-based training.
+  - Analyst.
+  - hunter.
+  - responder.
+  - fleet operator.
+  - detection engineer.
+  - auditor.
+
+[TODO/P2] ENT-DOC-007  Add interactive safe labs and sample synthetic data.
+
+[TODO/P2] ENT-DOC-008  Automate documentation drift checks.
+  - CLI/API/schema examples.
+  - version references.
+  - file paths.
+  - screenshots/manual review.
+
+Acceptance gate:
+  DOC. A new operator can install, verify, use, back up, recover, and remove the
+  product without reading source or receiving secrets through insecure channels.
+
+
+32. MIGRATION FROM STANDALONE TO FLEET
+--------------------------------------
+
+[TODO/P1] ENT-MIG-001  Preserve standalone mode as a first-class deployment.
+
+[TODO/P1] ENT-MIG-002  Add optional enrollment without reinstall.
+  - Preview changes and data destinations.
+  - Create device identity locally.
+  - Keep local detection active during enrollment.
+
+[TODO/P1] ENT-MIG-003  Separate local owner policy from fleet policy.
+  - Clearly define which settings a tenant admin may manage.
+  - Emergency local recovery cannot become a silent fleet bypass.
+
+[TODO/P1] ENT-MIG-004  Add dual-state transition.
+  - Local data continues.
+  - New events queue to authenticated ingest.
+  - policy remains last-known-good during outage.
+  - unenrollment revokes identity and returns to standalone cleanly.
+
+[TODO/P1] ENT-MIG-005  Migrate local trusted-process/suppression state carefully.
+  - Preview.
+  - scope.
+  - owner.
+  - expiry.
+  - avoid turning one-host learning into a fleet-wide allow.
+
+[TODO/P2] ENT-MIG-006  Add fleet import/bootstrap.
+  - CSV/API/MDM pre-registration.
+  - labels/groups.
+  - duplicate detection.
+  - no secret in import file.
+
+[TODO/P2] ENT-MIG-007  Add migration rollback and orphan cleanup.
+
+Acceptance gate:
+  TEST + OPS + PRIV. Enrollment/unenrollment/outage/reinstall do not lose local
+  protection, duplicate device identity, leak data, or strand an uncontrollable host.
+
+
+33. RELEASE MATURITY GATES
+--------------------------
+
+GATE A - TRUSTWORTHY STANDALONE RELEASE
+  [ ] Public secrets/privacy sweep clean.
+  [ ] Supported Windows matrix documented.
+  [ ] Installer, binaries, SBOM, provenance, and checksums signed/verifiable.
+  [ ] Update/rollback and uninstall tested.
+  [ ] 24-hour soak passes performance/leak targets.
+  [ ] Red-team drill cleanup/remediation scoring is deterministic and correct.
+  [ ] Data root stays on configured drive.
+  [ ] No known P0/P1 security/reliability issue.
+  [ ] README, SECURITY.md, llms.txt, manual, capabilities, flow are current.
+
+GATE B - FLEET PREVIEW
+  [ ] Unique device identity and mTLS enrollment/rotation/revocation.
+  [ ] Tenant boundary and cross-tenant negative tests.
+  [ ] OIDC SSO, least-privilege RBAC, immutable admin audit.
+  [ ] Durable bounded endpoint ingestion queue.
+  [ ] Signed policy/content bundle, canary, last-known-good, rollback.
+  [ ] Typed remote jobs only; no arbitrary shell.
+  [ ] Fleet inventory/health/data-freshness dashboard.
+  [ ] Published preview limitations and data-flow/privacy docs.
+
+GATE C - ENTERPRISE BETA
+  [ ] Search/retention/backup/restore.
+  [ ] Hunts with budgets, pause, expiry, offline endpoints.
+  [ ] Cases/evidence chain and response approvals.
+  [ ] Signed remote software update and rollback.
+  [ ] SIEM/ITSM/STIX/TAXII/API integration tests.
+  [ ] 10,000 simulated endpoint scale test.
+  [ ] 7-day soak and chaos tests.
+  [ ] Independent security assessment findings triaged.
+
+GATE D - ENTERPRISE GENERAL AVAILABILITY
+  [ ] HA control/data plane with tested failover.
+  [ ] RPO/RTO disaster recovery game day passes.
+  [ ] Upgrade compatibility across supported version window.
+  [ ] SLOs, operational dashboards, runbooks, and support process.
+  [ ] Release evidence pack and known limitations.
+  [ ] External penetration/security review closed or accepted transparently.
+  [ ] No unresolved critical/high issue without documented, time-bounded exception.
+  [ ] Enterprise claim approved by engineering, security, privacy, and operations.
+
+
+34. INITIAL EXECUTION PLAN
+--------------------------
+
+NEXT 30 DAYS - MAKE THE STANDALONE RELEASE BORINGLY TRUSTWORTHY
+  1. ENT-SC-001 public privacy/secrets/history sweep.
+  2. ENT-PERF-003/004 budgets and 24-hour soak.
+  3. ENT-SOAR-003 deterministic drill remediation and score closure.
+  4. ENT-DEP-002/003 signed installer/dependency verification design.
+  5. ENT-SC-005/007 SBOM and provenance.
+  6. ENT-QA-003/004 parser/lifecycle regression expansion.
+  7. ENT-DOC-001/002 current README and llms.txt.
+
+DAYS 31-90 - BUILD THE FLEET TRUST CORE
+  1. ENT-ID-001 threat model.
+  2. ENT-AUTH-001 tenant model.
+  3. ENT-ID-002..006 enrollment/mTLS/rotation/revocation.
+  4. ENT-ING-001..005 versioned bounded delivery.
+  5. ENT-AUTH-002/005/008 OIDC/RBAC/audit.
+  6. ENT-POL-001..006 signed policy/canary/rollback.
+  7. ENT-CTL-001..006 typed jobs and signed receipts.
+
+MONTHS 4-6 - OPERATIONS
+  1. Search/retention/evidence storage.
+  2. Hunts and cases.
+  3. Signed staged software updates.
+  4. APIs/connectors.
+  5. backup/restore/DR.
+  6. 10,000-endpoint simulation and external review.
+
+MONTHS 7-12 - ENTERPRISE BETA TO GA
+  1. HA and SLOs.
+  2. cross-host analytics.
+  3. enterprise deployment/air gap.
+  4. compliance evidence packs.
+  5. platform expansion only after Windows quality gates.
+  6. choose at most two P4 research tracks based on measured customer value.
+
+
+35. SUCCESS METRICS
+-------------------
+
+Security:
+  - 100% remote commands typed, signed, scoped, expiring, replay-resistant.
+  - 100% production policies/content/updates verified before activation.
+  - 0 known cross-tenant access paths in automated and independent tests.
+  - 100% high-impact response actions with approval and proof receipt.
+
+Reliability:
+  - Declared SLOs met during beta/GA window.
+  - No monotonic resource leak in 24-hour and 7-day soaks.
+  - Bad policy/update automatically pauses and rolls back within the target SLO.
+  - Backup restore and disaster recovery demonstrated on schedule.
+
+Detection:
+  - 100% production detections have owner, fixtures, data requirements, version,
+    ATT&CK mapping, performance budget, and rollback.
+  - False-positive suppressions have scope, reason, owner, and expiry.
+  - Coverage reports distinguish visibility, analytic, test, observation, response.
+
+Privacy:
+  - 100% fields have purpose/class/retention/access/egress record.
+  - Optional egress remains off by default.
+  - 100% exports/connectors show or document redaction and destination.
+  - Retention deletion and legal hold are tested.
+
+Supply chain:
+  - 100% release artifacts have digest, signature, SBOM, provenance.
+  - Verification instructions are tested on a clean machine.
+  - Protected release workflow uses minimal permissions and reviewed inputs.
+
+Operator experience:
+  - Core workflows are keyboard accessible and screen-reader labeled.
+  - Reduced-motion mode retains full function.
+  - Normal-load interaction p95 stays within the declared target.
+  - Degraded/stale/partial data is always visible.
+
+
+36. DO-NOT-SHIP LIST
+--------------------
+
+[ ] No real exploit, credential theft, destructive payload, ransomware, or wiper.
+[ ] No generic enterprise remote shell.
+[ ] No AI-generated code executed on endpoints.
+[ ] No silent autonomous destructive remediation.
+[ ] No unsigned/unverified policy, rule, plugin, report, model, or update.
+[ ] No shared permanent fleet secret.
+[ ] No implicit trust from IP address, subnet, VPN, or physical network.
+[ ] No cross-tenant cache/search/export/audit shortcut.
+[ ] No unbounded queue, cache, table, report, log, scan, archive, or model context.
+[ ] No cloud/connector/microphone egress hidden behind vague wording.
+[ ] No stale telemetry rendered as healthy.
+[ ] No kernel driver without a proven need and separate assurance gate.
+[ ] No stealth naming, hidden persistence, or owner-resistant uninstall.
+[ ] No compliance/certification or enterprise-readiness claim without evidence.
+
+
+37. AUTHORITATIVE REFERENCE SET
+-------------------------------
+
+Use current versions at implementation time. These references informed the
+roadmap; they are not automatic proof that Angerona conforms.
+
+Fleet and endpoint architecture:
+  Wazuh architecture
+  https://documentation.wazuh.com/current/getting-started/architecture.html
+
+  Wazuh server enrollment, identity, configuration, and clustering
+  https://documentation.wazuh.com/current/getting-started/components/wazuh-server.html
+
+  Wazuh agent encrypted channel and remote lifecycle
+  https://documentation.wazuh.com/current/getting-started/components/wazuh-agent.html
+
+  Wazuh upgrade guide
+  https://documentation.wazuh.com/current/upgrade-guide/index.html
+
+  Velociraptor hunts
+  https://docs.velociraptor.app/docs/hunting/
+
+Identity and zero trust:
+  NIST SP 800-207 Zero Trust Architecture
+  https://csrc.nist.gov/pubs/sp/800/207/final
+
+  SPIFFE Workload API
+  https://spiffe.io/docs/latest/spiffe-specs/spiffe_workload_api/
+
+  OpenID Connect Core 1.0
+  https://openid.net/specs/openid-connect-core-1_0.html
+
+  SCIM Protocol, RFC 7644
+  https://www.rfc-editor.org/info/rfc7644
+
+Windows isolation and platform security:
+  Windows application isolation
+  https://learn.microsoft.com/windows/security/book/application-security-application-isolation
+
+  MSIX containerization
+  https://learn.microsoft.com/windows/msix/msix-containerization-overview
+
+  Application Control for Windows
+  https://learn.microsoft.com/windows/security/application-security/application-control/app-control-for-business/
+
+  Windows driver documentation and security/HLK entry points
+  https://learn.microsoft.com/windows-hardware/drivers/
+
+Supply chain and updates:
+  NIST SP 800-218 Secure Software Development Framework
+  https://csrc.nist.gov/pubs/sp/800/218/final
+
+  SLSA specification
+  https://slsa.dev/spec/v1.2/
+
+  Sigstore signing overview
+  https://docs.sigstore.dev/cosign/signing/overview/
+
+  The Update Framework specification
+  https://theupdateframework.github.io/specification/
+
+  CycloneDX VEX
+  https://cyclonedx.org/capabilities/vex/
+
+  OpenSSF Scorecard
+  https://github.com/ossf/scorecard
+
+Schemas, threat intelligence, detection, and observability:
+  Open Cybersecurity Schema Framework
+  https://ocsf.io/
+
+  OASIS TAXII 2.1
+  https://docs.oasis-open.org/cti/taxii/v2.1/os/taxii-v2.1-os.html
+
+  MITRE ATT&CK Detection Strategies
+  https://attack.mitre.org/detectionstrategies/
+
+  MITRE D3FEND
+  https://d3fend.mitre.org/about/
+
+  OpenTelemetry
+  https://opentelemetry.io/docs/
+
+AI risk:
+  NIST AI Risk Management Framework
+  https://www.nist.gov/itl/ai-risk-management-framework
+
+  NIST AI 600-1 Generative AI Profile
+  https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.600-1.pdf
+
+
+38. NEW-IDEA INTAKE TEMPLATE
+----------------------------
+
+Use this template for anything not already captured:
+
+  ID:
+  Title:
+  Problem/evidence:
+  User/operator:
+  Priority:
+  Current limitation:
+  Proposed outcome:
+  Trust boundary changed:
+  Data collected/retained/exported:
+  Privileges required:
+  Failure/abuse cases:
+  Safer alternatives considered:
+  Dependencies:
+  Resource budget:
+  Migration/rollback:
+  Acceptance tests:
+  Documentation:
+  Owner:
+  Target release:
+  Status:
+
+
+END OF MASTER TODO
+------------------
+
+The next best move is not the flashiest feature. It is Gate A: make the public,
+standalone Angerona release verifiable, privacy-clean, signed, reproducible,
+stable under long soaks, and honest about its current limits. Fleet identity,
+signed policy, typed jobs, tenant isolation, and durable ingestion then create
+the foundation on which the more legendary capabilities can safely stand.

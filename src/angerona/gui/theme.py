@@ -249,6 +249,15 @@ QComboBox QAbstractItemView {{
     selection-background-color: {p['accent']}44;
 }}
 QCheckBox::indicator {{ width: {ind_wh}; height: {ind_wh}; }}
+QProgressBar {{
+    background: {p['bg']};
+    border: 1px solid {p['border']};
+    border-radius: 3px;
+}}
+QProgressBar::chunk {{
+    background: {p['accent']};
+    border-radius: 2px;
+}}
 QScrollBar:vertical  {{ background: {p['panel']}; width: 10px; }}
 QScrollBar::handle:vertical {{ background: {p['border']}; border-radius: 5px; }}
 QScrollBar:horizontal {{ background: {p['panel']}; height: 8px; }}

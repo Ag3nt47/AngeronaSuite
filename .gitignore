@@ -103,3 +103,7 @@ dist/
 
 # ── Self-check runtime report ───────────────────────────────────────────────
 selfcheck_report*.txt
+
+# Local document-rendering workspaces (generated; never publish)
+/analysis/manual_build/
+/LibreOffice_*_Machine_X64_msi_en-US/

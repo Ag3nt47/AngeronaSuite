@@ -90,6 +90,7 @@ class Config:
     #           on very large or very high-DPI monitors where auto feels off.
     ui_scale_mode: str = "auto"                  # "auto" | "fixed"
     ui_scale_fixed: float = 1.0                  # honored only when mode == "fixed"
+    ui_motion_enabled: bool = True                # polished panel reveals; OS reduced-motion still wins
 
     # ── Self-hardening input integrity ─────────────────────────────────────
     # When True, After-Action Reports that aren't HMAC-authenticated (unsigned
@@ -171,6 +172,9 @@ class Config:
                     cfg.ui_scale_fixed    = float(data.get("ui_scale_fixed", cfg.ui_scale_fixed))
                 except (TypeError, ValueError):
                     pass
+                cfg.ui_motion_enabled = bool(
+                    data.get("ui_motion_enabled", cfg.ui_motion_enabled)
+                )
                 cfg.require_signed_aar    = bool(data.get("require_signed_aar", cfg.require_signed_aar))
                 cfg.entropy_pool_enabled  = bool(data.get("entropy_pool_enabled", cfg.entropy_pool_enabled))
             except Exception:
@@ -240,6 +244,7 @@ class Config:
                     "ollama_keep_alive":     self.ollama_keep_alive,
                     "ui_scale_mode":         self.ui_scale_mode,
                     "ui_scale_fixed":        self.ui_scale_fixed,
+                    "ui_motion_enabled":     self.ui_motion_enabled,
                     "require_signed_aar":    self.require_signed_aar,
                     "entropy_pool_enabled":  self.entropy_pool_enabled,
                 },

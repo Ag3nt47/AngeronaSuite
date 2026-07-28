@@ -25,6 +25,8 @@ from angerona.core.eco_wakeup import EcoWakeupWorker
 from angerona.core.eventbus import Severity
 from angerona.gui.animations import (
     ClashingSwords, RunSpinner, SharkSwimBanner, SharkSwimIndicator, ThreatOverlay)
+from angerona.gui.header_controls import (
+    HeaderActionButton, PanelRevealOverlay, motion_allowed)
 from angerona.gui.pages import (
     AARDialog, AlertsPanel, CommandConsolePanel, DashboardCards, ModuleInspector,
     ModulesPanel, ResourceStrip, SettingsDialog, SharkMonitorDialog, SoarPanel,
@@ -32,6 +34,7 @@ from angerona.gui.pages import (
 )
 from angerona.gui.sandbox_editor import launch_sandbox_editor
 from angerona.gui.upgrade_console import launch_upgrade_console
+from angerona.gui.system_pulse import SystemPulseCard
 from angerona.gui.theme import build_qss, clamp_scale
 from angerona.gui.threat_intel_page import ThreatIntelDashboard
 from angerona.shark.shark_attack import SharkAttackEngine
@@ -112,20 +115,32 @@ class MainWindow(QMainWindow):
         header = QHBoxLayout()
         left = QWidget(); bl = QHBoxLayout(left)
         bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(8)
-        test_btn = QPushButton("▶  RUN SELF-TEST")
-        test_btn.clicked.connect(self._run_self_test)
+        test_btn = HeaderActionButton(
+            "RUN SELF-TEST",
+            "selftest",
+            "Run Self-Test",
+            "Checks every enabled defensive module and reports what passed, "
+            "what failed, and what the operator can do next.",
+        )
+        test_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                test_btn, self._run_self_test, "#5eead4"))
         # Unified Red Team Simulation — the Shark Attack and APT Red-Team drills
         # are now scenarios inside one configurable simulation (difficulty,
         # target, custom benign technique), launched from this single button.
-        sim_btn = QPushButton("RUN RED TEAM SIMULATION")
-        sim_btn.setToolTip(
-            "Configure and run an unannounced, non-destructive adversary simulation "
-            "(Shark and/or APT Red-Team scenarios) with a difficulty level, a target, "
-            "and an optional custom benign technique — tests detect + respond end to end.")
+        sim_btn = HeaderActionButton(
+            "RUN RED TEAM SIMULATION",
+            "simulation",
+            "Red Team Simulation",
+            "Configures a safe, reversible drill that tests detection and response "
+            "end to end without deploying a real exploit or persistence mechanism.",
+        )
         # Styled via QSS object name (#Danger) so it scales with the UI-scale
         # factor instead of being frozen at fixed inline pixels.
         sim_btn.setObjectName("Danger")
-        sim_btn.clicked.connect(self._open_simulation)
+        sim_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                sim_btn, self._open_simulation, "#fb7185"))
         # Eco Mode — one tap to shed heavy background scan load. Pauses the
         # expensive pollers/scanners (process/mem/yara/net enumeration) while
         # leaving the safety-critical response path (SOAR, deception, watchdog,
@@ -133,12 +148,16 @@ class MainWindow(QMainWindow):
         # host feels bogged down; tap again to resume full monitoring.
         self._eco_on = False
         self._eco_paused: list[str] = []
-        self.eco_btn = QPushButton("🌿  ECO MODE")
-        self.eco_btn.setToolTip(
-            "Pause the heavy background scanners to free up the machine. The core "
-            "response path (SOAR, deception, watchdog, heartbeat) stays active. "
-            "Tap again to resume full monitoring.")
-        self.eco_btn.clicked.connect(self._toggle_eco_mode)
+        self.eco_btn = HeaderActionButton(
+            "ECO MODE",
+            "eco",
+            "Eco Mode",
+            "Pauses heavy background scanners while keeping the safety-critical "
+            "response path live. Tap again to wake scanners one at a time.",
+        )
+        self.eco_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                self.eco_btn, self._toggle_eco_mode, "#4ade80"))
         # Shark/sword animations removed per user request. No-op stubs keep the
         # existing start()/stop()/set_active() call sites harmless.
         self.red_swords = _NoAnim()
@@ -169,44 +188,102 @@ class MainWindow(QMainWindow):
 
         right = QWidget(); rl = QHBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(8)
-        worldview_btn = QPushButton("🌐  WORLD VIEW")
-        worldview_btn.setToolTip("Deep-transparency host telemetry: suite-vs-host resources, "
-                                 "blinding detector, and live Ollama diagnostics")
-        worldview_btn.clicked.connect(self._open_worldview)
-        attack_heatmap_btn = QPushButton("🔥  ATT&CK MAP")
-        attack_heatmap_btn.setToolTip(
-            "Live MITRE ATT&CK heatmap — 86 techniques across 14 tactics, "
-            "coloured by time-decaying hit frequency")
-        attack_heatmap_btn.clicked.connect(self._open_attack_heatmap)
+        worldview_btn = HeaderActionButton(
+            "WORLD VIEW",
+            "world",
+            "World View",
+            "Shows Angerona's live system flow, host resources, blinding checks, "
+            "sensor health, and local AI diagnostics.",
+        )
+        worldview_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                worldview_btn, self._open_worldview, "#38bdf8"))
+        attack_heatmap_btn = HeaderActionButton(
+            "ATT&CK MAP",
+            "attack",
+            "MITRE ATT&CK Map",
+            "Maps observed activity and detection coverage across ATT&CK tactics "
+            "and techniques using time-decaying hit intensity.",
+        )
+        attack_heatmap_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                attack_heatmap_btn, self._open_attack_heatmap, "#fb923c"))
         # Threat Intel button — pulses red/amber when INTL has host-applicable
         # KEV CVEs waiting for operator review.  Style toggles in _refresh().
-        self.threat_intel_btn = QPushButton("🛡  THREAT INTEL")
-        self.threat_intel_btn.setToolTip(
-            "CISA Known Exploited Vulnerabilities correlated against this host.\n"
-            "Pulses when host-applicable CVEs are waiting for operator review.")
-        self.threat_intel_btn.clicked.connect(self._open_threat_intel)
+        self.threat_intel_btn = HeaderActionButton(
+            "THREAT INTEL",
+            "intel",
+            "Threat Intelligence",
+            "Correlates known exploited vulnerabilities and trusted intelligence "
+            "against this host, then highlights items awaiting operator review.",
+        )
+        self.threat_intel_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                self.threat_intel_btn, self._open_threat_intel, "#60a5fa"))
         self._threat_intel_dlg: ThreatIntelDashboard | None = None
         self._intl_alert_pulse = False   # toggled each tick when alert is pending
-        forensics_btn = QPushButton("🎯  FORENSICS")
-        forensics_btn.setToolTip("Incident forensics: Shark-vs-Shield ring collision view "
-                                 "and per-PID blast-radius provenance tree")
-        forensics_btn.clicked.connect(self._open_forensics_hub)
-        console_btn = QPushButton("🧰  CONSOLE")
-        console_btn.clicked.connect(self._open_upgrade_console)
-        setup_btn = QPushButton("🚀  SETUP")
-        setup_btn.setToolTip("One-swoop setup: AI, voice, Signal, Teams, trusted apps, startup")
-        setup_btn.clicked.connect(self._open_setup)
-        self._help_btn = QPushButton("❔  HELP")
-        self._help_btn.setToolTip("How to set up, test, and troubleshoot Angerona, ARIA, "
-                                  "voice, Signal and Teams — plus an interactive tour")
-        self._help_btn.clicked.connect(self._open_help)
-        settings_btn = QPushButton("⚙  SETTINGS")
-        settings_btn.clicked.connect(self._open_settings)
-        stop_btn = QPushButton("⏹  STOP")
-        stop_btn.setToolTip("Stop all modules and shut Angerona down completely")
+        forensics_btn = HeaderActionButton(
+            "FORENSICS",
+            "forensics",
+            "Forensics",
+            "Investigates incidents with evidence capture, process provenance, "
+            "blast-radius context, and signed after-action material.",
+        )
+        forensics_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                forensics_btn, self._open_forensics_hub, "#c084fc"))
+        console_btn = HeaderActionButton(
+            "CONSOLE",
+            "console",
+            "Advanced Console",
+            "Opens diagnostics, integrations, mobile response, watchdog controls, "
+            "and advanced management tools.",
+        )
+        console_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                console_btn, self._open_upgrade_console, "#2dd4bf"))
+        setup_btn = HeaderActionButton(
+            "SETUP",
+            "setup",
+            "Guided Setup",
+            "Configures local AI, voice, notifications, trusted applications, "
+            "startup behavior, and other first-run choices.",
+        )
+        setup_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                setup_btn, self._open_setup, "#f472b6"))
+        self._help_btn = HeaderActionButton(
+            "HELP",
+            "help",
+            "Help and Guided Tour",
+            "Explains setup, testing, troubleshooting, privacy, ARIA, and "
+            "integrations, with an interactive tour of the dashboard.",
+        )
+        self._help_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                self._help_btn, self._open_help, "#facc15"))
+        settings_btn = HeaderActionButton(
+            "SETTINGS",
+            "settings",
+            "Settings",
+            "Changes appearance, performance, privacy, trusted processes, "
+            "enterprise controls, ARIA, microphone, and integrations.",
+        )
+        settings_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                settings_btn, self._open_settings, "#cbd5e1"))
+        stop_btn = HeaderActionButton(
+            "STOP",
+            "stop",
+            "Stop Angerona",
+            "Stops every module and helper, closes local AI owned by Angerona, "
+            "and shuts the suite down cleanly.",
+        )
         # Styled via QSS object name (#Critical) so it scales with the UI.
         stop_btn.setObjectName("Critical")
-        stop_btn.clicked.connect(self._full_shutdown)
+        stop_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                stop_btn, self._full_shutdown, "#ef4444"))
         rl.addStretch(1)
         rl.addWidget(worldview_btn); rl.addWidget(attack_heatmap_btn)
         rl.addWidget(self.threat_intel_btn)
@@ -258,10 +335,10 @@ class MainWindow(QMainWindow):
         # ARIA import/build failure just skips it without touching the rest.
         self._wire_aria()
 
-        # Bottom section = ARIA. The compact orb HUD (built in _wire_aria) sits to
-        # the LEFT of the Console prompt bar; the Console is the single place you
-        # type to ARIA (streaming) or run IR commands. If ARIA is disabled/failed
-        # to build, the Console fills the space alone.
+        # Bottom section = ARIA + Console + a compact live System Pulse. The
+        # monitor samples in a background worker, so CPU/Wi-Fi queries cannot
+        # stall the prompt or dashboard repaint path.
+        self.system_pulse = SystemPulseCard()
         if getattr(self, "aria_hud", None) is not None:
             self._console_section = QSplitter(Qt.Horizontal)
             # Lowered from 150 so the ARIA orb column can be squeezed right down
@@ -270,15 +347,26 @@ class MainWindow(QMainWindow):
             self.aria_hud.setMaximumWidth(420)
             self._console_section.addWidget(self.aria_hud)
             self._console_section.addWidget(self.console)
+            self._console_section.addWidget(self.system_pulse)
             self._console_section.setStretchFactor(0, 2)
-            self._console_section.setStretchFactor(1, 8)
-            self._console_section.setSizes([230, 900])
+            self._console_section.setStretchFactor(1, 7)
+            self._console_section.setStretchFactor(2, 2)
+            self._console_section.setSizes([210, 760, 250])
             self._console_section.setOpaqueResize(False)
             self._console_section.setChildrenCollapsible(False)
             self._console_section.setHandleWidth(7)
             bottom = self._console_section
         else:
-            bottom = self.console
+            self._console_section = QSplitter(Qt.Horizontal)
+            self._console_section.addWidget(self.console)
+            self._console_section.addWidget(self.system_pulse)
+            self._console_section.setStretchFactor(0, 8)
+            self._console_section.setStretchFactor(1, 2)
+            self._console_section.setSizes([900, 250])
+            self._console_section.setOpaqueResize(False)
+            self._console_section.setChildrenCollapsible(False)
+            self._console_section.setHandleWidth(7)
+            bottom = self._console_section
 
         body = QSplitter(Qt.Vertical)
         body.addWidget(top_split)
@@ -316,6 +404,7 @@ class MainWindow(QMainWindow):
         root.addWidget(self.resource_strip)
 
         self.setCentralWidget(central)
+        self._panel_reveal = PanelRevealOverlay(central)
 
         # Shark-sweep overlay and full-width swimming-shark banner removed per
         # user request — stubbed so existing start()/stop() calls are harmless.
@@ -454,6 +543,19 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.setStyleSheet(self._qss())
+
+    def _run_header_action(self, source: QWidget, callback, color: str) -> None:
+        """Route a top-row action through the lightweight panel reveal."""
+        if not motion_allowed(self.config):
+            callback()
+            return
+        overlay = getattr(self, "_panel_reveal", None)
+        if overlay is None:
+            callback()
+            return
+        # A second click while the 280 ms reveal is active is deliberately
+        # ignored so it cannot open duplicate modal windows.
+        overlay.reveal(source, callback, color)
 
     # ── Refresh ──────────────────────────────────────────────────────────────
     def _refresh(self) -> None:
@@ -687,7 +789,7 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
         self._eco_on = True
-        self.eco_btn.setText("🌿  ECO: ON")
+        self.eco_btn.setText("ECO: ON")
         self.eco_btn.setStyleSheet(
             "background:#166534; color:#dcfce7; font-weight:800; border:none;"
             "border-radius:6px; padding:7px 16px;")
@@ -708,7 +810,7 @@ class MainWindow(QMainWindow):
             mods = [self.manager.modules[n] for n in self._eco_paused
                     if n in self.manager.modules]
             self._eco_on = False
-            self.eco_btn.setText("🌿  ECO MODE")
+            self.eco_btn.setText("ECO MODE")
             self.eco_btn.setStyleSheet("")
             if not mods:
                 self._eco_paused = []
