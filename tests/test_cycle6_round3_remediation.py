@@ -23,8 +23,12 @@ def _event_db(path: Path, authority: BusAuthority) -> None:
     con.execute(
         "INSERT INTO events VALUES (?,?,?,?,?,?)",
         (
-            event.ts, event.module, int(event.severity), event.message,
-            '{"pid":42}', authority.sign(event),
+            event.ts,
+            event.module,
+            int(event.severity),
+            event.message,
+            '{"pid":42}',
+            authority.sign(event),
         ),
     )
     con.commit()
@@ -69,9 +73,7 @@ def test_precreated_known_bus_key_is_quarantined_before_read(tmp_path, monkeypat
     known = b"A" * 32
     key_path = tmp_path / "bus.key"
     key_path.write_text(known.hex(), encoding="ascii")
-    monkeypatch.setattr(
-        eventbus.BusAuthority, "_key_path", staticmethod(lambda: key_path)
-    )
+    monkeypatch.setattr(eventbus.BusAuthority, "_key_path", staticmethod(lambda: key_path))
     monkeypatch.setattr(hardening, "key_acl_required", lambda: True)
     monkeypatch.setattr(hardening, "ensure_sensitive_parent", lambda *_a, **_k: None)
     monkeypatch.setattr(hardening, "sensitive_file_is_protected", lambda _p: False)
@@ -86,11 +88,27 @@ def test_precreated_known_bus_key_is_quarantined_before_read(tmp_path, monkeypat
 def test_launcher_protects_parent_before_runtime_key_access():
     root = Path(__file__).parents[1]
     launcher = (root / "start-angerona.bat").read_text(encoding="utf-8")
-    custody = (root / "tools" / "protect-key-custody.ps1").read_text(
-        encoding="utf-8"
-    )
+    custody = (root / "tools" / "protect-key-custody.ps1").read_text(encoding="utf-8")
     protect_at = launcher.index("protect-key-custody.ps1")
     first_runtime_create = launcher.index('if not exist "%TEMP%" mkdir')
     assert protect_at < first_runtime_create
     assert "[IO.Directory]::CreateDirectory($Path, $security)" in custody
     assert 'foreach ($name in @("bus.key", "shutdown.key"))' in custody
+
+
+def test_key_custody_uses_valid_separate_icacls_command_forms():
+    root = Path(__file__).parents[1]
+    custody = (root / "tools" / "protect-key-custody.ps1").read_text(encoding="utf-8")
+
+    # icacls accepts /setowner and DACL mutation as distinct syntaxes. Combining
+    # them caused the elevated launcher to abort with "Invalid parameter
+    # /setowner" before Angerona could start.
+    owner_call = 'Invoke-Icacls @($DataRoot, "/setowner", "*S-1-5-32-544", "/T", "/L", "/Q")'
+    reset_call = 'Invoke-Icacls @($children, "/reset", "/T", "/L", "/Q")'
+    assert owner_call in custody
+    assert reset_call in custody
+    assert "/inheritance:r" not in custody
+    assert custody.index("Set-Acl -LiteralPath $DataRoot") < custody.index(owner_call)
+    assert "Assert-NoReparsePoints $DataRoot" in custody
+    assert '$custodyMarker = Join-Path $DataRoot ".custody-v1"' in custody
+    assert "One-time runtime data migration is required." in custody

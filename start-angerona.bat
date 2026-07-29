@@ -37,6 +37,7 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+echo [*] Preparing protected runtime storage...
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\protect-key-custody.ps1" -DataRoot "%ANGERONA_DATA%"
 if errorlevel 1 (
     echo [!] Unable to establish protected runtime key custody.

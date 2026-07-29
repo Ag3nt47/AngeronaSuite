@@ -552,7 +552,14 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   single-flight. Canary echo ingestion is non-blocking and retains the newest
   64 records. Existing generation, shutdown-drain, sleep/resume, and closed
   dialog tests complete the concurrency/lifecycle contract.
-- Current evidence: 495 passed /
+- Windows source startup runs `tools/protect-key-custody.ps1` before any
+  runtime key access. Keep `icacls /setowner` and DACL `/reset` as separate
+  native command forms; Windows rejects a combined ownership/DACL invocation.
+  The migration closes the root first, rejects reparse points, resets
+  descendants, quarantines pre-existing bus/shutdown keys, and writes
+  `.custody-v1` only after success. Visible phase messages are intentional
+  because a first migration of a large report/model tree can take time.
+- Current evidence: 496 passed /
   2 intentional platform skips; compile and Ruff clean; no known
   installed-package vulnerability reported.
 

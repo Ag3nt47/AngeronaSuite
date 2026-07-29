@@ -972,6 +972,14 @@ email scanning, channel push, research) — each has a one-click test button.
   requires a ready fixed drive, and retains the existing reparse-point and
   required-file checks. The independent Python source/interpreter trust
   preflight still runs before `pythonw`.
+- **Protected-storage launcher migration repaired.** Windows `icacls` ownership
+  and permission changes now run as their required separate command forms; the
+  previous combined invocation failed with an invalid `/setowner` parameter and
+  stopped startup. Existing runtime trees are closed at the root first, checked
+  for reparse points, migrated with fail-closed native ownership and permission
+  passes, and marked only after completion so an interrupted migration resumes.
+  The launcher displays each one-time phase instead of presenting a blank
+  console.
 - **Deterministic trust-boundary fuzzing.** A pinned, development-only
   Hypothesis harness now derives 120 offline-replayable examples per property
   for normalized sensor events, authenticated Inter-Process Communication (IPC)
@@ -1017,10 +1025,10 @@ email scanning, channel push, research) — each has a one-click test button.
   result handling. A synthetic 100,000-event burst retained exactly the newest
   2,000 records, accounted for 98,000 drops, and enqueued in 216.46 ms.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
-  passes **495 tests with 2 intentional platform skips** and 0 failures.
+  passes **496 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
   Ruff pass. pip-audit reports no known vulnerabilities in the installed
   dependencies. The public-repository scan found no committed real credential,
   private key, user-profile path, database, runtime-data, or cache artifact.
 
-<!-- ANGERONA_DOC_STATUS tests=495 skips=2 modules=65 -->
+<!-- ANGERONA_DOC_STATUS tests=496 skips=2 modules=65 -->
