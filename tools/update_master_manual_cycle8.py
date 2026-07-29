@@ -209,6 +209,36 @@ def update(source: Path, destination: Path) -> None:
         "time range, privacy policy, and requester token.",
     ))
 
+    doc.add_heading("Proof-driven drill remediation", level=2)
+    bullets(doc, (
+        "The After-Action Report closure counter previously had no producer, "
+        "which structurally kept simulated finding closure at zero. Closure now "
+        "uses a durable lifecycle rather than a display-only flag.",
+        "Each unique actionable technique receives a typed action contract with "
+        "exact detector and marker scope, preconditions, operator-reviewed "
+        "authorization, safety checks, idempotency, verification expiry, and "
+        "an exact rollback. The contract accepts no command, shell, script, "
+        "code, or arbitrary executable field.",
+        "Installing a Purple Remediation Guard candidate and cleaning inert "
+        "markers creates an HMAC-authenticated applied receipt. Applied does "
+        "not mean fixed and cannot close the source run.",
+        "The VERIFIED_CLOSED state requires a fresh, technique-bound Purple "
+        "Guard echo from a different run and after the action was applied. Wrong run, "
+        "detector, technique, contract identifier or digest, pre-apply evidence, "
+        "and tampered lifecycle state fail closed.",
+        "Application, verification, and exact-policy rollback produce standalone "
+        "authenticated receipts. Rollback removes only the selected technique "
+        "and preserves unrelated detector candidates.",
+        "Verification expires after a bounded interval and a later miss reopens "
+        "the issue. Repeated occurrences are idempotent and retained within a "
+        "fixed bound.",
+        "The scorecard separately reports detector coverage, same-run correlated "
+        "Security Orchestration, Automation, and Response (SOAR), deterministic "
+        "action application, and verified closure. Closure counts unique "
+        "actionable techniques; resilience and no-detector-by-design stages "
+        "remain outside the denominator.",
+    ))
+
     doc.add_heading("Engineering efficiency and verification", level=2)
     bullets(doc, (
         "Ruff 0.16.0 adds a fast correctness gate and found a latent ARP "
@@ -227,7 +257,7 @@ def update(source: Path, destination: Path) -> None:
         "The first Bandit pass exposed a weak SHA-1 alert identifier and "
         "shell-based console clearing. Both were corrected and the "
         "high-severity re-scan is clean.",
-        "Final repository evidence: 416 tests passed, 2 intentional "
+        "Final repository evidence: 426 tests passed, 2 intentional "
         "platform-dependent skips, 0 failures; Python compilation, Ruff, "
         "dependency audit, and whitespace checks passed.",
     ))

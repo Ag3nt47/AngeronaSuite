@@ -3488,7 +3488,7 @@ class AARDialog(QDialog):
         row.addWidget(refresh)
         row.addStretch(1)
         self._fix_btn = QPushButton("\U0001F6E0  " +
-                                    ("Build & Verify Fixes" if self._redteam else "Attempt Fix"))
+                                    ("Apply Fix Candidates" if self._redteam else "Attempt Fix"))
         self._fix_btn.setObjectName("Primary")
         self._fix_btn.setToolTip(
             "Install reviewed detector candidates and clean inert markers. Findings stay open "

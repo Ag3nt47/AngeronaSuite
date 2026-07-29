@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 from angerona.connectors.teams_bot import TeamsBot
-from angerona.core import privacy, report_attest, secure_store
+from angerona.core import drill_resolution, privacy, report_attest, secure_store
 from angerona.engines import ai_consult
 from angerona.modules.cloud_escalation import _cloud_prompt
 from angerona.modules.posture_hardening import PostureHardening
@@ -82,6 +83,12 @@ def test_purple_candidate_requires_a_distinct_later_run(tmp_path, monkeypatch):
     module.record_weakness("T1003", "Credential Access", "High", None,
                            source="redteam")
     install_policies([{"mitre": "T1003"}], "run-a", tmp_path)
+    drill_resolution.apply_contracts(
+        [{"mitre": "T1003", "name": "Credential Access"}],
+        "run-a",
+        tmp_path,
+        installed=["T1003"],
+    )
 
     report = {
         "run_id": "run-a",
@@ -97,6 +104,20 @@ def test_purple_candidate_requires_a_distinct_later_run(tmp_path, monkeypatch):
     assert module.weaknesses("VULNERABLE")
 
     report["run_id"] = "run-b"
+    state = drill_resolution.resolution_snapshot(tmp_path)["t1003"]
+    proof = drill_resolution.verify_detector_evidence(
+        "T1003",
+        "run-b",
+        detector="Purple Remediation Guard",
+        event_ts=time.time() + 1,
+        event_details={"mitre": "T1003", "artifact_path": "inert-marker"},
+        data_dir=tmp_path,
+        expected_contract_id=state["contract_id"],
+        expected_contract_digest=state["contract_digest"],
+    )
+    assert proof["ok"]
+    report["verdicts"][0]["action_contract_id"] = state["contract_id"]
+    report["verdicts"][0]["action_contract_digest"] = state["contract_digest"]
     report_attest.write_signed_json(aar, report)
     module.ingest_redteam_report(aar)
     assert any(row["mitre_id"] == "T1003" for row in module.weaknesses("PATCHED"))

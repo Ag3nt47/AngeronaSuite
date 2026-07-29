@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
 
-from angerona.core import report_attest
+from angerona.core import drill_resolution, report_attest
 from angerona.modules.posture_hardening import PostureHardening
 from angerona.modules.purple_guard import policy_path
 
@@ -33,6 +34,30 @@ def _verdict(
 
 def _report(run_id: str, *verdicts: dict) -> dict:
     return {"run_id": run_id, "verdicts": list(verdicts)}
+
+
+def _verified_verdict(root: Path, run_id: str, *, ts_start: float) -> dict:
+    state = drill_resolution.resolution_snapshot(root)["t1003"]
+    proof = drill_resolution.verify_detector_evidence(
+        "T1003",
+        run_id,
+        detector="Purple Remediation Guard",
+        event_ts=time.time() + 1,
+        event_details={"mitre": "T1003", "artifact_path": "inert-marker"},
+        data_dir=root,
+        expected_contract_id=state["contract_id"],
+        expected_contract_digest=state["contract_digest"],
+    )
+    assert proof["ok"]
+    row = _verdict(
+        "T1003",
+        caught=True,
+        ts_start=ts_start,
+        detected_by="Purple Remediation Guard",
+    )
+    row["action_contract_id"] = state["contract_id"]
+    row["action_contract_digest"] = state["contract_digest"]
+    return row
 
 
 def _write(path: Path, doc: dict, *, signed: bool = True) -> Path:
@@ -166,16 +191,38 @@ def test_same_run_cannot_self_certify_but_later_signed_run_can(strict_module):
         report_path,
         _report(
             "run-b",
-            _verdict(
-                "T1003",
-                caught=True,
-                ts_start=52.0,
-                detected_by="Purple Remediation Guard",
-            ),
+            _verified_verdict(root, "run-b", ts_start=52.0),
         ),
     )
     assert module.ingest_redteam_report(report_path) == []
     assert module.weaknesses("PATCHED")[0]["mitre_id"] == "T1003"
+
+
+def test_signed_summary_without_raw_lifecycle_binding_cannot_close(strict_module):
+    module, root, _emitted = strict_module
+    report_path = root / "redteam_aar.json"
+    _write(
+        report_path,
+        _report("run-a", _verdict("T1003", caught=False, ts_start=55.0)),
+    )
+    module.ingest_redteam_report(report_path)
+    module.resolve_redteam_report(report_path)
+
+    _write(
+        report_path,
+        _report(
+            "run-b",
+            _verdict(
+                "T1003",
+                caught=True,
+                ts_start=56.0,
+                detected_by="Purple Remediation Guard",
+            ),
+        ),
+    )
+    module.ingest_redteam_report(report_path)
+    assert module.weaknesses("PATCHED") == []
+    assert module.weaknesses("VULNERABLE")
 
 
 def test_future_signed_miss_reopens_a_verified_patch(strict_module):
@@ -192,12 +239,7 @@ def test_future_signed_miss_reopens_a_verified_patch(strict_module):
         report_path,
         _report(
             "run-b",
-            _verdict(
-                "T1003",
-                caught=True,
-                ts_start=61.0,
-                detected_by="Purple Remediation Guard",
-            ),
+            _verified_verdict(root, "run-b", ts_start=61.0),
         ),
     )
     module.ingest_redteam_report(report_path)

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -95,6 +96,12 @@ class StepVerdict:
     remediation: Optional[Event] = None
     remediation_latency: Optional[float] = None
     finding_resolved: bool = False
+    technique_id: str = ""
+    action_state: str = "OPEN"
+    contract_id: Optional[str] = None
+    contract_digest: Optional[str] = None
+    action_applied: bool = False
+    verification_expires_at: Optional[float] = None
 
 
 def _load_history(path: Path) -> dict:
@@ -212,6 +219,37 @@ def _bar(ch: str = "=") -> str:
     return ch * WIDTH
 
 
+def _technique_id(value: object) -> str:
+    match = re.search(
+        r"\b(T\d{4}(?:\.\d{3})?|RT-[A-Z0-9_.-]+)\b",
+        str(value or ""),
+        re.I,
+    )
+    return match.group(1).upper() if match else str(value or "").strip()
+
+
+def _closure_metrics(verdicts: List[StepVerdict]) -> dict:
+    """Score unique actionable finding classes, never repeated drill steps."""
+    classes: dict[str, list[StepVerdict]] = {}
+    for verdict in verdicts:
+        if verdict.category != "detection":
+            continue
+        technique = verdict.technique_id or _technique_id(verdict.technique)
+        if technique:
+            classes.setdefault(technique, []).append(verdict)
+    applied = sum(
+        1 for rows in classes.values() if any(row.action_applied for row in rows)
+    )
+    verified = sum(
+        1 for rows in classes.values() if any(row.finding_resolved for row in rows)
+    )
+    return {
+        "actionable_classes": len(classes),
+        "actions_applied": applied,
+        "verified_closures": verified,
+    }
+
+
 def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTACK") -> str:
     lines = [_bar("="), f" ANGERONA — {title} AFTER-ACTION REPORT", _bar("=")]
     lines.append(f" Run ID     : {history.get('run_id', '?')}")
@@ -219,7 +257,8 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
     n = len(verdicts)
     caught = sum(1 for v in verdicts if v.catch)
     remediated = sum(1 for v in verdicts if v.remediation)
-    findings_resolved = sum(1 for v in verdicts if v.finding_resolved)
+    lifecycle = _closure_metrics(verdicts)
+    findings_resolved = lifecycle["verified_closures"]
     detection = [v for v in verdicts if v.category == "detection"]
     det_caught = sum(1 for v in detection if v.catch)
     det_remediated = sum(1 for v in detection if v.remediation)
@@ -262,6 +301,10 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
         elif v.catch:
             lines.append(f"           detected by {v.catch.module} in "
                          f"{v.catch_latency:.2f}s — \"{v.catch.message}\"")
+            if v.finding_resolved:
+                lines.append("           VERIFIED CLOSURE: this fresh detector echo is bound "
+                             f"to action contract {v.contract_id}; application and rerun "
+                             "evidence both passed.")
             if v.remediation:
                 lines.append(f"           remediated by {v.remediation.module} in "
                              f"{v.remediation_latency:.2f}s — \"{v.remediation.message}\"")
@@ -270,9 +313,12 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
                              "detection did not produce a correlated, successful SOAR action "
                              "inside this run's evidence window.")
         elif v.finding_resolved:
-            lines.append("           finding closed for this drill run after operator review and "
-                         "marker cleanup. Detection coverage is still shown as MISSED; a later "
-                         "run that misses again will reopen the finding.")
+            lines.append("           verified closure evidence exists, but this run produced no "
+                         "catch; lifecycle reconciliation reopens the gap rather than counting "
+                         "an unproven closure.")
+        elif v.action_applied:
+            lines.append("           deterministic detector/cleanup action is APPLIED, not closed; "
+                         "a fresh Purple Guard detector echo from a later run is still required.")
         elif v.stage == "Exfiltration":
             lines.append("           not yet detected — Network Monitor polls every 4s, so this "
                          "is rarely a timing issue. More likely: it deliberately doesn't re-alert "
@@ -297,12 +343,19 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
                  "— Initial Access / Persistence / Exfiltration-style steps only")
     lines.append(f"   Response success   : {det_remediated}/{det_caught} detected threat(s)  "
                  f"({(det_remediated / det_caught * 100 if det_caught else 0):.0f}%)")
+    actionable = lifecycle["actionable_classes"]
+    applied = lifecycle["actions_applied"]
+    verified = lifecycle["verified_closures"]
+    lines.append(f"   Action contracts   : {applied}/{actionable} unique gap class(es) applied  "
+                 f"({(applied / actionable * 100 if actionable else 0):.0f}%)")
+    lines.append(f"   Verified closure   : {verified}/{actionable} unique gap class(es)  "
+                 f"({(verified / actionable * 100 if actionable else 0):.0f}%)")
     if verified_upgrades:
         lines.append(f"   Detector fixes proven by rerun: {verified_upgrades}  "
                      "(Purple Guard evidence; not same-run self-certification)")
     if findings_resolved:
         lines.append(f"   Drill findings closed: {findings_resolved}  "
-                     "(run-scoped; future misses reopen)")
+                     "(authenticated action + fresh rerun proof; expiry/future misses reopen)")
     resilience = [v for v in verdicts if v.category == "resilience"]
     if resilience:
         fps = sum(1 for v in resilience if v.catch)
@@ -363,7 +416,8 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
     n = len(verdicts)
     caught = sum(1 for v in verdicts if v.catch)
     remediated = sum(1 for v in verdicts if v.remediation)
-    findings_resolved = sum(1 for v in verdicts if v.finding_resolved)
+    lifecycle = _closure_metrics(verdicts)
+    findings_resolved = lifecycle["verified_closures"]
     detection = [v for v in verdicts if v.category == "detection"]
     det_caught = sum(1 for v in detection if v.catch)
     det_remediated = sum(1 for v in detection if v.remediation)
@@ -376,6 +430,13 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
         "detected": caught,               # raw count, all categories — kept for backward compat
         "remediated": remediated,
         "findings_resolved": findings_resolved,
+        "actionable_finding_classes": lifecycle["actionable_classes"],
+        "action_contracts_applied": lifecycle["actions_applied"],
+        "verified_closures": lifecycle["verified_closures"],
+        "verified_closure_rate": (
+            lifecycle["verified_closures"] / lifecycle["actionable_classes"]
+            if lifecycle["actionable_classes"] else 0.0
+        ),
         "detection_steps": len(detection),      # steps where a detector SHOULD fire
         "detection_caught": det_caught,
         "detection_remediated": det_remediated,
@@ -398,6 +459,12 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
                 "remediate_latency_s": v.remediation_latency,
                 "remediate_message": v.remediation.message if v.remediation else None,
                 "finding_resolved": v.finding_resolved,
+                "technique_id": v.technique_id or _technique_id(v.technique),
+                "action_state": v.action_state,
+                "action_applied": v.action_applied,
+                "action_contract_id": v.contract_id,
+                "action_contract_digest": v.contract_digest,
+                "verification_expires_at": v.verification_expires_at,
             }
             for v in verdicts
         ],
@@ -477,6 +544,21 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
         recorder.close()
 
     verdicts = evaluate(history, events, stage_category)
+    # Reconcile proof, never invent or execute a fix: misses become
+    # OPEN/REOPENED and only a fresh, exact Purple Guard echo can close an
+    # already-applied deterministic action contract.
+    try:
+        from angerona.core import drill_resolution
+
+        drill_resolution.reconcile_verdicts(
+            verdicts,
+            str(history.get("run_id") or ""),
+            data_dir,
+        )
+    except Exception:
+        # The report stays available when lifecycle state is unavailable or
+        # tampered, but no closure credit is granted.
+        pass
     text = render(history, verdicts, title)
     _write_report(data_dir, history, verdicts, text, report_basename)
     return text

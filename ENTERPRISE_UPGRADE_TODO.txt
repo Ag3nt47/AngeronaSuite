@@ -1073,7 +1073,7 @@ Acceptance gate:
 
 [PARTIAL/P0] ENT-SOAR-001  Preserve the typed action registry and proof receipts.
 
-[TODO/P0] ENT-SOAR-002  Require an action contract.
+[PARTIAL/P0] ENT-SOAR-002  Require an action contract.
   - Preconditions.
   - exact scope.
   - authorization.
@@ -1083,14 +1083,28 @@ Acceptance gate:
   - rollback.
   - idempotency.
   - evidence/receipt.
+  Implemented boundary: simulated-drill detector/cleanup actions now require a
+  typed, HMAC-authenticated contract with exact technique scope, preconditions,
+  safety checks, operator-reviewed authorization, idempotency, expiry, exact
+  rollback, and standalone authenticated apply/verify/rollback receipts.
+  Existing typed Response Broker and vetted host remediations retain their own
+  guarded contracts. Remaining: migrate every legacy response primitive to one
+  unified durable action-contract state machine and privileged broker.
 
-[TODO/P0] ENT-SOAR-003  Fix simulated-drill closure semantics.
+[COMPLETE/P0] ENT-SOAR-003  Fix simulated-drill closure semantics.
   - Distinguish detector coverage from remediation.
   - Map each benign marker to a deterministic cleanup/containment action.
   - Do not ask an LLM to invent executable remediation.
   - Re-run validation after action.
   - Score only verified closures.
   - Explain N/A/no-detector-by-design.
+  Implemented: the After-Action Report (AAR) now scores unique actionable
+  technique classes and separates detector coverage, same-run correlated SOAR
+  response, deterministic action application, and verified closure. Candidate
+  installation and inert-marker cleanup cannot self-certify. Only a fresh,
+  technique-bound Purple Guard echo from a different run closes the gap;
+  expiry or a later miss reopens it. Unsupported and no-detector-by-design
+  stages remain explicit and do not inflate the denominator.
 
 [TODO/P1] ENT-SOAR-004  Add response approval policies.
   - Manual.
@@ -1112,11 +1126,17 @@ Acceptance gate:
   - block hash/publisher/path/destination with scope and expiry.
   - disable compromised Angerona extension/policy.
 
-[TODO/P1] ENT-SOAR-007  Add remediation verification.
+[PARTIAL/P1] ENT-SOAR-007  Add remediation verification.
   - Re-query state.
   - attach before/after evidence.
   - require independent signal where possible.
   - unresolved remains open.
+  Implemented boundary: drill actions bind authenticated before/apply evidence
+  to an independent fresh detector echo, reject wrong run/detector/technique/
+  contract proof, expire verification, and keep unresolved state open. Vetted
+  host remediations already require postcondition proof and rollback on failure.
+  Remaining: normalize independent verification and expiry across all network,
+  identity, fleet, and privileged response operations.
 
 [TODO/P2] ENT-SOAR-008  Add playbook-as-code.
   - Signed/versioned.

@@ -1283,7 +1283,10 @@ class MainWindow(QMainWindow):
                 return "[Attempt Fix] Posture Hardening module not available."
             if is_redteam:
                 cleaned = _clean_markers()
-                result = pm.resolve_redteam_report(report_path)
+                result = pm.resolve_redteam_report(
+                    report_path,
+                    cleanup_count=cleaned,
+                )
                 if not result.get("ok"):
                     return f"[Drill resolution] {result.get('error', 'failed')}"
                 count = int(result.get("candidates", 0))
@@ -1291,10 +1294,11 @@ class MainWindow(QMainWindow):
                 extra = (f" {len(unsupported)} unsupported technique(s) still need a detector."
                          if unsupported else "")
                 return (f"[Purple remediation] Installed {count} reviewed detector "
-                        f"candidate(s) for run {result.get('run_id') or 'unknown'} and cleaned "
-                        f"{cleaned} inert marker/file(s). The findings remain open until a fresh "
-                        f"drill proves marker → detector → recorder → SOAR end to end.{extra} "
-                        "Run the simulation again to certify the fixes.")
+                        f"candidate(s) under authenticated action contracts for run "
+                        f"{result.get('run_id') or 'unknown'} and cleaned {cleaned} inert "
+                        f"marker/file(s). Applied is not closed: a fresh drill must prove "
+                        f"marker → detector → recorder end to end.{extra} Run the simulation "
+                        "again to produce a verified closure receipt.")
             vuln = pm.weaknesses("VULNERABLE")
             if not vuln:
                 return "[Attempt Fix] No open weaknesses — posture is clean."

@@ -382,6 +382,7 @@ class PostureHardening(BaseModule):
         # Anti-poisoning: prove the AAR is authentic before trusting its verdicts.
         if not self._aar_trusted(report, path):
             return []
+        from angerona.core import drill_resolution
         new = []
         verified = 0
         run_id = str(report.get("run_id") or "")
@@ -392,6 +393,10 @@ class PostureHardening(BaseModule):
                 purple_policies = {}
         except Exception:
             purple_policies = {}
+        try:
+            lifecycle = drill_resolution.resolution_snapshot(self.data_dir)
+        except Exception:
+            lifecycle = {}
         for v in report.get("verdicts", []):
             if v.get("category") != "detection":
                 continue
@@ -408,7 +413,15 @@ class PostureHardening(BaseModule):
                     bool(run_id and candidate_run and run_id != candidate_run)
                     and v.get("detected_by") == "Purple Remediation Guard"
                 )
-                if not fresh_candidate_proof:
+                closure = lifecycle.get(mitre.casefold(), {})
+                contract_proof = (
+                    closure.get("state") == drill_resolution.VERIFIED_STATE
+                    and closure.get("verified_by_run_id") == run_id
+                    and closure.get("contract_id") == v.get("action_contract_id")
+                    and closure.get("contract_digest")
+                    == v.get("action_contract_digest")
+                )
+                if not fresh_candidate_proof or not contract_proof:
                     continue
                 with closing(sqlite3.connect(self.db_path)) as c, c:
                     changed = c.execute(
@@ -428,6 +441,19 @@ class PostureHardening(BaseModule):
             name = v.get("stage") or tech or "Red Team finding"
             self._ctx[mitre] = {"objective": v.get("description", ""), "target": "Red Team"}
             self.record_weakness(mitre, name, "High", None, source="redteam")
+            try:
+                drill_resolution.record_findings(
+                    [{"mitre": mitre, "name": name}],
+                    run_id,
+                    self.data_dir,
+                    observed_at=float(v.get("ts_start") or time.time()),
+                )
+            except (
+                TypeError,
+                ValueError,
+                drill_resolution.StateIntegrityError,
+            ):
+                pass
             new.append({"mitre": mitre, "name": name})
             self.emit(f"NEW WEAKNESS (Red Team): {name} ({mitre}) slipped past detection — "
                       f"a reviewed detector candidate can be installed and verified by rerun",
@@ -447,7 +473,7 @@ class PostureHardening(BaseModule):
                 pass
         return new
 
-    def resolve_redteam_report(self, path=None) -> dict:
+    def resolve_redteam_report(self, path=None, cleanup_count: int = 0) -> dict:
         """Install exact detector candidates for misses; never self-certify.
 
         The current run's duplicate alerts are acknowledged, but its database
@@ -485,11 +511,38 @@ class PostureHardening(BaseModule):
         from angerona.core import drill_resolution
         from angerona.modules.purple_guard import install_policies
         run_id = str(report.get("run_id") or "")
-        # Acknowledge this run's alert burst so it no longer dominates the threat
-        # banner, while retaining VULNERABLE status until a rerun proves the fix.
-        acknowledged = drill_resolution.resolve(findings, run_id, self.data_dir)
+        try:
+            # Persist the open issue first. If authenticated lifecycle state is
+            # unavailable/tampered, fail closed before changing detector policy.
+            drill_resolution.record_findings(findings, run_id, self.data_dir)
+        except drill_resolution.StateIntegrityError as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "fail_closed": True,
+                "candidates": 0,
+            }
         installed = install_policies(findings, run_id, self.data_dir)
         ids = list(installed.get("installed", []))
+        try:
+            # An installed candidate is APPLIED, never VERIFIED. The signed
+            # action receipt binds exact scope, idempotency, rollback metadata,
+            # and the independent rerun verifier.
+            acknowledged = drill_resolution.apply_contracts(
+                findings,
+                run_id,
+                self.data_dir,
+                installed=ids,
+                cleanup_count=cleanup_count,
+            )
+        except drill_resolution.StateIntegrityError as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "fail_closed": True,
+                "candidates": 0,
+                "policy_changed": bool(ids),
+            }
         self._recompute_health()
         self._log_attempt("install_drill_detector_candidates", "-", run_id=run_id,
                           report=str(report_path), techniques=ids,
@@ -497,7 +550,8 @@ class PostureHardening(BaseModule):
         self.emit(f"Installed {len(ids)} reviewed Purple Guard detector candidate(s) for "
                   f"run {run_id or 'unknown'}; rerun the drill to verify them.",
                   Severity.INFO, run_id=run_id, candidate_techniques=ids)
-        return {"ok": True, "candidates": len(ids), "findings": acknowledged,
+        return {"ok": True, "candidates": len(ids), "findings": findings,
+                "contracts": acknowledged,
                 "unsupported": installed.get("unsupported", []), "run_id": run_id,
                 "verification_required": True}
 

@@ -18,6 +18,7 @@ import re
 import time
 from pathlib import Path
 
+from angerona.core.atomic_io import replace_with_retry
 from angerona.core.data_paths import data_dir as canonical_data_dir
 from angerona.core.module_base import BaseModule, Severity
 
@@ -87,10 +88,46 @@ def install_policies(findings: list[dict], run_id: str,
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
     return {"installed": installed, "unsupported": unsupported, "path": str(path)}
+
+
+def remove_policies(
+    techniques: list[str],
+    data_root: Path | None = None,
+) -> dict:
+    """Rollback exact Purple Guard techniques; unrelated policy is preserved."""
+    root = Path(data_root or canonical_data_dir())
+    current = _read_policy(root)
+    enabled = current.get("techniques", {})
+    if not isinstance(enabled, dict):
+        enabled = {}
+    requested = {str(value or "").strip().upper() for value in techniques if value}
+    removed = []
+    for technique in sorted(requested):
+        if technique in enabled:
+            enabled.pop(technique)
+            removed.append(technique)
+    payload = {
+        "version": 1,
+        "updated_at": time.time(),
+        "techniques": enabled,
+    }
+    path = policy_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        replace_with_retry(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return {
+        "removed": removed,
+        "not_present": sorted(requested.difference(removed)),
+        "path": str(path),
+    }
 
 
 def classify_marker(path: Path) -> tuple[str, str] | None:

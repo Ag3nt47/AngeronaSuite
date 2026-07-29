@@ -44,6 +44,7 @@ class DrillResolutionTests(unittest.TestCase):
     def test_resolution_is_historical_and_run_scoped(self):
         with tempfile.TemporaryDirectory() as td:
             data = Path(td)
+            (data / "bus.key").write_text(bytes(range(32)).hex(), encoding="ascii")
             now = time.time()
             drill_resolution.resolve(
                 [{"mitre": "T1059", "name": "Benign Execution"}],
@@ -92,6 +93,18 @@ class DrillResolutionTests(unittest.TestCase):
 
             # Installing a candidate must not certify its own fix. A later run
             # carrying a real detector echo is the only PATCHED transition.
+            lifecycle = drill_resolution.resolution_snapshot(data)["t1003"]
+            proof = drill_resolution.verify_detector_evidence(
+                "T1003",
+                "run-two",
+                detector="Purple Remediation Guard",
+                event_ts=time.time() + 1,
+                event_details={"mitre": "T1003", "artifact_path": "inert-marker"},
+                data_dir=data,
+                expected_contract_id=lifecycle["contract_id"],
+                expected_contract_digest=lifecycle["contract_digest"],
+            )
+            self.assertTrue(proof["ok"])
             report_attest.write_signed_json(report_path, {
                 "run_id": "run-two",
                 "verdicts": [{
@@ -102,6 +115,8 @@ class DrillResolutionTests(unittest.TestCase):
                     "category": "detection",
                     "caught": True,
                     "detected_by": "Purple Remediation Guard",
+                    "action_contract_id": lifecycle["contract_id"],
+                    "action_contract_digest": lifecycle["contract_digest"],
                 }],
             })
             self.assertEqual(module.ingest_redteam_report(report_path), [])

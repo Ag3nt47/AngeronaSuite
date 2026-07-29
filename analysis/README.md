@@ -88,7 +88,7 @@ claim Endpoint Security or Network Extension enforcement.
   - Flight-recorder persistence (tamper-evident SQLite ledger)
 - **Red Team Simulation console** — an unannounced, non-destructive adversary simulation with an Intensity slider (Low→Extreme), Campaign (chained kill-chain) mode, a live ATT&CK kill-chain view, an embedded sandbox editor, a History tab of past reports, and plain-English "analogy" coaching (Flight Instructor). Every technique is a benign, reversible marker.
 - **Shark Attack drill** — the classic commodity-malware chain (lure → discovery → persistence → exfil markers) with an animated swimming-shark indicator; exercises detect-and-respond end to end.
-- **After-Action Report** — every drill produces a report. Simulated gaps use **Build & Verify Fixes** to install exact Purple Guard candidates; only a fresh rerun can prove and close them. Genuine host weaknesses retain the reviewed **Attempt Fix** workflow. **🧹 Clean & Close** erases drill markers.
+- **After-Action Report** — every drill produces a report. Simulated gaps use **Apply Fix Candidates** to install exact Purple Guard candidates under authenticated action contracts; application and cleanup are scored separately from verified closure. Only a fresh, technique-bound rerun can close a gap, and expiry or a later miss reopens it. Genuine host weaknesses retain the reviewed **Attempt Fix** workflow. **🧹 Clean & Close** erases drill markers.
 - **Resolve Center** — the Threat-level box lists the CRITICAL/HIGH alerts driving it, each with Allow / Block / Analyze / Research / Apply and **Ignore** (acknowledge → excluded from the threat level), so false positives clear back to Secure.
 - **Trusted Processes** — Settings includes exact-path trust plus supervised discovery of currently running executables. Path-rich telemetry requires an exact canonical path; basename entries are a pathless-telemetry fallback and cannot suppress memory scanning. Resolve Center's **Allow** action is process-aware.
 - **MITRE ATT&CK heatmap (tabbed)** — live heat matrix + a Coverage tab (Detect/Simulate/Remediate map with % and blind spots) + a Top-Techniques tab, richer cell detail, search, and an AI posture summary.
@@ -942,11 +942,23 @@ email scanning, channel push, research) — each has a one-click test button.
   become Angerona runtime dependencies. `tools\run_developer_toolkit.ps1`
   produces security/dead-code evidence, repeatable benchmarks, or an
   administrator-authorized live hang profile.
+- **Proof-driven drill remediation.** The old AAR closure counter had a field
+  that was never populated, structurally pinning simulated finding closure at
+  zero. Each unique actionable technique now receives a typed, HMAC-authenticated
+  action contract with exact scope, preconditions, safety checks, operator
+  authorization, idempotency, expiry, rollback, and standalone signed receipts.
+  Installing a Purple Guard candidate and cleaning inert markers produces only
+  an **applied** receipt. A later, different run must provide an exact
+  technique-bound Purple Guard detector echo before the AAR grants
+  **verified closure**; wrong detector/run/technique/contract evidence fails
+  closed, repeated occurrences are deduplicated, and expiry or a future miss
+  reopens the gap. Detector coverage, same-run SOAR response, action application,
+  and verified closure are separate scorecard values.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
-  passes **416 tests with 2 intentional platform skips** and 0 failures.
+  passes **426 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
   Ruff pass. pip-audit reports no known vulnerabilities in the installed
   dependencies. The public-repository scan found no committed real credential,
   private key, user-profile path, database, runtime-data, or cache artifact.
 
-<!-- ANGERONA_DOC_STATUS tests=416 skips=2 modules=65 -->
+<!-- ANGERONA_DOC_STATUS tests=426 skips=2 modules=65 -->
