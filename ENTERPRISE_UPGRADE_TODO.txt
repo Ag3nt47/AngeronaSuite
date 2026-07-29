@@ -767,12 +767,19 @@ Acceptance gate:
   - bandwidth schedule.
   - automatic pause on unexpected volume.
 
-[TODO/P2] ENT-HUNT-005  Add hunt notebooks/results.
+[PARTIAL/P2] ENT-HUNT-005  Add hunt notebooks/results.
   - Progress and failures.
   - Server-side bounded post-processing.
   - evidence links.
   - case promotion.
   - export with audit.
+  Local 2026-07-29 foundation: `core/hunt_workspace.py` provides an
+  HMAC-authenticated, atomically persisted, optimistic-concurrency workspace
+  for typed queries, notes, findings, decisions, privacy-tokenized device
+  result references, evidence digests, and sanitized export. It has no
+  executable cells and excludes restricted results/device identifiers from the
+  default exchange view. Fleet progress streaming, bounded server-side
+  aggregation, and direct case promotion remain open.
 
 [TODO/P2] ENT-HUNT-006  Add a safe live-response session.
   - Cataloged read-only queries first.
@@ -1390,6 +1397,12 @@ Acceptance gate:
   - disk write rate.
   - network rate.
   - startup/shutdown/restart time.
+  Local 2026-07-29 foundation: `core/operational_slo.py` records bounded
+  resident-set-size, thread, handle, tick-latency, queue-utilization, and dropped
+  event evidence. `core/atomic_io.py` also applies a short bounded retry to
+  antivirus sharing locks on authenticated hunt state without hiding persistent
+  failures. Full UI, disk, network, and long-duration physical-host evidence
+  remains open.
 
 [TODO/P0] ENT-PERF-004  Build 8-hour, 24-hour, and 7-day soak tests.
   - Eco on/off.
@@ -1527,7 +1540,7 @@ Acceptance gate:
   - bad policy/update.
   - lost signing key.
 
-[TODO/P2] ENT-RES-009  Run chaos/failure tests.
+[PARTIAL/P2] ENT-RES-009  Run chaos/failure tests.
   - Kill/restart nodes.
   - suspend/resume.
   - partial network.
@@ -1536,6 +1549,13 @@ Acceptance gate:
   - clock skew.
   - expired cert.
   - corrupt queue.
+  Local 2026-07-29 foundation: `core/reliability_lab.py` runs only registered,
+  deterministic failure scenarios with explicit retryable errors, exponential
+  delay caps, total timeout, bounded attempts, and content-addressed evidence.
+  Tests prove transient database-lock recovery, permanent collector-outage
+  exhaustion, unknown-error surfacing, supervised loopback-service restart, and
+  interoperability dead-letter behavior. Suspend/resume, full disk, certificate
+  expiry, partial network, and physical-host chaos campaigns remain open.
 
 Acceptance gate:
   OPS + TEST + PERF. Restore and failover are demonstrated, not documented only;
@@ -2008,7 +2028,7 @@ Acceptance gate:
   - operational procedure.
   - owner and review date.
 
-[TODO/P2] ENT-COMP-003  Produce release evidence pack.
+[PARTIAL/P2] ENT-COMP-003  Produce release evidence pack.
   - Version/scope.
   - threat model.
   - SBOM/VEX.
@@ -2017,6 +2037,13 @@ Acceptance gate:
   - privacy inventory.
   - known limitations.
   - incident response/support policy.
+  Local 2026-07-29 foundation: `core/release_evidence.py` and
+  `tools/run_release_gate.py` define a fixed, no-shell gate for serial tests,
+  bytecode compilation, Ruff, dependency audit, and documentation drift. The
+  bounded pack records the full source commit, source-date epoch, redacted
+  summaries, output and command digests, limitations, and a canonical manifest
+  digest. Publisher signing, complete threat/privacy/support attachments, SBOM
+  assembly, and externally witnessed release evidence remain open.
 
 [TODO/P2] ENT-COMP-004  Add audit export.
   - Time range/tenant/scope.

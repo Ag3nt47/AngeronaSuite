@@ -404,13 +404,33 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
 - `core/fleet_hunts.py` permits only registered artifact types and exact targets.
   It forbids command/shell/script/path input, enforces host/byte/time/expiry
   budgets, independent approvals, authenticated durable state, and receipts.
+- `core/hunt_workspace.py` is the non-executable hunt notebook and result layer.
+  It accepts typed `HuntQuery` objects, bounded notes/findings/decisions, and
+  immutable digest references; optimistic revisions prevent lost updates.
+  HMAC-authenticated atomic state fails closed on tampering. Sanitized export
+  redacts identities/paths, omits device tokens and raw artifacts, and excludes
+  restricted results. Never add code cells, arbitrary paths, or a shell.
+- `core/atomic_io.py:replace_with_retry()` handles only short antivirus/sharing
+  locks with a bounded exponential retry. It must not suppress persistent or
+  unrelated filesystem errors.
+- `core/reliability_lab.py` runs only registered, deterministic recovery drills
+  with explicit retryable exception classes, bounded attempts/delay/timeout,
+  and content-addressed evidence. Current tests cover transient database lock,
+  permanent collector outage, unknown failure surfacing, supervised fleet
+  service restart, and interoperability dead-letter exhaustion. This is not
+  8-hour/24-hour/7-day physical-host soak proof.
+- `core/release_evidence.py` and `tools/run_release_gate.py` define the fixed
+  local release gate: serial pytest, bytecode, Ruff, pip-audit, and documentation
+  drift. The pack binds the full commit, source epoch, redacted summaries,
+  command/output digests, limitations, and manifest digest. It is
+  content-addressed local evidence; publisher signature remains externally gated.
 - Normal launch never rewrites the elevated autostart task. Only an explicit
   Settings state change may mutate startup registration.
 - Development gates are pinned in `pyproject.toml`: Ruff 0.16.0,
   pytest-xdist 3.8.0, and pip-audit 2.10.1. Ruff uses correctness-critical rules
   first. Keep the complete suite serial because Windows ACL tests are not
   process-parallel-safe; xdist is for isolated test groups. Current evidence:
-  372 passed / 2 intentional platform skips; compile and Ruff clean; no known
+  387 passed / 2 intentional platform skips; compile and Ruff clean; no known
   installed-package vulnerability reported.
 
 ## NEVER DO

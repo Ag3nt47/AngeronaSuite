@@ -90,3 +90,22 @@ def test_query_parameters_are_covered_by_request_signature(tmp_path):
     assert denied.value.code == 401
     assert service.stop()
     plane.close()
+
+
+def test_loopback_service_restarts_cleanly_after_supervised_stop(tmp_path):
+    key = b"s" * 32
+    plane = FleetControlPlane(tmp_path / "fleet.db", {"tenant-a": b"a" * 32})
+    service = FleetLoopbackService(
+        plane, key, tmp_path / "replay.json", port=0
+    )
+    first_port = service.start()
+    assert json.load(urllib.request.urlopen(
+        f"http://127.0.0.1:{first_port}/health", timeout=3
+    ))["ok"]
+    assert service.stop()
+    second_port = service.start()
+    assert json.load(urllib.request.urlopen(
+        f"http://127.0.0.1:{second_port}/health", timeout=3
+    ))["ok"]
+    assert service.stop()
+    plane.close()

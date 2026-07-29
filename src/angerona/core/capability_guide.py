@@ -209,14 +209,45 @@ GUIDES = (
     CapabilityGuide(
         "fleet-hunts", "Safe Fleet Hunts and Collections", "Investigation",
         "Typed fleet-wide evidence collection with an allowlisted artifact "
-        "catalog, explicit targets, approvals, budgets, durable state and receipts.",
+        "catalog, explicit targets, approvals, budgets, durable state, "
+        "non-executable notebooks and receipts.",
         ("Choose registered artifacts.", "Set exact device/group targets.",
          "Set host, byte, duration, and expiry budgets.", "Collect approvals.",
-         "Run through the typed endpoint collector and verify the result receipt."),
+         "Run through the typed endpoint collector.",
+         "Record typed queries, notes and immutable evidence references.",
+         "Verify the workspace snapshot and result receipt."),
         "Arbitrary command/path fields fail, restricted artifacts require two "
-        "approvers, state tampering fails, and over-budget results are rejected.",
-        "Artifact privacy classes determine approval; no generic shell or "
-        "unbounded content collection exists.",
+        "approvers, state tampering fails, over-budget results are rejected, and "
+        "sanitized export omits restricted results and device identifiers.",
+        "Artifact privacy classes determine approval. Notebooks contain no "
+        "executable cells, generic shell, or unbounded content collection.",
+        "Enterprise",
+    ),
+    CapabilityGuide(
+        "release-evidence", "Local Release Evidence Gate", "Assurance",
+        "A fixed-command quality gate that records content digests, redacted "
+        "summaries, limitations and the exact source commit without storing raw logs.",
+        ("Open Enterprise Settings.", "Review the release limitations.",
+         "Run tools/run_release_gate.py from the project environment.",
+         "Verify every required check is present and passing.",
+         "Apply the separate publisher signature before public release."),
+        "The manifest digest verifies, incomplete or failed checks fail the gate, "
+        "and no credential, username or local path appears in summaries.",
+        "Raw command output is not retained in the evidence pack. Local evidence "
+        "is content-addressed; publisher signing remains a separate release gate.",
+        "Enterprise",
+    ),
+    CapabilityGuide(
+        "reliability-drills", "Reliability and Recovery Drills", "Reliability",
+        "Deterministic failure exercises with registered scenarios, explicit "
+        "retryable errors, bounded attempts, time budgets and evidence digests.",
+        ("Open Enterprise Settings.", "Review current reliability evidence.",
+         "Run the fixed local test suite.", "Inspect failed recovery evidence.",
+         "Do not treat local drills as long-duration physical-host soak proof."),
+        "Transient faults recover within budget, permanent faults stop at the "
+        "declared limit, and unknown failures surface immediately.",
+        "The harness invokes only a caller-supplied defensive operation; it has "
+        "no shell, network action, or production fault-injection switch.",
         "Enterprise",
     ),
     CapabilityGuide(

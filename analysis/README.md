@@ -873,6 +873,21 @@ email scanning, channel push, research) — each has a one-click test button.
   approvals, privacy-sensitive two-person approval, host/byte/time budgets,
   durable tamper-evident state, and signed result receipts. Arbitrary paths,
   scripts, commands, and remote shells are forbidden.
+- **Non-executable hunt notebooks.** Typed queries, analyst notes, findings,
+  decisions, and immutable evidence/result references use optimistic
+  concurrency and authenticated atomic persistence. Sanitized export redacts
+  identities and local paths, omits device tokens, excludes restricted results,
+  and never includes raw artifacts or executable cells.
+- **Bounded recovery evidence.** Registered local reliability drills exercise
+  transient locks, unavailable collectors, supervised service restart, and
+  dead-letter exhaustion with explicit retry classes, attempt/time limits, and
+  content-addressed results. A short atomic-replace retry also tolerates
+  temporary antivirus sharing locks without concealing persistent failures.
+- **Fixed local release gate.** A no-shell runner records serial tests, bytecode
+  compilation, Ruff, dependency audit, and documentation drift against the full
+  source commit. Its bounded evidence pack stores redacted summaries plus
+  command/output/manifest digests and known limitations. Publisher signing and
+  long physical-host soak evidence remain separate release gates.
 - **Fewer Defender prompts.** Normal startup no longer rewrites the
   highest-privilege scheduled task. Startup registration changes only when the
   operator explicitly changes that setting.
@@ -883,10 +898,10 @@ email scanning, channel push, research) — each has a one-click test button.
   intentionally mutate file permissions and are not process-parallel-safe.
   Ruff immediately found and closed a latent ARP Watchdog type-name defect.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
-  passes **372 tests with 2 intentional platform skips** and 0 failures.
+  passes **387 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
   Ruff pass. pip-audit reports no known vulnerabilities in the installed
   dependencies. The public-repository scan found no committed real credential,
   private key, user-profile path, database, runtime-data, or cache artifact.
 
-<!-- ANGERONA_DOC_STATUS tests=372 skips=2 modules=65 -->
+<!-- ANGERONA_DOC_STATUS tests=387 skips=2 modules=65 -->

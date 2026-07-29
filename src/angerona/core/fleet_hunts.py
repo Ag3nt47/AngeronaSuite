@@ -11,6 +11,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from angerona.core.atomic_io import replace_with_retry
+
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{2,127}$")
 _STATES = {"draft", "approved", "running", "completed", "failed", "cancelled", "expired"}
 _TRANSITIONS = {
@@ -168,7 +170,7 @@ class HuntLifecycle:
                 stream.write(encoded)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temp, self._state_path)
+            replace_with_retry(temp, self._state_path)
         finally:
             try:
                 temp.unlink()

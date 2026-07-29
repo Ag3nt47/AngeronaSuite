@@ -124,6 +124,29 @@ def update(source: Path, destination: Path) -> None:
         "Authenticated atomic state survives restart and fails on tampering. "
         "Terminal results are budget-checked and signed. Arbitrary commands, "
         "scripts, paths, and remote shells are forbidden.",
+        "The authenticated hunt workspace stores typed queries, bounded analyst "
+        "notes, findings, decisions, and immutable result/evidence references "
+        "with optimistic concurrency. It has no executable cells.",
+        "Sanitized notebook export redacts identities and paths, omits device "
+        "tokens and raw artifacts, and excludes restricted results by default.",
+    ))
+
+    doc.add_heading("Reliability and release evidence", level=2)
+    bullets(doc, (
+        "A short bounded atomic-replacement retry tolerates temporary antivirus "
+        "sharing locks on hunt state while persistent or unrelated failures "
+        "remain visible.",
+        "Registered deterministic recovery drills enforce explicit retryable "
+        "errors, attempt limits, delay caps, total time budgets, and "
+        "content-addressed outcomes. Current fixtures cover transient database "
+        "locks, collector outage, unknown errors, service restart, and dead letters.",
+        "The fixed local release gate runs serial tests, bytecode compilation, "
+        "Ruff, dependency audit, and documentation drift without accepting "
+        "operator-supplied commands or invoking a shell.",
+        "Its bounded evidence pack binds the complete source commit and source "
+        "epoch to redacted summaries, command/output digests, limitations, and "
+        "a canonical manifest digest. Publisher signing and long-duration "
+        "physical-host soaks remain separate gates.",
     ))
 
     doc.add_heading("Engineering efficiency and verification", level=2)
@@ -136,7 +159,7 @@ def update(source: Path, destination: Path) -> None:
         "pip-audit 2.10.1 reports no known vulnerability in installed "
         "dependencies. Public-repository scanning found no committed real "
         "credential, private key, user-profile path, database, cache, or runtime data.",
-        "Final repository evidence: 372 tests passed, 2 intentional "
+        "Final repository evidence: 387 tests passed, 2 intentional "
         "platform-dependent skips, 0 failures; Python compilation, Ruff, "
         "dependency audit, and whitespace checks passed.",
     ))
