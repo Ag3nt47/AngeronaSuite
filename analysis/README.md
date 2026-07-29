@@ -851,6 +851,10 @@ email scanning, channel push, research) — each has a one-click test button.
   fanout, broad external fanout, and large asymmetric uploads. Process and
   destination identities are HMAC-tokenized before retention; packet payloads
   are not accepted.
+- **Durable exposure lifecycle.** Host-applicable vulnerabilities now have a
+  local lifecycle for ownership, deadlines, mitigation, bounded risk
+  acceptance, expiry, verified closure, optimistic concurrency, and
+  authenticated audit receipts.
 - **Fewer Defender prompts.** Normal startup no longer rewrites the
   highest-privilege scheduled task. Startup registration changes only when the
   operator explicitly changes that setting.
@@ -861,10 +865,10 @@ email scanning, channel push, research) — each has a one-click test button.
   intentionally mutate file permissions and are not process-parallel-safe.
   Ruff immediately found and closed a latent ARP Watchdog type-name defect.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
-  passes **360 tests with 2 intentional platform skips** and 0 failures.
+  passes **363 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
   Ruff pass. pip-audit reports no known vulnerabilities in the installed
   dependencies. The public-repository scan found no committed real credential,
   private key, user-profile path, database, runtime-data, or cache artifact.
 
-<!-- ANGERONA_DOC_STATUS tests=360 skips=2 modules=65 -->
+<!-- ANGERONA_DOC_STATUS tests=363 skips=2 modules=65 -->

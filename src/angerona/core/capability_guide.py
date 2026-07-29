@@ -170,6 +170,19 @@ GUIDES = (
         "Enterprise",
     ),
     CapabilityGuide(
+        "exposure-management", "Vulnerability and Exposure Management", "Exposure",
+        "A durable lifecycle for assigning, mitigating, accepting, resolving, "
+        "and auditing host-applicable vulnerabilities.",
+        ("Correlate inventory with trusted vulnerability intelligence.",
+         "Assign an owner and deadline.", "Stage and verify remediation.",
+         "Attach a SHA-256 closure artifact or a bounded risk exception."),
+        "Stale updates conflict, expired exceptions return to the due queue, and "
+        "resolved findings contain immutable evidence identity.",
+        "Stores vulnerability and asset identifiers locally; diagnostic export "
+        "must pass the separate privacy minimization boundary.",
+        "Enterprise",
+    ),
+    CapabilityGuide(
         "world-view", "World View and System Pulse", "Observability",
         "Explains Angerona resource use, sensor continuity and internal service health.",
         ("Open World View.", "Inspect sensor and pipeline status.",

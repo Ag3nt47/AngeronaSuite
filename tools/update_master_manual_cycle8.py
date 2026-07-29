@@ -84,6 +84,15 @@ def update(source: Path, destination: Path) -> None:
         "The layer does not accept or store packet payloads.",
     ))
 
+    doc.add_heading("Durable exposure lifecycle", level=2)
+    bullets(doc, (
+        "Host-applicable vulnerabilities have a durable local lifecycle with "
+        "ownership, deadlines, optimistic concurrency, mitigation, bounded risk "
+        "acceptance, exception expiry, and due-item queries.",
+        "Resolved or closed findings require a SHA-256 closure artifact identity; "
+        "state changes produce authenticated audit receipts.",
+    ))
+
     doc.add_heading("Engineering efficiency and verification", level=2)
     bullets(doc, (
         "Ruff 0.16.0 adds a fast correctness gate and found a latent ARP "
@@ -94,7 +103,7 @@ def update(source: Path, destination: Path) -> None:
         "pip-audit 2.10.1 reports no known vulnerability in installed "
         "dependencies. Public-repository scanning found no committed real "
         "credential, private key, user-profile path, database, cache, or runtime data.",
-        "Final repository evidence: 360 tests passed, 2 intentional "
+        "Final repository evidence: 363 tests passed, 2 intentional "
         "platform-dependent skips, 0 failures; Python compilation, Ruff, "
         "dependency audit, and whitespace checks passed.",
     ))
