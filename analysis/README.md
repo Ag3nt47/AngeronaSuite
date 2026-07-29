@@ -868,6 +868,11 @@ email scanning, channel push, research) — each has a one-click test button.
   protocol compatibility, six architecture decisions, detection-content
   governance, ownership roles, vulnerability response targets, diagnostic
   privacy, and support escalation are now committed repository policy.
+- **Safe fleet hunts.** A typed, authenticated hunt lifecycle supports only
+  registered evidence artifacts, explicit device/group targets, independent
+  approvals, privacy-sensitive two-person approval, host/byte/time budgets,
+  durable tamper-evident state, and signed result receipts. Arbitrary paths,
+  scripts, commands, and remote shells are forbidden.
 - **Fewer Defender prompts.** Normal startup no longer rewrites the
   highest-privilege scheduled task. Startup registration changes only when the
   operator explicitly changes that setting.
@@ -878,10 +883,10 @@ email scanning, channel push, research) — each has a one-click test button.
   intentionally mutate file permissions and are not process-parallel-safe.
   Ruff immediately found and closed a latent ARP Watchdog type-name defect.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
-  passes **369 tests with 2 intentional platform skips** and 0 failures.
+  passes **372 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
   Ruff pass. pip-audit reports no known vulnerabilities in the installed
   dependencies. The public-repository scan found no committed real credential,
   private key, user-profile path, database, runtime-data, or cache artifact.
 
-<!-- ANGERONA_DOC_STATUS tests=369 skips=2 modules=65 -->
+<!-- ANGERONA_DOC_STATUS tests=372 skips=2 modules=65 -->

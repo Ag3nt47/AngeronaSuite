@@ -14,6 +14,7 @@ def test_guides_are_complete_unique_and_searchable():
     assert search_guides("expired exceptions")[0].key == "exposure-management"
     assert search_guides("entrypoint collisions")[0].key == "signed-plugins"
     assert search_guides("dead-letter")[0].key == "interop"
+    assert search_guides("over-budget results")[0].key == "fleet-hunts"
     assert search_guides("no such capability") == ()
 
 

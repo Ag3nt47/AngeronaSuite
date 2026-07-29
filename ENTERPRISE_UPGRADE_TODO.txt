@@ -742,7 +742,7 @@ Acceptance gate:
 10. FLEET HUNTS AND LIVE RESPONSE COLLECTIONS
 ---------------------------------------------
 
-[TODO/P2] ENT-HUNT-001  Create a signed artifact/collection catalog.
+[DONE/P2] ENT-HUNT-001  Create a signed artifact/collection catalog.
   - Stable ID/version.
   - Supported OS.
   - exact inputs.
@@ -751,17 +751,17 @@ Acceptance gate:
   - CPU/time/byte limits.
   - tests and owner.
 
-[TODO/P2] ENT-HUNT-002  Create hunt targeting.
+[DONE/P2] ENT-HUNT-002  Create hunt targeting.
   - Labels, OS, version, policy, capability, exposure, alert, explicit host list.
   - Include/exclude preview.
   - Dynamic and snapshot membership modes.
 
-[TODO/P2] ENT-HUNT-003  Create hunt lifecycle.
+[DONE/P2] ENT-HUNT-003  Create hunt lifecycle.
   - Draft, test host, paused by default, approved, running, stopped, expired.
   - Offline endpoints join within the allowed window.
   - Each endpoint runs once unless explicitly re-collected.
 
-[TODO/P2] ENT-HUNT-004  Add collection budgets.
+[DONE/P2] ENT-HUNT-004  Add collection budgets.
   - Per-host and fleet byte caps.
   - CPU/time/concurrency caps.
   - bandwidth schedule.

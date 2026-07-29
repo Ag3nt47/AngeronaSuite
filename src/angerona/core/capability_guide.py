@@ -207,6 +207,19 @@ GUIDES = (
         "Enterprise",
     ),
     CapabilityGuide(
+        "fleet-hunts", "Safe Fleet Hunts and Collections", "Investigation",
+        "Typed fleet-wide evidence collection with an allowlisted artifact "
+        "catalog, explicit targets, approvals, budgets, durable state and receipts.",
+        ("Choose registered artifacts.", "Set exact device/group targets.",
+         "Set host, byte, duration, and expiry budgets.", "Collect approvals.",
+         "Run through the typed endpoint collector and verify the result receipt."),
+        "Arbitrary command/path fields fail, restricted artifacts require two "
+        "approvers, state tampering fails, and over-budget results are rejected.",
+        "Artifact privacy classes determine approval; no generic shell or "
+        "unbounded content collection exists.",
+        "Enterprise",
+    ),
+    CapabilityGuide(
         "world-view", "World View and System Pulse", "Observability",
         "Explains Angerona resource use, sensor continuity and internal service health.",
         ("Open World View.", "Inspect sensor and pipeline status.",

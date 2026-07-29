@@ -401,13 +401,16 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
 - `docs/enterprise/` is authoritative for supported-edition claims,
   compatibility, architecture decisions, detection-content governance, and
   support/security operations. Code and marketing must stay within those gates.
+- `core/fleet_hunts.py` permits only registered artifact types and exact targets.
+  It forbids command/shell/script/path input, enforces host/byte/time/expiry
+  budgets, independent approvals, authenticated durable state, and receipts.
 - Normal launch never rewrites the elevated autostart task. Only an explicit
   Settings state change may mutate startup registration.
 - Development gates are pinned in `pyproject.toml`: Ruff 0.16.0,
   pytest-xdist 3.8.0, and pip-audit 2.10.1. Ruff uses correctness-critical rules
   first. Keep the complete suite serial because Windows ACL tests are not
   process-parallel-safe; xdist is for isolated test groups. Current evidence:
-  369 passed / 2 intentional platform skips; compile and Ruff clean; no known
+  372 passed / 2 intentional platform skips; compile and Ruff clean; no known
   installed-package vulnerability reported.
 
 ## NEVER DO
