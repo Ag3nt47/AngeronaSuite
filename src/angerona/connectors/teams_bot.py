@@ -138,7 +138,19 @@ class TeamsBot:
                     bot._request_slots.release()
 
             def _handle_post(self):
-                if not bot._verify_auth(self.headers.get("Authorization", "")):
+                forwarded = any(
+                    self.headers.get(name)
+                    for name in (
+                        "Forwarded", "X-Forwarded-For", "X-Forwarded-Host",
+                        "X-Forwarded-Proto", "X-Real-IP",
+                    )
+                )
+                peer = str(self.client_address[0] if self.client_address else "")
+                if not bot._verify_auth(
+                    self.headers.get("Authorization", ""),
+                    peer_host=peer,
+                    forwarded=forwarded,
+                ):
                     self.send_response(401); self.end_headers(); return
                 try:
                     length = int(self.headers.get("Content-Length", "0") or 0)
@@ -285,20 +297,39 @@ class TeamsBot:
         return self._token
 
     # ── Inbound auth: prove the request is from the Bot Connector ──────────────
-    def _verify_auth(self, auth_header: str) -> bool:
+    def _dev_auth_allowed(self, peer_host: str, forwarded: bool) -> bool:
+        """Allow bypass only for an explicitly enabled, direct loopback request."""
+        direct_loopback = str(peer_host).strip().lower() in {
+            "127.0.0.1", "::1", "localhost",
+        }
+        explicit_dev = (
+            os.environ.get("ANGERONA_TEAMS_DEV_SKIP_AUTH", "").strip() == "1"
+        )
+        return bool(
+            self.skip_auth and explicit_dev and direct_loopback and not forwarded
+        )
+
+    def _verify_auth(
+        self,
+        auth_header: str,
+        *,
+        peer_host: str = "",
+        forwarded: bool = False,
+    ) -> bool:
         """Fail CLOSED. Full validation (signature via JWKS, audience == App ID,
         issuer, expiry) when PyJWT is available; otherwise only the explicit dev
         override lets traffic through."""
         token = ""
         if auth_header.lower().startswith("bearer "):
             token = auth_header[7:].strip()
+        dev_allowed = self._dev_auth_allowed(peer_host, forwarded)
         if not token:
-            return bool(self.skip_auth)
+            return dev_allowed
         if not _have("jwt"):
             # No JWT library → cannot verify the signature; refuse unless dev override.
             if not self.skip_auth:
                 self.last_error = "PyJWT not installed; refusing unauthenticated Teams traffic"
-            return bool(self.skip_auth)
+            return dev_allowed
         try:
             import jwt                          # PyJWT
             from jwt import PyJWKClient
@@ -313,7 +344,7 @@ class TeamsBot:
             return True
         except Exception as exc:
             self.last_error = f"inbound JWT rejected: {exc}"
-            return bool(self.skip_auth)
+            return dev_allowed
 
     # ── Self-test (no network: injected token/reply transports) ────────────────
     def self_test(self) -> "tuple[bool, str]":
@@ -371,11 +402,21 @@ class TeamsBot:
                 assert bot._verify_auth("Bearer sometoken") is False, \
                     "unverifiable inbound JWT is refused"
                 dev = TeamsBot(enabled=True, app_id="x", app_password="y", skip_auth=True)
-                assert dev._verify_auth("Bearer sometoken") is True, \
-                    "loopback development override allows (opt-in)"
-                assert dev._verify_auth("") is True and TeamsBot()._verify_auth("") is False, \
-                    "empty auth follows the explicit override"
+                os.environ["ANGERONA_TEAMS_DEV_SKIP_AUTH"] = "1"
+                assert dev._verify_auth(
+                    "Bearer sometoken", peer_host="127.0.0.1"
+                ) is True, "direct loopback development override allows (opt-in)"
+                assert dev._verify_auth(
+                    "", peer_host="127.0.0.1", forwarded=True
+                ) is False, "forwarded loopback traffic cannot use the override"
+                assert dev._verify_auth(
+                    "", peer_host="10.0.0.5"
+                ) is False, "non-local traffic cannot use the override"
+                assert TeamsBot()._verify_auth(
+                    "", peer_host="127.0.0.1"
+                ) is False, "empty auth fails closed without explicit override"
             finally:
+                os.environ.pop("ANGERONA_TEAMS_DEV_SKIP_AUTH", None)
                 globals()["_have"] = original_have
 
             # 5 — never send our bearer token to an attacker-controlled URL.

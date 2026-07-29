@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "id": "org.angerona.benign-powershell-observation",
+  "version": "1.0.0",
+  "owner": "Angerona Community",
+  "description": "Benign demonstration package: observes Get-Process without taking response action.",
+  "telemetry": ["process.creation"],
+  "attack": ["T1059.001"],
+  "severity": "low",
+  "confidence": 80,
+  "logic": {
+    "type": "sigma-subset",
+    "detection": {
+      "selection": {
+        "image|endswith": "powershell.exe",
+        "cmdline|contains": "Get-Process"
+      },
+      "condition": "selection"
+    }
+  },
+  "fixtures": [
+    {
+      "name": "benign demo hit",
+      "event": {
+        "image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "cmdline": "powershell.exe Get-Process"
+      },
+      "expected_match": true
+    },
+    {
+      "name": "unrelated process",
+      "event": {
+        "image": "C:\\Windows\\System32\\notepad.exe",
+        "cmdline": "notepad.exe"
+      },
+      "expected_match": false
+    }
+  ],
+  "performance": {
+    "max_eval_ms": 50,
+    "max_events_per_second": 1000
+  },
+  "rollback": {
+    "previous_digest": null,
+    "instructions": "Disable this demonstration package."
+  },
+  "expires_at": "2035-01-01T00:00:00Z",
+  "digest": "sha256:d2bf4f735b79477153a1ba600ffc94c64496de5e9c8d322854ee9e0f06e8e979"
+}

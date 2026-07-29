@@ -70,17 +70,17 @@ NON-NEGOTIABLE PRODUCT RULES
   - Untrusted extension, policy, update, identity, or remediation proof -> deny.
   - Sensor read failure -> visible "unknown/degraded", never a false "healthy".
 
-[TODO/P0] DEF-004  Require human approval for destructive or high-impact response.
+[PARTIAL/P0] DEF-004  Require human approval for destructive or high-impact response.
   - AI may explain and recommend.
   - AI must not silently kill, isolate, delete, change firewall policy, alter
     startup state, or modify enterprise configuration.
   - Emergency pre-authorized playbooks require scope, expiry, rollback, and audit.
 
-[TODO/P0] DEF-005  Separate detection evidence from conclusions.
+[PARTIAL/P0] DEF-005  Separate detection evidence from conclusions.
   - Preserve raw observation, normalized event, analytic result, confidence,
     policy decision, operator decision, response action, and verification receipt.
 
-[TODO/P0] DEF-006  Make privacy a product boundary, not a settings footnote.
+[PARTIAL/P0] DEF-006  Make privacy a product boundary, not a settings footnote.
   - Minimize by default, redact before export, bound retention, support deletion,
     and document every optional outbound path.
 
@@ -268,13 +268,13 @@ Acceptance gate:
   Abuse cases: stolen token, cloned host, rogue control plane, replay, expired
   bootstrap token, host reimage, key theft, clock skew, tenant confusion, CA loss.
 
-[TODO/P1] ENT-ID-002  Give each endpoint a unique cryptographic device identity.
+[PARTIAL/P1] ENT-ID-002  Give each endpoint a unique cryptographic device identity.
   - Generate private key locally.
   - Prefer non-exportable TPM-backed keys when supported.
   - Never use a shared fleet secret as the steady-state identity.
   - Bind identity to tenant, device record, and enrollment metadata.
 
-[TODO/P1] ENT-ID-003  Implement one-time enrollment.
+[PARTIAL/P1] ENT-ID-003  Implement one-time enrollment.
   - Short-lived, single-use bootstrap token.
   - Optional admin approval or pre-registration.
   - Proof of key possession.
@@ -288,14 +288,14 @@ Acceptance gate:
   - Modern TLS only.
   - Separate identities for data and privileged control actions.
 
-[TODO/P1] ENT-ID-005  Rotate credentials automatically.
+[PARTIAL/P1] ENT-ID-005  Rotate credentials automatically.
   - Short-lived workload/device certificates.
   - Overlapping rotation window.
   - Clock-skew tolerance.
   - Expiry telemetry.
   - Fail-safe offline behavior.
 
-[TODO/P1] ENT-ID-006  Implement revocation and quarantine.
+[PARTIAL/P1] ENT-ID-006  Implement revocation and quarantine.
   - Immediate device disable.
   - Revocation distribution.
   - Compromised-key workflow.
@@ -391,16 +391,16 @@ Acceptance gate:
   - Every command has schema, capability, scope, limits, timeout, expiry,
     idempotency key, signer, authorization decision, and expected receipt.
 
-[TODO/P1] ENT-CTL-002  Implement host/group/fleet inventory.
+[PARTIAL/P1] ENT-CTL-002  Implement host/group/fleet inventory.
   - Identity, hostname alias, OS/build, agent version, policy version, labels,
     last seen, health, sensor capability, data freshness, and quarantine state.
   - Avoid collecting usernames or sensitive inventory without a named need.
 
-[TODO/P1] ENT-CTL-003  Implement a durable job state machine.
+[PARTIAL/P1] ENT-CTL-003  Implement a durable job state machine.
   States: draft -> approved -> queued -> delivered -> running -> succeeded /
   failed / expired / cancelled / rollback-pending / rolled-back.
 
-[TODO/P1] ENT-CTL-004  Add job targeting and safety.
+[PARTIAL/P1] ENT-CTL-004  Add job targeting and safety.
   - Explicit host/group query preview.
   - Estimated endpoint/data impact.
   - Canary sample.
@@ -408,11 +408,11 @@ Acceptance gate:
   - Maintenance windows.
   - Stop/cancel.
 
-[TODO/P1] ENT-CTL-005  Add replay resistance.
+[PARTIAL/P1] ENT-CTL-005  Add replay resistance.
   - Nonce, sequence, expiry, signature, one-time execution record.
   - Agent persists recent command IDs across restart.
 
-[TODO/P1] ENT-CTL-006  Add endpoint result receipts.
+[PARTIAL/P1] ENT-CTL-006  Add endpoint result receipts.
   - Signed result, timestamps, evidence references, change proof, health state.
   - Partial failure is explicit.
 
@@ -438,7 +438,7 @@ Acceptance gate:
 05. EVENT INGESTION AND OFFLINE DELIVERY
 ----------------------------------------
 
-[TODO/P1] ENT-ING-001  Define a versioned event envelope.
+[PARTIAL/P1] ENT-ING-001  Define a versioned event envelope.
   Required fields:
   - schema version, event ID, device ID, tenant ID (server attached), sensor ID,
     sensor sequence, observed time, received time, severity, category, payload
@@ -451,18 +451,21 @@ Acceptance gate:
   - Per-device and per-tenant rate limits.
   - Reject unknown schemas safely.
 
-[TODO/P1] ENT-ING-003  Add durable endpoint buffering.
+[PARTIAL/P1] ENT-ING-003  Add durable endpoint buffering.
   - Bounded encrypted queue on D:/configured data root.
   - Priority lanes so critical events are not buried by info floods.
   - Backpressure and drop accounting.
   - Age/size retention.
   - Crash-safe append/ack behavior.
 
-[TODO/P1] ENT-ING-004  Add deduplication and ordering semantics.
+[PARTIAL/P1] ENT-ING-004  Add deduplication and ordering semantics.
   - Stable event IDs.
-  - Sensor sequence gaps visible.
+  - Sensor sequence gaps, duplicates, regressions, missing metadata, and
+    staleness are now visible in bounded process-local coverage accounting.
   - At-least-once delivery with server-side dedup.
   - Never silently imply total ordering across sensors.
+  Remaining: durable restart continuity, stable cross-process event identity,
+  and server-side at-least-once deduplication.
 
 [TODO/P1] ENT-ING-005  Add clock-quality handling.
   - Track host offset and uncertainty.
@@ -493,19 +496,19 @@ Acceptance gate:
 
 [PARTIAL/P1] ENT-DATA-001  Make OCSF the canonical normalized export contract.
 
-[TODO/P1] ENT-DATA-002  Create an Angerona schema registry.
+[PARTIAL/P1] ENT-DATA-002  Create an Angerona schema registry.
   - Versioned JSON Schema/Protobuf contracts.
   - Compatibility checks in CI.
   - Examples and data classification.
   - Unknown-field handling.
 
-[TODO/P1] ENT-DATA-003  Preserve source fidelity.
+[PARTIAL/P1] ENT-DATA-003  Preserve source fidelity.
   - Raw source reference/digest.
   - Normalized event.
   - Enrichment provenance and version.
   - No destructive normalization that prevents later re-analysis.
 
-[TODO/P1] ENT-DATA-004  Add quality indicators.
+[PARTIAL/P1] ENT-DATA-004  Add quality indicators.
   - complete / partial / truncated / sampled / late / duplicate / unverifiable.
   - Sensor health and data freshness.
 
@@ -530,7 +533,7 @@ Acceptance gate:
 
 [DESIGN/P0] ENT-POL-001  Define policy/content trust roots and compromise recovery.
 
-[TODO/P1] ENT-POL-002  Use signed, versioned policy bundles.
+[PARTIAL/P1] ENT-POL-002  Use signed, versioned policy bundles.
   Bundle includes:
   - policy ID/version.
   - minimum/maximum compatible agent.
@@ -540,35 +543,35 @@ Acceptance gate:
   - publisher and signature.
   - rollback predecessor.
 
-[TODO/P1] ENT-POL-003  Build effective-policy resolution.
+[PARTIAL/P1] ENT-POL-003  Build effective-policy resolution.
   - Global -> tenant -> fleet -> group -> host.
   - Deterministic precedence.
   - Conflict detection.
   - "Why is this setting active?" explanation.
 
-[TODO/P1] ENT-POL-004  Build policy simulation.
+[PARTIAL/P1] ENT-POL-004  Build policy simulation.
   - Preview affected hosts.
   - Required capabilities.
   - expected CPU/RAM/storage/network impact.
   - privacy/egress changes.
   - detection coverage changes.
 
-[TODO/P1] ENT-POL-005  Build staged rollout.
+[PARTIAL/P1] ENT-POL-005  Build staged rollout.
   - Lab -> canary -> ring -> broad fleet.
   - Health gates and automatic pause.
   - Manual and automatic rollback.
   - Offline host handling.
 
-[TODO/P1] ENT-POL-006  Fail safely on invalid/expired policy.
+[PARTIAL/P1] ENT-POL-006  Fail safely on invalid/expired policy.
   - Keep last-known-good.
   - Raise visible integrity alert.
   - Do not silently revert to permissive defaults.
 
-[TODO/P2] ENT-POL-007  Separate content channels.
+[PARTIAL/P2] ENT-POL-007  Separate content channels.
   - Stable, rapid security fix, preview, customer-pinned.
   - Independent rules/intelligence/model/software versions.
 
-[TODO/P2] ENT-POL-008  Add policy approval workflow and signed audit.
+[PARTIAL/P2] ENT-POL-008  Add policy approval workflow and signed audit.
 
 Acceptance gate:
   THREAT + TEST + OPS. Forged, replayed, incompatible, expired, or partial
@@ -589,14 +592,14 @@ Acceptance gate:
   - Timestamp signatures.
   - Publish signer identity and certificate transition process.
 
-[TODO/P0] ENT-UPD-003  Publish signed checksums and provenance.
+[PARTIAL/P0] ENT-UPD-003  Publish signed checksums and provenance.
   - Artifact digest.
   - Source revision.
   - builder identity.
   - build inputs.
   - SBOM digest.
 
-[TODO/P1] ENT-UPD-004  Add agent-side verification before install.
+[PARTIAL/P1] ENT-UPD-004  Add agent-side verification before install.
   - Metadata signature.
   - artifact digest.
   - publisher policy.
@@ -611,7 +614,7 @@ Acceptance gate:
   - reboot coordination.
   - offline retry.
 
-[TODO/P1] ENT-UPD-006  Add atomic install and rollback.
+[PARTIAL/P1] ENT-UPD-006  Add atomic install and rollback.
   - Preserve last-known-good binaries/config.
   - Health check before promotion.
   - Failed start automatically rolls back.
@@ -621,7 +624,7 @@ Acceptance gate:
   - Available/queued/downloading/verifying/installing/healthy/rolled-back.
   - Fleet progress, failure reasons, and version drift.
 
-[TODO/P2] ENT-UPD-008  Add signed offline update bundles for air-gapped sites.
+[PARTIAL/P2] ENT-UPD-008  Add signed offline update bundles for air-gapped sites.
 
 Acceptance gate:
   REL + THREAT + TEST + OPS. Tampered artifacts, stale metadata, key rotation,
@@ -638,7 +641,7 @@ Acceptance gate:
   - Relational store for control/cases.
   - Small single-node and HA deployment profiles.
 
-[TODO/P2] ENT-SEA-002  Build tenant-scoped search.
+[PARTIAL/P2] ENT-SEA-002  Build tenant-scoped search.
   - Structured filters, full text, time range, host/group, ATT&CK, process,
     hash, IP/domain, case, severity, integrity, and data quality.
   - Saved searches and shareable queries with permission checks.
@@ -732,7 +735,7 @@ Acceptance gate:
 11. DETECTION-AS-CODE AND ANALYTIC QUALITY
 ------------------------------------------
 
-[TODO/P1] ENT-DET-001  Create a versioned detection package format.
+[PARTIAL/P1] ENT-DET-001  Create a versioned detection package format.
   - ID, title, description, owner, version.
   - inputs and schema.
   - query/logic.
@@ -954,12 +957,17 @@ Acceptance gate:
   - No TLS interception by default.
   - No secret/session-key collection.
 
-[TODO/P2] ENT-NET-006  Add network containment safely.
+[PARTIAL/P2] ENT-NET-006  Add network containment safely.
   - Windows-supported firewall/WFP rules.
   - host/process/destination scope.
   - duration and rollback.
   - preserve control-plane/recovery channel.
   - preflight and post-change verification.
+  Implemented boundary: deterministic typed plans, validated scope, mandatory
+  loopback/DNS/DHCP recovery exclusions, expiry, exact-plan approval,
+  apply-time reconstruction, rollback receipts, and an optional independent
+  verifier. Remaining: a separately privileged WFP broker, protected receipt
+  signing, expiry supervision, and OS-side enforcement/rollback proof.
 
 [TODO/P3] ENT-NET-007  Add optional remote network sensors.
   - Zeek/Suricata integration via normalized events.
@@ -1051,11 +1059,11 @@ Acceptance gate:
 16. CASE MANAGEMENT, FORENSICS, AND EVIDENCE
 --------------------------------------------
 
-[TODO/P2] ENT-CASE-001  Add incident/case objects.
+[PARTIAL/P2] ENT-CASE-001  Add incident/case objects.
   - Tenant, title, severity, status, owner, collaborators, timeline, evidence,
     hypotheses, tasks, approvals, actions, related alerts/hosts/users.
 
-[TODO/P2] ENT-CASE-002  Add evidence chain of custody.
+[PARTIAL/P2] ENT-CASE-002  Add evidence chain of custody.
   - Collection method/version.
   - collector/device identity.
   - observed/collected times.
@@ -1063,30 +1071,30 @@ Acceptance gate:
   - access history.
   - transformations and derived artifacts.
 
-[TODO/P2] ENT-CASE-003  Add safe evidence handling.
+[PARTIAL/P2] ENT-CASE-003  Add safe evidence handling.
   - Quarantine by default.
   - no preview execution.
   - archive/decompression limits.
   - malware warning.
   - least-privilege download.
 
-[TODO/P2] ENT-CASE-004  Add case workflow.
+[PARTIAL/P2] ENT-CASE-004  Add case workflow.
   - New/triage/investigating/contained/eradicated/recovered/closed.
   - Reopen and retrospective review.
   - SLA timers without hiding overdue work.
 
-[TODO/P2] ENT-CASE-005  Add collaboration.
+[PARTIAL/P2] ENT-CASE-005  Add collaboration.
   - Notes, mentions, tasks, assignments, decision log.
   - Permission and tenant checks on every linked object.
 
-[TODO/P2] ENT-CASE-006  Add exports.
+[PARTIAL/P2] ENT-CASE-006  Add exports.
   - Human report.
   - machine-readable evidence manifest.
   - signed AAR.
   - STIX bundle where appropriate.
   - redaction preview.
 
-[TODO/P2] ENT-CASE-007  Add legal hold and retention exceptions.
+[PARTIAL/P2] ENT-CASE-007  Add legal hold and retention exceptions.
 
 [TODO/P3] ENT-CASE-008  Add cross-host causal incident graph.
   - Bounded nodes/edges.
@@ -1155,11 +1163,11 @@ Acceptance gate:
 18. AI/ARIA SECURITY, GOVERNANCE, AND QUALITY
 ---------------------------------------------
 
-[TODO/P0] ENT-AI-001  Treat all model input and output as untrusted.
+[PARTIAL/P0] ENT-AI-001  Treat all model input and output as untrusted.
   - Prompt injection and malicious evidence cannot grant permissions.
   - Model text never bypasses typed action validation.
 
-[TODO/P0] ENT-AI-002  Create an AI tool broker.
+[PARTIAL/P0] ENT-AI-002  Create an AI tool broker.
   - Explicit allowlisted tools.
   - JSON schema validation.
   - per-tool scopes.
@@ -1167,19 +1175,19 @@ Acceptance gate:
   - operator confirmation.
   - complete audit.
 
-[TODO/P0] ENT-AI-003  Separate explain/recommend/plan/execute modes.
+[PARTIAL/P0] ENT-AI-003  Separate explain/recommend/plan/execute modes.
   - Default explain only.
   - Recommendations cite evidence.
   - Plans are previewable.
   - Execution uses deterministic registered actions, never generated scripts.
 
-[TODO/P0] ENT-AI-004  Strengthen redaction and data classification.
+[PARTIAL/P0] ENT-AI-004  Strengthen redaction and data classification.
   - Recursive fields.
   - paths, users, hostnames, IPs, URLs, secrets, tokens, evidence content.
   - destination-specific policy.
   - preview before cloud send.
 
-[TODO/P1] ENT-AI-005  Add model provenance.
+[PARTIAL/P1] ENT-AI-005  Add model provenance.
   - Provider/model/version/digest.
   - quantization.
   - prompt/template version.
@@ -1192,7 +1200,7 @@ Acceptance gate:
   - safety/privacy tests.
   - supported use cases and known limits.
 
-[TODO/P1] ENT-AI-007  Create deterministic security evals.
+[PARTIAL/P1] ENT-AI-007  Create deterministic security evals.
   - Prompt injection.
   - data exfiltration request.
   - forged alert.
@@ -1203,11 +1211,11 @@ Acceptance gate:
   - model unavailable.
   - multilingual input.
 
-[TODO/P1] ENT-AI-008  Require evidence citations inside Angerona.
+[PARTIAL/P1] ENT-AI-008  Require evidence citations inside Angerona.
   - Event/case/host/policy identifiers.
   - Never present an uncited model guess as telemetry.
 
-[TODO/P1] ENT-AI-009  Add confidence and abstention.
+[PARTIAL/P1] ENT-AI-009  Add confidence and abstention.
   - "Insufficient evidence" is a valid result.
   - Route uncertain/high-impact cases to human review.
 
@@ -1249,7 +1257,7 @@ Acceptance gate:
 19. PRIVACY, DATA GOVERNANCE, AND CUSTOMER CONTROL
 --------------------------------------------------
 
-[TODO/P0] ENT-PRIV-001  Create a complete data inventory.
+[PARTIAL/P0] ENT-PRIV-001  Create a complete data inventory.
   For every field/source:
   - purpose.
   - classification.
@@ -1260,12 +1268,12 @@ Acceptance gate:
   - export destinations.
   - deletion behavior.
 
-[TODO/P0] ENT-PRIV-002  Default to data minimization.
+[PARTIAL/P0] ENT-PRIV-002  Default to data minimization.
   - Do not collect content where metadata is sufficient.
   - Do not retain raw evidence automatically without a defined need.
   - Sample/drop low-value high-volume events visibly.
 
-[TODO/P0] ENT-PRIV-003  Centralize egress policy.
+[PARTIAL/P0] ENT-PRIV-003  Centralize egress policy.
   - Named destination.
   - data classes.
   - reason.
@@ -1274,19 +1282,19 @@ Acceptance gate:
   - timeout/rate/size bounds.
   - audit.
 
-[TODO/P1] ENT-PRIV-004  Add redaction/tokenization services.
+[PARTIAL/P1] ENT-PRIV-004  Add redaction/tokenization services.
   - Reversible only where authorized and key-protected.
   - Irreversible anonymization where identity is unnecessary.
   - Structured-data aware.
 
-[TODO/P1] ENT-PRIV-005  Add retention and deletion controls.
+[PARTIAL/P1] ENT-PRIV-005  Add retention and deletion controls.
   - Per class/tenant.
   - endpoint and central storage.
   - backups and indexes.
   - legal hold exception.
   - deletion report.
 
-[TODO/P1] ENT-PRIV-006  Add operator-facing privacy previews.
+[PARTIAL/P1] ENT-PRIV-006  Add operator-facing privacy previews.
   - What a connector sends.
   - What a diagnostic bundle contains.
   - What an export includes.
@@ -1317,7 +1325,7 @@ Acceptance gate:
 
 [DONE/P0] ENT-PERF-002  System Pulse samples CPU/RAM/Wi-Fi/network off the UI thread.
 
-[TODO/P0] ENT-PERF-003  Establish performance budgets.
+[PARTIAL/P0] ENT-PERF-003  Establish performance budgets.
   At minimum:
   - idle CPU.
   - active CPU.
@@ -1340,7 +1348,7 @@ Acceptance gate:
   - repeated drills.
   - bounded database/report growth.
 
-[TODO/P0] ENT-PERF-005  Track leak indicators.
+[PARTIAL/P0] ENT-PERF-005  Track leak indicators.
   - RSS/private bytes.
   - Python heap.
   - Qt objects.
@@ -1348,7 +1356,7 @@ Acceptance gate:
   - queues/caches/history.
   - DB connections/cursors.
 
-[TODO/P0] ENT-PERF-006  Keep blocking work off the GUI thread.
+[PARTIAL/P0] ENT-PERF-006  Keep blocking work off the GUI thread.
   - Database scans.
   - process/network enumeration.
   - local/cloud AI.
@@ -1369,11 +1377,15 @@ Acceptance gate:
   - Worker process/native component after measurement.
   - Fixed pool, bounded queue, cancellation, crash isolation.
 
-[TODO/P1] ENT-PERF-009  Bound every queue/cache/history/table.
+[PARTIAL/P1] ENT-PERF-009  Bound every queue/cache/history/table.
   - Drop/eviction policy.
   - critical priority.
   - visible counters.
   - no unbounded UI row accumulation.
+  Current evidence: Resolve Center renders 25 rows per page; telemetry drains in
+  bounded 200-row batches; coverage state caps sensor cardinality and exposes
+  evictions; the kernel posture ledger retains 256 records. Remaining
+  components still require a complete bound/eviction audit.
 
 [TODO/P1] ENT-PERF-010  Optimize database access.
   - WAL/transaction strategy.
@@ -1480,11 +1492,11 @@ Acceptance gate:
 22. OBSERVABILITY AND OPERATIONS
 --------------------------------
 
-[TODO/P1] ENT-OBS-001  Instrument components with structured logs, metrics, traces.
+[PARTIAL/P1] ENT-OBS-001  Instrument components with structured logs, metrics, traces.
   - Correlation/trace IDs across agent -> ingest -> analytic -> case -> response.
   - OpenTelemetry-compatible export where practical.
 
-[TODO/P1] ENT-OBS-002  Define service-level indicators/objectives.
+[PARTIAL/P1] ENT-OBS-002  Define service-level indicators/objectives.
   Examples:
   - enrollment success.
   - event acceptance/lag.
@@ -1495,14 +1507,14 @@ Acceptance gate:
   - remediation verification.
   - console availability.
 
-[TODO/P1] ENT-OBS-003  Add health endpoints and dependency status.
+[PARTIAL/P1] ENT-OBS-003  Add health endpoints and dependency status.
   - Live vs ready.
   - last successful work cycle.
   - queue/lag.
   - credential expiry.
   - data freshness.
 
-[TODO/P1] ENT-OBS-004  Add low-cardinality metrics discipline.
+[PARTIAL/P1] ENT-OBS-004  Add low-cardinality metrics discipline.
   - Never put raw host/user/path/hash in metric labels.
   - Cardinality budgets and overflow visibility.
 
@@ -1670,14 +1682,14 @@ Acceptance gate:
 25. SOFTWARE SUPPLY CHAIN AND PUBLIC GITHUB HARDENING
 -----------------------------------------------------
 
-[TODO/P0] ENT-SC-001  Run a public-release secrets/privacy sweep.
+[PARTIAL/P0] ENT-SC-001  Run a public-release secrets/privacy sweep.
   - Git history and current tree.
   - .env/tokens/keys/cert private keys.
   - usernames, phone/email, IPs, paths, reports, databases, crash dumps,
     screenshots, model prompts, and customer-like telemetry.
   - Replace examples with obvious synthetic values.
 
-[TODO/P0] ENT-SC-002  Lock down GitHub workflows.
+[PARTIAL/P0] ENT-SC-002  Lock down GitHub workflows.
   - Minimal token permissions.
   - Pin third-party actions to full commit digest.
   - No untrusted PR code with write secrets.
@@ -1689,21 +1701,21 @@ Acceptance gate:
   - no direct protected-branch push.
   - signed commits/tags policy if adopted.
 
-[TODO/P0] ENT-SC-004  Add automated security analysis.
+[PARTIAL/P0] ENT-SC-004  Add automated security analysis.
   - CodeQL/static analysis.
   - dependency scanning.
   - secret scanning.
   - license review.
   - malicious dependency/name confusion review.
 
-[TODO/P0] ENT-SC-005  Generate CycloneDX/SPDX SBOM for every release.
+[PARTIAL/P0] ENT-SC-005  Generate CycloneDX/SPDX SBOM for every release.
   - Python, native binaries, installer, models/content where applicable.
 
 [TODO/P0] ENT-SC-006  Publish vulnerability/exploitability status.
   - VEX when supported by evidence.
   - No unjustified "not affected" claims.
 
-[TODO/P0] ENT-SC-007  Generate SLSA-compatible build provenance.
+[PARTIAL/P0] ENT-SC-007  Generate SLSA-compatible build provenance.
   - Builder identity.
   - source revision.
   - build definition/inputs.
@@ -1747,7 +1759,7 @@ Acceptance gate:
 26. TESTING AND SECURITY ASSURANCE
 ----------------------------------
 
-[TODO/P0] ENT-QA-001  Define required test layers.
+[PARTIAL/P0] ENT-QA-001  Define required test layers.
   - Unit.
   - property/invariant.
   - integration.
@@ -1759,7 +1771,7 @@ Acceptance gate:
   - security/privacy.
   - installer/update/rollback.
 
-[TODO/P0] ENT-QA-002  Maintain isolated deterministic tests.
+[PARTIAL/P0] ENT-QA-002  Maintain isolated deterministic tests.
   - No real cloud/network by default.
   - No host mutation outside temp sandbox.
   - No unbounded sleeps.
@@ -1775,7 +1787,7 @@ Acceptance gate:
   - API request validation.
   - native/driver IOCTL if ever added.
 
-[TODO/P0] ENT-QA-004  Add concurrency/lifecycle tests.
+[PARTIAL/P0] ENT-QA-004  Add concurrency/lifecycle tests.
   - start/stop/restart.
   - double click/job duplicate.
   - shutdown during work.
@@ -1783,7 +1795,7 @@ Acceptance gate:
   - stale worker result after window close.
   - queue saturation.
 
-[TODO/P0] ENT-QA-005  Add security boundary tests.
+[PARTIAL/P0] ENT-QA-005  Add security boundary tests.
   - Forged identity/policy/update/receipt/AAR.
   - cross-tenant access.
   - replay.
@@ -1792,7 +1804,7 @@ Acceptance gate:
   - untrusted plugin.
   - prompt injection/tool abuse.
 
-[TODO/P0] ENT-QA-006  Add privacy tests.
+[PARTIAL/P0] ENT-QA-006  Add privacy tests.
   - redaction recursion.
   - logs/support bundles.
   - connector preview.
@@ -2287,6 +2299,44 @@ DAYS 31-90 - BUILD THE FLEET TRUST CORE
   5. ENT-AUTH-002/005/008 OIDC/RBAC/audit.
   6. ENT-POL-001..006 signed policy/canary/rollback.
   7. ENT-CTL-001..006 typed jobs and signed receipts.
+
+
+2026-07-29 LOCAL FOUNDATION RECONCILIATION
+------------------------------------------
+
+The PARTIAL status changes above are evidence-backed local foundations, not
+claims that their full fleet acceptance gates are closed. The current tree now
+contains:
+
+  - bounded asynchronous flight recording and normalized evidence ingestion;
+  - typed evidence hunting, case workflow, privacy-minimized export, legal hold,
+    authenticated chain-of-custody heads, and signed retention receipts;
+  - signed detection-package activation with trust revalidation and quarantine;
+  - endpoint identity, one-time enrollment, replay resistance, revocation,
+    persisted connection sequence checks, and scoped fleet job receipts;
+  - signed policy bundles, deterministic resolution/simulation, staged rollout,
+    expiry handling, rollback, and approval receipts;
+  - scoped Role-Based Access Control (RBAC), expiring service accounts,
+    explicit-deny precedence, canonical fleet/group/host scopes, and
+    request-bound authorization receipts;
+  - asset/exposure inventory contracts, service-level objective accounting,
+    privacy/egress governance, an Artificial Intelligence (AI) security broker,
+    and staged-only generated-code/remediation proposals;
+  - deterministic release manifests, CycloneDX Software Bill of Materials
+    (SBOM), signed offline bundles, compatibility/rollback preflight,
+    vulnerability-exploitability exchange data, and provenance skeletons;
+  - immutable GitHub Actions pins, least-privilege workflow permissions,
+    dependency updates, code ownership, secret scanning, CodeQL, Scorecard,
+    release-policy validation, and multi-version continuous integration.
+
+Still external-gated or incomplete: production mutual Transport Layer Security
+(mTLS), central fleet services and storage, tenant isolation, durable
+cross-process authorization replay storage, production privileged containment
+broker, Authenticode certificate custody, branch-protection administration,
+Hardware Lab Kit (HLK)/Driver Verifier labs, Apple entitlements/notarization,
+external penetration testing, compatibility labs, and long-duration physical
+host soak evidence. These items remain TODO/DESIGN/BLOCKED until their exact
+acceptance evidence exists.
 
 MONTHS 4-6 - OPERATIONS
   1. Search/retention/evidence storage.

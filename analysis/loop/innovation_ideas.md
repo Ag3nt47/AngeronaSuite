@@ -1,662 +1,490 @@
-# Innovation Ideas — Cycle 4, Round 1 (2026-07-27)
+# Loop 1 Innovation Ideas — 2026-07-29
 
-This is a defensive-only research and design brief for Angerona's local-first
-Windows EDR/NDR/SOAR. It is ranked by expected **impact divided by effort**.
-For a transparent comparison, impact is scored 1–5 and effort is weighted
-S=1, M=2, L=3; range estimates use their midpoint. The score is directional,
-not a delivery promise.
+## Decision
 
-## Scope and non-duplication check
+This cycle should strengthen Angerona at the boundaries where an enterprise
+operator must be able to ask, and prove:
 
-The current tree already has 63 auto-discovered modules; Windows Security,
-Kernel-Process ETW and Sysmon bridges; WFP/packet/DNS sensors; process lineage;
-RWX-memory scanning; ransomware entropy, rename, canary, delta-cache and VSS
-protections; BYOVD signals; behavioral baselining; Evidence Lattice/Cortex
-correlation; proof-required Purple Guard remediation; OCSF/D3FEND/Sigma
-foundations; guarded local Ollama use; confirm-before-write ARIA actions; and
-encrypted Remote Bridge transport. The earlier backlog also already covers
-Trust Passports, a driver-hardening audit, central privacy receipts, typed
-settings, release attestation, and evidence-taint enforcement.
+1. What happened at the Windows kernel boundary without trusting an unshippable
+   custom driver?
+2. Did network containment take effect, remain scoped, and preserve recovery?
+3. How much telemetry was lost or delayed?
+4. Can AI-assisted investigation remain useful without gaining authority?
+5. Can every important conclusion be traced to immutable source evidence?
 
-The six proposals below do not relabel those features. They close different
-gaps found in the current code:
-
-- ransomware change detection still walks selected directories and compares
-  snapshots instead of consuming the volume's native change stream;
-- Windows identity-protocol fallback is not modeled, despite NTLM's removal
-  trajectory;
-- Sysmon EID 10 `CallTrace` is captured as text but is not scored as execution
-  provenance, while non-Sysmon image-tampering evidence remains weak;
-- local-model prompts are filtered, but the model runtime is not an OS-isolated
-  security boundary and several call sites still bypass the guarded client;
-- UDP/443 ownership exists, but QUIC is not identified or correlated as its own
-  encrypted-transport lane; and
-- the GUI, AI, sensors, and response surface still share an always-elevated
-  application trust domain.
-
-Deliberate exclusions: no custom kernel driver, no protected ETW Threat
-Intelligence provider that Angerona cannot legitimately access as PPL, no
-always-on whole-system stack sampling, no TLS/QUIC decryption, no credential
-capture, and no offensive emulation or counterattack capability.
+The proposals below are ranked by expected impact divided by effort. They are
+designs only; no product code is implemented here. They deliberately do not
+re-propose Angerona's existing Cortex, Evidence Lattice, TECT canary, receipt
+chain, OCSF exporter, WFP connection snapshot, or proof-carrying Purple Guard.
 
 ## Ranked shortlist
 
-| Rank | Proposal | Impact | Effort | Impact / effort | Primary mode |
-|---:|---|---:|:---:|---:|---|
-| 1 | NTFS Journal Ransomware Pulse | 5.0 | S–M | 3.33 | Detect / Respond / Visualize |
-| 2 | NTLM Exit Radar | 4.5 | S–M | 3.00 | Detect / Harden / Visualize |
-| 3 | Stack-to-Image Provenance Fuse | 5.0 | M | 2.50 | Detect / Visualize |
-| 4 | Local Model Airlock | 5.0 | M–L | 2.00 | Harden |
-| 5 | QUIC Sightline | 3.8 | M | 1.90 | Detect / Visualize |
-| 6 | Split-Token Angerona | 5.0 | L | 1.67 | Harden / Respond |
+| Rank | Proposal | Effort | Primary mode | Why this cycle |
+|---:|---|:---:|---|---|
+| 1 | Windows Kernel-Boundary Posture Ledger | M | Detect / Harden / Visualize | High assurance without shipping a custom driver |
+| 2 | Transactional WFP Containment with Independent Proof | M | Respond / Harden | Turns “rule created” into verified, reversible isolation |
+| 3 | Telemetry Loss Accounting and Coverage SLOs | M | Detect / Visualize | Makes sensor blindness measurable instead of implicit |
+| 4 | Deterministic Investigation Broker with Capability Leases | M | Harden / Respond | Useful autonomy with no model-derived authority |
+| 5 | Evidence Reference Resolver and Claim Gate | M | Harden / Visualize | Forces AI, incident, and response claims to cite real records |
+| 6 | Pktmon Counter Flight Recorder | S-M | Detect / Visualize | Adds low-payload network-path and drop evidence on demand |
 
 ---
 
-## 1. NTFS Journal Ransomware Pulse
+## 1. Windows Kernel-Boundary Posture Ledger
 
-**Pitch:** Replace repeated directory snapshots with a bounded reader of the
-native NTFS USN change journal, detecting destructive file-change bursts earlier
-while reading no file contents.
+**Pitch.** Build a read-only, user-mode ledger of driver loads, Code Integrity
+decisions, HVCI/VBS state, vulnerable-driver controls, and kernel-telemetry
+availability; keep Angerona's custom driver unavailable in production until its
+separate assurance gates are met.
 
 ### Why now
 
-MITRE's May 2026 update to Data Encrypted for Impact names high-frequency writes,
-uncommon extensions, ransom notes, recovery tampering, and repeated
-delete/replace behavior as a detection strategy. Windows already exposes the
-ordered change records needed to measure those behaviors through
-`FSCTL_READ_USN_JOURNAL`; the journal ID is an explicit integrity check that
-changes if the journal is stopped, deleted, or recreated.
+Microsoft says attackers abuse legitimate signed but vulnerable drivers to gain
+kernel access, recommends HVCI and the vulnerable-driver blocklist, and advises
+audit-mode validation before enforcement because blocks can break devices or
+cause a bugcheck:
+[Microsoft recommended driver block rules](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/design/microsoft-recommended-driver-block-rules).
+Microsoft's 2026 Windows Driver Policy also uses an evaluation/audit phase and
+records Code Integrity evidence before enforcement:
+[The Windows Driver Policy](https://support.microsoft.com/en-us/windows/the-windows-driver-policy-ecd2a78c-750c-415d-93f2-e37302ce0443).
 
-- [MITRE ATT&CK — Data Encrypted for Impact (T1486), v1.5, modified 2026-05-12](https://attack.mitre.org/techniques/T1486/)
-- [Microsoft — FSCTL_READ_USN_JOURNAL](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_read_usn_journal)
-- [Microsoft — Using the Change Journal Identifier](https://learn.microsoft.com/en-us/windows/win32/fileio/using-the-change-journal-identifier)
+### Fit and file-specific implementation plan
 
-### Fit
+- **Core:** add `src/angerona/core/kernel_posture.py` with a bounded typed
+  `KernelPostureSnapshot`. It should distinguish `observed`, `not_configured`,
+  `unavailable`, `access_denied`, and `unknown`; absence must never mean safe.
+- **BaseModule:** add `src/angerona/modules/kernel_posture.py` (`windows`,
+  `detect`) to consume documented Windows Security, System, and Code Integrity
+  event channels; inventory only bounded driver metadata: service/image
+  basename, SHA-256, version, publisher/result, first/last seen, and source event
+  reference.
+- **Existing boundary:** change no code this cycle, but an implementation should
+  gate `src/angerona/modules/kernel_bridge.py` behind an explicit lab-only
+  capability contract. Its current “park at 50%” state must not imply production
+  coverage, and raw command lines must not enter ordinary INFO messages.
+- **GUI:** add a “Kernel boundary” evidence card to
+  `src/angerona/gui/dashboard_details.py` and Settings enterprise evidence view:
+  HVCI/VBS, vulnerable-driver blocklist, ASR driver rule, Code Integrity channel
+  health, recent driver decisions, and explicit limitations.
+- **Export:** normalize findings through `core/sensor_events.py`; optionally emit
+  OCSF-compatible findings through the existing `core/ocsf_export.py`.
 
-Add `modules/usn_ransomware_sensor.py` as a Windows-only `BaseModule`. Feed its
-normalized burst evidence to `modules/ransomware_heuristics.py`,
-`modules/evidence_lattice.py`, `core/cortex.py`, and the existing incident/SOAR
-path. Keep `smart_deception.py`, `shadowcopy_guard.py`, and `shadow_shield.py` as
-independent corroborators. This is **Detect + Respond + Visualize**; the journal
-sensor itself remains read-only.
+Maps to `ENT-WIN-006/007/008` and `ENT-KRN-001/003`.
 
-**Data flow:** per-volume USN cursor and journal ID → `CLOSE`-qualified change
-records → bounded per-parent/per-extension windows → aggregate
-`ransomware_change_burst` evidence → Evidence Lattice/Cortex → existing SOAR
-only when a separate trusted signal supplies a PID → compact Flight Recorder
-receipt.
+### Abuse cases and failure handling
 
-### Buildable design and phases
+- A signed malicious/vulnerable driver must not become “trusted” solely because
+  Authenticode succeeds.
+- A disabled or unreadable Code Integrity channel must produce a coverage gap,
+  not a clean posture.
+- A stale cached blocklist must display its observed timestamp and Windows build.
+- No automatic WDAC/HVCI/ASR enforcement; incompatible drivers can interrupt
+  boot or hardware.
+- The optional custom driver must never be loaded, installed, or recommended by
+  this module.
 
-1. **Phase A — read-only sensor.** Open only explicitly configured fixed NTFS
-   volumes, query the journal ID, and asynchronously read forward from a stored
-   cursor. Track unique file IDs and reason masks for overwrite/extend,
-   rename-old/rename-new, create, delete, and close. Never create, resize, or
-   delete the system journal.
-2. **Phase B — burst classifier.** Score change velocity, unique-file count,
-   directory spread, novel-extension concentration, delete→create/rename pairs,
-   and repeated small partial writes. Require `CLOSE` where possible to avoid
-   overcounting one logical operation. Feed only aggregate evidence into the
-   current lattice; retain the existing entropy and canary detectors as
-   orthogonal signals.
-3. **Phase C — controlled response.** Journal data has no PID, so it can raise a
-   HIGH volume-level alarm but cannot identify or contain a process by itself.
-   CRITICAL/automatic SOAR eligibility requires a PID-bearing second source:
-   Sysmon file activity, a tripped decoy, ETW process evidence, shadow-copy
-   tamper, or a known malicious process chain.
+### Performance budget
 
-### Operator and UI value
+- Event-driven after startup; inventory refresh no more than every 15 minutes.
+- Startup scan: <= 250 ms CPU time, <= 2,000 retained driver observations.
+- Steady state: <= 0.2% average CPU, <= 25 MiB private memory, <= 1 MiB/day
+  metadata before retention compaction.
 
-Add a **Ransomware Pulse** strip to the incident timeline: changed files/second,
-unique file IDs, affected protected roots, extension churn, and which
-corroborator supplied process attribution. The operator sees
-`Journal-only: alert, no process action` versus
-`Corroborated: PID 1234 eligible for containment`. Persist root aliases and
-counts by default, not raw personal filenames; raw paths remain memory-only
-unless the operator opens a local incident detail.
+### Acceptance tests
 
-### Tests
-
-- Pure parser fixtures for USN_RECORD V2/V3, split buffers, malformed record
-  lengths, UTF-16 names, cursor continuation, and journal-ID rollover.
-- Synthetic windows proving benign compiler/package-manager bursts remain below
-  threshold while wide overwrite+rename+extension churn crosses it.
-- A gate proving journal-only evidence can never call SOAR or invent a PID.
-- Restart/cursor tests proving no replay storm, and a journal-reset test that
-  reports telemetry degradation without labeling the reset malicious.
-- Performance gate on a large synthetic journal: bounded memory, no file-content
-  reads, and no GUI-thread work.
-
-### Effort and limits
-
-**Effort: S–M.** `DeviceIoControl` structures can be implemented with `ctypes`
-or a small signed native helper. First delivery should be NTFS on fixed local
-volumes. It needs elevation and does not cover FAT/exFAT; ReFS requires its
-versioned record support and should be separately gated. USN records do not
-contain a responsible PID, and the design must say so visibly.
+- Fixtures cover allowed, audit-blocked, enforced-blocked, unsigned, vulnerable,
+  access-denied, malformed XML, channel-disabled, and event-gap cases.
+- A valid signature alone never clears a vulnerable/blocklisted finding.
+- Unsupported Windows builds show `unavailable`, not 100% health.
+- No raw command line, full user path, certificate private data, or driver bytes
+  are retained.
+- Module discovery and GUI remain healthy with no custom driver installed.
 
 ### Safety
 
-Defensive-only and read-only. It never edits a journal, reads document contents,
-creates encryption samples, or attempts ransomware behavior. No volume-level
-signal alone may kill, suspend, quarantine, or block a process.
+Defensive and read-only. It inventories posture and explains supported Windows
+controls. It does not load drivers, develop an exploit, bypass Code Integrity,
+or provide vulnerable-driver weaponization guidance.
 
 ---
 
-## 2. NTLM Exit Radar
+## 2. Transactional WFP Containment with Independent Proof
 
-**Pitch:** Build a local compatibility graph of where Windows still falls back
-to NTLM, detect suspicious downgrade/relay conditions, and stage a reversible
-audit-first path toward Kerberos or NTLM blocking.
+**Pitch.** Replace “firewall command returned success” with a typed containment
+transaction: preflight, narrowly scoped rule, independent WFP evidence, expiry,
+rollback, and a recovery-channel invariant.
 
 ### Why now
 
-Microsoft announced in January 2026 that Windows is moving from NTLM
-deprecation toward disabling NTLM by default, with enhanced auditing and
-transition tools planned for Windows 11 24H2 and Windows Server 2025. Those
-versions already support SMB-client NTLM blocking. MITRE's May 2026 update
-continues to identify captured or relayed NTLM responses over SMB, LDAP, MSSQL,
-and HTTP as a credential-access risk.
+WFP supports per-application, per-user, and per-connection policy through the
+Base Filtering Engine:
+[About Windows Filtering Platform](https://learn.microsoft.com/en-us/windows/win32/fwp/about-windows-filtering-platform).
+Windows exposes allowed/blocked connection audits and WFP policy-change events:
+[WFP auditing and logging](https://learn.microsoft.com/en-us/windows/win32/fwp/auditing-and-logging).
+On current Windows versions, Filter Origin and Interface Index improve the
+explainability of 5152/5157 drop events:
+[Filter Origin Audit Log](https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/filter-origin-documentation).
 
-- [Microsoft — Advancing Windows security: Disabling NTLM by default (2026-01-29)](https://techcommunity.microsoft.com/blog/windows-itpro-blog/advancing-windows-security-disabling-ntlm-by-default/4489526)
-- [Microsoft — Block NTLM connections on SMB](https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-ntlm-blocking)
-- [Microsoft — Configure Windows event auditing / NTLM event 8004](https://learn.microsoft.com/en-us/defender-for-identity/deploy/configure-windows-event-collection)
-- [MITRE ATT&CK — Name Resolution Poisoning and SMB Relay (T1557.001), modified 2026-05-12](https://attack.mitre.org/techniques/T1557/001/)
+### Fit and file-specific implementation plan
 
-### Fit
+- **Core:** add `src/angerona/core/action_contracts/network_isolation.py`.
+  Contract fields: immutable action ID, canonical process identity
+  `(pid,start_time,image_hash)`, destination/interface scope, duration,
+  protected endpoints, preconditions, rollback deadline, idempotency key, and
+  evidence references.
+- **Respond engine:** adapt `src/angerona/modules/soar_engine.py` and
+  `src/angerona/modules/soar.py` to stage this typed contract. Revalidate process
+  identity immediately before mutation to defeat PID reuse.
+- **WFP boundary:** extend `src/angerona/modules/wfp_controller.py` with
+  read-side rule/filter enumeration and 5152/5157 correlation. Mutation should
+  use a single supported Windows firewall/WFP adapter, never shell text assembled
+  from model output.
+- **Proof:** write the before state, requested change, OS result, independently
+  observed filter origin, bounded negative/positive micro-probe outcome, expiry,
+  and rollback result through `src/angerona/core/remediation_log.py`.
+- **GUI:** preview exact scope and recovery exclusions in Resolve Center; show
+  `STAGED -> APPLIED -> VERIFIED -> EXPIRED/ROLLED_BACK`, with `UNVERIFIED`
+  remaining open.
 
-Add a read-only `modules/identity_protocol_monitor.py` `BaseModule` plus a pure
-`core/ntlm_compat_graph.py`. Reuse the Event Log parser patterns in
-`etw_listener.py` and `sysmon_listener.py`, network ownership from
-`wfp_controller.py`, Evidence Lattice correlation, posture history, and vetted
-reversible remediation plumbing. Put the UI card under **World View → Identity
-Security** with a link from Resolve Center. This is **Detect + Harden +
-Visualize**.
+Maps to `ENT-NET-006` and `ENT-SOAR-002/004/005/006/007`.
 
-**Data flow:** NTLM Operational 8001–8004, Security 4624/4625, SMB client
-connectivity/audit events, and optional Sysmon network events → normalized local
-authentication edges → account pseudonym + server/service/protocol/result →
-compatibility graph → downgrade/relay analytics and an operator-reviewed
-hardening plan.
+### Abuse cases and failure handling
 
-### Buildable design and phases
+- PID reuse cannot redirect a block to an unrelated process.
+- Wildcard, loopback, DHCP, DNS resolver, Angerona IPC, and configured
+  management/recovery endpoints are denied by default unless an explicit
+  emergency policy names them.
+- A forged EventBus “blocked” message is not proof; proof must reference an OS
+  event or enumerated rule plus the bound action receipt.
+- Timeout, restart, or partial failure must leave a discoverable lease that the
+  recovery worker can roll back.
+- An attacker cannot make a permanent block by submitting an extreme duration;
+  policy caps it.
 
-1. **Phase A — inventory.** Parse only existing local logs. Record source host
-   class, destination, service/protocol, NTLM version when the event reliably
-   supplies it, first/last seen, and count. Pseudonymize account names with a
-   per-install keyed digest before persistence. Never store challenge/response
-   material, password hashes, tickets, or credentials.
-2. **Phase B — detection.** Raise a downgrade signal for a newly seen NTLM edge
-   where Kerberos was previously normal, outbound authentication to an
-   untrusted external address, NTLM shortly after LLMNR/NBT-NS activity, or an
-   SMB signing/encryption regression. Attribute a process only when an exact
-   PID/process GUID and tight time window are present; otherwise label the edge
-   `process unknown`.
-3. **Phase C — migration coach.** Generate an audit report listing dependencies
-   and likely remediations (`Negotiate`, SPN/DNS correction, SMB NTLM block,
-   narrow exception). On Windows 11 24H2/Server 2025, offer a separately
-   confirmed, reversible `Set-SmbClientConfiguration -BlockNTLM` change only
-   after a clean observation window. Global/domain NTLM denial stays manual and
-   outside the MVP.
+### Performance budget
 
-### Operator and UI value
+- Preflight plus apply target: p95 <= 500 ms excluding OS audit delivery.
+- Verification deadline <= 5 seconds; no polling faster than 250 ms.
+- At most 128 active Angerona containment leases and 1,000 retained receipts.
+- WFP success auditing remains off by default because Microsoft documents it as
+  high volume; use narrowly filtered failure/policy evidence.
 
-The Identity card answers: **What still needs NTLM? What changed today? What
-will break if I block it?** Show a local edge graph with protocol, destination,
-last use, confidence, and exception expiry. A readiness meter is based on
-observed dependencies, not an AI guess. The local model may explain an edge but
-cannot enable a policy or manufacture an exception.
+### Acceptance tests
 
-### Tests
-
-- XML fixtures for 4624/4625 and NTLM 8001–8004, including missing fields,
-  anonymous sessions, IPv6, local/workgroup, and domain cases.
-- Deterministic graph tests for deduplication, keyed pseudonyms, expiry, and
-  `unknown process` handling.
-- Correlation tests that require the MITRE combination of name-resolution
-  poisoning plus relay/downgrade evidence before CRITICAL.
-- Dry-run/revert tests for the SMB-client setting with all PowerShell/host
-  mutation stubbed.
-- A privacy assertion that no raw account, challenge, response, ticket, or hash
-  reaches SQLite, logs, AI prompts, or exports.
-
-### Effort and limits
-
-**Effort: S–M.** The event-log and posture machinery exists. Coverage depends on
-local audit policy and OS version; domain-wide visibility would require
-explicitly configured remote nodes and is not assumed. Some NTLM events do not
-identify the originating process, so process attribution must remain
-confidence-labeled. Windows 10 and standalone workgroups need compatible
-guidance rather than a blanket "disable everything" message.
+- Deterministic tests cover PID reuse, duplicate retry, expired lease, restart
+  recovery, rule-name collision, IPv4/IPv6, VPN interface change, missing audit
+  privilege, full disk, and rollback failure.
+- A synthetic containment is “verified” only when scope and OS evidence match.
+- Recovery/management endpoints remain reachable in the network namespace test.
+- Retrying one idempotency key creates no second rule.
+- Forced process exit between preflight and apply fails closed.
 
 ### Safety
 
-Defensive-only. The module observes authentication metadata and proposes safer
-configuration. It never captures reusable authentication material, probes
-servers, coerces authentication, tests relay, or automatically disables a
-protocol that could lock out the operator.
+Defensive containment only. No packet modification, interception, credential
+capture, persistence beyond the bounded lease, or arbitrary firewall scripting.
 
 ---
 
-## 3. Stack-to-Image Provenance Fuse
+## 3. Telemetry Loss Accounting and Coverage SLOs
 
-**Pitch:** Turn call stacks and process-image identity into a high-confidence
-answer to “did trusted code really make this sensitive access?” instead of
-treating every process handle or RWX page equally.
+**Pitch.** Give every ETW/Event Log sensor a source cursor, queue watermark,
+loss counter, freshness deadline, and explicit coverage state that follows each
+derived detection.
 
 ### Why now
 
-Microsoft's 2026 Sysmon guidance calls CreateRemoteThread low-volume/high-signal,
-exposes a `CallTrace` for ProcessAccess, and identifies ProcessTampering EID 25
-with hollowing/herpaderping. MITRE's May 2026 process-hollowing strategy focuses
-on the suspended-process → unmap → write → set-context → resume chain.
-Windows ETW can also attach call stacks to selected kernel events through
-`TraceSetInformation`, and `GetMappedFileName` can identify the file backing a
-mapped address.
+Microsoft documents bounded ETW buffers and that new events can be ignored when
+real-time buffers fill:
+[EVENT_TRACE_PROPERTIES](https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-event_trace_properties).
+ETW session tooling exposes “Events Lost” when allocated buffers are full:
+[Tracelog Properties Display](https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/tracelog-properties-display).
+Microsoft also documents buffer callbacks for consumer-side buffer statistics:
+[EVENT_TRACE_LOGFILEW](https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-event_trace_logfilew).
 
-- [Microsoft — Sysmon events (2026): ProcessAccess, CreateRemoteThread, ProcessTampering](https://learn.microsoft.com/en-us/windows/security/operating-system-security/sysmon/sysmon-events)
-- [MITRE ATT&CK — Process Hollowing (T1055.012), v2.0, modified 2026-05-12](https://attack.mitre.org/techniques/T1055/012/)
-- [Microsoft — TraceSetInformation / TraceStackTracingInfo](https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-tracesetinformation)
-- [Microsoft — Memory-Mapped File Information / GetMappedFileName](https://learn.microsoft.com/en-us/windows/win32/psapi/memory-mapped-file-information)
+### Fit and file-specific implementation plan
 
-### Fit
+- **Core:** add `src/angerona/core/telemetry_quality.py` with per-source bounded
+  counters: session epoch, source cursor/bookmark, received, parsed, rejected,
+  queue high-water, OS-reported loss, inferred sequence gaps, last event,
+  last heartbeat, and clock discontinuity.
+- **Sensors:** instrument `modules/etw_listener.py`,
+  `modules/etw_realtime_sensor.py`, `modules/sysmon_listener.py`,
+  `modules/av_telemetry_bridge.py`, and `modules/amsi_bridge.py`. Preserve each
+  source's native meaning; never fabricate a universal loss number.
+- **Event contract:** add a bounded `telemetry_quality_ref` to derived normalized
+  events in `core/sensor_events.py`, pointing to a snapshot/epoch rather than
+  copying large diagnostics into every event.
+- **Cortex/ELAT:** allow `core/cortex.py` and
+  `modules/evidence_lattice.py` to reduce confidence or mark “coverage degraded”;
+  loss must not erase a true alert.
+- **GUI:** World View shows freshness, OS loss, internal drops, and backlog by
+  source. Alerts show the quality epoch that supported them.
 
-Add pure `core/stack_provenance.py` and an event-driven
-`modules/stack_image_guard.py` `BaseModule`. Consume the `call_trace`,
-`start_address`, `start_module`, source/target PID, access mask, and EID 25 fields
-already emitted by `sysmon_listener.py`; on a high-suspicion trigger, enrich
-with the existing executable-trust, process-allowlist, memory-scanner, and
-process-provenance engines. Feed only the resulting evidence into Evidence
-Lattice/Cortex and the incident timeline. This is **Detect + Visualize**.
+Maps to `ENT-WIN-001/002` and the enterprise proof requirements.
 
-**Data flow:** Sysmon EID 8/10/25 or a Memory Injection alert → frame tokenizer
-and access-mask decoder → cached module path/signature/mapping identities →
-optional targeted image check → provenance verdict with confidence and reasons
-→ lattice/correlation → operator-visible compact stack.
+### Abuse cases and failure handling
 
-### Buildable design and phases
+- An attacker flooding a provider cannot turn dropped events into a green sensor.
+- Counter reset/restart creates a new epoch; it must not hide the prior gap.
+- Clock rollback cannot make stale data appear fresh; use monotonic deadlines.
+- Malformed events increment rejected counts without logging their unbounded raw
+  contents.
+- Unknown provider loss semantics are labeled unknown, not zero.
 
-1. **Phase A — score the telemetry already present.** Parse EID 10 `CallTrace`
-   into ordered module+offset frames. Mark frames as system-signed,
-   third-party-signed, unsigned, user-writable, missing/unbacked, or unresolved.
-   Decode access rights and score only sensitive combinations such as
-   VM_WRITE/VM_OPERATION/CREATE_THREAD/DUP_HANDLE against LSASS, Angerona,
-   browsers, credential managers, or protected system processes.
-2. **Phase B — image truth on trigger.** For the source and target PID, compare
-   the canonical executable path with the `MEM_IMAGE` mapping that backs the
-   main image; validate PE layout invariants and the mapped-file identity. Do
-   not hash an entire relocated in-memory image and call normal relocations
-   malicious. An executable private region, missing backing image, EID 25, or a
-   remote-thread start outside known mapped code becomes independent evidence.
-3. **Phase C — optional five-second ETW capture.** On supported systems and only
-   after a strong precursor, start a small in-memory session for a narrow set of
-   Process/Thread/Image kernel events with stack tracing, bounded by time,
-   event count, and process filter. This is an enrichment path, not a permanent
-   whole-host profiler; symbol download is never required for detection.
+### Performance budget
 
-### Operator and UI value
+- O(1) counter updates; no synchronous storage per event.
+- <= 100 ns-scale Python bookkeeping is unrealistic as a claim; measured gate
+  instead: <= 3% throughput regression at 50,000 synthetic events/minute.
+- Flush aggregate quality snapshots at most every 5 seconds and on state change.
+- <= 256 source epochs in memory and <= 10,000 persisted snapshots.
 
-Replace opaque “ProcessAccess CRITICAL” text with a **Why this stack is
-suspicious** foldout:
+### Acceptance tests
 
-`unsigned user-writable frame → ntdll → target LSASS; VM_WRITE; start address
-not in a mapped image`.
-
-Display basenames, signer, mapping class, and stable local digests by default.
-Raw paths remain in memory for local drill-down and are excluded from routine
-exports. A confidence badge distinguishes `Sysmon-confirmed tamper`,
-`multi-signal provenance mismatch`, and `unresolved`.
-
-### Tests
-
-- Pure stack fixtures: normal Microsoft chain, signed security tool, JIT frame,
-  unsigned AppData frame, missing module, malformed/truncated trace, WOW64, and
-  access-mask combinations.
-- PE/mapping fixtures proving relocations and legitimate hotpatch/JIT behavior
-  do not create an image mismatch.
-- Correlation gates requiring a sensitive access right plus untrusted frame (or
-  independent EID 25) for CRITICAL; an unresolved stack alone is not malicious.
-- Bounded-session tests for exact PID/event/time caps, stop-on-error, no symbol
-  network access, and no registry change such as `DisablePagingExecutive`.
-- Performance test showing signature/mapping results are cached by file ID,
-  mtime, and digest rather than recomputed per frame.
-
-### Effort and limits
-
-**Effort: M.** Phase A uses data Angerona already collects. Phase B needs careful
-Windows process/memory APIs and access-denied handling. Phase C is optional and
-may need a small signed Rust/C helper; ETW stack availability varies, stacks can
-be incomplete, protected processes may deny inspection, and JIT/security
-products legitimately create unusual frames. Confidence must degrade rather
-than silently infer.
+- Deterministic overflow, queue saturation, parse rejection, bookmark resume,
+  restart, clock rollback, subscriber stall, and source-disable fixtures.
+- A loss burst changes coverage to degraded within 5 seconds.
+- A later healthy epoch does not rewrite historical alert quality.
+- Event throughput regression stays within 3% and GUI reads remain nonblocking.
+- TECT canary health and loss accounting remain separate, complementary signals.
 
 ### Safety
 
-Defensive-only, targeted, and read-only. No thread suspension, memory write,
-remote thread, injection, credential read, or full-memory dump is permitted.
-The optional ETW trace is short, in memory, process-scoped, and never enables
-dangerous diagnostic registry settings.
+Defensive observability only. It exposes blind spots and confidence limits; it
+does not weaken providers, suppress events, or claim that loss identifies an
+attacker.
 
 ---
 
-## 4. Local Model Airlock
+## 4. Deterministic Investigation Broker with Capability Leases
 
-**Pitch:** Put the local model behind an OS-enforced sandbox with no ambient
-files, credentials, desktop, or network—so prompt filtering is not the only
-boundary between untrusted telemetry and an elevated security suite.
+**Pitch.** Let ARIA/local models propose bounded read-only investigations while
+only deterministic code can issue short-lived, schema-validated tool leases;
+response remains a separate human/policy-approved action.
 
 ### Why now
 
-Microsoft documented an experimental Windows 11 `CreateProcessInSandbox` API in
-June 2026. Its AppContainer mode is default-deny for system resources and
-network, exposes explicit read-only/read-write paths, supports low integrity and
-Win32k/UI restrictions, and fails rather than silently weakening an invalid
-policy. NIST's GenAI profile identifies prompt injection and the possibility of
-stealing data or running code as risks that require layered controls, not prompt
-wording alone.
+NIST's 2025 adversarial machine-learning taxonomy explicitly covers direct
+prompt injection and AI supply-chain risks:
+[NIST AI 100-2e2025, Adversarial Machine Learning](https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.100-2e2025.pdf).
+NIST's Generative AI Profile treats prompt injection and over-reliance on model
+output as risks requiring governance and evaluation:
+[NIST AI 600-1, Generative AI Profile](https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.600-1.pdf).
 
-- [Microsoft — Create Process In Sandbox APIs (experimental, updated 2026-06-01)](https://learn.microsoft.com/en-us/windows/win32/secauthz/createprocessinsandbox)
-- [Microsoft — AppContainer isolation](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation)
-- [Microsoft — CreateRestrictedToken](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken)
-- [NIST AI 600-1 — Generative AI Profile](https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.600-1.pdf)
+### Fit and file-specific implementation plan
 
-### Fit
+- **Core:** add `src/angerona/core/investigation_broker.py`. The immutable
+  registry exposes read-only typed queries such as `event.lookup`,
+  `process.snapshot`, `network.snapshot`, `evidence.resolve`, and
+  `posture.read`; each has JSON schema, row/byte/deadline/rate/privacy budgets.
+- **Policy:** make `src/angerona/core/action_policy.py` authoritative for broker
+  admission only after shadow-mode equivalence tests. A lease binds tool,
+  normalized arguments, evidence/case ID, requester, expiry, budget, and policy
+  version.
+- **ARIA:** adapt `core/assistant.py`, `core/copilot.py`, and
+  `modules/ai_triage.py` so model output is an untrusted proposal. A deterministic
+  parser chooses only registered tools; unknown fields and free-form commands
+  fail closed.
+- **Isolation:** execute higher-risk parsers in the existing worker/process
+  isolation pattern, later using Job Objects/restricted tokens per
+  `ENT-ISO-001/002/003`.
+- **Audit:** record proposal, admission/denial, bounded result digest, citations,
+  and budget use. Never store hidden chain-of-thought.
 
-Add `core/model_airlock.py` plus a small signed `native/model_host` helper.
-First route every local-model caller through `engines/ollama_client.py`; current
-direct callers in AI triage, briefings, coaching, CVE advice, evolution, and
-posture hardening must not retain alternate unguarded HTTP paths. ARIA and the
-assistant continue to use the existing deterministic action registry. Add the
-airlock state to **World View → Local AI Deep Diagnostics**. This is core
-**Harden**, not a `BaseModule`.
+Maps to `ENT-AI-001/002/003/007/009` and `ENT-VIS-009`.
 
-**Data flow:** deterministic feature extraction/redaction in the privileged
-process → bounded typed request over stdio or a private authenticated pipe →
-low-integrity isolated model worker → schema-limited text/JSON result →
-post-inference redaction and validation → assistant/action policy. The model
-never receives a capability to call Angerona actions.
+### Abuse cases and failure handling
 
-### Buildable design and phases
+- Prompt text inside email, web results, logs, filenames, or model output cannot
+  mint a lease or widen a scope.
+- A read tool cannot invoke a response tool transitively.
+- Symlink/path traversal, PID reuse, oversized result, recursive query, tool
+  fan-out, and timeout fail closed.
+- Model unavailability yields deterministic “insufficient evidence”; it does not
+  bypass policy.
+- No voice-only approval and no generated PowerShell, Python, SQL, or firewall
+  expression is executable.
 
-1. **Phase A — one choke point.** Enforce a single guarded local-model client,
-   block non-loopback model URLs by default, cap prompt/context/output, and mark
-   model output `UNTRUSTED_GENERATED_TEXT`. Any failure uses the existing
-   deterministic non-AI fallback; it does not silently call an unguarded
-   backend.
-2. **Phase B — downlevel airlock.** Launch a dedicated headless inference
-   worker with a restricted token, low integrity, a Job Object with kill-on-
-   close/CPU/RAM/child limits, no inherited handles, no desktop/clipboard, a
-   clean environment, a read-only model directory, and one bounded scratch
-   directory. Use stdio/private-pipe IPC so the worker needs no network.
-3. **Phase C — Windows 11 sandbox.** When the experimental API is present and
-   passes a startup self-test, use AppContainer with no network capabilities,
-   `disallow_win32k_system_calls`, explicit model read-only and scratch
-   read-write paths, and a unique Angerona sandbox identity. Because the API is
-   experimental and GPU/runtime compatibility is unknown, this mode is
-   version-gated. A signed dedicated llama.cpp-style worker may be required;
-   Angerona must not grant broad filesystem/network capabilities merely to keep
-   a legacy Ollama daemon working.
+### Performance budget
 
-### Operator and UI value
+- Broker admission p95 <= 10 ms without model time.
+- Default plan: <= 8 tool calls, <= 5 seconds wall time, <= 1 MiB total result,
+  <= 500 rows, and no more than two concurrent plans.
+- All queries use bounded indexes/snapshots and cancellation; no GUI-thread work.
 
-The Local AI card reports independently verifiable properties:
+### Acceptance tests
 
-- `Network: denied`, `Files: model read-only + scratch only`,
-- `Token: low/restricted`, `Child processes: bounded`,
-- `Backend: sandbox / restricted-token / legacy-disabled`,
-- last containment self-test and model digest.
-
-An explicit **Allow legacy local Ollama** escape hatch may exist for
-compatibility, but it is off by default in high-security mode and clearly
-states which boundary is lost.
-
-### Tests
-
-- A sandbox canary worker tries to read a DPAPI blob, settings, clipboard,
-  arbitrary user document, environment secret, and external/loopback socket;
-  every forbidden attempt must fail while model-file read and bounded scratch
-  write succeed.
-- Job tests prove child escape is denied/bounded, RAM/CPU/output limits trip,
-  and closing the broker kills the whole worker tree.
-- Routing test enumerates all model call sites and fails if one bypasses the
-  guarded client.
-- Prompt-injection fixtures prove a malicious event can influence prose but
-  cannot produce a trusted action object or cross the action-policy boundary.
-- Version/feature gates prove missing or changed experimental APIs fail closed
-  to restricted mode or deterministic fallback, never unsandboxed execution.
-
-### Effort and limits
-
-**Effort: M–L.** Centralizing calls is M; a production-quality isolated backend
-and GPU compatibility make the full feature M–L. `CreateProcessInSandbox` is
-Windows 11-only, experimental, dynamically loaded from `processmodel.dll`, and
-has no public header. AppContainer, model runtimes, GPU drivers, and loopback
-servers may not compose cleanly, which is why stdio and a dedicated worker are
-the preferred design rather than broad network exceptions.
+- Injection corpus includes hostile email, event message, webpage, Unicode
+  confusables, nested JSON, tool-result poisoning, multilingual coercion, and
+  “ignore policy” text.
+- Fuzzed arguments never reach an unregistered callable or shell.
+- Expired/replayed leases are rejected; identical approved read plans are
+  deterministic over a fixed fixture.
+- Every returned claim carries resolvable evidence references or explicitly
+  says insufficient evidence.
+- Response actions remain impossible through the investigation broker.
 
 ### Safety
 
-Defensive-only. The airlock reduces the model's authority and data access. It
-does not ask the model to generate attacks, executable remediation, shell
-commands, or offensive content. Model output remains advisory and can never
-authorize its own privileged action.
+Defensive investigation only. It offers cataloged reads, not unrestricted shell,
+code execution, credential access, exploit generation, or autonomous destructive
+response.
 
 ---
 
-## 5. QUIC Sightline
+## 5. Evidence Reference Resolver and Claim Gate
 
-**Pitch:** Attribute QUIC/UDP 443 to a process and score its metadata without
-decrypting traffic, closing a blind lane in beaconing, DNS, and Top Talkers.
+**Pitch.** Introduce one bounded evidence-reference format so incident, AI,
+containment, and compliance claims can be mechanically resolved to original
+records and their transformations.
 
 ### Why now
 
-HTTP/3 carries HTTP semantics over QUIC and embeds TLS 1.3 at the transport
-layer. Windows Server 2025 expands SMB over QUIC and records explicit client/
-server connectivity events. Microsoft MsQuic provides manifested ETW with a
-documented low-volume `Basic.Light` profile, connection events, and a stable
-provider GUID. These are useful local metadata sources precisely because a
-TCP-oriented or cleartext packet path cannot interpret encrypted UDP/443.
+NIST SP 800-86 emphasizes preserving and documenting digital evidence during
+incident response:
+[NIST SP 800-86, Guide to Integrating Forensic Techniques into Incident Response](https://csrc.nist.gov/pubs/sp/800/86/final).
+OCSF provides an open, vendor-neutral schema intended to simplify consistent
+security-event normalization:
+[Open Cybersecurity Schema Framework](https://schema.ocsf.io/).
 
-- [IETF/RFC Editor — RFC 9114: HTTP/3](https://www.rfc-editor.org/rfc/rfc9114.html)
-- [Microsoft — SMB over QUIC](https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-over-quic)
-- [Microsoft MsQuic — Diagnosing Issues with MsQuic / ETW](https://microsoft.github.io/msquic/msquicdocs/docs/Diagnostics.html)
-- [Microsoft — Sysmon events: UDP network connection and DNS Query telemetry](https://learn.microsoft.com/en-us/windows/security/operating-system-security/sysmon/sysmon-events)
+### Fit and file-specific implementation plan
 
-### Fit
+- **Core:** add `src/angerona/core/evidence_refs.py` defining
+  `EvidenceRef(source_kind, source_id, revision, observed_at, digest,
+  transform_id, quality_epoch)`. IDs are opaque and privacy-minimized.
+- **Storage:** add an append-only evidence index beside
+  `core/storage.py`; resolve references against committed revisions only.
+  Transform records bind input digests to redaction/normalization version and
+  output digest.
+- **Existing proof:** bridge, do not replace,
+  `core/remediation_log.py`, `modules/provenance_graph.py`,
+  `modules/evidence_lattice.py`, `core/ocsf_export.py`, and
+  `shark/run_manifest.py`.
+- **Claim gate:** `core/copilot.py`, `modules/ai_triage.py`, incident summaries,
+  and compliance exports may label a sentence as `observed` only if all cited
+  refs resolve and verify. Otherwise use `inferred`, `unverified`, or
+  `insufficient evidence`.
+- **GUI:** Alert/incident detail resolves a citation to a redacted source preview,
+  collection time, quality state, transforms, and integrity result.
 
-Add Windows-only `modules/quic_sightline.py` as a `BaseModule`. Reuse UDP
-ownership from `wfp_controller.py`, Sysmon EID 3 and (after a narrow bridge
-extension) EID 22, `network_protocol_decoder.py`, `beacon_detector.py`,
-`net_interfaces.py`, threat-intel lookup, and Cortex. Show the protocol in
-`gui/top_talkers.py` and incident timelines. This is **Detect + Visualize**.
+Maps to `DEF-005`, `ENT-CASE-002/003`, `ENT-AI-008`, and `ENT-COMP-002`.
 
-**Data flow:** low-volume MsQuic connection ETW + SMB QUIC audit events + UDP
-owner table + Sysmon DNS/network events → normalized
-`pid/process/remote/port/interface/transport/start-stop/bytes-if-available` flow
-→ local cadence/rarity/baseline analysis → NDRD/beacon/Cortex → metadata-only
-incident receipt.
+### Abuse cases and failure handling
 
-### Buildable design and phases
+- Event text cannot claim another event's identifier.
+- Deleted/expired evidence leaves a tombstone and retention reason; it cannot
+  silently resolve to a newer row.
+- Hash validity proves integrity, not truth; UI wording must preserve that
+  distinction.
+- Circular references, transform loops, oversized provenance chains, and
+  cross-case access are rejected.
+- Redaction transforms never expose the original through a preview or error.
 
-1. **Phase A — honest classification.** Identify Windows MsQuic connections and
-   SMB-over-QUIC events directly. For other implementations (for example,
-   browsers with a different QUIC library), label sustained UDP/443
-   `probable_quic` only when flow shape and DNS timing support it. Never claim
-   the Microsoft provider sees every QUIC implementation.
-2. **Phase B — process-aware analytics.** Learn a bounded local baseline of
-   process signer/path, destination prefix/domain token, interface, connection
-   duration, byte bucket, and reconnect cadence. Flag a rare non-browser using
-   UDP/443 only when joined with another signal such as unsigned/path drift,
-   high-entropy DNS, a flagged destination, regular beacon cadence, or an
-   anomalous parent.
-3. **Phase C — protocol-aware UX.** Recognize SMB-over-QUIC client Event 30832
-   and server Event 1913 where available, so legitimate secure file access is
-   labeled rather than misclassified as generic C2. Add a QUIC lane to Top
-   Talkers and the kill-chain view, with `confirmed`, `probable`, or `UDP only`
-   confidence.
+### Performance budget
 
-### Operator and UI value
+- Resolve one reference p95 <= 5 ms from a local index.
+- At most 64 references per claim and 32 transformation hops.
+- Batch GUI resolution <= 100 refs and <= 50 ms p95 from committed snapshots.
+- Retention is policy-bounded; no automatic raw packet/content preservation.
 
-The operator sees `browser → example → HTTP/3`, `System → file server → SMB over
-QUIC`, or `unsigned child of script host → rare endpoint → probable QUIC,
-regular 37 s cadence`. The UI explicitly says **payload not inspected**. Store
-IP/domain tokens, coarse byte buckets, cadence, and signer/path identity; never
-store packet bodies, TLS secrets, QUIC keys, URLs, or application content.
+### Acceptance tests
 
-### Tests
-
-- Synthetic MsQuic and SMB connectivity event fixtures, including manifest
-  version drift and missing fields.
-- UDP ownership reuse/PID-exit tests and DNS→flow time-window correlation.
-- Classifier tests for ordinary browser HTTP/3, known SMB over QUIC, generic
-  game/video UDP, VPN interfaces, and a rare periodic probable-QUIC flow.
-- A confidence test proving UDP/443 alone cannot produce a QUIC-confirmed or
-  CRITICAL verdict.
-- Load test with high browser flow volume proving bounded per-process state,
-  sampling, deduplication, and no raw packet/payload persistence.
-
-### Effort and limits
-
-**Effort: M.** UDP ownership and network correlation exist; the work is ETW
-parsing, honest confidence labeling, and UI integration. MsQuic manifests and
-event availability vary by Windows/runtime version, not all QUIC uses MsQuic,
-NAT can obscure destination continuity, and some useful metadata may be absent.
-The feature must degrade to `UDP only`, not infer an application protocol.
+- Tests cover valid, missing, tampered, expired, wrong-revision, cross-case,
+  transform-loop, redacted, and quality-degraded references.
+- A model hallucinated ID cannot render as observed evidence.
+- Modifying a stored source or transform invalidates dependent verification.
+- OCSF export preserves the local reference without leaking local paths/identity.
+- Existing remediation and drill receipt verification still passes unchanged.
 
 ### Safety
 
-Defensive-only and metadata-only. No decryption, TLS interception, key logging,
-certificate substitution, traffic injection, replay, protocol fuzzing, or
-content capture is proposed. Automatic network isolation still requires the
-suite's existing corroboration and protected-process gates.
+Defensive evidence handling only. The resolver neither executes evidence nor
+equates integrity with maliciousness; previews remain bounded and non-executable.
 
 ---
 
-## 6. Split-Token Angerona
+## 6. Pktmon Counter Flight Recorder
 
-**Pitch:** Keep the operator UI and AI at medium integrity, move continuous
-privileged sensing into a read-only service, and grant host-changing authority
-only to an ephemeral, typed, operator-approved broker.
+**Pitch.** Use Windows' in-box Packet Monitor in counters-only, tightly filtered
+mode to capture network-path health and drop reasons around a suspicious flow or
+containment action without retaining payloads.
 
 ### Why now
 
-Angerona currently documents that it always runs elevated, which makes every GUI,
-connector, parser, and local-model bug part of the administrator trust domain.
-Microsoft's Administrator Protection architecture (currently preview) is moving
-Windows 11 toward deprivileged sessions, Windows Hello-approved just-in-time
-elevation, isolated admin profiles, and destruction of the admin token when the
-task ends. It also adds Microsoft-Windows-LUA ETW 15031/15032 for approved and
-denied elevations. Ordinary UAC has the same core goal of limiting the access
-malicious code has to administrator privileges.
+Packet Monitor is an in-box Windows component that exposes cross-component packet
+counts, drop detection/reasons, ETW/WPP integration, and circular or memory
+modes:
+[Packet Monitor overview](https://learn.microsoft.com/en-us/windows-server/networking/technologies/pktmon/pktmon).
+Microsoft recommends filters because unfiltered capture is noisy and documents
+counters as a lower-cost alternative to log analysis:
+[Pktmon command formatting](https://learn.microsoft.com/en-us/windows-server/networking/technologies/pktmon/pktmon-syntax).
 
-- [Microsoft — Administrator Protection for Windows 11](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/administrator-protection/)
-- [Microsoft — User Account Control overview](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/)
-- [Microsoft — CreateRestrictedToken](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken)
+### Fit and file-specific implementation plan
 
-### Fit
+- **BaseModule:** add `src/angerona/modules/pktmon_counters.py` (`windows`,
+  `observe/detect`) as an opt-in worker-backed sensor. Default to
+  `--counters-only`; permit bounded drop-only ETL only with explicit diagnostic
+  consent.
+- **Isolation:** follow `modules/packet_sniffer.py` /
+  `packet_sniffer_worker.py`: hidden worker, strict executable path, fixed argv
+  grammar, Job Object, timeout, capped output, and cleanup.
+- **Correlation:** attach a short recording to a network flow ID or containment
+  action; retain component category, Tx/Rx/drop counts, last drop reason,
+  filter digest, OS build, and time bounds—not packet bytes.
+- **GUI:** expose “Capture network-path evidence (30 s)” from a flow/action
+  detail, with an explicit overhead/privacy notice.
 
-This is an architectural core change, not a `BaseModule`. Split
-`core/privilege.py`, autostart, module hosting, `core/action_policy.py`, IPC
-Guard, SOAR/remediation actions, and the PySide GUI into explicit trust domains:
+Maps to `ENT-NET-001/006` and improves response proof without a custom callout.
 
-1. **Angerona UI/ARIA** — medium integrity, no privileged handles or secrets;
-2. **Sensor service** — elevated/SYSTEM as required, read-only telemetry APIs,
-   no Internet and no general host-change command surface; and
-3. **Action broker** — short-lived elevated helper accepting only versioned
-   typed operations already present in `action_policy`, then exiting.
+### Abuse cases and failure handling
 
-This is **Harden + Respond**.
+- Never accept free-form pktmon arguments or executable paths.
+- One Angerona-owned session at a time; detect foreign sessions without stopping
+  them.
+- Component IDs are boot/session-local and must not be treated as durable
+  identity.
+- Timeout, crash, privilege failure, or unsupported build yields an incomplete
+  diagnostic, not “no drops.”
+- No full packet capture, TLS interception, session keys, credential scanning,
+  or remote destinations by default.
 
-**Data flow:** sensor service → ACL-protected, bounded, one-way event stream →
-medium-integrity UI/Flight Recorder view. UI action preview → canonical typed
-manifest → separate UAC/Administrator Protection approval → ephemeral broker
-revalidates target/policy/current state → vetted action → verification/rollback
-receipt → broker destroys token and exits.
+### Performance budget
 
-### Buildable design and phases
+- Default duration <= 30 seconds; <= 32 narrow filters; one concurrent session.
+- Counters-only steady overhead target <= 1% CPU and <= 32 MiB worker memory,
+  measured on the supported Windows matrix.
+- Diagnostic ETL, if explicitly enabled, is circular and capped at 16 MiB with
+  automatic deletion after derived metadata is committed.
 
-1. **Phase A — privilege inventory and read-only split.** Mark every module/API
-   `USER`, `ELEVATED_READ`, or `ELEVATED_WRITE`. Move the GUI, ARIA, connectors,
-   model, exports, and ordinary settings to the user process. Host only sensors
-   that genuinely need privileged read access in an installed, digest-verified
-   service. Preserve reduced-visibility user-mode operation when the service is
-   absent.
-2. **Phase B — remove writes from the service.** The sensor service publishes
-   events but exposes no generic subprocess, PowerShell, registry, file, or
-   firewall method. A separate signed action broker understands only fixed
-   opcodes and typed fields (for example `isolate_pid`, `restore_firewall_rule`,
-   `apply_vetted_registry_change`). It rejects shell strings, unknown versions,
-   stale previews, PID reuse, path drift, and caller-supplied executable paths.
-3. **Phase C — just-in-time authorization.** Each material host change launches
-   the broker through UAC; when stable Administrator Protection is available,
-   consume its 15031/15032 ETW receipts and Hello-backed approval. Bind the
-   canonical preview digest to the broker request, re-evaluate action policy in
-   the elevated process, verify/rollback, emit a signed receipt, and exit.
+### Acceptance tests
 
-### Operator and UI value
-
-The header gains a small **Privilege** chip:
-
-`UI: standard | Sensors: protected/read-only | Actions: locked`.
-
-An action preview explains why elevation is needed and exactly which typed
-change will occur. Routine viewing, AI questions, triage, searches, and exports
-never show a UAC prompt. Continuous detection keeps running if the GUI closes.
-The World View trust-boundary diagram shows which process owns each capability
-and its last integrity self-test.
-
-### Tests
-
-- Capability-matrix test fails if a USER component imports privileged write
-  adapters or if the sensor service exposes an untyped mutation method.
-- IPC adversary tests: malformed length, replay, stale nonce, PID reuse,
-  alternate same-user client, path swap, unknown opcode, oversized payload,
-  and event flood/backpressure.
-- Broker tests prove shell/PowerShell text is impossible in the wire schema,
-  action policy is re-run after elevation, target identity is revalidated, and
-  rollback/receipt behavior is deterministic.
-- Integration test runs the GUI medium-integrity against a stub sensor service,
-  then proves read-only operation survives service loss without silently
-  claiming full coverage.
-- Windows-version gates for classic UAC versus Administrator Protection
-  15031/15032; preview absence must not weaken authentication.
-
-### Effort and limits
-
-**Effort: L.** This touches startup, packaging, IPC, module ownership, actions,
-and tests. It should be migrated by capability slice, beginning with an
-unelevated read-only GUI against a compatibility service while the current
-single-process mode remains a clearly labeled transition option. Administrator
-Protection is preview/not universally deployed and changes profile/SSO
-semantics, so it is an enhancement rather than a prerequisite. Some sensors may
-need SYSTEM while others need only an administrator token; least privilege must
-be measured, not assumed.
+- Validate exact argv for IPv4/IPv6/TCP/UDP filters and reject injection tokens.
+- Verify timeout/kill-on-close, foreign-session preservation, bounded files,
+  unsupported build, privilege denial, malformed JSON, and cleanup after crash.
+- Prove default output contains no payload bytes or credential values.
+- Correlate a synthetic blocked flow to a bounded counter/drop record without
+  declaring the WFP rule verified from pktmon alone.
 
 ### Safety
 
-Defensive-only and least-privilege. The broker exposes only Angerona's existing
-vetted defensive actions, never arbitrary command execution. Each material
-change remains previewed, interactively approved, revalidated, verified,
-audited, and reversible where Windows permits. No offensive response,
-counterattack, persistence implant, or credential use is added.
+Defensive local diagnostics only. It is metadata-first, consent-gated, bounded,
+and supplies no interception, evasion, offensive packet generation, or payload
+collection capability.
 
 ---
 
-## Recommended delivery order
+## Recommended cycle cut
 
-1. Build the USN reader/parser and journal-only safety invariant.
-2. Ship NTLM inventory and the Identity card with no policy mutation.
-3. Score existing Sysmon call traces before adding targeted image/ETW
-   enrichment.
-4. Centralize local-model calls immediately, then prototype the restricted
-   worker and Windows 11 sandbox behind a feature gate.
-5. Add confirmed MsQuic/SMB classification, then conservative probable-QUIC
-   correlation.
-6. Start the split-token migration with a written capability matrix and
-   unelevated GUI prototype; do not combine the service/action-broker cutover
-   into one release.
+Implement the first three as the enterprise foundation:
 
-The first three proposals can deliver independent operator value without
-changing Angerona's privilege model. The final three are architectural hardening
-tracks and should remain gated until their containment and compatibility tests
-pass on supported Windows versions.
+1. **Kernel-Boundary Posture Ledger** gives honest coverage and a safe roadblock
+   against prematurely shipping the custom driver.
+2. **Transactional WFP Containment** provides the highest-value response proof.
+3. **Telemetry Loss Accounting** makes all later detection evidence more
+   trustworthy.
+
+If capacity remains, build the Investigation Broker's deterministic registry and
+lease verifier without wiring model-driven execution. The Evidence Reference
+Resolver can then become the common proof substrate. Pktmon is a small,
+independent diagnostic slice after the containment contract exists.

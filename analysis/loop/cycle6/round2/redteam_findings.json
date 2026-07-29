@@ -1,0 +1,20 @@
+[
+  {
+    "id": "C6-R2-01",
+    "title": "Teams development auth bypass can authorize forwarded requests and persist",
+    "severity": "HIGH",
+    "status": "FIXED"
+  },
+  {
+    "id": "C6-R2-02",
+    "title": "Source-mode shutdown authority shares EventBus key custody and can rotate on failure",
+    "severity": "HIGH",
+    "status": "FIXED"
+  },
+  {
+    "id": "C6-R2-03",
+    "title": "Elevated source launcher executes from an editable trust root",
+    "severity": "HIGH",
+    "status": "DEFERRED"
+  }
+]

@@ -36,25 +36,50 @@ def _data_dir() -> Path:
 
 
 def _load_key() -> bytes:
-    """Reuse the suite's per-install HMAC key (bus.key)."""
+    """Load the dedicated shutdown authority, creating it only when absent.
+
+    Shutdown custody is intentionally separate from EventBus signing: a module
+    that can authenticate telemetry must not thereby gain stand-down authority.
+    Malformed/unreadable keys fail closed and are never silently rotated.
+    """
+    key_path = _data_dir() / "shutdown.key"
+    from angerona.core.hardening import key_acl_required, prepare_sensitive_key
+    required = key_acl_required()
+    if key_path.exists() and not prepare_sensitive_key(
+        key_path, required=required
+    ):
+        return _load_key()
     try:
-        from angerona.core.eventbus import BusAuthority
-        auth = BusAuthority.load()
-        # BusAuthority stores the key privately; re-read the file directly.
-    except Exception:
-        pass
-    key_path = _data_dir() / "bus.key"
-    try:
-        return bytes.fromhex(key_path.read_text(encoding="ascii").strip())
-    except Exception:
-        # Fall back to a generated key (persisted) so the mechanism still works.
+        encoded = key_path.read_text(encoding="ascii").strip()
+    except FileNotFoundError:
         key = secrets.token_bytes(32)
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        from angerona.core.hardening import ensure_sensitive_parent
+        ensure_sensitive_parent(key_path, required=required)
         try:
-            key_path.parent.mkdir(parents=True, exist_ok=True)
-            key_path.write_text(key.hex(), encoding="ascii")
-        except Exception:
-            pass
+            fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return _load_key()
+        with os.fdopen(fd, "w", encoding="ascii") as fh:
+            fh.write(key.hex())
+            fh.flush()
+            os.fsync(fh.fileno())
+        from angerona.core.hardening import secure_sensitive_file
+        secure_sensitive_file(key_path, required=required)
         return key
+    except Exception as exc:
+        raise RuntimeError(f"shutdown authority is unreadable: {key_path}") from exc
+    try:
+        key = bytes.fromhex(encoded)
+    except ValueError as exc:
+        raise RuntimeError(f"shutdown authority is malformed: {key_path}") from exc
+    if len(key) != 32:
+        raise RuntimeError(
+            f"shutdown authority has invalid length ({len(key)} bytes): {key_path}"
+        )
+    from angerona.core.hardening import secure_sensitive_file
+    secure_sensitive_file(key_path, required=required)
+    return key
 
 
 def _standdown_path() -> Path:

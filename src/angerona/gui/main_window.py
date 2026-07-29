@@ -69,7 +69,11 @@ class MainWindow(QMainWindow):
     _fi_coaching = Signal(str)             # Flight Instructor line → right pane
     startup_eco_requested = Signal()       # emitted from the loader thread once modules are up
 
-    def __init__(self, bus, storage, manager, config) -> None:
+    def __init__(
+        self, bus, storage, manager, config, *,
+        evidence_store=None, evidence_ingestion=None,
+        flight_recorder_worker=None,
+    ) -> None:
         super().__init__()
         self.bus, self.storage, self.manager, self.config = bus, storage, manager, config
 
@@ -352,7 +356,12 @@ class MainWindow(QMainWindow):
         top_split.setStretchFactor(1, 6)
         top_split.setSizes([460, 700])
 
-        self.console = CommandConsolePanel(CommandConsole(manager, bus, config))
+        self.console = CommandConsolePanel(CommandConsole(
+            manager, bus, config,
+            evidence_store=evidence_store,
+            evidence_ingestion=evidence_ingestion,
+            flight_recorder_worker=flight_recorder_worker,
+        ))
 
         # ── ARIA (v1.8.0): HUD tab + local assistant. Fully guarded so any
         # ARIA import/build failure just skips it without touching the rest.

@@ -28,8 +28,12 @@ _THREAT = {Severity.INFO: "SECURE", Severity.LOW: "LOW", Severity.MEDIUM: "ELEVA
 
 
 class StatusReporter:
-    def __init__(self, bus, storage, manager, config, interval: float = 3.0) -> None:
+    def __init__(
+        self, bus, storage, manager, config, interval: float = 3.0,
+        telemetry_coverage=None,
+    ) -> None:
         self.bus, self.storage, self.manager, self.config = bus, storage, manager, config
+        self.telemetry_coverage = telemetry_coverage
         self.interval = interval
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -73,6 +77,25 @@ class StatusReporter:
                 "health_note": m.health_note, "enabled": self.manager.is_enabled(name),
                 "last_error": m.last_error,
             })
+        telemetry = {}
+        evicted_sensors = 0
+        if self.telemetry_coverage is not None:
+            telemetry = {
+                sensor_id: {
+                    "status": item.status,
+                    "first_sequence": item.first_sequence,
+                    "last_sequence": item.last_sequence,
+                    "accepted": item.accepted,
+                    "missing": item.missing,
+                    "duplicates": item.duplicates,
+                    "regressions": item.regressions,
+                    "unsequenced": item.unsequenced,
+                    "last_observed_at": item.last_observed_at,
+                    "reason": item.reason,
+                }
+                for sensor_id, item in self.telemetry_coverage.snapshot().items()
+            }
+            evicted_sensors = self.telemetry_coverage.evicted_sensors
         return {
             "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
             "app_version": __version__,
@@ -85,6 +108,14 @@ class StatusReporter:
                 "critical_24h": sum(1 for e in events if e.severity == Severity.CRITICAL),
             },
             "ollama": {"host": self.config.ollama_host, "model": self.config.ollama_model},
+            "telemetry_coverage": {
+                "sensors": telemetry,
+                "evicted_sensors": evicted_sensors,
+                "limitation": (
+                    "Healthy means no observed sequence discontinuity in this "
+                    "process lifetime; it does not prove complete collection."
+                ),
+            },
             "modules": mods,
             "recent_events": [
                 {"time": e.time_str, "module": e.module,
@@ -104,6 +135,26 @@ class StatusReporter:
             f" Modules   : {c['modules_running']}/{c['modules_total']} running"
             f"     Alerts(24h): {c['alerts_24h']}     Critical(24h): {c['critical_24h']}",
             f" Ollama    : {s['ollama']['host']}  (model: {s['ollama']['model']})",
+            "",
+            "-" * 78,
+            " TELEMETRY COVERAGE",
+            "-" * 78,
+        ]
+        coverage = s["telemetry_coverage"]
+        if not coverage["sensors"]:
+            lines.append("  No sensor sequence observations; coverage is unknown.")
+        for sensor_id, item in coverage["sensors"].items():
+            lines.append(
+                f"  {sensor_id:<26} {item['status']:<8} "
+                f"last={item['last_sequence']} missing={item['missing']} "
+                f"duplicates={item['duplicates']} regressions={item['regressions']}"
+            )
+        if coverage["evicted_sensors"]:
+            lines.append(
+                f"  Sensor records evicted by cardinality bound: "
+                f"{coverage['evicted_sensors']}"
+            )
+        lines += [
             "",
             "-" * 78,
             " MODULES",

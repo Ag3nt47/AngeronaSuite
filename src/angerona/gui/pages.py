@@ -4215,8 +4215,11 @@ class SettingsDialog(QDialog):
         self._teams_port.setFixedWidth(80)
         tgrid.addWidget(self._teams_port, 3, 1, Qt.AlignLeft)
         lay.addLayout(tgrid)
-        self._teams_skip_chk = QCheckBox("DEV ONLY: skip inbound JWT verification (insecure)")
-        self._teams_skip_chk.setChecked(getattr(self._cfg, "teams_bot_skip_auth", False))
+        self._teams_skip_chk = QCheckBox(
+            "JWT bypass unavailable in saved settings (direct-loopback tests only)"
+        )
+        self._teams_skip_chk.setChecked(False)
+        self._teams_skip_chk.setEnabled(False)
         lay.addWidget(self._teams_skip_chk)
         _note("Create an Azure Bot, set its messaging endpoint to https://<your-tunnel>/api/messages, "
               "add the Microsoft Teams channel, then 'pip install pyjwt'. Only your allow-listed user "
@@ -4811,7 +4814,7 @@ class SettingsDialog(QDialog):
         self._cfg.teams_bot_enabled   = self._teams_chk.isChecked()
         self._cfg.teams_app_id        = self._teams_app_id.text().strip()
         self._cfg.teams_allowed_users = self._teams_users.text().strip()
-        self._cfg.teams_bot_skip_auth = self._teams_skip_chk.isChecked()
+        self._cfg.teams_bot_skip_auth = False
         try:
             self._cfg.teams_bot_port  = int(self._teams_port.text().strip() or "3978")
         except ValueError:

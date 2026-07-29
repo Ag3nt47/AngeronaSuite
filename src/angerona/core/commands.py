@@ -38,8 +38,15 @@ AI_SYSTEM = (
 
 
 class CommandConsole:
-    def __init__(self, manager, bus: EventBus, config) -> None:
+    def __init__(
+        self, manager, bus: EventBus, config, *,
+        evidence_store=None, evidence_ingestion=None,
+        flight_recorder_worker=None,
+    ) -> None:
         self.manager, self.bus, self.config = manager, bus, config
+        self.evidence_store = evidence_store
+        self.evidence_ingestion = evidence_ingestion
+        self.flight_recorder_worker = flight_recorder_worker
         self._instructor = None    # lazy — angerona.academy.security_academy.FlightInstructor
         self._achievements = None  # lazy — angerona.academy.achievements.AchievementTracker
         # Optional ARIA handler. When the GUI wires it, free-form questions typed
@@ -92,6 +99,8 @@ class CommandConsole:
             "revive": self._wd_restart,
             "install": self._install, "capabilities": self._capabilities,
             "caps": self._capabilities,
+            "ehunt": self._evidence_hunt, "evidence": self._evidence_hunt,
+            "ingest-status": self._ingest_status,
         }
 
     def set_ask_handler(self, fn) -> None:
@@ -244,6 +253,9 @@ class CommandConsole:
             "  enterprise                evidence-based enterprise readiness and remaining fleet gaps\n"
             "  test [module]             run a self-test / stress drill (all, or one)\n"
             "  query <SELECT ...>        SQL threat-hunting over processes/connections/ports\n"
+            "  ehunt [field=value ...]   bounded hunt over normalized local evidence\n"
+            "                            fields: module, severity, category, activity, source\n"
+            "  ingest-status             normalized evidence queue/backpressure health\n"
             "  aar                       print the latest Shark Attack After-Action Report\n"
             "  academy [sub]             Cyber Security Academy — coaching + achievements + tuning:\n"
             "      academy explain <stage>      teach one technique (Initial Access, Discovery,\n"
@@ -617,6 +629,89 @@ class CommandConsole:
         for r in rows:
             out.append("  " + " | ".join("" if x is None else str(x) for x in r))
         return "\n".join(out)
+
+    def _evidence_hunt(self, args: List[str]) -> str:
+        """Bounded normalized-evidence hunt; never accepts caller SQL."""
+        if self.evidence_store is None:
+            return "normalized evidence is unavailable in this runtime"
+        from angerona.core.evidence_store import HuntPredicate, HuntQuery
+
+        aliases = {
+            "module": "module", "severity": "severity", "category": "category",
+            "activity": "activity", "source": "source", "message": "message",
+        }
+        predicates = []
+        limit = 25
+        for token in args:
+            if "=" not in token:
+                return "usage: ehunt [module=name] [severity=0..4] [category=name] [limit=1..100]"
+            key, value = token.split("=", 1)
+            key = key.strip().lower()
+            value = value.strip()
+            if key == "limit":
+                if not value.isdigit() or not 1 <= int(value) <= 100:
+                    return "ehunt limit must be between 1 and 100"
+                limit = int(value)
+                continue
+            field = aliases.get(key)
+            if field is None:
+                return f"unsupported evidence field: {key}"
+            if field == "severity":
+                if not value.isdigit() or not 0 <= int(value) <= 4:
+                    return "severity must be 0, 1, 2, 3, or 4"
+                value = int(value)
+            operator = "contains" if field in {"module", "message"} else "eq"
+            predicates.append(HuntPredicate(field, operator, value))
+        result = self.evidence_store.hunt(
+            HuntQuery(tuple(predicates), limit=limit)
+        )
+        if not result.evidence:
+            return (
+                f"No normalized evidence matched (scanned {result.scanned}, "
+                f"{result.elapsed_ms:.1f} ms)."
+            )
+        lines = [
+            f"Normalized evidence: {len(result.evidence)} result(s), "
+            f"scanned {result.scanned}, {result.elapsed_ms:.1f} ms"
+            + (" (bounded/truncated)" if result.truncated else "")
+        ]
+        for item in result.evidence:
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(item.observed_at))
+            lines.append(
+                f"  {stamp}  S{item.severity}  {item.module[:28]:<28} "
+                f"{item.message[:100]}"
+            )
+        return "\n".join(lines)
+
+    def _ingest_status(self, args: List[str]) -> str:
+        if self.evidence_ingestion is None:
+            evidence_text = "Normalized evidence ingestion: unavailable"
+        else:
+            metric = self.evidence_ingestion.metrics()
+            evidence_text = (
+                "Normalized evidence ingestion\n"
+                f"  running: {metric.running}\n"
+                f"  queue: {metric.queue_depth}/{metric.queue_capacity}\n"
+                f"  accepted/persisted/duplicates: "
+                f"{metric.accepted}/{metric.persisted}/{metric.duplicates}\n"
+                f"  dropped-full/failed/batches: "
+                f"{metric.dropped_full}/{metric.failed}/{metric.batches}"
+            )
+        if self.flight_recorder_worker is None:
+            recorder_text = "Authoritative recorder: unavailable"
+        else:
+            durable = self.flight_recorder_worker.metrics()
+            recorder_text = (
+                "Authoritative recorder\n"
+                f"  running: {durable.running}\n"
+                f"  queue: {durable.queue_depth}/{durable.queue_capacity}\n"
+                f"  accepted/persisted: {durable.accepted}/{durable.persisted}\n"
+                f"  overflow-DLQ/storage-DLQ/failures: "
+                f"{durable.overflow_dlq}/{durable.storage_dlq}/"
+                f"{durable.dlq_failures}\n"
+                f"  batches: {durable.batches}"
+            )
+        return evidence_text + "\n" + recorder_text
 
     def _load_hunt_tables(self, db) -> None:
         db.execute("CREATE TABLE processes (pid INT, name TEXT, exe TEXT, ppid INT, "

@@ -104,17 +104,12 @@ def scan_generated_source(source: str) -> list[str]:
 
 
 def hot_reload_capability(module_name, file_path, authorized: bool = False):
-    """Injects a newly compiled script live into runtime memory.
+    """Retain compatibility while refusing in-process generated-code loading.
 
-    Refuses unless (a) self-evolution is explicitly enabled via ANGERONA_SELF_EVOLVE=1
-    or the caller passes authorized=True after human review, AND (b) the source
-    passes the static security scan. This prevents autonomous execution of
-    unreviewed, potentially poisoned AI-generated code (finding A-01).
+    Human confirmation and deny-list scans do not make arbitrary model output a
+    safe plugin. Reviewed capabilities must be packaged through the signed
+    external-module manifest and loaded on a later clean startup.
     """
-    if not (SELF_EVOLVE_ENABLED or authorized):
-        return False, ("BLOCKED: self-evolution is disabled by default. Review the "
-                       "generated source and set ANGERONA_SELF_EVOLVE=1 (or pass "
-                       "authorized=True) to allow execution.")
     try:
         with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
             src = fh.read()
@@ -124,14 +119,11 @@ def hot_reload_capability(module_name, file_path, authorized: bool = False):
     if hits:
         return False, ("BLOCKED by static security scan — generated code contains "
                        f"disallowed constructs: {', '.join(hits)}. Not executed.")
-    try:
-        spec = importlib.util.spec_from_file_location(module_name, file_path)
-        new_module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = new_module
-        spec.loader.exec_module(new_module)
-        return True, new_module
-    except Exception as e:
-        return False, str(e)
+    return False, (
+        "STAGED ONLY: generated Python is never executed or hot-reloaded. "
+        "Convert reviewed code into a signed Capability Manifest package and "
+        "load it on a clean restart."
+    )
 
 def orchestrate_self_evolution(capability_name, feature_request, iterations=3):
     """Manages the autonomous code, syntax check, and recursive debugging lifecycle."""

@@ -7,10 +7,13 @@ from PySide6.QtWidgets import QApplication
 from angerona.core import autostart
 from angerona.core.config import Config
 from angerona.core.eventbus import EventBus
-from angerona.core.storage import FlightRecorder
+from angerona.core.storage import AsyncFlightRecorder, FlightRecorder
 from angerona.core.module_manager import ModuleManager
 from angerona.core.platforms import current_platform
 from angerona.core.status_report import StatusReporter
+from angerona.core.telemetry_coverage import TelemetryCoverageAccountant
+from angerona.core.evidence_store import EvidenceStore
+from angerona.core.evidence_ingestion import EvidenceIngestionWorker
 from angerona.gui.main_window import MainWindow
 
 
@@ -32,8 +35,44 @@ class AngeronaApp:
         self.bus = EventBus()
         self.bus.arm(self.storage.authority)
 
-        # Persist every event the moment it is published.
-        self.bus.subscribe(self.storage.record_bus)
+        # The authoritative recorder batches signed events off producer
+        # threads. Queue overflow is preserved in the authenticated append-only
+        # dead-letter queue instead of stalling every sensor on SQLite.
+        self.flight_recorder_worker = AsyncFlightRecorder(self.storage)
+        self.flight_recorder_worker.start()
+        self.bus.subscribe(self.flight_recorder_worker.submit)
+
+        # Build the normalized hunt read-model asynchronously. EventBus invokes
+        # subscribers inline, so this subscriber only performs a bounded
+        # put_nowait; normalization, hashing, and SQLite work stay on the
+        # dedicated local writer. Queue pressure is observable through metrics
+        # and drops evidence-read-model copies rather than blocking protection.
+        self.evidence_store = None
+        self.evidence_ingestion = None
+        try:
+            self.evidence_store = EvidenceStore(
+                self.config.data_dir / "normalized-evidence.db"
+            )
+            self.evidence_ingestion = EvidenceIngestionWorker(
+                self.evidence_store
+            )
+            self.evidence_ingestion.start()
+            self.bus.subscribe(self.evidence_ingestion.submit_event)
+        except Exception:
+            # The normalized read-model is additive. Its failure must not take
+            # down the authoritative signed recorder or protection modules.
+            if self.evidence_store is not None:
+                try:
+                    self.evidence_store.close()
+                except Exception:
+                    pass
+            self.evidence_store = None
+            self.evidence_ingestion = None
+
+        # Account for sensor sequence continuity independently of conclusions.
+        # Legacy sensors without sequence metadata remain explicitly "unknown".
+        self.telemetry_coverage = TelemetryCoverageAccountant()
+        self.bus.subscribe(self.telemetry_coverage.observe_event)
 
         # Correlate the flat event stream into scored incidents (O(1)/event).
         from angerona.core.incidents import get_correlator
@@ -48,7 +87,10 @@ class AngeronaApp:
         self.bus.subscribe(init_tracker().on_event)
 
         self.manager  = ModuleManager(self.bus, self.config)
-        self.reporter = StatusReporter(self.bus, self.storage, self.manager, self.config)
+        self.reporter = StatusReporter(
+            self.bus, self.storage, self.manager, self.config,
+            telemetry_coverage=self.telemetry_coverage,
+        )
         self._resilience = None
 
         # MCP server — opt-in loopback tool server for Claude Desktop / Claude Code.
@@ -63,7 +105,12 @@ class AngeronaApp:
             except Exception:
                 pass   # MCP failure must never block startup
 
-        self.window = MainWindow(self.bus, self.storage, self.manager, self.config)
+        self.window = MainWindow(
+            self.bus, self.storage, self.manager, self.config,
+            evidence_store=self.evidence_store,
+            evidence_ingestion=self.evidence_ingestion,
+            flight_recorder_worker=self.flight_recorder_worker,
+        )
 
     def start(self) -> None:
         # Show the window immediately so the user sees a responsive UI.
@@ -275,6 +322,21 @@ class AngeronaApp:
             except Exception:
                 pass
         self.manager.stop_all()
+        recorder_drained = False
+        try:
+            recorder_drained = self.flight_recorder_worker.stop(timeout=3.0)
+        except Exception:
+            pass
+        # Producers are stopped before the normalized evidence worker drains.
+        # The timeout prevents shutdown from hanging on damaged/locked storage.
+        evidence_drained = self.evidence_ingestion is None
+        try:
+            if self.evidence_ingestion is not None:
+                evidence_drained = self.evidence_ingestion.stop(
+                    drain_timeout=3.0
+                )
+        except Exception:
+            pass
         # Release Angerona's resident llama3 model immediately. Ollama normally
         # keeps models loaded for several minutes, which left its runner using
         # CPU/GPU after the GUI had closed. Keep the Ollama service itself alive
@@ -287,4 +349,13 @@ class AngeronaApp:
             )
         except Exception:
             pass
-        self.storage.close()
+        # Never close a SQLite connection underneath a still-running writer.
+        # If a bounded drain times out, process teardown will reclaim it; this
+        # is safer than creating a worker/use-after-close race during shutdown.
+        if recorder_drained:
+            self.storage.close()
+        try:
+            if self.evidence_store is not None and evidence_drained:
+                self.evidence_store.close()
+        except Exception:
+            pass

@@ -51,20 +51,46 @@ class ResolveCenter(QDialog):
         self._sub.setStyleSheet("color:#9aa4b2;")
         root.addWidget(self._sub)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Time", "Severity", "Module", "Message", "Actions"])
+        self._page = 0
+        self._page_size = 25
+        self._page_events: list = []
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Time", "Severity", "Module", "Message"])
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setAlternatingRowColors(True)
         self.table.setStyleSheet("QTableWidget::item{padding:4px 6px;}")
+        self.table.itemSelectionChanged.connect(self._sync_action_state)
+        self.table.cellDoubleClicked.connect(lambda *_: self._act_selected(self._detail))
         root.addWidget(self.table, 1)
 
         bar = QHBoxLayout()
         self._foot = QLabel("")
         self._foot.setStyleSheet("color:#9aa4b2;")
         bar.addWidget(self._foot, 1)
-        ignore_all_btn = QPushButton("🔕  Ignore all shown")
+        self._previous_btn = QPushButton("‹ Previous")
+        self._previous_btn.setShortcut("Alt+Left")
+        self._previous_btn.setToolTip("Previous alert page (Alt+Left)")
+        self._previous_btn.clicked.connect(lambda: self._change_page(-1))
+        self._page_label = QLabel("Page 1 / 1")
+        self._page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._page_label.setMinimumWidth(92)
+        self._next_btn = QPushButton("Next ›")
+        self._next_btn.setShortcut("Alt+Right")
+        self._next_btn.setToolTip("Next alert page (Alt+Right)")
+        self._next_btn.clicked.connect(lambda: self._change_page(1))
+        self._detail_btn = QPushButton("Detail")
+        self._detail_btn.clicked.connect(lambda: self._act_selected(self._detail))
+        self._allow_btn = QPushButton("Allow")
+        self._allow_btn.clicked.connect(lambda: self._act_selected(self._allow))
+        self._block_btn = QPushButton("Block")
+        self._block_btn.clicked.connect(lambda: self._act_selected(self._block))
+        self._ignore_btn = QPushButton("Ignore")
+        self._ignore_btn.clicked.connect(lambda: self._act_selected(self._ignore))
+        ignore_all_btn = QPushButton("🔕  Ignore all active")
         ignore_all_btn.setToolTip("Ignore every active alert (by class) to clear the threat level "
                                   "back to Secure. Reversible; repeats of each class stay suppressed.")
         ignore_all_btn.setStyleSheet("background:#3f3f46; color:#e4e4e7; border:1px solid #52525b;"
@@ -75,9 +101,12 @@ class ResolveCenter(QDialog):
         ignored_btn.clicked.connect(self._show_ignored)
         refresh = QPushButton("Refresh"); refresh.clicked.connect(self._refresh)
         close = QPushButton("Close"); close.clicked.connect(self.accept)
-        for b in (ignore_all_btn, ignored_btn, refresh, close):
+        for b in (self._previous_btn, self._page_label, self._next_btn,
+                  self._detail_btn, self._allow_btn, self._block_btn, self._ignore_btn,
+                  ignore_all_btn, ignored_btn, refresh, close):
             bar.addWidget(b)
         root.addLayout(bar)
+        self._sync_action_state()
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
@@ -85,7 +114,7 @@ class ResolveCenter(QDialog):
         self._refresh()
 
     # ── data ─────────────────────────────────────────────────────────────────
-    _SCAN_CAP = 300   # bound HMAC/policy work regardless of alert volume
+    _SCAN_CAP = 5000  # bounded history; pagination makes rendering independent of this
 
     def _events(self) -> list:
         from angerona.gui.pages import NOISE_MODULES
@@ -94,9 +123,9 @@ class ResolveCenter(QDialog):
             evs = self.storage.try_recent_in_window(
                 now - self.window_s, now, Severity.HIGH, self._SCAN_CAP)
             if evs is None:
-                evs = self.bus.recent(500)
+                evs = self.bus.recent(self._SCAN_CAP)
         except Exception:
-            evs = self.bus.recent(500)
+            evs = self.bus.recent(self._SCAN_CAP)
         # Cheap filters + sort FIRST, then cap, THEN the expensive per-event ack
         # signature check — so a critical storm (thousands of HIGH+ events) can't
         # make this O(all events) in sha1 on every 2 s tick.
@@ -115,19 +144,7 @@ class ResolveCenter(QDialog):
                 and not drill_resolution.is_resolved_event(
                     e, resolutions=resolutions)]
 
-    _MAX_ROWS = 75   # keep per-row action controls responsive during alert storms
-
-    def _free_action_widgets(self) -> None:
-        """Delete the per-row Detail/Ignore cell widgets before a rebuild.
-        setRowCount() does NOT free setCellWidget widgets — without this the
-        Resolve Center leaks buttons on every 2 s refresh (badly, when critical)."""
-        for r in range(self.table.rowCount()):
-            w = self.table.cellWidget(r, 4)
-            if w is not None:
-                self.table.removeCellWidget(r, 4)
-                w.deleteLater()
-
-    def _refresh(self) -> None:
+    def _refresh(self, *_args) -> None:
         # Change-detection: skip the whole (expensive) rebuild when nothing new has
         # arrived and no ack changed — otherwise this ran O(alerts) every 2 s.
         try:
@@ -157,11 +174,22 @@ class ResolveCenter(QDialog):
                               "Allow / Block / Research / Apply fix, or Ignore a false positive "
                               "to remove it from the threat level.")
         n_ign = len(alert_ack.acked_records())
-        self._foot.setText(f"{len(evs)} active · {n_ign} ignored. Clearing/ignoring all returns to Secure.")
+        page_count = max(1, (len(evs) + self._page_size - 1) // self._page_size)
+        self._page = min(self._page, page_count - 1)
+        start = self._page * self._page_size
+        shown = evs[start:start + self._page_size]
+        self._page_events = shown
+        first = start + 1 if shown else 0
+        last = start + len(shown)
+        self._foot.setText(
+            f"{len(evs)} active · {n_ign} ignored · showing {first}–{last}. "
+            "Double-click a row for detail.")
+        self._page_label.setText(f"Page {self._page + 1} / {page_count}")
+        self._previous_btn.setEnabled(self._page > 0)
+        self._next_btn.setEnabled(self._page + 1 < page_count)
 
-        shown = evs[:self._MAX_ROWS]
         self.table.setUpdatesEnabled(False)
-        self._free_action_widgets()          # free old buttons BEFORE resizing rows
+        self.table.clearContents()
         self.table.setRowCount(len(shown))
         for r, ev in enumerate(shown):
             when = time.strftime("%m-%d %H:%M:%S", time.localtime(getattr(ev, "ts", time.time())))
@@ -173,20 +201,34 @@ class ResolveCenter(QDialog):
             self.table.setItem(r, 1, sev_it)
             self.table.setItem(r, 2, QTableWidgetItem(str(getattr(ev, "module", ""))))
             self.table.setItem(r, 3, QTableWidgetItem(str(getattr(ev, "message", ""))))
-            self.table.setCellWidget(r, 4, self._actions_cell(ev))
         self.table.setUpdatesEnabled(True)
-        self.table.resizeColumnToContents(4)
+        if shown:
+            self.table.selectRow(0)
+        self._sync_action_state()
 
-    def _actions_cell(self, ev) -> QWidget:
-        w = QWidget(); h = QHBoxLayout(w)
-        h.setContentsMargins(4, 1, 4, 1); h.setSpacing(4)
-        detail = self._btn("Detail", "#1e3a5f", "#38bdf8", lambda: self._detail(ev))
-        allow = self._btn("Allow", "#14532d", "#86efac", lambda: self._allow(ev))
-        block = self._btn("Block", "#7f1d1d", "#fecaca", lambda: self._block(ev))
-        ignore = self._btn("Ignore", "#3f3f46", "#d4d4d8", lambda: self._ignore(ev))
-        for b in (detail, allow, block, ignore):
-            h.addWidget(b)
-        return w
+    def _change_page(self, delta: int) -> None:
+        new_page = max(0, self._page + delta)
+        if new_page == self._page:
+            return
+        self._page = new_page
+        self._last_key = None
+        self._refresh()
+
+    def _selected_event(self):
+        row = self.table.currentRow()
+        if 0 <= row < len(self._page_events):
+            return self._page_events[row]
+        return None
+
+    def _sync_action_state(self) -> None:
+        enabled = self._selected_event() is not None
+        for button in (self._detail_btn, self._allow_btn, self._block_btn, self._ignore_btn):
+            button.setEnabled(enabled)
+
+    def _act_selected(self, action) -> None:
+        ev = self._selected_event()
+        if ev is not None:
+            action(ev)
 
     def _alerts_panel(self):
         """Find the live AlertsPanel (on the MainWindow) so Allow/Block behave

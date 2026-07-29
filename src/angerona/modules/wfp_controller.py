@@ -32,9 +32,14 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
+import hashlib
+import ipaddress
+import json
 import subprocess
 import time
-from typing import Optional
+from typing import Callable, Optional, Sequence
 
 from angerona.core.module_base import BaseModule, Severity
 
@@ -46,6 +51,57 @@ TCP_TABLE_OWNER_PID_ALL = 5
 UDP_TABLE_OWNER_PID     = 1
 AF_INET                 = 2
 AF_INET6                = 23   # BL-17 fix: include IPv6 loopback (::1) connections
+
+
+@dataclass(frozen=True)
+class ContainmentTarget:
+    """One deliberately scoped network-containment target."""
+
+    kind: str
+    value: str
+    direction: str = "outbound"
+
+
+@dataclass(frozen=True)
+class ContainmentPlan:
+    """Immutable, reviewable plan.  A plan does not change firewall state."""
+
+    plan_id: str
+    created_at: str
+    expires_at: str
+    targets: tuple[ContainmentTarget, ...]
+    recovery_exclusions: tuple[str, ...]
+    dry_run: bool = True
+
+
+@dataclass(frozen=True)
+class RollbackReceipt:
+    """Portable proof describing exactly what must be reversed."""
+
+    plan_id: str
+    plan_digest: str
+    applied_at: str
+    expires_at: str
+    rollback_actions: tuple[str, ...]
+    receipt_digest: str
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+
+
+def _digest(value: object) -> str:
+    return hashlib.sha256(_canonical(value)).hexdigest()
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("containment timestamps must be timezone-aware")
+    return value.astimezone(timezone.utc).replace(microsecond=0)
 
 try:
     _iphlp = ctypes.WinDLL("iphlpapi")
@@ -196,6 +252,8 @@ class WFPController:
 
     # Cache port→pid table for this many seconds before refreshing
     _CACHE_TTL = 5.0
+    _MAX_CONTAINMENT_SECONDS = 24 * 60 * 60
+    _RECOVERY_BASELINE = ("loopback", "dns", "dhcp")
 
     def __init__(self) -> None:
         self._cache: dict[tuple[str, int], int] = {}
@@ -227,6 +285,153 @@ class WFPController:
         if time.time() - self._cache_ts > self._CACHE_TTL:
             self._refresh()
         return dict(self._cache)
+
+    @staticmethod
+    def _validate_target(target: ContainmentTarget) -> ContainmentTarget:
+        kind = target.kind.strip().lower()
+        value = target.value.strip()
+        direction = target.direction.strip().lower()
+        if kind not in {"ip", "cidr", "port", "process"}:
+            raise ValueError(f"unsupported containment target kind: {kind}")
+        if direction not in {"inbound", "outbound", "both"}:
+            raise ValueError(f"unsupported containment direction: {direction}")
+        if not value or any(ch in value for ch in "\r\n;&|"):
+            raise ValueError("containment target contains unsafe or empty input")
+        if kind in {"ip", "cidr"}:
+            parsed = ipaddress.ip_network(value, strict=(kind == "cidr"))
+            value = str(parsed if kind == "cidr" else parsed.network_address)
+        elif kind == "port":
+            port = int(value)
+            if not 1 <= port <= 65535:
+                raise ValueError("port must be between 1 and 65535")
+            value = str(port)
+        elif kind == "process":
+            # A process target is a basename, never an arbitrary command/path.
+            if "/" in value or "\\" in value or value in {".", ".."}:
+                raise ValueError("process target must be an executable basename")
+            value = value.lower()
+        return ContainmentTarget(kind, value, direction)
+
+    def plan_containment(
+        self,
+        targets: Sequence[ContainmentTarget],
+        *,
+        ttl_seconds: int = 15 * 60,
+        recovery_exclusions: Sequence[str] = (),
+        dry_run: bool = True,
+        now: Optional[datetime] = None,
+    ) -> ContainmentPlan:
+        """Build a deterministic, reviewable containment transaction.
+
+        This method never changes host state.  ``dry_run`` defaults to true and
+        is carried into the plan so an enforcement boundary cannot silently
+        reinterpret a preview as authorization.
+        """
+        if not targets:
+            raise ValueError("at least one scoped containment target is required")
+        if not 30 <= int(ttl_seconds) <= self._MAX_CONTAINMENT_SECONDS:
+            raise ValueError("containment TTL must be between 30 seconds and 24 hours")
+        validated = tuple(sorted(
+            (self._validate_target(target) for target in targets),
+            key=lambda item: (item.kind, item.value, item.direction),
+        ))
+        exclusions = tuple(sorted({
+            *(item.lower().strip() for item in self._RECOVERY_BASELINE),
+            *(item.lower().strip() for item in recovery_exclusions if item.strip()),
+        }))
+        created = _as_utc(now or _utc_now())
+        expires = created + timedelta(seconds=int(ttl_seconds))
+        identity = {
+            "created_at": created.isoformat(),
+            "expires_at": expires.isoformat(),
+            "targets": [asdict(target) for target in validated],
+            "recovery_exclusions": exclusions,
+            "dry_run": bool(dry_run),
+        }
+        return ContainmentPlan(
+            plan_id=f"wfp-{_digest(identity)[:32]}",
+            created_at=identity["created_at"],
+            expires_at=identity["expires_at"],
+            targets=validated,
+            recovery_exclusions=exclusions,
+            dry_run=bool(dry_run),
+        )
+
+    def apply_containment(
+        self,
+        plan: ContainmentPlan,
+        *,
+        approved: bool = False,
+        approved_plan_id: Optional[str] = None,
+        executor: Optional[Callable[[ContainmentPlan], Sequence[str]]] = None,
+        now: Optional[datetime] = None,
+    ) -> RollbackReceipt:
+        """Apply through an injected privileged broker and return rollback proof.
+
+        The controller intentionally has no implicit ``netsh`` execution path.
+        A caller must submit a non-preview plan, assert human approval, and
+        provide a broker that returns concrete rollback actions.
+        """
+        # A dataclass is a transport shape, not a trust boundary.  Rebuild the
+        # submitted plan from validated primitives and require byte-for-byte
+        # semantic equality before consulting an executor.
+        try:
+            created = _as_utc(datetime.fromisoformat(plan.created_at))
+            expires = _as_utc(datetime.fromisoformat(plan.expires_at))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("containment plan has invalid timestamps") from exc
+        ttl = int((expires - created).total_seconds())
+        canonical = self.plan_containment(
+            plan.targets,
+            ttl_seconds=ttl,
+            recovery_exclusions=plan.recovery_exclusions,
+            dry_run=plan.dry_run,
+            now=created,
+        )
+        if plan != canonical:
+            raise ValueError("containment plan is non-canonical or has been altered")
+
+        applied = _as_utc(now or _utc_now())
+        if plan.dry_run:
+            raise PermissionError("dry-run containment plans cannot be applied")
+        if not approved:
+            raise PermissionError("explicit human approval is required")
+        if approved_plan_id != canonical.plan_id:
+            raise PermissionError("approval is not bound to this canonical containment plan")
+        if executor is None:
+            raise RuntimeError("a privileged, auditable containment executor is required")
+        if applied >= expires:
+            raise ValueError("containment plan has expired")
+        if not set(self._RECOVERY_BASELINE).issubset(plan.recovery_exclusions):
+            raise ValueError("containment plan is missing mandatory recovery exclusions")
+        actions = tuple(str(action).strip() for action in executor(plan) if str(action).strip())
+        if not actions:
+            raise RuntimeError("executor supplied no rollback actions; refusing untracked containment")
+        plan_digest = _digest(asdict(canonical))
+        body = {
+            "plan_id": plan.plan_id,
+            "plan_digest": plan_digest,
+            "applied_at": applied.isoformat(),
+            "expires_at": plan.expires_at,
+            "rollback_actions": actions,
+        }
+        return RollbackReceipt(receipt_digest=_digest(body), **body)
+
+    @staticmethod
+    def verify_rollback_receipt(
+        receipt: RollbackReceipt,
+        plan: ContainmentPlan,
+        *,
+        verifier: Optional[Callable[[RollbackReceipt], bool]] = None,
+    ) -> bool:
+        """Verify local receipt integrity, then optionally query another sensor."""
+        if receipt.plan_id != plan.plan_id or receipt.plan_digest != _digest(asdict(plan)):
+            return False
+        body = asdict(receipt)
+        supplied = body.pop("receipt_digest")
+        if supplied != _digest(body) or not receipt.rollback_actions:
+            return False
+        return True if verifier is None else bool(verifier(receipt))
 
 
 def get_wfp() -> WFPController:

@@ -94,7 +94,7 @@ class Config:
     teams_app_id: str = ""                       # Azure Bot App (client) ID; secret in .env
     teams_allowed_users: str = ""                # comma/semicolon-separated immutable Teams user IDs
     teams_bot_port: int = 3978                   # local Bot Framework messaging-endpoint port
-    teams_bot_skip_auth: bool = False            # DEV ONLY: skip inbound JWT verification
+    teams_bot_skip_auth: bool = False            # runtime-only dev switch; never persisted
     # ── ARIA model tuning ──
     ollama_keep_alive: str = "30m"               # keep the local model warm for fast replies
 
@@ -204,8 +204,8 @@ class Config:
                 cfg.teams_app_id          = data.get("teams_app_id", cfg.teams_app_id)
                 cfg.teams_allowed_users   = data.get("teams_allowed_users", cfg.teams_allowed_users)
                 cfg.teams_bot_port        = int(data.get("teams_bot_port", cfg.teams_bot_port))
-                cfg.teams_bot_skip_auth = _bool_setting(
-                    data, "teams_bot_skip_auth", cfg.teams_bot_skip_auth)
+                # Authentication bypasses are never restored from disk.
+                cfg.teams_bot_skip_auth = False
                 cfg.ollama_keep_alive     = data.get("ollama_keep_alive", cfg.ollama_keep_alive)
                 cfg.ui_scale_mode         = str(data.get("ui_scale_mode", cfg.ui_scale_mode))
                 try:
@@ -305,7 +305,6 @@ class Config:
                     "teams_app_id":          self.teams_app_id,
                     "teams_allowed_users":   self.teams_allowed_users,
                     "teams_bot_port":        self.teams_bot_port,
-                    "teams_bot_skip_auth":   self.teams_bot_skip_auth,
                     "ollama_keep_alive":     self.ollama_keep_alive,
                     "ui_scale_mode":         self.ui_scale_mode,
                     "ui_scale_fixed":        self.ui_scale_fixed,

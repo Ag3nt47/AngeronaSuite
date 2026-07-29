@@ -1,0 +1,5 @@
+# Security-sensitive automation and trust policy require repository-owner review.
+/.github/ @Ag3nt47
+/src/angerona/core/ @Ag3nt47
+/tools/ @Ag3nt47
+/SECURITY.md @Ag3nt47

@@ -1,0 +1,14 @@
+[
+  {
+    "id": "C6-R3-01",
+    "title": "Attacker-precreated signing/shutdown keys can be accepted before ACL repair",
+    "severity": "HIGH",
+    "status": "FIXED"
+  },
+  {
+    "id": "C6-R3-02",
+    "title": "GUI telemetry cursor bypasses persisted Event HMAC verification",
+    "severity": "HIGH",
+    "status": "FIXED"
+  }
+]

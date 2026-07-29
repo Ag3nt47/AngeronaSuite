@@ -440,23 +440,36 @@ class AngeronaUpgradeConsole(QMainWindow):
         dlg.exec()
 
     def _implement_code(self):
+        import ast
         code = self.ai_proposed_code.toPlainText().strip()
         if not code:
             QMessageBox.warning(self, "Nothing to Implement", "The code window is empty.")
             return
-        default = str(self._data_dir() / "sandbox_full.py")
-        path, _ = QFileDialog.getSaveFileName(self, "Choose sandbox file to append to",
-                                              default, "Python (*.py)")
-        if not path:
+        try:
+            ast.parse(code)
+        except SyntaxError as exc:
+            QMessageBox.critical(
+                self, "Invalid Proposal",
+                f"The proposed Python is not syntactically valid:\n{exc}",
+            )
             return
         if QMessageBox.question(
-                self, "Confirm", f"Append the proposed code to:\n{path}?") != QMessageBox.Yes:
+                self, "Stage proposal",
+                "Save this untrusted AI proposal to the review staging area?\n\n"
+                "It will not be appended to application code or executed."
+        ) != QMessageBox.Yes:
             return
         try:
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(f"\n\n# --- Implemented via Advanced Console {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
-                f.write(code + "\n")
-            QMessageBox.information(self, "Implemented", f"Code appended to {path}.")
+            import hashlib
+            digest = hashlib.sha256(code.encode("utf-8")).hexdigest()
+            staged = self._data_dir() / "staged_patches"
+            staged.mkdir(parents=True, exist_ok=True)
+            path = staged / f"ai-proposal-{digest[:16]}.py.review"
+            path.write_text(code + "\n", encoding="utf-8")
+            QMessageBox.information(
+                self, "Proposal staged",
+                f"Saved for review only:\n{path}\n\nSHA-256: {digest}",
+            )
             self.ai_proposed_code.clear()
         except Exception as exc:
             QMessageBox.critical(self, "Write Error", f"Could not write to target file:\n{exc}")

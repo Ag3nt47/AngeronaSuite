@@ -364,6 +364,33 @@ Copilot pane → OCSF/D3FEND/purple-loop panels.
 
 ## Round 1 — Innovation
 
+### 2026-07-29 enterprise visionary refresh
+
+Researched current Microsoft, NIST, OCSF, and Windows platform guidance and
+reviewed the present 64-module architecture, enterprise backlog, existing
+Evidence Lattice/TECT/Cortex/receipt capabilities, and the optional custom
+kernel bridge. Six defensive-only designs are ranked in
+`analysis/loop/innovation_ideas.md`.
+
+- **M / first:** Windows Kernel-Boundary Posture Ledger — user-mode Code
+  Integrity, HVCI/VBS, vulnerable-driver-control, driver-load, and source-health
+  evidence; the custom driver remains lab-only behind separate assurance gates.
+- **M / first:** Transactional WFP Containment — exact scope, PID/start-time/hash
+  revalidation, recovery exclusions, expiry, OS-side verification, and rollback
+  receipts.
+- **M / first:** Telemetry Loss Accounting — ETW/Event Log loss, cursor,
+  freshness, queue, and quality epochs attached to derived detections.
+- **M / next:** Deterministic Investigation Broker — short-lived read-only
+  capability leases; model text cannot authorize tools or response.
+- **M / next:** Evidence Reference Resolver — mechanically resolvable citations
+  and transformation provenance for incident, AI, response, and compliance
+  claims.
+- **S-M / after containment:** Pktmon Counter Flight Recorder — consent-gated,
+  counters-only network-path/drop evidence with no payload retention.
+
+Each proposal includes exact integration files, abuse cases, resource budgets,
+acceptance tests, limitations, and explicit defensive-only safety boundaries.
+
 Research/design refresh completed 2026-07-19. Eight defensive-only proposals were
 checked against the current code so existing behavioral baselining, trusted paths,
 telemetry contracts, ARIA voice, OCSF/D3FEND, and action-policy foundations were not
@@ -676,3 +703,98 @@ the HTTP/3 standard.
   errors**; compile scan and diff check PASS. A synthetic 100,000-event graph
   run completed in **2.958 s** (**29.58 μs/input event**), retained 1,000 events,
   respected the 2,500-node cap, and added about **3.81 MiB RSS**.
+
+## Cycle 5 / Round 1 — Performance
+
+- **Applied:** the GUI telemetry reader now reuses one thread-owned read-only
+  SQLite connection and advances through new events with an indexed rowid
+  cursor, preserving the initial newest-200 snapshot, oldest-first batch order,
+  200-row backpressure, and complete burst draining.
+- **Corrected:** removed invalid `QThread.setDaemon(True)`, which prevented the
+  telemetry worker from being constructed under PySide6.
+- **Measured:** 1,000 idle polls over a 5,000-row database fell from
+  **2,338.7 ms to 156.6 ms** (**14.9x faster; 93.3% reduction**).
+- **Gates:** changed-source `py_compile` PASS; focused SQLite/PySide6 cursor test
+  PASS (initial 200, subsequent 250 drained as 200 + 50, zero duplicates).
+- **Proposed:** replace the remaining 20 Hz EventBus snapshot poll with a bounded
+  subscription queue, and share immutable recent-event snapshots across GUI
+  refresh consumers after lifecycle/API integration coverage is added.
+- Full evidence:
+  `analysis/loop/cycle5/round1/performance_summary.md`.
+
+## Cycle 6 / Round 3 — Performance
+
+- Post-change telemetry regression PASS: 1,000 idle SQLite cursor polls over
+  5,000 rows completed in **216.4 ms (216.4 µs/poll)**.
+- Resolve Center remains bounded to 25 rendered rows: unchanged refresh calls
+  measured **115.7 µs/call**; forced 5,000-event refreshes measured
+  **3.38 ms/call**.
+- Kernel posture work runs off the GUI thread every 300 seconds with bounded
+  registry enumeration, ledger retention, and command timeouts. WFP scans run
+  off the GUI thread every 30 seconds with a five-second connection cache. No
+  tight loop or new blocking UI path was found.
+- Gates: focused tests **15/15 PASS**, changed-module compile PASS, full `src`
+  compile scan PASS. No product-code correction was required.
+- Full evidence:
+  `analysis/loop/cycle6/round3/performance_summary.md`.
+
+## Cycle 6 / Round 2 — Remediation
+
+- Teams development authentication is now ephemeral and direct-loopback only;
+  forwarded/tunnelled and non-local requests always require a valid JWT.
+- Shutdown authority is separated from EventBus signing, invalid keys fail
+  closed, and packaged/elevated-launcher key ACL establishment is mandatory.
+- Elevated source launch now rejects redirected, incomplete, and non-fixed
+  trust roots. Full equivalence to a signed admin-owned installation remains
+  deferred because an editable source checkout is intentionally user-writable.
+- Gates: changed-file compile PASS; Teams and shutdown self-tests PASS; focused
+  security suites **12 passed / 1 platform skip / 0 failed**.
+
+## Cycle 6 / Round 3 — Remediation
+
+- Elevated startup now establishes the protected runtime parent before any key
+  access. Unsafe pre-existing authorities are quarantined without consuming
+  attacker-known bytes; new-key creation inherits the final protected boundary.
+- The optimized GUI telemetry cursor now verifies every persisted Event HMAC.
+  Forged/tampered rows become canonical Critical integrity alerts while the
+  indexed cursor and bounded reads remain intact.
+- Gates: changed-file compile and PowerShell parse PASS; relevant self-tests
+  PASS; regression suites **39 passed / 1 platform skip / 0 failed**.
+- Architectural limit: user-mode ACLs do not defend against a compromised
+  Administrator/SYSTEM principal or a hostile handle opened before repair.
+
+## Cycle 6 / Round 3 — Bug Test
+
+- Compiled **233/233** package files; full pytest completed **223 passed / 2
+  skipped / 0 failed**.
+- Discovered **65** uniquely named modules with zero discovery errors; imported
+  all **67** module files without error.
+- Fixed the headless self-check's narrow cross-platform classification bug:
+  the explicitly macOS-only observe sensor is now a skip on Windows, while any
+  other sensor failure remains actionable. Final self-check: **26/26 PASS**.
+- ARIA component harness: **13/13 PASS**. Module stress drill: **51 passed / 15
+  expected environment or platform skips**.
+- No fresh crash/freeze evidence exists after 2026-07-19. Historic GUI stalls
+  predate the bounded-table, cursor, and refresh work and require production
+  soak validation rather than another speculative code change.
+- Full evidence:
+  `analysis/loop/cycle6/round3/bugtest_results.md`.
+
+## Cycle 6 — Documentation Reconciliation
+
+- README and both llms mirrors now describe the Teams tunnel-bypass closure,
+  protected and separated key custody, HMAC-verified telemetry cursor,
+  kernel-boundary posture ledger, transactional WFP planning boundary, live
+  telemetry coverage accounting, Resolve Center pagination, and measured
+  telemetry performance.
+- Enterprise backlog statuses moved only to PARTIAL where acceptance evidence
+  exists: ENT-ING-004, ENT-NET-006, and ENT-PERF-009. Durable fleet
+  deduplication, a privileged WFP enforcement broker, and a complete
+  bound/eviction audit remain open.
+- Public claims explicitly retain the user-mode, editable-source,
+  privileged-broker, kernel-driver-lab, tamper-proof, and certification limits.
+- Recorded Cycle 6 gate is **223 passed / 2 intentional platform skips**,
+  compile **233/233**, discovery **65 / 0 errors**, self-check **26/26**. A later
+  aggregate count must be accompanied by its matching test transcript.
+- Package version remains **1.9.4**; Cycle 6 is documented as current
+  development rather than an invented release.

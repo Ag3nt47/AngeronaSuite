@@ -22,6 +22,7 @@ NOT done here — that stays behind the dashboard's explicit "Consult AI" button
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -296,24 +297,11 @@ def analyze(cve_rec: dict, timeout: float = 90.0) -> dict:
 # ── apply / revert (confirm-then-execute; the GUI shows the commands first) ────
 
 def _run_powershell(script: str, timeout: float = 120.0) -> tuple[int, str]:
-    """Run a PowerShell script hidden; return (returncode, combined output)."""
-    if os.name != "nt":
-        return 1, "PowerShell execution is only available on Windows."
-    try:
-        from angerona.core.win import run_hidden  # hidden, no console flash
-        cp = run_hidden(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-            capture_output=True, text=True, timeout=timeout)
-        out = (getattr(cp, "stdout", "") or "") + (getattr(cp, "stderr", "") or "")
-        return getattr(cp, "returncode", 0), out.strip()
-    except Exception as exc:
-        try:  # fall back to a plain hidden subprocess if run_hidden signature differs
-            cp = subprocess.run(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-                capture_output=True, text=True, timeout=timeout)
-            return cp.returncode, ((cp.stdout or "") + (cp.stderr or "")).strip()
-        except Exception as exc2:
-            return 1, f"execution error: {exc2 or exc}"
+    """Compatibility guard: arbitrary model-authored PowerShell is forbidden."""
+    return 1, (
+        "Refused: arbitrary PowerShell execution was removed. Convert the "
+        "reviewed proposal to a registered PowerShellBoundary operation."
+    )
 
 
 def _load_applied() -> dict:
@@ -337,8 +325,12 @@ def applied_state(cve: str) -> dict | None:
 
 
 def apply_fix(cve: str, analysis: dict) -> dict:
-    """Execute the AI's fix script (caller MUST have confirmed). Records applied
-    state + the revert script so revert_fix() can undo it. Returns a result dict."""
+    """Stage an AI proposal for review; never execute model-generated script.
+
+    Executable remediation must be expressed as a registered typed operation
+    through ``PowerShellBoundary``. A deny-list scan is useful triage but is
+    not an authority boundary for arbitrary model output.
+    """
     cve = (cve or "").strip().upper()
     script = (analysis or {}).get("fix_script", "").strip()
     if not script:
@@ -347,25 +339,38 @@ def apply_fix(cve: str, analysis: dict) -> dict:
     if danger:
         return {"ok": False, "output": "Refused: destructive/high-risk commands "
                 f"in fix ({', '.join(danger)}). Not executed."}
-    rc, out = _run_powershell(script)
-    ok = rc == 0
+    digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
+    staged_dir = _repo_root() / "staged_remediation"
+    staged_dir.mkdir(parents=True, exist_ok=True)
+    staged_path = staged_dir / f"{cve.replace(':', '_')}-{digest[:12]}.ps1.txt"
+    staged_path.write_text(script, encoding="utf-8")
+    out = (
+        "Proposal staged for review; it was not executed. Convert approved "
+        "steps to registered PowerShellBoundary operations."
+    )
     data = _load_applied()
     data[cve] = {
-        "applied": ok,
-        "applied_ts": time.time(),
-        "applied_iso": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "applied": False,
+        "staged": True,
+        "staged_ts": time.time(),
+        "staged_iso": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "proposal_sha256": digest,
+        "proposal_path": str(staged_path),
         "summary": analysis.get("summary", ""),
-        "fix_script": script,
         "revert_script": analysis.get("revert_script", ""),
         "last_output": out[:4000],
         "reverted": False,
     }
     _save_applied(data)
-    return {"ok": ok, "returncode": rc, "output": out}
+    return {
+        "ok": True, "staged": True, "executed": False,
+        "proposal_sha256": digest, "proposal_path": str(staged_path),
+        "output": out,
+    }
 
 
 def revert_fix(cve: str) -> dict:
-    """Run the stored revert script for a previously-applied CVE fix."""
+    """Stage a revert proposal; never execute stored model-generated script."""
     cve = (cve or "").strip().upper()
     data = _load_applied()
     rec = data.get(cve)
@@ -378,14 +383,27 @@ def revert_fix(cve: str) -> dict:
     if danger:
         return {"ok": False, "output": "Refused: destructive/high-risk commands "
                 f"in revert ({', '.join(danger)}). Not executed."}
-    rc, out = _run_powershell(script)
-    ok = rc == 0
-    rec["reverted"] = ok
-    rec["reverted_ts"] = time.time()
-    rec["reverted_iso"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
+    staged_dir = _repo_root() / "staged_remediation"
+    staged_dir.mkdir(parents=True, exist_ok=True)
+    staged_path = staged_dir / f"{cve.replace(':', '_')}-revert-{digest[:12]}.ps1.txt"
+    staged_path.write_text(script, encoding="utf-8")
+    out = (
+        "Revert proposal staged for review; it was not executed. Convert "
+        "approved steps to registered PowerShellBoundary operations."
+    )
+    rec["reverted"] = False
+    rec["revert_staged"] = True
+    rec["revert_staged_ts"] = time.time()
+    rec["revert_proposal_sha256"] = digest
+    rec["revert_proposal_path"] = str(staged_path)
     rec["last_output"] = out[:4000]
     _save_applied(data)
-    return {"ok": ok, "returncode": rc, "output": out}
+    return {
+        "ok": True, "staged": True, "executed": False,
+        "proposal_sha256": digest, "proposal_path": str(staged_path),
+        "output": out,
+    }
 
 
 def self_test() -> tuple[bool, str]:

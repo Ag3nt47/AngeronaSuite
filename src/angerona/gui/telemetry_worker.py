@@ -30,6 +30,7 @@ Drop-in integration
 from __future__ import annotations
 
 import collections
+import json
 import queue
 import sqlite3
 import threading
@@ -84,7 +85,12 @@ class TelemetryWorker(QThread):
         self._seen_ids: set[int] = set()     # deduplicate by row id
         self._pending: collections.deque[dict] = collections.deque()
         self._last_flush = time.monotonic()
-        self.setDaemon(True)
+        # Owned and used exclusively by this QThread.  Keeping the read-only
+        # connection open avoids connection setup/schema parsing on every
+        # 50 ms poll; _last_rowid turns subsequent reads into an indexed seek.
+        self._db_con: sqlite3.Connection | None = None
+        self._last_rowid: int | None = None
+        self._ledger_authority = None
 
     def stop(self) -> None:
         self._stopping.set()
@@ -107,36 +113,86 @@ class TelemetryWorker(QThread):
         if not self._db_path:
             return []
         try:
-            con = sqlite3.connect(
-                f"file:{self._db_path}?mode=ro",
-                uri=True, check_same_thread=False,
-                timeout=2.0,
-            )
-            con.row_factory = sqlite3.Row
-            rows = con.execute(
-                "SELECT rowid, ts, module, severity, message, details "
-                "FROM events ORDER BY rowid DESC LIMIT 200"
-            ).fetchall()
-            con.close()
+            if self._db_con is None:
+                self._db_con = sqlite3.connect(
+                    f"file:{self._db_path}?mode=ro",
+                    uri=True, check_same_thread=False,
+                    timeout=2.0,
+                )
+                self._db_con.row_factory = sqlite3.Row
+
+            if self._last_rowid is None:
+                rows = self._db_con.execute(
+                    "SELECT rowid, ts, module, severity, message, details, hmac_sig "
+                    "FROM events ORDER BY rowid DESC LIMIT 200"
+                ).fetchall()
+                rows.reverse()  # preserve the public oldest-first batch order
+            else:
+                rows = self._db_con.execute(
+                    "SELECT rowid, ts, module, severity, message, details, hmac_sig "
+                    "FROM events WHERE rowid > ? ORDER BY rowid ASC LIMIT 200",
+                    (self._last_rowid,),
+                ).fetchall()
+
             new = []
             for r in rows:
                 rid = r["rowid"]
-                if rid in self._seen_ids:
+                try:
+                    from angerona.core.eventbus import BusAuthority, Event, Severity
+                    if self._ledger_authority is None:
+                        self._ledger_authority = BusAuthority.load()
+                    details = json.loads(r["details"] or "{}")
+                    if not isinstance(details, dict):
+                        raise ValueError("details is not an object")
+                    persisted = Event(
+                        ts=float(r["ts"]),
+                        module=str(r["module"]),
+                        severity=Severity(int(r["severity"])),
+                        message=str(r["message"]),
+                        details=details,
+                        hmac_sig=str(r["hmac_sig"] or ""),
+                    )
+                    if not self._ledger_authority.verify(persisted):
+                        raise ValueError("missing or invalid HMAC")
+                except Exception as exc:
+                    # Never display attacker-controlled row content after an
+                    # integrity failure. Surface one canonical alert in its
+                    # place so tampering is visible rather than silently hidden.
+                    new.append({
+                        "id": rid,
+                        "ts": time.time(),
+                        "module": "Ledger Integrity",
+                        "severity": 4,
+                        "message": (
+                            f"Persisted telemetry row {rid} rejected: "
+                            f"{type(exc).__name__}"
+                        ),
+                        "details": {
+                            "_ledger_integrity": "rejected",
+                            "record_id": rid,
+                        },
+                    })
                     continue
-                self._seen_ids.add(rid)
                 new.append({
                     "id": rid,
-                    "ts": r["ts"],
-                    "module": r["module"],
-                    "severity": r["severity"],
-                    "message": r["message"],
-                    "details": r["details"],
+                    "ts": persisted.ts,
+                    "module": persisted.module,
+                    "severity": int(persisted.severity),
+                    "message": persisted.message,
+                    "details": persisted.details,
                 })
-            # Keep seen_ids bounded
-            if len(self._seen_ids) > 50_000:
-                self._seen_ids = set(list(self._seen_ids)[-25_000:])
-            return list(reversed(new))   # oldest first
+            if rows:
+                self._last_rowid = rows[-1]["rowid"]
+            return new
         except Exception:
+            # A transient replacement/removal of the DB invalidates the handle.
+            # Reconnect on the next poll and retain the cursor for deduplication.
+            if self._db_con is not None:
+                try:
+                    self._db_con.close()
+                except Exception:
+                    pass
+                self._db_con = None
             return []
 
     # ── EventBus reader ───────────────────────────────────────────────────────
@@ -178,18 +234,25 @@ class TelemetryWorker(QThread):
 
     # ── main loop ─────────────────────────────────────────────────────────────
     def run(self) -> None:
-        while not self._stopping.is_set():
-            try:
-                new_events = self._read_memc() or self._read_bus()
-                for ev in new_events:
-                    self._pending.append(ev)
-                self._maybe_flush()
-            except Exception:
-                pass
-            self._stopping.wait(timeout=POLL_INTERVAL_S)
-
-        # Final flush on shutdown
-        self._maybe_flush(force=True)
+        try:
+            while not self._stopping.is_set():
+                try:
+                    new_events = self._read_memc() or self._read_bus()
+                    for ev in new_events:
+                        self._pending.append(ev)
+                    self._maybe_flush()
+                except Exception:
+                    pass
+                self._stopping.wait(timeout=POLL_INTERVAL_S)
+        finally:
+            if self._db_con is not None:
+                try:
+                    self._db_con.close()
+                except Exception:
+                    pass
+                self._db_con = None
+            # Final flush on shutdown
+            self._maybe_flush(force=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

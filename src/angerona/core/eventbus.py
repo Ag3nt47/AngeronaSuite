@@ -105,6 +105,9 @@ class BusAuthority:
         key = secrets.token_bytes(cls._KEY_BYTES)
         p   = cls._key_path()
         p.parent.mkdir(parents=True, exist_ok=True)
+        from angerona.core.hardening import ensure_sensitive_parent, key_acl_required
+        required = key_acl_required()
+        ensure_sensitive_parent(p, required=required)
         try:
             fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError:
@@ -114,6 +117,8 @@ class BusAuthority:
                 fh.write(key.hex())
                 fh.flush()
                 os.fsync(fh.fileno())
+            from angerona.core.hardening import secure_sensitive_file
+            secure_sensitive_file(p, required=required)
         except Exception:
             try:
                 p.unlink()
@@ -131,6 +136,10 @@ class BusAuthority:
         corrupt and conceal key-file tampering.
         """
         p = cls._key_path()
+        from angerona.core.hardening import key_acl_required, prepare_sensitive_key
+        required = key_acl_required()
+        if p.exists() and not prepare_sensitive_key(p, required=required):
+            return cls.generate()
         try:
             encoded = p.read_text(encoding="ascii").strip()
         except FileNotFoundError:
@@ -145,6 +154,8 @@ class BusAuthority:
             raise RuntimeError(
                 f"event signing key has invalid length ({len(key)} bytes): {p}"
             )
+        from angerona.core.hardening import secure_sensitive_file
+        secure_sensitive_file(p, required=required)
         return cls(key)
 
     def sign(self, event: "Event") -> str:

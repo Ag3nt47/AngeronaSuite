@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import queue
 import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import List
+from typing import Iterable, List, NamedTuple
 
 from angerona.core.eventbus import BusAuthority, Event, Severity
 
@@ -203,9 +204,72 @@ class FlightRecorder:
                 else:
                     self._route_to_dlq(event)
             except Exception:
-                return   # unexpected error — skip without crashing the bus
+                self._route_to_dlq(event)
+                return
 
-    def _route_to_dlq(self, event: Event) -> None:
+    def record_batch_bus(self, events: Iterable[Event]) -> "BatchRecordResult":
+        """Persist bus-delivered events in one transaction.
+
+        Unsigned input is signed defensively. If the transaction cannot be
+        committed, every event is routed to the authenticated append-only DLQ.
+        """
+        prepared = [
+            event if event.hmac_sig else dataclasses.replace(
+                event, hmac_sig=self._authority.sign(event)
+            )
+            for event in events
+        ]
+        if not prepared:
+            return BatchRecordResult(0, 0)
+        rows = [
+            (
+                event.ts, event.module, int(event.severity), event.message,
+                self._details_json(event.details), event.hmac_sig,
+            )
+            for event in prepared
+        ]
+        for attempt in range(self._DLQ_RETRIES):
+            try:
+                with self._lock:
+                    self._db.executemany(
+                        "INSERT INTO events "
+                        "(ts, module, severity, message, details, hmac_sig) "
+                        "VALUES (?,?,?,?,?,?)",
+                        rows,
+                    )
+                    self._db.commit()
+                    self._writes += len(rows)
+                    if self._writes >= self.PRUNE_EVERY:
+                        self._writes %= self.PRUNE_EVERY
+                        self._prune_locked()
+                    row = self._db.execute(
+                        "SELECT COALESCE(MAX(id), 0) FROM events"
+                    ).fetchone()
+                    last_id = int(row[0] if row else 0)
+                    with self._revision_lock:
+                        self._revision = max(self._revision, last_id)
+                return BatchRecordResult(len(prepared), 0)
+            except sqlite3.OperationalError:
+                try:
+                    with self._lock:
+                        self._db.rollback()
+                except Exception:
+                    pass
+                if attempt < self._DLQ_RETRIES - 1:
+                    time.sleep(self._DLQ_RETRY_DELAY)
+                    continue
+                break
+            except Exception:
+                try:
+                    with self._lock:
+                        self._db.rollback()
+                except Exception:
+                    pass
+                break
+        dlq = sum(1 for event in prepared if self._route_to_dlq(event))
+        return BatchRecordResult(0, dlq)
+
+    def _route_to_dlq(self, event: Event) -> bool:
         """Append-only JSON fallback when the primary SQLite ledger is locked.
 
         Each line in dlq_events.json is a complete, self-contained JSON object
@@ -230,8 +294,9 @@ class FlightRecorder:
         try:
             with self._dlq_lock:
                 _dlq_write_exclusive(dlq_path, entry)
+            return True
         except Exception:
-            pass   # DLQ failure is silently ignored — we cannot recurse
+            return False
 
     def _prune_locked(self) -> None:
         """Bound the table to ~MAX_ROWS newest rows (id-ordered). O(deleted rows)
@@ -479,3 +544,155 @@ class FlightRecorder:
             self._ui_db.close()
         with self._lock:
             self._db.close()
+
+
+class BatchRecordResult(NamedTuple):
+    persisted: int
+    dlq: int
+
+
+@dataclasses.dataclass(frozen=True)
+class AsyncRecorderMetrics:
+    accepted: int
+    persisted: int
+    overflow_dlq: int
+    storage_dlq: int
+    dlq_failures: int
+    queue_depth: int
+    queue_capacity: int
+    batches: int
+    running: bool
+
+
+class AsyncFlightRecorder:
+    """Bounded worker-owned persistence adapter for EventBus subscribers.
+
+    ``submit`` never touches SQLite. The normal path is a non-blocking queue
+    operation; queue overflow is preserved in the recorder's signed append-only
+    DLQ. The single worker owns all SQLite calls and commits in batches.
+    """
+
+    def __init__(
+        self,
+        recorder: FlightRecorder,
+        *,
+        queue_capacity: int = 4096,
+        batch_size: int = 128,
+        flush_interval: float = 0.10,
+    ) -> None:
+        if queue_capacity < 1:
+            raise ValueError("queue_capacity must be positive")
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        if flush_interval <= 0:
+            raise ValueError("flush_interval must be positive")
+        self._recorder = recorder
+        self._queue: queue.Queue[Event] = queue.Queue(maxsize=queue_capacity)
+        self._batch_size = min(int(batch_size), int(queue_capacity))
+        self._flush_interval = float(flush_interval)
+        self._state_lock = threading.Lock()
+        self._metrics_lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._accepted = 0
+        self._persisted = 0
+        self._overflow_dlq = 0
+        self._storage_dlq = 0
+        self._dlq_failures = 0
+        self._batches = 0
+
+    def start(self) -> bool:
+        """Start the worker once; return False if it is already running."""
+        with self._state_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return False
+            self._stop.clear()
+            self._thread = threading.Thread(
+                target=self._run,
+                name="angerona-flight-recorder",
+                daemon=True,
+            )
+            self._thread.start()
+            return True
+
+    def submit(self, event: Event) -> None:
+        """Non-blocking subscriber callback. No SQLite operation occurs here."""
+        if not event.hmac_sig:
+            event = dataclasses.replace(
+                event, hmac_sig=self._recorder.authority.sign(event)
+            )
+        with self._state_lock:
+            running = self._thread is not None and self._thread.is_alive()
+        if running and not self._stop.is_set():
+            try:
+                self._queue.put_nowait(event)
+                with self._metrics_lock:
+                    self._accepted += 1
+                return
+            except queue.Full:
+                pass
+        written = self._recorder._route_to_dlq(event)
+        with self._metrics_lock:
+            if written:
+                self._overflow_dlq += 1
+            else:
+                self._dlq_failures += 1
+
+    def stop(self, timeout: float = 5.0) -> bool:
+        """Request a drain and wait a bounded time; safe to call repeatedly."""
+        timeout = max(0.0, float(timeout))
+        with self._state_lock:
+            thread = self._thread
+            if thread is None:
+                return True
+            self._stop.set()
+        if thread is threading.current_thread():
+            return False
+        thread.join(timeout)
+        stopped = not thread.is_alive()
+        if stopped:
+            with self._state_lock:
+                if self._thread is thread:
+                    self._thread = None
+        return stopped
+
+    def metrics(self) -> AsyncRecorderMetrics:
+        with self._state_lock:
+            running = self._thread is not None and self._thread.is_alive()
+        with self._metrics_lock:
+            return AsyncRecorderMetrics(
+                accepted=self._accepted,
+                persisted=self._persisted,
+                overflow_dlq=self._overflow_dlq,
+                storage_dlq=self._storage_dlq,
+                dlq_failures=self._dlq_failures,
+                queue_depth=self._queue.qsize(),
+                queue_capacity=self._queue.maxsize,
+                batches=self._batches,
+                running=running,
+            )
+
+    def _run(self) -> None:
+        while not self._stop.is_set() or not self._queue.empty():
+            batch: list[Event] = []
+            try:
+                batch.append(self._queue.get(timeout=self._flush_interval))
+            except queue.Empty:
+                continue
+            deadline = time.monotonic() + self._flush_interval
+            while len(batch) < self._batch_size:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    batch.append(self._queue.get(timeout=remaining))
+                except queue.Empty:
+                    break
+            result = self._recorder.record_batch_bus(batch)
+            with self._metrics_lock:
+                self._persisted += result.persisted
+                self._storage_dlq += result.dlq
+                self._dlq_failures += len(batch) - result.persisted - result.dlq
+                self._batches += 1
+            for _ in batch:
+                self._queue.task_done()

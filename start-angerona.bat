@@ -17,6 +17,7 @@ set "ANGERONA_STORAGE_AUTOMIGRATE=1"
 set "TEMP=%~dp0runtime-data\tmp"
 set "TMP=%TEMP%"
 set "ANGERONA_INSTALL_ROOT=%~dp0"
+set "ANGERONA_ENFORCE_KEY_ACL=1"
 
 REM ── Self-elevate (full-system telemetry needs Administrator) ────────────────
 "%SystemRoot%\System32\net.exe" session >nul 2>&1
@@ -29,6 +30,19 @@ if errorlevel 1 (
 
 REM This source/developer launcher must not recursively rewrite the checkout ACLs.
 REM The release installer establishes the protected installed-program trust root.
+REM Fail closed on redirected/removable source roots before executing elevated code.
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "$r=Get-Item -LiteralPath $env:ANGERONA_INSTALL_ROOT -Force; if (($r.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $r.PSDrive.DriveType -ne 'Fixed') {exit 1}; $required=@('start-angerona.bat','pyproject.toml','src\angerona\__init__.py'); foreach($n in $required) {$p=Join-Path $r.FullName $n; if (!(Test-Path -LiteralPath $p -PathType Leaf) -or ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {exit 1}}; exit 0"
+if errorlevel 1 (
+    echo [!] Refusing redirected, incomplete, or non-fixed elevated source checkout.
+    pause
+    exit /b 1
+)
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\protect-key-custody.ps1" -DataRoot "%ANGERONA_DATA%"
+if errorlevel 1 (
+    echo [!] Unable to establish protected runtime key custody.
+    pause
+    exit /b 1
+)
 if not exist "%TEMP%" mkdir "%TEMP%"
 if not exist "%ANGERONA_DATA%\logs" mkdir "%ANGERONA_DATA%\logs"
 
@@ -58,6 +72,13 @@ echo [*] Installing the verified offline speech model to the D-drive data folder
 :validate
 REM Fail visibly before using pythonw, which intentionally has no console output.
 set "ANGERONA_PREFLIGHT_LOG=%ANGERONA_DATA%\logs\launcher-preflight.log"
+"venv\Scripts\python.exe" "tools\source_trust_preflight.py" > "%ANGERONA_PREFLIGHT_LOG%" 2>&1
+if errorlevel 1 (
+    echo [!] Angerona source trust preflight failed.
+    type "%ANGERONA_PREFLIGHT_LOG%"
+    pause
+    exit /b 1
+)
 "venv\Scripts\python.exe" -c "import angerona, PySide6; print('Angerona launcher preflight OK')" > "%ANGERONA_PREFLIGHT_LOG%" 2>&1
 if errorlevel 1 (
     echo [!] Angerona could not pass its startup check.
