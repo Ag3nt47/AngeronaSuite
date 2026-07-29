@@ -976,13 +976,22 @@ email scanning, channel push, research) — each has a one-click test button.
   Hypothesis harness now derives 120 offline-replayable examples per property
   for normalized sensor events, authenticated Inter-Process Communication (IPC)
   frames, signed capability manifests, detection packages, fleet request
-  authentication, encrypted-backup metadata, and portable restore paths.
+  authentication, encrypted-backup metadata, portable restore paths, signed
+  release envelopes, ZIP member paths/metadata, and Sigma rule documents.
   Parsers must return a fully validated object or their documented fail-closed
-  error. The first runs found and fixed malformed
+  error. The runs found and fixed malformed
   platform/header exception leaks, mixed-type diagnostic failures, silent list
   truncation, non-finite detection values, schema-smuggling fields, and Windows
-  alternate-data-stream/device-alias restore paths. Document-import and future
-  native-driver fuzz targets remain open.
+  alternate-data-stream/device aliases. Imported update, offline voice-model,
+  and inert drill-marker ZIPs now pre-validate canonical paths, entry and
+  expansion budgets, compression ratios, duplicates/case collisions, encryption,
+  special files, and supported compression before reading or writing content.
+  Signed update metadata uses an exact schema and strict signature encoding;
+  voice downloads cannot redirect away from the approved HTTPS origin. Sigma
+  YAML is size/node/depth/document bounded, alias-free, and limited to plain
+  finite values. This completes current local user-mode document/archive
+  coverage; a future native-driver Input/Output Control (IOCTL) boundary would
+  require its own separate fuzz gate.
 - **Authenticated scanner-to-core IPC.** Shared-memory ring v2 protects every
   scanner record with a dedicated, access-controlled Hash-based Message
   Authentication Code using Secure Hash Algorithm 256 (HMAC-SHA-256) key. The
@@ -996,10 +1005,10 @@ email scanning, channel push, research) — each has a one-click test button.
   cannot prevent a fully compromised scanner process that can read that key from
   creating authenticated records.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
-  passes **452 tests with 2 intentional platform skips** and 0 failures.
+  passes **488 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
   Ruff pass. pip-audit reports no known vulnerabilities in the installed
   dependencies. The public-repository scan found no committed real credential,
   private key, user-profile path, database, runtime-data, or cache artifact.
 
-<!-- ANGERONA_DOC_STATUS tests=452 skips=2 modules=65 -->
+<!-- ANGERONA_DOC_STATUS tests=488 skips=2 modules=65 -->

@@ -66,6 +66,7 @@ def make_exe(dist):
             "requests",
             "yara-python",
             "python-dotenv",
+            "PyYAML",
         ])
     )
 

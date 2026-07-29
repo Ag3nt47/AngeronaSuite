@@ -21,6 +21,7 @@ import hashlib
 import importlib.util
 import os
 import shutil
+import urllib.parse
 import urllib.request
 import zipfile
 from collections import deque
@@ -28,11 +29,47 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+from angerona.core.archive_safety import safe_archive_path, validate_zip_members
+
 
 _VOSK_MODEL_NAME = "vosk-model-small-en-us-0.15"
 _VOSK_MODEL_URL = f"https://alphacephei.com/vosk/models/{_VOSK_MODEL_NAME}.zip"
 _VOSK_MODEL_SHA256 = "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498"
 _VOSK_MODEL_MAX_BYTES = 48 * 1024 * 1024
+_VOSK_MODEL_MAX_FILES = 4096
+_VOSK_MODEL_MAX_MEMBER_BYTES = 256 * 1024 * 1024
+_VOSK_MODEL_MAX_EXPANDED_BYTES = 512 * 1024 * 1024
+_VOSK_MODEL_MAX_RATIO = 200
+_VOSK_MODEL_HOST = "alphacephei.com"
+
+
+def _approved_model_url(value: str) -> str:
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise RuntimeError("speech model URL is malformed") from exc
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != _VOSK_MODEL_HOST
+        or port not in {None, 443}
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise RuntimeError("speech model URL left the approved HTTPS origin")
+    return value
+
+
+class _PinnedModelRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return super().redirect_request(
+            req,
+            fp,
+            code,
+            msg,
+            headers,
+            _approved_model_url(newurl),
+        )
 
 
 def offline_model_path() -> Path:
@@ -51,6 +88,43 @@ def offline_model_status() -> tuple[bool, str]:
     path = Path(override).expanduser() if override else offline_model_path()
     ready = path.is_dir() and (path / "am").is_dir()
     return ready, (str(path) if ready else "Not installed (offline model is 39 MB)")
+
+
+def _extract_verified_model_archive(bundle: zipfile.ZipFile, staging: Path) -> None:
+    """Extract a checksum-approved model through bounded portable paths."""
+    members = validate_zip_members(
+        bundle.infolist(),
+        max_files=_VOSK_MODEL_MAX_FILES,
+        max_member_bytes=_VOSK_MODEL_MAX_MEMBER_BYTES,
+        max_total_bytes=_VOSK_MODEL_MAX_EXPANDED_BYTES,
+        max_ratio=_VOSK_MODEL_MAX_RATIO,
+        allow_directories=True,
+    )
+    expanded = 0
+    for member in members:
+        relative = safe_archive_path(
+            member.filename,
+            allow_directory=member.is_dir(),
+        )
+        target = staging.joinpath(*relative.parts)
+        if member.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        member_size = 0
+        with bundle.open(member) as source, target.open("xb") as output:
+            while chunk := source.read(1024 * 1024):
+                member_size += len(chunk)
+                expanded += len(chunk)
+                if (
+                    member_size > member.file_size
+                    or member_size > _VOSK_MODEL_MAX_MEMBER_BYTES
+                    or expanded > _VOSK_MODEL_MAX_EXPANDED_BYTES
+                ):
+                    raise RuntimeError("speech model expanded beyond approved limits")
+                output.write(chunk)
+        if member_size != member.file_size:
+            raise RuntimeError("speech model member size mismatch")
 
 
 def install_offline_model() -> str:
@@ -73,11 +147,18 @@ def install_offline_model() -> str:
         if cached_archive.is_file() and cached_archive.stat().st_size <= _VOSK_MODEL_MAX_BYTES:
             with cached_archive.open("rb") as source, archive.open("wb") as out:
                 while chunk := source.read(1024 * 1024):
-                    total += len(chunk); digest.update(chunk); out.write(chunk)
+                    total += len(chunk)
+                    if total > _VOSK_MODEL_MAX_BYTES:
+                        raise RuntimeError("cached speech model exceeded the size limit")
+                    digest.update(chunk)
+                    out.write(chunk)
         else:
-            request = urllib.request.Request(_VOSK_MODEL_URL,
-                                             headers={"User-Agent": "Angerona-Installer/1"})
-            with urllib.request.urlopen(request, timeout=30) as response, archive.open("wb") as out:
+            request = urllib.request.Request(
+                _approved_model_url(_VOSK_MODEL_URL),
+                headers={"User-Agent": "Angerona-Installer/1"},
+            )
+            opener = urllib.request.build_opener(_PinnedModelRedirect)
+            with opener.open(request, timeout=30) as response, archive.open("wb") as out:
                 while True:
                     chunk = response.read(1024 * 1024)
                     if not chunk:
@@ -92,20 +173,7 @@ def install_offline_model() -> str:
 
         staging.mkdir(parents=True, exist_ok=False)
         with zipfile.ZipFile(archive) as bundle:
-            for member in bundle.infolist():
-                name = member.filename.replace("\\", "/")
-                target = (staging / name).resolve()
-                if not target.is_relative_to(staging.resolve()):
-                    raise RuntimeError("unsafe path in speech model archive")
-                mode = (member.external_attr >> 16) & 0o170000
-                if mode == 0o120000:
-                    raise RuntimeError("speech model archive contains a symlink")
-                if member.is_dir():
-                    target.mkdir(parents=True, exist_ok=True)
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with bundle.open(member) as source, target.open("wb") as output:
-                    shutil.copyfileobj(source, output, length=1024 * 1024)
+            _extract_verified_model_archive(bundle, staging)
         extracted = staging / _VOSK_MODEL_NAME
         if not (extracted / "am").is_dir():
             raise RuntimeError("speech model archive did not contain the expected model")
@@ -451,7 +519,7 @@ class Voice:
             # 3 ── injected TTS backend is called
             said: list[str] = []
             v = Voice(enabled=True, tts_fn=lambda t: said.append(t),
-                      stt_fn=lambda to: "hey aria run the loop")
+                      stt_fn=lambda _timeout: "hey aria run the loop")
             assert v.speak("Load critical.") is True and said == ["Load critical."], "injected TTS used"
 
             # 4 ── STT + wake word

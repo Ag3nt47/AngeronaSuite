@@ -94,6 +94,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional
 
+from angerona.core.archive_safety import read_bounded_member, validate_zip_members
 from angerona.shark.run_manifest import (
     build_run_history,
     preflight_run,
@@ -156,12 +157,21 @@ def _file_has_marker(p: Path) -> bool:
     try:
         if p.suffix.lower() == ".zip":
             with zipfile.ZipFile(p) as zf:
-                for name in zf.namelist():
-                    try:
-                        if EICAR_MARKER in zf.read(name).decode("ascii", errors="ignore"):
-                            return True
-                    except Exception:
-                        continue
+                members = validate_zip_members(
+                    zf.infolist(),
+                    max_files=64,
+                    max_member_bytes=2 * 1024 * 1024,
+                    max_total_bytes=16 * 1024 * 1024,
+                    max_ratio=100,
+                )
+                for member in members:
+                    sample = read_bounded_member(
+                        zf,
+                        member,
+                        max_bytes=2 * 1024 * 1024,
+                    )
+                    if EICAR_MARKER in sample.decode("ascii", errors="ignore"):
+                        return True
             return False
         text = p.read_text(encoding="ascii", errors="ignore")
         # EICAR for the lure/persistence markers, plus the benign BYOVD-drill

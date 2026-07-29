@@ -310,21 +310,27 @@ CYCLE 8 IMPLEMENTATION RECORD — 2026-07-29
   - Hypothesis 6.163.0, Ruff 0.16.0, pytest-xdist 3.8.0, pip-audit 2.10.1.
   - Complete Windows ACL/security suite remains serial; xdist is limited to
     isolated groups without cross-process permission mutation.
-  - Current evidence: 452 passed, 2 intentional platform skips; compile/Ruff
+  - Current evidence: 488 passed, 2 intentional platform skips; compile/Ruff
     clean; installed dependency audit reports no known vulnerabilities.
 
-[PARTIAL/P0] ENT-QA-003  Deterministic trust-boundary property fuzzing.
+[DONE/P0] ENT-QA-003  Deterministic trust-boundary property fuzzing.
   - 120 offline-replayable examples per property; no retained corpus, network,
     runtime service, or product dependency.
   - Covers normalized event/schema parsing, signed capability manifests,
     detection packages, fleet request authentication, encrypted backup
     header/manifest metadata, portable restore-path validation, and authenticated
-    shared-memory IPC frame/payload parsing.
+    shared-memory IPC frame/payload parsing, strict signed-release envelopes,
+    portable ZIP metadata, bounded Sigma YAML, offline voice-model archives,
+    and drill-marker archive readers.
   - First pass closed exception leaks, schema smuggling, silent list truncation,
     non-finite detection values, mixed-type diagnostics, Windows alternate data
     streams, reserved device aliases, unauthenticated ring records, replayable
-    32-bit sequences, and a non-object JSON ring-drain crash.
-  - Remaining: document importers and any future native/driver IOCTL surface.
+    32-bit sequences, a non-object JSON ring-drain crash, ambiguous archive
+    paths, archive expansion/collision hazards, permissive release metadata,
+    unpinned speech-model redirects, and unbounded Sigma YAML aliases/types.
+  - All currently consumed local user-mode document/archive formats are covered.
+    A future native/driver IOCTL surface requires its own separate assurance
+    gate if that optional architecture is ever implemented.
 
 [DONE/P0] ENT-RES-002  Stateful, safe watchdog recovery.
   - Separate authenticated durable state for Core Manager and peer Watchdog.
@@ -1945,7 +1951,7 @@ Acceptance gate:
   - No unbounded sleeps.
   - explicit opt-in integration/lab tests.
 
-[PARTIAL/P0] ENT-QA-003  Add fuzzing.
+[DONE/P0] ENT-QA-003  Add fuzzing.
   Implemented:
   - deterministic normalized event/schema parser properties.
   - authenticated IPC ring records bind schema, sensor, full 64-bit sequence,
@@ -1953,9 +1959,12 @@ Acceptance gate:
   - signed capability-manifest and detection-package mutation properties.
   - encrypted backup header/manifest and Windows-safe restore-path properties.
   - authenticated fleet API request/header/body mutation properties.
-  Remaining:
-  - document importers.
-  - native/driver IOCTL if ever added.
+  - signed release-envelope mutation and strict artifact metadata properties.
+  - portable ZIP path/member invariants shared by update, voice-model, and
+    inert drill-marker readers.
+  - bounded, alias-free Sigma YAML document import properties.
+  Conditional future scope:
+  - native/driver IOCTL only if that optional surface is ever added.
 
 [PARTIAL/P0] ENT-QA-004  Add concurrency/lifecycle tests.
   - start/stop/restart.

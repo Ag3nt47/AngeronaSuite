@@ -21,6 +21,7 @@ requests>=2.31
 
 # ── Utilities ────────────────────────────────────────────────────────────────
 python-dotenv>=1.0
+PyYAML>=6.0.2                       # bounded local Sigma YAML import
 
 # ── Local voice conversation (installed by the one-click installer) ──────────
 sounddevice>=0.5

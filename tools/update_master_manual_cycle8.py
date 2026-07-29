@@ -251,13 +251,28 @@ def update(source: Path, destination: Path) -> None:
         "120 replayable examples per property for normalized sensor events, "
         "authenticated Inter-Process Communication frames, signed capability "
         "manifests, detection packages, fleet authentication, encrypted-backup "
-        "metadata, and portable restore paths.",
+        "metadata, portable restore paths, signed release envelopes, portable "
+        "archive metadata, and bounded Sigma rule documents.",
         "The property contract requires complete normalization or the documented "
         "fail-closed validation error. Its first pass found and corrected "
         "malformed platform and authentication-header exception leaks, mixed-type "
         "diagnostics, silent list truncation, non-finite values, schema smuggling, "
-        "and Windows alternate-data-stream and device-alias restore paths. "
-        "Document-import and future native driver fuzzing remain open.",
+        "Windows alternate-data-stream/device aliases, permissive signed-release "
+        "metadata, archive collisions and expansion hazards, an unpinned speech "
+        "redirect, and unbounded Sigma aliases and types.",
+        "Update packages, verified offline speech models, and inert drill-marker "
+        "archives share one pre-read validator. It enforces canonical portable "
+        "paths, Unicode normalization, entry/member/expanded-size and compression "
+        "ratio budgets, duplicate and case-collision rejection, supported "
+        "compression, and regular-file-only content. No encrypted or special "
+        "members are accepted.",
+        "Signed update envelopes use exact schemas, bounded typed artifact "
+        "metadata, strict Ed25519 signature encoding, and exact 32-byte trusted "
+        "keys. Speech downloads remain on their approved Hypertext Transfer "
+        "Protocol Secure (HTTPS) origin. Sigma YAML is byte, document, node, and "
+        "depth bounded; aliases, non-plain types, and non-finite values fail "
+        "closed. Current local user-mode document/archive coverage is complete. "
+        "A future native Input/Output Control boundary requires a separate gate.",
         "Shared-memory ring version 2 authenticates scanner-to-core records with "
         "a dedicated protected per-install Hash-based Message Authentication "
         "Code using Secure Hash Algorithm 256 key. Schema, sensor identifier, "
@@ -288,7 +303,7 @@ def update(source: Path, destination: Path) -> None:
         "The first Bandit pass exposed a weak SHA-1 alert identifier and "
         "shell-based console clearing. Both were corrected and the "
         "high-severity re-scan is clean.",
-        "Final repository evidence: 452 tests passed, 2 intentional "
+        "Final repository evidence: 488 tests passed, 2 intentional "
         "platform-dependent skips, 0 failures; Python compilation, Ruff, "
         "dependency audit, and whitespace checks passed.",
     ))

@@ -513,12 +513,22 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   property suite. Every parser must normalize completely or raise its documented
   validation error. It covers sensor envelopes, signed capability manifests,
   detection packages, fleet authentication, authenticated IPC frames,
-  encrypted-backup metadata, and portable restore paths. Keep `database=None`,
+  encrypted-backup metadata, portable restore paths, signed release envelopes,
+  portable ZIP metadata, and bounded Sigma YAML documents. Keep `database=None`,
   `derandomize=True`, bounded examples, no network, and no real endpoint data.
   The first passes closed
   malformed platform/header exception leaks, schema smuggling, silent list
   truncation, non-finite values, and Windows alternate-data-stream/device-alias
-  restore paths. Document-import and future driver IOCTL fuzzing remain open.
+  paths. `core/archive_safety.py` now gives update packages, verified offline
+  speech models, and inert drill-marker readers one canonical pre-read contract:
+  bounded entry/member/expanded sizes and ratios, canonical portable paths,
+  Unicode normalization, duplicate/case-collision rejection, and no encryption,
+  unsupported compression, symlinks, or special files. Update envelopes use
+  exact schemas and strict Ed25519 signature encoding; speech redirects remain
+  on the approved HTTPS origin. Sigma imports reject aliases, non-plain/nonfinite
+  types, and excessive bytes/documents/nodes/depth. Current local user-mode
+  document/archive fuzz coverage is complete; any future native driver IOCTL
+  remains a separate conditional gate.
 - `resilience/ipc_ring.py` v2 is the scanner-to-core trust boundary. Every fixed
   slot carries a full-sequence HMAC-SHA-256 tag under a dedicated protected
   per-install key. Decode must verify exact schema, sensor, 64-bit ring position,
@@ -530,7 +540,7 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   Do not claim process isolation: a fully compromised scanner that can read the
   ring key can forge a valid record. Code integrity, process supervision, and
   future native isolation remain separate controls.
-- Current evidence: 452 passed /
+- Current evidence: 488 passed /
   2 intentional platform skips; compile and Ruff clean; no known
   installed-package vulnerability reported.
 

@@ -14,7 +14,42 @@ Pure/local. YAML loading uses PyYAML if present; rules can also be passed as dic
 """
 from __future__ import annotations
 
+import math
 import re
+
+MAX_RULE_TEXT_BYTES = 4 * 1024 * 1024
+MAX_RULE_DOCUMENTS = 2000
+MAX_RULE_NODES = 100_000
+MAX_RULE_DEPTH = 16
+MAX_RULE_STRING = 4096
+
+
+def _bounded_yaml_value(value, budget: list[int], depth: int = 0) -> bool:
+    if depth > MAX_RULE_DEPTH:
+        return False
+    budget[0] -= 1
+    if budget[0] < 0:
+        return False
+    if value is None or isinstance(value, bool):
+        return True
+    if isinstance(value, int):
+        return -(2**63) <= value <= 2**63 - 1
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, str):
+        return len(value) <= MAX_RULE_STRING
+    if isinstance(value, list):
+        return len(value) <= 4096 and all(
+            _bounded_yaml_value(item, budget, depth + 1) for item in value
+        )
+    if isinstance(value, dict):
+        return len(value) <= 1024 and all(
+            isinstance(key, str)
+            and 0 < len(key) <= 256
+            and _bounded_yaml_value(item, budget, depth + 1)
+            for key, item in value.items()
+        )
+    return False
 
 
 def load_rules(text: str) -> list[dict]:
@@ -24,8 +59,29 @@ def load_rules(text: str) -> list[dict]:
         import yaml  # type: ignore
     except Exception:
         return []
+    if not isinstance(text, str):
+        return []
     try:
-        return [d for d in yaml.safe_load_all(text) if isinstance(d, dict)]
+        if len(text.encode("utf-8")) > MAX_RULE_TEXT_BYTES:
+            return []
+
+        class NoAliasSafeLoader(yaml.SafeLoader):
+            def compose_node(self, parent, index):
+                if self.check_event(yaml.AliasEvent):
+                    raise yaml.YAMLError("YAML aliases are unsupported")
+                return super().compose_node(parent, index)
+
+        rules: list[dict] = []
+        budget = [MAX_RULE_NODES]
+        for document in yaml.load_all(text, Loader=NoAliasSafeLoader):
+            if len(rules) >= MAX_RULE_DOCUMENTS:
+                return []
+            if not isinstance(document, dict):
+                continue
+            if not _bounded_yaml_value(document, budget):
+                return []
+            rules.append(document)
+        return rules
     except Exception:
         return []
 

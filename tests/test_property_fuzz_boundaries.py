@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from hypothesis import HealthCheck, given, settings, strategies as st
 
+from angerona.core.archive_safety import safe_archive_path
 from angerona.core.backup_restore import _parse_header, _parse_manifest, _relative
 from angerona.core.capability_manifest import ManifestError, parse_manifest
 from angerona.core.detection_packages import (
@@ -22,6 +23,8 @@ from angerona.core.detection_packages import (
     validate_package,
 )
 from angerona.core.fleet_service import RequestAuthenticator, sign_request
+from angerona.core.release_assurance import _parse_envelope
+from angerona.core.sigma_engine import load_rules
 from angerona.core.sensor_events import SensorEvent, SensorEventError
 from angerona.resilience.ipc_ring import (
     FrameError,
@@ -151,6 +154,25 @@ def _backup_manifest() -> dict:
             "size_bytes": 0,
         }],
         "total_bytes": 0,
+    }
+
+
+def _release_envelope() -> dict:
+    return {
+        "publisher_id": "property-fuzzer",
+        "manifest": {
+            "product": "Angerona",
+            "version": "2.0.0",
+            "artifacts": [{
+                "path": "app.bin",
+                "sha256": "0" * 64,
+                "size": 0,
+                "platform": "windows-x64",
+                "version": "2.0.0",
+            }],
+            "schema_version": 1,
+        },
+        "signature": "A" * 86,
     }
 
 
@@ -337,6 +359,49 @@ def test_backup_relative_paths_never_escape_or_use_windows_aliases(value):
 def test_backup_paths_reject_traversal_ads_and_device_aliases(unsafe):
     with pytest.raises(ValueError, match="safe relative"):
         _relative(unsafe)
+
+
+@FUZZ
+@given(value=st.text(max_size=700))
+def test_archive_paths_accept_only_portable_relative_names(value):
+    try:
+        path = safe_archive_path(value)
+    except ValueError:
+        return
+    assert not path.is_absolute()
+    assert ".." not in path.parts
+    assert all(":" not in part and not part.endswith((" ", ".")) for part in path.parts)
+
+
+@FUZZ
+@given(
+    field=st.sampled_from(tuple(_release_envelope())),
+    value=JSON_VALUE,
+)
+def test_release_envelope_mutations_parse_or_raise_value_error(field, value):
+    document = copy.deepcopy(_release_envelope())
+    document[field] = value
+    raw = json.dumps(
+        document,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=True,
+    ).encode("utf-8")
+    try:
+        publisher, manifest, signature = _parse_envelope(raw)
+    except ValueError:
+        return
+    assert publisher == document["publisher_id"]
+    assert manifest.version == "2.0.0"
+    assert len(signature) == 64
+
+
+@FUZZ
+@given(value=st.text(max_size=2000))
+def test_sigma_document_import_is_total_and_bounded(value):
+    rules = load_rules(value)
+    assert isinstance(rules, list)
+    assert all(isinstance(rule, dict) for rule in rules)
 
 
 @FUZZ

@@ -2,6 +2,7 @@ import base64
 import json
 import zipfile
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -11,7 +12,7 @@ from angerona.core.release_assurance import (
 )
 
 
-def make_bundle(tmp_path, *, unsafe_name=None):
+def make_bundle(tmp_path, *, unsafe_name=None, mutate_envelope=None):
     root = tmp_path / "payload"
     root.mkdir()
     artifact = root / "app.bin"
@@ -25,6 +26,8 @@ def make_bundle(tmp_path, *, unsafe_name=None):
         "publisher_id": "release", "manifest": json.loads(manifest.canonical()),
         "signature": sig,
     }
+    if mutate_envelope is not None:
+        mutate_envelope(envelope)
     bundle = tmp_path / "update.zip"
     with zipfile.ZipFile(bundle, "w") as archive:
         archive.writestr("release-envelope.json", json.dumps(envelope))
@@ -49,6 +52,28 @@ def test_path_traversal_and_payload_mismatch_fail_closed(tmp_path):
     result = verify_update_bundle(bundle, {"release": public})
     assert not result.valid
     assert any("unsafe archive path" in error for error in result.errors)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda envelope: envelope.update({"execute_after_verify": True}),
+        lambda envelope: envelope.update({"publisher_id": ["release"]}),
+        lambda envelope: envelope.update({"signature": "not-base64"}),
+        lambda envelope: envelope["manifest"].update({"extra": True}),
+        lambda envelope: envelope["manifest"]["artifacts"][0].update(
+            {"size": "7"}
+        ),
+        lambda envelope: envelope["manifest"]["artifacts"][0].update(
+            {"path": "CON"}
+        ),
+    ),
+)
+def test_release_envelope_schema_and_types_fail_closed(tmp_path, mutation):
+    bundle, public = make_bundle(tmp_path, mutate_envelope=mutation)
+    result = verify_update_bundle(bundle, {"release": public})
+    assert not result.valid
+    assert result.errors
 
 
 def test_sbom_and_slsa_are_deterministic_and_digest_tied(tmp_path):

@@ -11,6 +11,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
+from angerona.core.archive_safety import (
+    read_bounded_member,
+    safe_archive_path,
+    validate_zip_members,
+)
+
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
     _CRYPTO_ERROR: Exception | None = None
@@ -22,8 +28,10 @@ MAX_FILES = 10_000
 MAX_FILE_BYTES = 512 * 1024 * 1024
 MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 MAX_RATIO = 200
+MAX_ENVELOPE_BYTES = 1024 * 1024
 SCHEMA_VERSION = 1
 _VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?$")
+_PLATFORM = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
 def _canonical(value: Any) -> bytes:
@@ -51,6 +59,23 @@ class Artifact:
     platform: str
     version: str
 
+    def __post_init__(self) -> None:
+        safe_archive_path(self.path)
+        if not isinstance(self.sha256, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", self.sha256
+        ):
+            raise ValueError("invalid artifact digest")
+        if (
+            isinstance(self.size, bool)
+            or not isinstance(self.size, int)
+            or not 0 <= self.size <= MAX_FILE_BYTES
+        ):
+            raise ValueError("invalid artifact size")
+        if not isinstance(self.platform, str) or not _PLATFORM.fullmatch(self.platform):
+            raise ValueError("invalid artifact platform")
+        if not isinstance(self.version, str) or not _VERSION.fullmatch(self.version):
+            raise ValueError("invalid artifact version")
+
 
 @dataclass(frozen=True)
 class ArtifactManifest:
@@ -61,13 +86,23 @@ class ArtifactManifest:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "artifacts", tuple(self.artifacts))
-        if self.schema_version != SCHEMA_VERSION or not self.product:
+        if (
+            isinstance(self.schema_version, bool)
+            or self.schema_version != SCHEMA_VERSION
+            or not isinstance(self.product, str)
+            or not self.product
+            or len(self.product) > 100
+        ):
             raise ValueError("invalid artifact manifest")
-        if not _VERSION.fullmatch(self.version):
+        if not isinstance(self.version, str) or not _VERSION.fullmatch(self.version):
             raise ValueError("invalid release version")
+        if not all(isinstance(item, Artifact) for item in self.artifacts):
+            raise ValueError("manifest artifacts must be typed")
         paths = [item.path for item in self.artifacts]
-        if len(paths) != len(set(paths)) or len(paths) > MAX_FILES:
+        if len(paths) != len({path.casefold() for path in paths}) or len(paths) > MAX_FILES:
             raise ValueError("artifact paths must be unique and bounded")
+        if any(item.version != self.version for item in self.artifacts):
+            raise ValueError("artifact version does not match manifest")
 
     def canonical(self) -> bytes:
         return _canonical(asdict(self))
@@ -194,6 +229,71 @@ class VerificationResult:
     publisher_id: str
 
 
+def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("JSON object contains duplicate keys")
+        value[key] = item
+    return value
+
+
+def _exact_keys(value: Any, expected: set[str], label: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != expected:
+        raise ValueError(f"{label} has an invalid schema")
+    return value
+
+
+def _decode_signature(value: Any) -> bytes:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{86}", value):
+        raise ValueError("invalid release signature encoding")
+    try:
+        decoded = base64.b64decode(value + "==", altchars=b"-_", validate=True)
+    except Exception as exc:
+        raise ValueError("invalid release signature encoding") from exc
+    if len(decoded) != 64:
+        raise ValueError("invalid release signature length")
+    return decoded
+
+
+def _parse_envelope(raw: bytes) -> tuple[str, ArtifactManifest, bytes]:
+    try:
+        envelope = json.loads(raw, object_pairs_hook=_strict_object)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("release envelope is not valid UTF-8 JSON") from exc
+    envelope = _exact_keys(
+        envelope,
+        {"publisher_id", "manifest", "signature"},
+        "release envelope",
+    )
+    publisher_id = envelope["publisher_id"]
+    if (
+        not isinstance(publisher_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", publisher_id)
+    ):
+        raise ValueError("invalid publisher identity")
+    raw_manifest = _exact_keys(
+        envelope["manifest"],
+        {"product", "version", "artifacts", "schema_version"},
+        "artifact manifest",
+    )
+    raw_artifacts = raw_manifest["artifacts"]
+    if not isinstance(raw_artifacts, list) or len(raw_artifacts) > MAX_FILES:
+        raise ValueError("manifest artifacts must be a bounded list")
+    artifacts: list[Artifact] = []
+    artifact_keys = {"path", "sha256", "size", "platform", "version"}
+    for raw_artifact in raw_artifacts:
+        item = _exact_keys(raw_artifact, artifact_keys, "artifact")
+        artifacts.append(Artifact(**item))
+    manifest = ArtifactManifest(
+        raw_manifest["product"],
+        raw_manifest["version"],
+        tuple(artifacts),
+        raw_manifest["schema_version"],
+    )
+    return publisher_id, manifest, _decode_signature(envelope["signature"])
+
+
 def verify_update_bundle(
     bundle_path: Path, trust_store: Mapping[str, bytes],
     preflight: Preflight | None = None,
@@ -205,38 +305,28 @@ def verify_update_bundle(
     publisher_id = ""
     try:
         with zipfile.ZipFile(bundle_path) as archive:
-            infos = archive.infolist()
+            infos = validate_zip_members(
+                archive.infolist(),
+                max_files=MAX_FILES + 1,
+                max_member_bytes=MAX_FILE_BYTES,
+                max_total_bytes=MAX_TOTAL_BYTES,
+                max_ratio=MAX_RATIO,
+            )
             names = [item.filename for item in infos]
-            if len(names) > MAX_FILES or len(names) != len(set(names)):
-                raise ValueError("archive has too many or duplicate entries")
-            total = 0
-            for item in infos:
-                path = PurePosixPath(item.filename)
-                if path.is_absolute() or ".." in path.parts or "\\" in item.filename:
-                    raise ValueError("unsafe archive path")
-                if item.file_size > MAX_FILE_BYTES:
-                    raise ValueError("archive member exceeds size bound")
-                total += item.file_size
-                if total > MAX_TOTAL_BYTES:
-                    raise ValueError("archive exceeds total size bound")
-                if item.file_size and item.compress_size == 0:
-                    raise ValueError("invalid compressed size")
-                if item.compress_size and item.file_size / item.compress_size > MAX_RATIO:
-                    raise ValueError("archive compression ratio exceeds bound")
-            envelope = json.loads(archive.read("release-envelope.json"))
-            publisher_id = str(envelope["publisher_id"])
-            raw_manifest = envelope["manifest"]
-            manifest = ArtifactManifest(
-                raw_manifest["product"], raw_manifest["version"],
-                tuple(Artifact(**item) for item in raw_manifest["artifacts"]),
-                raw_manifest.get("schema_version", 1),
+            try:
+                envelope_info = infos[names.index("release-envelope.json")]
+            except ValueError as exc:
+                raise ValueError("release envelope is missing") from exc
+            publisher_id, manifest, signature = _parse_envelope(
+                read_bounded_member(
+                    archive,
+                    envelope_info,
+                    max_bytes=MAX_ENVELOPE_BYTES,
+                )
             )
             public = trust_store.get(publisher_id)
-            if public is None:
+            if not isinstance(public, bytes) or len(public) != 32:
                 raise ValueError("publisher is not trusted")
-            signature = base64.urlsafe_b64decode(
-                envelope["signature"] + "=" * (-len(envelope["signature"]) % 4)
-            )
             Ed25519PublicKey.from_public_bytes(public).verify(
                 signature, manifest.canonical()
             )

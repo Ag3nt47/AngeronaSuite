@@ -36,6 +36,7 @@ import time
 import zipfile
 from pathlib import Path
 
+from angerona.core.archive_safety import read_bounded_member, validate_zip_members
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.process_allowlist import (
     is_event_allowed as _process_event_allowed,
@@ -144,10 +145,20 @@ class ActiveResponseSOAR(BaseModule):
         try:
             if path.suffix.casefold() == ".zip":
                 with zipfile.ZipFile(path) as archive:
-                    for member in archive.infolist()[:20]:
-                        if member.file_size > 262_144:
-                            continue
-                        if b"Angerona Shark Attack drill sample" in archive.read(member):
+                    members = validate_zip_members(
+                        archive.infolist(),
+                        max_files=20,
+                        max_member_bytes=262_144,
+                        max_total_bytes=5 * 1024 * 1024,
+                        max_ratio=100,
+                    )
+                    for member in members:
+                        sample = read_bounded_member(
+                            archive,
+                            member,
+                            max_bytes=262_144,
+                        )
+                        if b"Angerona Shark Attack drill sample" in sample:
                             return True
                 return False
             if path.stat().st_size > 262_144:
