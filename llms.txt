@@ -364,6 +364,33 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
 - **GUI (`gui/pages.py`, `core/analysis_worker.py`)** — Alerts panel gains a 7th **Analyze** column: `AnalysisWorker` (QThread) runs dual-stage deep triage (local llama3:8b → cloud CTI if confidence <70 or UNKNOWN) off the GUI thread; button disables to "Analyzing…" so the GPU queue can't be spammed. `MarqueeLabel` slowly scrolls long alert text in the detail dialog. Remote alerts show a `⇠node_origin` tag.
 - **Fix — Settings button:** `MainWindow.apply_theme()` now takes an optional `theme` arg; `SettingsDialog._save` passed one, so any theme-change Save previously raised `TypeError` and the dialog never closed/applied. Settings now work.
 
+## CYCLE 8 — LOCAL FLEET PREVIEW, RESPONSE SAFETY, AND OPERATOR GUIDANCE
+
+- Settings has one canonical owner per capability. Overview and Information
+  tabs provide search, definitions, procedures, verification, privacy boundaries,
+  and Take me there navigation. Advanced Console is diagnostic-only where
+  Settings owns configuration.
+- Explicit X/Close/Cancel actions must call `close()` so PanelRevealOverlay can
+  perform the reverse animation. Do not bypass QEvent.Close with accept/reject
+  for animated dialogs.
+- `core/fleet_control_plane.py` and `core/fleet_service.py` implement an opt-in,
+  loopback-only fleet preview. Requests cover the complete path and query,
+  payload digest, timestamp, and nonce. Replay, staleness, tampering,
+  cross-tenant access, identity-key conflict, quarantine, and revocation fail
+  closed. This is not production mTLS or an internet-facing service.
+- `core/response_broker.py` is the typed enterprise response boundary. Never
+  add a generic command/shell operation. Live operations need independent
+  approval; high/critical operations require two distinct non-requester
+  approvers. Preview validates but never invokes a handler.
+- Normal launch never rewrites the elevated autostart task. Only an explicit
+  Settings state change may mutate startup registration.
+- Development gates are pinned in `pyproject.toml`: Ruff 0.16.0,
+  pytest-xdist 3.8.0, and pip-audit 2.10.1. Ruff uses correctness-critical rules
+  first. Keep the complete suite serial because Windows ACL tests are not
+  process-parallel-safe; xdist is for isolated test groups. Current evidence:
+  353 passed / 2 intentional platform skips; compile and Ruff clean; no known
+  installed-package vulnerability reported.
+
 ## NEVER DO
 - **Cycle 7 enterprise foundations (newest, 2026-07-29)** — The authoritative
   flight recorder and normalized evidence path use bounded asynchronous workers,

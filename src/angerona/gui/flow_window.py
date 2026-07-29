@@ -231,7 +231,7 @@ class FlowWindow(QDialog):
         fit = QPushButton("Fit")
         fit.clicked.connect(lambda: self.view.fitInView(self.scene.itemsBoundingRect(), Qt.KeepAspectRatio))
         close = QPushButton("Close")
-        close.clicked.connect(self.accept)
+        close.clicked.connect(self.close)
         row.addWidget(tele_toggle); row.addWidget(fit); row.addWidget(close)
         root.addLayout(row)
 

@@ -185,7 +185,7 @@ class FuturisticDetailDialog(QDialog):
         self.footer_status = QLabel("Bounded local detail view · no automatic action")
         self.footer_status.setStyleSheet("color:#64748b; font-size:10px;")
         close = QPushButton("Close")
-        close.clicked.connect(self.accept)
+        close.clicked.connect(self.close)
         footer.addWidget(self.footer_status)
         footer.addStretch(1)
         footer.addWidget(close)

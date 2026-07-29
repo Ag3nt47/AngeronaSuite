@@ -819,4 +819,42 @@ email scanning, channel push, research) — each has a one-click test button.
   qualification, and Apple entitlement/notarization remain external or
   release-level work. They are not presented as shipped capabilities.
 
-<!-- ANGERONA_DOC_STATUS tests=334 skips=2 modules=65 -->
+### Current development — local fleet preview, response safety, and faster quality gates
+
+- **Canonical Settings and Information.** Settings now owns each configurable
+  capability exactly once. A searchable Information tab explains purpose,
+  step-by-step use, verification, privacy boundaries, and provides **Take me
+  there** navigation. Mobile configuration moved out of the diagnostics console
+  and into its single Settings owner.
+- **Consistent motion and accessibility.** Explicit Close, Cancel, and window
+  **X** actions now use the same reduced-motion-aware reverse reveal as the
+  opening transition. No second window is spawned for the animation.
+- **Authenticated local fleet preview.** An opt-in service binds only to
+  `127.0.0.1`, uses a protected per-install secret, HMAC-authenticated requests,
+  freshness checks, durable nonce replay rejection, bounded payloads,
+  tenant-scoped SQLite queries, event deduplication, quarantine/revocation
+  enforcement, and authenticated ingestion receipts. It is disabled by default
+  and is not presented as an internet-facing or mutual Transport Layer Security
+  (mTLS) enterprise server.
+- **Typed enterprise response boundary.** Registered response operations have
+  explicit validators, targets, risk, expiry, rollback, idempotency, and signed
+  receipts. There is no generic shell. Preview never executes; live medium/low
+  risk needs an independent approval and high/critical response needs two
+  distinct non-requester approvals.
+- **Fewer Defender prompts.** Normal startup no longer rewrites the
+  highest-privilege scheduled task. Startup registration changes only when the
+  operator explicitly changes that setting.
+- **Faster engineering loop.** Pinned Ruff, pytest-xdist, and pip-audit tooling
+  adds a fast undefined-name gate, optional parallel execution for isolated
+  test groups, and dependency vulnerability review. The full suite stays
+  serial by default because Windows security/Access Control List (ACL) tests
+  intentionally mutate file permissions and are not process-parallel-safe.
+  Ruff immediately found and closed a latent ARP Watchdog type-name defect.
+- **Final Cycle 8 verification.** The authoritative serial repository suite
+  passes **353 tests with 2 intentional platform skips** and 0 failures.
+  Python compilation and
+  Ruff pass. pip-audit reports no known vulnerabilities in the installed
+  dependencies. The public-repository scan found no committed real credential,
+  private key, user-profile path, database, runtime-data, or cache artifact.
+
+<!-- ANGERONA_DOC_STATUS tests=353 skips=2 modules=65 -->

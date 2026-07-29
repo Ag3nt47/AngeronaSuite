@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QPlainTextEdit,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -102,6 +103,36 @@ def test_panel_reveal_animates_the_real_destination_window() -> None:
     assert not target.isVisible()
     assert overlay._target is None
     assert overlay._mode == "idle"
+    parent.close()
+
+
+def test_close_button_uses_the_same_reverse_reveal_path() -> None:
+    app = _app()
+    parent = QWidget()
+    parent.resize(640, 400)
+    parent.show()
+    source = QWidget(parent)
+    source.resize(50, 24)
+    overlay = PanelRevealOverlay(parent)
+    target = QDialog(parent)
+    target.resize(320, 200)
+    layout = QVBoxLayout(target)
+    close = QPushButton("Close")
+    close.clicked.connect(target.close)
+    layout.addWidget(close)
+    assert overlay.reveal(source, target.show)
+    app.processEvents()
+    overlay._animation.setCurrentTime(overlay._animation.duration())
+    app.processEvents()
+
+    QTest.mouseClick(close, Qt.LeftButton)
+    app.processEvents()
+    assert target.isVisible()
+    assert overlay._target is target
+    assert overlay._mode == "closing"
+    overlay._animation.setCurrentTime(overlay._animation.duration())
+    app.processEvents()
+    assert not target.isVisible()
     parent.close()
 
 

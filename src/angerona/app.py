@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QApplication
 
-from angerona.core import autostart
 from angerona.core.config import Config
 from angerona.core.eventbus import EventBus
 from angerona.core.storage import AsyncFlightRecorder, FlightRecorder
@@ -23,14 +22,9 @@ class AngeronaApp:
     def __init__(self, qt: QApplication) -> None:
         self.qt = qt
         self.config = Config.load()
-        # Keep the Windows logon scheduled task in sync with the user's
-        # actual setting on every launch — cheap (schtasks /create /f is
-        # idempotent) and self-healing if the task was ever removed
-        # outside the app. Never allowed to block/break startup.
-        try:
-            autostart.sync(self.config.autostart_enabled)
-        except Exception:
-            pass
+        # Do not rewrite the highest-privilege Scheduled Task during ordinary
+        # startup. That caused repeated Defender/UAC access prompts. Settings
+        # changes registration only after an explicit operator toggle.
         self.storage = FlightRecorder(self.config.db_path)
         self.bus = EventBus()
         self.bus.arm(self.storage.authority)
@@ -92,6 +86,8 @@ class AngeronaApp:
             telemetry_coverage=self.telemetry_coverage,
         )
         self._resilience = None
+        self._fleet_plane = None
+        self._fleet_service = None
 
         # MCP server — opt-in loopback tool server for Claude Desktop / Claude Code.
         # Exposes six read-only security-data tools; nothing leaves the machine.
@@ -303,6 +299,60 @@ class AngeronaApp:
                 self._mcp.start()
             except Exception:
                 self._mcp = None   # port bind failure → silently disable
+        self._start_fleet_service()
+
+    def _start_fleet_service(self) -> bool:
+        """Start the opt-in, authenticated, loopback-only fleet endpoint."""
+        if not getattr(self.config, "fleet_service_enabled", False):
+            return False
+        try:
+            import hashlib
+            import hmac
+            import os
+
+            secret = os.environ.get("ANGERONA_FLEET_SERVICE_KEY", "")
+            if len(secret) < 32:
+                raise ValueError("protected fleet service key is unavailable")
+            service_key = hashlib.sha256(
+                b"angerona-fleet-service-v1\0" + secret.encode("utf-8")
+            ).digest()
+            tenant_key = hmac.new(
+                service_key,
+                b"angerona-fleet-tenant-v1\0"
+                + self.config.fleet_tenant_id.encode("utf-8"),
+                hashlib.sha256,
+            ).digest()
+            from angerona.core.fleet_control_plane import FleetControlPlane
+            from angerona.core.fleet_service import FleetLoopbackService
+
+            self._fleet_plane = FleetControlPlane(
+                self.config.data_dir / "fleet-control.db",
+                {self.config.fleet_tenant_id: tenant_key},
+            )
+            self._fleet_service = FleetLoopbackService(
+                self._fleet_plane,
+                service_key,
+                self.config.data_dir / "fleet-replay.json",
+                port=self.config.fleet_service_port,
+            )
+            self._fleet_service.start()
+            return True
+        except Exception as exc:
+            service, plane = self._fleet_service, self._fleet_plane
+            self._fleet_service = None
+            self._fleet_plane = None
+            try:
+                if service is not None:
+                    service.stop()
+            except Exception:
+                pass
+            try:
+                if plane is not None:
+                    plane.close()
+            except Exception:
+                pass
+            self._blackbox_note(f"local fleet service unavailable: {exc}")
+            return False
 
     def shutdown(self) -> None:
         # Clean shutdown: tell the ecosystem to STAND DOWN so the watchdog does
@@ -321,6 +371,18 @@ class AngeronaApp:
                 self._mcp.stop()
             except Exception:
                 pass
+        if self._fleet_service is not None:
+            try:
+                self._fleet_service.stop()
+            except Exception:
+                pass
+            self._fleet_service = None
+        if self._fleet_plane is not None:
+            try:
+                self._fleet_plane.close()
+            except Exception:
+                pass
+            self._fleet_plane = None
         self.manager.stop_all()
         recorder_drained = False
         try:

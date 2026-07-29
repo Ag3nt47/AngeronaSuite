@@ -146,7 +146,7 @@ class HistoryDialog(QDialog):
             view.setPlainText("No edits recorded for this module yet.")
         lay.addWidget(view)
         close = QPushButton("Close")
-        close.clicked.connect(self.accept)
+        close.clicked.connect(self.close)
         lay.addWidget(close)
 
 

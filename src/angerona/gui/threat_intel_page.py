@@ -355,7 +355,7 @@ class ThreatIntelDashboard(QDialog):
         else:
             txt.setPlainText("No ignore/revert history for this CVE yet.")
         v.addWidget(txt)
-        b = QPushButton("Close"); b.clicked.connect(dlg.accept); v.addWidget(b)
+        b = QPushButton("Close"); b.clicked.connect(dlg.close); v.addWidget(b)
         dlg.exec()
 
     # ── AI fix analysis (single + batch) ─────────────────────────────────
@@ -633,7 +633,7 @@ class ThreatIntelDashboard(QDialog):
                 "note": result.get("note", ""), "when": _time.strftime("%Y-%m-%d %H:%M:%S")})
             QMessageBox.information(self, "Staged", f"{cve} staged for operator review.")
             dlg.accept()
-        b_confirm.clicked.connect(_confirm); b_close.clicked.connect(dlg.reject)
+        b_confirm.clicked.connect(_confirm); b_close.clicked.connect(dlg.close)
         dlg.exec()
 
     def _show_staged(self) -> None:
@@ -655,7 +655,7 @@ class ThreatIntelDashboard(QDialog):
                 lines.append("")
             txt.setPlainText("\n".join(lines))
         lay.addWidget(txt)
-        b = QPushButton("Close"); b.clicked.connect(dlg.accept); lay.addWidget(b)
+        b = QPushButton("Close"); b.clicked.connect(dlg.close); lay.addWidget(b)
         dlg.exec()
 
     def _open_consult_ai(self) -> None:

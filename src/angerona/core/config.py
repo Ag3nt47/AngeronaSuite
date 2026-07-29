@@ -69,6 +69,11 @@ class Config:
     # ── MCP server (local loopback — opt-in, default off) ──────────────────
     mcp_enabled: bool = False                   # start engines/mcp_server.py at boot
     mcp_port:    int  = 47923                   # loopback port for the MCP SSE endpoint
+    # Local self-hosted fleet service. Loopback-only until an external mTLS
+    # termination and deployment threat model are separately approved.
+    fleet_service_enabled: bool = False
+    fleet_service_port: int = 47930
+    fleet_tenant_id: str = "local"
 
     # ── ARIA assistant layer (v1.8.0) — local, gated, defensive-only ───────
     aria_enabled: bool = True                   # show the ARIA HUD tab + local assistant
@@ -166,6 +171,17 @@ class Config:
                 cfg.mcp_enabled = _bool_setting(
                     data, "mcp_enabled", cfg.mcp_enabled)
                 cfg.mcp_port    = int(data.get("mcp_port", cfg.mcp_port))
+                cfg.fleet_service_enabled = _bool_setting(
+                    data, "fleet_service_enabled", cfg.fleet_service_enabled)
+                try:
+                    cfg.fleet_service_port = int(
+                        data.get("fleet_service_port", cfg.fleet_service_port)
+                    )
+                except (TypeError, ValueError):
+                    pass
+                cfg.fleet_tenant_id = str(
+                    data.get("fleet_tenant_id", cfg.fleet_tenant_id)
+                )
                 cfg.aria_enabled = _bool_setting(
                     data, "aria_enabled", cfg.aria_enabled)
                 cfg.perf_governor_enabled = _bool_setting(
@@ -287,6 +303,9 @@ class Config:
                     "ai_provider_order":  self.ai_provider_order,
                     "mcp_enabled":       self.mcp_enabled,
                     "mcp_port":          self.mcp_port,
+                    "fleet_service_enabled": self.fleet_service_enabled,
+                    "fleet_service_port": self.fleet_service_port,
+                    "fleet_tenant_id": self.fleet_tenant_id,
                     "aria_enabled":          self.aria_enabled,
                     "perf_governor_enabled": self.perf_governor_enabled,
                     "aria_voice_enabled":    self.aria_voice_enabled,

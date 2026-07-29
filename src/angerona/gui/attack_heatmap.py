@@ -558,7 +558,7 @@ class AttackHeatmapWindow(QDialog):
             v = QVBoxLayout(self._posture_dlg)
             self._posture_body = QTextBrowser()
             v.addWidget(self._posture_body)
-            b = QPushButton("Close"); b.clicked.connect(self._posture_dlg.accept)
+            b = QPushButton("Close"); b.clicked.connect(self._posture_dlg.close)
             v.addWidget(b)
         self._posture_body.setPlainText(text)
         self._posture_dlg.show(); self._posture_dlg.raise_(); self._posture_dlg.activateWindow()

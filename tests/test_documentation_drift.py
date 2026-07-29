@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from tools.validate_documentation_drift import validate
@@ -18,9 +19,10 @@ def test_checker_detects_marker_and_module_drift(tmp_path):
         "class One(BaseModule):\n    pass\n", encoding="utf-8"
     )
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    readme = readme.replace(
-        "tests=334 skips=2 modules=65",
+    readme = re.sub(
+        r"tests=\d+ skips=\d+ modules=\d+",
         "tests=999 skips=2 modules=999",
+        readme,
     )
     (tmp_path / "README.md").write_text(readme, encoding="utf-8")
 

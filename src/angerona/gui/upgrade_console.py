@@ -100,7 +100,6 @@ class AngeronaUpgradeConsole(QMainWindow):
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
-        self._init_mobile_tab()
         self._init_ai_sandbox_tab()
         self._init_watchdog_tab()
         self._init_telemetry_tab()
@@ -434,7 +433,7 @@ class AngeronaUpgradeConsole(QMainWindow):
                     pass
             b_ps.clicked.connect(_open_ps)
             row.addWidget(b_ps)
-        b_close = QPushButton("Close"); b_close.clicked.connect(dlg.accept)
+        b_close = QPushButton("Close"); b_close.clicked.connect(dlg.close)
         row.addWidget(b_close)
         lay.addLayout(row)
         dlg.exec()

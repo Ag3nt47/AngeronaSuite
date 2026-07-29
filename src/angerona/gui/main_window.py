@@ -2299,7 +2299,7 @@ class MainWindow(QMainWindow):
             tour_btn = QPushButton("▶  Take the interactive tour")
             tour_btn.clicked.connect(lambda: (dlg.accept(), self._start_tour()))
             close = QPushButton("Close")
-            close.clicked.connect(dlg.accept)
+            close.clicked.connect(dlg.close)
             brow.addWidget(tour_btn)
             brow.addStretch()
             brow.addWidget(close)
@@ -2407,7 +2407,7 @@ class MainWindow(QMainWindow):
             lay.addWidget(box)
 
         lay.addStretch()
-        close = QPushButton("Close"); close.clicked.connect(dlg.accept)
+        close = QPushButton("Close"); close.clicked.connect(dlg.close)
         lay.addWidget(close)
         dlg.exec()
 

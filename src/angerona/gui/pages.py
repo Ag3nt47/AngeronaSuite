@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import subprocess
 import threading
 import time
@@ -549,7 +550,7 @@ class EventsWindow(QDialog):
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self._refresh)
         close = QPushButton("Close")
-        close.clicked.connect(self.accept)
+        close.clicked.connect(self.close)
         row.addStretch(1)
         row.addWidget(refresh)
         row.addWidget(close)
@@ -632,7 +633,7 @@ class ModulesStatusWindow(QDialog):
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self._refresh)
         close = QPushButton("Close")
-        close.clicked.connect(self.accept)
+        close.clicked.connect(self.close)
         row.addStretch(1)
         row.addWidget(refresh)
         row.addWidget(close)
@@ -995,7 +996,7 @@ class BlastRadiusDialog(QDialog):
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self._refresh)
         close = QPushButton("Close")
-        close.clicked.connect(self.accept)
+        close.clicked.connect(self.close)
         row.addStretch(1)
         row.addWidget(refresh)
         row.addWidget(close)
@@ -1092,7 +1093,7 @@ class CollisionView(QDialog):
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self._refresh)
         close = QPushButton("Close")
-        close.clicked.connect(self.accept)
+        close.clicked.connect(self.close)
         row.addStretch(1)
         row.addWidget(refresh)
         row.addWidget(close)
@@ -1195,7 +1196,7 @@ class CollisionView(QDialog):
         b_copy = QPushButton("Copy details")
         b_copy.clicked.connect(lambda: QApplication.clipboard().setText(det.toPlainText()))
         rowb.addWidget(b_copy)
-        b_close = QPushButton("Close"); b_close.clicked.connect(dlg.accept)
+        b_close = QPushButton("Close"); b_close.clicked.connect(dlg.close)
         rowb.addWidget(b_close)
         lay.addLayout(rowb)
         dlg.exec()
@@ -1829,7 +1830,7 @@ class ModuleInspector(QDialog):
         body = QPlainTextEdit(); body.setReadOnly(True); body.setPlainText(HELP_TEXT_FULL)
         body.setFont(QFont("Consolas", 10)); l.addWidget(body)
         close = QPushButton("Close"); close.setObjectName("Primary")
-        close.clicked.connect(dlg.accept); l.addWidget(close)
+        close.clicked.connect(dlg.close); l.addWidget(close)
         dlg.exec()
 
     def _enabled(self) -> bool:
@@ -2040,7 +2041,7 @@ class AlertDetailDialog(QDialog):
             acts.addWidget(b)
         acts.addStretch()
         close = QPushButton("Close"); close.setObjectName("Primary")
-        close.clicked.connect(self.accept)
+        close.clicked.connect(self.close)
         acts.addWidget(close)
         lay.addLayout(acts)
         lay.addWidget(self._action_status)
@@ -3630,6 +3631,8 @@ class SettingsDialog(QDialog):
             sa.setWidget(inner)
             return sa
 
+        tabs.addTab(_scroll(self._tab_overview()), "Overview")
+        tabs.addTab(_scroll(self._tab_information()), "Information")
         tabs.addTab(_scroll(self._tab_general()), "General")
         tabs.addTab(_scroll(self._tab_system()),  "System")
         tabs.addTab(_scroll(self._tab_enterprise()), "Enterprise")
@@ -3644,7 +3647,7 @@ class SettingsDialog(QDialog):
             "'Mobile Integration' tab — configure the transport (Signal / ntfy / "
             "Pushover / SMS), save the settings, and send a live test alert there.")
         _lbl.setWordWrap(True); _mv.addWidget(_lbl); _mv.addStretch()
-        tabs.addTab(_scroll(_mob), "Mobile Integration")
+        tabs.addTab(_scroll(self._tab_mobile()), "Mobile Integration")
         tabs.addTab(_scroll(self._tab_apikeys()), "API Keys")
         self._settings_search.textChanged.connect(self._find_setting)
 
@@ -3666,7 +3669,7 @@ class SettingsDialog(QDialog):
         root.addLayout(btn_row)
 
         self._btn_save.clicked.connect(self._save)
-        self._btn_cancel.clicked.connect(self.reject)
+        self._btn_cancel.clicked.connect(self.close)
         # Route background ARIA-test results back to the status label on the GUI thread.
         try:
             self.aria_test_result.connect(self._aria_test_status.setText)
@@ -3682,28 +3685,18 @@ class SettingsDialog(QDialog):
 
     def _find_setting(self, query: str) -> None:
         """Jump to the most relevant settings area without hiding any controls."""
-        text = (query or "").strip().casefold()
-        if not text:
-            return
-        routes = (
-            (("mic", "microphone", "voice", "speech", "cloud", "mail", "teams",
-              "research", "webhook", "aria"), "ARIA"),
-            (("trusted", "allow", "process", "vpn", "false positive"), "Trusted Processes"),
-            (("performance", "eco", "startup", "mcp", "black box", "ebpf"), "System"),
-            (("enterprise", "readiness", "manifest", "signature", "receipt",
-              "fleet", "rbac", "causal"), "Enterprise"),
-            (("key", "api", "credential", "secret", "provider"), "API Keys"),
-            (("theme", "ollama", "model", "github", "update", "animation",
-              "motion", "appearance", "orb", "holographic", "minimize",
-              "token"), "General"),
-            (("mobile", "signal", "phone", "ntfy", "sms"), "Mobile Integration"),
-        )
-        for words, tab_name in routes:
-            if any(word in text for word in words):
-                for i in range(self.tabs.count()):
-                    if self.tabs.tabText(i) == tab_name:
-                        self.tabs.setCurrentIndex(i)
-                        return
+        from angerona.core.settings_catalog import resolve_area
+
+        area = resolve_area(query)
+        if area is not None:
+            self._select_tab(area.title)
+
+    def _select_tab(self, title: str) -> bool:
+        for index in range(self.tabs.count()):
+            if self.tabs.tabText(index) == title:
+                self.tabs.setCurrentIndex(index)
+                return True
+        return False
 
     def _restore_privacy_defaults(self) -> None:
         """Stage safe local-only defaults; Save applies them."""
@@ -3714,14 +3707,151 @@ class SettingsDialog(QDialog):
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.setChecked(False)
-        for index in range(self.tabs.count()):
-            if self.tabs.tabText(index) == "ARIA":
-                self.tabs.setCurrentIndex(index)
-                break
+        self._select_tab("ARIA")
         self._aria_test_status.setText(
             "Privacy defaults staged: optional cloud and remote egress are off. Click Save.")
 
     # ── Tab builders ──────────────────────────────────────────────────────────
+
+    def _tab_overview(self) -> QWidget:
+        """One map of every canonical configuration owner."""
+        from angerona.core.settings_catalog import AREAS
+
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setSpacing(10)
+        lay.addWidget(self._section("Configuration map"))
+        intro = QLabel(
+            "Each capability is configured in exactly one place. Double-click "
+            "an area to open it. Operational dashboards remain in the Advanced "
+            "Console and do not duplicate saved settings."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#94a3b8; font-size:11px;")
+        lay.addWidget(intro)
+        self._settings_map = QTableWidget(len(AREAS), 4)
+        self._settings_map.setHorizontalHeaderLabels(
+            ["Area", "Purpose", "Privacy", "Apply"]
+        )
+        self._settings_map.verticalHeader().setVisible(False)
+        self._settings_map.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._settings_map.setSelectionBehavior(QTableWidget.SelectRows)
+        self._settings_map.setAlternatingRowColors(True)
+        for row, area in enumerate(AREAS):
+            for column, value in enumerate((
+                area.title,
+                area.purpose,
+                area.privacy,
+                "Restart" if area.restart else "Live",
+            )):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.UserRole, area.title)
+                self._settings_map.setItem(row, column, item)
+        header = self._settings_map.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self._settings_map.cellDoubleClicked.connect(
+            lambda row, _column: self._select_tab(
+                self._settings_map.item(row, 0).data(Qt.UserRole)
+            )
+        )
+        lay.addWidget(self._settings_map, 1)
+        return w
+
+    def _tab_information(self) -> QWidget:
+        """Searchable capability definitions, procedures and direct navigation."""
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setSpacing(10)
+        lay.addWidget(self._section("Capability guide"))
+        intro = QLabel(
+            "Search by task or feature. Every entry explains what it does, how "
+            "to configure it, how to verify it, its privacy boundary, and the "
+            "single canonical place that owns it."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#94a3b8; font-size:11px;")
+        lay.addWidget(intro)
+        self._info_search = QLineEdit()
+        self._info_search.setClearButtonEnabled(True)
+        self._info_search.setPlaceholderText(
+            "Search capabilities - try VPN, custody, microphone, fleet, performance..."
+        )
+        lay.addWidget(self._info_search)
+        body = QHBoxLayout()
+        self._info_list = QListWidget()
+        self._info_list.setMinimumWidth(220)
+        self._info_detail = QPlainTextEdit()
+        self._info_detail.setReadOnly(True)
+        self._info_detail.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        body.addWidget(self._info_list, 1)
+        body.addWidget(self._info_detail, 3)
+        lay.addLayout(body, 1)
+        nav = QHBoxLayout()
+        nav.addStretch()
+        self._info_take_me = QPushButton("Take me there")
+        self._info_take_me.setObjectName("Primary")
+        self._info_take_me.clicked.connect(self._info_navigate)
+        nav.addWidget(self._info_take_me)
+        lay.addLayout(nav)
+        self._info_search.textChanged.connect(self._refresh_information)
+        self._info_list.currentRowChanged.connect(self._show_information)
+        self._refresh_information("")
+        return w
+
+    def _refresh_information(self, query: str) -> None:
+        from angerona.core.capability_guide import search_guides
+
+        self._visible_guides = search_guides(query)
+        self._info_list.clear()
+        for guide in self._visible_guides:
+            item = QListWidgetItem(f"{guide.name}\n{guide.category}")
+            item.setData(Qt.UserRole, guide.key)
+            self._info_list.addItem(item)
+        self._info_list.setCurrentRow(0 if self._visible_guides else -1)
+        if not self._visible_guides:
+            self._info_detail.setPlainText(
+                "No capability matched. Try a broader task or feature name."
+            )
+            self._info_take_me.setEnabled(False)
+
+    def _show_information(self, row: int) -> None:
+        if row < 0 or row >= len(getattr(self, "_visible_guides", ())):
+            self._info_take_me.setEnabled(False)
+            return
+        guide = self._visible_guides[row]
+        steps = "\n".join(
+            f"{index}. {step}" for index, step in enumerate(guide.steps, 1)
+        )
+        self._info_detail.setPlainText(
+            f"{guide.name}\n"
+            f"{'=' * len(guide.name)}\n\n"
+            f"WHAT IT DOES\n{guide.definition}\n\n"
+            f"HOW TO USE IT\n{steps}\n\n"
+            f"VERIFY\n{guide.verify}\n\n"
+            f"PRIVACY AND SAFETY\n{guide.privacy}\n\n"
+            f"CANONICAL DESTINATION\n"
+            f"{guide.destination if guide.destination_kind == 'settings' else 'Main window'}"
+        )
+        self._info_take_me.setEnabled(True)
+
+    def _info_navigate(self) -> None:
+        row = self._info_list.currentRow()
+        if row < 0 or row >= len(getattr(self, "_visible_guides", ())):
+            return
+        guide = self._visible_guides[row]
+        if guide.destination_kind == "settings":
+            self._select_tab(guide.destination)
+            return
+        owner = self.parent()
+        callback = getattr(owner, guide.destination, None)
+        if callable(callback):
+            # Let this dialog finish its reverse-close animation before the next
+            # real destination performs its own reveal.
+            self.close()
+            QTimer.singleShot(420, callback)
 
     def _tab_general(self) -> QWidget:
         w   = QWidget()
@@ -3949,6 +4079,38 @@ class SettingsDialog(QDialog):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setSpacing(10)
+
+        lay.addWidget(self._section("Local fleet control plane"))
+        self._fleet_service_chk = QCheckBox(
+            "Enable authenticated local fleet service"
+        )
+        self._fleet_service_chk.setChecked(
+            bool(getattr(self._cfg, "fleet_service_enabled", False))
+        )
+        lay.addWidget(self._fleet_service_chk)
+        fleet_grid = QGridLayout()
+        fleet_grid.addWidget(QLabel("Tenant ID:"), 0, 0)
+        self._fleet_tenant = QLineEdit(
+            str(getattr(self._cfg, "fleet_tenant_id", "local"))
+        )
+        self._fleet_tenant.setPlaceholderText("local")
+        fleet_grid.addWidget(self._fleet_tenant, 0, 1)
+        fleet_grid.addWidget(QLabel("Loopback port:"), 1, 0)
+        self._fleet_port = QLineEdit(
+            str(getattr(self._cfg, "fleet_service_port", 47930))
+        )
+        self._fleet_port.setFixedWidth(90)
+        fleet_grid.addWidget(self._fleet_port, 1, 1)
+        fleet_grid.setColumnStretch(2, 1)
+        lay.addLayout(fleet_grid)
+        fleet_note = QLabel(
+            "Binds only to 127.0.0.1 and requires signed, fresh, replay-protected "
+            "requests. Enabling it creates a protected random service key. "
+            "Remote fleet access remains disabled until mutual TLS is deployed."
+        )
+        fleet_note.setWordWrap(True)
+        fleet_note.setStyleSheet("color:#94a3b8; font-size:11px;")
+        lay.addWidget(fleet_note)
 
         lay.addWidget(self._section("Enterprise readiness"))
         intro = QLabel(
@@ -4706,22 +4868,43 @@ class SettingsDialog(QDialog):
         from angerona.core.autostart import enable_autostart as _autostart_enable, \
             disable_autostart as _autostart_disable
 
+        if self._fleet_service_chk.isChecked():
+            tenant = self._fleet_tenant.text().strip()
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{2,127}", tenant):
+                self._select_tab("Enterprise")
+                QMessageBox.warning(
+                    self, "Invalid fleet tenant",
+                    "Use 3-128 letters, numbers, dots, underscores, colons or hyphens."
+                )
+                return
+            try:
+                port = int(self._fleet_port.text().strip())
+                if not 1024 <= port <= 65535:
+                    raise ValueError
+            except ValueError:
+                self._select_tab("Enterprise")
+                QMessageBox.warning(
+                    self, "Invalid fleet port",
+                    "Choose an unused loopback port from 1024 through 65535."
+                )
+                return
+
         if self._teams_chk.isChecked() and not self._teams_users.text().strip():
-            self.tabs.setCurrentIndex(2)
+            self._select_tab("ARIA")
             QMessageBox.warning(
                 self, "Teams allowlist required",
                 "Add at least one immutable Teams AAD object ID. The bot "
                 "fails closed when its allowlist is empty.")
             return
         if self._aria_push_chk.isChecked() and not self._aria_push_url.text().strip():
-            self.tabs.setCurrentIndex(2)
+            self._select_tab("ARIA")
             QMessageBox.warning(self, "Channel URL required",
                                 "Enter the approved channel/webhook URL or turn push off.")
             return
         if self._aria_inbox_chk.isChecked() and not (
                 self._aria_imap_host.text().strip() and
                 self._aria_imap_user.text().strip()):
-            self.tabs.setCurrentIndex(2)
+            self._select_tab("ARIA")
             QMessageBox.warning(self, "Mailbox settings required",
                                 "Enter the IMAP host and mailbox, or turn inbox triage off.")
             return
@@ -4768,7 +4951,10 @@ class SettingsDialog(QDialog):
         want_autostart = self._autostart_chk.isChecked()
         self._cfg.autostart_enabled = want_autostart
         try:
-            _autostart_enable() if want_autostart else _autostart_disable()
+            from angerona.core.autostart import is_enabled as _autostart_is_enabled
+            current_autostart = _autostart_is_enabled()
+            if current_autostart is None or bool(current_autostart) != want_autostart:
+                _autostart_enable() if want_autostart else _autostart_disable()
         except Exception:
             pass
 
@@ -4780,6 +4966,29 @@ class SettingsDialog(QDialog):
         except ValueError:
             pass
         self._cfg.ebpf_enabled = self._ebpf_chk.isChecked()
+        self._cfg.fleet_service_enabled = self._fleet_service_chk.isChecked()
+        self._cfg.fleet_tenant_id = self._fleet_tenant.text().strip() or "local"
+        try:
+            self._cfg.fleet_service_port = int(self._fleet_port.text().strip())
+        except ValueError:
+            pass
+        if self._cfg.fleet_service_enabled and not os.environ.get(
+            "ANGERONA_FLEET_SERVICE_KEY"
+        ):
+            import secrets
+            try:
+                from angerona.core.config import write_env_keys
+                write_env_keys({
+                    "ANGERONA_FLEET_SERVICE_KEY": secrets.token_urlsafe(48)
+                })
+            except Exception as exc:
+                QMessageBox.warning(
+                    self, "Fleet service key unavailable",
+                    "The protected credential store could not create the local "
+                    f"fleet key, so the service remains disabled.\n\n{exc}"
+                )
+                self._cfg.fleet_service_enabled = False
+                return
 
         # ── ARIA toggles ──
         self._cfg.aria_enabled          = self._aria_chk.isChecked()

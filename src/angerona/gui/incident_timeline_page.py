@@ -63,7 +63,7 @@ class IncidentTimelineDialog(QDialog):
         self._status.setStyleSheet("color:#9fb3c8;")
         lay.addWidget(self._status)
 
-        close = QPushButton("Close"); close.clicked.connect(self.accept)
+        close = QPushButton("Close"); close.clicked.connect(self.close)
         lay.addWidget(close)
 
         self._refresh()

@@ -375,5 +375,5 @@ class ARPWatchdogModule(BaseModule):
         return True, f"ARP cache has {len(cache)} entries — mode={mode}"
 
 
-def register() -> ARPWWatchdogModule:
+def register() -> ARPWatchdogModule:
     return ARPWatchdogModule()

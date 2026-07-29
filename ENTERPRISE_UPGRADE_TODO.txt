@@ -261,6 +261,37 @@ Acceptance gate:
   and incident has a named owner and change process.
 
 
+CYCLE 8 IMPLEMENTATION RECORD — 2026-07-29
+-------------------------------------------
+
+[DONE/P1] ENT-FLT-LOCAL-001  Authenticated loopback fleet preview.
+  - Tenant-isolated device inventory and deduplicated event ingestion.
+  - Protected service secret, freshness, full-target HMAC, durable replay ledger.
+  - Quarantine/revocation enforcement and authenticated receipts.
+  - Disabled by default and refused on non-loopback interfaces.
+
+[PARTIAL/P1] ENT-FLT-LOCAL-002  Production fleet transport.
+  - The local preview deliberately does not satisfy production mTLS, external
+    deployment, certificate rotation, central high availability, or SSO gates.
+
+[DONE/P1] ENT-RSP-001  Typed enterprise response broker foundation.
+  - No generic shell; bounded registered operations only.
+  - Dry-run preview, expiry, target binding, idempotency, rollback metadata.
+  - Independent approval and two-person high/critical approval.
+  - HMAC-authenticated result receipts.
+
+[DONE/P0] ENT-UX-INFO-001  Canonical Settings and searchable capability guide.
+  - Unique settings ownership, definitions, steps, verification, privacy, and
+    Take me there navigation.
+
+[DONE/P0] ENT-QA-FAST-001  Pinned fast correctness and dependency gates.
+  - Ruff 0.16.0, pytest-xdist 3.8.0, pip-audit 2.10.1.
+  - Complete Windows ACL/security suite remains serial; xdist is limited to
+    isolated groups without cross-process permission mutation.
+  - Current evidence: 353 passed, 2 intentional platform skips; compile/Ruff
+    clean; installed dependency audit reports no known vulnerabilities.
+
+
 02. FLEET IDENTITY, ENROLLMENT, AND ZERO TRUST
 ----------------------------------------------
 

@@ -100,7 +100,7 @@ class ResolveCenter(QDialog):
         ignored_btn.setToolTip("View and revert previously-ignored alerts.")
         ignored_btn.clicked.connect(self._show_ignored)
         refresh = QPushButton("Refresh"); refresh.clicked.connect(self._refresh)
-        close = QPushButton("Close"); close.clicked.connect(self.accept)
+        close = QPushButton("Close"); close.clicked.connect(self.close)
         for b in (self._previous_btn, self._page_label, self._next_btn,
                   self._detail_btn, self._allow_btn, self._block_btn, self._ignore_btn,
                   ignore_all_btn, ignored_btn, refresh, close):
@@ -352,5 +352,5 @@ class ResolveCenter(QDialog):
             wrap = QWidget(); wl = QHBoxLayout(wrap); wl.setContentsMargins(4, 1, 4, 1)
             wl.addWidget(btn); tbl.setCellWidget(r, 3, wrap)
         v.addWidget(tbl, 1)
-        b = QPushButton("Close"); b.clicked.connect(dlg.accept); v.addWidget(b)
+        b = QPushButton("Close"); b.clicked.connect(dlg.close); v.addWidget(b)
         dlg.exec()

@@ -26,6 +26,8 @@ def _app(recorder_drained, evidence_drained):
     app._resilience = None
     app.reporter = _Stopper()
     app._mcp = None
+    app._fleet_service = None
+    app._fleet_plane = None
     app.manager = SimpleNamespace(stop_all=lambda: None)
     app.flight_recorder_worker = _Stopper(recorder_drained)
     app.evidence_ingestion = _Stopper(evidence_drained)

@@ -210,7 +210,7 @@ class TopTalkersDialog(QDialog):
         refresh = QPushButton("Refresh now")
         refresh.clicked.connect(self.refresh)
         close = QPushButton("Close")
-        close.clicked.connect(self.accept)
+        close.clicked.connect(self.close)
         row.addWidget(refresh)
         row.addWidget(close)
         root.addLayout(row)
@@ -340,7 +340,7 @@ class TopTalkersDialog(QDialog):
         b_allow.clicked.connect(_allow)
         b_block.clicked.connect(_block)
         b_ai.clicked.connect(_ai)
-        b_close.clicked.connect(dlg.accept)
+        b_close.clicked.connect(dlg.close)
         dlg.exec()
 
     def _start_ai_request(
