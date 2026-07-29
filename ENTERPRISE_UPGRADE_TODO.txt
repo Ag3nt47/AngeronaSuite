@@ -293,6 +293,15 @@ CYCLE 8 IMPLEMENTATION RECORD — 2026-07-29
   - Ownership, deadline, optimistic concurrency, exception expiry.
   - SHA-256 closure evidence and authenticated audit receipts.
 
+[DONE/P2] ENT-PLG-001  Signed offline plugin lifecycle.
+  - Exact verified snapshots, activation revalidation, history, revocation,
+    quarantine, entrypoint collision protection; no lifecycle-time import.
+
+[DONE/P2] ENT-INT-001  Privacy-reviewed offline interoperability queue.
+  - OCSF, STIX, OTLP, and Angerona envelopes.
+  - HMAC integrity, idempotency, bounded backoff/dead-letter handling.
+  - External egress denied by default.
+
 [DONE/P0] ENT-UX-INFO-001  Canonical Settings and searchable capability guide.
   - Unique settings ownership, definitions, steps, verification, privacy, and
     Take me there navigation.
@@ -301,7 +310,7 @@ CYCLE 8 IMPLEMENTATION RECORD — 2026-07-29
   - Ruff 0.16.0, pytest-xdist 3.8.0, pip-audit 2.10.1.
   - Complete Windows ACL/security suite remains serial; xdist is limited to
     isolated groups without cross-process permission mutation.
-  - Current evidence: 363 passed, 2 intentional platform skips; compile/Ruff
+  - Current evidence: 368 passed, 2 intentional platform skips; compile/Ruff
     clean; installed dependency audit reports no known vulnerabilities.
 
 

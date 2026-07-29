@@ -392,13 +392,19 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
 - `core/exposure_management.py` owns durable vulnerability lifecycle state:
   owner, deadline, optimistic version, bounded exception expiry, closure digest,
   and authenticated audit receipt. Never mark resolved without SHA-256 evidence.
+- `core/plugin_lifecycle.py` stages the exact verified source and parsed signed
+  manifest, revalidates before activation, never imports code, and quarantines
+  revocation/tampering. Preserve signed entrypoint names; reject collisions.
+- `core/interop_gateway.py` queues signed, minimized OCSF/STIX/OTLP envelopes.
+  External egress is denied by default. Preserve idempotency, backoff, and
+  dead-letter bounds; connectors must verify before delivery.
 - Normal launch never rewrites the elevated autostart task. Only an explicit
   Settings state change may mutate startup registration.
 - Development gates are pinned in `pyproject.toml`: Ruff 0.16.0,
   pytest-xdist 3.8.0, and pip-audit 2.10.1. Ruff uses correctness-critical rules
   first. Keep the complete suite serial because Windows ACL tests are not
   process-parallel-safe; xdist is for isolated test groups. Current evidence:
-  363 passed / 2 intentional platform skips; compile and Ruff clean; no known
+  368 passed / 2 intentional platform skips; compile and Ruff clean; no known
   installed-package vulnerability reported.
 
 ## NEVER DO

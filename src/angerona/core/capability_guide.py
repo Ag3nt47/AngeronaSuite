@@ -183,6 +183,30 @@ GUIDES = (
         "Enterprise",
     ),
     CapabilityGuide(
+        "signed-plugins", "Signed Plugin Lifecycle", "Extensions",
+        "Offline staging, revalidation, activation, revocation, quarantine, "
+        "history, and audit catalog for reviewed capability extensions.",
+        ("Trust a reviewed publisher key.", "Stage the signed source and manifest.",
+         "Review permissions, privacy, egress, and resource budgets.",
+         "Activate for the next restart or revoke to quarantine."),
+        "Tampering, revoked trust, missing manifests, entrypoint collisions, and "
+        "unsigned content fail before import.",
+        "Plugins are disabled by default and receive no implied egress permission.",
+        "Enterprise",
+    ),
+    CapabilityGuide(
+        "interop", "Offline Interoperability Gateway", "Integration",
+        "A durable signed queue for privacy-reviewed OCSF, STIX, OTLP, and "
+        "Angerona envelopes with idempotency, backoff, and dead-letter handling.",
+        ("Choose a standard schema.", "Preview minimization and destination.",
+         "Explicitly permit external egress if required.", "Queue locally.",
+         "Deliver through a separately configured connector and acknowledge."),
+        "Restricted fields are removed, sensitive fields tokenize, retries back "
+        "off, and payload/signature verification succeeds before delivery.",
+        "External egress is denied by default; queued payloads are minimized first.",
+        "Enterprise",
+    ),
+    CapabilityGuide(
         "world-view", "World View and System Pulse", "Observability",
         "Explains Angerona resource use, sensor continuity and internal service health.",
         ("Open World View.", "Inspect sensor and pipeline status.",
