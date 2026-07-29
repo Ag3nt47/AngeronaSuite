@@ -307,11 +307,23 @@ CYCLE 8 IMPLEMENTATION RECORD — 2026-07-29
     Take me there navigation.
 
 [DONE/P0] ENT-QA-FAST-001  Pinned fast correctness and dependency gates.
-  - Ruff 0.16.0, pytest-xdist 3.8.0, pip-audit 2.10.1.
+  - Hypothesis 6.163.0, Ruff 0.16.0, pytest-xdist 3.8.0, pip-audit 2.10.1.
   - Complete Windows ACL/security suite remains serial; xdist is limited to
     isolated groups without cross-process permission mutation.
-  - Current evidence: 416 passed, 2 intentional platform skips; compile/Ruff
+  - Current evidence: 445 passed, 2 intentional platform skips; compile/Ruff
     clean; installed dependency audit reports no known vulnerabilities.
+
+[PARTIAL/P0] ENT-QA-003  Deterministic trust-boundary property fuzzing.
+  - 120 offline-replayable examples per property; no retained corpus, network,
+    runtime service, or product dependency.
+  - Covers normalized event/schema parsing, signed capability manifests,
+    detection packages, fleet request authentication, encrypted backup
+    header/manifest metadata, and portable restore-path validation.
+  - First pass closed exception leaks, schema smuggling, silent list truncation,
+    non-finite detection values, mixed-type diagnostics, Windows alternate data
+    streams, and reserved device aliases.
+  - Remaining: authenticated IPC frames, document importers, and any future
+    native/driver IOCTL surface.
 
 [DONE/P0] ENT-RES-002  Stateful, safe watchdog recovery.
   - Separate authenticated durable state for Core Manager and peer Watchdog.
@@ -1932,14 +1944,15 @@ Acceptance gate:
   - No unbounded sleeps.
   - explicit opt-in integration/lab tests.
 
-[TODO/P0] ENT-QA-003  Add fuzzing.
-  Targets:
-  - event/schema parsers.
-  - IPC frames.
-  - signed bundle metadata.
-  - archive/document parsers.
-  - plugin manifests.
-  - API request validation.
+[PARTIAL/P0] ENT-QA-003  Add fuzzing.
+  Implemented:
+  - deterministic normalized event/schema parser properties.
+  - signed capability-manifest and detection-package mutation properties.
+  - encrypted backup header/manifest and Windows-safe restore-path properties.
+  - authenticated fleet API request/header/body mutation properties.
+  Remaining:
+  - authenticated IPC frames.
+  - document importers.
   - native/driver IOCTL if ever added.
 
 [PARTIAL/P0] ENT-QA-004  Add concurrency/lifecycle tests.

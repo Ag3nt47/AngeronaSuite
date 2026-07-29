@@ -140,6 +140,17 @@ unless the checkout was already administrator-protected, and then hardens the
 checkout. Source scripts are not signed release installers, so this route is for
 reviewed development trees; use the protected release installer for normal use.
 
+Development and security checks use the optional, non-runtime tool set:
+
+```powershell
+python -m pip install -e ".[dev]"
+python -m pytest -q
+```
+
+This includes deterministic offline property fuzzing. It does not add a service,
+network listener, telemetry upload, or fuzzing dependency to an ordinary
+Angerona installation.
+
 `kill-all-angerona.bat` stops only suite-owned Python entry points and unloads
 Angerona's resident llama3 model.
 
@@ -961,11 +972,21 @@ email scanning, channel push, research) — each has a one-click test button.
   requires a ready fixed drive, and retains the existing reparse-point and
   required-file checks. The independent Python source/interpreter trust
   preflight still runs before `pythonw`.
+- **Deterministic trust-boundary fuzzing.** A pinned, development-only
+  Hypothesis harness now derives 120 offline-replayable examples per property
+  for normalized sensor events, signed capability manifests, detection
+  packages, fleet request authentication, encrypted-backup metadata, and
+  portable restore paths. Parsers must return a fully validated object or their
+  documented fail-closed error. The first run found and fixed malformed
+  platform/header exception leaks, mixed-type diagnostic failures, silent list
+  truncation, non-finite detection values, schema-smuggling fields, and Windows
+  alternate-data-stream/device-alias restore paths. Inter-Process Communication
+  (IPC) frame and future native-driver fuzz targets remain open.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
-  passes **426 tests with 2 intentional platform skips** and 0 failures.
+  passes **445 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
   Ruff pass. pip-audit reports no known vulnerabilities in the installed
   dependencies. The public-repository scan found no committed real credential,
   private key, user-profile path, database, runtime-data, or cache artifact.
 
-<!-- ANGERONA_DOC_STATUS tests=426 skips=2 modules=65 -->
+<!-- ANGERONA_DOC_STATUS tests=445 skips=2 modules=65 -->

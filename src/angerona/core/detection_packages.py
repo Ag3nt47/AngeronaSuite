@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -89,6 +90,8 @@ def _validate_scalar(value: Any, name: str) -> None:
     if isinstance(value, str):
         if len(value) > MAX_STRING_CHARS:
             _fail(f"{name} is too long")
+    elif isinstance(value, float) and not math.isfinite(value):
+        _fail(f"{name} must be finite")
     elif value is not None and not isinstance(value, (bool, int, float)):
         _fail(f"{name} must contain only scalar values")
 
@@ -136,7 +139,7 @@ def validate_package(
         _fail("package must be a JSON object")
     unknown = set(document) - _ALLOWED_TOP
     if unknown:
-        _fail(f"unknown package fields: {', '.join(sorted(unknown))}")
+        _fail(f"package contains {len(unknown)} unknown field(s)")
     required = _ALLOWED_TOP
     missing = required - set(document)
     if missing:
@@ -149,7 +152,7 @@ def validate_package(
         _fail("version must be semantic version syntax")
     _bounded_string(document["owner"], "owner", maximum=160)
     _bounded_string(document["description"], "description")
-    if document["severity"] not in _LEVELS:
+    if not isinstance(document["severity"], str) or document["severity"] not in _LEVELS:
         _fail("invalid severity")
     confidence = document["confidence"]
     if type(confidence) is not int or not 0 <= confidence <= 100:

@@ -38,6 +38,7 @@ voice = [
 ]
 cloud = ["google-genai", "groq", "openai"]
 dev = [
+    "hypothesis==6.163.0",
     "ruff==0.16.0",
     "pytest-xdist==3.8.0",
     "pip-audit==2.10.1",

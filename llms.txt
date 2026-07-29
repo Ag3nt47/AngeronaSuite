@@ -468,10 +468,12 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   predecessor and the manifest HMAC binds the chain head and records digest.
 - Normal launch never rewrites the elevated autostart task. Only an explicit
   Settings state change may mutate startup registration.
-- Development gates are pinned in `pyproject.toml`: Ruff 0.16.0,
-  pytest-xdist 3.8.0, and pip-audit 2.10.1. Ruff uses correctness-critical rules
-  first. Keep the complete suite serial because Windows ACL tests are not
-  process-parallel-safe; xdist is for isolated test groups.
+- Development gates are pinned in `pyproject.toml`: Hypothesis 6.163.0,
+  Ruff 0.16.0, pytest-xdist 3.8.0, and pip-audit 2.10.1. Hypothesis properties
+  are deterministic, database-free, synthetic, and offline; they are a
+  development extra, never a product runtime dependency. Ruff uses
+  correctness-critical rules first. Keep the complete suite serial because
+  Windows ACL tests are not process-parallel-safe; xdist is for isolated groups.
 - `tools/github_toolkit.lock.json` pins development-only GitHub assets and
   SHA-256 digests: uv 0.12.0, py-spy 0.4.2, hyperfine 1.20.0, and official
   GitHub CLI 2.96.0. The bootstrap keeps them in ignored `.dev-tools` and
@@ -507,7 +509,17 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   items and caused valid D: source checkouts to fail closed before launch.
   Reparse-point and required-file checks remain, followed by the independent
   Python source/interpreter trust preflight.
-- Current evidence: 426 passed /
+- `tests/test_property_fuzz_boundaries.py` is the deterministic trust-boundary
+  property suite. Every parser must normalize completely or raise its documented
+  validation error. It covers sensor envelopes, signed capability manifests,
+  detection packages, fleet authentication, encrypted-backup metadata, and
+  portable restore paths. Keep `database=None`, `derandomize=True`, bounded
+  examples, no network, and no real endpoint data. The first pass closed
+  malformed platform/header exception leaks, schema smuggling, silent list
+  truncation, non-finite values, and Windows alternate-data-stream/device-alias
+  restore paths. IPC-frame, document-import, and future driver IOCTL fuzzing
+  remain open.
+- Current evidence: 445 passed /
   2 intentional platform skips; compile and Ruff clean; no known
   installed-package vulnerability reported.
 

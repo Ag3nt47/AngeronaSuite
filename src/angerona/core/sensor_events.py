@@ -61,10 +61,13 @@ def _section(value: object, field_name: str) -> dict[str, Any]:
         elif isinstance(raw_value, float) and math.isfinite(raw_value):
             result[key] = raw_value
         elif isinstance(raw_value, (list, tuple)) and len(raw_value) <= 32:
+            if any(not isinstance(item, str) for item in raw_value):
+                raise SensorEventError(
+                    f"{field_name}.{key} lists may contain only strings"
+                )
             result[key] = [
                 _text(item, f"{field_name}.{key}", 512)
                 for item in raw_value
-                if isinstance(item, str)
             ]
         else:
             raise SensorEventError(
@@ -89,7 +92,7 @@ class SensorEvent:
     schema_version: int = SENSOR_EVENT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        platform = normalize_platform(self.platform)
+        platform = normalize_platform(_text(self.platform, "platform", 64))
         if platform not in KNOWN_PLATFORMS:
             raise SensorEventError(f"unsupported platform: {self.platform!r}")
         if self.schema_version != SENSOR_EVENT_SCHEMA_VERSION:
@@ -156,7 +159,7 @@ class SensorEvent:
         unknown = set(payload) - allowed
         if unknown:
             raise SensorEventError(
-                "sensor event contains unknown fields: " + ", ".join(sorted(unknown))
+                f"sensor event contains {len(unknown)} unknown field(s)"
             )
         privacy = payload.get("privacy_classes", ())
         if not isinstance(privacy, (list, tuple)) or len(privacy) > 32:

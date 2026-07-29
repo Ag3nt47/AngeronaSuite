@@ -246,6 +246,18 @@ def update(source: Path, destination: Path) -> None:
 
     doc.add_heading("Engineering efficiency and verification", level=2)
     bullets(doc, (
+        "Hypothesis 6.163.0 provides deterministic, database-free, synthetic, "
+        "offline property fuzzing as a development-only dependency. It derives "
+        "120 replayable examples per property for normalized sensor events, "
+        "signed capability manifests, detection packages, fleet authentication, "
+        "encrypted-backup metadata, and portable restore paths.",
+        "The property contract requires complete normalization or the documented "
+        "fail-closed validation error. Its first pass found and corrected "
+        "malformed platform and authentication-header exception leaks, mixed-type "
+        "diagnostics, silent list truncation, non-finite values, schema smuggling, "
+        "and Windows alternate-data-stream and device-alias restore paths. "
+        "Inter-Process Communication frame, document-import, and future native "
+        "driver fuzzing remain open.",
         "Ruff 0.16.0 adds a fast correctness gate and found a latent ARP "
         "Watchdog return-type spelling defect, which was corrected.",
         "pytest-xdist 3.8.0 is available for isolated test groups. The complete "
@@ -262,7 +274,7 @@ def update(source: Path, destination: Path) -> None:
         "The first Bandit pass exposed a weak SHA-1 alert identifier and "
         "shell-based console clearing. Both were corrected and the "
         "high-severity re-scan is clean.",
-        "Final repository evidence: 426 tests passed, 2 intentional "
+        "Final repository evidence: 445 tests passed, 2 intentional "
         "platform-dependent skips, 0 failures; Python compilation, Ruff, "
         "dependency audit, and whitespace checks passed.",
     ))

@@ -106,6 +106,7 @@ selfcheck_report*.txt
 
 # Local document-rendering workspaces (generated; never publish)
 /analysis/manual_build/
+/analysis/release-evidence-local.json
 /LibreOffice_*_Machine_X64_msi_en-US/
 
 # Verified, development-only GitHub tools. The reproducible lock manifest and

@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -33,6 +34,22 @@ _ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{1,126}[a-z0-9])?$")
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 _MITRE_RE = re.compile(r"^T\d{4}(?:\.\d{3})?$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_ALLOWED_MANIFEST_FIELDS = frozenset({
+    "schema_version",
+    "id",
+    "name",
+    "version",
+    "api_version",
+    "entrypoint",
+    "sha256",
+    "permissions",
+    "events",
+    "mitre",
+    "privacy",
+    "performance",
+    "publisher",
+    "signature",
+})
 
 ALLOWED_PERMISSIONS = frozenset({
     "ai.infer",
@@ -258,6 +275,11 @@ def sha256_file(path: Path) -> str:
 
 def parse_manifest(data: Mapping[str, Any], module_path: Path) -> CapabilityManifest:
     """Validate and normalize a manifest, without yet checking its signature."""
+    if not isinstance(data, Mapping):
+        raise ManifestError("manifest root must be an object")
+    unknown = set(data) - _ALLOWED_MANIFEST_FIELDS
+    if unknown:
+        raise ManifestError(f"manifest contains {len(unknown)} unknown field(s)")
     if data.get("schema_version") != SCHEMA_VERSION:
         raise ManifestError(f"schema_version must be {SCHEMA_VERSION}")
     capability_id = _bounded_text(data.get("id"), "id", 128).casefold()
@@ -287,6 +309,8 @@ def parse_manifest(data: Mapping[str, Any], module_path: Path) -> CapabilityMani
     events = data.get("events", {})
     if not isinstance(events, dict):
         raise ManifestError("events must be an object")
+    if set(events) - {"inputs", "outputs"}:
+        raise ManifestError("events contains unknown fields")
     event_inputs = _string_list(events.get("inputs", []), "events.inputs")
     event_outputs = _string_list(events.get("outputs", []), "events.outputs")
 
@@ -298,6 +322,8 @@ def parse_manifest(data: Mapping[str, Any], module_path: Path) -> CapabilityMani
     privacy = data.get("privacy", {})
     if not isinstance(privacy, dict):
         raise ManifestError("privacy must be an object")
+    if set(privacy) - {"data_classes", "egress", "retention"}:
+        raise ManifestError("privacy contains unknown fields")
     data_classes = _string_list(
         privacy.get("data_classes", ["none"]),
         "privacy.data_classes",
@@ -323,21 +349,38 @@ def parse_manifest(data: Mapping[str, Any], module_path: Path) -> CapabilityMani
     performance = data.get("performance", {})
     if not isinstance(performance, dict):
         raise ManifestError("performance must be an object")
+    if set(performance) - {
+        "cpu_budget_pct", "memory_budget_mb", "poll_interval_s",
+    }:
+        raise ManifestError("performance contains unknown fields")
     try:
-        cpu_budget = float(performance.get("cpu_budget_pct", 5.0))
-        memory_budget = int(performance.get("memory_budget_mb", 128))
-        poll_interval = float(performance.get("poll_interval_s", 1.0))
+        raw_cpu = performance.get("cpu_budget_pct", 5.0)
+        raw_memory = performance.get("memory_budget_mb", 128)
+        raw_poll = performance.get("poll_interval_s", 1.0)
+        if (
+            type(raw_cpu) not in (int, float)
+            or type(raw_memory) is not int
+            or type(raw_poll) not in (int, float)
+        ):
+            raise TypeError
+        cpu_budget = float(raw_cpu)
+        memory_budget = raw_memory
+        poll_interval = float(raw_poll)
     except (TypeError, ValueError) as exc:
         raise ManifestError("performance budgets must be numeric") from exc
-    if not (0.1 <= cpu_budget <= 100.0):
+    if not math.isfinite(cpu_budget) or not (0.1 <= cpu_budget <= 100.0):
         raise ManifestError("cpu_budget_pct must be between 0.1 and 100")
     if not (8 <= memory_budget <= 4096):
         raise ManifestError("memory_budget_mb must be between 8 and 4096")
-    if not (0.01 <= poll_interval <= 86_400.0):
+    if not math.isfinite(poll_interval) or not (0.01 <= poll_interval <= 86_400.0):
         raise ManifestError("poll_interval_s must be between 0.01 and 86400")
 
-    publisher = str(data.get("publisher", "") or "").strip()
-    signature = str(data.get("signature", "") or "").strip()
+    raw_publisher = data.get("publisher", "")
+    raw_signature = data.get("signature", "")
+    if not isinstance(raw_publisher, str) or not isinstance(raw_signature, str):
+        raise ManifestError("publisher and signature must be strings")
+    publisher = raw_publisher.strip()
+    signature = raw_signature.strip()
     if signature and not publisher:
         raise ManifestError("a signed manifest must identify its publisher")
     if len(publisher) > 128 or len(signature) > 512:

@@ -19,6 +19,7 @@ from angerona.core.fleet_control_plane import FleetControlPlane, FleetDevice
 
 MAX_BODY = 256 * 1024
 MAX_SKEW_SECONDS = 60
+MAX_AUTH_PATH = 8192
 _NONCE = re.compile(r"^[A-Za-z0-9_-]{22,128}$")
 
 
@@ -64,10 +65,22 @@ class RequestAuthenticator:
     def verify(
         self, method: str, path: str, headers: Mapping[str, str], body: bytes
     ) -> tuple[bool, str]:
+        if (
+            not isinstance(method, str) or not method
+            or len(method) > 32
+            or not isinstance(path, str) or not path
+            or len(path) > MAX_AUTH_PATH
+            or not isinstance(body, bytes) or len(body) > MAX_BODY
+        ):
+            return False, "request components are invalid"
         try:
             stamp_text = headers["X-Angerona-Timestamp"]
             nonce = headers["X-Angerona-Nonce"]
             signature = headers["X-Angerona-Signature"]
+            if not all(isinstance(value, str) for value in (
+                stamp_text, nonce, signature,
+            )):
+                return False, "missing or invalid authentication headers"
             stamp = int(stamp_text)
         except (KeyError, TypeError, ValueError):
             return False, "missing or invalid authentication headers"

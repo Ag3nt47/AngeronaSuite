@@ -33,6 +33,19 @@ _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{2,127}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _PRIVACY = {"internal", "sensitive", "restricted"}
 _KINDS = {"file", "sqlite"}
+_WINDOWS_FORBIDDEN = frozenset('<>:"|?*')
+_WINDOWS_RESERVED = frozenset({
+    "con", "prn", "aux", "nul",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+})
+_MANIFEST_FIELDS = frozenset({
+    "schema", "backup_id", "source_scope", "created_at", "items", "total_bytes",
+})
+_ITEM_FIELDS = frozenset({
+    "relative_path", "kind", "privacy_class", "sha256", "size_bytes",
+})
+_HEADER_FIELDS = frozenset({"schema", "backup_id", "salt", "nonce"})
 
 
 def _canonical(value: Any) -> bytes:
@@ -47,7 +60,19 @@ def _b64(value: bytes) -> str:
 
 
 def _unb64(value: str) -> bytes:
-    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    if (
+        not isinstance(value, str) or not 1 <= len(value) <= 128
+        or not re.fullmatch(r"[A-Za-z0-9_-]+", value)
+    ):
+        raise ValueError("backup parameter is not valid base64url")
+    try:
+        return base64.b64decode(
+            value + "=" * (-len(value) % 4),
+            altchars=b"-_",
+            validate=True,
+        )
+    except Exception as exc:
+        raise ValueError("backup parameter is not valid base64url") from exc
 
 
 def _digest(path: Path) -> tuple[str, int]:
@@ -61,16 +86,60 @@ def _digest(path: Path) -> tuple[str, int]:
 
 
 def _relative(value: str) -> PurePosixPath:
-    path = PurePosixPath(str(value).replace("\\", "/"))
+    if not isinstance(value, str) or "\x00" in value:
+        raise ValueError("backup path must be a safe relative path")
+    path = PurePosixPath(value.replace("\\", "/"))
     if (
         path.is_absolute() or not path.parts or len(path.parts) > 24
         or any(part in {"", ".", ".."} for part in path.parts)
-        or ":" in path.parts[0]
+        or any(
+            any(ord(character) < 32 or character in _WINDOWS_FORBIDDEN
+                for character in part)
+            or part.endswith((" ", "."))
+            or part.split(".", 1)[0].casefold() in _WINDOWS_RESERVED
+            for part in path.parts
+        )
     ):
         raise ValueError("backup path must be a safe relative path")
     if len(path.as_posix()) > 500:
         raise ValueError("backup path exceeds 500 characters")
     return path
+
+
+def _parse_header(value: Any) -> dict[str, Any]:
+    try:
+        decoded = json.loads(value) if isinstance(value, (bytes, bytearray, str)) else value
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("encrypted backup header is invalid") from exc
+    if not isinstance(decoded, dict) or set(decoded) != _HEADER_FIELDS:
+        raise ValueError("encrypted backup header is invalid")
+    if (
+        decoded["schema"] != "angerona.backup-stream/v1"
+        or not isinstance(decoded["backup_id"], str)
+        or not _ID.fullmatch(decoded["backup_id"])
+    ):
+        raise ValueError("unsupported encrypted backup container")
+    salt, nonce = _unb64(decoded["salt"]), _unb64(decoded["nonce"])
+    if len(salt) != 16 or len(nonce) != 12:
+        raise ValueError("invalid encrypted backup parameters")
+    return decoded
+
+
+def _parse_manifest(value: Any) -> "BackupManifest":
+    if not isinstance(value, dict) or set(value) != _MANIFEST_FIELDS:
+        raise ValueError("backup manifest fields are invalid")
+    raw_items = value.get("items")
+    if not isinstance(raw_items, list) or not 1 <= len(raw_items) <= MAX_ITEMS:
+        raise ValueError("backup manifest items are invalid")
+    items: list[BackupItem] = []
+    try:
+        for raw_item in raw_items:
+            if not isinstance(raw_item, dict) or set(raw_item) != _ITEM_FIELDS:
+                raise ValueError("backup item fields are invalid")
+            items.append(BackupItem(**raw_item))
+        return BackupManifest(**{**value, "items": tuple(items)})
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"backup manifest is invalid: {exc}") from exc
 
 
 def _has_reparse_component(root: Path, relative: PurePosixPath) -> bool:
@@ -136,9 +205,9 @@ class BackupItem:
         ).as_posix())
         if self.kind not in _KINDS or self.privacy_class not in _PRIVACY:
             raise ValueError("invalid backup item metadata")
-        if not _SHA256.fullmatch(self.sha256):
+        if not isinstance(self.sha256, str) or not _SHA256.fullmatch(self.sha256):
             raise ValueError("invalid backup item digest")
-        if not 0 <= int(self.size_bytes) <= MAX_ITEM_BYTES:
+        if type(self.size_bytes) is not int or not 0 <= self.size_bytes <= MAX_ITEM_BYTES:
             raise ValueError("backup item exceeds byte budget")
 
 
@@ -155,16 +224,32 @@ class BackupManifest:
         object.__setattr__(self, "items", tuple(self.items))
         if self.schema != "angerona.backup/v1":
             raise ValueError("unsupported backup schema")
-        if not _ID.fullmatch(self.backup_id) or not _ID.fullmatch(self.source_scope):
+        if (
+            not isinstance(self.backup_id, str)
+            or not isinstance(self.source_scope, str)
+            or not _ID.fullmatch(self.backup_id)
+            or not _ID.fullmatch(self.source_scope)
+        ):
             raise ValueError("invalid backup identity")
-        if not math.isfinite(float(self.created_at)) or self.created_at < 0:
+        if (
+            type(self.created_at) not in (int, float)
+            or not math.isfinite(float(self.created_at))
+            or self.created_at < 0
+        ):
             raise ValueError("invalid backup timestamp")
-        if not 1 <= len(self.items) <= MAX_ITEMS:
+        if (
+            not 1 <= len(self.items) <= MAX_ITEMS
+            or any(not isinstance(item, BackupItem) for item in self.items)
+        ):
             raise ValueError("backup item count is invalid")
         if len({item.relative_path.casefold() for item in self.items}) != len(self.items):
             raise ValueError("backup contains duplicate paths")
         expected = sum(item.size_bytes for item in self.items)
-        if expected != int(self.total_bytes) or expected > MAX_TOTAL_BYTES:
+        if (
+            type(self.total_bytes) is not int
+            or expected != self.total_bytes
+            or expected > MAX_TOTAL_BYTES
+        ):
             raise ValueError("backup total byte budget is invalid")
 
     def canonical(self) -> bytes:
@@ -619,12 +704,10 @@ class EncryptedBackupManager:
             if not 1 <= header_length <= 4096:
                 raise ValueError("encrypted backup header length is invalid")
             header = stream.read(header_length)
-            value = json.loads(header)
-            if value.get("schema") != "angerona.backup-stream/v1":
-                raise ValueError("unsupported encrypted backup container")
+            if len(header) != header_length:
+                raise ValueError("encrypted backup header is truncated")
+            value = _parse_header(header)
             salt, nonce = _unb64(value["salt"]), _unb64(value["nonce"])
-            if len(salt) != 16 or len(nonce) != 12:
-                raise ValueError("invalid encrypted backup parameters")
             cipher_start = stream.tell()
             total_size = path.stat().st_size
             ciphertext_size = total_size - cipher_start - 16
@@ -649,7 +732,6 @@ class EncryptedBackupManager:
         self, path: Path, *, output_root: Path | None = None,
     ) -> BackupManifest:
         stream, reader, header = self._open_archive(path)
-        del header
         try:
             with tarfile.open(fileobj=reader, mode="r|") as archive:
                 member = archive.next()
@@ -661,12 +743,12 @@ class EncryptedBackupManager:
                 manifest_stream = archive.extractfile(member)
                 if manifest_stream is None:
                     raise ValueError("backup manifest cannot be read")
-                raw = json.loads(manifest_stream.read())
-                raw["items"] = tuple(BackupItem(**item) for item in raw["items"])
-                manifest = BackupManifest(**raw)
-                header_backup_id = json.loads(
-                    self._read_header(path)
-                ).get("backup_id")
+                try:
+                    raw = json.loads(manifest_stream.read())
+                except (UnicodeError, json.JSONDecodeError) as exc:
+                    raise ValueError("backup manifest JSON is invalid") from exc
+                manifest = _parse_manifest(raw)
+                header_backup_id = _parse_header(header)["backup_id"]
                 if header_backup_id != manifest.backup_id:
                     raise ValueError("backup header identity does not match manifest")
                 for index, item in enumerate(manifest.items):
@@ -715,14 +797,6 @@ class EncryptedBackupManager:
             return manifest
         finally:
             stream.close()
-
-    @staticmethod
-    def _read_header(path: Path) -> bytes:
-        with open(path, "rb") as stream:
-            if stream.read(len(MAGIC)) != MAGIC:
-                raise ValueError("not an Angerona encrypted backup")
-            size = int.from_bytes(stream.read(4), "big")
-            return stream.read(size)
 
     def _verify_plan(self, plan: RestorePlan) -> None:
         value = asdict(plan)
