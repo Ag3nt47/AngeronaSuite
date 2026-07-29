@@ -215,12 +215,30 @@ GUIDES = (
          "Set host, byte, duration, and expiry budgets.", "Collect approvals.",
          "Run through the typed endpoint collector.",
          "Record typed queries, notes and immutable evidence references.",
-         "Verify the workspace snapshot and result receipt."),
+         "Review authenticated progress and coded failures.",
+         "Promote verified result references into an investigating case.",
+         "Verify the workspace snapshot, custody chain and result receipt."),
         "Arbitrary command/path fields fail, restricted artifacts require two "
         "approvers, state tampering fails, over-budget results are rejected, and "
         "sanitized export omits restricted results and device identifiers.",
         "Artifact privacy classes determine approval. Notebooks contain no "
         "executable cells, generic shell, or unbounded content collection.",
+        "Enterprise",
+    ),
+    CapabilityGuide(
+        "safe-live-response", "Safe Live Response Session", "Response",
+        "A maximum 30-minute target-bound session exposing only registered "
+        "read-only queries and separately approval-gated typed response operations.",
+        ("Open Enterprise Settings.", "Choose the exact endpoint and capabilities.",
+         "Set the shortest useful expiry.", "Collect an independent approval; "
+         "host-changing sessions require two.",
+         "Run registered queries or approved Response Broker proposals.",
+         "Close the session and verify its transcript receipt."),
+        "Unregistered queries, target changes, executable fields, expired sessions "
+        "and under-approved host changes fail; duplicate requests do not execute twice.",
+        "The persisted transcript contains action identities, outcome and request/"
+        "result digests rather than raw result content. It forms an authenticated "
+        "hash chain and there is no generic shell.",
         "Enterprise",
     ),
     CapabilityGuide(

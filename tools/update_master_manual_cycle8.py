@@ -129,6 +129,23 @@ def update(source: Path, destination: Path) -> None:
         "with optimistic concurrency. It has no executable cells.",
         "Sanitized notebook export redacts identities and paths, omits device "
         "tokens and raw artifacts, and excludes restricted results by default.",
+        "Per-host progress and coded failures persist as authenticated records "
+        "with non-regressing timestamps and byte counters. Exact host and total "
+        "byte budgets apply before insertion; bounded summaries expose the "
+        "latest state without retaining raw device identity.",
+        "Verified result references promote idempotently into a deterministic "
+        "investigating case. Evidence remains reference-only and every promoted "
+        "item receives an authenticated custody chain.",
+        "Safe live-response sessions bind one target, requester, exact capability "
+        "set and a maximum 30-minute expiry. Read-only sessions require an "
+        "independent approval; host-changing sessions require two.",
+        "Only registered read-only query handlers and separately approval-gated "
+        "Response Broker operations are available. Executable fields, target "
+        "escape, unregistered capabilities, expiry, and duplicate execution fail "
+        "closed. The privacy-minimized transcript forms an authenticated hash chain.",
+        "Read-only query handlers execute outside the session-manager lock so a "
+        "slow collector cannot block close or expiry. Results arriving after "
+        "the session ends are recorded as discarded and are not returned.",
     ))
 
     doc.add_heading("Reliability and release evidence", level=2)
@@ -183,7 +200,7 @@ def update(source: Path, destination: Path) -> None:
         "pip-audit 2.10.1 reports no known vulnerability in installed "
         "dependencies. Public-repository scanning found no committed real "
         "credential, private key, user-profile path, database, cache, or runtime data.",
-        "Final repository evidence: 397 tests passed, 2 intentional "
+        "Final repository evidence: 405 tests passed, 2 intentional "
         "platform-dependent skips, 0 failures; Python compilation, Ruff, "
         "dependency audit, and whitespace checks passed.",
     ))

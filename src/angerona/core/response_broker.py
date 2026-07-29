@@ -111,6 +111,11 @@ class ResponseBroker:
                 raise ValueError("operation is already registered")
             self._operations[operation.operation_id] = operation
 
+    def registered_operation_ids(self) -> tuple[str, ...]:
+        """Return the stable closed operation catalog exposed to session policy."""
+        with self._lock:
+            return tuple(sorted(self._operations))
+
     def approve(self, proposal: ResponseProposal, approver_id: str) -> int:
         if not _ID.fullmatch(approver_id):
             raise ValueError("invalid approver identity")

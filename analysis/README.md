@@ -878,6 +878,17 @@ email scanning, channel push, research) — each has a one-click test button.
   concurrency and authenticated atomic persistence. Sanitized export redacts
   identities and local paths, omits device tokens, excludes restricted results,
   and never includes raw artifacts or executable cells.
+- **Hunt operations and case promotion.** Per-host progress and coded failures
+  persist with authenticated records, non-regressing counters, exact host/byte
+  budgets, and bounded latest-state summaries. Verified result references
+  promote idempotently into an investigating case with a custody chain.
+- **Safe live response.** A target-bound session lasts no more than 30 minutes
+  and exposes only registered read-only queries and separately approval-gated
+  Response Broker operations. Host-changing sessions need two independent
+  approvals, executable fields are forbidden, duplicate requests do not rerun,
+  and the privacy-minimized transcript is hash-chained and authenticated.
+  Slow read handlers run outside the session lock, so session close and expiry
+  remain responsive; a result arriving after closure is recorded then discarded.
 - **Bounded recovery evidence.** Registered local reliability drills exercise
   transient locks, unavailable collectors, supervised service restart, and
   dead-letter exhaustion with explicit retry classes, attempt/time limits, and
@@ -908,10 +919,10 @@ email scanning, channel push, research) — each has a one-click test button.
   intentionally mutate file permissions and are not process-parallel-safe.
   Ruff immediately found and closed a latent ARP Watchdog type-name defect.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
-  passes **397 tests with 2 intentional platform skips** and 0 failures.
+  passes **405 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
   Ruff pass. pip-audit reports no known vulnerabilities in the installed
   dependencies. The public-repository scan found no committed real credential,
   private key, user-profile path, database, runtime-data, or cache artifact.
 
-<!-- ANGERONA_DOC_STATUS tests=397 skips=2 modules=65 -->
+<!-- ANGERONA_DOC_STATUS tests=405 skips=2 modules=65 -->

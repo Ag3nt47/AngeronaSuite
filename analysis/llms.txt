@@ -410,6 +410,20 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   HMAC-authenticated atomic state fails closed on tampering. Sanitized export
   redacts identities/paths, omits device tokens and raw artifacts, and excludes
   restricted results. Never add code cells, arbitrary paths, or a shell.
+- `core/hunt_operations.py` persists HMAC-authenticated per-host progress and
+  coded failures, enforces non-regressing timestamps/bytes plus hunt host/byte
+  budgets, and produces authenticated bounded summaries. Promotion uses a
+  deterministic case identity, immutable result references, idempotency, and
+  CaseStore custody verification; it never copies raw artifacts.
+- `core/safe_response_session.py` creates maximum-30-minute sessions bound to
+  one target, requester, registered query set, and registered Response Broker
+  operation set. Read-only sessions require one independent approval; sessions
+  with host changes require two, and every operation still requires its separate
+  risk-based approval. Executable fields and capability escape fail closed.
+  Transcript events store action identity/outcome and request/result digests,
+  form an HMAC-authenticated chain, persist atomically, and replay idempotently.
+  Query handlers run outside the session lock; close/expiry stays responsive and
+  a late result is transcripted as discarded rather than returned.
 - `core/atomic_io.py:replace_with_retry()` handles only short antivirus/sharing
   locks with a bounded exponential retry. It must not suppress persistent or
   unrelated filesystem errors.
@@ -442,7 +456,7 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   pytest-xdist 3.8.0, and pip-audit 2.10.1. Ruff uses correctness-critical rules
   first. Keep the complete suite serial because Windows ACL tests are not
   process-parallel-safe; xdist is for isolated test groups. Current evidence:
-  397 passed / 2 intentional platform skips; compile and Ruff clean; no known
+  405 passed / 2 intentional platform skips; compile and Ruff clean; no known
   installed-package vulnerability reported.
 
 ## NEVER DO

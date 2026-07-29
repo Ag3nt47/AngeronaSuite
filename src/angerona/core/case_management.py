@@ -132,12 +132,15 @@ class CaseStore:
     def create_case(
         self, title: str, *, assignee: str = "", tags: Sequence[str] = (),
         retention_until: float = 0, now: float | None = None,
+        case_id: str | None = None,
     ) -> CaseRecord:
         tags = tuple(sorted({_safe_text(tag, 80) for tag in tags if tag}))
         if len(tags) > MAX_TAGS:
             raise ValueError("too many tags")
         stamp = time.time() if now is None else float(now)
-        case_id = "case-" + uuid.uuid4().hex
+        case_id = case_id or ("case-" + uuid.uuid4().hex)
+        if not _SAFE_ID.fullmatch(case_id):
+            raise ValueError("invalid case ID")
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
@@ -152,6 +155,17 @@ class CaseStore:
                 self._db.execute("ROLLBACK")
                 raise
         return self.get_case(case_id)
+
+    def evidence_owner(self, evidence_id: str) -> str | None:
+        """Return the owning case for an evidence reference, if present."""
+        if not _SAFE_ID.fullmatch(evidence_id):
+            raise ValueError("invalid evidence ID")
+        with self._lock:
+            row = self._db.execute(
+                "SELECT case_id FROM evidence WHERE evidence_id=?",
+                (evidence_id,),
+            ).fetchone()
+        return None if row is None else str(row[0])
 
     def get_case(self, case_id: str) -> CaseRecord:
         with self._lock:

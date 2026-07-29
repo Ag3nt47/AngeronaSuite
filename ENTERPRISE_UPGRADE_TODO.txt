@@ -767,25 +767,38 @@ Acceptance gate:
   - bandwidth schedule.
   - automatic pause on unexpected volume.
 
-[PARTIAL/P2] ENT-HUNT-005  Add hunt notebooks/results.
+[DONE/P2] ENT-HUNT-005  Add hunt notebooks/results.
   - Progress and failures.
   - Server-side bounded post-processing.
   - evidence links.
   - case promotion.
   - export with audit.
-  Local 2026-07-29 foundation: `core/hunt_workspace.py` provides an
+  Local 2026-07-29 implementation: `core/hunt_workspace.py` provides an
   HMAC-authenticated, atomically persisted, optimistic-concurrency workspace
   for typed queries, notes, findings, decisions, privacy-tokenized device
   result references, evidence digests, and sanitized export. It has no
   executable cells and excludes restricted results/device identifiers from the
-  default exchange view. Fleet progress streaming, bounded server-side
-  aggregation, and direct case promotion remain open.
+  default exchange view. `core/hunt_operations.py` adds authenticated durable
+  progress and coded failures, non-regressing host/byte limits, bounded
+  latest-state aggregation, tamper-evident summaries, and deterministic
+  idempotent promotion of result references into an investigating case with
+  verified custody. The UI and future central service may present the same
+  contracts without widening them.
 
-[TODO/P2] ENT-HUNT-006  Add a safe live-response session.
+[DONE/P2] ENT-HUNT-006  Add a safe live-response session.
   - Cataloged read-only queries first.
   - Strong approval for changes.
   - No unrestricted shell.
   - Session expiry and complete transcript.
+  Local 2026-07-29 implementation: `core/safe_response_session.py` exposes only
+  registered read-only query handlers and registered Response Broker operations.
+  Session identity, target, requester, exact capabilities, and a maximum
+  30-minute lifetime are immutable. Read-only sessions need an independent
+  approval; sessions containing host-changing operations need two. Each change
+  still passes the operation's separate risk-based approvals. Executable
+  query/parameter fields and unregistered capabilities fail closed. Request
+  replay is idempotent, host changes are explicit, and the bounded persisted
+  transcript forms an HMAC-authenticated hash chain with a signed receipt.
 
 Acceptance gate:
   TEST + PERF + PRIV. A hunt against 10,000 simulated endpoints respects byte,
