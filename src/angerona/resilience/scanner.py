@@ -63,7 +63,8 @@ class RawProcessSensor:
             for pid in (set(current) - self._known):
                 info = current[pid]
                 rec = {"type": "process_creation", "pid": pid,
-                       "ppid": info.get("ppid"), "name": info.get("name"),
+                       "ppid": info.get("ppid"),
+                       "name": info.get("name") or "unknown",
                        "ts": time.time()}
                 frames.append(json.dumps(rec, separators=(",", ":")).encode("utf-8"))
         else:

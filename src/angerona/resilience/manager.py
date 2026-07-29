@@ -20,7 +20,6 @@ the EventBus, and writes its status for the BlackBox.
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import threading
@@ -100,6 +99,7 @@ class ResilienceManager:
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self.frames_ingested = 0
+        self.frames_rejected = 0
         self.status = "stopped"
 
     def _sup_event(self, level: str, msg: str, details: dict) -> None:
@@ -220,20 +220,47 @@ class ResilienceManager:
 
     def _ring_loop(self):
         while not self._stop.wait(self.ring_interval):
+            before = (
+                int(getattr(self._reader, "authentication_failures", 0))
+                if self._reader is not None else 0
+            )
             try:
                 batch = self._reader.read_batch(2048) if self._reader else []
             except Exception:
                 batch = []
+            after = (
+                int(getattr(self._reader, "authentication_failures", before))
+                if self._reader is not None else before
+            )
+            if after > before:
+                self._record_ipc_rejection(
+                    after - before,
+                    "frame authentication, sequence, or ring-header integrity",
+                )
             for fr in batch:
                 self.frames_ingested += 1
                 self._handle_frame(fr)
 
-    def _handle_frame(self, fr: dict) -> None:
-        label = _SENSOR_LABELS.get(fr.get("sensor_id"), f"sensor{fr.get('sensor_id')}")
+    def _record_ipc_rejection(self, count: int, reason: str) -> None:
+        self.frames_rejected += max(1, int(count))
+        total = self.frames_rejected
+        if total <= 3 or total & (total - 1) == 0:
+            self._publish(
+                "Resilience Manager",
+                f"Authenticated IPC input rejected ({reason}); "
+                f"{total} rejected frame(s) this run.",
+                "HIGH",
+                {"rejected_frames": total, "reason": reason},
+            )
+
+    def _handle_frame(self, fr: dict) -> bool:
+        sensor_id = fr.get("sensor_id")
+        label = _SENSOR_LABELS.get(sensor_id, f"sensor{sensor_id}")
         try:
-            payload = json.loads(fr["payload"].decode("utf-8", "ignore"))
-        except Exception:
-            payload = {"raw": fr["payload"][:120].hex()}
+            payload = ipc_ring.decode_sensor_payload(sensor_id, fr["payload"])
+        except (ipc_ring.FrameError, KeyError, TypeError):
+            self._record_ipc_rejection(1, "authenticated sensor payload schema")
+            return False
         if self.on_frame:
             try:
                 self.on_frame({"label": label, **payload})
@@ -243,11 +270,13 @@ class ResilienceManager:
         self._publish("Telemetry Scanner",
                       f"{label}: {name} (pid {payload.get('pid')})",
                       "INFO", {**payload, "source": "scanner", "sensor": label})
+        return True
 
     def _status_loop(self):
         while not self._stop.wait(3.0):
             diag.write_status("core", "running", {
                 "frames_ingested": self.frames_ingested,
+                "frames_rejected": self.frames_rejected,
                 "supervised": list(self._sup.components.keys()),
                 "safe_mode": [n for n, c in self._sup.components.items() if c.safe_mode],
             })

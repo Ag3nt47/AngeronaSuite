@@ -512,14 +512,25 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
 - `tests/test_property_fuzz_boundaries.py` is the deterministic trust-boundary
   property suite. Every parser must normalize completely or raise its documented
   validation error. It covers sensor envelopes, signed capability manifests,
-  detection packages, fleet authentication, encrypted-backup metadata, and
-  portable restore paths. Keep `database=None`, `derandomize=True`, bounded
-  examples, no network, and no real endpoint data. The first pass closed
+  detection packages, fleet authentication, authenticated IPC frames,
+  encrypted-backup metadata, and portable restore paths. Keep `database=None`,
+  `derandomize=True`, bounded examples, no network, and no real endpoint data.
+  The first passes closed
   malformed platform/header exception leaks, schema smuggling, silent list
   truncation, non-finite values, and Windows alternate-data-stream/device-alias
-  restore paths. IPC-frame, document-import, and future driver IOCTL fuzzing
-  remain open.
-- Current evidence: 445 passed /
+  restore paths. Document-import and future driver IOCTL fuzzing remain open.
+- `resilience/ipc_ring.py` v2 is the scanner-to-core trust boundary. Every fixed
+  slot carries a full-sequence HMAC-SHA-256 tag under a dedicated protected
+  per-install key. Decode must verify exact schema, sensor, 64-bit ring position,
+  payload, and tag before returning bytes. Wrong-key, tampered, replayed,
+  out-of-position, unknown-schema, oversized, symlink-backed, or malformed
+  input fails closed. The process-creation payload parser accepts only strict
+  UTF-8 JSON with exact fields and finite bounded types. Manager rejection
+  metrics and rate-limited alerts never retain the rejected raw payload.
+  Do not claim process isolation: a fully compromised scanner that can read the
+  ring key can forge a valid record. Code integrity, process supervision, and
+  future native isolation remain separate controls.
+- Current evidence: 452 passed /
   2 intentional platform skips; compile and Ruff clean; no known
   installed-package vulnerability reported.
 

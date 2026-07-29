@@ -249,15 +249,29 @@ def update(source: Path, destination: Path) -> None:
         "Hypothesis 6.163.0 provides deterministic, database-free, synthetic, "
         "offline property fuzzing as a development-only dependency. It derives "
         "120 replayable examples per property for normalized sensor events, "
-        "signed capability manifests, detection packages, fleet authentication, "
-        "encrypted-backup metadata, and portable restore paths.",
+        "authenticated Inter-Process Communication frames, signed capability "
+        "manifests, detection packages, fleet authentication, encrypted-backup "
+        "metadata, and portable restore paths.",
         "The property contract requires complete normalization or the documented "
         "fail-closed validation error. Its first pass found and corrected "
         "malformed platform and authentication-header exception leaks, mixed-type "
         "diagnostics, silent list truncation, non-finite values, schema smuggling, "
         "and Windows alternate-data-stream and device-alias restore paths. "
-        "Inter-Process Communication frame, document-import, and future native "
-        "driver fuzzing remain open.",
+        "Document-import and future native driver fuzzing remain open.",
+        "Shared-memory ring version 2 authenticates scanner-to-core records with "
+        "a dedicated protected per-install Hash-based Message Authentication "
+        "Code using Secure Hash Algorithm 256 key. Schema, sensor identifier, "
+        "full 64-bit sequence, and payload are bound before parsing. Wrong-key, "
+        "modified, replayed, out-of-position, unknown-schema, oversized, and "
+        "malformed records are discarded and counted.",
+        "Known process telemetry uses strict UTF-8 JavaScript Object Notation "
+        "(JSON) with exact bounded fields and finite values. A valid non-object "
+        "JSON payload can no longer terminate the ring-drain thread. Rejection "
+        "alerts are rate-limited and never retain rejected raw payloads.",
+        "Ring authentication detects corruption, replay, and forgery without "
+        "the protected key. It is not process isolation: a fully compromised "
+        "scanner that can read the key can forge a valid record. Code integrity, "
+        "supervision, and future native isolation remain separate controls.",
         "Ruff 0.16.0 adds a fast correctness gate and found a latent ARP "
         "Watchdog return-type spelling defect, which was corrected.",
         "pytest-xdist 3.8.0 is available for isolated test groups. The complete "
@@ -274,7 +288,7 @@ def update(source: Path, destination: Path) -> None:
         "The first Bandit pass exposed a weak SHA-1 alert identifier and "
         "shell-based console clearing. Both were corrected and the "
         "high-severity re-scan is clean.",
-        "Final repository evidence: 445 tests passed, 2 intentional "
+        "Final repository evidence: 452 tests passed, 2 intentional "
         "platform-dependent skips, 0 failures; Python compilation, Ruff, "
         "dependency audit, and whitespace checks passed.",
     ))

@@ -7,6 +7,7 @@ can be replayed offline.
 from __future__ import annotations
 
 import copy
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,6 +23,15 @@ from angerona.core.detection_packages import (
 )
 from angerona.core.fleet_service import RequestAuthenticator, sign_request
 from angerona.core.sensor_events import SensorEvent, SensorEventError
+from angerona.resilience.ipc_ring import (
+    FrameError,
+    RingReader,
+    RingWriter,
+    _load_or_create_key,
+    decode_frame,
+    decode_sensor_payload,
+    encode_frame,
+)
 
 FUZZ = settings(
     max_examples=120,
@@ -327,3 +337,146 @@ def test_backup_relative_paths_never_escape_or_use_windows_aliases(value):
 def test_backup_paths_reject_traversal_ads_and_device_aliases(unsafe):
     with pytest.raises(ValueError, match="safe relative"):
         _relative(unsafe)
+
+
+@FUZZ
+@given(
+    record=st.binary(max_size=700),
+    expected_sequence=st.integers(min_value=0, max_value=0xFFFFFFFFFFFFFFFF),
+)
+def test_ipc_record_parser_returns_authenticated_frame_or_frame_error(
+    record, expected_sequence,
+):
+    try:
+        decoded = decode_frame(
+            b"i" * 32,
+            record,
+            expected_sequence=expected_sequence,
+        )
+    except FrameError:
+        return
+    assert decoded["seq"] == expected_sequence
+    assert decoded["schema"] == 1
+    assert isinstance(decoded["payload"], bytes)
+
+
+@FUZZ
+@given(
+    data=st.data(),
+    payload=st.binary(max_size=400),
+    sensor_id=st.integers(min_value=0, max_value=0xFFFF),
+    sequence=st.integers(min_value=0, max_value=0xFFFFFFFFFFFFFFFF),
+)
+def test_ipc_frames_bind_every_byte_key_and_full_sequence(
+    data, payload, sensor_id, sequence,
+):
+    key = b"i" * 32
+    record = encode_frame(
+        key,
+        payload,
+        sensor_id=sensor_id,
+        sequence=sequence,
+    )
+    decoded = decode_frame(key, record, expected_sequence=sequence)
+    assert decoded["payload"] == payload
+    assert decoded["sensor_id"] == sensor_id
+
+    index = data.draw(st.integers(min_value=0, max_value=len(record) - 1))
+    tampered = bytearray(record)
+    tampered[index] ^= 1
+    with pytest.raises(FrameError, match="authentication|schema|sequence"):
+        decode_frame(key, bytes(tampered), expected_sequence=sequence)
+    with pytest.raises(FrameError, match="authentication"):
+        decode_frame(b"x" * 32, record, expected_sequence=sequence)
+    replay_position = sequence - 1 if sequence else 1
+    with pytest.raises(FrameError, match="sequence"):
+        decode_frame(key, record, expected_sequence=replay_position)
+
+
+@FUZZ
+@given(payload=st.binary(max_size=700))
+def test_ipc_sensor_payload_parser_normalizes_or_raises_frame_error(payload):
+    try:
+        value = decode_sensor_payload(1, payload)
+    except FrameError:
+        return
+    assert set(value) == {"type", "pid", "ppid", "name", "ts"}
+    assert value["type"] == "process_creation"
+
+
+@FUZZ
+@given(
+    field=st.sampled_from(("type", "pid", "ppid", "name", "ts")),
+    value=JSON_VALUE,
+)
+def test_ipc_process_payload_field_mutations_fail_closed(field, value):
+    payload = {
+        "type": "process_creation",
+        "pid": 100,
+        "ppid": 10,
+        "name": "safe.exe",
+        "ts": 1_000.0,
+    }
+    payload[field] = value
+    try:
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return
+    try:
+        decoded = decode_sensor_payload(1, encoded)
+    except FrameError:
+        return
+    assert decoded["pid"] >= 1
+    assert decoded["name"]
+
+
+def test_ipc_ring_discards_tampered_slot_and_rejects_header_corruption(tmp_path):
+    key = b"i" * 32
+    path = tmp_path / "telemetry.ring"
+    writer = RingWriter(path, slot_count=8, slot_size=256, key=key)
+    reader = RingReader(path, slot_count=8, slot_size=256, key=key)
+    try:
+        assert writer.write(b"authenticated", sensor_id=1)
+        offset = writer._slot_off(0) + 4
+        writer._mm[offset] ^= 1
+        assert reader.read_batch() == []
+        assert reader.authentication_failures == 1
+
+        writer._write_field(4, "<I", 99)
+        with pytest.raises(FrameError, match="header"):
+            reader.read_batch()
+        assert reader.authentication_failures == 2
+    finally:
+        reader.close()
+        writer.close()
+
+
+def test_ipc_ring_key_is_create_once_and_malformed_custody_fails(tmp_path):
+    path = tmp_path / "ipc_ring.key"
+    first = _load_or_create_key(path)
+    assert len(first) == 32
+    assert _load_or_create_key(path) == first
+
+    path.write_text("not-a-key", encoding="ascii")
+    with pytest.raises(RuntimeError, match="malformed"):
+        _load_or_create_key(path)
+
+
+def test_ipc_ring_reinitializes_legacy_layout_before_consumption(tmp_path):
+    key = b"i" * 32
+    path = tmp_path / "legacy.ring"
+    writer = RingWriter(path, slot_count=8, slot_size=256, key=key)
+    writer._write_field(4, "<I", 1)
+    writer.close()
+
+    reader = RingReader(path, slot_count=8, slot_size=256, key=key)
+    try:
+        assert reader._read_header()[1] == 2
+        assert reader.read_batch() == []
+    finally:
+        reader.close()

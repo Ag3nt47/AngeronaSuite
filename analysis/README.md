@@ -974,19 +974,32 @@ email scanning, channel push, research) — each has a one-click test button.
   preflight still runs before `pythonw`.
 - **Deterministic trust-boundary fuzzing.** A pinned, development-only
   Hypothesis harness now derives 120 offline-replayable examples per property
-  for normalized sensor events, signed capability manifests, detection
-  packages, fleet request authentication, encrypted-backup metadata, and
-  portable restore paths. Parsers must return a fully validated object or their
-  documented fail-closed error. The first run found and fixed malformed
+  for normalized sensor events, authenticated Inter-Process Communication (IPC)
+  frames, signed capability manifests, detection packages, fleet request
+  authentication, encrypted-backup metadata, and portable restore paths.
+  Parsers must return a fully validated object or their documented fail-closed
+  error. The first runs found and fixed malformed
   platform/header exception leaks, mixed-type diagnostic failures, silent list
   truncation, non-finite detection values, schema-smuggling fields, and Windows
-  alternate-data-stream/device-alias restore paths. Inter-Process Communication
-  (IPC) frame and future native-driver fuzz targets remain open.
+  alternate-data-stream/device-alias restore paths. Document-import and future
+  native-driver fuzz targets remain open.
+- **Authenticated scanner-to-core IPC.** Shared-memory ring v2 protects every
+  scanner record with a dedicated, access-controlled Hash-based Message
+  Authentication Code using Secure Hash Algorithm 256 (HMAC-SHA-256) key. The
+  tag binds the schema, sensor, full 64-bit sequence, and payload. Wrong-key,
+  modified, replayed, out-of-position, unknown-schema, oversized, and malformed
+  records are discarded before EventBus publication. Known process telemetry is
+  strict UTF-8 JSON with an exact bounded schema; a valid non-object JSON frame
+  can no longer terminate the ring-drain thread. Rejections are counted and
+  surfaced with rate-limited alerts instead of retaining raw rejected payloads.
+  This detects ring-file corruption and forgery without the protected key; it
+  cannot prevent a fully compromised scanner process that can read that key from
+  creating authenticated records.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
-  passes **445 tests with 2 intentional platform skips** and 0 failures.
+  passes **452 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
   Ruff pass. pip-audit reports no known vulnerabilities in the installed
   dependencies. The public-repository scan found no committed real credential,
   private key, user-profile path, database, runtime-data, or cache artifact.
 
-<!-- ANGERONA_DOC_STATUS tests=445 skips=2 modules=65 -->
+<!-- ANGERONA_DOC_STATUS tests=452 skips=2 modules=65 -->
