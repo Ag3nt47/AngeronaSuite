@@ -251,6 +251,38 @@ GUIDES = (
         "Enterprise",
     ),
     CapabilityGuide(
+        "backup-restore", "Encrypted Backup and Offline Restore", "Resilience",
+        "Streaming authenticated backup for selected local configuration, "
+        "identity, audit, case and evidence files, including consistent SQLite "
+        "snapshots and a two-person offline restore boundary.",
+        ("Open Enterprise Settings.", "Choose an external backup destination.",
+         "Select exact data-root items and create the encrypted archive.",
+         "Verify its receipt and perform a test restore.",
+         "For a real restore, stop Angerona and collect two independent approvals.",
+         "Keep the generated rollback scope until verification completes."),
+        "The archive decrypts with the protected key, all item digests verify, "
+        "a wrong key or changed archive fails, and an interrupted restore returns "
+        "the previous file to its original location.",
+        "Paths, filenames and payloads are inside the encrypted stream. Keys are "
+        "never embedded in the archive; destination and key custody remain an "
+        "operator responsibility.",
+        "Enterprise",
+    ),
+    CapabilityGuide(
+        "audit-export", "Signed Audit Export", "Governance",
+        "Tenant, scope and time-bounded audit exchange with privacy minimization, "
+        "actor tokenization, record chaining, manifest signing and truncation honesty.",
+        ("Open Enterprise Settings.", "Choose the exact tenant, scopes and time range.",
+         "Set a bounded record limit.", "Generate the local export.",
+         "Verify its chain and manifest before sharing."),
+        "Cross-tenant/out-of-scope records are absent, restricted fields are "
+        "removed, sensitive values tokenize, free text redacts, and any record or "
+        "manifest change fails verification.",
+        "The default export removes restricted fields and raw actors, tokenizes "
+        "sensitive fields, and records when the requested result was truncated.",
+        "Enterprise",
+    ),
+    CapabilityGuide(
         "world-view", "World View and System Pulse", "Observability",
         "Explains Angerona resource use, sensor continuity and internal service health.",
         ("Open World View.", "Inspect sensor and pipeline status.",

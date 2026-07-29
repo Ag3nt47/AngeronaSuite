@@ -1526,12 +1526,23 @@ Acceptance gate:
   - search/storage replica plan.
   - documented consistency.
 
-[TODO/P2] ENT-RES-007  Add backup/restore.
+[PARTIAL/P2] ENT-RES-007  Add backup/restore.
   - Encrypted backups.
   - configuration, identity, audit, cases, indexes/object evidence.
   - restore validation.
   - key backup/recovery.
   - tenant-level export where supported.
+  Local 2026-07-29 foundation: `core/backup_restore.py` creates a streaming
+  AES-GCM encrypted and authenticated archive whose header exposes only a
+  backup identity and random cryptographic parameters. Exact relative selections
+  stay under the canonical data root; symlink/reparse input, in-root destination,
+  missing required data, size overflow, wrong keys, tampering, and digest mismatch
+  fail closed. SQLite inputs use the backup API for a consistent snapshot.
+  Restore is a separate verified plan bound to the archive and target, requires
+  Angerona offline plus two distinct non-requester approvals, stages all content
+  before replacement, retains previous files in a rollback scope, and restores
+  them after an injected interruption. Protected key custody/recovery, scheduled
+  policy, retention, tenant packaging, and full-system disaster recovery remain.
 
 [TODO/P2] ENT-RES-008  Define RPO/RTO and disaster recovery.
   - Site loss.
@@ -2045,11 +2056,19 @@ Acceptance gate:
   digest. Publisher signing, complete threat/privacy/support attachments, SBOM
   assembly, and externally witnessed release evidence remain open.
 
-[TODO/P2] ENT-COMP-004  Add audit export.
+[PARTIAL/P2] ENT-COMP-004  Add audit export.
   - Time range/tenant/scope.
   - signed manifest.
   - redaction.
   - chain-of-custody.
+  Local 2026-07-29 foundation: `core/audit_export.py` filters exact tenant,
+  scope, and inclusive time range; applies a bounded result limit with explicit
+  truncation; removes restricted fields; tokenizes sensitive values and actors;
+  redacts sensitive free text; chains every exported record; binds the chain and
+  records digest into an HMAC-authenticated manifest; and writes atomically.
+  Tests prove cross-tenant/scope exclusion and record/manifest tamper detection.
+  Direct adapters for every product audit source, centralized tenant authority,
+  externally verifiable publisher signatures, and operational export UI remain.
 
 [TODO/P2] ENT-COMP-005  Add configurable evidence retention/legal hold.
 
@@ -2408,6 +2427,12 @@ contains:
   - immutable GitHub Actions pins, least-privilege workflow permissions,
     dependency updates, code ownership, secret scanning, CodeQL, Scorecard,
     release-policy validation, and multi-version continuous integration.
+  - streaming encrypted local backup with consistent SQLite snapshots,
+    two-person offline restore planning, staged verification, retained rollback,
+    and interrupted-restore recovery;
+  - tenant/scope/time-bounded privacy-minimized audit export with actor
+    tokenization, explicit truncation, record custody chain, and authenticated
+    manifest.
 
 Still external-gated or incomplete: production mutual Transport Layer Security
 (mTLS), central fleet services and storage, tenant isolation, durable

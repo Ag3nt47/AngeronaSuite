@@ -888,6 +888,16 @@ email scanning, channel push, research) — each has a one-click test button.
   source commit. Its bounded evidence pack stores redacted summaries plus
   command/output/manifest digests and known limitations. Publisher signing and
   long physical-host soak evidence remain separate release gates.
+- **Encrypted backup and offline restore.** Selected data-root files and
+  consistent SQLite snapshots stream into an authenticated encrypted archive;
+  filenames and payloads are not exposed. Restore verifies every digest, stages
+  all content, requires the suite offline plus two independent approvers, and
+  retains the previous files for rollback. Key recovery, scheduling, retention,
+  and full disaster recovery remain operational gates.
+- **Signed audit export.** Exact tenant, scope, time, and record limits produce a
+  privacy-minimized local exchange: restricted fields are removed, sensitive
+  values and actors are tokenized, free text is redacted, truncation is explicit,
+  records form a custody chain, and the manifest is authenticated.
 - **Fewer Defender prompts.** Normal startup no longer rewrites the
   highest-privilege scheduled task. Startup registration changes only when the
   operator explicitly changes that setting.
@@ -898,10 +908,10 @@ email scanning, channel push, research) — each has a one-click test button.
   intentionally mutate file permissions and are not process-parallel-safe.
   Ruff immediately found and closed a latent ARP Watchdog type-name defect.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
-  passes **387 tests with 2 intentional platform skips** and 0 failures.
+  passes **397 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
   Ruff pass. pip-audit reports no known vulnerabilities in the installed
   dependencies. The public-repository scan found no committed real credential,
   private key, user-profile path, database, runtime-data, or cache artifact.
 
-<!-- ANGERONA_DOC_STATUS tests=387 skips=2 modules=65 -->
+<!-- ANGERONA_DOC_STATUS tests=397 skips=2 modules=65 -->

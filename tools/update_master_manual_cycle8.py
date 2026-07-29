@@ -149,6 +149,30 @@ def update(source: Path, destination: Path) -> None:
         "physical-host soaks remain separate gates.",
     ))
 
+    doc.add_heading("Encrypted backup, restore, and audit export", level=2)
+    bullets(doc, (
+        "Selected canonical data-root files and consistent SQLite snapshots "
+        "stream into an Advanced Encryption Standard Galois/Counter Mode "
+        "(AES-GCM) authenticated archive. Filenames, paths, manifests, and "
+        "payloads remain inside the encrypted stream.",
+        "Backup rejects traversal, symlink or reparse-point input, an in-root "
+        "archive destination, missing required data, byte overflow, wrong keys, "
+        "tampering, and digest mismatch.",
+        "Restore is planned separately and binds the exact archive, target, "
+        "manifest, item list, requester, and expiry. It requires Angerona "
+        "offline plus two distinct non-requester approvals, stages every item, "
+        "and retains replaced files in a rollback scope.",
+        "An interrupted replacement restores the previous file. Protected key "
+        "recovery, scheduling, retention, and full disaster-recovery exercises "
+        "remain operational gates.",
+        "Audit export filters an exact tenant, scope, inclusive time range and "
+        "record limit. Restricted fields are removed, sensitive values and "
+        "actors are tokenized, free text is redacted, and truncation is explicit.",
+        "Exported audit records form a cryptographic custody chain; an "
+        "HMAC-authenticated manifest binds the chain head, record digest, scope, "
+        "time range, privacy policy, and requester token.",
+    ))
+
     doc.add_heading("Engineering efficiency and verification", level=2)
     bullets(doc, (
         "Ruff 0.16.0 adds a fast correctness gate and found a latent ARP "
@@ -159,7 +183,7 @@ def update(source: Path, destination: Path) -> None:
         "pip-audit 2.10.1 reports no known vulnerability in installed "
         "dependencies. Public-repository scanning found no committed real "
         "credential, private key, user-profile path, database, cache, or runtime data.",
-        "Final repository evidence: 387 tests passed, 2 intentional "
+        "Final repository evidence: 397 tests passed, 2 intentional "
         "platform-dependent skips, 0 failures; Python compilation, Ruff, "
         "dependency audit, and whitespace checks passed.",
     ))
