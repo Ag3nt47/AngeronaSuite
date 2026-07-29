@@ -17,13 +17,18 @@ and best-effort (never raise into the caller's hot path).
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import os
+import re
 import sys
 import threading
 import time
 import traceback
 from pathlib import Path
 from typing import Optional
+
+from angerona.core.atomic_io import replace_with_retry
 
 
 def _repo_root() -> Path:
@@ -51,8 +56,12 @@ def _atomic_write_json(name: str, obj) -> bool:
     tmp = p.with_suffix(p.suffix + f".tmp.{os.getpid()}")
     try:
         with _LOCK:
-            tmp.write_text(json.dumps(obj, indent=2, default=str), encoding="utf-8")
-            os.replace(tmp, p)
+            encoded = json.dumps(obj, indent=2, default=str).encode("utf-8")
+            with open(tmp, "wb") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            replace_with_retry(tmp, p)
         return True
     except Exception:
         try:
@@ -60,6 +69,72 @@ def _atomic_write_json(name: str, obj) -> bool:
         except Exception:
             pass
         return False
+
+
+def write_recovery_snapshot(
+    component: str,
+    observed_state: str,
+    *,
+    namespace: str,
+    heartbeat: Optional[dict] = None,
+    failure_count: int = 0,
+    restart_count: int = 0,
+    safe_mode: bool = False,
+    next_restart_at: float = 0.0,
+    key: Optional[bytes] = None,
+) -> Optional[str]:
+    """Write a bounded, authenticated pre-restart snapshot and return its digest.
+
+    This intentionally records no command line, executable path, user identity,
+    environment value, or telemetry payload.  It is evidence that the supervisor
+    observed a liveness failure—not a process-memory dump.
+    """
+    from angerona.resilience.recovery_state import safe_name
+    from angerona.resilience.shutdown_token import _load_key
+
+    component_name = safe_name(component, fallback="component")
+    namespace_name = safe_name(namespace)
+    record = heartbeat if isinstance(heartbeat, dict) else {}
+    heartbeat_view = {}
+    for field in ("pid", "count", "flags"):
+        try:
+            heartbeat_view[field] = max(0, int(record.get(field, 0)))
+        except (TypeError, ValueError):
+            heartbeat_view[field] = 0
+    try:
+        ts_ns = max(0, int(record.get("ts_ns", 0)))
+        heartbeat_view["age_s"] = (
+            round(max(0.0, (time.time_ns() - ts_ns) / 1e9), 3) if ts_ns else None
+        )
+    except (TypeError, ValueError, OverflowError):
+        heartbeat_view["age_s"] = None
+
+    snapshot = {
+        "schema_version": 1,
+        "namespace": namespace_name,
+        "component": component_name,
+        "observed_state": re.sub(r"[^a-z_]+", "-", str(observed_state).casefold())[:24],
+        "timestamp": time.time(),
+        "heartbeat": heartbeat_view,
+        "failure_count": max(0, min(64, int(failure_count))),
+        "restart_count": max(0, int(restart_count)),
+        "safe_mode": bool(safe_mode),
+        "next_restart_at": max(0.0, float(next_restart_at)),
+    }
+    authority = bytes(key) if key is not None else _load_key()
+    canonical = json.dumps(
+        snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    snapshot["hmac_sha256"] = hmac.new(
+        authority, canonical, hashlib.sha256
+    ).hexdigest()
+    encoded = json.dumps(snapshot, indent=2, default=str).encode("utf-8")
+    if len(encoded) > 16 * 1024:
+        return None
+    filename = f"recovery_{namespace_name}_{component_name}.json"
+    if not _atomic_write_json(filename, snapshot):
+        return None
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def write_status(component: str, state: str = "running", extra: Optional[dict] = None) -> bool:

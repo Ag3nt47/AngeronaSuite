@@ -135,11 +135,10 @@ class ResolveCenter(QDialog):
                and getattr(e, "module", "") not in NOISE_MODULES]
         out.sort(key=lambda e: getattr(e, "ts", 0), reverse=True)
         out = out[:self._SCAN_CAP]
-        acked = alert_ack.acked_signatures()
         process_policy = process_allowlist.policy_snapshot()
         resolutions = drill_resolution.resolution_snapshot()
         return [e for e in out
-                if alert_ack.signature(e) not in acked
+                if not alert_ack.is_acked(e)
                 and not process_allowlist.is_event_allowed(e, policy=process_policy)
                 and not drill_resolution.is_resolved_event(
                     e, resolutions=resolutions)]

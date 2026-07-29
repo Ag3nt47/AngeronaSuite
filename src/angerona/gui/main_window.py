@@ -23,8 +23,7 @@ from angerona.branding import icon_path
 from angerona.core.commands import CommandConsole
 from angerona.core.eco_wakeup import EcoWakeupWorker
 from angerona.core.eventbus import Severity
-from angerona.gui.animations import (
-    ClashingSwords, RunSpinner, SharkSwimBanner, SharkSwimIndicator, ThreatOverlay)
+from angerona.gui.animations import RunSpinner
 from angerona.gui.header_controls import (
     HeaderActionButton, PanelRevealOverlay, motion_allowed)
 from angerona.gui.holographic_orb import HolographicOrbController

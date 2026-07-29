@@ -96,6 +96,7 @@ def register_research_tool(aria, research: Optional[Research] = None, *,
     effect. ``open_in_browser`` is retained for caller compatibility but never
     makes the READ tool open a browser.
     """
+    del open_in_browser  # legacy argument is intentionally behaviorless
     research = research or Research()
 
     def _research(indicator: str):

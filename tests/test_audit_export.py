@@ -17,11 +17,11 @@ def _event(record_id, timestamp, **overrides):
         "timestamp": timestamp,
         "action": "process.contain",
         "outcome": "success",
-        "actor": "Agent47@example.com",
+        "actor": "SampleUser@example.com",
         "details": {
             "device_id": "device-001",
-            "username": "Agent47",
-            "path": r"C:\Users\Agent47\private.exe",
+            "username": "SampleUser",
+            "path": r"C:\Users\SampleUser\private.exe",
             "password": "super-secret",
             "message": "password=super-secret from 10.2.3.4",
         },
@@ -60,7 +60,7 @@ def test_audit_export_filters_redacts_chains_and_signs(tmp_path):
     path = tmp_path / "audit.json"
     write_audit_export(path, export)
     raw = path.read_text(encoding="utf-8")
-    assert "Agent47" not in raw
+    assert "SampleUser" not in raw
     assert "super-secret" not in raw
     assert r"C:\\Users" not in raw
     assert "10.2.3.4" not in raw

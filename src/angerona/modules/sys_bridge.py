@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import ctypes
 import os
-import sys as _sys
 import time
 
 from angerona.core.module_base import BaseModule, Severity

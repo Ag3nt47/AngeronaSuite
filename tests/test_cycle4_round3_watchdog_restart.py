@@ -118,16 +118,25 @@ def test_dead_core_is_automatically_respawned_by_watchdog(monkeypatch) -> None:
     from angerona.resilience import shutdown_token, supervisor
 
     monkeypatch.setattr(shutdown_token, "is_standdown_requested", lambda: False)
-    sup = supervisor.ProcessSupervisor()
+    now = [100.0]
+    sup = supervisor.ProcessSupervisor(clock=lambda: now[0])
     component = sup.add("core", ["core"])
     calls = []
     monkeypatch.setattr(sup, "_pop_restart_requests", lambda: set())
     monkeypatch.setattr(sup, "_assess", lambda current: "dead")
     monkeypatch.setattr(sup, "_register_failure", lambda current: False)
-    monkeypatch.setattr(sup, "_spawn", lambda current: calls.append(current.name))
+    monkeypatch.setattr(sup, "_capture_recovery_snapshot", lambda *_args: None)
+    monkeypatch.setattr(
+        sup,
+        "_spawn",
+        lambda current: calls.append(current.name) or True,
+    )
 
+    first = sup.tick()
+    now[0] = component.next_restart_at
     actions = sup.tick()
 
+    assert first["core"] == "backoff(dead)"
     assert actions["core"] == "respawned(dead)"
     assert calls == ["core"]
     assert component.safe_mode is False

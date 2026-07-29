@@ -38,6 +38,11 @@ from typing import Callable, Optional
 from angerona.resilience import heartbeat as hb
 from angerona.resilience import diagnostics as diag
 from angerona.resilience import shutdown_token as tok
+from angerona.resilience.recovery_state import (
+    RecoveryStateError,
+    RecoveryStateStore,
+    safe_name,
+)
 
 # After a component hits SAFE_MODE (crash-loop), wait this long, then retry once —
 # so supervision recovers automatically instead of giving up permanently.
@@ -175,16 +180,38 @@ class Component:
     _failures: deque = field(default_factory=deque)
     safe_mode: bool = False
     safe_mode_since: float = 0.0    # when SAFE_MODE was entered (for cooldown recovery)
+    next_restart_at: float = 0.0
+    last_state: str = "unknown"
+    last_diagnostic_sha256: str = ""
+    state_fault: bool = False
     restarts: int = 0
     adopted: bool = False
 
 
 class ProcessSupervisor:
     def __init__(self, poll_interval: float = 1.0,
-                 on_event: Optional[Callable[[str, str, dict], None]] = None):
+                 on_event: Optional[Callable[[str, str, dict], None]] = None,
+                 *,
+                 state_namespace: Optional[str] = None,
+                 state_store: Optional[RecoveryStateStore] = None,
+                 clock: Callable[[], float] = time.time,
+                 initial_backoff_s: float = 1.0,
+                 max_backoff_s: float = 60.0):
+        if initial_backoff_s <= 0 or max_backoff_s < initial_backoff_s:
+            raise ValueError("invalid supervisor restart backoff")
         self.components: dict[str, Component] = {}
         self.poll_interval = poll_interval
         self.on_event = on_event
+        self._clock = clock
+        self.initial_backoff_s = float(initial_backoff_s)
+        self.max_backoff_s = float(max_backoff_s)
+        self.state_namespace = safe_name(state_namespace or "ephemeral")
+        self._state_store = state_store
+        if self._state_store is None and state_namespace:
+            self._state_store = RecoveryStateStore(
+                self.state_namespace,
+                clock=clock,
+            )
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -192,6 +219,27 @@ class ProcessSupervisor:
     def add(self, name: str, argv: list, **kw) -> Component:
         c = Component(name=name, argv=list(argv), **kw)
         c.reader = hb.HeartbeatReader(name)
+        if self._state_store is not None:
+            try:
+                record = self._state_store.component(name)
+                c._failures.extend(record["failures"])
+                c.safe_mode = record["safe_mode"]
+                c.safe_mode_since = record["safe_mode_since"]
+                c.next_restart_at = record["next_restart_at"]
+                c.last_state = record["last_state"]
+                c.last_diagnostic_sha256 = record["last_diagnostic_sha256"]
+                c.state_fault = record["state_fault"]
+            except RecoveryStateError as exc:
+                c.safe_mode = True
+                c.safe_mode_since = self._clock()
+                c.state_fault = True
+                self._emit(
+                    "CRITICAL",
+                    f"{name} recovery state failed authentication; automatic "
+                    "respawns are paused until an authenticated manual restart.",
+                    component=name,
+                    error=type(exc).__name__,
+                )
         self.components[name] = c
         return c
 
@@ -222,7 +270,7 @@ class ProcessSupervisor:
         return age <= max(c.stale_after_s, 2.0) and hb.pid_alive(rec.get("pid", 0))
 
     # ── spawning (adopt-if-alive + cross-process lock) ───────────────────────
-    def _spawn(self, c: Component) -> None:
+    def _spawn(self, c: Component) -> bool:
         # Already up (perhaps started by the other supervisor)? Adopt it.
         if self._is_running(c):
             c._dead = False
@@ -230,13 +278,13 @@ class ProcessSupervisor:
                 c.adopted = True
                 self._emit("INFO", f"adopted already-running {c.name} (no duplicate started)",
                            component=c.name)
-            return
+            return True
         # Only one supervisor may spawn a given component at a time.
         if not try_claim_spawn(c.name):
-            return
+            return False
         try:
             if self._is_running(c):     # double-check under the lock
-                return
+                return True
             c.proc = spawn_detached(c.argv, window=c.window)
             c._dead = False
             c.adopted = False
@@ -245,8 +293,10 @@ class ProcessSupervisor:
                              name=f"wait-{c.name}").start()
             self._emit("INFO", f"launched {c.name} ({c.window}) pid {c.proc.pid}",
                        component=c.name, pid=c.proc.pid, restarts=c.restarts)
+            return True
         except Exception as exc:
             self._emit("CRITICAL", f"failed to spawn {c.name}: {exc}", component=c.name)
+            return False
         finally:
             # Hold the lock until the child is detectably up (or 5 s), so the peer
             # supervisor doesn't also spawn during the startup gap.
@@ -271,6 +321,13 @@ class ProcessSupervisor:
     def start(self) -> None:
         # Adopt-if-alive: never start a second instance of something already up.
         for c in self.components.values():
+            if c.safe_mode and not self._is_running(c):
+                self._emit(
+                    "HIGH",
+                    f"{c.name} remains stopped because durable SAFE_MODE is active.",
+                    component=c.name,
+                )
+                continue
             self._spawn(c)
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name="supervisor")
@@ -288,12 +345,29 @@ class ProcessSupervisor:
         actions: dict = {}
         standdown = tok.is_standdown_requested()
         forced = self._pop_restart_requests()       # operator/console manual restart
-        now = time.time()
+        now = self._clock()
         for name, c in self.components.items():
             # Manual restart: force a respawn now, clearing SAFE_MODE.
             if name in forced or "*" in forced:
+                self._capture_recovery_snapshot(c, "manual_restart")
                 c.safe_mode = False
+                c.safe_mode_since = 0.0
+                c.next_restart_at = 0.0
+                c.state_fault = False
                 c._failures.clear()
+                if self._state_store is not None:
+                    try:
+                        self._state_store.clear_component(
+                            name,
+                            authenticated_reset=True,
+                        )
+                    except Exception as exc:
+                        self._emit(
+                            "HIGH",
+                            f"{name}: manual restart could not reset durable state.",
+                            component=name,
+                            error=type(exc).__name__,
+                        )
                 if not self._terminate(c):
                     actions[name] = "manual_restart_failed"
                     self._emit(
@@ -310,31 +384,152 @@ class ProcessSupervisor:
             # SAFE_MODE recovery: never give up forever. After a cooldown, clear it
             # and allow a retry — a transient crash-loop (or a since-fixed bug) then
             # recovers automatically instead of staying permanently dead.
-            if c.safe_mode and now - c.safe_mode_since >= _SAFE_MODE_COOLDOWN:
+            if (
+                c.safe_mode
+                and not c.state_fault
+                and now - c.safe_mode_since >= _SAFE_MODE_COOLDOWN
+            ):
                 c.safe_mode = False
+                c.safe_mode_since = 0.0
+                c.next_restart_at = 0.0
                 c._failures.clear()
+                self._persist(c)
                 self._emit("INFO", f"{name} leaving SAFE_MODE after "
                            f"{_SAFE_MODE_COOLDOWN:.0f}s cooldown — retrying.", component=name)
             state = self._assess(c)
+            state_changed = state != c.last_state
+            if state_changed:
+                c.last_state = state
             actions[name] = state
             if standdown:
+                if state_changed:
+                    self._persist(c)
                 continue
             if state in ("dead", "suspended") and not c.safe_mode:
-                if self._register_failure(c):
-                    c.safe_mode = True
-                    c.safe_mode_since = now
-                    self._emit("CRITICAL",
-                               f"{name} entered SAFE_MODE after {c.max_failures} failures in "
-                               f"{c.window_s:.0f}s — respawns paused, auto-retry in "
-                               f"{_SAFE_MODE_COOLDOWN:.0f}s (or use manual restart).",
-                               component=name)
-                    actions[name] = "safe_mode"
+                if c.next_restart_at and now < c.next_restart_at:
+                    actions[name] = f"backoff({state})"
+                    if state_changed:
+                        self._persist(c)
+                    continue
+                if not c.next_restart_at:
+                    entered_safe_mode = self._register_failure(c)
+                    if entered_safe_mode:
+                        c.safe_mode = True
+                        c.safe_mode_since = now
+                        c.next_restart_at = 0.0
+                    self._capture_recovery_snapshot(c, state)
+                    if entered_safe_mode:
+                        self._persist(c)
+                        self._emit(
+                            "CRITICAL",
+                            f"{name} entered SAFE_MODE after {c.max_failures} failures in "
+                            f"{c.window_s:.0f}s; respawns paused, auto-retry in "
+                            f"{_SAFE_MODE_COOLDOWN:.0f}s (or use manual restart).",
+                            component=name,
+                        )
+                        actions[name] = "safe_mode"
+                        continue
+                    delay = min(
+                        self.max_backoff_s,
+                        self.initial_backoff_s * (2 ** max(0, len(c._failures) - 1)),
+                    )
+                    c.next_restart_at = now + delay
+                    if not self._persist(c):
+                        c.safe_mode = True
+                        c.safe_mode_since = now
+                        c.state_fault = True
+                        actions[name] = "safe_mode(persistence_fault)"
+                        continue
+                    actions[name] = f"backoff({state})"
+                    self._emit(
+                        "INFO",
+                        f"{name}: {state} observed; restart scheduled after "
+                        f"{delay:.1f}s backoff.",
+                        component=name,
+                        delay_s=delay,
+                    )
                     continue
                 if state == "suspended":
-                    self._terminate(c)
-                self._spawn(c)
-                actions[name] = f"respawned({state})"
+                    if not self._terminate(c):
+                        c.next_restart_at = now + self.max_backoff_s
+                        self._persist(c)
+                        actions[name] = "termination_failed"
+                        continue
+                spawned = self._spawn(c)
+                c.next_restart_at = 0.0
+                self._persist(c)
+                actions[name] = (
+                    f"respawned({state})" if spawned else f"restart_deferred({state})"
+                )
+            elif state == "alive":
+                if c.next_restart_at:
+                    c.next_restart_at = 0.0
+                    state_changed = True
+                if state_changed:
+                    self._persist(c)
+            elif state_changed:
+                self._persist(c)
         return actions
+
+    def _capture_recovery_snapshot(self, c: Component, state: str) -> None:
+        heartbeat = None
+        try:
+            heartbeat = c.reader.read() if c.reader else None
+        except Exception:
+            heartbeat = None
+        try:
+            digest = diag.write_recovery_snapshot(
+                c.name,
+                state,
+                namespace=self.state_namespace,
+                heartbeat=heartbeat,
+                failure_count=len(c._failures),
+                restart_count=c.restarts,
+                safe_mode=c.safe_mode,
+                next_restart_at=c.next_restart_at,
+            )
+            if digest:
+                c.last_diagnostic_sha256 = digest
+            else:
+                self._emit(
+                    "HIGH",
+                    f"{c.name}: pre-restart diagnostic snapshot could not be written.",
+                    component=c.name,
+                )
+        except Exception as exc:
+            self._emit(
+                "HIGH",
+                f"{c.name}: pre-restart diagnostic capture failed.",
+                component=c.name,
+                error=type(exc).__name__,
+            )
+
+    def _persist(self, c: Component) -> bool:
+        if self._state_store is None:
+            return True
+        try:
+            self._state_store.update_component(
+                c.name,
+                {
+                    "failures": list(c._failures),
+                    "safe_mode": c.safe_mode,
+                    "safe_mode_since": c.safe_mode_since,
+                    "next_restart_at": c.next_restart_at,
+                    "last_state": c.last_state,
+                    "last_diagnostic_sha256": c.last_diagnostic_sha256,
+                    "state_fault": c.state_fault,
+                },
+            )
+            return True
+        except Exception as exc:
+            self._emit(
+                "HIGH",
+                f"{c.name}: durable recovery state could not be saved; automatic "
+                "restart is paused to prevent an unbudgeted crash loop.",
+                component=c.name,
+                error=type(exc).__name__,
+            )
+            return False
 
     # ── manual restart (operator-triggered, cross-process via a command file) ──
     @staticmethod
@@ -416,17 +611,17 @@ class ProcessSupervisor:
         return hb_state
 
     def _register_failure(self, c: Component) -> bool:
-        now = time.time()
+        now = self._clock()
         c._failures.append(now)
         while c._failures and now - c._failures[0] > c.window_s:
             c._failures.popleft()
         return len(c._failures) >= c.max_failures
 
     def _decay(self, c: Component) -> None:
-        now = time.time()
+        now = self._clock()
         while c._failures and now - c._failures[0] > c.window_s:
             c._failures.popleft()
-        if c.safe_mode and not c._failures:
+        if c.safe_mode and not c.state_fault and not c._failures:
             c.safe_mode = False
             self._emit("INFO", f"{c.name} left SAFE_MODE (healthy again).", component=c.name)
 
@@ -533,7 +728,11 @@ def self_test() -> tuple[bool, str]:
             )
         py = sys.executable
 
-        sup = ProcessSupervisor(poll_interval=0.2)
+        sup = ProcessSupervisor(
+            poll_interval=0.2,
+            initial_backoff_s=0.05,
+            max_backoff_s=0.2,
+        )
         c = sup.add("scanner", [py, child, "scanner", "40"], stale_after_s=1.0,
                     max_failures=3, window_s=60.0, window="normal")
         sup._spawn(c)

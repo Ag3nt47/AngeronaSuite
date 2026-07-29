@@ -438,6 +438,14 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   drift. The pack binds the full commit, source epoch, redacted summaries,
   command/output digests, limitations, and manifest digest. It is
   content-addressed local evidence; publisher signature remains externally gated.
+- `resilience/recovery_state.py`, `resilience/supervisor.py`, and
+  `resilience/diagnostics.py` implement stateful recovery. Core Manager and peer
+  Watchdog use separate HMAC-authenticated atomic ledgers. A dead/suspended
+  component receives a bounded authenticated health snapshot before exponential
+  backoff; rolling failure budgets, restart deadlines, diagnostic digests, and
+  safe mode survive a supervisor restart. Tampered state fails closed until an
+  authenticated manual restart resets it. Stopped heartbeats and signed
+  stand-down do not respawn.
 - `core/backup_restore.py` is the streaming encrypted backup and approval-gated
   restore boundary. It snapshots regular files and SQLite databases under the
   canonical data root, rejects path traversal/symlink/reparse input and an
@@ -463,8 +471,15 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
 - Development gates are pinned in `pyproject.toml`: Ruff 0.16.0,
   pytest-xdist 3.8.0, and pip-audit 2.10.1. Ruff uses correctness-critical rules
   first. Keep the complete suite serial because Windows ACL tests are not
-  process-parallel-safe; xdist is for isolated test groups. Current evidence:
-  409 passed / 2 intentional platform skips; compile and Ruff clean; no known
+  process-parallel-safe; xdist is for isolated test groups.
+- `tools/github_toolkit.lock.json` pins development-only GitHub assets and
+  SHA-256 digests: uv 0.12.0, py-spy 0.4.2, hyperfine 1.20.0, and official
+  GitHub CLI 2.96.0. The bootstrap keeps them in ignored `.dev-tools` and
+  creates a separate Bandit 1.9.4, Vulture 2.16, and pytest-timeout 2.4.0
+  environment. None are product runtime dependencies. The first Bandit pass
+  found and closed the high-confidence SHA-1 identifier and shell-clearing
+  findings; the high-severity re-scan is clean. Current evidence: 416 passed /
+  2 intentional platform skips; compile and Ruff clean; no known
   installed-package vulnerability reported.
 
 ## NEVER DO

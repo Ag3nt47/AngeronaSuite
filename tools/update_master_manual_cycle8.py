@@ -164,6 +164,13 @@ def update(source: Path, destination: Path) -> None:
         "epoch to redacted summaries, command/output digests, limitations, and "
         "a canonical manifest digest. Publisher signing and long-duration "
         "physical-host soaks remain separate gates.",
+        "Core Manager and peer Watchdog now use separate HMAC-authenticated "
+        "atomic recovery ledgers. Dead and suspended components receive a "
+        "privacy-minimized authenticated health snapshot before recovery.",
+        "Exponential restart backoff, rolling crash budgets, restart deadlines, "
+        "diagnostic digests, and safe mode survive supervisor restarts. A forged "
+        "ledger fails closed until an authenticated manual restart resets it; "
+        "stopped heartbeats and signed stand-down remain stopped.",
     ))
 
     doc.add_heading("Encrypted backup, restore, and audit export", level=2)
@@ -212,7 +219,15 @@ def update(source: Path, destination: Path) -> None:
         "pip-audit 2.10.1 reports no known vulnerability in installed "
         "dependencies. Public-repository scanning found no committed real "
         "credential, private key, user-profile path, database, cache, or runtime data.",
-        "Final repository evidence: 409 tests passed, 2 intentional "
+        "A development-only toolkit pins GitHub release assets and SHA-256 "
+        "digests for uv 0.12.0, py-spy 0.4.2, hyperfine 1.20.0, and the official "
+        "GitHub CLI 2.96.0. Bandit 1.9.4, Vulture 2.16, and pytest-timeout 2.4.0 "
+        "run in a separate ignored environment and are not product runtime "
+        "dependencies.",
+        "The first Bandit pass exposed a weak SHA-1 alert identifier and "
+        "shell-based console clearing. Both were corrected and the "
+        "high-severity re-scan is clean.",
+        "Final repository evidence: 416 tests passed, 2 intentional "
         "platform-dependent skips, 0 failures; Python compilation, Ruff, "
         "dependency audit, and whitespace checks passed.",
     ))

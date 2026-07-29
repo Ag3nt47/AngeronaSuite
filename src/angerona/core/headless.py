@@ -81,7 +81,7 @@ def run_headless() -> int:
 
     stop = threading.Event()
 
-    def _handle(signum, _frame):
+    def _handle(_signum, _frame):
         stop.set()
 
     for sig in (signal.SIGINT, getattr(signal, "SIGTERM", signal.SIGINT)):

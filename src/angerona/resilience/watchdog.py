@@ -90,7 +90,10 @@ def main(argv: list[str] | None = None) -> int:
     beat = hb.HeartbeatWriter("watchdog", token_raw=token_raw)
 
     pyw = os.environ.get("ANGERONA_PY") or _pythonw()
-    sup = ProcessSupervisor(poll_interval=1.0)
+    sup = ProcessSupervisor(
+        poll_interval=1.0,
+        state_namespace="peer-watchdog",
+    )
 
     # Core (Angerona) — the thing this watchdog exists to resurrect.
     core_cmd = (os.environ.get("ANGERONA_CORE_CMD") or "").strip()

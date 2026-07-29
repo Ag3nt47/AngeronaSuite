@@ -92,7 +92,11 @@ class ResilienceManager:
         self.on_frame = on_frame
         self._core_beat = hb.HeartbeatWriter("core")
         self._reader: Optional[ipc_ring.RingReader] = None
-        self._sup = ProcessSupervisor(poll_interval=1.0, on_event=self._sup_event)
+        self._sup = ProcessSupervisor(
+            poll_interval=1.0,
+            on_event=self._sup_event,
+            state_namespace="core-manager",
+        )
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self.frames_ingested = 0

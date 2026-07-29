@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "purpose": "Pinned, development-only tools used to build, profile, benchmark, and audit Angerona. None are Angerona runtime dependencies.",
+  "updated_utc": "2026-07-29T00:00:00Z",
+  "github_assets": [
+    {
+      "id": "uv",
+      "repository": "https://github.com/astral-sh/uv",
+      "version": "0.12.0",
+      "license": "Apache-2.0 OR MIT",
+      "asset": "uv-x86_64-pc-windows-msvc.zip",
+      "url": "https://github.com/astral-sh/uv/releases/download/0.12.0/uv-x86_64-pc-windows-msvc.zip",
+      "sha256": "68200e25de594df92387186bbfb9d9df606ec1d87efaa0ae0c7f690970e53db6",
+      "executables": [
+        "uv.exe",
+        "uvx.exe"
+      ],
+      "use": "Fast, reproducible creation of the isolated developer-tool environment."
+    },
+    {
+      "id": "py-spy",
+      "repository": "https://github.com/benfred/py-spy",
+      "version": "0.4.2",
+      "license": "MIT",
+      "asset": "py_spy-0.4.2-py2.py3-none-win_amd64.whl",
+      "url": "https://github.com/benfred/py-spy/releases/download/v0.4.2/py_spy-0.4.2-py2.py3-none-win_amd64.whl",
+      "sha256": "8b06a353c177677e4e1701b288d8c58e2f8d4208ee81a8048d9f72ba800918f8",
+      "executables": [
+        "py-spy.exe"
+      ],
+      "use": "Low-overhead sampling of a live or non-responsive Angerona Python process."
+    },
+    {
+      "id": "hyperfine",
+      "repository": "https://github.com/sharkdp/hyperfine",
+      "version": "1.20.0",
+      "license": "Apache-2.0 OR MIT",
+      "asset": "hyperfine-v1.20.0-x86_64-pc-windows-msvc.zip",
+      "url": "https://github.com/sharkdp/hyperfine/releases/download/v1.20.0/hyperfine-v1.20.0-x86_64-pc-windows-msvc.zip",
+      "sha256": "2508c549b049b1d4342d08edc1cb42bfac169082b6e3069431b5bab9822dbb32",
+      "executables": [
+        "hyperfine.exe"
+      ],
+      "use": "Repeatable before-and-after command benchmarks with warm-up and statistical summaries."
+    },
+    {
+      "id": "github-cli",
+      "repository": "https://github.com/cli/cli",
+      "version": "2.96.0",
+      "license": "MIT",
+      "asset": "gh_2.96.0_windows_amd64.zip",
+      "url": "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_windows_amd64.zip",
+      "sha256": "c2d6acc935cd2f00e2144d7e036d5cd82e6b6bd5594e8c75aa75ef2a4ed6aac3",
+      "executables": [
+        "gh.exe"
+      ],
+      "use": "Repository authentication, pull-request state, and GitHub workflow inspection without a system-wide install."
+    }
+  ],
+  "python_tools": [
+    {
+      "requirement": "bandit==1.9.4",
+      "repository": "https://github.com/PyCQA/bandit",
+      "license": "Apache-2.0",
+      "use": "Python abstract-syntax-tree security checks."
+    },
+    {
+      "requirement": "vulture==2.16",
+      "repository": "https://github.com/jendrikseipp/vulture",
+      "license": "MIT",
+      "use": "High-confidence dead-code discovery."
+    },
+    {
+      "requirement": "pytest-timeout==2.4.0",
+      "repository": "https://github.com/pytest-dev/pytest-timeout",
+      "license": "MIT",
+      "use": "Bounded failure instead of an indefinitely hung developer test."
+    }
+  ]
+}

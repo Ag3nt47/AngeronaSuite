@@ -19,7 +19,7 @@ def _checks(*, failing=""):
             command=("python", "-m", check_id),
             exit_code=1 if check_id == failing else 0,
             duration_seconds=1.25,
-            output=b"password=super-secret\nC:\\Users\\Agent47\\project",
+            output=b"password=super-secret\nC:\\Users\\SampleUser\\project",
         )
         for check_id in REQUIRED_RELEASE_CHECKS
     )

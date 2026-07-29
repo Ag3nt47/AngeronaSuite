@@ -46,7 +46,10 @@ def get_verdict_color(verdict: str) -> str:
     return CLR_SAFE
 
 def clear_screen():
-    os.system('cls' if os.name == 'nt' else 'clear')
+    # ANSI erase + home avoids invoking a command shell. Windows Terminal and
+    # current Windows consoles support this sequence natively.
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
 
 def fit_line_to_width(text: str, max_width: int) -> str:
     """Truncates text safely and appends an ellipsis if it exceeds panel width bounds."""
@@ -156,9 +159,6 @@ def draw_dashboard(data: dict):
 
 def main():
     """Initializes the operational terminal visual pipeline."""
-    if os.name == 'nt':
-        os.system('')
-        
     try:
         while True:
             status_payload = read_status_payload()

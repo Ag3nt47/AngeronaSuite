@@ -74,7 +74,7 @@ def test_sanitized_export_redacts_and_excludes_restricted_results(tmp_path):
     workspace = HuntWorkspace(tmp_path / "workspace.json", b"k" * 32)
     note = NotebookEntry(
         "entry-002", "hunt-001", "note", "analyst@example.com", 100,
-        r"password=secret C:\Users\Agent47\private.txt", None, (),
+        r"password=secret C:\Users\SampleUser\private.txt", None, (),
     )
     workspace.append_entry(note, expected_revision=0)
     workspace.add_result(_result(), expected_revision=1)
@@ -87,7 +87,7 @@ def test_sanitized_export_redacts_and_excludes_restricted_results(tmp_path):
     encoded = json.dumps(exported)
     assert exported["raw_artifacts_included"] is False
     assert len(exported["result_references"]) == 1
-    assert "Agent47" not in encoded
+    assert "SampleUser" not in encoded
     assert "secret" not in encoded.lower()
     assert "@" not in exported["entries"][0]["author"]
 

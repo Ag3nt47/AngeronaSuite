@@ -28,8 +28,8 @@ from docx.text.paragraph import Paragraph
 from docx.shared import Inches, Pt, RGBColor
 
 
-ANALYSIS_DIR = Path(r"C:\Users\Agent47\Desktop\Angerona Analysis")
-REPO_ROOT = Path(r"D:\local-security-ai\AngeronaSuite")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ANALYSIS_DIR = REPO_ROOT / "analysis"
 
 BLUE = "1F9CFF"
 DARK_BLUE = "164E75"

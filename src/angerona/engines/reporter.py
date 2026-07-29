@@ -7,9 +7,9 @@ import uuid
 import time
 import hashlib
 import psutil
+from pathlib import Path
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 
 def generate_summary_report(pid: int, name: str, mitigation_type: str, evidence_locker: str, log_module) -> dict:
     """Compiles static file hashes, runtime properties, and dynamic anomalies into a detailed JSON summary record."""
@@ -79,11 +79,10 @@ def build_visual_report_panel(report_data: dict, width: int) -> Panel:
 # Measures how many EVOL iterations (rounds) it takes to drive a technique from a
 # VERIFICATION_RESULT: SUCCESS (bypass) back down to a certified BLOCKED state,
 # and tracks whether the AI's patch-generation is improving or degrading.
-from pathlib import Path as _Path
 import statistics as _stats
 
 
-def _shared_logs_dir() -> "_Path":
+def _shared_logs_dir() -> Path:
     from angerona.core.data_paths import data_dir
     return data_dir() / "shared_logs"
 

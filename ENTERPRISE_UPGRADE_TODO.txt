@@ -310,8 +310,19 @@ CYCLE 8 IMPLEMENTATION RECORD — 2026-07-29
   - Ruff 0.16.0, pytest-xdist 3.8.0, pip-audit 2.10.1.
   - Complete Windows ACL/security suite remains serial; xdist is limited to
     isolated groups without cross-process permission mutation.
-  - Current evidence: 368 passed, 2 intentional platform skips; compile/Ruff
+  - Current evidence: 416 passed, 2 intentional platform skips; compile/Ruff
     clean; installed dependency audit reports no known vulnerabilities.
+
+[DONE/P0] ENT-RES-002  Stateful, safe watchdog recovery.
+  - Separate authenticated durable state for Core Manager and peer Watchdog.
+  - Hung-vs-busy heartbeat grace, bounded signed pre-restart health evidence.
+  - Exponential backoff, rolling restart budget, durable safe mode.
+  - Tampered recovery state fails closed; authenticated manual reset recovers.
+
+[DONE/P1] ENT-QA-GH-001  Verified development-only GitHub toolkit.
+  - uv 0.12.0, py-spy 0.4.2, hyperfine 1.20.0, and GitHub CLI 2.96.0.
+  - GitHub asset SHA-256 pinning and ignored isolated installation.
+  - Separate Bandit/Vulture/pytest-timeout environment; no runtime dependency.
 
 
 02. FLEET IDENTITY, ENROLLMENT, AND ZERO TRUST
@@ -1505,27 +1516,38 @@ Acceptance gate:
 
 [PARTIAL/P0] ENT-RES-001  Preserve independent watchdog and Black Box diagnostics.
 
-[TODO/P0] ENT-RES-002  Make watchdog recovery stateful and safe.
-  - Detect hung vs busy.
-  - Capture thread/health diagnostics before restart.
-  - Exponential backoff and restart budget.
-  - safe mode after repeated failure.
-  - explicit core restart menu action.
+[DONE/P0] ENT-RES-002  Make watchdog recovery stateful and safe.
+  - Heartbeat classification distinguishes dead, suspended, stopped, and busy
+    scheduling grace.
+  - Privacy-minimized HMAC-authenticated health evidence is captured before
+    automatic restart.
+  - Exponential backoff, rolling restart budget, and safe mode persist atomically
+    across supervisor restarts.
+  - The Watchdog window exposes an authenticated explicit Core restart action.
+  - Tampered recovery state fails closed until authenticated manual reset.
 
-[TODO/P0] ENT-RES-003  Complete mutual service supervision.
+[PARTIAL/P0] ENT-RES-003  Complete mutual service supervision.
   - Core.
   - telemetry scanner.
   - watchdog.
   - Black Box.
   - owned Ollama instance.
   - signed clean-shutdown marker prevents unwanted resurrection.
+  Implemented: Core, scanner, Watchdog, and Black Box mutual supervision;
+  target-specific spawn locks; stopped heartbeat and signed stand-down handling.
+  Remaining: service-manager evidence for an owned Ollama instance and a
+  production signed-binary mutual-supervision soak.
 
-[TODO/P1] ENT-RES-004  Add crash-safe local state.
+[PARTIAL/P1] ENT-RES-004  Add crash-safe local state.
   - Atomic writes.
   - corruption detection.
   - schema migrations with backup.
   - last-known-good configuration.
   - disk-full behavior.
+  Implemented: atomic authenticated supervisor state, atomic diagnostics, and
+  corruption/tamper fail-closed behavior. Remaining: general configuration
+  schema migration backup, last-known-good restore, and explicit disk-full drills
+  across every mutable store.
 
 [TODO/P2] ENT-RES-005  Add control-plane HA.
   - Multiple stateless API/control nodes.

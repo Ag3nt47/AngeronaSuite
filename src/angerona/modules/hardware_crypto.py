@@ -177,6 +177,8 @@ class HardwareCrypto(BaseModule):
         requires the same physical TPM + PCR state, binding the key to this host.
         Implemented as an outline because it needs a provisioned TPM present.
         """
+        if not isinstance(db_key, bytes):
+            return False, "TPM sealing requires a byte-string database key"
         try:
             import tpm2_pytss  # type: ignore  # noqa: F401
         except Exception:

@@ -918,17 +918,35 @@ email scanning, channel push, research) — each has a one-click test button.
 - **Fewer Defender prompts.** Normal startup no longer rewrites the
   highest-privilege scheduled task. Startup registration changes only when the
   operator explicitly changes that setting.
+- **Stateful watchdog recovery.** The Core Manager and peer Watchdog keep
+  separate HMAC-authenticated recovery ledgers. Dead and suspended components
+  receive a privacy-minimized signed diagnostic snapshot before recovery,
+  exponential restart backoff, a durable rolling crash budget, and safe mode
+  that survives supervisor restarts. A corrupt or forged recovery ledger pauses
+  automatic respawn until an authenticated manual restart resets it; a clean
+  stopped heartbeat and signed stand-down remain stopped.
 - **Faster engineering loop.** Pinned Ruff, pytest-xdist, and pip-audit tooling
   adds a fast undefined-name gate, optional parallel execution for isolated
   test groups, and dependency vulnerability review. The full suite stays
   serial by default because Windows security/Access Control List (ACL) tests
   intentionally mutate file permissions and are not process-parallel-safe.
   Ruff immediately found and closed a latent ARP Watchdog type-name defect.
+- **Verified GitHub developer toolkit.** `tools\bootstrap_github_toolkit.ps1`
+  downloads exact Windows releases of
+  [uv](https://github.com/astral-sh/uv),
+  [py-spy](https://github.com/benfred/py-spy), and
+  [hyperfine](https://github.com/sharkdp/hyperfine), plus the official
+  [GitHub CLI](https://github.com/cli/cli). It verifies their pinned SHA-256
+  digests and keeps them under ignored `.dev-tools`. Bandit, Vulture, and
+  pytest-timeout run in a separate audit environment, so these tools never
+  become Angerona runtime dependencies. `tools\run_developer_toolkit.ps1`
+  produces security/dead-code evidence, repeatable benchmarks, or an
+  administrator-authorized live hang profile.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
-  passes **409 tests with 2 intentional platform skips** and 0 failures.
+  passes **416 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
   Ruff pass. pip-audit reports no known vulnerabilities in the installed
   dependencies. The public-repository scan found no committed real credential,
   private key, user-profile path, database, runtime-data, or cache artifact.
 
-<!-- ANGERONA_DOC_STATUS tests=409 skips=2 modules=65 -->
+<!-- ANGERONA_DOC_STATUS tests=416 skips=2 modules=65 -->

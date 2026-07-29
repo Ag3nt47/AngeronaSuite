@@ -52,7 +52,7 @@ def test_enabled_cloud_receives_only_recursive_redacted_bounded_prompt(monkeypat
     windows_path = r"C:\Users\Alice\Private Cases\incident.exe"
     unc_path = r"\\fileserver\private\case.txt"
     posix_path = "/home/alice/private/case.txt"
-    token = "sk-proj-0123456789abcdefghijklmnopqrstuvwxyz"
+    token = "sk_test_0123456789abcdefghijklmnopqrstuvwxyz"
     jwt = (
         "eyJhbGciOiJIUzI1NiJ9."
         "eyJzdWIiOiJwcml2YXRlLXVzZXIifQ."

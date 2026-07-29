@@ -58,7 +58,21 @@ def signature(ev) -> str:
     per-run tokens stripped), so ignoring one alert clears its whole class."""
     module = str(getattr(ev, "module", "") or "")
     msg = _normalize_msg(str(getattr(ev, "message", "") or ""))
-    return hashlib.sha1(f"{module}|{msg}".encode("utf-8", "replace")).hexdigest()[:16]
+    return hashlib.sha256(f"{module}|{msg}".encode("utf-8", "replace")).hexdigest()[:24]
+
+
+def _legacy_signature(ev) -> str:
+    """Pre-1.9.4 identifier retained only to honor existing acknowledgements."""
+    module = str(getattr(ev, "module", "") or "")
+    msg = _normalize_msg(str(getattr(ev, "message", "") or ""))
+    return hashlib.sha1(  # compatibility lookup, explicitly non-security
+        f"{module}|{msg}".encode("utf-8", "replace"),
+        usedforsecurity=False,
+    ).hexdigest()[:16]
+
+
+def _signatures(ev) -> set[str]:
+    return {signature(ev), _legacy_signature(ev)}
 
 
 def load() -> dict:
@@ -101,7 +115,7 @@ def acked_signatures() -> set[str]:
 
 
 def is_acked(ev) -> bool:
-    return signature(ev) in acked_signatures()
+    return bool(_signatures(ev) & acked_signatures())
 
 
 def ack(ev, reason: str = "") -> dict:
@@ -139,8 +153,7 @@ def acked_records() -> list[dict]:
 
 def filter_active(events: list) -> list:
     """Return only events whose signature is NOT acknowledged."""
-    acked = acked_signatures()
-    return [e for e in events if signature(e) not in acked]
+    return [event for event in events if not is_acked(event)]
 
 
 def _event(action: str, reason: str) -> dict:
