@@ -388,12 +388,14 @@ class _RevealFrame(QWidget):
 
 
 class PanelRevealOverlay(QWidget):
-    """Reveal the real destination window from a vertical accent line.
+    """Reveal and dismiss real destination windows through one accent line.
 
     The previous implementation animated a dashboard overlay, removed it, and
     only then opened an unrelated dialog. This coordinator watches for the
     window produced by the action and applies the widening mask to that window
     itself, so its live contents are visibly generated inside the expanding box.
+    A captured window's normal close request is intercepted once and plays the
+    same geometry in reverse before the real close proceeds.
     """
 
     def __init__(self, parent: QWidget) -> None:
@@ -407,6 +409,7 @@ class PanelRevealOverlay(QWidget):
         self._target: QWidget | None = None
         self._frame: _RevealFrame | None = None
         self._previous_mask = QRegion()
+        self._mode = "idle"
         self._animation = QPropertyAnimation(self, b"revealProgress", self)
         self._animation.setDuration(360)
         self._animation.setEasingCurve(QEasingCurve.OutCubic)
@@ -451,6 +454,31 @@ class PanelRevealOverlay(QWidget):
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt signature
         if (
+            event.type() == QEvent.Close
+            and isinstance(watched, QWidget)
+            and bool(getattr(watched, "_angerona_reverse_reveal_close", False))
+            and not bool(getattr(watched, "_angerona_close_bypass", False))
+        ):
+            app = QApplication.instance()
+            try:
+                shutting_down = bool(app is not None and app.closingDown())
+            except Exception:
+                shutting_down = False
+            config = getattr(self.window(), "config", None)
+            busy_with_other = (
+                self._target is not None and self._target is not watched
+            )
+            if (
+                shutting_down
+                or busy_with_other
+                or not motion_allowed(config)
+                or not watched.isVisible()
+            ):
+                return super().eventFilter(watched, event)
+            event.ignore()
+            self._start_target_close(watched)
+            return True
+        if (
             self._armed
             and event.type() == QEvent.Show
             and isinstance(watched, QWidget)
@@ -470,6 +498,25 @@ class PanelRevealOverlay(QWidget):
             app.removeEventFilter(self)
         self._target = target
         self._previous_mask = QRegion(target.mask())
+        self._mode = "opening"
+        setattr(target, "_angerona_reverse_reveal_close", True)
+        setattr(target, "_angerona_close_bypass", False)
+        setattr(
+            target,
+            "_angerona_reveal_original_mask",
+            QRegion(self._previous_mask),
+        )
+        setattr(
+            target,
+            "_angerona_reveal_source_global",
+            QPoint(self._source_global),
+        )
+        setattr(target, "_angerona_reveal_color", QColor(self._color))
+        try:
+            target.removeEventFilter(self)
+        except RuntimeError:
+            return
+        target.installEventFilter(self)
         # Apply the first narrow slice during QEvent.Show itself. Waiting for
         # the next event-loop turn would allow one fully painted dialog frame
         # to flash before the reveal begins.
@@ -520,9 +567,67 @@ class PanelRevealOverlay(QWidget):
         self._frame.show()
         self._frame.raise_()
         self._progress = 0.0
+        self._mode = "opening"
         self._animation.stop()
+        self._animation.setDuration(360)
+        self._animation.setEasingCurve(QEasingCurve.OutCubic)
         self._animation.setStartValue(0.0)
         self._animation.setEndValue(1.0)
+        self._animation.start()
+
+    def _start_target_close(self, target: QWidget) -> None:
+        """Collapse one captured destination, then allow its real close."""
+        if self._target is target and self._mode == "closing":
+            return
+
+        # A very fast X press can arrive while the opening animation is still
+        # running. Reverse from the exact visible progress instead of flashing
+        # the fully opened window first.
+        opening_progress = (
+            self._progress
+            if self._target is target and self._mode == "opening"
+            else 1.0
+        )
+        self._animation.stop()
+        self._target = target
+        self._mode = "closing"
+        self._previous_mask = QRegion(
+            getattr(
+                target,
+                "_angerona_reveal_original_mask",
+                target.mask(),
+            )
+        )
+        source_global = getattr(
+            target,
+            "_angerona_reveal_source_global",
+            target.mapToGlobal(target.rect().center()),
+        )
+        self._source_global = QPoint(source_global)
+        self._color = QColor(
+            getattr(target, "_angerona_reveal_color", QColor("#38bdf8"))
+        )
+        bounds = target.rect()
+        local = target.mapFromGlobal(self._source_global)
+        self._origin = QPoint(
+            max(0, min(bounds.width(), local.x())),
+            max(0, min(bounds.height(), local.y())),
+        )
+        if self._frame is None:
+            self._frame = _RevealFrame(target, self._color)
+        self._frame.setGeometry(bounds)
+        self._frame.show()
+        self._frame.raise_()
+
+        start = max(0.0, min(1.0, float(opening_progress)))
+        self._progress = start
+        if start <= 0.01:
+            self._finish()
+            return
+        self._animation.setDuration(max(90, round(320 * start)))
+        self._animation.setEasingCurve(QEasingCurve.InCubic)
+        self._animation.setStartValue(start)
+        self._animation.setEndValue(0.0)
         self._animation.start()
 
     def get_reveal_progress(self) -> float:
@@ -568,8 +673,28 @@ class PanelRevealOverlay(QWidget):
 
     def _finish(self) -> None:
         target = self._target
+        mode = self._mode
         try:
-            if target is not None:
+            if target is not None and mode == "closing":
+                # Hide while the mask is still a line so restoring the original
+                # mask cannot flash one full-size frame before closeEvent runs.
+                target.hide()
+                if self._previous_mask.isEmpty():
+                    target.clearMask()
+                else:
+                    target.setMask(self._previous_mask)
+                setattr(target, "_angerona_close_bypass", True)
+                target.removeEventFilter(self)
+                closed = target.close()
+                if not closed:
+                    # A destination is allowed to veto close for unsaved work.
+                    # Restore it fully and re-arm the reverse transition.
+                    setattr(target, "_angerona_close_bypass", False)
+                    target.installEventFilter(self)
+                    target.show()
+                    target.raise_()
+                    target.activateWindow()
+            elif target is not None:
                 if self._previous_mask.isEmpty():
                     target.clearMask()
                 else:
@@ -584,3 +709,4 @@ class PanelRevealOverlay(QWidget):
         self._target = None
         self._previous_mask = QRegion()
         self._progress = 0.0
+        self._mode = "idle"

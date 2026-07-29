@@ -87,13 +87,49 @@ def test_panel_reveal_animates_the_real_destination_window() -> None:
     overlay._animation.setCurrentTime(overlay._animation.duration())
     app.processEvents()
     assert target.mask().isEmpty()
+
+    # The native X close is intercepted once. The real window remains alive
+    # while its contents collapse through the same mask in reverse, then the
+    # original close proceeds without a full-size flash.
     target.close()
+    app.processEvents()
+    assert target.isVisible()
+    assert overlay._target is target
+    assert overlay._mode == "closing"
+    assert not target.mask().isEmpty()
+    overlay._animation.setCurrentTime(overlay._animation.duration())
+    app.processEvents()
+    assert not target.isVisible()
+    assert overlay._target is None
+    assert overlay._mode == "idle"
     parent.close()
 
 
 def test_reduced_motion_environment_is_a_hard_override(monkeypatch) -> None:
     monkeypatch.setenv("ANGERONA_REDUCE_MOTION", "1")
     assert motion_allowed() is False
+
+    # If motion is disabled after a destination was registered (for example,
+    # while Settings is open), its X must close immediately instead of starting
+    # a reverse transition.
+    app = _app()
+    parent = QWidget()
+    parent.resize(500, 320)
+    parent.show()
+    source = QWidget(parent)
+    source.resize(40, 24)
+    overlay = PanelRevealOverlay(parent)
+    target = QDialog(parent)
+    target.resize(260, 160)
+    assert overlay.reveal(source, lambda: target.show())
+    app.processEvents()
+    overlay._animation.setCurrentTime(overlay._animation.duration())
+    app.processEvents()
+    target.close()
+    app.processEvents()
+    assert not target.isVisible()
+    assert overlay._mode == "idle"
+    parent.close()
 
 
 def test_system_pulse_card_and_human_readable_units() -> None:
