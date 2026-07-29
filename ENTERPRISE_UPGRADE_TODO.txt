@@ -1555,14 +1555,26 @@ Acceptance gate:
   Angerona offline plus two distinct non-requester approvals, stages all content
   before replacement, retains previous files in a rollback scope, and restores
   them after an injected interruption. Protected key custody/recovery, scheduled
-  policy, retention, tenant packaging, and full-system disaster recovery remain.
+  execution, tenant packaging, and full-system disaster recovery remain.
+  `core/recovery_policy.py` now defines an explicit disabled-by-default cadence,
+  exact selection IDs, destination class, minimum verified copies, retention
+  count/age, due-state reasoning, and an HMAC-authenticated deletion proposal
+  that never deletes or schedules work by itself.
 
-[TODO/P2] ENT-RES-008  Define RPO/RTO and disaster recovery.
+[PARTIAL/P2] ENT-RES-008  Define RPO/RTO and disaster recovery.
   - Site loss.
   - database corruption.
   - CA/control-plane compromise.
   - bad policy/update.
   - lost signing key.
+  Local 2026-07-29 foundation: `core/recovery_policy.py` provides bounded
+  per-scenario Recovery Point Objective (RPO), Recovery Time Objective (RTO),
+  verified-copy count, owner, and review contracts for all five named scenarios.
+  Drill evaluation measures backup age and recovery duration, requires archive,
+  manifest, service-health, and rollback verification, enumerates every
+  violation, and authenticates the evidence. It has no recovery side effects.
+  Named-system exercises, alternate-site infrastructure, Certificate Authority
+  and signing-key recovery ceremonies, and repeated operational proof remain.
 
 [PARTIAL/P2] ENT-RES-009  Run chaos/failure tests.
   - Kill/restart nodes.

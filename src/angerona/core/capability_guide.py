@@ -287,6 +287,21 @@ GUIDES = (
         "Enterprise",
     ),
     CapabilityGuide(
+        "recovery-objectives", "Recovery Objectives and Drills", "Resilience",
+        "Explicit per-scenario Recovery Point Objective (RPO), Recovery Time "
+        "Objective (RTO), verified-copy, ownership, review and drill evidence.",
+        ("Open Enterprise Settings.", "Choose a named recovery scenario.",
+         "Set reviewed RPO, RTO and minimum-copy objectives.",
+         "Run a controlled restore exercise.", "Verify archive, manifest, "
+         "service health and rollback.", "Review every violation and sign the evidence."),
+        "Measured backup age and recovery duration meet the objective, the "
+        "minimum verified copies exist, all four verification gates pass, and "
+        "the drill evidence HMAC verifies.",
+        "The policy engine records objectives and evidence only. It never starts "
+        "a backup, deletes retained archives or performs recovery by itself.",
+        "Enterprise",
+    ),
+    CapabilityGuide(
         "audit-export", "Signed Audit Export", "Governance",
         "Tenant, scope and time-bounded audit exchange with privacy minimization, "
         "actor tokenization, record chaining, manifest signing and truncation honesty.",

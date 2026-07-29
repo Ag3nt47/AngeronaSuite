@@ -446,6 +446,14 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   suite offline and two distinct non-requester approvers, stages every item,
   retains previous files under `.restore-rollback/<plan>`, and rolls back an
   interrupted replacement. Never embed the encryption key in the archive.
+- `core/recovery_policy.py` is side-effect-free policy and evidence. It computes
+  disabled-by-default cadence status, exact selection/destination coverage,
+  verified-copy floors, count/age retention, and HMAC-authenticated deletion
+  proposals but never schedules work or deletes an archive. Named site-loss,
+  database-corruption, control-plane-compromise, bad-policy/update, and
+  lost-signing-key objectives define Recovery Point Objective (RPO), Recovery
+  Time Objective (RTO), copy count, owner, and review. Drill evidence measures
+  RPO/RTO and requires archive, manifest, service-health, and rollback proof.
 - `core/audit_export.py` creates exact tenant/scope/time-bounded audit exchanges.
   Restricted fields are removed; sensitive fields and actors are tokenized;
   free text is redacted; truncation is explicit. Every record binds its
@@ -456,7 +464,7 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   pytest-xdist 3.8.0, and pip-audit 2.10.1. Ruff uses correctness-critical rules
   first. Keep the complete suite serial because Windows ACL tests are not
   process-parallel-safe; xdist is for isolated test groups. Current evidence:
-  405 passed / 2 intentional platform skips; compile and Ruff clean; no known
+  409 passed / 2 intentional platform skips; compile and Ruff clean; no known
   installed-package vulnerability reported.
 
 ## NEVER DO

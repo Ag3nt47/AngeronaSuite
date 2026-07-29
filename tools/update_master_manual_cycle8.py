@@ -182,6 +182,18 @@ def update(source: Path, destination: Path) -> None:
         "An interrupted replacement restores the previous file. Protected key "
         "recovery, scheduling, retention, and full disaster-recovery exercises "
         "remain operational gates.",
+        "Backup policy is disabled by default and side-effect free. It computes "
+        "cadence status, exact selections, destination class, a minimum verified "
+        "copy floor, count/age retention, and an HMAC-authenticated deletion "
+        "proposal; it never schedules work or removes an archive.",
+        "Named site-loss, database-corruption, control-plane-compromise, bad "
+        "policy/update, and lost-signing-key scenarios define a Recovery Point "
+        "Objective (RPO), Recovery Time Objective (RTO), minimum verified copies, "
+        "owner, and review date.",
+        "Recovery drill evidence measures backup age and recovery duration, "
+        "requires archive, manifest, service-health, and rollback verification, "
+        "lists every objective violation, and authenticates the final result. "
+        "Operational alternate-site and key-recovery exercises remain open.",
         "Audit export filters an exact tenant, scope, inclusive time range and "
         "record limit. Restricted fields are removed, sensitive values and "
         "actors are tokenized, free text is redacted, and truncation is explicit.",
@@ -200,7 +212,7 @@ def update(source: Path, destination: Path) -> None:
         "pip-audit 2.10.1 reports no known vulnerability in installed "
         "dependencies. Public-repository scanning found no committed real "
         "credential, private key, user-profile path, database, cache, or runtime data.",
-        "Final repository evidence: 405 tests passed, 2 intentional "
+        "Final repository evidence: 409 tests passed, 2 intentional "
         "platform-dependent skips, 0 failures; Python compilation, Ruff, "
         "dependency audit, and whitespace checks passed.",
     ))

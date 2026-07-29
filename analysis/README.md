@@ -905,6 +905,12 @@ email scanning, channel push, research) — each has a one-click test button.
   all content, requires the suite offline plus two independent approvers, and
   retains the previous files for rollback. Key recovery, scheduling, retention,
   and full disaster recovery remain operational gates.
+- **Recovery policy and drill evidence.** Disabled-by-default backup cadence,
+  exact selections, destination class, verified-copy floor, age/count retention,
+  and signed deletion proposals are calculated without scheduling or deleting
+  anything. Named scenarios define Recovery Point Objective (RPO) and Recovery
+  Time Objective (RTO); drill evidence measures both and requires archive,
+  manifest, service-health, and rollback verification.
 - **Signed audit export.** Exact tenant, scope, time, and record limits produce a
   privacy-minimized local exchange: restricted fields are removed, sensitive
   values and actors are tokenized, free text is redacted, truncation is explicit,
@@ -919,10 +925,10 @@ email scanning, channel push, research) — each has a one-click test button.
   intentionally mutate file permissions and are not process-parallel-safe.
   Ruff immediately found and closed a latent ARP Watchdog type-name defect.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
-  passes **405 tests with 2 intentional platform skips** and 0 failures.
+  passes **409 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
   Ruff pass. pip-audit reports no known vulnerabilities in the installed
   dependencies. The public-repository scan found no committed real credential,
   private key, user-profile path, database, runtime-data, or cache artifact.
 
-<!-- ANGERONA_DOC_STATUS tests=405 skips=2 modules=65 -->
+<!-- ANGERONA_DOC_STATUS tests=409 skips=2 modules=65 -->
