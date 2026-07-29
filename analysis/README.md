@@ -1004,11 +1004,23 @@ email scanning, channel push, research) — each has a one-click test button.
   This detects ring-file corruption and forgery without the protected key; it
   cannot prevent a fully compromised scanner process that can read that key from
   creating authenticated records.
+- **Lifecycle and alert-storm backpressure.** Long-running GUI telemetry no
+  longer retains every EventBus object identity or an unlimited presentation
+  queue. Worker and UI stages each retain at most 2,000 newest events, render no
+  more than 250 rows per tick, expose drop counters, and keep a bounded 4,096
+  identity window that distinguishes recycled object identifiers by timestamp.
+  Stopping the flusher discards late worker results. System Pulse suppresses
+  completion after shutdown; voice resolution/listening and the full self-test
+  are single-flight; telemetry canary echoes retain the newest 64 without ever
+  blocking a publisher. Existing generation tests also prove non-overlapping
+  restart, restart cancellation, shutdown drain, sleep/resume, and late-dialog
+  result handling. A synthetic 100,000-event burst retained exactly the newest
+  2,000 records, accounted for 98,000 drops, and enqueued in 216.46 ms.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
-  passes **488 tests with 2 intentional platform skips** and 0 failures.
+  passes **495 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
   Ruff pass. pip-audit reports no known vulnerabilities in the installed
   dependencies. The public-repository scan found no committed real credential,
   private key, user-profile path, database, runtime-data, or cache artifact.
 
-<!-- ANGERONA_DOC_STATUS tests=488 skips=2 modules=65 -->
+<!-- ANGERONA_DOC_STATUS tests=495 skips=2 modules=65 -->

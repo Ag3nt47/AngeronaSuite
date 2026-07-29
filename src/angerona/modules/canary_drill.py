@@ -106,6 +106,7 @@ _SENSOR_SILENCE_WINDOW_S: float = 600.0
 _SENSOR_WARMUP_S: float        = 120.0
 # How often to scan the bus for coverage evidence.
 _SENSOR_COVERAGE_INTERVAL_S: float = 120.0
+_ECHO_QUEUE_LIMIT: int = 64
 
 
 class CanaryDrillModule(BaseModule):
@@ -126,7 +127,10 @@ class CanaryDrillModule(BaseModule):
     def __init__(self) -> None:
         super().__init__()
         self._expectations = TelemetryExpectationEngine(max_pending=8)
-        self._echo_queue: queue.Queue[tuple[str, float]] = queue.Queue()
+        self._echo_queue: queue.Queue[tuple[str, float]] = queue.Queue(
+            maxsize=_ECHO_QUEUE_LIMIT
+        )
+        self._echo_queue_dropped = 0
         self._consecutive_misses = 0
         self._drills_fired = 0
         self._drills_caught = 0
@@ -227,7 +231,19 @@ class CanaryDrillModule(BaseModule):
             if pid is not None:
                 tag = self._pending_pids.get(pid)
         if tag:
-            self._echo_queue.put((tag, time.monotonic()))
+            echo = (tag, time.monotonic())
+            try:
+                self._echo_queue.put_nowait(echo)
+            except queue.Full:
+                try:
+                    self._echo_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                self._echo_queue_dropped += 1
+                try:
+                    self._echo_queue.put_nowait(echo)
+                except queue.Full:
+                    self._echo_queue_dropped += 1
 
     @staticmethod
     def _event_pid(event: Event) -> int | None:

@@ -540,7 +540,19 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   Do not claim process isolation: a fully compromised scanner that can read the
   ring key can forge a valid record. Code integrity, process supervision, and
   future native isolation remain separate controls.
-- Current evidence: 488 passed /
+- `gui/telemetry_worker.py` enforces long-runtime backpressure at both sides of
+  its queued signal. Pending and UI queues retain the newest 2,000 events,
+  signal/render batches are capped at 250, EventBus identity history retains
+  4,096 `(object identity, timestamp)` pairs, and snapshots expose drops. Stop
+  clears the UI queue and rejects late results. Do not replace these with
+  unbounded lists/sets. A 100,000-event synthetic burst retained 2,000 and
+  accounted for 98,000 drops in 216.46 ms.
+- `gui/system_pulse.py` ignores late samples after shutdown.
+  ARIA voice resolver/listener startup and the complete self-test are
+  single-flight. Canary echo ingestion is non-blocking and retains the newest
+  64 records. Existing generation, shutdown-drain, sleep/resume, and closed
+  dialog tests complete the concurrency/lifecycle contract.
+- Current evidence: 495 passed /
   2 intentional platform skips; compile and Ruff clean; no known
   installed-package vulnerability reported.
 

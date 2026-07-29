@@ -145,6 +145,7 @@ class SystemPulseCard(QFrame):
         root.addStretch(1)
 
         self._busy = threading.Event()
+        self._closed = threading.Event()
         self._last_net = None
         self._last_net_at = 0.0
         self._wifi_cache: int | None = None
@@ -158,7 +159,7 @@ class SystemPulseCard(QFrame):
         QTimer.singleShot(120, self.request_sample)
 
     def request_sample(self) -> None:
-        if self._busy.is_set() or not self.isVisible():
+        if self._closed.is_set() or self._busy.is_set() or not self.isVisible():
             return
         self._busy.set()
         threading.Thread(
@@ -199,7 +200,19 @@ class SystemPulseCard(QFrame):
             data["error"] = str(exc)
         finally:
             self._busy.clear()
-        self.sample_ready.emit(data)
+        if not self._closed.is_set():
+            self.sample_ready.emit(data)
+
+    def shutdown(self) -> None:
+        """Stop scheduling and discard any late sampler completion."""
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        self._timer.stop()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        self.shutdown()
+        super().closeEvent(event)
 
     def snapshot(self) -> dict[str, object]:
         """Return a bounded GUI-owned snapshot for the expanded detail view."""
@@ -215,6 +228,8 @@ class SystemPulseCard(QFrame):
         super().mousePressEvent(event)
 
     def _apply_sample(self, data: dict) -> None:
+        if self._closed.is_set():
+            return
         if data.get("error"):
             self._state.setText("● WAIT")
             self._state.setStyleSheet("color:#f59e0b; font-size:10px; font-weight:800;")

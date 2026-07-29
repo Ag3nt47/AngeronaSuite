@@ -53,7 +53,7 @@ class _NoAnim:
     start()/stop()/set_active()/setGeometry()/etc. call so existing call sites
     keep working while nothing renders."""
     def __getattr__(self, _name):
-        return lambda *a, **k: None
+        return lambda *_args, **_kwargs: None
 
 
 class MainWindow(QMainWindow):
@@ -75,6 +75,9 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
         self.bus, self.storage, self.manager, self.config = bus, storage, manager, config
+        self._voice_loop_lock = threading.Lock()
+        self._voice_loop_thread: threading.Thread | None = None
+        self._selftest_active = threading.Event()
 
         self.setWindowTitle("Angerona — Security Suite")
         # Custom shield icon (assets/icons/angerona.ico) — falls back to the
@@ -1528,9 +1531,7 @@ class MainWindow(QMainWindow):
                 # a daemon thread. It idles silently when no STT backend/mic exists.
                 self._aria_voice_stop = False
                 if getattr(self.aria_voice, "enabled", False):
-                    import threading as _th
-                    _th.Thread(target=self._aria_voice_loop, name="AriaVoice",
-                               daemon=True).start()
+                    self._ensure_voice_loop()
                     # Live mic-level meter so you can SEE ARIA is hearing you. Runs
                     # whenever a mic backend (sounddevice) is present — even before
                     # vosk is installed — so the bar proves the mic works.
@@ -1751,6 +1752,42 @@ class MainWindow(QMainWindow):
         finally:
             self._voice_loop_alive = False       # loop exited → allow a fresh start
 
+    def _voice_loop_in_flight(self) -> bool:
+        with self._voice_loop_lock:
+            return (
+                self._voice_loop_thread is not None
+                and self._voice_loop_thread.is_alive()
+            )
+
+    def _voice_loop_entry(self) -> None:
+        try:
+            self._aria_voice_loop()
+        finally:
+            current = threading.current_thread()
+            with self._voice_loop_lock:
+                if self._voice_loop_thread is current:
+                    self._voice_loop_thread = None
+
+    def _ensure_voice_loop(self) -> bool:
+        """Start at most one resolver/listener across rapid settings clicks."""
+        with self._voice_loop_lock:
+            current = self._voice_loop_thread
+            if current is not None and current.is_alive():
+                return False
+            self._aria_voice_stop = False
+            worker = threading.Thread(
+                target=self._voice_loop_entry,
+                name="AriaVoice",
+                daemon=True,
+            )
+            self._voice_loop_thread = worker
+            try:
+                worker.start()
+            except Exception:
+                self._voice_loop_thread = None
+                raise
+            return True
+
     def _enable_voice_live(self) -> None:
         """(Re)build the voice subsystem NOW with whatever backends are installed,
         enable it, and start the listen loop + mic meter — so 'install voice'
@@ -1764,7 +1801,7 @@ class MainWindow(QMainWindow):
             pass
         # If a listen loop is already alive, voice is already hearing — just make
         # sure the meter is visible and stop here (no duplicate loop).
-        if getattr(self, "_voice_loop_alive", False):
+        if self._voice_loop_in_flight():
             try:
                 self._start_mic_meter()
             except Exception:
@@ -1778,9 +1815,7 @@ class MainWindow(QMainWindow):
                 self.aria_voice.set_mic_device(getattr(self.config, "aria_mic_device", "") or None)
             except Exception:
                 pass
-            self._aria_voice_stop = False
-            import threading as _th
-            _th.Thread(target=self._aria_voice_loop, name="AriaVoice", daemon=True).start()
+            self._ensure_voice_loop()
             self._start_mic_meter()
         except Exception as exc:
             try:
@@ -2515,20 +2550,40 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             self._aria_voice_stop = False
-            if not started_now and not getattr(self, "_voice_loop_alive", False):
-                threading.Thread(target=self._aria_voice_loop, name="AriaVoice",
-                                 daemon=True).start()
+            if not started_now:
+                self._ensure_voice_loop()
             self._start_mic_meter()
         if hud is not None:
-            hud.set_microphone_state(True, bool(getattr(self, "_voice_loop_alive", False)))
+            hud.set_microphone_state(True, self._voice_loop_in_flight())
 
     # ── Self-test (off-thread) + fix prompt on failures ──────────────────────
-    def _run_self_test(self) -> None:
+    def _claim_self_test(self) -> bool:
+        """Single-flight gate; button invocations occur on the GUI thread."""
+        if self._selftest_active.is_set():
+            return False
+        self._selftest_active.set()
+        return True
+
+    def _run_self_test(self) -> bool:
+        if not self._claim_self_test():
+            self.console._append("[self-test] already running")
+            return False
         self.console._append("ARIA# test all")
         self.console._start_busy()
         self.run_spinner.start("Running self-test")
-        import threading
-        threading.Thread(target=self._self_test_worker, daemon=True).start()
+        self._selftest_btn.setEnabled(False)
+        try:
+            threading.Thread(
+                target=self._self_test_worker,
+                name="AngeronaSelfTest",
+                daemon=True,
+            ).start()
+        except Exception:
+            self._selftest_active.clear()
+            self._selftest_btn.setEnabled(True)
+            self.console._end_busy()
+            raise
+        return True
 
     def _self_test_worker(self) -> None:
         from angerona.core.selftest import SelfTestRunner
@@ -2542,6 +2597,8 @@ class MainWindow(QMainWindow):
         self._selftest_done.emit(report, failures)
 
     def _on_selftest_done(self, report: str, failures) -> None:
+        self._selftest_active.clear()
+        self._selftest_btn.setEnabled(True)
         self.console._append(report)
         self.console._end_busy()
         # Snap the wheel to a green 100% so the run visibly completes, then fade.

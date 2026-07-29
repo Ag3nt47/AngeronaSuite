@@ -310,7 +310,7 @@ CYCLE 8 IMPLEMENTATION RECORD — 2026-07-29
   - Hypothesis 6.163.0, Ruff 0.16.0, pytest-xdist 3.8.0, pip-audit 2.10.1.
   - Complete Windows ACL/security suite remains serial; xdist is limited to
     isolated groups without cross-process permission mutation.
-  - Current evidence: 488 passed, 2 intentional platform skips; compile/Ruff
+  - Current evidence: 495 passed, 2 intentional platform skips; compile/Ruff
     clean; installed dependency audit reports no known vulnerabilities.
 
 [DONE/P0] ENT-QA-003  Deterministic trust-boundary property fuzzing.
@@ -1513,7 +1513,10 @@ Acceptance gate:
   - no unbounded UI row accumulation.
   Current evidence: Resolve Center renders 25 rows per page; telemetry drains in
   bounded 200-row batches; coverage state caps sensor cardinality and exposes
-  evictions; the kernel posture ledger retains 256 records. Remaining
+  evictions; the kernel posture ledger retains 256 records. The async GUI
+  telemetry bridge now caps pending and presentation queues at 2,000, renders
+  at most 250 rows per tick, bounds EventBus identity retention at 4,096, and
+  exposes drop/queue counters. Canary echoes retain the newest 64. Remaining
   components still require a complete bound/eviction audit.
 
 [TODO/P1] ENT-PERF-010  Optimize database access.
@@ -1966,13 +1969,24 @@ Acceptance gate:
   Conditional future scope:
   - native/driver IOCTL only if that optional surface is ever added.
 
-[PARTIAL/P0] ENT-QA-004  Add concurrency/lifecycle tests.
+[DONE/P0] ENT-QA-004  Add concurrency/lifecycle tests.
   - start/stop/restart.
   - double click/job duplicate.
   - shutdown during work.
   - sleep/resume.
   - stale worker result after window close.
   - queue saturation.
+  Evidence:
+  - generation-owned BaseModule restart tests prove interruptible and deferred
+    restarts never overlap, and stop cancels a deferred restart.
+  - shutdown drain tests keep databases open under live writers.
+  - asynchronous dialogs ignore results after close; System Pulse now suppresses
+    post-shutdown samples.
+  - voice resolution/listening and full self-test actions are single-flight.
+  - telemetry worker/UI queues, seen-identity state, and canary echoes are
+    explicitly bounded with deterministic saturation/drop-accounting tests.
+  - a synthetic 100,000-event telemetry burst retained exactly 2,000 newest
+    records, accounted for 98,000 drops, and completed in 216.46 ms.
 
 [PARTIAL/P0] ENT-QA-005  Add security boundary tests.
   - Forged identity/policy/update/receipt/AAR.

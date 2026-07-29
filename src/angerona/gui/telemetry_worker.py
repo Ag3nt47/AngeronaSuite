@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import collections
 import json
-import queue
+import math
 import sqlite3
 import threading
 import time
@@ -53,6 +53,11 @@ BATCH_MAX_MS: float = 80.0     # or after this many ms, whichever comes first
 POLL_INTERVAL_S: float = 0.05  # worker poll rate (50 ms → max 20 polls/s)
 UI_FLUSH_MS: int = 100         # QTimer flush cadence in the main thread
 _RECENT_N: int = 200           # events fetched per poll from EventBus
+_SEEN_ID_LIMIT: int = 4096
+_WORKER_PENDING_LIMIT: int = 2000
+_SIGNAL_BATCH_LIMIT: int = 250
+_UI_QUEUE_LIMIT: int = 2000
+_UI_RENDER_BATCH_LIMIT: int = 250
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -82,8 +87,10 @@ class TelemetryWorker(QThread):
         super().__init__(parent)
         self._db_path = db_path
         self._stopping = threading.Event()
-        self._seen_ids: set[int] = set()     # deduplicate by row id
+        self._seen_ids: set[tuple[int, float]] = set()
+        self._seen_order: collections.deque[tuple[int, float]] = collections.deque()
         self._pending: collections.deque[dict] = collections.deque()
+        self._dropped_pending = 0
         self._last_flush = time.monotonic()
         # Owned and used exclusively by this QThread.  Keeping the read-only
         # connection open avoids connection setup/schema parsing on every
@@ -95,21 +102,37 @@ class TelemetryWorker(QThread):
     def stop(self) -> None:
         self._stopping.set()
 
+    def _remember_event_id(self, event_id: int, observed_at: float = 0.0) -> bool:
+        """Bound EventBus identity deduplication for indefinite runtimes."""
+        identity = (event_id, observed_at)
+        if identity in self._seen_ids:
+            return False
+        self._seen_ids.add(identity)
+        self._seen_order.append(identity)
+        while len(self._seen_order) > _SEEN_ID_LIMIT:
+            self._seen_ids.discard(self._seen_order.popleft())
+        return True
+
+    def _enqueue_pending(self, events: list[dict]) -> None:
+        """Keep newest telemetry under producer bursts without unbounded RAM."""
+        for event in events:
+            if len(self._pending) >= _WORKER_PENDING_LIMIT:
+                self._pending.popleft()
+                self._dropped_pending += 1
+            self._pending.append(event)
+
+    def backpressure_snapshot(self) -> dict[str, int]:
+        return {
+            "pending": len(self._pending),
+            "pending_limit": _WORKER_PENDING_LIMIT,
+            "dropped": self._dropped_pending,
+            "seen_ids": len(self._seen_ids),
+            "seen_limit": _SEEN_ID_LIMIT,
+        }
+
     # ── MEMC / FlightRecorder reader ─────────────────────────────────────────
     def _read_memc(self) -> list[dict]:
-        """Pull new events from the in-memory cache if MEMC module is active,
-        otherwise fall back to a direct read of the on-disk FlightRecorder."""
-        try:
-            from angerona.modules.flight_cache import FlightCacheModule  # type: ignore
-            # If the module singleton is running, use its in-memory DB
-            # (this avoids touching the disk DB at all in the hot path)
-            # The MEMC module registers itself via register(); we look it up
-            # from the module manager if available.
-            pass
-        except Exception:
-            pass
-
-        # Direct on-disk fallback: read the last 200 rows
+        """Read authenticated new rows through one persistent read-only cursor."""
         if not self._db_path:
             return []
         try:
@@ -206,12 +229,17 @@ class TelemetryWorker(QThread):
         result = []
         for ev in events:
             eid = id(ev)
-            if eid in self._seen_ids:
+            try:
+                observed_at = float(getattr(ev, "ts", 0.0))
+            except (TypeError, ValueError):
+                observed_at = 0.0
+            if not math.isfinite(observed_at):
+                observed_at = 0.0
+            if not self._remember_event_id(eid, observed_at):
                 continue
-            self._seen_ids.add(eid)
             result.append({
                 "id": eid,
-                "ts": getattr(ev, "ts", time.time()),
+                "ts": observed_at,
                 "module": getattr(ev, "module", ""),
                 "severity": int(getattr(ev, "severity", 0)),
                 "message": getattr(ev, "message", ""),
@@ -226,8 +254,15 @@ class TelemetryWorker(QThread):
         if not self._pending:
             return
         if force or len(self._pending) >= BATCH_SIZE or elapsed_ms >= BATCH_MAX_MS:
-            batch = list(self._pending)
-            self._pending.clear()
+            if force and len(self._pending) > _SIGNAL_BATCH_LIMIT:
+                discard = len(self._pending) - _SIGNAL_BATCH_LIMIT
+                for _index in range(discard):
+                    self._pending.popleft()
+                self._dropped_pending += discard
+            batch = [
+                self._pending.popleft()
+                for _index in range(min(len(self._pending), _SIGNAL_BATCH_LIMIT))
+            ]
             self._last_flush = now
             # Emit the signal — Qt routes this to the main thread safely
             self.batch_ready.emit(batch)
@@ -238,8 +273,7 @@ class TelemetryWorker(QThread):
             while not self._stopping.is_set():
                 try:
                     new_events = self._read_memc() or self._read_bus()
-                    for ev in new_events:
-                        self._pending.append(ev)
+                    self._enqueue_pending(new_events)
                     self._maybe_flush()
                 except Exception:
                     pass
@@ -270,31 +304,59 @@ class UIBatchFlusher:
 
     def __init__(self, render_fn, parent=None) -> None:
         self._render_fn = render_fn
-        self._queue: list[dict] = []
+        self._queue: collections.deque[dict] = collections.deque()
         self._lock = threading.Lock()
+        self._accepting = True
+        self._dropped = 0
         self._timer = QTimer(parent)
         self._timer.setInterval(UI_FLUSH_MS)
         self._timer.timeout.connect(self._flush)
 
     def start(self) -> None:
+        with self._lock:
+            self._accepting = True
         self._timer.start()
 
     def stop(self) -> None:
         self._timer.stop()
+        with self._lock:
+            self._accepting = False
+            self._dropped += len(self._queue)
+            self._queue.clear()
 
     @Slot(list)
     def enqueue(self, batch: list) -> None:
         """Receive a batch from TelemetryWorker (runs in main thread via signal)."""
         with self._lock:
-            self._queue.extend(batch)
+            if not self._accepting:
+                self._dropped += len(batch)
+                return
+            for event in batch:
+                if len(self._queue) >= _UI_QUEUE_LIMIT:
+                    self._queue.popleft()
+                    self._dropped += 1
+                self._queue.append(event)
+
+    def backpressure_snapshot(self) -> dict[str, int | bool]:
+        with self._lock:
+            return {
+                "queued": len(self._queue),
+                "queue_limit": _UI_QUEUE_LIMIT,
+                "dropped": self._dropped,
+                "accepting": self._accepting,
+            }
 
     def _flush(self) -> None:
         """Called by QTimer every 100 ms — drain the queue into the UI."""
         with self._lock:
             if not self._queue:
                 return
-            batch = self._queue
-            self._queue = []
+            batch = [
+                self._queue.popleft()
+                for _index in range(
+                    min(len(self._queue), _UI_RENDER_BATCH_LIMIT)
+                )
+            ]
         try:
             self._render_fn(batch)
         except Exception:

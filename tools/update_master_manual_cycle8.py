@@ -287,6 +287,21 @@ def update(source: Path, destination: Path) -> None:
         "the protected key. It is not process isolation: a fully compromised "
         "scanner that can read the key can forge a valid record. Code integrity, "
         "supervision, and future native isolation remain separate controls.",
+        "Long-running Graphical User Interface telemetry now bounds both sides "
+        "of its queued signal. Worker and presentation queues retain the newest "
+        "2,000 events, signal and render batches are capped at 250, and EventBus "
+        "identity retention is limited to 4,096 identity/timestamp pairs. "
+        "Observable counters distinguish retained and dropped work.",
+        "Stopping the presentation flusher rejects stale completion. System "
+        "Pulse ignores post-shutdown samples. Voice resolver/listener startup "
+        "and full self-test execution are single-flight, and canary echo "
+        "ingestion is non-blocking with a newest-64 bound.",
+        "Deterministic lifecycle coverage proves non-overlapping generation "
+        "restart, deferred-restart cancellation, shutdown draining, sleep and "
+        "resume, closed-dialog result suppression, duplicate-action rejection, "
+        "and queue saturation. A synthetic 100,000-event burst retained exactly "
+        "2,000 newest records, accounted for 98,000 drops, and enqueued in "
+        "216.46 milliseconds.",
         "Ruff 0.16.0 adds a fast correctness gate and found a latent ARP "
         "Watchdog return-type spelling defect, which was corrected.",
         "pytest-xdist 3.8.0 is available for isolated test groups. The complete "
@@ -303,7 +318,7 @@ def update(source: Path, destination: Path) -> None:
         "The first Bandit pass exposed a weak SHA-1 alert identifier and "
         "shell-based console clearing. Both were corrected and the "
         "high-severity re-scan is clean.",
-        "Final repository evidence: 488 tests passed, 2 intentional "
+        "Final repository evidence: 495 tests passed, 2 intentional "
         "platform-dependent skips, 0 failures; Python compilation, Ruff, "
         "dependency audit, and whitespace checks passed.",
     ))
