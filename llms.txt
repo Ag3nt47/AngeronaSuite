@@ -386,13 +386,16 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   and detects password spray, distributed account attacks, repeated failures,
   new privileged sources, and interactive service-account use. Never accept
   passwords, tokens, or credential material as analytics input.
+- `core/network_behavior.py` tokenizes process/destination identity before
+  retention and detects periodic beacons, private lateral fanout, external
+  fanout, and asymmetric upload. Never store packet payloads in this layer.
 - Normal launch never rewrites the elevated autostart task. Only an explicit
   Settings state change may mutate startup registration.
 - Development gates are pinned in `pyproject.toml`: Ruff 0.16.0,
   pytest-xdist 3.8.0, and pip-audit 2.10.1. Ruff uses correctness-critical rules
   first. Keep the complete suite serial because Windows ACL tests are not
   process-parallel-safe; xdist is for isolated test groups. Current evidence:
-  357 passed / 2 intentional platform skips; compile and Ruff clean; no known
+  360 passed / 2 intentional platform skips; compile and Ruff clean; no known
   installed-package vulnerability reported.
 
 ## NEVER DO

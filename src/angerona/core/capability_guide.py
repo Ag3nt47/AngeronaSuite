@@ -157,6 +157,19 @@ GUIDES = (
         "Enterprise",
     ),
     CapabilityGuide(
+        "network-behavior", "Network Behavior Analytics", "Network",
+        "Privacy-minimized Network Detection and Response (NDR) analytics for "
+        "periodic beaconing, lateral fanout, external fanout, and asymmetric upload.",
+        ("Normalize new flow observations.", "Tokenize process and destination.",
+         "Correlate within the bounded local window.",
+         "Review the finding with DNS, process, and identity evidence."),
+        "Periodic and fanout fixtures alert while raw process and destination "
+        "values never appear in retained analytics state.",
+        "Destinations and process identities are HMAC-tokenized before retention; "
+        "packet payloads are neither accepted nor stored.",
+        "Enterprise",
+    ),
+    CapabilityGuide(
         "world-view", "World View and System Pulse", "Observability",
         "Explains Angerona resource use, sensor continuity and internal service health.",
         ("Open World View.", "Inspect sensor and pipeline status.",

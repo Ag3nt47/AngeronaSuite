@@ -10,6 +10,7 @@ def test_guides_are_complete_unique_and_searchable():
     assert search_guides("microphone")[0].key == "local-ai"
     assert search_guides("custody privacy")[0].key == "forensics"
     assert search_guides("password spray")[0].key == "identity-defense"
+    assert search_guides("periodic beaconing")[0].key == "network-behavior"
     assert search_guides("no such capability") == ()
 
 

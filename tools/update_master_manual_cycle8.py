@@ -75,6 +75,15 @@ def update(source: Path, destination: Path) -> None:
         "analytics contract never accepts passwords, tokens, or credential material.",
     ))
 
+    doc.add_heading("Privacy-minimized network behavior", level=2)
+    bullets(doc, (
+        "A fixed-memory Network Detection and Response (NDR) layer detects "
+        "periodic beacon timing, private lateral fanout, broad external fanout, "
+        "and large asymmetric uploads.",
+        "Process and destination identities are HMAC-tokenized before retention. "
+        "The layer does not accept or store packet payloads.",
+    ))
+
     doc.add_heading("Engineering efficiency and verification", level=2)
     bullets(doc, (
         "Ruff 0.16.0 adds a fast correctness gate and found a latent ARP "
@@ -85,7 +94,7 @@ def update(source: Path, destination: Path) -> None:
         "pip-audit 2.10.1 reports no known vulnerability in installed "
         "dependencies. Public-repository scanning found no committed real "
         "credential, private key, user-profile path, database, cache, or runtime data.",
-        "Final repository evidence: 357 tests passed, 2 intentional "
+        "Final repository evidence: 360 tests passed, 2 intentional "
         "platform-dependent skips, 0 failures; Python compilation, Ruff, "
         "dependency audit, and whitespace checks passed.",
     ))

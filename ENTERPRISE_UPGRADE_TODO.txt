@@ -285,6 +285,10 @@ CYCLE 8 IMPLEMENTATION RECORD — 2026-07-29
   - New privileged source and interactive service-account detections.
   - HMAC-tokenized account/source retention; no credential input.
 
+[DONE/P2] ENT-NDR-001  Privacy-minimized local network behavior analytics.
+  - Periodic beacon, private lateral fanout, external fanout, asymmetric upload.
+  - HMAC-tokenized process/destination retention; no packet payload input.
+
 [DONE/P0] ENT-UX-INFO-001  Canonical Settings and searchable capability guide.
   - Unique settings ownership, definitions, steps, verification, privacy, and
     Take me there navigation.
@@ -293,7 +297,7 @@ CYCLE 8 IMPLEMENTATION RECORD — 2026-07-29
   - Ruff 0.16.0, pytest-xdist 3.8.0, pip-audit 2.10.1.
   - Complete Windows ACL/security suite remains serial; xdist is limited to
     isolated groups without cross-process permission mutation.
-  - Current evidence: 357 passed, 2 intentional platform skips; compile/Ruff
+  - Current evidence: 360 passed, 2 intentional platform skips; compile/Ruff
     clean; installed dependency audit reports no known vulnerabilities.
 
 
