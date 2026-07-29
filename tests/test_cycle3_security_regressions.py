@@ -143,3 +143,5 @@ def test_source_launcher_is_bounded_and_reports_early_startup_failures():
     assert text.index(":validate") < text.index(":launch")
     assert "launcher-preflight.log" in text
     assert "launcher-stderr.log" in text
+    assert "[IO.DriveInfo]::new([IO.Path]::GetPathRoot($r.FullName))" in text
+    assert "$r.PSDrive.DriveType" not in text

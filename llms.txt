@@ -501,6 +501,12 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
 - Purple Guard rollback removes only the exact technique policy and preserves
   unrelated detector candidates. Short antivirus sharing locks use the existing
   bounded atomic-replacement retry; persistent filesystem failures remain visible.
+- `start-angerona.bat` validates the elevated source volume with
+  `System.IO.DriveInfo` and `System.IO.DriveType.Fixed`. Do not use
+  `FileSystemInfo.PSDrive.DriveType`: that property is blank for normal path
+  items and caused valid D: source checkouts to fail closed before launch.
+  Reparse-point and required-file checks remain, followed by the independent
+  Python source/interpreter trust preflight.
 - Current evidence: 426 passed /
   2 intentional platform skips; compile and Ruff clean; no known
   installed-package vulnerability reported.

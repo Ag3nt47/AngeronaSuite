@@ -1763,6 +1763,10 @@ Acceptance gate:
 -------------------------------------------
 
 [PARTIAL/P0] ENT-DEP-001  Preserve one-click development bootstrapper.
+  Current source-launch boundary: self-elevation, actual fixed-volume validation
+  through Windows DriveInfo, reparse/missing-file refusal, protected runtime key
+  custody, pinned binary-only dependency install, visible preflight logs, and
+  early-exit diagnostics. Production signing/repair/uninstall remain separate.
 
 [TODO/P0] ENT-DEP-002  Create a signed production installer.
   - MSI/MSIX or a documented combination.

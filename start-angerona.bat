@@ -31,7 +31,7 @@ if errorlevel 1 (
 REM This source/developer launcher must not recursively rewrite the checkout ACLs.
 REM The release installer establishes the protected installed-program trust root.
 REM Fail closed on redirected/removable source roots before executing elevated code.
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "$r=Get-Item -LiteralPath $env:ANGERONA_INSTALL_ROOT -Force; if (($r.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $r.PSDrive.DriveType -ne 'Fixed') {exit 1}; $required=@('start-angerona.bat','pyproject.toml','src\angerona\__init__.py'); foreach($n in $required) {$p=Join-Path $r.FullName $n; if (!(Test-Path -LiteralPath $p -PathType Leaf) -or ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {exit 1}}; exit 0"
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "$r=Get-Item -LiteralPath $env:ANGERONA_INSTALL_ROOT -Force; $v=[IO.DriveInfo]::new([IO.Path]::GetPathRoot($r.FullName)); if (($r.Attributes -band [IO.FileAttributes]::ReparsePoint) -or !$v.IsReady -or $v.DriveType -ne [IO.DriveType]::Fixed) {exit 1}; $required=@('start-angerona.bat','pyproject.toml','src\angerona\__init__.py'); foreach($n in $required) {$p=Join-Path $r.FullName $n; if (!(Test-Path -LiteralPath $p -PathType Leaf) -or ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {exit 1}}; exit 0"
 if errorlevel 1 (
     echo [!] Refusing redirected, incomplete, or non-fixed elevated source checkout.
     pause

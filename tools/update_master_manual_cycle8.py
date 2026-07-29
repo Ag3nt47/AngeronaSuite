@@ -37,6 +37,11 @@ def update(source: Path, destination: Path) -> None:
         "reduced-motion-aware reverse panel transition as opening.",
         "Ordinary startup no longer rewrites the highest-privilege scheduled "
         "task. Registration changes only after an explicit operator setting change.",
+        "The elevated source launcher validates its volume through the Windows "
+        "DriveInfo API and requires a ready fixed drive. This replaces a blank "
+        "PowerShell path-object DriveType property that incorrectly refused a "
+        "valid D: checkout. Reparse-point, required-file, protected-key-custody, "
+        "and independent Python source/interpreter checks remain fail closed.",
     ))
 
     doc.add_heading("Authenticated local fleet preview", level=2)

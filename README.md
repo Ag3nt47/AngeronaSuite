@@ -954,6 +954,13 @@ email scanning, channel push, research) — each has a one-click test button.
   closed, repeated occurrences are deduplicated, and expiry or a future miss
   reopens the gap. Detector coverage, same-run SOAR response, action application,
   and verified closure are separate scorecard values.
+- **Source-launcher fixed-volume check repaired.** The elevated developer
+  launcher previously read `DriveType` from a PowerShell path object where that
+  property is blank, causing a valid D: checkout to be refused as redirected or
+  non-fixed. It now resolves the volume through the Windows `DriveInfo` API,
+  requires a ready fixed drive, and retains the existing reparse-point and
+  required-file checks. The independent Python source/interpreter trust
+  preflight still runs before `pythonw`.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
   passes **426 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
