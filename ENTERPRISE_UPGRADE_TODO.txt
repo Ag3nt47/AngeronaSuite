@@ -84,7 +84,7 @@ NON-NEGOTIABLE PRODUCT RULES
   - Minimize by default, redact before export, bound retention, support deletion,
     and document every optional outbound path.
 
-[TODO/P0] DEF-007  Never claim "enterprise ready", "tamper proof", "zero trust",
+[DONE/P0] DEF-007  Never claim "enterprise ready", "tamper proof", "zero trust",
   "AI-secured", or compliance/certification without objective release evidence.
 
 [DECLINED/P0] DEF-008  Do not use stealth process names, process ghosting, covert
@@ -118,7 +118,7 @@ CURRENT FOUNDATION TO PRESERVE AND REVALIDATE
 [DONE] BASE-016  Non-blocking System Pulse card for CPU, RAM, available memory,
                  Wi-Fi signal, and aggregate network throughput.
 
-[TODO/P0] BASE-017  Re-run the full regression, security, performance, and privacy
+[DONE/P0] BASE-017  Re-run the full regression, security, performance, and privacy
   suite before every release and archive results with the release manifest.
 
 
@@ -209,23 +209,23 @@ PHASE 4 - VISIONARY RESEARCH (P4)
 01. PRODUCT GOVERNANCE AND OWNERSHIP
 ------------------------------------
 
-[TODO/P0] ENT-GOV-001  Assign owners for agent, control plane, data, update,
+[DONE/P0] ENT-GOV-001  Assign owners for agent, control plane, data, update,
   identity, UI, detection content, privacy, release, and incident response.
 
-[TODO/P0] ENT-GOV-002  Publish a supported-editions matrix.
+[DONE/P0] ENT-GOV-002  Publish a supported-editions matrix.
   - Community/Standalone: local host, local data, manual administration.
   - Fleet Preview: experimental central management with explicit limitations.
   - Enterprise: only after GA gates are passed.
   - Never hide security fixes behind a paid tier.
 
-[TODO/P0] ENT-GOV-003  Define semantic versioning and compatibility policy.
+[DONE/P0] ENT-GOV-003  Define semantic versioning and compatibility policy.
   - Agent/control plane protocol compatibility window.
   - Schema compatibility window.
   - Detection-content compatibility.
   - Upgrade ordering and downgrade rules.
   - Deprecation period and end-of-support policy.
 
-[TODO/P0] ENT-GOV-004  Create Architecture Decision Records (ADRs).
+[DONE/P0] ENT-GOV-004  Create Architecture Decision Records (ADRs).
   Required first ADRs:
   - Fleet identity and trust roots.
   - Control-plane deployment model.
@@ -235,14 +235,14 @@ PHASE 4 - VISIONARY RESEARCH (P4)
   - Multi-tenancy boundary.
   - Plugin isolation boundary.
 
-[TODO/P0] ENT-GOV-005  Establish security response governance.
+[DONE/P0] ENT-GOV-005  Establish security response governance.
   - SECURITY.md reporting path and response expectations.
   - Private vulnerability intake.
   - CVE assignment strategy.
   - Coordinated disclosure and embargo handling.
   - Supported-version patch policy.
 
-[TODO/P1] ENT-GOV-006  Establish detection-content governance.
+[DONE/P1] ENT-GOV-006  Establish detection-content governance.
   - Author/reviewer ownership.
   - Test evidence.
   - false-positive risk.
@@ -250,7 +250,7 @@ PHASE 4 - VISIONARY RESEARCH (P4)
   - ATT&CK/D3FEND mapping.
   - version, changelog, rollback, and expiry.
 
-[TODO/P2] ENT-GOV-007  Establish enterprise support operations.
+[PARTIAL/P2] ENT-GOV-007  Establish enterprise support operations.
   - Severity definitions and support hours.
   - Diagnostic bundles with preview/redaction.
   - Escalation runbooks.

@@ -864,6 +864,10 @@ email scanning, channel push, research) — each has a one-click test button.
   OpenTelemetry Protocol (OTLP), and Angerona envelopes use a signed durable
   queue with idempotency, bounded backoff, and dead-letter handling. External
   egress remains denied by default.
+- **Enterprise governance baseline.** Supported-edition claims, semantic and
+  protocol compatibility, six architecture decisions, detection-content
+  governance, ownership roles, vulnerability response targets, diagnostic
+  privacy, and support escalation are now committed repository policy.
 - **Fewer Defender prompts.** Normal startup no longer rewrites the
   highest-privilege scheduled task. Startup registration changes only when the
   operator explicitly changes that setting.
@@ -874,10 +878,10 @@ email scanning, channel push, research) — each has a one-click test button.
   intentionally mutate file permissions and are not process-parallel-safe.
   Ruff immediately found and closed a latent ARP Watchdog type-name defect.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
-  passes **368 tests with 2 intentional platform skips** and 0 failures.
+  passes **369 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
   Ruff pass. pip-audit reports no known vulnerabilities in the installed
   dependencies. The public-repository scan found no committed real credential,
   private key, user-profile path, database, runtime-data, or cache artifact.
 
-<!-- ANGERONA_DOC_STATUS tests=368 skips=2 modules=65 -->
+<!-- ANGERONA_DOC_STATUS tests=369 skips=2 modules=65 -->

@@ -23,6 +23,13 @@ We will acknowledge a report as soon as practical, validate it, coordinate a
 fix, and credit the reporter unless anonymity is requested. Do not access data
 that is not yours, persist on another system, or disrupt services while testing.
 
+Severity, response targets, ownership roles, diagnostic-bundle privacy, and
+escalation are defined in
+[Support and security operations](docs/enterprise/SUPPORT_OPERATIONS.md).
+The project requests a CVE when a released vulnerability has material security
+impact and coordinates disclosure until a fix or mitigation is ready. Severe
+issues may receive a narrowly scoped backport when a safe patch is feasible.
+
 ## Trust boundaries
 
 Angerona is defensive software that may run elevated to observe Windows

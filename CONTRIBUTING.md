@@ -15,3 +15,8 @@ Before proposing a change:
    and require an explicit operator confirmation for state-changing actions.
 
 Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+Detection changes also follow
+[Detection-content governance](docs/enterprise/DETECTION_CONTENT_GOVERNANCE.md).
+Compatibility and architecture changes must remain consistent with
+[the compatibility policy](docs/enterprise/COMPATIBILITY_POLICY.md) and
+[accepted architecture decisions](docs/enterprise/ARCHITECTURE_DECISIONS.md).

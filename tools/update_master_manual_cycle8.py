@@ -105,6 +105,17 @@ def update(source: Path, destination: Path) -> None:
         "External egress remains denied by default.",
     ))
 
+    doc.add_heading("Enterprise governance baseline", level=2)
+    bullets(doc, (
+        "Repository policy now defines supported editions and honest claims, "
+        "semantic and protocol compatibility, downgrade/deprecation behavior, "
+        "and six accepted architecture decisions.",
+        "Detection-content governance defines owner/reviewer roles, telemetry, "
+        "fixtures, ATT&CK mapping, false-positive risk, privacy, signing, and "
+        "promotion gates. Support operations define ownership, severity, response "
+        "targets, diagnostic privacy, escalation, and disclosure.",
+    ))
+
     doc.add_heading("Engineering efficiency and verification", level=2)
     bullets(doc, (
         "Ruff 0.16.0 adds a fast correctness gate and found a latent ARP "
@@ -115,7 +126,7 @@ def update(source: Path, destination: Path) -> None:
         "pip-audit 2.10.1 reports no known vulnerability in installed "
         "dependencies. Public-repository scanning found no committed real "
         "credential, private key, user-profile path, database, cache, or runtime data.",
-        "Final repository evidence: 368 tests passed, 2 intentional "
+        "Final repository evidence: 369 tests passed, 2 intentional "
         "platform-dependent skips, 0 failures; Python compilation, Ruff, "
         "dependency audit, and whitespace checks passed.",
     ))
