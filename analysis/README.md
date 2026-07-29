@@ -841,6 +841,11 @@ email scanning, channel push, research) — each has a one-click test button.
   receipts. There is no generic shell. Preview never executes; live medium/low
   risk needs an independent approval and high/critical response needs two
   distinct non-requester approvals.
+- **Privacy-minimized identity defense.** A bounded local analytics layer detects
+  password spray, distributed account targeting, repeated authentication
+  failures, new privileged sign-in sources, and interactive service-account
+  use. Accounts and sources are HMAC-tokenized before retention; credential
+  material is never accepted.
 - **Fewer Defender prompts.** Normal startup no longer rewrites the
   highest-privilege scheduled task. Startup registration changes only when the
   operator explicitly changes that setting.
@@ -851,10 +856,10 @@ email scanning, channel push, research) — each has a one-click test button.
   intentionally mutate file permissions and are not process-parallel-safe.
   Ruff immediately found and closed a latent ARP Watchdog type-name defect.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
-  passes **353 tests with 2 intentional platform skips** and 0 failures.
+  passes **357 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
   Ruff pass. pip-audit reports no known vulnerabilities in the installed
   dependencies. The public-repository scan found no committed real credential,
   private key, user-profile path, database, runtime-data, or cache artifact.
 
-<!-- ANGERONA_DOC_STATUS tests=353 skips=2 modules=65 -->
+<!-- ANGERONA_DOC_STATUS tests=357 skips=2 modules=65 -->

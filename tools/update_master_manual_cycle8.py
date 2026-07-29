@@ -66,6 +66,15 @@ def update(source: Path, destination: Path) -> None:
         "rejection, bounded results, and HMAC-authenticated receipts are enforced.",
     ))
 
+    doc.add_heading("Privacy-minimized identity defense", level=2)
+    bullets(doc, (
+        "Bounded local authentication analytics detect password spray, "
+        "distributed account targeting, repeated failures, new privileged "
+        "sign-in sources, and interactive service-account use.",
+        "Account and source values are HMAC-tokenized before retention. The "
+        "analytics contract never accepts passwords, tokens, or credential material.",
+    ))
+
     doc.add_heading("Engineering efficiency and verification", level=2)
     bullets(doc, (
         "Ruff 0.16.0 adds a fast correctness gate and found a latent ARP "
@@ -76,7 +85,7 @@ def update(source: Path, destination: Path) -> None:
         "pip-audit 2.10.1 reports no known vulnerability in installed "
         "dependencies. Public-repository scanning found no committed real "
         "credential, private key, user-profile path, database, cache, or runtime data.",
-        "Final repository evidence: 353 tests passed, 2 intentional "
+        "Final repository evidence: 357 tests passed, 2 intentional "
         "platform-dependent skips, 0 failures; Python compilation, Ruff, "
         "dependency audit, and whitespace checks passed.",
     ))

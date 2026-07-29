@@ -142,6 +142,21 @@ GUIDES = (
         "Enterprise",
     ),
     CapabilityGuide(
+        "identity-defense", "Identity Threat Analytics", "Identity",
+        "Local authentication analytics for password spray, distributed account "
+        "targeting, repeated failures, new privileged sources, and interactive "
+        "service-account use.",
+        ("Collect supported local authentication events.",
+         "Normalize account, source, success, privilege, and logon type.",
+         "Review tokenized findings and corroborating endpoint evidence.",
+         "Use the response broker to preview any containment."),
+        "Benign fixtures remain quiet; threshold fixtures produce the expected "
+        "rule and no raw account or source appears in retained analytics state.",
+        "Accounts and sources are HMAC-tokenized before retention; passwords "
+        "and credential material are never accepted.",
+        "Enterprise",
+    ),
+    CapabilityGuide(
         "world-view", "World View and System Pulse", "Observability",
         "Explains Angerona resource use, sensor continuity and internal service health.",
         ("Open World View.", "Inspect sensor and pipeline status.",

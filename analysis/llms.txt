@@ -382,13 +382,17 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   add a generic command/shell operation. Live operations need independent
   approval; high/critical operations require two distinct non-requester
   approvers. Preview validates but never invokes a handler.
+- `core/identity_analytics.py` tokenizes accounts and sources before retention
+  and detects password spray, distributed account attacks, repeated failures,
+  new privileged sources, and interactive service-account use. Never accept
+  passwords, tokens, or credential material as analytics input.
 - Normal launch never rewrites the elevated autostart task. Only an explicit
   Settings state change may mutate startup registration.
 - Development gates are pinned in `pyproject.toml`: Ruff 0.16.0,
   pytest-xdist 3.8.0, and pip-audit 2.10.1. Ruff uses correctness-critical rules
   first. Keep the complete suite serial because Windows ACL tests are not
   process-parallel-safe; xdist is for isolated test groups. Current evidence:
-  353 passed / 2 intentional platform skips; compile and Ruff clean; no known
+  357 passed / 2 intentional platform skips; compile and Ruff clean; no known
   installed-package vulnerability reported.
 
 ## NEVER DO
