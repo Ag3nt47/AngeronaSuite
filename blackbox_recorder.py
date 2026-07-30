@@ -2308,9 +2308,21 @@ def main() -> None:
         beat_timer = QTimer()
         beat_timer.timeout.connect(ui_watchdog.beat)
         beat_timer.start(1000)
+        try:
+            from angerona.core.config import Config
+            motion_config = Config.load()
+        except Exception:
+            motion_config = None
         if args.show:
-            win.show()
+            from angerona.gui.header_controls import show_with_window_reveal
+            show_with_window_reveal(
+                win,
+                config=motion_config,
+                color="#38bdf8",
+            )
         else:
+            from angerona.gui.header_controls import install_global_window_reveal
+            install_global_window_reveal(win, config=motion_config)
             win.showMinimized()
 
         exit_code = app.exec()

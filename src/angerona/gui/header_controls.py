@@ -10,6 +10,7 @@ import ctypes
 import os
 import sys
 import time
+import weakref
 from functools import lru_cache
 from html import escape
 from typing import Callable
@@ -412,6 +413,8 @@ class PanelRevealOverlay(QWidget):
         self._previous_mask = QRegion()
         self._mode = "idle"
         self._global_windows = False
+        self._motion_config = None
+        self._pending_windows: list[weakref.ReferenceType[QWidget]] = []
         self._last_click_global = QPoint()
         self._last_click_at = 0.0
         self._animation = QPropertyAnimation(self, b"revealProgress", self)
@@ -419,6 +422,55 @@ class PanelRevealOverlay(QWidget):
         self._animation.setEasingCurve(QEasingCurve.OutCubic)
         self._animation.finished.connect(self._finish)
         self.hide()
+
+    def set_motion_config(self, config=None) -> None:
+        """Use an explicit motion policy when the owner has no ``config`` attr."""
+        self._motion_config = config
+
+    def _config(self):
+        if self._motion_config is not None:
+            return self._motion_config
+        try:
+            return getattr(self.window(), "config", None)
+        except RuntimeError:
+            return None
+
+    @staticmethod
+    def _widget_flag(widget: QWidget, name: str) -> bool:
+        """Read opt-out flags set either as Python or dynamic Qt properties."""
+        try:
+            if bool(getattr(widget, name, False)):
+                return True
+        except RuntimeError:
+            return True
+        try:
+            return bool(widget.property(name))
+        except RuntimeError:
+            return True
+
+    def _is_reveal_destination(self, widget: QWidget) -> bool:
+        """Return whether *widget* is an Angerona-owned content window.
+
+        Tooltips, menus, splash surfaces, and the holographic token are not
+        content windows. They already own purpose-built motion and masking them
+        here causes flicker or a duplicate animation.
+        """
+        try:
+            if not widget.isWindow() or widget is self.window():
+                return False
+            if widget.windowType() in (
+                Qt.ToolTip,
+                Qt.Popup,
+                Qt.SplashScreen,
+            ):
+                return False
+            if self._widget_flag(widget, "_angerona_no_reveal"):
+                return False
+            if self._widget_flag(widget, "_angerona_orb_ignore"):
+                return False
+            return True
+        except RuntimeError:
+            return False
 
     def enable_global_windows(self, enabled: bool = True) -> None:
         """Apply the reveal/reverse-close transition to newly shown app windows."""
@@ -430,6 +482,7 @@ class PanelRevealOverlay(QWidget):
             app.removeEventFilter(self)
             app.installEventFilter(self)
         elif not self._armed and self._target is None:
+            self._clear_pending_windows()
             app.removeEventFilter(self)
 
     def reveal(
@@ -498,14 +551,13 @@ class PanelRevealOverlay(QWidget):
                 shutting_down = bool(app is not None and app.closingDown())
             except Exception:
                 shutting_down = False
-            config = getattr(self.window(), "config", None)
             busy_with_other = (
                 self._target is not None and self._target is not watched
             )
             if (
                 shutting_down
                 or busy_with_other
-                or not motion_allowed(config)
+                or not motion_allowed(self._config())
                 or not watched.isVisible()
             ):
                 return super().eventFilter(watched, event)
@@ -516,11 +568,24 @@ class PanelRevealOverlay(QWidget):
             self._armed
             and event.type() == QEvent.Show
             and isinstance(watched, QWidget)
-            and watched.isWindow()
-            and watched is not self.window()
-            and watched.windowType() not in (Qt.ToolTip, Qt.Popup)
+            and self._is_reveal_destination(watched)
         ):
             self._capture(watched)
+        elif (
+            self._global_windows
+            and not self._armed
+            and self._target is not None
+            and watched is not self._target
+            and event.type() == QEvent.Show
+            and isinstance(watched, QWidget)
+            and self._is_reveal_destination(watched)
+            and motion_allowed(self._config())
+        ):
+            # Two destinations can appear in one action (or a confirmation can
+            # be created while another window is collapsing). Keep the later
+            # window as a narrow live slice until its own turn rather than
+            # flashing it at full size or silently skipping the transition.
+            self._queue_pending_window(watched)
         elif (
             self._global_windows
             and not self._armed
@@ -528,14 +593,11 @@ class PanelRevealOverlay(QWidget):
             and self._animation.state() != QPropertyAnimation.Running
             and event.type() == QEvent.Show
             and isinstance(watched, QWidget)
-            and watched.isWindow()
-            and watched is not self.window()
-            and watched.windowType() not in (Qt.ToolTip, Qt.Popup)
-            and not bool(getattr(watched, "_angerona_no_reveal", False))
-            and not bool(
-                getattr(watched, "_angerona_reverse_reveal_close", False)
-            )
-            and motion_allowed(getattr(self.window(), "config", None))
+            and self._is_reveal_destination(watched)
+            # A dialog may be intentionally hidden and reused. Its previous
+            # transition marker is not an opt-out: every later Show receives a
+            # fresh opening animation too.
+            and motion_allowed(self._config())
         ):
             if (
                 self._last_click_at
@@ -565,7 +627,17 @@ class PanelRevealOverlay(QWidget):
         if app is not None and not self._global_windows:
             app.removeEventFilter(self)
         self._target = target
-        self._previous_mask = QRegion(target.mask())
+        pending_mask = getattr(
+            target,
+            "_angerona_pending_reveal_original_mask",
+            None,
+        )
+        self._previous_mask = (
+            QRegion(pending_mask)
+            if isinstance(pending_mask, QRegion)
+            else QRegion(target.mask())
+        )
+        setattr(target, "_angerona_pending_reveal_original_mask", None)
         self._mode = "opening"
         setattr(target, "_angerona_reverse_reveal_close", True)
         setattr(target, "_angerona_close_bypass", False)
@@ -606,6 +678,102 @@ class PanelRevealOverlay(QWidget):
         # dimensions. Modal exec() enters a nested event loop, so this also works
         # for existing blocking dialogs without rewriting every destination.
         QTimer.singleShot(0, self._start_target_reveal)
+
+    def _queue_pending_window(self, target: QWidget) -> None:
+        for reference in self._pending_windows:
+            if reference() is target:
+                return
+        try:
+            source_global = (
+                QPoint(self._last_click_global)
+                if self._last_click_at
+                and time.monotonic() - self._last_click_at <= 2.0
+                and not self._last_click_global.isNull()
+                else target.mapToGlobal(target.rect().center())
+            )
+            setattr(
+                target,
+                "_angerona_pending_reveal_original_mask",
+                QRegion(target.mask()),
+            )
+            setattr(target, "_angerona_reveal_source_global", source_global)
+            setattr(
+                target,
+                "_angerona_reveal_color",
+                QColor(getattr(target, "_angerona_reveal_color", "#38bdf8")),
+            )
+            bounds = target.rect()
+            local = target.mapFromGlobal(source_global)
+            origin = QPoint(
+                max(0, min(bounds.width(), local.x())),
+                max(0, min(bounds.height(), local.y())),
+            )
+            initial = QRect(
+                origin.x() - 2,
+                origin.y() - 14,
+                4,
+                28,
+            ).intersected(bounds)
+            if not initial.isEmpty():
+                target.setMask(QRegion(initial))
+            self._pending_windows.append(weakref.ref(target))
+        except RuntimeError:
+            return
+
+    def _start_next_pending_window(self) -> None:
+        if (
+            self._target is not None
+            or self._armed
+            or self._animation.state() == QPropertyAnimation.Running
+        ):
+            return
+        while self._pending_windows:
+            target = self._pending_windows.pop(0)()
+            if target is None:
+                continue
+            try:
+                if not target.isVisible():
+                    self._restore_pending_mask(target)
+                    continue
+                self._source_global = QPoint(
+                    getattr(
+                        target,
+                        "_angerona_reveal_source_global",
+                        target.mapToGlobal(target.rect().center()),
+                    )
+                )
+                self._color = QColor(
+                    getattr(target, "_angerona_reveal_color", "#38bdf8")
+                )
+                self._armed = True
+                self._capture(target)
+                return
+            except RuntimeError:
+                continue
+
+    @staticmethod
+    def _restore_pending_mask(target: QWidget) -> None:
+        try:
+            original = getattr(
+                target,
+                "_angerona_pending_reveal_original_mask",
+                None,
+            )
+            if isinstance(original, QRegion):
+                if original.isEmpty():
+                    target.clearMask()
+                else:
+                    target.setMask(original)
+            setattr(target, "_angerona_pending_reveal_original_mask", None)
+        except RuntimeError:
+            pass
+
+    def _clear_pending_windows(self) -> None:
+        for reference in self._pending_windows:
+            target = reference()
+            if target is not None:
+                self._restore_pending_mask(target)
+        self._pending_windows.clear()
 
     def _cancel_capture(self) -> None:
         self._armed = False
@@ -742,39 +910,119 @@ class PanelRevealOverlay(QWidget):
     def _finish(self) -> None:
         target = self._target
         mode = self._mode
+        previous_mask = QRegion(self._previous_mask)
+        frame = self._frame
         try:
             if target is not None and mode == "closing":
                 # Hide while the mask is still a line so restoring the original
                 # mask cannot flash one full-size frame before closeEvent runs.
                 target.hide()
-                if self._previous_mask.isEmpty():
+                if previous_mask.isEmpty():
                     target.clearMask()
                 else:
-                    target.setMask(self._previous_mask)
+                    target.setMask(previous_mask)
                 setattr(target, "_angerona_close_bypass", True)
                 target.removeEventFilter(self)
+                # Release this transition before closeEvent runs. A destination
+                # may create a nested confirmation dialog from closeEvent; the
+                # global coordinator can now animate that prompt immediately in
+                # its nested event loop instead of deadlocking behind its owner.
+                self._frame = None
+                self._target = None
+                self._previous_mask = QRegion()
+                self._progress = 0.0
+                self._mode = "idle"
+                if frame is not None:
+                    frame.deleteLater()
                 closed = target.close()
                 if not closed:
                     # A destination is allowed to veto close for unsaved work.
                     # Restore it fully and re-arm the reverse transition.
                     setattr(target, "_angerona_close_bypass", False)
                     target.installEventFilter(self)
+                    prior_opt_out = getattr(
+                        target,
+                        "_angerona_no_reveal",
+                        False,
+                    )
+                    setattr(target, "_angerona_no_reveal", True)
                     target.show()
+                    setattr(target, "_angerona_no_reveal", prior_opt_out)
                     target.raise_()
                     target.activateWindow()
             elif target is not None:
-                if self._previous_mask.isEmpty():
+                if previous_mask.isEmpty():
                     target.clearMask()
                 else:
-                    target.setMask(self._previous_mask)
+                    target.setMask(previous_mask)
                 target.raise_()
                 target.activateWindow()
         except RuntimeError:
             pass
-        if self._frame is not None:
-            self._frame.deleteLater()
-        self._frame = None
-        self._target = None
-        self._previous_mask = QRegion()
-        self._progress = 0.0
-        self._mode = "idle"
+        finally:
+            # A nested close confirmation may already own the coordinator. Do
+            # not clear its state when the outer close resumes.
+            if self._target is target:
+                if self._frame is not None:
+                    self._frame.deleteLater()
+                self._frame = None
+                self._target = None
+                self._previous_mask = QRegion()
+                self._progress = 0.0
+                self._mode = "idle"
+            app = QApplication.instance()
+            if (
+                app is not None
+                and not self._global_windows
+                and not self._armed
+                and self._target is None
+            ):
+                app.removeEventFilter(self)
+            QTimer.singleShot(0, self._start_next_pending_window)
+
+
+def install_global_window_reveal(
+    owner: QWidget,
+    *,
+    config=None,
+) -> PanelRevealOverlay:
+    """Install one shared transition coordinator on a top-level Angerona UI.
+
+    Main Angerona, Black Box, the Watchdog/Scanner status windows, and the
+    standalone Sandbox/Upgrade Console each own a QApplication in some launch
+    modes. Installing the coordinator in each entry point keeps every
+    Angerona-created dialog on the same open and reverse-close path.
+    """
+    existing = getattr(owner, "_angerona_window_reveal", None)
+    if isinstance(existing, PanelRevealOverlay):
+        existing.set_motion_config(config)
+        existing.enable_global_windows(True)
+        return existing
+    overlay = PanelRevealOverlay(owner)
+    overlay.set_motion_config(config)
+    overlay.enable_global_windows(True)
+    setattr(owner, "_angerona_window_reveal", overlay)
+    return overlay
+
+
+def show_with_window_reveal(
+    window: QWidget,
+    *,
+    config=None,
+    color: str | QColor = "#38bdf8",
+) -> PanelRevealOverlay:
+    """Show a standalone Angerona window through its real-content reveal."""
+    overlay = install_global_window_reveal(window, config=config)
+    if not motion_allowed(config):
+        window.show()
+        return overlay
+
+    def _show():
+        window.show()
+        window.raise_()
+        return window
+
+    # Mapping a hidden top-level widget is supported by Qt and gives the
+    # transition a stable centre-origin before its first visible frame.
+    overlay.reveal(window, _show, color)
+    return overlay

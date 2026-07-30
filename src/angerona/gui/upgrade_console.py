@@ -618,11 +618,12 @@ def _standalone() -> int:
     app = QApplication.instance() or QApplication([])
     try:
         from angerona.core.config import Config
-        cfg = Config()
+        cfg = Config.load()
     except Exception:
         cfg = None
     win = AngeronaUpgradeConsole(config=cfg)
-    win.show()
+    from angerona.gui.header_controls import show_with_window_reveal
+    show_with_window_reveal(win, config=cfg, color="#c084fc")
     return app.exec()
 
 

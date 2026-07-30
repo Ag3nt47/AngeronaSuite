@@ -635,7 +635,8 @@ def _standalone() -> int:
     manager = ModuleManager(bus, Config.load())
     manager.discover()
     win = SandboxEditor(manager, bus)
-    win.show()
+    from angerona.gui.header_controls import show_with_window_reveal
+    show_with_window_reveal(win, config=manager.config, color="#22c55e")
     return app.exec()
 
 

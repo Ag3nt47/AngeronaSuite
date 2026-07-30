@@ -356,14 +356,19 @@ def update(source: Path, destination: Path) -> None:
         "Observed evidence panel for Event, Subject, Location, Parent, Command "
         "line, and Source. The strict two-kibibyte IPC slot accepts the enriched "
         "schema and normalizes legacy frames without fabricating evidence.",
-        "The destination-window coordinator now covers later top-level Angerona "
-        "dialogs globally, including legacy and indirect open paths, and reverses "
-        "the same transition on X or Close. ARIA Voice and Microphone settings "
-        "are explicitly routed from their source button. Tooltips and pop-up "
-        "menus are excluded, and reduced-motion settings remain authoritative.",
-        "Final repository evidence: 517 tests passed, 2 intentional "
+        "The universal open and close transition now covers later top-level "
+        "Angerona dialogs globally, including legacy and indirect paths, reused "
+        "hidden dialogs, Black Box, Watchdog and Scanner status windows, and "
+        "standalone Sandbox and Upgrade Console processes. Overlapping windows "
+        "remain masked as a live accent line until their serialized reveal; a "
+        "close-time confirmation can open safely while its owner reverses. ARIA "
+        "Voice and Microphone settings are explicitly routed from their source "
+        "button. Tooltips, pop-up menus, and the holographic token retain their "
+        "purpose-built motion, and reduced-motion settings remain authoritative.",
+        "Final repository evidence: 522 tests passed, 2 intentional "
         "platform-dependent skips, 0 failures; Python compilation, Ruff, "
-        "dependency audit, and whitespace checks passed.",
+        "and whitespace checks passed. The focused universal-window lifecycle "
+        "gate passed 16 tests.",
     ))
 
     for section in doc.sections:

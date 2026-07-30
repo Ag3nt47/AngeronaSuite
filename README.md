@@ -1040,7 +1040,7 @@ email scanning, channel push, research) — each has a one-click test button.
   passes 74 tests spanning identity, policy, update, receipt, After-Action Report
   (AAR), tenant, replay, expiry, path, plugin, and prompt/tool abuse cases.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
-  passes **517 tests with 2 intentional platform skips** and 0 failures.
+  passes **522 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
   Ruff pass. pip-audit reports no known vulnerabilities in the installed
   dependencies. The public-repository scan found no committed real credential,
@@ -1062,17 +1062,24 @@ email scanning, channel push, research) — each has a one-click test button.
   clearly show unavailable fields.
 - **Universal open and close transition.** Newly shown Angerona windows now use
   the same accent-line expansion and reverse collapse even when opened by an
-  older or indirect control. ARIA's **Voice & Mic** button is also explicitly
-  routed through this transition. Tooltips and pop-up menus are excluded, and
-  the reduced-motion controls remain a hard override.
+  older or indirect control. Reused hidden dialogs animate again on every show;
+  overlapping destinations wait as a masked live line instead of flashing or
+  skipping the effect; and close-time confirmation windows can open safely
+  during the reverse path. Black Box, Watchdog/Scanner monitors, and standalone
+  Sandbox/Upgrade Console processes install the same coordinator and honor the
+  saved motion preference. ARIA's **Voice & Mic** button is explicitly routed
+  through this transition. Tooltips, pop-up menus, and the holographic token
+  keep their purpose-built motion, while reduced-motion controls remain a hard
+  override.
 - **Performance and lifecycle boundaries.** Only newly observed processes are
   enriched; the recurring process-table diff stays lightweight. The authenticated
   ring uses bounded 2 KiB slots (about 8 MiB total), and strict decoding accepts
   the enriched schema plus normalized legacy frames. Test supervisors use
   isolated D-drive runtime roots and cannot adopt the operator's live Black Box.
-- **Verification.** Full serial repository suite: **517 passed, 2 intentional
-  platform skips, 0 failed**. Focused evidence/UI/security boundary gate:
-  **44 passed**. Scanner loop and scanner-to-core lifecycle/respawn self-tests:
-  **PASS**. Python compilation and whitespace validation: **PASS**.
+- **Verification.** Full serial repository suite: **522 passed, 2 intentional
+  platform skips, 0 failed**. Focused universal-window lifecycle gate:
+  **16 passed**. The prior 44-test evidence/UI/security gate remains covered by
+  the full run. Scanner loop and scanner-to-core lifecycle/respawn self-tests:
+  **PASS**. Python compilation, Ruff, and whitespace validation: **PASS**.
 
-<!-- ANGERONA_DOC_STATUS tests=517 skips=2 modules=65 -->
+<!-- ANGERONA_DOC_STATUS tests=522 skips=2 modules=65 -->

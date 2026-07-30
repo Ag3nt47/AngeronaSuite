@@ -24,8 +24,10 @@ from angerona.gui.aria_hud import AriaHud
 from angerona.gui.header_controls import (
     HeaderActionButton,
     PanelRevealOverlay,
+    install_global_window_reveal,
     motion_allowed,
     navigation_icon,
+    show_with_window_reveal,
 )
 from angerona.gui.system_pulse import SystemPulseCard, _memory, _rate
 from angerona.gui.pages import _ClickableSection, _show_nonmodal_from
@@ -166,6 +168,168 @@ def test_global_window_reveal_covers_legacy_dialog_open_and_close_paths() -> Non
     assert not target.isVisible()
     overlay.enable_global_windows(False)
     parent.close()
+
+
+def test_reused_window_receives_a_fresh_reveal_after_hide_and_show() -> None:
+    app = _app()
+    parent = QWidget()
+    parent.resize(640, 400)
+    parent.show()
+    overlay = PanelRevealOverlay(parent)
+    overlay.enable_global_windows()
+    target = QDialog(parent)
+    target.resize(340, 220)
+
+    target.show()
+    app.processEvents()
+    overlay._animation.setCurrentTime(overlay._animation.duration())
+    app.processEvents()
+    assert overlay._target is None
+
+    target.hide()
+    app.processEvents()
+    target.show()
+    app.processEvents()
+    assert overlay._target is target
+    assert overlay._mode == "opening"
+    assert not target.mask().isEmpty()
+
+    overlay._animation.setCurrentTime(overlay._animation.duration())
+    app.processEvents()
+    setattr(target, "_angerona_close_bypass", True)
+    target.close()
+    overlay.enable_global_windows(False)
+    parent.close()
+
+
+def test_global_reveal_excludes_holographic_and_transient_surfaces() -> None:
+    app = _app()
+    parent = QWidget()
+    parent.resize(640, 400)
+    parent.show()
+    overlay = PanelRevealOverlay(parent)
+    overlay.enable_global_windows()
+
+    token = QWidget(None, Qt.Tool)
+    token.setProperty("_angerona_orb_ignore", True)
+    token.resize(116, 116)
+    token.show()
+    app.processEvents()
+    assert overlay._target is None
+    assert token.mask().isEmpty()
+
+    token.close()
+    overlay.enable_global_windows(False)
+    parent.close()
+
+
+def test_overlapping_window_opens_are_queued_without_a_full_size_flash() -> None:
+    app = _app()
+    parent = QWidget()
+    parent.resize(640, 400)
+    parent.show()
+    overlay = PanelRevealOverlay(parent)
+    overlay.enable_global_windows()
+    first = QDialog(parent)
+    second = QDialog(parent)
+    first.resize(340, 220)
+    second.resize(360, 240)
+
+    first.show()
+    second.show()
+    app.processEvents()
+    assert overlay._target is first
+    assert not second.mask().isEmpty()
+    assert any(reference() is second for reference in overlay._pending_windows)
+
+    overlay._animation.setCurrentTime(overlay._animation.duration())
+    app.processEvents()
+    assert overlay._target is second
+    assert not second.mask().isEmpty()
+    overlay._animation.setCurrentTime(overlay._animation.duration())
+    app.processEvents()
+
+    for dialog in (first, second):
+        setattr(dialog, "_angerona_close_bypass", True)
+        dialog.close()
+    overlay.enable_global_windows(False)
+    parent.close()
+
+
+def test_close_veto_confirmation_can_open_during_reverse_transition() -> None:
+    class ConfirmingDialog(QDialog):
+        prompt: QDialog | None = None
+
+        def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
+            if self.prompt is None:
+                self.prompt = QDialog(self)
+                self.prompt.setWindowTitle("Confirm close")
+                self.prompt.resize(260, 140)
+                self.prompt.show()
+                event.ignore()
+                return
+            super().closeEvent(event)
+
+    app = _app()
+    parent = QWidget()
+    parent.resize(640, 400)
+    parent.show()
+    overlay = PanelRevealOverlay(parent)
+    overlay.enable_global_windows()
+    target = ConfirmingDialog(parent)
+    target.resize(360, 240)
+    target.show()
+    app.processEvents()
+    overlay._animation.setCurrentTime(overlay._animation.duration())
+    app.processEvents()
+
+    target.close()
+    app.processEvents()
+    overlay._animation.setCurrentTime(overlay._animation.duration())
+    app.processEvents()
+    assert target.isVisible()
+    assert target.prompt is not None
+    assert target.prompt.isVisible()
+    assert overlay._target is target.prompt
+    assert not target.prompt.mask().isEmpty()
+
+    overlay._animation.setCurrentTime(overlay._animation.duration())
+    app.processEvents()
+    setattr(target.prompt, "_angerona_close_bypass", True)
+    target.prompt.close()
+    setattr(target, "_angerona_close_bypass", True)
+    target.close()
+    overlay.enable_global_windows(False)
+    parent.close()
+
+
+def test_standalone_window_installs_one_shared_reveal_coordinator() -> None:
+    app = _app()
+    window = QWidget()
+    window.resize(520, 320)
+    overlay = show_with_window_reveal(window, color="#c084fc")
+    app.processEvents()
+
+    assert overlay is install_global_window_reveal(window)
+    assert overlay._target is window
+    assert not window.mask().isEmpty()
+    overlay._animation.setCurrentTime(overlay._animation.duration())
+    app.processEvents()
+
+    child = QDialog(window)
+    child.resize(300, 180)
+    child.show()
+    app.processEvents()
+    assert overlay._target is child
+    assert not child.mask().isEmpty()
+    overlay._animation.setCurrentTime(overlay._animation.duration())
+    app.processEvents()
+
+    setattr(child, "_angerona_close_bypass", True)
+    child.close()
+    overlay.enable_global_windows(False)
+    setattr(window, "_angerona_close_bypass", True)
+    window.close()
 
 
 def test_aria_voice_request_carries_its_button_as_reveal_origin() -> None:

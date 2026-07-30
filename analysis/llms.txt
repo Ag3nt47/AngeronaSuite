@@ -63,7 +63,7 @@ Subclass `core.module_base.BaseModule`; set `name/description/category/version/e
 
 ## LATEST (2026-07-27 — dashboard polish, live resource telemetry, and documentation consolidation)
 - **Responsive header controls:** every top-row action uses a distinct Qt-rendered vector icon and a shared `HeaderActionButton`. Navigation destinations automatically become icon-only before their labels can clip; primary labels remain on normal desktop widths and elide cleanly if constrained. Hover or keyboard focus always shows the full action name and definition, and accessible name/description metadata remains present.
-- **Universal destination-window reveal with an accessible fallback:** explicitly routed actions and legacy/indirect top-level Angerona dialogs reveal their actual live contents from the widening accent line and reverse the same geometry on X/Close. ARIA Voice & Mic is explicitly source-routed. Tooltips/pop-up menus are excluded. The 360 ms transition suppresses duplicate clicks and is bypassed when `ui_motion_enabled` is disabled, `ANGERONA_REDUCE_MOTION` is set, or Windows client-area animation is disabled. Self-Test and Eco are immediate dashboard actions and deliberately do not use the window reveal.
+- **Universal destination-window reveal with an accessible fallback:** explicitly routed actions and legacy/indirect top-level Angerona dialogs reveal their actual live contents from the widening accent line and reverse the same geometry on X/Close. Reused dialogs animate on every Show; overlapping opens remain masked as a live line and are serialized without a full-window flash; the active close transition releases its coordinator before a nested confirmation is created. Black Box, Watchdog/Scanner status windows, and standalone Sandbox/Upgrade Console processes install the same global coordinator and load the saved motion preference. ARIA Voice & Mic is explicitly source-routed. Tooltips, pop-up menus, and the holographic token retain their own motion. The 360 ms transition suppresses duplicate clicks and is bypassed when `ui_motion_enabled` is disabled, `ANGERONA_REDUCE_MOTION` is set, or Windows client-area animation is disabled. Self-Test and Eco are immediate dashboard actions and deliberately do not use the window reveal.
 - **Evidence-rich process alerts:** the scanner keeps its recurring process diff lightweight and enriches only new PIDs with executable location, parent name/PID, and a bounded command line. Common inline passwords, tokens, API keys, authorization/credential arguments, and bearer tokens are redacted before the authenticated ring write. The strict enriched payload fits bounded 2 KiB slots; legacy frames normalize with explicit unavailable statuses. Alert Detail renders Event, Subject, Location, Parent, Command line, and Source above the signed full JSON record.
 - **System Pulse:** the dashboard now shows live CPU utilization, RAM utilization, available memory, aggregate network receive/send throughput, and Windows Wi-Fi signal beside ARIA. Sampling runs off the Qt GUI thread, Wi-Fi probing is single-flight and rate-limited, and the card stops its worker cleanly with the window.
 - **Operator setting:** Settings > General exposes a direct “Animate top-row buttons” control. Settings search recognizes animation, motion, and appearance terms.
@@ -374,6 +374,11 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
 - Explicit X/Close/Cancel actions must call `close()` so PanelRevealOverlay can
   perform the reverse animation. Do not bypass QEvent.Close with accept/reject
   for animated dialogs.
+- Every QApplication entry point must install `install_global_window_reveal`;
+  visible standalone launches use `show_with_window_reveal`. Reused dialogs and
+  overlapping/nested windows are handled by the shared coordinator. Do not
+  install a second coordinator inside an embedded window when MainWindow
+  already owns the application-wide event filter.
 - `core/fleet_control_plane.py` and `core/fleet_service.py` implement an opt-in,
   loopback-only fleet preview. Requests cover the complete path and query,
   payload digest, timestamp, and nonce. Replay, staleness, tampering,
@@ -584,7 +589,7 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   selection covers forged identity/policy/update/receipt/AAR, tenant isolation,
   replay/expiry, path traversal/symlink/reparse, untrusted plugins, and prompt
   injection/tool abuse.
-- Current evidence: 517 passed /
+- Current evidence: 522 passed /
   2 intentional platform skips; compile and Ruff clean; no known
   installed-package vulnerability reported.
 

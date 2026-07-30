@@ -245,6 +245,13 @@ def main(argv: list[str] | None = None) -> int:
             win.setWindowTitle("Angerona - Telemetry Scanner")
             win.setCentralWidget(status_ui.build_status_widget("scanner", "Angerona - Telemetry Scanner"))
             win.resize(540, 460)
+            from angerona.gui.header_controls import install_global_window_reveal
+            try:
+                from angerona.core.config import Config
+                motion_config = Config.load()
+            except Exception:
+                motion_config = None
+            install_global_window_reveal(win, config=motion_config)
             win.showMinimized()
             rc = app.exec()
             host.stop()

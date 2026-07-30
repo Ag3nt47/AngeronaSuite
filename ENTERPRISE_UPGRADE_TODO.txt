@@ -2021,7 +2021,7 @@ Acceptance gate:
     prompt-injection/tool fields and forged receipt inputs fail closed.
   Verification:
   - security-boundary selection: 74 passed / 0 failed.
-  - full serial repository suite: 517 passed / 2 intentional platform skips.
+  - full serial repository suite: 522 passed / 2 intentional platform skips.
 
 [DONE/P0] ENT-QA-005A  Make live process evidence actionable and private.
   - Scanner process-start frames now carry executable location, parent
@@ -2038,7 +2038,7 @@ Acceptance gate:
   Verification:
   - focused evidence/UI/security gate: 44 passed / 0 failed.
   - scanner loop and scanner-to-core respawn/adoption self-tests: PASS.
-  - full serial repository suite: 517 passed / 2 intentional platform skips.
+  - full serial repository suite: 522 passed / 2 intentional platform skips.
 
 [PARTIAL/P0] ENT-QA-006  Add privacy tests.
   - redaction recursion.
@@ -2077,8 +2077,14 @@ Acceptance gate:
 [DONE/P1] ENT-UX-002  Hover name/definition cards plus accessibility metadata.
 
 [DONE/P1] ENT-UX-003  Vertical-line-to-panel click reveal.
-  - 280 ms.
+  - 360 ms real-content expansion and reverse close.
   - ignores duplicate clicks during reveal.
+  - reused dialogs animate on every Show.
+  - overlapping/nested destinations are masked and serialized without flashing.
+  - main, Black Box, Watchdog/Scanner monitors, and standalone engineering
+    consoles use the same coordinator without duplicate event filters.
+  - holographic token, tooltips, menus, and splash surfaces retain their own
+    purpose-built motion.
   - honors app/Windows reduced-motion preferences.
 
 [DONE/P1] ENT-UX-004  System Pulse beside ARIA.

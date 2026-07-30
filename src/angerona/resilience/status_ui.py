@@ -256,9 +256,17 @@ def run_window(component: str, title: str | None = None, show: bool = False) -> 
     win.setWindowTitle(title or f"Angerona — {component.capitalize()} Monitor")
     win.setCentralWidget(build_status_widget(component, title))
     win.resize(560, 520)
+    try:
+        from angerona.core.config import Config
+        motion_config = Config.load()
+    except Exception:
+        motion_config = None
     if show:
-        win.show()
+        from angerona.gui.header_controls import show_with_window_reveal
+        show_with_window_reveal(win, config=motion_config)
     else:
+        from angerona.gui.header_controls import install_global_window_reveal
+        install_global_window_reveal(win, config=motion_config)
         win.showMinimized()
     return app.exec()
 
