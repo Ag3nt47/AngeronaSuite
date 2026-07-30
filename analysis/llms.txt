@@ -63,7 +63,8 @@ Subclass `core.module_base.BaseModule`; set `name/description/category/version/e
 
 ## LATEST (2026-07-27 — dashboard polish, live resource telemetry, and documentation consolidation)
 - **Responsive header controls:** every top-row action uses a distinct Qt-rendered vector icon and a shared `HeaderActionButton`. Navigation destinations automatically become icon-only before their labels can clip; primary labels remain on normal desktop widths and elide cleanly if constrained. Hover or keyboard focus always shows the full action name and definition, and accessible name/description metadata remains present.
-- **Destination-window reveal with an accessible fallback:** window-opening actions now reveal the actual target window and its live contents from the widening accent line instead of playing an unrelated overlay before opening a normal dialog. The 360 ms transition suppresses duplicate clicks and is bypassed when `ui_motion_enabled` is disabled, `ANGERONA_REDUCE_MOTION` is set, or Windows client-area animation is disabled. Self-Test and Eco are immediate dashboard actions and deliberately do not use the window reveal.
+- **Universal destination-window reveal with an accessible fallback:** explicitly routed actions and legacy/indirect top-level Angerona dialogs reveal their actual live contents from the widening accent line and reverse the same geometry on X/Close. ARIA Voice & Mic is explicitly source-routed. Tooltips/pop-up menus are excluded. The 360 ms transition suppresses duplicate clicks and is bypassed when `ui_motion_enabled` is disabled, `ANGERONA_REDUCE_MOTION` is set, or Windows client-area animation is disabled. Self-Test and Eco are immediate dashboard actions and deliberately do not use the window reveal.
+- **Evidence-rich process alerts:** the scanner keeps its recurring process diff lightweight and enriches only new PIDs with executable location, parent name/PID, and a bounded command line. Common inline passwords, tokens, API keys, authorization/credential arguments, and bearer tokens are redacted before the authenticated ring write. The strict enriched payload fits bounded 2 KiB slots; legacy frames normalize with explicit unavailable statuses. Alert Detail renders Event, Subject, Location, Parent, Command line, and Source above the signed full JSON record.
 - **System Pulse:** the dashboard now shows live CPU utilization, RAM utilization, available memory, aggregate network receive/send throughput, and Windows Wi-Fi signal beside ARIA. Sampling runs off the Qt GUI thread, Wi-Fi probing is single-flight and rate-limited, and the card stops its worker cleanly with the window.
 - **Operator setting:** Settings > General exposes a direct “Animate top-row buttons” control. Settings search recognizes animation, motion, and appearance terms.
 - **Enterprise engineering backlog:** `ENTERPRISE_UPGRADE_TODO.txt` is the comprehensive staged backlog and release-gate reference. Completed dashboard work is marked DONE; fleet identity, policy, ingestion, search, hunts, cases, high availability, supply-chain trust, platform depth, and guarded research remain explicitly separated from shipped behavior.
@@ -559,7 +560,31 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   descendants, quarantines pre-existing bus/shutdown keys, and writes
   `.custody-v1` only after success. Visible phase messages are intentional
   because a first migration of a large report/model tree can take time.
-- Current evidence: 496 passed /
+- `core/endpoint_identity.py` binds initial enrollment IDs to their Ed25519
+  public key, signs identity/access state v2, and verifies rotation only against
+  the caller's already-trusted old ID/key. Never restore self-signed arbitrary
+  device IDs or unsigned/downgraded state.
+- `core/plugin_lifecycle.py` treats its catalog as untrusted input: exact schema,
+  duplicate rejection, portable one-file entrypoints, size/type/time/digest
+  bounds, root confinement, reparse rejection, and activation-time capability,
+  entrypoint, and source-digest rebinding. `ModuleManager` permits unsigned
+  hash-pinned development modules only when both development flags are explicit
+  and protected key-custody mode is off. Canonical launchers force that override
+  off.
+- `core/ai_security_broker.py` treats every model response as untrusted JSON.
+  It requires exact fields, cited known evidence, finite bounded values, and a
+  registered typed tool schema. Every validated response receives a private
+  broker HMAC; execution authorizations expire in 1-300 seconds, are consumed
+  before handler entry, cannot cross brokers or be replayed, and retain at most
+  4,096 live replay entries. Handler results are bounded finite JSON. Audit
+  receipts require a response authenticated by that broker and are HMAC
+  verified. AI mutation still belongs behind the separate Response Broker,
+  never a raw shell/code tool.
+- ENT-QA-005 is complete for current local user-mode surfaces: a 74-test
+  selection covers forged identity/policy/update/receipt/AAR, tenant isolation,
+  replay/expiry, path traversal/symlink/reparse, untrusted plugins, and prompt
+  injection/tool abuse.
+- Current evidence: 517 passed /
   2 intentional platform skips; compile and Ruff clean; no known
   installed-package vulnerability reported.
 

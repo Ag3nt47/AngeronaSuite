@@ -190,7 +190,9 @@ if _HAVE_QT:
         submitted = Signal(str)
         response_ready = Signal(str)   # full answer posted back from the ask thread
         token_ready = Signal(str)      # one streamed chunk (live typing effect)
-        microphone_requested = Signal()  # direct jump to conversational settings
+        # Carries the actual button so the main window can originate the shared
+        # destination reveal from the point the operator clicked.
+        microphone_requested = Signal(object)
         details_requested = Signal()   # expand the compact orb into a detail deck
 
         def __init__(self, *, score_fn: Callable[[], int],
@@ -223,7 +225,11 @@ if _HAVE_QT:
             self.mic_button = QPushButton("🎙  VOICE & MIC")
             self.mic_button.setToolTip(
                 "Open ARIA's microphone, offline model, and conversation settings.")
-            self.mic_button.clicked.connect(self.microphone_requested.emit)
+            self.mic_button.clicked.connect(
+                lambda _checked=False: self.microphone_requested.emit(
+                    self.mic_button
+                )
+            )
 
             # Live mic-level meter ("ARIA can hear you"). Only visible once voice
             # listening is active; the main window feeds it from the audio thread.

@@ -443,6 +443,9 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(central)
         self._panel_reveal = PanelRevealOverlay(central)
+        # Enable after construction so every later top-level Angerona dialog,
+        # including older call sites, receives the same reveal and reverse close.
+        QTimer.singleShot(0, self._panel_reveal.enable_global_windows)
 
         # Shark-sweep overlay and full-width swimming-shark banner removed per
         # user request — stubbed so existing start()/stop() calls are harmless.
@@ -1483,7 +1486,13 @@ class MainWindow(QMainWindow):
                 stream_fn=self._aria_ask_stream,
                 compact=True,
             )
-            self.aria_hud.microphone_requested.connect(self._open_voice_settings)
+            self.aria_hud.microphone_requested.connect(
+                lambda source: self._reveal_window_from(
+                    source,
+                    self._open_voice_settings,
+                    "#38bdf8",
+                )
+            )
             self.aria_hud.set_microphone_state(
                 bool(getattr(self.config, "aria_voice_enabled", False)))
             # NOTE: intentionally NOT added to self._right_tabs — ARIA is in the

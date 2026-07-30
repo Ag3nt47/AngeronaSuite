@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
 import sys
 import time
 from typing import Iterable
@@ -36,6 +38,63 @@ from angerona.resilience import diagnostics as diag
 SENSOR_PROC = 1
 
 SCHEMA = 1
+
+
+_COMMAND_SECRET_PATTERNS = (
+    re.compile(
+        r"(?i)((?:--?|/)?(?:password|passwd|pwd|token|api[-_]?key|"
+        r"secret|authorization|credential)(?:\s*[:=]\s*|\s+))"
+        r"(?:\"[^\"]*\"|'[^']*'|\S+)"
+    ),
+    re.compile(r"(?i)(\bBearer\s+)[A-Za-z0-9._~+/=-]+"),
+)
+
+
+def _redact_command_line(parts: object) -> str:
+    """Render a useful command line without persisting common inline secrets."""
+    if not isinstance(parts, (list, tuple)):
+        return ""
+    try:
+        text = subprocess.list2cmdline([str(part) for part in parts])
+    except Exception:
+        text = " ".join(str(part) for part in parts)
+    text = text.replace("\x00", "")
+    for pattern in _COMMAND_SECRET_PATTERNS:
+        text = pattern.sub(r"\1[REDACTED]", text)
+    return text[:1024]
+
+
+def _process_evidence(process, parent_name: str, psutil_module) -> dict:
+    """Enrich only a newly-created PID, keeping the recurring table diff cheap."""
+    location_status = "unavailable"
+    command_line_status = "unavailable"
+    executable = ""
+    command_line = ""
+    try:
+        executable = str(process.exe() or "").replace("\x00", "")[:1024]
+        location_status = "resolved" if executable else "unavailable"
+    except psutil_module.AccessDenied:
+        location_status = "access_denied"
+    except psutil_module.NoSuchProcess:
+        location_status = "process_exited"
+    except Exception:
+        location_status = "unavailable"
+    try:
+        command_line = _redact_command_line(process.cmdline())
+        command_line_status = "resolved" if command_line else "unavailable"
+    except psutil_module.AccessDenied:
+        command_line_status = "access_denied"
+    except psutil_module.NoSuchProcess:
+        command_line_status = "process_exited"
+    except Exception:
+        command_line_status = "unavailable"
+    return {
+        "exe": executable,
+        "location_status": location_status,
+        "cmdline": command_line,
+        "command_line_status": command_line_status,
+        "parent_name": str(parent_name or "").replace("\x00", "")[:512],
+    }
 
 
 class RawProcessSensor:
@@ -53,19 +112,34 @@ class RawProcessSensor:
         except Exception:
             return []
         current: dict[int, dict] = {}
-        for p in psutil.process_iter(["pid", "ppid", "name"]):
+        processes: dict[int, object] = {}
+        for p in psutil.process_iter(["pid", "ppid", "name"], ad_value=None):
             try:
                 current[p.info["pid"]] = p.info
+                processes[p.info["pid"]] = p
             except Exception:
                 continue
         frames: list[bytes] = []
         if self._seeded:
             for pid in (set(current) - self._known):
                 info = current[pid]
+                parent = info.get("ppid")
+                parent_name = (
+                    (current.get(parent) or {}).get("name")
+                    if isinstance(parent, int)
+                    else ""
+                )
                 rec = {"type": "process_creation", "pid": pid,
-                       "ppid": info.get("ppid"),
+                       "ppid": parent,
                        "name": info.get("name") or "unknown",
                        "ts": time.time()}
+                rec.update(
+                    _process_evidence(
+                        processes[pid],
+                        parent_name or "",
+                        psutil,
+                    )
+                )
                 frames.append(json.dumps(rec, separators=(",", ":")).encode("utf-8"))
         else:
             self._seeded = True     # first pass = baseline, don't flood

@@ -465,7 +465,18 @@ def test_ipc_sensor_payload_parser_normalizes_or_raises_frame_error(payload):
         value = decode_sensor_payload(1, payload)
     except FrameError:
         return
-    assert set(value) == {"type", "pid", "ppid", "name", "ts"}
+    assert set(value) == {
+        "type",
+        "pid",
+        "ppid",
+        "name",
+        "ts",
+        "exe",
+        "location_status",
+        "cmdline",
+        "command_line_status",
+        "parent_name",
+    }
     assert value["type"] == "process_creation"
 
 
@@ -498,6 +509,39 @@ def test_ipc_process_payload_field_mutations_fail_closed(field, value):
         return
     assert decoded["pid"] >= 1
     assert decoded["name"]
+
+
+def test_ipc_process_payload_preserves_bounded_evidence_and_legacy_frames() -> None:
+    enriched = {
+        "type": "process_creation",
+        "pid": 9580,
+        "ppid": 15520,
+        "name": "conhost.exe",
+        "ts": 1_785_372_208.35,
+        "exe": r"C:\Windows\System32\conhost.exe",
+        "location_status": "resolved",
+        "cmdline": r"C:\Windows\System32\conhost.exe 0xffffffff -ForceV1",
+        "command_line_status": "resolved",
+        "parent_name": "powershell.exe",
+    }
+    decoded = decode_sensor_payload(
+        1,
+        json.dumps(enriched, separators=(",", ":")).encode("utf-8"),
+    )
+    assert decoded["exe"] == enriched["exe"]
+    assert decoded["cmdline"] == enriched["cmdline"]
+    assert decoded["parent_name"] == "powershell.exe"
+
+    legacy = {
+        key: enriched[key]
+        for key in ("type", "pid", "ppid", "name", "ts")
+    }
+    normalized = decode_sensor_payload(
+        1,
+        json.dumps(legacy, separators=(",", ":")).encode("utf-8"),
+    )
+    assert normalized["exe"] == ""
+    assert normalized["location_status"] == "unavailable"
 
 
 def test_ipc_ring_discards_tampered_slot_and_rejects_header_corruption(tmp_path):

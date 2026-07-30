@@ -9,6 +9,7 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
+import time
 from functools import lru_cache
 from html import escape
 from typing import Callable
@@ -410,11 +411,26 @@ class PanelRevealOverlay(QWidget):
         self._frame: _RevealFrame | None = None
         self._previous_mask = QRegion()
         self._mode = "idle"
+        self._global_windows = False
+        self._last_click_global = QPoint()
+        self._last_click_at = 0.0
         self._animation = QPropertyAnimation(self, b"revealProgress", self)
         self._animation.setDuration(360)
         self._animation.setEasingCurve(QEasingCurve.OutCubic)
         self._animation.finished.connect(self._finish)
         self.hide()
+
+    def enable_global_windows(self, enabled: bool = True) -> None:
+        """Apply the reveal/reverse-close transition to newly shown app windows."""
+        self._global_windows = bool(enabled)
+        app = QApplication.instance()
+        if app is None:
+            return
+        if self._global_windows:
+            app.removeEventFilter(self)
+            app.installEventFilter(self)
+        elif not self._armed and self._target is None:
+            app.removeEventFilter(self)
 
     def reveal(
         self,
@@ -436,7 +452,8 @@ class PanelRevealOverlay(QWidget):
         self._source_global = source.mapToGlobal(source.rect().center())
         self._color = QColor(color or "#38bdf8")
         self._armed = True
-        app.installEventFilter(self)
+        if not self._global_windows:
+            app.installEventFilter(self)
         try:
             result = after()
             if self._armed and isinstance(result, QWidget):
@@ -453,6 +470,23 @@ class PanelRevealOverlay(QWidget):
         return True
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt signature
+        if (
+            self._global_windows
+            and event.type() == QEvent.MouseButtonPress
+            and isinstance(watched, QWidget)
+        ):
+            try:
+                self._last_click_global = watched.mapToGlobal(
+                    event.position().toPoint()
+                )
+            except (AttributeError, RuntimeError):
+                try:
+                    self._last_click_global = watched.mapToGlobal(
+                        watched.rect().center()
+                    )
+                except RuntimeError:
+                    self._last_click_global = QPoint()
+            self._last_click_at = time.monotonic()
         if (
             event.type() == QEvent.Close
             and isinstance(watched, QWidget)
@@ -487,6 +521,40 @@ class PanelRevealOverlay(QWidget):
             and watched.windowType() not in (Qt.ToolTip, Qt.Popup)
         ):
             self._capture(watched)
+        elif (
+            self._global_windows
+            and not self._armed
+            and self._target is None
+            and self._animation.state() != QPropertyAnimation.Running
+            and event.type() == QEvent.Show
+            and isinstance(watched, QWidget)
+            and watched.isWindow()
+            and watched is not self.window()
+            and watched.windowType() not in (Qt.ToolTip, Qt.Popup)
+            and not bool(getattr(watched, "_angerona_no_reveal", False))
+            and not bool(
+                getattr(watched, "_angerona_reverse_reveal_close", False)
+            )
+            and motion_allowed(getattr(self.window(), "config", None))
+        ):
+            if (
+                self._last_click_at
+                and time.monotonic() - self._last_click_at <= 2.0
+                and not self._last_click_global.isNull()
+            ):
+                self._source_global = QPoint(self._last_click_global)
+            else:
+                try:
+                    self._source_global = watched.mapToGlobal(
+                        watched.rect().center()
+                    )
+                except RuntimeError:
+                    return super().eventFilter(watched, event)
+            self._color = QColor(
+                getattr(watched, "_angerona_reveal_color", "#38bdf8")
+            )
+            self._armed = True
+            self._capture(watched)
         return super().eventFilter(watched, event)
 
     def _capture(self, target: QWidget) -> None:
@@ -494,7 +562,7 @@ class PanelRevealOverlay(QWidget):
             return
         self._armed = False
         app = QApplication.instance()
-        if app is not None:
+        if app is not None and not self._global_windows:
             app.removeEventFilter(self)
         self._target = target
         self._previous_mask = QRegion(target.mask())
@@ -542,7 +610,7 @@ class PanelRevealOverlay(QWidget):
     def _cancel_capture(self) -> None:
         self._armed = False
         app = QApplication.instance()
-        if app is not None:
+        if app is not None and not self._global_windows:
             app.removeEventFilter(self)
 
     def _start_target_reveal(self) -> None:

@@ -110,5 +110,35 @@ def test_key_custody_uses_valid_separate_icacls_command_forms():
     assert "/inheritance:r" not in custody
     assert custody.index("Set-Acl -LiteralPath $DataRoot") < custody.index(owner_call)
     assert "Assert-NoReparsePoints $DataRoot" in custody
+    migration_at = custody.index("One-time runtime data migration is required.")
+    root_check_at = custody.index("Assert-RootNotReparsePoint $DataRoot", migration_at)
+    protect_root_at = custody.index("Set-Acl -LiteralPath $DataRoot", root_check_at)
+    owner_at = custody.index(owner_call, protect_root_at)
+    reset_at = custody.index(reset_call, owner_at)
+    descendant_check_at = custody.index("Assert-NoReparsePoints $DataRoot", reset_at)
+    assert root_check_at < protect_root_at < owner_at < reset_at < descendant_check_at
     assert '$custodyMarker = Join-Path $DataRoot ".custody-v1"' in custody
     assert "One-time runtime data migration is required." in custody
+
+
+def test_sensitive_key_acl_uses_separate_owner_and_dacl_commands(
+    tmp_path,
+    monkeypatch,
+):
+    from angerona.core import hardening
+
+    calls = []
+
+    def completed(command, **_kwargs):
+        calls.append(command)
+        return type("Result", (), {"returncode": 0})()
+
+    monkeypatch.setattr(hardening.subprocess, "run", completed)
+    assert hardening.secure_sensitive_file(tmp_path / "bus.key", required=True)
+    assert len(calls) == 2
+    assert "/setowner" in calls[0]
+    assert "/inheritance:r" not in calls[0]
+    assert "/grant:r" not in calls[0]
+    assert "/inheritance:r" in calls[1]
+    assert "/grant:r" in calls[1]
+    assert "/setowner" not in calls[1]

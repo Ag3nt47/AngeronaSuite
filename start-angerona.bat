@@ -9,6 +9,10 @@ REM  PATH (the #1 cause of "Python was not found" on a fresh Windows machine).
 REM ============================================================================
 cd /d "%~dp0"
 title Angerona launcher
+echo.
+echo  [ANGERONA] Starting the security suite...
+echo  [ANGERONA] This window will close after the dashboard is confirmed alive.
+echo.
 
 REM Keep every persistent/runtime write on the D: installation drive.
 set "ANGERONA_DATA=%~dp0runtime-data"
@@ -18,6 +22,8 @@ set "TEMP=%~dp0runtime-data\tmp"
 set "TMP=%TEMP%"
 set "ANGERONA_INSTALL_ROOT=%~dp0"
 set "ANGERONA_ENFORCE_KEY_ACL=1"
+set "ANGERONA_DEVELOPMENT_MODE=0"
+set "ANGERONA_ALLOW_UNSIGNED_EXTERNAL_MODULES=0"
 
 REM ── Self-elevate (full-system telemetry needs Administrator) ────────────────
 "%SystemRoot%\System32\net.exe" session >nul 2>&1
@@ -31,13 +37,16 @@ if errorlevel 1 (
 REM This source/developer launcher must not recursively rewrite the checkout ACLs.
 REM The release installer establishes the protected installed-program trust root.
 REM Fail closed on redirected/removable source roots before executing elevated code.
+title Angerona launcher - validating source
+echo [1/4] Validating the local installation...
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "$r=Get-Item -LiteralPath $env:ANGERONA_INSTALL_ROOT -Force; $v=[IO.DriveInfo]::new([IO.Path]::GetPathRoot($r.FullName)); if (($r.Attributes -band [IO.FileAttributes]::ReparsePoint) -or !$v.IsReady -or $v.DriveType -ne [IO.DriveType]::Fixed) {exit 1}; $required=@('start-angerona.bat','pyproject.toml','src\angerona\__init__.py'); foreach($n in $required) {$p=Join-Path $r.FullName $n; if (!(Test-Path -LiteralPath $p -PathType Leaf) -or ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {exit 1}}; exit 0"
 if errorlevel 1 (
     echo [!] Refusing redirected, incomplete, or non-fixed elevated source checkout.
     pause
     exit /b 1
 )
-echo [*] Preparing protected runtime storage...
+title Angerona launcher - preparing protected storage
+echo [2/4] Preparing protected runtime storage...
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\protect-key-custody.ps1" -DataRoot "%ANGERONA_DATA%"
 if errorlevel 1 (
     echo [!] Unable to establish protected runtime key custody.
@@ -72,6 +81,8 @@ echo [*] Installing the verified offline speech model to the D-drive data folder
 
 :validate
 REM Fail visibly before using pythonw, which intentionally has no console output.
+title Angerona launcher - checking application
+echo [3/4] Checking the application and its dependencies...
 set "ANGERONA_PREFLIGHT_LOG=%ANGERONA_DATA%\logs\launcher-preflight.log"
 "venv\Scripts\python.exe" "tools\source_trust_preflight.py" > "%ANGERONA_PREFLIGHT_LOG%" 2>&1
 if errorlevel 1 (
@@ -91,7 +102,8 @@ if errorlevel 1 (
 
 :launch
 REM ── Launch (pythonw = no console window) ─────────────────────────────────────
-echo [*] Launching Angerona...
+title Angerona launcher - opening dashboard
+echo [4/4] Opening the Angerona dashboard...
 REM BL-01: if the signed out-of-process watchdog is built, use it as the resilience
 REM PARENT (it launches + hashes + relaunches Angerona). ANGERONA_EXTERNAL_WATCHDOG
 REM tells the in-process manager to skip its own watchdog (no double-supervision).
@@ -108,7 +120,10 @@ if defined ANGERONA_WATCHDOG_SIGNED (
     echo [*] Using signed watchdog as resilience parent.
     start "" "%ANGERONA_WATCHDOG%" "venv\Scripts\pythonw.exe" -m angerona
 ) else (
-    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "$p=Start-Process -FilePath $env:ANGERONA_PYTHON -ArgumentList @('-m','angerona') -WorkingDirectory $env:ANGERONA_INSTALL_ROOT -WindowStyle Hidden -RedirectStandardOutput $env:ANGERONA_STDOUT_LOG -RedirectStandardError $env:ANGERONA_STDERR_LOG -PassThru; Start-Sleep -Milliseconds 1500; if ($p.HasExited) {exit 1}; exit 0"
+    REM Keep observing the hidden bootstrap through its high-risk initialization
+    REM window. The old 1.5-second check could close this launcher just before a
+    REM delayed Qt/storage failure, leaving no dashboard and no visible error.
+    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "$p=Start-Process -FilePath $env:ANGERONA_PYTHON -ArgumentList @('-m','angerona') -WorkingDirectory $env:ANGERONA_INSTALL_ROOT -WindowStyle Hidden -RedirectStandardOutput $env:ANGERONA_STDOUT_LOG -RedirectStandardError $env:ANGERONA_STDERR_LOG -PassThru; $deadline=[DateTime]::UtcNow.AddSeconds(12); do {Start-Sleep -Milliseconds 250; if ($p.HasExited) {exit 1}} while ([DateTime]::UtcNow -lt $deadline); exit 0"
     if errorlevel 1 (
         echo [!] Angerona exited before its window opened.
         echo     Error log: %ANGERONA_STDERR_LOG%

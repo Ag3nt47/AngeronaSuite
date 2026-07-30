@@ -20,6 +20,7 @@ from angerona.gui.dashboard_details import (
     FuturisticDetailDialog,
     SystemPulseDetailDialog,
 )
+from angerona.gui.aria_hud import AriaHud
 from angerona.gui.header_controls import (
     HeaderActionButton,
     PanelRevealOverlay,
@@ -134,6 +135,49 @@ def test_close_button_uses_the_same_reverse_reveal_path() -> None:
     app.processEvents()
     assert not target.isVisible()
     parent.close()
+
+
+def test_global_window_reveal_covers_legacy_dialog_open_and_close_paths() -> None:
+    app = _app()
+    parent = QWidget()
+    parent.resize(640, 400)
+    parent.show()
+    source = QPushButton("Legacy action", parent)
+    source.resize(120, 32)
+    overlay = PanelRevealOverlay(parent)
+    overlay.enable_global_windows()
+
+    QTest.mouseClick(source, Qt.LeftButton)
+    target = QDialog(parent)
+    target.resize(340, 220)
+    target.show()
+    app.processEvents()
+    assert overlay._target is target
+    assert not target.mask().isEmpty()
+    overlay._animation.setCurrentTime(overlay._animation.duration())
+    app.processEvents()
+
+    target.close()
+    app.processEvents()
+    assert target.isVisible()
+    assert overlay._mode == "closing"
+    overlay._animation.setCurrentTime(overlay._animation.duration())
+    app.processEvents()
+    assert not target.isVisible()
+    overlay.enable_global_windows(False)
+    parent.close()
+
+
+def test_aria_voice_request_carries_its_button_as_reveal_origin() -> None:
+    app = _app()
+    hud = AriaHud(score_fn=lambda: 100, compact=True)
+    hud.show()
+    origins = []
+    hud.microphone_requested.connect(origins.append)
+    QTest.mouseClick(hud.mic_button, Qt.LeftButton)
+    app.processEvents()
+    assert origins == [hud.mic_button]
+    hud.close()
 
 
 def test_reduced_motion_environment_is_a_hard_override(monkeypatch) -> None:

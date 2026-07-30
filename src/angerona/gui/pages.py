@@ -1972,6 +1972,69 @@ def _restore_alert_scroll(table: QTableWidget, sort_col: int, sort_ord,
     bar.setValue(max(bar.minimum(), min(previous_value, bar.maximum())))
 
 
+def _event_evidence_context(event) -> dict[str, str]:
+    """Return operator-readable evidence while preserving the signed raw record."""
+    details = event.details if isinstance(getattr(event, "details", None), dict) else {}
+
+    event_type = str(details.get("type") or details.get("event_type") or "alert")
+    event_label = event_type.replace("_", " ").strip().title() or "Alert"
+    name = str(details.get("name") or details.get("process_name") or "").strip()
+    pid = details.get("pid")
+    if name and isinstance(pid, int):
+        subject = f"{name} (PID {pid})"
+    elif name:
+        subject = name
+    else:
+        subject = str(getattr(event, "message", "") or "No subject supplied")
+
+    location = ""
+    for key in (
+        "exe",
+        "path",
+        "file_path",
+        "artifact_path",
+        "target_path",
+        "location",
+        "registry_path",
+    ):
+        candidate = details.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            location = candidate.strip()
+            break
+    location_status = str(details.get("location_status") or "unavailable")
+    if not location:
+        location = f"Unavailable ({location_status.replace('_', ' ')})"
+
+    parent_name = str(details.get("parent_name") or "").strip()
+    parent_pid = details.get("ppid")
+    if parent_name and isinstance(parent_pid, int):
+        parent = f"{parent_name} (PID {parent_pid})"
+    elif isinstance(parent_pid, int):
+        parent = f"PID {parent_pid} (name unavailable)"
+    else:
+        parent = "Not supplied by this sensor"
+
+    command_line = str(details.get("cmdline") or "").strip()
+    if not command_line:
+        command_status = str(
+            details.get("command_line_status") or "unavailable"
+        ).replace("_", " ")
+        command_line = f"Unavailable ({command_status})"
+
+    source = str(details.get("source") or "event bus").strip()
+    sensor = str(details.get("sensor") or "").strip()
+    if sensor and sensor.lower() not in source.lower():
+        source = f"{source} · {sensor}"
+    return {
+        "event": event_label,
+        "subject": subject,
+        "location": location,
+        "parent": parent,
+        "command_line": command_line,
+        "source": source,
+    }
+
+
 class AlertDetailDialog(QDialog):
     """Full granular detail for one alert, incl. a SHA-256 fingerprint.
 
@@ -2006,6 +2069,37 @@ class AlertDetailDialog(QDialog):
         except Exception:
             msg = QLabel(event.message); msg.setWordWrap(True)
         msg.setStyleSheet("color:#cbd5e1;"); lay.addWidget(msg)
+
+        # Keep the signed JSON as the source of truth, while surfacing the
+        # affected artifact and process lineage as first-class operator evidence.
+        evidence = _event_evidence_context(event)
+        lay.addWidget(_section("Observed evidence"))
+        evidence_panel = QFrame()
+        evidence_panel.setObjectName("Panel")
+        evidence_grid = QGridLayout(evidence_panel)
+        evidence_grid.setContentsMargins(10, 8, 10, 8)
+        evidence_grid.setHorizontalSpacing(10)
+        evidence_grid.setVerticalSpacing(5)
+        evidence_fields = (
+            ("Event", "event", "alertEvidenceEvent"),
+            ("Subject", "subject", "alertEvidenceSubject"),
+            ("Location", "location", "alertEvidenceLocation"),
+            ("Parent", "parent", "alertEvidenceParent"),
+            ("Command line", "command_line", "alertEvidenceCommandLine"),
+            ("Source", "source", "alertEvidenceSource"),
+        )
+        for row, (label, key, object_name) in enumerate(evidence_fields):
+            caption = QLabel(label)
+            caption.setStyleSheet("color:#7dd3fc; font-weight:700;")
+            value = QLineEdit(evidence[key])
+            value.setObjectName(object_name)
+            value.setReadOnly(True)
+            value.setCursorPosition(0)
+            value.setToolTip(evidence[key])
+            evidence_grid.addWidget(caption, row, 0)
+            evidence_grid.addWidget(value, row, 1)
+        evidence_grid.setColumnStretch(1, 1)
+        lay.addWidget(evidence_panel)
 
         canon = (f"{event.ts}|{event.module}|{int(event.severity)}|{event.message}|"
                  f"{json.dumps(event.details, sort_keys=True)}")

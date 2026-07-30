@@ -78,6 +78,8 @@ def test_external_loader_executes_verified_snapshot_not_swapped_path(
     _external_module(module, marker)
     monkeypatch.setenv("ANGERONA_EXTERNAL_MODULES", "1")
     monkeypatch.setenv("ANGERONA_ALLOW_UNSIGNED_EXTERNAL_MODULES", "1")
+    monkeypatch.setenv("ANGERONA_DEVELOPMENT_MODE", "1")
+    monkeypatch.delenv("ANGERONA_ENFORCE_KEY_ACL", raising=False)
     monkeypatch.setattr(
         "angerona.core.module_manager.verify_external_module",
         lambda *_args, **_kwargs: decision,
@@ -102,10 +104,7 @@ def test_causal_graph_marks_receipt_as_unverified_reference() -> None:
     )
     graph = build_graph([event])
     proof = next(node for node in graph["nodes"] if node["kind"] == "proof")
-    edge = next(
-        edge for edge in graph["edges"]
-        if edge["relation"] == "verification-proof"
-    )
+    edge = next(edge for edge in graph["edges"] if edge["relation"] == "verification-proof")
 
     assert proof["verification_claim"] is False
     assert proof["receipt_hash"] == ""
@@ -193,19 +192,19 @@ def test_malformed_boolean_settings_fail_to_security_defaults(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(data_paths, "data_dir", lambda: tmp_path)
-    monkeypatch.setattr(
-        secure_store, "load_into_environment", lambda _root=None: None
-    )
+    monkeypatch.setattr(secure_store, "load_into_environment", lambda _root=None: None)
     monkeypatch.setenv("ANGERONA_REQUIRE_SIGNED_AAR", "test-baseline")
     (tmp_path / "settings.json").write_text(
-        json.dumps({
-            "mcp_enabled": 1,
-            "aria_cloud_fallback": "false",
-            "alert_analysis_cloud_fallback": "yes",
-            "teams_bot_enabled": "true",
-            "teams_bot_skip_auth": "false",
-            "require_signed_aar": "false",
-        }),
+        json.dumps(
+            {
+                "mcp_enabled": 1,
+                "aria_cloud_fallback": "false",
+                "alert_analysis_cloud_fallback": "yes",
+                "teams_bot_enabled": "true",
+                "teams_bot_skip_auth": "false",
+                "require_signed_aar": "false",
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -230,9 +229,7 @@ def test_push_webhook_is_dpapi_routed_and_omitted_from_settings(
 
     monkeypatch.setattr(secure_store, "write_secret_map", _write)
     config = Config(data_dir=tmp_path)
-    config.aria_push_url = (
-        "https://hooks.slack.com/services/T000/B000/secret-webhook"
-    )
+    config.aria_push_url = "https://hooks.slack.com/services/T000/B000/secret-webhook"
     config.save()
 
     settings = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))

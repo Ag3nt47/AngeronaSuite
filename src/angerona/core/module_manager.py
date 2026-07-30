@@ -7,6 +7,7 @@ Discovery sources (both scanned automatically):
 A module is any subclass of ``BaseModule``. To add a capability, drop one file —
 no registration, no core edits.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -27,6 +28,22 @@ from angerona.core.platforms import (
     declared_platforms_from_source,
     normalize_platform,
 )
+
+
+_TRUE = frozenset({"1", "true", "yes", "on"})
+
+
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "0").strip().casefold() in _TRUE
+
+
+def _unsigned_development_allowed() -> bool:
+    """Unsigned extensions are unavailable in protected/elevated launch mode."""
+    return (
+        _env_enabled("ANGERONA_ALLOW_UNSIGNED_EXTERNAL_MODULES")
+        and _env_enabled("ANGERONA_DEVELOPMENT_MODE")
+        and not _env_enabled("ANGERONA_ENFORCE_KEY_ACL")
+    )
 
 
 class ModuleManager:
@@ -82,16 +99,16 @@ class ModuleManager:
                 "origin": origin,
                 "trust": trust,
                 "capability_id": (
-                    manifest.capability_id if manifest is not None
+                    manifest.capability_id
+                    if manifest is not None
                     else f"angerona.builtin.{cls.__module__.rsplit('.', 1)[-1]}"
                 ),
                 "version": (
-                    manifest.version if manifest is not None
+                    manifest.version
+                    if manifest is not None
                     else str(getattr(inst, "version", "1.0.0"))
                 ),
-                "permissions": (
-                    list(manifest.permissions) if manifest is not None else []
-                ),
+                "permissions": (list(manifest.permissions) if manifest is not None else []),
                 "high_risk_permissions": (
                     list(manifest.high_risk_permissions) if manifest is not None else []
                 ),
@@ -100,6 +117,7 @@ class ModuleManager:
 
     def _builtin_classes(self) -> List[type]:
         import angerona.modules as pkg
+
         found: List[type] = []
         seen: set[str] = set()
         roots = list(getattr(pkg, "__path__", []) or [])
@@ -175,14 +193,10 @@ class ModuleManager:
         # then verify a detached manifest and source digest before Python ever
         # sees the file. Signed publisher trust is the default; a hash-pinned
         # unsigned mode exists only behind an explicit development override.
-        if os.environ.get("ANGERONA_EXTERNAL_MODULES", "0").strip().lower() not in {
-            "1", "true", "yes", "on"
-        }:
+        if not _env_enabled("ANGERONA_EXTERNAL_MODULES"):
             return []
         found: List[type] = []
-        allow_unsigned = os.environ.get(
-            "ANGERONA_ALLOW_UNSIGNED_EXTERNAL_MODULES", "0"
-        ).strip().lower() in {"1", "true", "yes", "on"}
+        allow_unsigned = _unsigned_development_allowed()
         root = self.config.external_modules_dir.resolve()
         trust_store = self.config.data_dir / "trust" / "module_publishers.json"
         for path in sorted(root.glob("*.py")):
@@ -206,9 +220,7 @@ class ModuleManager:
                 self.discovery_errors.append(
                     f"{path}: external capability rejected before import: {decision.reason}"
                 )
-                self.external_rejections.append(
-                    {"path": str(path), "reason": decision.reason}
-                )
+                self.external_rejections.append({"path": str(path), "reason": decision.reason})
                 continue
             try:
                 spec = importlib.util.spec_from_file_location(f"angerona_ext_{path.stem}", path)
@@ -221,7 +233,10 @@ class ModuleManager:
                 # signature were verified. Reopening the path here would permit
                 # a local verify-then-swap race against the elevated process.
                 code = compile(decision.source_bytes, str(path), "exec")
-                exec(code, mod.__dict__)
+                # External Python is executable by design, but only this exact
+                # bounded byte snapshot reaches exec after digest, manifest,
+                # publisher-signature, path, and protected-mode checks.
+                exec(code, mod.__dict__)  # nosec B102
             except Exception as exc:
                 self.discovery_errors.append(f"{path}: {exc}")
                 continue
@@ -236,7 +251,11 @@ class ModuleManager:
     def _subclasses_in(mod) -> List[type]:
         out = []
         for _, obj in inspect.getmembers(mod, inspect.isclass):
-            if issubclass(obj, BaseModule) and obj is not BaseModule and obj.__module__ == mod.__name__:
+            if (
+                issubclass(obj, BaseModule)
+                and obj is not BaseModule
+                and obj.__module__ == mod.__name__
+            ):
                 out.append(obj)
         return out
 
@@ -249,8 +268,11 @@ class ModuleManager:
 
     # Safety-critical modules must come up immediately — never staggered.
     _NO_STAGGER = {
-        "Watchdog Monitor", "Anti-Suspension Heartbeat", "Active Response SOAR",
-        "Zero-Trust Local IPC Guard", "SOAR Automation",
+        "Watchdog Monitor",
+        "Anti-Suspension Heartbeat",
+        "Active Response SOAR",
+        "Zero-Trust Local IPC Guard",
+        "SOAR Automation",
     }
 
     def start_enabled(
@@ -332,29 +354,27 @@ class ModuleManager:
         for name in sorted(self.modules):
             mod = self.modules[name]
             trust = dict(self.module_trust.get(name, {}))
-            trust.update({
-                "name": name,
-                "category": str(getattr(mod, "category", "General")),
-                "status": str(getattr(mod, "status", "unknown")),
-                "health": int(getattr(mod, "health", 0)),
-                "enabled": bool(self.is_enabled(name)),
-            })
+            trust.update(
+                {
+                    "name": name,
+                    "category": str(getattr(mod, "category", "General")),
+                    "status": str(getattr(mod, "status", "unknown")),
+                    "health": int(getattr(mod, "health", 0)),
+                    "enabled": bool(self.is_enabled(name)),
+                }
+            )
             trust.update(availability_for(mod, self.platform).as_dict())
             rows.append(trust)
         return rows
 
     def extension_security_summary(self) -> dict[str, Any]:
-        external = [
-            row for row in self.capability_inventory()
-            if row.get("origin") == "external"
-        ]
+        external = [row for row in self.capability_inventory() if row.get("origin") == "external"]
         return {
-            "external_loading_enabled": os.environ.get(
-                "ANGERONA_EXTERNAL_MODULES", "0"
-            ).strip().lower() in {"1", "true", "yes", "on"},
-            "unsigned_development_override": os.environ.get(
-                "ANGERONA_ALLOW_UNSIGNED_EXTERNAL_MODULES", "0"
-            ).strip().lower() in {"1", "true", "yes", "on"},
+            "external_loading_enabled": _env_enabled("ANGERONA_EXTERNAL_MODULES"),
+            "unsigned_development_override_requested": _env_enabled(
+                "ANGERONA_ALLOW_UNSIGNED_EXTERNAL_MODULES"
+            ),
+            "unsigned_development_override": _unsigned_development_allowed(),
             "loaded_external": len(external),
             "signed_external": sum(1 for row in external if row.get("trust") == "signed"),
             "rejected_external": len(self.external_rejections),

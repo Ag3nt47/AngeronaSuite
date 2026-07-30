@@ -53,7 +53,7 @@ _FRAME_AAD = b"Angerona-IPC-Ring-v2\x00"
 _SLOT_LEN_FMT = "<I"                      # per-slot payload length prefix
 
 DEFAULT_SLOT_COUNT = 4096
-DEFAULT_SLOT_SIZE = 512                   # ~2 MB ring at defaults
+DEFAULT_SLOT_SIZE = 2048                  # ~8 MB; carries bounded process evidence
 BACKPRESSURE_FRAC = 0.85
 MIN_SLOT_COUNT = 2
 MAX_SLOT_COUNT = 65_536
@@ -227,8 +227,15 @@ def decode_sensor_payload(sensor_id: int, payload: bytes) -> dict:
         )
     except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise FrameError("IPC sensor payload is not strict JSON") from exc
-    required = {"type", "pid", "ppid", "name", "ts"}
-    if not isinstance(value, dict) or set(value) != required:
+    legacy = {"type", "pid", "ppid", "name", "ts"}
+    enriched = legacy | {
+        "exe",
+        "location_status",
+        "cmdline",
+        "command_line_status",
+        "parent_name",
+    }
+    if not isinstance(value, dict) or set(value) not in (legacy, enriched):
         raise FrameError("IPC process payload fields are invalid")
     if value["type"] != "process_creation":
         raise FrameError("IPC process payload type is unsupported")
@@ -257,12 +264,44 @@ def decode_sensor_payload(sensor_id: int, payload: bytes) -> dict:
         or observed < 0
     ):
         raise FrameError("IPC process timestamp is invalid")
+    executable = value.get("exe", "")
+    command_line = value.get("cmdline", "")
+    parent_name = value.get("parent_name", "")
+    for field, content, limit in (
+        ("executable path", executable, 1024),
+        ("command line", command_line, 1024),
+        ("parent process name", parent_name, 512),
+    ):
+        if (
+            not isinstance(content, str)
+            or len(content) > limit
+            or "\x00" in content
+        ):
+            raise FrameError(f"IPC process {field} is invalid")
+    location_status = value.get("location_status", "unavailable")
+    command_line_status = value.get("command_line_status", "unavailable")
+    allowed_statuses = {
+        "resolved",
+        "access_denied",
+        "process_exited",
+        "unavailable",
+    }
+    if (
+        location_status not in allowed_statuses
+        or command_line_status not in allowed_statuses
+    ):
+        raise FrameError("IPC process evidence status is invalid")
     return {
         "type": "process_creation",
         "pid": pid,
         "ppid": parent,
         "name": name,
         "ts": float(observed),
+        "exe": executable,
+        "location_status": location_status,
+        "cmdline": command_line,
+        "command_line_status": command_line_status,
+        "parent_name": parent_name,
     }
 
 

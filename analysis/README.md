@@ -1024,11 +1024,55 @@ email scanning, channel push, research) — each has a one-click test button.
   restart, restart cancellation, shutdown drain, sleep/resume, and late-dialog
   result handling. A synthetic 100,000-event burst retained exactly the newest
   2,000 records, accounted for 98,000 drops, and enqueued in 216.46 ms.
+- **Security-boundary matrix closed.** Endpoint enrollment binds the stable
+  device identity to its Ed25519 public key; persisted identity/access state is
+  signed, and key rotation must prove continuity from the already-trusted
+  identity and old key. Policy verification rejects changed, expired,
+  non-finite, or non-JavaScript Object Notation (JSON) data. Plugin catalogs and
+  entrypoints use exact schemas, portable names, confinement and reparse-point
+  checks, and activation rebinds the signed capability identity, filename, and
+  digest. Protected startup clears the unsigned-extension development override.
+  Local Artificial Intelligence (AI) output uses an exact cited-evidence schema;
+  typed tool calls carry a short-lived, one-time Hash-based Message
+  Authentication Code using Secure Hash Algorithm 256 (HMAC-SHA-256) broker
+  authorization, and forged, changed, expired, replayed, cross-broker, unknown,
+  or oversized calls/results fail closed. The consolidated boundary selection
+  passes 74 tests spanning identity, policy, update, receipt, After-Action Report
+  (AAR), tenant, replay, expiry, path, plugin, and prompt/tool abuse cases.
 - **Final Cycle 8 verification.** The authoritative serial repository suite
-  passes **496 tests with 2 intentional platform skips** and 0 failures.
+  passes **517 tests with 2 intentional platform skips** and 0 failures.
   Python compilation and
   Ruff pass. pip-audit reports no known vulnerabilities in the installed
   dependencies. The public-repository scan found no committed real credential,
   private key, user-profile path, database, runtime-data, or cache artifact.
 
-<!-- ANGERONA_DOC_STATUS tests=496 skips=2 modules=65 -->
+## LATEST (2026-07-29 — evidence-rich alerts and universal window motion)
+
+- **Actionable process evidence.** New Telemetry Scanner process-start events
+  include the resolved executable location, parent process name and identifier,
+  and a bounded command line. Common inline passwords, tokens, API keys,
+  authorization values, credentials, and bearer tokens are redacted before the
+  authenticated shared-memory frame is written. If Windows denies access or a
+  short-lived process exits before enrichment, the record states that limitation
+  instead of inventing a location.
+- **Readable Alert Detail.** The signed full event record remains the source of
+  truth, while an **Observed evidence** panel now surfaces Event, Subject,
+  Location, Parent, Command line, and Source fields without requiring the
+  operator to interpret raw JSON. Existing legacy records remain readable and
+  clearly show unavailable fields.
+- **Universal open and close transition.** Newly shown Angerona windows now use
+  the same accent-line expansion and reverse collapse even when opened by an
+  older or indirect control. ARIA's **Voice & Mic** button is also explicitly
+  routed through this transition. Tooltips and pop-up menus are excluded, and
+  the reduced-motion controls remain a hard override.
+- **Performance and lifecycle boundaries.** Only newly observed processes are
+  enriched; the recurring process-table diff stays lightweight. The authenticated
+  ring uses bounded 2 KiB slots (about 8 MiB total), and strict decoding accepts
+  the enriched schema plus normalized legacy frames. Test supervisors use
+  isolated D-drive runtime roots and cannot adopt the operator's live Black Box.
+- **Verification.** Full serial repository suite: **517 passed, 2 intentional
+  platform skips, 0 failed**. Focused evidence/UI/security boundary gate:
+  **44 passed**. Scanner loop and scanner-to-core lifecycle/respawn self-tests:
+  **PASS**. Python compilation and whitespace validation: **PASS**.
+
+<!-- ANGERONA_DOC_STATUS tests=517 skips=2 modules=65 -->

@@ -302,6 +302,33 @@ def update(source: Path, destination: Path) -> None:
         "and queue saturation. A synthetic 100,000-event burst retained exactly "
         "2,000 newest records, accounted for 98,000 drops, and enqueued in "
         "216.46 milliseconds.",
+        "The current local user-mode security-boundary matrix is complete. Its "
+        "74-test selection covers forged endpoint identity, signed policy and "
+        "update content, authenticated receipts, After-Action Reports, tenant "
+        "isolation, replay and expiry, path traversal and reparse points, "
+        "untrusted extensions, and model prompt/tool abuse.",
+        "Initial endpoint enrollment now binds the stable device identifier to "
+        "the enrolling Ed25519 public key. Identity and access state use a "
+        "current-key signature, and rotation is accepted only against the "
+        "caller's already-trusted device identifier and old public key. "
+        "Malformed, expired, replayed, wrong-key, or modified envelopes fail "
+        "closed.",
+        "External plugin catalogs are untrusted exact-schema input. Capability "
+        "identifiers, portable one-file entrypoints, digests, state, timestamps, "
+        "and catalog size are bounded; duplicate fields, traversal, aliases, "
+        "symlink or reparse roots, and out-of-root quarantine paths are refused. "
+        "Activation rebinds the verified capability identity, entrypoint, and "
+        "source digest. Protected launch disables the unsigned-development "
+        "override even if it was inherited from the user environment.",
+        "The Artificial Intelligence Security Broker now accepts only plain, "
+        "finite, exact-schema JavaScript Object Notation with conclusions tied "
+        "to known evidence. Typed tool requests receive a private broker "
+        "Hash-based Message Authentication Code using Secure Hash Algorithm "
+        "256 authorization, expire after 1 to 300 seconds, and are consumed "
+        "before handler entry. Forged, modified, cross-broker, expired, or "
+        "replayed calls cannot invoke a handler; results are bounded JSON. "
+        "Authenticated audit receipts can be minted only for a response "
+        "validated by that broker.",
         "Ruff 0.16.0 adds a fast correctness gate and found a latent ARP "
         "Watchdog return-type spelling defect, which was corrected.",
         "pytest-xdist 3.8.0 is available for isolated test groups. The complete "
@@ -318,7 +345,23 @@ def update(source: Path, destination: Path) -> None:
         "The first Bandit pass exposed a weak SHA-1 alert identifier and "
         "shell-based console clearing. Both were corrected and the "
         "high-severity re-scan is clean.",
-        "Final repository evidence: 495 tests passed, 2 intentional "
+        "Telemetry Scanner process-start evidence now includes the resolved "
+        "executable location, parent process name and identifier, and a bounded "
+        "command line. Common inline credential, token, API-key, authorization, "
+        "and bearer values are redacted before authenticated ring persistence. "
+        "Only new process identifiers are enriched, preserving the lightweight "
+        "recurring table-diff path. Access denied, process exited, and unavailable "
+        "states are represented explicitly.",
+        "Alert Detail keeps the signed JSON as its source of truth and adds an "
+        "Observed evidence panel for Event, Subject, Location, Parent, Command "
+        "line, and Source. The strict two-kibibyte IPC slot accepts the enriched "
+        "schema and normalizes legacy frames without fabricating evidence.",
+        "The destination-window coordinator now covers later top-level Angerona "
+        "dialogs globally, including legacy and indirect open paths, and reverses "
+        "the same transition on X or Close. ARIA Voice and Microphone settings "
+        "are explicitly routed from their source button. Tooltips and pop-up "
+        "menus are excluded, and reduced-motion settings remain authoritative.",
+        "Final repository evidence: 517 tests passed, 2 intentional "
         "platform-dependent skips, 0 failures; Python compilation, Ruff, "
         "dependency audit, and whitespace checks passed.",
     ))

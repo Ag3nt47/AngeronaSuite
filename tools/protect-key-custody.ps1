@@ -57,11 +57,15 @@ function Test-Protected([string]$Path) {
     return Test-SafeAcl $Path $true
 }
 
-function Assert-NoReparsePoints([string]$Path) {
+function Assert-RootNotReparsePoint([string]$Path) {
     $root = Get-Item -LiteralPath $Path -Force
     if ($root.Attributes -band [IO.FileAttributes]::ReparsePoint) {
         throw "Refusing reparse-point runtime data root"
     }
+}
+
+function Assert-NoReparsePoints([string]$Path) {
+    Assert-RootNotReparsePoint $Path
     $item = Get-ChildItem -LiteralPath $Path -Force -Recurse `
         -Attributes ReparsePoint | Select-Object -First 1
     if ($null -ne $item) {
@@ -85,8 +89,11 @@ if (-not $existed) {
 } elseif (-not (Test-Protected $DataRoot) -or
           -not (Test-Path -LiteralPath $custodyMarker -PathType Leaf)) {
     Write-Host "[*] One-time runtime data migration is required."
-    Write-Host "    Checking for redirected files..."
-    Assert-NoReparsePoints $DataRoot
+    # Validate the root itself before changing it, then close its DACL before
+    # traversing descendants. Old scanner/test directories can legitimately
+    # have tighter ACLs than the interactive account; walking them first made
+    # startup fail with AccessDenied before custody could repair the tree.
+    Assert-RootNotReparsePoint $DataRoot
 
     # Close the root boundary atomically before walking attacker-influenced
     # descendants. Ownership and DACL changes are separate icacls command
@@ -107,6 +114,12 @@ if (-not $existed) {
             "reset protected runtime data permissions"
     }
     Set-Acl -LiteralPath $DataRoot -AclObject (New-ProtectedDirectorySecurity)
+
+    # /L changes the reparse object itself and never follows its target. Once
+    # the tree is readable under the protected root, reject any reparse object
+    # before reading, moving, or trusting descendant content.
+    Write-Host "    Verifying the protected tree..."
+    Assert-NoReparsePoints $DataRoot
     if (-not (Test-Protected $DataRoot)) {
         throw "Protected runtime data root verification failed"
     }

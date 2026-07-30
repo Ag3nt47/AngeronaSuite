@@ -1988,7 +1988,7 @@ Acceptance gate:
   - a synthetic 100,000-event telemetry burst retained exactly 2,000 newest
     records, accounted for 98,000 drops, and completed in 216.46 ms.
 
-[PARTIAL/P0] ENT-QA-005  Add security boundary tests.
+[DONE/P0] ENT-QA-005  Add security boundary tests.
   - Forged identity/policy/update/receipt/AAR.
   - cross-tenant access.
   - replay.
@@ -1996,6 +1996,49 @@ Acceptance gate:
   - path traversal/symlink/reparse point.
   - untrusted plugin.
   - prompt injection/tool abuse.
+  Evidence:
+  - endpoint enrollment now binds the stable device ID to the enrolling
+    Ed25519 public key; persisted access/identity state is signed, and rotation
+    verification requires the already-trusted device ID and old public key.
+  - policy verification rejects changed signatures, expired or non-finite
+    time, malformed signatures, non-finite/non-JSON settings, and forged
+    high-impact approvals. Signed update envelopes retain exact-schema,
+    publisher-signature, digest, portable-path, and bounded-archive gates.
+  - response, fleet, remediation, drill, and AI receipts have deterministic
+    wrong-key/changed-field authentication tests. Unsigned or changed AARs
+    cannot create weaknesses, policy candidates, or verified closure.
+  - tenant-isolated fleet storage rejects cross-tenant device/event use;
+    endpoint, fleet-request, response, and AI-tool replay/expiry paths are
+    covered, including concurrent nonce consumption.
+  - backup/restore, signed update, archive, and plugin lifecycle tests reject
+    traversal, symlink/reparse, portable-name aliases, and catalog path escape.
+  - external modules remain disabled by default, require a trusted publisher,
+    revalidate exact source/identity/digest at activation, and cannot inherit
+    the unsigned development override from protected/elevated launch.
+  - AI output uses an exact JSON schema and cited evidence. Tool calls must be
+    registered and typed, carry a short-lived broker HMAC, execute once, cannot
+    be forged/modified/replayed across brokers, and return bounded JSON. Unknown
+    prompt-injection/tool fields and forged receipt inputs fail closed.
+  Verification:
+  - security-boundary selection: 74 passed / 0 failed.
+  - full serial repository suite: 517 passed / 2 intentional platform skips.
+
+[DONE/P0] ENT-QA-005A  Make live process evidence actionable and private.
+  - Scanner process-start frames now carry executable location, parent
+    identity, and a bounded command line without adding heavy lookups to every
+    recurring process-table entry.
+  - common inline credential/token/API-key/authorization values are redacted
+    before authenticated IPC persistence.
+  - strict enriched and legacy-compatible payload decoding fails closed and
+    records access-denied/process-exited/unavailable evidence honestly.
+  - Alert Detail surfaces Event, Subject, Location, Parent, Command line, and
+    Source above the signed raw event.
+  - every later top-level Angerona dialog receives the shared open/reverse-close
+    transition; ARIA Voice & Mic is explicitly routed from its actual button.
+  Verification:
+  - focused evidence/UI/security gate: 44 passed / 0 failed.
+  - scanner loop and scanner-to-core respawn/adoption self-tests: PASS.
+  - full serial repository suite: 517 passed / 2 intentional platform skips.
 
 [PARTIAL/P0] ENT-QA-006  Add privacy tests.
   - redaction recursion.

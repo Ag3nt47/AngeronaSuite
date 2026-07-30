@@ -95,6 +95,15 @@ class ManifestError(ValueError):
     """Raised when a capability manifest violates the v1 contract."""
 
 
+def _no_duplicate_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ManifestError(f"duplicate JSON field: {key}")
+        value[key] = item
+    return value
+
+
 @dataclass(frozen=True)
 class CapabilityManifest:
     schema_version: int
@@ -198,14 +207,23 @@ def _string_list(
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
-        if path.is_symlink():
-            raise ManifestError("manifest symlinks are not accepted")
-        size = path.stat().st_size
-        if size <= 0 or size > MAX_MANIFEST_BYTES:
+        metadata = path.lstat()
+        attributes = getattr(metadata, "st_file_attributes", 0)
+        if path.is_symlink() or attributes & getattr(
+            stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400
+        ):
+            raise ManifestError("manifest reparse points are not accepted")
+        if metadata.st_size <= 0 or metadata.st_size > MAX_MANIFEST_BYTES:
             raise ManifestError(
                 f"manifest size must be between 1 and {MAX_MANIFEST_BYTES} bytes"
             )
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        loaded = json.loads(
+            path.read_bytes().decode("utf-8"),
+            object_pairs_hook=_no_duplicate_object,
+            parse_constant=lambda token: (_ for _ in ()).throw(
+                ManifestError(f"non-finite JSON value: {token}")
+            ),
+        )
     except ManifestError:
         raise
     except FileNotFoundError as exc:
@@ -225,7 +243,16 @@ def read_module_source(path: Path) -> tuple[bytes, str]:
     affect the already-verified code snapshot.
     """
     path = Path(path)
-    if path.is_symlink() or not path.is_file():
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise ManifestError(f"cannot inspect external module: {exc}") from exc
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    if (
+        path.is_symlink()
+        or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        or not stat.S_ISREG(metadata.st_mode)
+    ):
         raise ManifestError("external module must be a regular non-symlink file")
     descriptor: int | None = None
     try:
@@ -234,7 +261,11 @@ def read_module_source(path: Path) -> tuple[bytes, str]:
         )
         descriptor = os.open(path, flags)
         opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode):
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (metadata.st_dev, metadata.st_ino)
+            != (opened.st_dev, opened.st_ino)
+        ):
             raise ManifestError("external module must open as a regular file")
         if opened.st_size <= 0 or opened.st_size > MAX_MODULE_BYTES:
             raise ManifestError(
@@ -280,7 +311,10 @@ def parse_manifest(data: Mapping[str, Any], module_path: Path) -> CapabilityMani
     unknown = set(data) - _ALLOWED_MANIFEST_FIELDS
     if unknown:
         raise ManifestError(f"manifest contains {len(unknown)} unknown field(s)")
-    if data.get("schema_version") != SCHEMA_VERSION:
+    if (
+        type(data.get("schema_version")) is not int
+        or data["schema_version"] != SCHEMA_VERSION
+    ):
         raise ManifestError(f"schema_version must be {SCHEMA_VERSION}")
     capability_id = _bounded_text(data.get("id"), "id", 128).casefold()
     if not _ID_RE.fullmatch(capability_id):
@@ -418,6 +452,7 @@ def _canonical_signed_body(data: Mapping[str, Any]) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
+        allow_nan=False,
     ).encode("utf-8")
 
 
@@ -447,14 +482,23 @@ def load_trusted_publishers(path: Path) -> dict[str, bytes]:
     if not trust_path.exists():
         return {}
     data = _read_json(trust_path)
-    if data.get("schema_version") != SCHEMA_VERSION:
+    if (
+        set(data) != {"schema_version", "publishers"}
+        or type(data["schema_version"]) is not int
+        or data["schema_version"] != SCHEMA_VERSION
+    ):
         raise ManifestError("publisher trust store has an unsupported schema")
-    rows = data.get("publishers", [])
+    rows = data["publishers"]
     if not isinstance(rows, list) or len(rows) > 256:
         raise ManifestError("publishers must be a list with at most 256 entries")
     publishers: dict[str, bytes] = {}
     for row in rows:
-        if not isinstance(row, dict):
+        if (
+            type(row) is not dict
+            or not {"id", "public_key"} <= set(row)
+            or set(row) - {"id", "public_key", "revoked"}
+            or ("revoked" in row and type(row["revoked"]) is not bool)
+        ):
             raise ManifestError("each publisher entry must be an object")
         publisher_id = _bounded_text(row.get("id"), "publisher.id", 128)
         if publisher_id in publishers:

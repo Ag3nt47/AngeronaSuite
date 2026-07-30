@@ -62,6 +62,32 @@ def test_manifest_rejects_unannounced_high_risk_permission(tmp_path: Path) -> No
         parse_manifest(manifest, module)
 
 
+def test_manifest_files_reject_duplicate_fields_and_boolean_schema(
+    tmp_path: Path,
+) -> None:
+    module = tmp_path / "strict.py"
+    _write_module(module)
+    manifest = _manifest(module)
+    manifest["schema_version"] = True
+    with pytest.raises(ValueError, match="schema_version"):
+        parse_manifest(manifest, module)
+
+    raw = json.dumps(_manifest(module))
+    raw = raw.replace(
+        '"schema_version": 1',
+        '"schema_version": 1, "schema_version": 1',
+        1,
+    )
+    module.with_name("strict.angerona.json").write_text(raw, encoding="utf-8")
+    decision = verify_external_module(
+        module,
+        tmp_path / "missing-trust.json",
+        allow_unsigned=True,
+    )
+    assert not decision.accepted
+    assert "duplicate JSON field" in decision.reason
+
+
 def test_tampered_external_module_is_rejected_before_top_level_exec(
     tmp_path: Path,
     monkeypatch,
@@ -103,9 +129,9 @@ def test_signed_external_module_is_accepted_from_trusted_publisher(
     manifest["publisher"] = "example.publisher"
 
     key = Ed25519PrivateKey.generate()
-    manifest["signature"] = base64.b64encode(
-        key.sign(_canonical_signed_body(manifest))
-    ).decode("ascii")
+    manifest["signature"] = base64.b64encode(key.sign(_canonical_signed_body(manifest))).decode(
+        "ascii"
+    )
     module.with_name("signed.angerona.json").write_text(
         json.dumps(manifest),
         encoding="utf-8",
@@ -116,13 +142,17 @@ def test_signed_external_module_is_accepted_from_trusted_publisher(
     )
     trust = tmp_path / "publishers.json"
     trust.write_text(
-        json.dumps({
-            "schema_version": 1,
-            "publishers": [{
-                "id": "example.publisher",
-                "public_key": base64.b64encode(public).decode("ascii"),
-            }],
-        }),
+        json.dumps(
+            {
+                "schema_version": 1,
+                "publishers": [
+                    {
+                        "id": "example.publisher",
+                        "public_key": base64.b64encode(public).decode("ascii"),
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -149,6 +179,35 @@ def test_unsigned_module_requires_explicit_development_override(tmp_path: Path) 
     assert "unsigned" in refused.reason
     assert allowed.accepted is True
     assert allowed.trust == "hash-pinned-dev"
+
+
+def test_protected_launcher_cannot_enable_unsigned_external_code(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _Config(tmp_path)
+    module = config.external_modules_dir / "unsigned.py"
+    _write_module(module)
+    module.with_name("unsigned.angerona.json").write_text(
+        json.dumps(_manifest(module)),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ANGERONA_EXTERNAL_MODULES", "1")
+    monkeypatch.setenv("ANGERONA_ALLOW_UNSIGNED_EXTERNAL_MODULES", "1")
+    monkeypatch.setenv("ANGERONA_DEVELOPMENT_MODE", "1")
+    monkeypatch.setenv("ANGERONA_ENFORCE_KEY_ACL", "1")
+
+    manager = ModuleManager(EventBus(), config)
+    assert manager._external_classes() == []
+    assert manager.external_rejections
+    assert "unsigned" in manager.external_rejections[0]["reason"]
+    summary = manager.extension_security_summary()
+    assert summary["unsigned_development_override_requested"] is True
+    assert summary["unsigned_development_override"] is False
+
+    launcher = (Path(__file__).parents[1] / "start-angerona.bat").read_text(encoding="utf-8")
+    assert 'set "ANGERONA_DEVELOPMENT_MODE=0"' in launcher
+    assert 'set "ANGERONA_ALLOW_UNSIGNED_EXTERNAL_MODULES=0"' in launcher
 
 
 def test_sample_manifest_binds_exact_source(tmp_path: Path) -> None:

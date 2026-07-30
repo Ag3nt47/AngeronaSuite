@@ -310,11 +310,15 @@ def self_test() -> tuple[bool, str]:
     import tempfile, shutil, subprocess, threading as _th
     prev = os.environ.get("ANGERONA_DATA")
     prev_diag = os.environ.get("ANGERONA_DIAG_DIR")
+    prev_blackbox = os.environ.get("ANGERONA_BLACKBOX_ENABLED")
     workdir = tempfile.mkdtemp(prefix="mgr_selftest_")
     os.environ["ANGERONA_DATA"] = workdir
     os.environ["ANGERONA_DIAG_DIR"] = os.path.join(workdir, "diag")
     os.environ["ANGERONA_SCANNER_INTERVAL"] = "0.2"
     os.environ["ANGERONA_SCANNER_UI"] = "0"
+    # Never adopt or terminate the operator's live Black Box during this
+    # isolated lifecycle test.
+    os.environ["ANGERONA_BLACKBOX_ENABLED"] = "0"
 
     class _Bus:
         def __init__(self): self.events = []
@@ -380,6 +384,10 @@ def self_test() -> tuple[bool, str]:
                 os.environ[k] = v
         os.environ.pop("ANGERONA_SCANNER_INTERVAL", None)
         os.environ.pop("ANGERONA_SCANNER_UI", None)
+        if prev_blackbox is None:
+            os.environ.pop("ANGERONA_BLACKBOX_ENABLED", None)
+        else:
+            os.environ["ANGERONA_BLACKBOX_ENABLED"] = prev_blackbox
         shutil.rmtree(workdir, ignore_errors=True)
 
 

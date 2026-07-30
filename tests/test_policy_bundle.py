@@ -1,11 +1,18 @@
 import base64
+import dataclasses
+import math
 import time
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from angerona.core.policy_bundle import (
-    PolicyApproval, PolicyBundle, PolicyLayer, PolicyManager, RolloutState,
+    PolicyApproval,
+    PolicyBundle,
+    PolicyLayer,
+    PolicyManager,
+    RolloutState,
 )
 
 
@@ -14,17 +21,20 @@ def b64(value):
 
 
 def public(key):
-    return key.public_key().public_bytes(
-        serialization.Encoding.Raw, serialization.PublicFormat.Raw
-    )
+    return key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
 
 
 def signed(key, **changes):
     data = dict(
-        bundle_id="b1", version=1, publisher_id="publisher",
-        channel="configuration", layer=PolicyLayer.FLEET,
-        settings=(("sensor.enabled", True),), locked_keys=(),
-        rollout=RolloutState.STAGED, expires_at=time.time() + 100,
+        bundle_id="b1",
+        version=1,
+        publisher_id="publisher",
+        channel="configuration",
+        layer=PolicyLayer.FLEET,
+        settings=(("sensor.enabled", True),),
+        locked_keys=(),
+        rollout=RolloutState.STAGED,
+        expires_at=time.time() + 100,
     )
     data.update(changes)
     unsigned = PolicyBundle(**data)
@@ -42,19 +52,52 @@ def test_signed_bundle_and_invalid_update_fall_back_to_lkg():
     assert manager.effective("configuration").bundle_ids == ("b1",)
 
 
+def test_forged_changed_and_expired_policy_bundles_fail_closed():
+    publisher = Ed25519PrivateKey.generate()
+    manager = PolicyManager({"publisher": public(publisher)})
+    original = signed(publisher, expires_at=200)
+    forged = dataclasses.replace(
+        original,
+        settings=(("sensor.enabled", False),),
+    )
+    assert manager.submit(forged, now=100) == (
+        False,
+        "publisher signature invalid",
+    )
+    expired = signed(
+        publisher,
+        bundle_id="expired",
+        version=2,
+        expires_at=100,
+    )
+    assert manager.submit(expired, now=100) == (False, "bundle expired")
+    assert manager.submit(original, now=math.nan) == (
+        False,
+        "policy verification time is invalid",
+    )
+    with pytest.raises(ValueError, match="expiry"):
+        signed(publisher, expires_at=math.nan)
+
+
 def test_precedence_locks_and_channel_separation():
     publisher = Ed25519PrivateKey.generate()
     manager = PolicyManager({"publisher": public(publisher)})
     fleet = signed(
-        publisher, bundle_id="fleet", settings=(("x", 1),),
+        publisher,
+        bundle_id="fleet",
+        settings=(("x", 1),),
         locked_keys=("x",),
     )
     group = signed(
-        publisher, bundle_id="group", layer=PolicyLayer.GROUP,
+        publisher,
+        bundle_id="group",
+        layer=PolicyLayer.GROUP,
         settings=(("x", 2), ("y", 2)),
     )
     detection = signed(
-        publisher, bundle_id="detect", channel="detection",
+        publisher,
+        bundle_id="detect",
+        channel="detection",
         settings=(("rule", "on"),),
     )
     for item in (fleet, group, detection):
@@ -68,12 +111,17 @@ def test_dry_run_does_not_mutate_and_reports_blocked_lock():
     publisher = Ed25519PrivateKey.generate()
     manager = PolicyManager({"publisher": public(publisher)})
     fleet = signed(
-        publisher, bundle_id="fleet", settings=(("x", 1),),
+        publisher,
+        bundle_id="fleet",
+        settings=(("x", 1),),
         locked_keys=("x",),
     )
     manager.submit(fleet)
     group = signed(
-        publisher, bundle_id="group", version=2, layer=PolicyLayer.GROUP,
+        publisher,
+        bundle_id="group",
+        version=2,
+        layer=PolicyLayer.GROUP,
         settings=(("x", 9),),
     )
     simulated, diff = manager.simulate(group)
@@ -93,25 +141,20 @@ def test_high_impact_requires_two_distinct_signed_approvals():
         PolicyApproval("a1", b64(first.sign(body))),
         PolicyApproval("a2", b64(second.sign(body))),
     )
-    approved = signed(
-        publisher, high_impact=True, approvals=approvals, expires_at=expiry
-    )
+    approved = signed(publisher, high_impact=True, approvals=approvals, expires_at=expiry)
     manager = PolicyManager(
         {"publisher": public(publisher)},
         {"a1": public(first), "a2": public(second)},
     )
     assert manager.submit(approved)[0]
-    one = signed(publisher, bundle_id="one", version=2, high_impact=True,
-                 approvals=(approvals[0],))
+    one = signed(publisher, bundle_id="one", version=2, high_impact=True, approvals=(approvals[0],))
     assert not manager.submit(one)[0]
 
 
 def test_rollout_states_and_canonical_receipt():
     publisher = Ed25519PrivateKey.generate()
     manager = PolicyManager({"publisher": public(publisher)})
-    canary = signed(
-        publisher, rollout=RolloutState.CANARY, canary_percent=10
-    )
+    canary = signed(publisher, rollout=RolloutState.CANARY, canary_percent=10)
     accepted, reason = manager.submit(canary)
     one = manager.receipt(canary, accepted, reason, now=10)
     two = manager.receipt(canary, accepted, reason, now=10)

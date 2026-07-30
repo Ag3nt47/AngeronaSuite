@@ -76,20 +76,43 @@ def secure_sensitive_file(path: Path, *, required: bool = False) -> bool:
         if not icacls.is_file():
             raise RuntimeError("icacls.exe unavailable")
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        result = subprocess.run(
+        # icacls parses owner changes and DACL changes as separate command
+        # forms. Combining /setowner with /inheritance or /grant returns
+        # ERROR_INVALID_PARAMETER (87), which prevented a fresh bus.key from
+        # being created after the launcher completed its custody migration.
+        commands = (
             [
-                str(icacls), str(target), "/inheritance:r",
-                "/setowner", "*S-1-5-32-544",
-                "/grant:r", "*S-1-5-18:(F)", "*S-1-5-32-544:(F)",
+                str(icacls),
+                str(target),
+                "/setowner",
+                "*S-1-5-32-544",
+                "/L",
+                "/Q",
             ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=20,
-            check=False,
-            creationflags=flags,
+            [
+                str(icacls),
+                str(target),
+                "/inheritance:r",
+                "/grant:r",
+                "*S-1-5-18:(F)",
+                "*S-1-5-32-544:(F)",
+                "/L",
+                "/Q",
+            ],
         )
-        if result.returncode != 0:
-            raise RuntimeError(f"icacls failed with exit {result.returncode}")
+        for operation, command in zip(("owner", "DACL"), commands, strict=True):
+            result = subprocess.run(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=20,
+                check=False,
+                creationflags=flags,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"icacls {operation} update failed with exit {result.returncode}"
+                )
         return True
     except Exception:
         if required:
