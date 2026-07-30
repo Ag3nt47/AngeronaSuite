@@ -639,7 +639,15 @@ class PanelRevealOverlay(QWidget):
         )
         setattr(target, "_angerona_pending_reveal_original_mask", None)
         self._mode = "opening"
-        setattr(target, "_angerona_reverse_reveal_close", True)
+        # The primary dashboard owns a purpose-built close/minimize path that
+        # collapses into the holographic orb. It still receives this real-window
+        # opening reveal, but must not acquire a second competing close handler.
+        # Ordinary content windows receive the matching reverse reveal.
+        setattr(
+            target,
+            "_angerona_reverse_reveal_close",
+            not self._widget_flag(target, "_angerona_reveal_open_only"),
+        )
         setattr(target, "_angerona_close_bypass", False)
         setattr(
             target,

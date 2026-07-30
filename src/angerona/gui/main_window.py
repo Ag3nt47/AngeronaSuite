@@ -72,9 +72,11 @@ class MainWindow(QMainWindow):
         self, bus, storage, manager, config, *,
         evidence_store=None, evidence_ingestion=None,
         flight_recorder_worker=None,
+        process_baseline=None,
     ) -> None:
         super().__init__()
         self.bus, self.storage, self.manager, self.config = bus, storage, manager, config
+        self.process_baseline = process_baseline
         self._voice_loop_lock = threading.Lock()
         self._voice_loop_thread: threading.Thread | None = None
         self._selftest_active = threading.Event()
@@ -2514,7 +2516,9 @@ class MainWindow(QMainWindow):
         try:
             dlg = SettingsDialog(self.config,
                                  lambda: check_for_updates(self.config.github_repo),
-                                 self.apply_theme, self, initial_tab=initial_tab)
+                                 self.apply_theme, self,
+                                 initial_tab=initial_tab,
+                                 process_baseline=self.process_baseline)
             dlg.setStyleSheet(self._qss())
             if dlg.exec():
                 self._apply_voice_settings_live()

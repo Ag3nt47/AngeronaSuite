@@ -3688,13 +3688,15 @@ class SettingsDialog(QDialog):
     # Background ARIA setup tests post their result here (thread-safe → GUI).
     aria_test_result = Signal(str)
     voice_model_result = Signal(str, bool)
+    process_baseline_result = Signal(str, bool)
 
     def __init__(self, config, check_updates_fn, apply_theme_fn, parent=None,
-                 initial_tab: str | None = None):
+                 initial_tab: str | None = None, process_baseline=None):
         super().__init__(parent)
         self._cfg            = config
         self._check_updates  = check_updates_fn
         self._apply_theme    = apply_theme_fn
+        self._process_baseline = process_baseline
 
         self.setWindowTitle("Angerona — Settings")
         self.setMinimumWidth(720)
@@ -3741,7 +3743,7 @@ class SettingsDialog(QDialog):
             "'Mobile Integration' tab — configure the transport (Signal / ntfy / "
             "Pushover / SMS), save the settings, and send a live test alert there.")
         _lbl.setWordWrap(True); _mv.addWidget(_lbl); _mv.addStretch()
-        tabs.addTab(_scroll(self._tab_mobile()), "Mobile Integration")
+        tabs.addTab(_scroll(_mob), "Mobile Integration")
         tabs.addTab(_scroll(self._tab_apikeys()), "API Keys")
         self._settings_search.textChanged.connect(self._find_setting)
 
@@ -3768,6 +3770,9 @@ class SettingsDialog(QDialog):
         try:
             self.aria_test_result.connect(self._aria_test_status.setText)
             self.voice_model_result.connect(self._voice_model_finished)
+            self.process_baseline_result.connect(
+                self._process_baseline_action_finished
+            )
         except Exception:
             pass
         if initial_tab:
@@ -4608,8 +4613,6 @@ class SettingsDialog(QDialog):
 
     def _tab_trusted_processes(self) -> QWidget:
         """Operator-supervised process learning and exact allowlisting."""
-        from angerona.core import process_allowlist
-
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setSpacing(8)
@@ -4641,10 +4644,67 @@ class SettingsDialog(QDialog):
         add_row.addWidget(remove)
         lay.addLayout(add_row)
 
+        lay.addWidget(self._section("Conservative normal-process learning"))
+        self._process_baseline_chk = QCheckBox(
+            "Learn stable signed executables and suggest them for review"
+        )
+        self._process_baseline_chk.setChecked(
+            bool(getattr(self._cfg, "process_baseline_enabled", False))
+        )
+        self._process_baseline_chk.setToolTip(
+            "Opt-in and local only. Observation never suppresses an alert. "
+            "A candidate needs repeated observations across separate UTC days, "
+            "a protected Windows/Program Files location, valid Authenticode, "
+            "and an explicit Approve action."
+        )
+        lay.addWidget(self._process_baseline_chk)
+        baseline_note = QLabel(
+            "Learning stores only executable identity metadata locally: exact path, "
+            "SHA-256, publisher, first/last observation, and counts. It never stores "
+            "command lines, usernames, parent processes, or network activity. A "
+            "changed executable becomes a new candidate and an approved hash mismatch "
+            "immediately stops matching trust."
+        )
+        baseline_note.setWordWrap(True)
+        baseline_note.setStyleSheet("color:#94a3b8; font-size:11px;")
+        lay.addWidget(baseline_note)
+        self._baseline_candidate_list = QListWidget()
+        self._baseline_candidate_list.setMinimumHeight(150)
+        lay.addWidget(self._baseline_candidate_list)
+        baseline_row = QHBoxLayout()
+        refresh_baseline = QPushButton("Refresh learned candidates")
+        approve_baseline = QPushButton("Approve eligible candidate")
+        dismiss_baseline = QPushButton("Dismiss for 30 days")
+        reset_baseline = QPushButton("Reset learned state")
+        refresh_baseline.clicked.connect(self._refresh_process_baseline)
+        approve_baseline.clicked.connect(self._approve_process_baseline)
+        dismiss_baseline.clicked.connect(self._dismiss_process_baseline)
+        reset_baseline.clicked.connect(self._reset_process_baseline)
+        for button in (
+            refresh_baseline,
+            approve_baseline,
+            dismiss_baseline,
+            reset_baseline,
+        ):
+            baseline_row.addWidget(button)
+        baseline_row.addStretch(1)
+        lay.addLayout(baseline_row)
+        self._baseline_action_buttons = (
+            approve_baseline,
+            dismiss_baseline,
+            reset_baseline,
+        )
+        self._baseline_status = QLabel("")
+        self._baseline_status.setWordWrap(True)
+        self._baseline_status.setStyleSheet("color:#94a3b8; font-size:11px;")
+        lay.addWidget(self._baseline_status)
+
         lay.addWidget(self._section("Supervised learning — processes running now"))
         learn_note = QLabel(
             "Scan the current system, select a recognized executable, then trust its exact "
-            "path. Items are suggestions only; observing a process never makes it safe.")
+            "path immediately. This manual path remains available when a legitimate "
+            "unsigned or user-installed application cannot qualify for conservative "
+            "baseline review.")
         learn_note.setWordWrap(True)
         learn_note.setStyleSheet("color:#94a3b8; font-size:11px;")
         lay.addWidget(learn_note)
@@ -4665,6 +4725,7 @@ class SettingsDialog(QDialog):
         lay.addLayout(learn_row)
 
         self._refresh_trusted_processes()
+        self._refresh_process_baseline()
         return w
 
     def _refresh_trusted_processes(self) -> None:
@@ -4672,11 +4733,172 @@ class SettingsDialog(QDialog):
         self._trusted_process_list.clear()
         for row in process_allowlist.entries(self._cfg.data_dir):
             label = row.get("path") or row.get("name") or "(unnamed)"
-            item = QListWidgetItem(label)
-            item.setToolTip("Exact path" if row.get("path") else
-                            "Exact basename — applies wherever this executable name runs")
+            digest = str(row.get("sha256") or "")
+            source = str(row.get("source") or "legacy")
+            binding = "hash-bound" if digest else "legacy path/name only"
+            item = QListWidgetItem(f"{label}  [{binding}; {source}]")
+            tooltip = (
+                "Exact path" if row.get("path") else
+                "Exact basename — applies only to pathless telemetry"
+            )
+            if digest:
+                tooltip += f"\nSHA-256: {digest}"
+            else:
+                tooltip += (
+                    "\nLegacy policy is not bound to file contents. Browse/re-approve "
+                    "the executable to add a SHA-256 binding."
+                )
+            if row.get("publisher"):
+                tooltip += f"\nPublisher: {row.get('publisher')}"
+            item.setToolTip(tooltip)
             item.setData(Qt.UserRole, row.get("id"))
             self._trusted_process_list.addItem(item)
+
+    def _refresh_process_baseline(self) -> None:
+        learner = self._process_baseline
+        self._baseline_candidate_list.clear()
+        if learner is None:
+            self._baseline_status.setText(
+                "Normal-process learning is unavailable in this launch mode."
+            )
+            self._process_baseline_chk.setEnabled(False)
+            for button in self._baseline_action_buttons:
+                button.setEnabled(False)
+            return
+        snapshot = learner.snapshot()
+        integrity_error = str(snapshot.get("integrity_error") or "")
+        candidates = snapshot.get("candidates") or []
+        for row in candidates:
+            observations = int(row.get("observations", 0))
+            days = len(row.get("days") or ())
+            if row.get("eligible"):
+                stage = "READY FOR OPERATOR REVIEW"
+            elif not row.get("trusted_root"):
+                stage = "MANUAL REVIEW ONLY — unprotected install location"
+            elif str(row.get("signature_status", "")).casefold() != "valid":
+                stage = (
+                    "MANUAL REVIEW ONLY — Authenticode "
+                    f"{row.get('signature_status') or 'unavailable'}"
+                )
+            else:
+                stage = (
+                    f"LEARNING — {observations}/3 observations, "
+                    f"{days}/2 UTC days"
+                )
+            item = QListWidgetItem(
+                f"{row.get('name', '?')}  —  {stage}\n"
+                f"{row.get('path', '')}"
+            )
+            item.setData(Qt.UserRole, row.get("id"))
+            item.setData(Qt.UserRole + 1, bool(row.get("eligible")))
+            item.setToolTip(
+                f"SHA-256: {row.get('sha256', '')}\n"
+                f"Publisher: {row.get('publisher') or '(not available)'}\n"
+                f"Root: {row.get('root_class') or '(not protected)'}\n"
+                f"First seen: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(float(row.get('first_seen', 0))))}\n"
+                f"Last seen: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(float(row.get('last_seen', 0))))}\n"
+                f"Assessment: {row.get('reason', '')}"
+            )
+            self._baseline_candidate_list.addItem(item)
+        metrics = snapshot.get("metrics") or {}
+        if integrity_error:
+            self._baseline_status.setText(
+                "INTEGRITY LOCK: learned state could not be authenticated. "
+                f"{integrity_error} Use Reset learned state to quarantine it."
+            )
+        else:
+            self._baseline_status.setText(
+                f"{len(candidates)} candidate(s) · "
+                f"{metrics.get('accepted', 0)} accepted observation(s) · "
+                f"{metrics.get('rejected', 0)} rejected · "
+                f"{metrics.get('dropped', 0)} queue drop(s) · "
+                f"queue {snapshot.get('queue_depth', 0)}/"
+                f"{snapshot.get('queue_capacity', 0)}"
+            )
+        self._baseline_action_buttons[0].setEnabled(
+            not integrity_error
+            and any(bool(row.get("eligible")) for row in candidates)
+        )
+        self._baseline_action_buttons[1].setEnabled(
+            not integrity_error and bool(candidates)
+        )
+        self._baseline_action_buttons[2].setEnabled(True)
+
+    def _selected_process_baseline(self) -> tuple[str, bool]:
+        item = self._baseline_candidate_list.currentItem()
+        if item is None:
+            return "", False
+        return (
+            str(item.data(Qt.UserRole) or ""),
+            bool(item.data(Qt.UserRole + 1)),
+        )
+
+    def _run_process_baseline_action(self, label: str, action) -> None:
+        for button in self._baseline_action_buttons:
+            button.setEnabled(False)
+        self._baseline_status.setText(f"{label}…")
+
+        def _run() -> None:
+            try:
+                action()
+                self.process_baseline_result.emit(f"{label}: complete.", True)
+            except Exception as exc:
+                self.process_baseline_result.emit(f"{label}: {exc}", False)
+
+        threading.Thread(
+            target=_run,
+            daemon=True,
+            name="ProcessBaselineAction",
+        ).start()
+
+    def _approve_process_baseline(self) -> None:
+        candidate_id, eligible = self._selected_process_baseline()
+        if not candidate_id:
+            self._baseline_status.setText("Select a learned candidate first.")
+            return
+        if not eligible:
+            self._baseline_status.setText(
+                "That candidate is not eligible for conservative approval. "
+                "Use the manual exact-path review below if you recognize it."
+            )
+            return
+        self._run_process_baseline_action(
+            "Revalidating and approving candidate",
+            lambda: self._process_baseline.approve(candidate_id),
+        )
+
+    def _dismiss_process_baseline(self) -> None:
+        candidate_id, _eligible = self._selected_process_baseline()
+        if not candidate_id:
+            self._baseline_status.setText("Select a learned candidate first.")
+            return
+        self._run_process_baseline_action(
+            "Dismissing candidate for 30 days",
+            lambda: self._process_baseline.dismiss(candidate_id),
+        )
+
+    def _reset_process_baseline(self) -> None:
+        if QMessageBox.question(
+            self,
+            "Reset learned process state",
+            "Quarantine all learned candidates and counters, then create a new "
+            "empty authenticated state? Trusted-process approvals are not removed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self._run_process_baseline_action(
+            "Resetting authenticated learned state",
+            self._process_baseline.reset_state,
+        )
+
+    def _process_baseline_action_finished(self, message: str, ok: bool) -> None:
+        self._refresh_trusted_processes()
+        self._refresh_process_baseline()
+        self._baseline_status.setStyleSheet(
+            f"color:{'#22c55e' if ok else '#ef4444'}; font-size:11px;"
+        )
+        self._baseline_status.setText(message)
 
     def _trust_process_name(self) -> None:
         from angerona.core import process_allowlist
@@ -5023,6 +5245,9 @@ class SettingsDialog(QDialog):
         self._cfg.holographic_orb_enabled = (
             self._holographic_orb_chk.isChecked()
         )
+        self._cfg.process_baseline_enabled = (
+            self._process_baseline_chk.isChecked()
+        )
         if callable(self._apply_theme):
             try: self._apply_theme(self._cfg.theme)
             except Exception: pass
@@ -5152,4 +5377,8 @@ class SettingsDialog(QDialog):
         except Exception as exc:
             QMessageBox.warning(self, "Settings not saved", str(exc))
             return
+        if self._process_baseline is not None:
+            self._process_baseline.set_enabled(
+                self._cfg.process_baseline_enabled
+            )
         self.accept()

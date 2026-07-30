@@ -31,11 +31,15 @@ GUIDES = (
     CapabilityGuide(
         "trusted-processes", "Trusted Processes", "False positives",
         "Exact-path trust for known software such as a Virtual Private Network "
-        "(VPN), with supervised discovery and no blanket memory-scan bypass.",
-        ("Open Trusted Processes.", "Scan running processes.",
-         "Select the exact executable path.", "Save and verify new events."),
-        "Restart the application and confirm the trusted exact path remains listed.",
-        "Stores executable name, canonical path and trust metadata locally.",
+        "(VPN), with manual review plus opt-in conservative learning and no "
+        "blanket memory-scan bypass.",
+        ("Open Trusted Processes.", "Optionally enable conservative learning.",
+         "Review stable signed candidates or scan running processes.",
+         "Approve only the exact executable path.", "Verify later events."),
+        "Confirm the approval is SHA-256-bound and later events from an unchanged "
+        "exact path no longer affect posture.",
+        "Stores executable name, canonical path, SHA-256, publisher and bounded "
+        "observation metadata locally; no command lines or usernames.",
         "Trusted Processes",
     ),
     CapabilityGuide(

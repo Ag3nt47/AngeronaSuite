@@ -332,6 +332,35 @@ def test_standalone_window_installs_one_shared_reveal_coordinator() -> None:
     window.close()
 
 
+def test_primary_window_can_reveal_without_competing_with_orb_close() -> None:
+    app = _app()
+    window = QWidget()
+    window.resize(620, 380)
+    setattr(window, "_angerona_reveal_open_only", True)
+    overlay = PanelRevealOverlay(window)
+
+    def _show_window():
+        window.show()
+        return window
+
+    assert overlay.reveal(window, _show_window, "#38bdf8")
+    app.processEvents()
+    assert overlay._target is window
+    assert not window.mask().isEmpty()
+    assert not bool(
+        getattr(window, "_angerona_reverse_reveal_close", True)
+    )
+
+    overlay._animation.setCurrentTime(overlay._animation.duration())
+    app.processEvents()
+    assert window.isVisible()
+    assert window.mask().isEmpty()
+    # The orb/controller remains the sole owner of the dashboard close path.
+    window.close()
+    app.processEvents()
+    assert not window.isVisible()
+
+
 def test_aria_voice_request_carries_its_button_as_reveal_origin() -> None:
     app = _app()
     hud = AriaHud(score_fn=lambda: 100, compact=True)

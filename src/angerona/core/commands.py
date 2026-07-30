@@ -1118,7 +1118,7 @@ class CommandConsole:
             if not include_system and ("\\windows\\" in low or "/windows/" in low):
                 skipped += 1; continue
             try:
-                pa.add(name=name, path=path)
+                pa.add(name=name, path=path, source="console")
                 added += 1
                 if len(names) < 20:
                     names.append(name)

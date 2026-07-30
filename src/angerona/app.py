@@ -29,6 +29,28 @@ class AngeronaApp:
         self.bus = EventBus()
         self.bus.arm(self.storage.authority)
 
+        # Optional, offline normal-process learning. The EventBus callback only
+        # performs a bounded put_nowait; signature verification, executable
+        # hashing, Authenticode inspection, and authenticated state writes stay
+        # on its dedicated worker. Observation never changes trust by itself.
+        self.process_baseline = None
+        try:
+            from angerona.core.process_baseline import ProcessBaselineLearner
+
+            self.process_baseline = ProcessBaselineLearner(
+                self.config.data_dir,
+                self.storage.authority,
+                enabled=getattr(
+                    self.config,
+                    "process_baseline_enabled",
+                    False,
+                ),
+            )
+            self.bus.subscribe(self.process_baseline.submit_event)
+            self.process_baseline.start()
+        except Exception:
+            self.process_baseline = None
+
         # The authoritative recorder batches signed events off producer
         # threads. Queue overflow is preserved in the authenticated append-only
         # dead-letter queue instead of stalling every sensor on SQLite.
@@ -106,6 +128,7 @@ class AngeronaApp:
             evidence_store=self.evidence_store,
             evidence_ingestion=self.evidence_ingestion,
             flight_recorder_worker=self.flight_recorder_worker,
+            process_baseline=self.process_baseline,
         )
 
     def start(self) -> None:
@@ -113,7 +136,26 @@ class AngeronaApp:
         # Module discovery (37 importlib.import_module calls) and thread
         # starts are deferred to a background thread via a zero-delay timer
         # so the event loop gets at least one paint cycle first.
-        self.window.show()
+        # The dashboard itself is the only content window created before the
+        # global reveal coordinator becomes active. Route its first frame
+        # through the same live-content line-to-window transition used by every
+        # later Angerona window. Its close/minimize path remains owned by the
+        # holographic orb so the two animations cannot compete.
+        reveal = getattr(self.window, "_panel_reveal", None)
+        if reveal is not None:
+            setattr(self.window, "_angerona_reveal_open_only", True)
+
+            def _show_dashboard():
+                self.window.show()
+                return self.window
+
+            reveal.reveal(
+                self.window,
+                _show_dashboard,
+                "#38bdf8",
+            )
+        else:
+            self.window.show()
         self.qt.aboutToQuit.connect(self.shutdown)
         from PySide6.QtCore import QTimer
         # Let the window actually paint and become interactive before kicking off
@@ -384,6 +426,11 @@ class AngeronaApp:
                 pass
             self._fleet_plane = None
         self.manager.stop_all()
+        try:
+            if self.process_baseline is not None:
+                self.process_baseline.stop(timeout=2.0)
+        except Exception:
+            pass
         recorder_drained = False
         try:
             recorder_drained = self.flight_recorder_worker.stop(timeout=3.0)

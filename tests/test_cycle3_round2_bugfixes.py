@@ -29,7 +29,8 @@ def test_canonical_mobile_settings_save_without_console_duplicate(tmp_path, monk
     applied_themes: list[str] = []
     dialog = SettingsDialog(config, lambda: None, applied_themes.append)
 
-    assert hasattr(dialog, "_mob_chk")
+    # Settings owns only the redirect; Advanced Console is the single editor.
+    assert not hasattr(dialog, "_mob_chk")
     assert any(
         dialog.tabs.tabText(index) == "Mobile Integration"
         for index in range(dialog.tabs.count())
@@ -43,6 +44,7 @@ def test_canonical_mobile_settings_save_without_console_duplicate(tmp_path, monk
     assert saved["ollama_model"] == "qa-model"
     assert saved["eco_mode"] is False
     assert saved["mobile_dest_number"] == "+15550000000"
+    assert saved["process_baseline_enabled"] is False
     assert applied_themes
     assert mutations == []
     assert not (tmp_path / ".env").exists()

@@ -46,7 +46,8 @@ AREAS = (
     SettingsArea(
         "trusted", "Trusted Processes",
         "Exact-path process trust and supervised false-positive handling.",
-        ("trusted", "allow", "process", "vpn", "false positive", "proton"),
+        ("trusted", "allow", "process", "vpn", "false positive", "proton",
+         "baseline", "learning", "publisher", "authenticode"),
         "Local executable metadata", False,
     ),
     SettingsArea(

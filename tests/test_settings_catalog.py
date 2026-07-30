@@ -10,6 +10,9 @@ def test_settings_catalog_has_one_owner_and_routes_common_terms():
     assert len({area.key for area in AREAS}) == len(AREAS)
     assert resolve_area("microphone input").title == "ARIA"
     assert resolve_area("Proton VPN false positive").title == "Trusted Processes"
+    assert resolve_area("AuthentiCode process baseline learning").title == (
+        "Trusted Processes"
+    )
     assert resolve_area("startup performance").title == "System"
     assert resolve_area("Signal phone").title == "Mobile Integration"
     assert resolve_area("fleet RBAC").title == "Enterprise"

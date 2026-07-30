@@ -269,7 +269,11 @@ class ResolveCenter(QDialog):
                     QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
                 return
             try:
-                process_allowlist.add(proc_name, proc_path)
+                process_allowlist.add(
+                    proc_name,
+                    proc_path,
+                    source="resolve",
+                )
             except Exception as exc:
                 QMessageBox.warning(self, "Trust process", str(exc))
                 return

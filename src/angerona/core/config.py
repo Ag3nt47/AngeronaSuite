@@ -114,6 +114,9 @@ class Config:
     holographic_orb_enabled: bool = True          # minimized-window token + radial service controls
     holographic_orb_x: int = -1                   # global center; -1 selects the active screen corner
     holographic_orb_y: int = -1
+    # Offline normal-process learning is opt-in and suggestion-only. It never
+    # changes threat posture until the operator approves a mature candidate.
+    process_baseline_enabled: bool = False
 
     # ── Self-hardening input integrity ─────────────────────────────────────
     # When True, After-Action Reports that aren't HMAC-authenticated (unsigned
@@ -235,6 +238,11 @@ class Config:
                     "holographic_orb_enabled",
                     cfg.holographic_orb_enabled,
                 )
+                cfg.process_baseline_enabled = _bool_setting(
+                    data,
+                    "process_baseline_enabled",
+                    cfg.process_baseline_enabled,
+                )
                 try:
                     cfg.holographic_orb_x = int(
                         data.get("holographic_orb_x", cfg.holographic_orb_x)
@@ -331,6 +339,7 @@ class Config:
                     "holographic_orb_enabled": self.holographic_orb_enabled,
                     "holographic_orb_x":     self.holographic_orb_x,
                     "holographic_orb_y":     self.holographic_orb_y,
+                    "process_baseline_enabled": self.process_baseline_enabled,
                     "require_signed_aar":    self.require_signed_aar,
                     "entropy_pool_enabled":  self.entropy_pool_enabled,
                 },
