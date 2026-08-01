@@ -32,6 +32,8 @@ from PySide6.QtWidgets import (
     QSlider, QTextEdit, QVBoxLayout, QWidget,
 )
 
+from angerona.core.url_policy import LOCAL_SERVICE_POLICY, read_bounded, safe_urlopen
+
 # Env keys this console reads/writes (persisted to .env by config.write_env_keys).
 _ENV_MOBILE = {
     "host": "ANGERONA_MOBILE_HOST",
@@ -289,8 +291,12 @@ class AngeronaUpgradeConsole(QMainWindow):
     def _list_ollama_models(self) -> list:
         try:
             import json, urllib.request
-            with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=2) as r:
-                data = json.loads(r.read().decode("utf-8", "ignore"))
+            with safe_urlopen(
+                "http://127.0.0.1:11434/api/tags",
+                policy=LOCAL_SERVICE_POLICY,
+                timeout=2,
+            ) as r:
+                data = json.loads(read_bounded(r).decode("utf-8", "ignore"))
             names = [m.get("name") for m in data.get("models", []) if m.get("name")]
             if names:
                 return names
@@ -346,8 +352,8 @@ class AngeronaUpgradeConsole(QMainWindow):
             data=json.dumps({"name": model}).encode(),
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=3) as response:
-            response.read()
+        with safe_urlopen(req, policy=LOCAL_SERVICE_POLICY, timeout=3) as response:
+            read_bounded(response)
         return True
 
     def _new_async_token(self) -> int:

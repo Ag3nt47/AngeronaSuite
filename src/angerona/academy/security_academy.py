@@ -32,6 +32,12 @@ from enum import Enum
 from typing import List, Optional
 
 from angerona.academy.explainer_dictionary import lookup
+from angerona.core.url_policy import (
+    LOCAL_SERVICE_POLICY,
+    local_service_url,
+    read_bounded,
+    safe_urlopen,
+)
 
 # ── Prompt engineering ──────────────────────────────────────────────────────
 # Each system prompt fixes: persona, exact input shape, exact output shape
@@ -128,11 +134,13 @@ class FlightInstructor:
             ],
             "stream": False,
         }).encode("utf-8")
-        req = urllib.request.Request(f"{self._host}/api/chat", data=payload,
+        req = urllib.request.Request(local_service_url(self._host, "/api/chat"), data=payload,
                                      headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            with safe_urlopen(
+                req, policy=LOCAL_SERVICE_POLICY, timeout=timeout
+            ) as resp:
+                data = json.loads(read_bounded(resp).decode("utf-8"))
             text = (data.get("message", {}) or {}).get("content", "").strip()
             return text or None
         except Exception as exc:

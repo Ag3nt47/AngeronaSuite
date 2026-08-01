@@ -40,6 +40,13 @@ import urllib.parse
 import urllib.request
 from typing import Callable, Iterable, Optional
 
+from angerona.core.url_policy import (
+    host_policy,
+    read_bounded,
+    safe_urlopen,
+    validate_url,
+)
+
 
 def _have(mod: str) -> bool:
     try:
@@ -59,6 +66,24 @@ _SERVICE_HOST_SUFFIXES = (
     ".trafficmanager.net",
     ".botframework.com",
     ".teams.microsoft.com",
+)
+_SERVICE_POLICY = host_policy(
+    "Microsoft Bot Framework service",
+    {"trafficmanager.net", "botframework.com", "teams.microsoft.com"},
+    allow_subdomains=True,
+)
+_LOGIN_POLICY = host_policy(
+    "Microsoft Bot Framework OAuth",
+    {"login.microsoftonline.com"},
+)
+_OPENID_POLICY = host_policy(
+    "Microsoft Bot Framework OpenID metadata",
+    {"login.botframework.com"},
+)
+_JWKS_POLICY = host_policy(
+    "Microsoft Bot Framework signing keys",
+    {"botframework.com", "microsoftonline.com", "windows.net"},
+    allow_subdomains=True,
 )
 
 
@@ -265,7 +290,7 @@ class TeamsBot:
                 url, data=body, method="POST",
                 headers={"Content-Type": "application/json",
                          "Authorization": f"Bearer {token}"})
-            with urllib.request.urlopen(req, timeout=10):
+            with safe_urlopen(req, policy=_SERVICE_POLICY, timeout=10):
                 pass
             return reply
         except Exception as exc:
@@ -290,8 +315,8 @@ class TeamsBot:
         req = urllib.request.Request(
             _LOGIN_TOKEN_URL, data=data, method="POST",
             headers={"Content-Type": "application/x-www-form-urlencoded"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            payload = json.loads(resp.read().decode("utf-8", "replace"))
+        with safe_urlopen(req, policy=_LOGIN_POLICY, timeout=10) as resp:
+            payload = json.loads(read_bounded(resp, 1024 * 1024).decode("utf-8", "replace"))
         self._token = str(payload.get("access_token") or "")
         self._token_exp = now + float(payload.get("expires_in", 3600))
         return self._token
@@ -332,11 +357,22 @@ class TeamsBot:
             return dev_allowed
         try:
             import jwt                          # PyJWT
-            from jwt import PyJWKClient
-            meta = json.loads(urllib.request.urlopen(_OPENID_URL, timeout=10)
-                              .read().decode("utf-8", "replace"))
-            jwks_uri = meta["jwks_uri"]
-            signing_key = PyJWKClient(jwks_uri).get_signing_key_from_jwt(token)
+            with safe_urlopen(_OPENID_URL, policy=_OPENID_POLICY, timeout=10) as response:
+                meta = json.loads(
+                    read_bounded(response, 1024 * 1024).decode("utf-8", "replace")
+                )
+            jwks_uri = str(meta["jwks_uri"])
+            validate_url(jwks_uri, _JWKS_POLICY)
+            with safe_urlopen(jwks_uri, policy=_JWKS_POLICY, timeout=10) as response:
+                jwks = json.loads(
+                    read_bounded(response, 2 * 1024 * 1024).decode("utf-8", "replace")
+                )
+            key_id = str(jwt.get_unverified_header(token).get("kid") or "")
+            key_record = next(
+                item for item in (jwks.get("keys") or [])
+                if isinstance(item, dict) and str(item.get("kid") or "") == key_id
+            )
+            signing_key = jwt.PyJWK.from_dict(key_record)
             issuer = str(meta.get("issuer") or "https://api.botframework.com")
             jwt.decode(token, signing_key.key, algorithms=["RS256"],
                        audience=self.app_id, issuer=issuer,

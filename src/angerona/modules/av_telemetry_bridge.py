@@ -30,14 +30,17 @@ from __future__ import annotations
 import json
 import subprocess
 import time
-import xml.etree.ElementTree as ET
 from typing import Optional
+
+from defusedxml import ElementTree as ET
+from defusedxml.common import DefusedXmlException
 
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.win import check_output_hidden
 
 _DEFENDER_CHANNEL   = "Microsoft-Windows-Windows Defender/Operational"
 _EVTLOG_SEQ_FWD     = 0x0001 | 0x0004   # SEQUENTIAL_READ | FORWARDS_READ
+_MAX_EVENT_XML_CHARS = 1024 * 1024
 _POLL_INTERVAL      = 30.0              # seconds between log reads (was 10 — AV events don't need sub-30s latency)
 _FALLBACK_INTERVAL  = 120.0            # seconds between PowerShell polls (was 60)
 
@@ -198,13 +201,16 @@ class AVTelemetryBridgeModule(BaseModule):
         except Exception:
             pass
 
-        if xml_str and parser:
+        if xml_str and parser and len(xml_str) <= _MAX_EVENT_XML_CHARS:
             try:
                 root = ET.fromstring(xml_str)
                 msg, details = parser(root)
-            except ET.ParseError:
+            except (ET.ParseError, DefusedXmlException):
                 msg     = f"Defender EID {eid} (XML parse error)"
                 details = {}
+        elif xml_str and len(xml_str) > _MAX_EVENT_XML_CHARS:
+            msg = f"Defender EID {eid} (XML payload exceeded safety bound)"
+            details = {"xml_status": "oversized"}
         else:
             label   = _EID_MAP[eid][0]
             msg     = f"Defender: {label} (EID {eid})"

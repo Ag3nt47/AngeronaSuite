@@ -21,6 +21,12 @@ from typing import Optional
 import urllib.request
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.url_policy import (
+    LOCAL_SERVICE_POLICY,
+    local_service_url,
+    read_bounded,
+    safe_urlopen,
+)
 
 SYSTEM_PROMPT = (
     "You are a local SOC analyst. Given a security event, respond with a single "
@@ -91,12 +97,14 @@ class AITriageModule(BaseModule):
             "options": {"num_predict": 256, "temperature": 0.2},
         }).encode("utf-8")
         req = urllib.request.Request(
-            f"{self._host}/api/chat", data=payload,
+            local_service_url(self._host, "/api/chat"), data=payload,
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=self._CB_TIMEOUT_S) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            with safe_urlopen(
+                req, policy=LOCAL_SERVICE_POLICY, timeout=self._CB_TIMEOUT_S,
+            ) as resp:
+                data = json.loads(read_bounded(resp).decode("utf-8"))
             return (data.get("message", {}) or {}).get("content", "").strip()
         except Exception as exc:
             self.last_error = str(exc)
@@ -130,12 +138,14 @@ class AITriageModule(BaseModule):
             "options": {"num_predict": 8},  # tiny reply → fast once loaded
         }).encode("utf-8")
         req = urllib.request.Request(
-            f"{self._host}/api/chat", data=payload,
+            local_service_url(self._host, "/api/chat"), data=payload,
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=self._CB_TIMEOUT_S) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            with safe_urlopen(
+                req, policy=LOCAL_SERVICE_POLICY, timeout=self._CB_TIMEOUT_S,
+            ) as resp:
+                data = json.loads(read_bounded(resp).decode("utf-8"))
             return bool((data.get("message", {}) or {}).get("content", "").strip())
         except Exception:
             return False

@@ -37,6 +37,13 @@ from PySide6.QtWidgets import (
     QScrollArea, QSizePolicy, QSplitter, QVBoxLayout, QWidget,
 )
 
+from angerona.core.url_policy import (
+    LOCAL_SERVICE_POLICY,
+    local_service_url,
+    read_bounded,
+    safe_urlopen,
+)
+
 # ── Ollama settings ───────────────────────────────────────────────────────────
 _OLLAMA_HOST  = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 _OLLAMA_MODEL = os.environ.get("ANGERONA_MODEL", "llama3")
@@ -265,13 +272,13 @@ def _call_ollama(prompt: str) -> Optional[str]:
         "stream": False,
     }).encode("utf-8")
     req = urllib.request.Request(
-        f"{_OLLAMA_HOST}/api/chat",
+        local_service_url(_OLLAMA_HOST, "/api/chat"),
         data=payload,
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=_OLLAMA_TIMEOUT) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        with safe_urlopen(req, policy=LOCAL_SERVICE_POLICY, timeout=_OLLAMA_TIMEOUT) as resp:
+            data = json.loads(read_bounded(resp).decode("utf-8"))
         return (data.get("message", {}) or {}).get("content", "").strip()
     except Exception as exc:
         return None

@@ -311,6 +311,76 @@ def _candidate_id(path: str, digest: str) -> str:
     return hashlib.sha256(identity + b"\0" + digest.encode("ascii")).hexdigest()[:32]
 
 
+def _same_path(left: str, right: str) -> bool:
+    return os.path.normcase(os.path.normpath(left)) == os.path.normcase(
+        os.path.normpath(right)
+    )
+
+
+def _validate_assessment(
+    value: object,
+    *,
+    requested_path: str = "",
+) -> ExecutableAssessment:
+    """Fail closed when a probe returns malformed or contradictory identity."""
+    if not isinstance(value, ExecutableAssessment):
+        raise BaselineIntegrityError("executable assessment type is invalid")
+    name = _bounded_text(value.name, "assessment name", 260)
+    path = _bounded_text(value.path, "assessment path", 1024)
+    if not _is_absolute_local_path(path):
+        raise BaselineIntegrityError("executable assessment path is not local")
+    if requested_path and not _same_path(path, requested_path):
+        raise BaselineIntegrityError("executable assessment changed the requested path")
+    if os.path.normcase(name) != os.path.normcase(Path(path).name):
+        raise BaselineIntegrityError("executable assessment name/path mismatch")
+    digest = _bounded_text(value.sha256, "assessment SHA-256", 64).casefold()
+    if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+        raise BaselineIntegrityError("executable assessment SHA-256 is invalid")
+    if type(value.size) is not int or not 0 < value.size <= 1024 * 1024 * 1024:
+        raise BaselineIntegrityError("executable assessment size is invalid")
+    if type(value.mtime_ns) is not int or value.mtime_ns < 0:
+        raise BaselineIntegrityError("executable assessment mtime is invalid")
+    signature_status = _bounded_text(
+        value.signature_status,
+        "assessment signature status",
+        64,
+        empty=True,
+    )
+    publisher = _bounded_text(
+        value.publisher,
+        "assessment publisher",
+        512,
+        empty=True,
+    )
+    root_class = _bounded_text(
+        value.root_class,
+        "assessment root class",
+        64,
+        empty=True,
+    )
+    if type(value.trusted_root) is not bool:
+        raise BaselineIntegrityError("executable assessment root flag is invalid")
+    if value.trusted_root and root_class not in {
+        "windows",
+        "program_files",
+        "program_files_x86",
+    }:
+        raise BaselineIntegrityError("executable assessment root class is untrusted")
+    reason = _bounded_text(value.reason, "assessment reason", 512)
+    return ExecutableAssessment(
+        name=name,
+        path=path,
+        sha256=digest,
+        size=value.size,
+        mtime_ns=value.mtime_ns,
+        signature_status=signature_status,
+        publisher=publisher,
+        root_class=root_class,
+        trusted_root=value.trusted_root,
+        reason=reason,
+    )
+
+
 def _state_event(body: dict) -> Event:
     canonical = json.dumps(
         body,
@@ -341,6 +411,14 @@ def _validate_candidate(value: object) -> dict:
     digest = _bounded_text(value["sha256"], "SHA-256", 64)
     if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
         raise BaselineIntegrityError("process-baseline SHA-256 is invalid")
+    path = _bounded_text(value["path"], "path", 1024)
+    name = _bounded_text(value["name"], "name", 260)
+    if not _is_absolute_local_path(path):
+        raise BaselineIntegrityError("process-baseline path is not local")
+    if os.path.normcase(name) != os.path.normcase(Path(path).name):
+        raise BaselineIntegrityError("process-baseline name/path mismatch")
+    if candidate_id != _candidate_id(path, digest):
+        raise BaselineIntegrityError("process-baseline candidate identity is invalid")
     days = value["days"]
     if (
         not isinstance(days, list)
@@ -355,6 +433,16 @@ def _validate_candidate(value: object) -> dict:
         or days != sorted(set(days))
     ):
         raise BaselineIntegrityError("process-baseline observation days are invalid")
+    try:
+        if any(
+            datetime.strptime(day, "%Y-%m-%d").date().isoformat() != day
+            for day in days
+        ):
+            raise ValueError
+    except ValueError as exc:
+        raise BaselineIntegrityError(
+            "process-baseline observation day is not a real date"
+        ) from exc
     observations = value["observations"]
     if type(observations) is not int or not 1 <= observations <= 1_000_000_000:
         raise BaselineIntegrityError("process-baseline observation count is invalid")
@@ -376,8 +464,8 @@ def _validate_candidate(value: object) -> dict:
         raise BaselineIntegrityError("process-baseline trusted_root is invalid")
     return {
         "id": candidate_id,
-        "name": _bounded_text(value["name"], "name", 260),
-        "path": _bounded_text(value["path"], "path", 1024),
+        "name": name,
+        "path": path,
         "sha256": digest,
         "size": size,
         "mtime_ns": mtime_ns,
@@ -505,7 +593,11 @@ class ProcessBaselineLearner:
         if enabled:
             self.start()
         else:
-            self.stop(timeout=1.0)
+            # Settings runs on the GUI thread. Disabling must therefore remain
+            # immediate even if the worker is inside an eight-second signature
+            # probe. Keep the already-created worker idle for cheap re-enable,
+            # and discard queued additive observations without processing them.
+            self._discard_pending()
 
     def start(self) -> bool:
         with self._lock:
@@ -529,6 +621,9 @@ class ProcessBaselineLearner:
         if thread is None:
             return True
         self._stop.set()
+        # Observations are advisory and additive. Shutdown must not turn a full
+        # 512-item queue into minutes of Authenticode work.
+        self._discard_pending()
         thread.join(max(0.0, float(timeout)))
         stopped = not thread.is_alive()
         if stopped:
@@ -536,6 +631,17 @@ class ProcessBaselineLearner:
                 if self._thread is thread:
                     self._thread = None
         return stopped
+
+    def _discard_pending(self) -> int:
+        discarded = 0
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+            else:
+                discarded += 1
+        return discarded
 
     def submit_event(self, event: Event) -> bool:
         """Non-blocking EventBus subscriber; all verification stays off-thread."""
@@ -566,19 +672,27 @@ class ProcessBaselineLearner:
     def _run(self) -> None:
         dirty = False
         last_write = time.monotonic()
-        while not self._stop.is_set() or not self._queue.empty():
+        while not self._stop.is_set():
             try:
                 event = self._queue.get(timeout=0.25)
             except queue.Empty:
                 event = None
+            if self._stop.is_set():
+                break
             if event is not None and self.enabled:
-                dirty = self._observe(event) or dirty
+                try:
+                    dirty = self._observe(event) or dirty
+                except Exception:
+                    # A malformed probe result or transient file race must not
+                    # kill the learner thread. It is rejected and never trusted.
+                    self._metric("rejected")
             now = time.monotonic()
             if dirty and (self._queue.empty() or now - last_write >= 1.0):
                 dirty = not self._write()
                 last_write = now
         if dirty:
             self._write()
+        self._discard_pending()
 
     def _observe(self, event: Event) -> bool:
         if self._integrity_error or not self.authority.verify(event):
@@ -608,7 +722,15 @@ class ProcessBaselineLearner:
             return False
         try:
             assessment = self._assess_cached(raw_path)
-        except (OSError, ValueError):
+        except (BaselineIntegrityError, OSError, TypeError, ValueError):
+            self._metric("rejected")
+            return False
+        # Disabling or stopping while an Authenticode probe is in flight must
+        # not let that stale observation mutate state after the operator's
+        # decision or during shutdown.
+        if self._stop.is_set() or not self.enabled:
+            return False
+        if os.path.normcase(raw_name) != os.path.normcase(assessment.name):
             self._metric("rejected")
             return False
         now = float(self._clock())
@@ -677,7 +799,10 @@ class ProcessBaselineLearner:
             if cached is not None and cached[0] == identity:
                 self._assessment_cache.move_to_end(key)
                 return cached[1]
-        assessment = self._assessor(path)
+        assessment = _validate_assessment(
+            self._assessor(path),
+            requested_path=path,
+        )
         with self._lock:
             self._assessment_cache[key] = (identity, assessment)
             self._assessment_cache.move_to_end(key)
@@ -688,6 +813,8 @@ class ProcessBaselineLearner:
     def _body(self) -> dict:
         with self._lock:
             now = float(self._clock())
+            if not math.isfinite(now) or now < 0:
+                raise ValueError("process-baseline clock is invalid")
             return {
                 "version": STATE_VERSION,
                 "updated_at": now,
@@ -709,21 +836,23 @@ class ProcessBaselineLearner:
     def _write(self) -> bool:
         if self._integrity_error:
             return False
-        body = self._body()
-        document = dict(body)
-        document["signature"] = _sign_state(body, self.authority)
-        encoded = json.dumps(
-            document,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode("utf-8")
-        if len(encoded) > MAX_STATE_BYTES:
-            self._metric("write_errors")
-            return False
         try:
+            body = self._body()
+            document = dict(body)
+            document["signature"] = _sign_state(body, self.authority)
+            encoded = json.dumps(
+                document,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+            if len(encoded) > MAX_STATE_BYTES:
+                raise BaselineIntegrityError("process-baseline state is oversized")
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            if self.path.exists() and _is_reparse(self.path):
+            if _is_reparse(self.path.parent) or (
+                self.path.exists() and _is_reparse(self.path)
+            ):
                 raise BaselineIntegrityError(
                     "process-baseline state path is a reparse point"
                 )
@@ -750,7 +879,7 @@ class ProcessBaselineLearner:
         if not self.path.exists():
             return
         try:
-            if _is_reparse(self.path):
+            if _is_reparse(self.path.parent) or _is_reparse(self.path):
                 raise BaselineIntegrityError(
                     "process-baseline state path is a reparse point"
                 )
@@ -822,10 +951,13 @@ class ProcessBaselineLearner:
             raise ValueError(
                 "Candidate is not mature and signed inside a protected install root."
             )
-        assessment = self._assessor(candidate["path"])
+        assessment = _validate_assessment(
+            self._assessor(candidate["path"]),
+            requested_path=candidate["path"],
+        )
         if (
             assessment.sha256 != candidate["sha256"]
-            or assessment.path != candidate["path"]
+            or not _same_path(assessment.path, candidate["path"])
             or not assessment.trusted_root
             or assessment.signature_status.casefold() != "valid"
         ):
@@ -869,18 +1001,29 @@ class ProcessBaselineLearner:
 
     def reset_state(self) -> None:
         """Explicitly quarantine bad/old suggestions and start a signed empty state."""
-        self.stop()
+        was_enabled = self.enabled
+        if not self.stop(timeout=10.0):
+            raise RuntimeError(
+                "Process learning is still completing a signature check; try reset again."
+            )
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if _is_reparse(self.path.parent):
+            raise BaselineIntegrityError(
+                "process-baseline state parent is a reparse point"
+            )
         if self.path.exists():
             quarantine = self.path.with_name(
-                f"{self.path.name}.quarantine.{int(self._clock())}"
+                f"{self.path.name}.quarantine.{int(self._clock())}.{uuid.uuid4().hex}"
             )
             replace_with_retry(self.path, quarantine)
-            older = sorted(
-                self.path.parent.glob(f"{self.path.name}.quarantine.*"),
-                key=lambda item: item.stat().st_mtime_ns,
-                reverse=True,
-            )
-            for item in older[3:]:
+            older = []
+            for item in self.path.parent.glob(f"{self.path.name}.quarantine.*"):
+                try:
+                    older.append((item.stat().st_mtime_ns, item))
+                except OSError:
+                    continue
+            older.sort(key=lambda item: item[0], reverse=True)
+            for _stamp, item in older[3:]:
                 try:
                     item.unlink()
                 except OSError:
@@ -893,7 +1036,7 @@ class ProcessBaselineLearner:
             self._assessment_cache.clear()
         if not self._write():
             raise OSError("Could not create authenticated process-baseline state.")
-        if self.enabled:
+        if was_enabled:
             self.start()
 
 

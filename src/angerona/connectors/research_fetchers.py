@@ -25,6 +25,8 @@ from __future__ import annotations
 import webbrowser
 from typing import Callable, Optional
 
+from angerona.core.url_policy import host_policy, read_bounded, safe_urlopen
+
 try:  # in-package; falls back to flat layout for the standalone runner
     from angerona.connectors.research import (Research, ResearchTask,
                                               _ALLOWED_HOSTS, _host_of)
@@ -80,8 +82,9 @@ class HttpFetcher:
             raise RuntimeError(f"refusing non-allow-listed host: {_host_of(url)}")
         import urllib.request  # local import: no network cost unless actually used
         req = urllib.request.Request(url, headers={"User-Agent": self.user_agent})
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # pragma: no cover
-            return resp.read().decode("utf-8", "replace")
+        policy = host_policy("research source", _ALLOWED_HOSTS)
+        with safe_urlopen(req, policy=policy, timeout=self.timeout) as resp:  # pragma: no cover
+            return read_bounded(resp, 4 * 1024 * 1024).decode("utf-8", "replace")
 
 
 # ── Wire research into the ARIA assistant (recon = read-only) ─────────────────

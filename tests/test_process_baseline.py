@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from angerona.core.process_baseline import (
     ExecutableAssessment,
     ProcessBaselineLearner,
 )
+from angerona.core import process_baseline as baseline_module
 
 
 def _assessment(path: str, *, signed: bool = True, trusted: bool = True):
@@ -312,3 +314,120 @@ def test_approval_rechecks_current_executable_bytes(tmp_path) -> None:
     assert not process_allowlist.is_allowed(
         executable.name, str(executable), data_dir=tmp_path
     )
+
+
+def test_disable_is_immediate_and_inflight_probe_cannot_mutate_state(tmp_path) -> None:
+    authority = BusAuthority(b"e" * 32)
+    executable = tmp_path / "slow.exe"
+    executable.write_bytes(b"slow")
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_assessment(path: str) -> ExecutableAssessment:
+        entered.set()
+        assert release.wait(3.0)
+        return _assessment(path)
+
+    learner = ProcessBaselineLearner(
+        tmp_path,
+        authority,
+        enabled=True,
+        assessor=slow_assessment,
+    )
+    assert learner.start()
+    assert learner.submit_event(_signed_process_event(authority, executable))
+    assert entered.wait(1.0)
+    started = time.monotonic()
+    learner.set_enabled(False)
+    assert time.monotonic() - started < 0.2
+    assert not learner.enabled
+    release.set()
+    assert learner.stop(timeout=2.0)
+    assert learner.snapshot()["candidates"] == []
+
+
+def test_stop_discards_queued_signature_work_instead_of_draining_it(tmp_path) -> None:
+    authority = BusAuthority(b"q" * 32)
+    executable = tmp_path / "queued.exe"
+    executable.write_bytes(b"queued")
+    entered = threading.Event()
+    release = threading.Event()
+    calls = [0]
+
+    def slow_assessment(path: str) -> ExecutableAssessment:
+        calls[0] += 1
+        entered.set()
+        assert release.wait(3.0)
+        return _assessment(path)
+
+    learner = ProcessBaselineLearner(
+        tmp_path,
+        authority,
+        enabled=True,
+        assessor=slow_assessment,
+        queue_size=8,
+    )
+    event = _signed_process_event(authority, executable)
+    for _ in range(6):
+        assert learner.submit_event(event)
+    assert learner.start()
+    assert entered.wait(1.0)
+    assert not learner.stop(timeout=0.02)
+    assert learner.snapshot()["queue_depth"] == 0
+    release.set()
+    assert learner.stop(timeout=2.0)
+    assert calls == [1]
+    assert learner.snapshot()["candidates"] == []
+
+
+def test_malformed_assessor_output_fails_closed_without_killing_worker(tmp_path) -> None:
+    authority = BusAuthority(b"m" * 32)
+    executable = tmp_path / "identity.exe"
+    executable.write_bytes(b"identity")
+
+    def malformed(path: str) -> ExecutableAssessment:
+        return dataclasses.replace(_assessment(path), name="different.exe")
+
+    learner = ProcessBaselineLearner(
+        tmp_path,
+        authority,
+        enabled=True,
+        assessor=malformed,
+    )
+    assert learner.start()
+    assert learner.submit_event(_signed_process_event(authority, executable))
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if learner.snapshot()["metrics"]["rejected"]:
+            break
+        time.sleep(0.01)
+    assert learner.snapshot()["metrics"]["rejected"] == 1
+    assert learner.snapshot()["candidates"] == []
+    assert learner._thread is not None and learner._thread.is_alive()
+    assert learner.stop()
+
+
+def test_authenticated_but_inconsistent_candidate_state_is_rejected(tmp_path) -> None:
+    authority = BusAuthority(b"i" * 32)
+    executable = tmp_path / "state.exe"
+    executable.write_bytes(b"state")
+    learner = ProcessBaselineLearner(
+        tmp_path,
+        authority,
+        enabled=True,
+        assessor=_assessment,
+    )
+    learner.start()
+    assert learner.submit_event(_signed_process_event(authority, executable))
+    _wait_for(learner, 1)
+    assert learner.stop()
+
+    raw = json.loads(learner.path.read_text(encoding="utf-8"))
+    raw["candidates"][0]["days"] = ["2026-99-99"]
+    body = {key: value for key, value in raw.items() if key != "signature"}
+    raw["signature"] = baseline_module._sign_state(body, authority)
+    learner.path.write_text(json.dumps(raw), encoding="utf-8")
+
+    reloaded = ProcessBaselineLearner(tmp_path, authority, assessor=_assessment)
+    assert "real date" in reloaded.snapshot()["integrity_error"]
+    assert reloaded.snapshot()["candidates"] == []

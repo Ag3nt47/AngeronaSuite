@@ -17,6 +17,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "cryptography>=42.0",
     "PyYAML>=6.0.2",
+    "defusedxml>=0.7.1",
 ]
 
 [project.optional-dependencies]

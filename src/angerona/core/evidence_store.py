@@ -351,7 +351,9 @@ class EvidenceStore:
         order = "DESC" if query.newest_first else "ASC"
         fetch_limit = min(self.candidate_limit, max(query.limit * 10, query.limit + 1))
         sql = (
-            "SELECT envelope_json FROM normalized_evidence" + where
+            "SELECT envelope_json FROM normalized_evidence" + where  # nosec B608
+            # Fields/operators above are closed allowlists; all caller-controlled
+            # values remain parameterized.
             + f" ORDER BY observed_at {order}, seq {order} LIMIT ?"
         )
         params.append(fetch_limit + 1)

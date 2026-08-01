@@ -29,6 +29,14 @@ import urllib.error
 import urllib.request
 from typing import Optional
 
+from angerona.core.url_policy import (
+    LOCAL_SERVICE_POLICY,
+    host_policy,
+    local_service_url,
+    read_bounded,
+    safe_urlopen,
+)
+
 # Env-overridable model ids (kept current-ish; the operator can override in .env).
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest")
 OPENAI_MODEL    = os.environ.get("OPENAI_MODEL", "gpt-4o")
@@ -50,8 +58,20 @@ DEFAULT_SYSTEM = (
 def _post(url: str, headers: dict, payload: dict) -> dict:
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    if url.startswith(OLLAMA_HOST + "/"):
+        policy = LOCAL_SERVICE_POLICY
+    else:
+        policy = host_policy(
+            "configured AI provider",
+            {
+                "api.anthropic.com",
+                "api.openai.com",
+                "openrouter.ai",
+                "generativelanguage.googleapis.com",
+            },
+        )
+    with safe_urlopen(req, policy=policy, timeout=_TIMEOUT) as resp:
+        return json.loads(read_bounded(resp).decode("utf-8"))
 
 
 # ── Providers ─────────────────────────────────────────────────────────────────
@@ -118,7 +138,7 @@ def _gemini(prompt: str, system: str) -> Optional[str]:
 
 def _ollama(prompt: str, system: str) -> Optional[str]:
     body = _post(
-        f"{OLLAMA_HOST}/api/chat",
+        local_service_url(OLLAMA_HOST, "/api/chat"),
         {"content-type": "application/json"},
         {"model": OLLAMA_MODEL, "stream": False, "messages": [
             {"role": "system", "content": system},

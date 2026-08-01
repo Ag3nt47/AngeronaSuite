@@ -17,6 +17,12 @@ from pathlib import Path
 from typing import Callable, Dict, List
 
 from angerona.core.eventbus import Event, EventBus, Severity
+from angerona.core.url_policy import (
+    LOCAL_SERVICE_POLICY,
+    local_service_url,
+    read_bounded,
+    safe_urlopen,
+)
 
 try:
     import psutil
@@ -1157,12 +1163,14 @@ class CommandConsole:
         payload = json.dumps({"model": model, "prompt": query, "stream": False}).encode()
         try:
             req = urllib.request.Request(
-                f"{host}/api/generate",
+                local_service_url(host, "/api/generate"),
                 data=payload,
                 headers={"Content-Type": "application/json"},
             )
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read())
+            with safe_urlopen(
+                req, policy=LOCAL_SERVICE_POLICY, timeout=30
+            ) as resp:
+                data = json.loads(read_bounded(resp))
             return data.get("response", "").strip() or "(no response)"
         except Exception as exc:
             return f"AI unavailable: {exc}"

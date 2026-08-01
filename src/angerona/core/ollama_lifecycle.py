@@ -4,6 +4,12 @@ from __future__ import annotations
 import json
 from urllib import request
 
+from angerona.core.url_policy import (
+    LOCAL_SERVICE_POLICY,
+    read_bounded,
+    safe_urlopen,
+)
+
 
 def _json_request(url: str, payload: dict | None, timeout: float) -> dict:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -13,8 +19,8 @@ def _json_request(url: str, payload: dict | None, timeout: float) -> dict:
         headers={"Content-Type": "application/json"} if data is not None else {},
         method="POST" if data is not None else "GET",
     )
-    with request.urlopen(req, timeout=timeout) as response:
-        raw = response.read()
+    with safe_urlopen(req, policy=LOCAL_SERVICE_POLICY, timeout=timeout) as response:
+        raw = read_bounded(response)
     return json.loads(raw.decode("utf-8")) if raw else {}
 
 

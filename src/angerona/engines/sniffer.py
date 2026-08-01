@@ -54,7 +54,8 @@ def start_dpi_worker():
     threading.Thread(target=asynchronous_dpi_worker, daemon=True).start()
 
 def get_geo_location(ip_address):
-    if ip_address in ["127.0.0.1", "0.0.0.0"] or ip_address.startswith("192.168.") or ip_address.startswith("10."):
+    # Address classification only; this function never binds a socket.
+    if ip_address in ["127.0.0.1", "0.0.0.0"] or ip_address.startswith("192.168.") or ip_address.startswith("10."):  # nosec B104
         return "Local Network"
 
     if ip_address in geo_cache:
@@ -83,7 +84,8 @@ def packet_callback(packet):
         dst_ip = packet[IP].dst
         
         remote_ip = dst_ip if src_ip.startswith("192.168.") or src_ip in ["127.0.0.1"] else src_ip
-        if remote_ip not in ["127.0.0.1", "0.0.0.0"]:
+        # Address comparison only; no socket bind occurs here.
+        if remote_ip not in ["127.0.0.1", "0.0.0.0"]:  # nosec B104
             unique_ips.add(remote_ip)
             
         if packet.haslayer(TCP):

@@ -22,6 +22,13 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import Callable, Optional
 
+from angerona.core.url_policy import (
+    PUBLIC_HTTPS_POLICY,
+    read_bounded,
+    safe_urlopen,
+    validate_url,
+)
+
 
 class Level(IntEnum):
     INFO = 0
@@ -75,8 +82,8 @@ class PushResult:
 def _default_transport(url: str, data: bytes, headers: dict) -> "tuple[int, str]":  # pragma: no cover
     import urllib.request
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return resp.status, resp.read().decode("utf-8", "replace")
+    with safe_urlopen(req, policy=PUBLIC_HTTPS_POLICY, timeout=10) as resp:
+        return resp.status, read_bounded(resp, 1024 * 1024).decode("utf-8", "replace")
 
 
 class ChannelPush:
@@ -94,11 +101,15 @@ class ChannelPush:
 
     def __init__(self, *, enabled: bool = False, min_level: Level = Level.INFO,
                  targets: Optional[list] = None,
-                 transport: Optional[Transport] = None) -> None:
+                 transport: Optional[Transport] = None,
+                 url_validator: Optional[Callable[[str], object]] = None) -> None:
         self.enabled = enabled
         self.min_level = Level.parse(min_level)
         self.targets: list[Target] = [self._coerce(t) for t in (targets or [])]
         self._transport = transport or _default_transport
+        self._url_validator = url_validator or (
+            lambda value: validate_url(value, PUBLIC_HTTPS_POLICY)
+        )
 
     @staticmethod
     def _coerce(t) -> Target:
@@ -137,6 +148,9 @@ class ChannelPush:
         for t in self.targets:
             data, headers = self._payload(t.kind, safe, lvl)
             try:
+                # Validate before even an injected transport sees the target.
+                # This keeps a custom connector from becoming an SSRF path.
+                self._url_validator(t.url)
                 status, _body = self._transport(t.url, data, headers)
                 results.append(PushResult(t.name or t.url, ok=200 <= status < 300, status=status))
             except Exception as exc:
@@ -177,6 +191,7 @@ class ChannelPush:
 
             # 2 ── enabled slack target → JSON {"text": …} posted once
             cp = ChannelPush(enabled=True, transport=fake,
+                             url_validator=lambda _url: True,
                              targets=[Target("slack", "https://hooks.slack/x", "soc")])
             r = cp.push("LSASS access", "CRITICAL")
             assert len(sent) == 1 and r[0].ok and r[0].status == 200, "slack push ok"
@@ -188,6 +203,7 @@ class ChannelPush:
             # 3 ── ntfy target → plain-text body + urgent priority on CRITICAL
             sent.clear()
             n = ChannelPush(enabled=True, transport=fake,
+                            url_validator=lambda _url: True,
                             targets=[Target("ntfy", "https://ntfy.sh/crits")])
             n.push("beacon storm", "CRITICAL")
             _u, ndata, nhead = sent[0]

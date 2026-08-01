@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout,
 )
 
+from angerona.core.url_policy import LOCAL_SERVICE_POLICY, read_bounded, safe_urlopen
+
 try:
     import psutil
 except Exception:   # pragma: no cover
@@ -461,8 +463,8 @@ class TopTalkersDialog(QDialog):
                                "prompt": prompt, "stream": False}).encode()
             req = urllib.request.Request("http://127.0.0.1:11434/api/generate", data=body,
                                          headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=20) as r:
-                data = json.loads(r.read().decode("utf-8", "ignore"))
+            with safe_urlopen(req, policy=LOCAL_SERVICE_POLICY, timeout=20) as r:
+                data = json.loads(read_bounded(r).decode("utf-8", "ignore"))
             return data.get("response", "").strip() or "(no response from local AI)"
         except Exception as exc:
             return (f"Local AI (Ollama) unavailable: {exc}\n\n"

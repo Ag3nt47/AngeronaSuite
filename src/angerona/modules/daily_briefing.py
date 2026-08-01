@@ -24,6 +24,12 @@ from collections import Counter
 from pathlib import Path
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.url_policy import (
+    LOCAL_SERVICE_POLICY,
+    local_service_url,
+    read_bounded,
+    safe_urlopen,
+)
 
 _SYSTEM_PROMPT = (
     "You are a SOC analyst writing a short daily security briefing for a single "
@@ -176,11 +182,11 @@ class DailyBriefingModule(BaseModule):
             "keep_alive": "30m",
         }).encode("utf-8")
         req = urllib.request.Request(
-            f"{self._host}/api/chat", data=payload,
+            local_service_url(self._host, "/api/chat"), data=payload,
             headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=90) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            with safe_urlopen(req, policy=LOCAL_SERVICE_POLICY, timeout=90) as resp:
+                data = json.loads(read_bounded(resp).decode("utf-8"))
             return ((data.get("message", {}) or {}).get("content", "") or "").strip() or None
         except Exception as exc:
             self.last_error = str(exc)

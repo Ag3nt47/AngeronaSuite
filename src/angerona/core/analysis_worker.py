@@ -34,6 +34,13 @@ from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QSizePolicy,
 )
 
+from angerona.core.url_policy import (
+    LOCAL_SERVICE_POLICY,
+    local_service_url,
+    read_bounded,
+    safe_urlopen,
+)
+
 
 # ── Tuning ────────────────────────────────────────────────────────────────────
 OLLAMA_HOST          = "http://localhost:11434"
@@ -263,11 +270,13 @@ class AnalysisWorker(QThread):
             "keep_alive": "30m",
         }).encode("utf-8")
         req = urllib.request.Request(
-            f"{OLLAMA_HOST}/api/chat", data=payload,
+            local_service_url(OLLAMA_HOST, "/api/chat"), data=payload,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=LOCAL_TIMEOUT_S) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        with safe_urlopen(
+            req, policy=LOCAL_SERVICE_POLICY, timeout=LOCAL_TIMEOUT_S
+        ) as resp:
+            data = json.loads(read_bounded(resp).decode("utf-8"))
         content = (data.get("message", {}) or {}).get("content", "")
         parsed = _extract_json(content)
         if parsed is None:

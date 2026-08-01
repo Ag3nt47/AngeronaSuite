@@ -14,6 +14,13 @@ from __future__ import annotations
 
 import re
 
+from angerona.core.url_policy import (
+    LOCAL_SERVICE_POLICY,
+    local_service_url,
+    read_bounded,
+    safe_urlopen,
+)
+
 _INTENTS = [
     ("top_threats", re.compile(r"\b(top|biggest|worst|main)\b.*\b(threat|risk|entit|process)|what.?s (critical|dangerous|bad)|whats bad", re.I)),
     ("why_critical", re.compile(r"\bwhy\b.*\b(critical|high|threat|bad|flagged|score)", re.I)),
@@ -147,10 +154,10 @@ def _ask_ollama(question: str, snap: dict) -> str | None:
              "provided Angerona state. Be concise. If the data doesn't answer it, say so."},
             {"role": "user", "content": f"State: {facts}\n\nQuestion: {question}"}]}).encode()
     try:
-        req = urllib.request.Request(f"{host}/api/chat", data=payload,
+        req = urllib.request.Request(local_service_url(host, "/api/chat"), data=payload,
                                      headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
+        with safe_urlopen(req, policy=LOCAL_SERVICE_POLICY, timeout=30) as resp:
+            data = json.loads(read_bounded(resp).decode())
         return ((data.get("message", {}) or {}).get("content", "") or "").strip() or None
     except Exception:
         return None

@@ -30,7 +30,6 @@ import json
 import os
 import platform
 import re
-import socket
 import subprocess
 import sys
 import threading
@@ -43,6 +42,12 @@ except Exception:  # pragma: no cover
     psutil = None
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.url_policy import (
+    PUBLIC_HTTPS_POLICY,
+    host_policy,
+    read_bounded,
+    safe_urlopen,
+)
 
 _KEV_URL = ("https://www.cisa.gov/sites/default/files/feeds/"
             "known_exploited_vulnerabilities.json")
@@ -178,20 +183,13 @@ class IntelSyncModule(BaseModule):
     def health_pct(self) -> int:
         return self.health
 
-    @staticmethod
-    def _online() -> bool:
-        try:
-            with socket.create_connection(("1.1.1.1", 443), timeout=3):
-                return True
-        except Exception:
-            return False
-
     def _fetch_kev(self) -> list[dict]:
         """Inbound-only GET of the public KEV catalog (no host data sent)."""
         import urllib.request
         req = urllib.request.Request(_KEV_URL, headers={"User-Agent": "AngeronaSuite/INTL"})
-        with urllib.request.urlopen(req, timeout=30) as r:   # nosec - public gov feed
-            data = json.loads(r.read().decode("utf-8", "ignore"))
+        policy = host_policy("CISA KEV catalog", {"www.cisa.gov"})
+        with safe_urlopen(req, policy=policy, timeout=30) as r:
+            data = json.loads(read_bounded(r, 16 * 1024 * 1024).decode("utf-8", "ignore"))
         return data.get("vulnerabilities", []) if isinstance(data, dict) else []
 
     @staticmethod
@@ -281,8 +279,10 @@ class IntelSyncModule(BaseModule):
         try:
             import urllib.request
             req = urllib.request.Request(feed, headers={"User-Agent": "AngeronaSuite/INTL-IOC"})
-            with urllib.request.urlopen(req, timeout=20) as r:   # nosec - operator-configured feed
-                payload = json.loads(r.read().decode("utf-8", "ignore"))
+            with safe_urlopen(req, policy=PUBLIC_HTTPS_POLICY, timeout=20) as r:
+                payload = json.loads(
+                    read_bounded(r, 16 * 1024 * 1024).decode("utf-8", "ignore")
+                )
             ips, hashes = _parse_iocs(payload)
             with _IOC_LOCK:
                 _IOC_IPS.update(ips)
@@ -328,11 +328,6 @@ class IntelSyncModule(BaseModule):
     def run(self) -> None:
         self.emit("INTL online - will correlate CISA KEV against this host.", Severity.INFO)
         while not self.stopping:
-            if not self._online():
-                self.set_health(70, "offline - using last cached KEV correlation")
-                self.sleep(120)
-                continue
-
             _done = threading.Event()
             _result: dict = {}
 

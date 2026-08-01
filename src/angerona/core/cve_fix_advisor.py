@@ -32,6 +32,13 @@ import time
 import urllib.request
 from pathlib import Path
 
+from angerona.core.url_policy import (
+    LOCAL_SERVICE_POLICY,
+    local_service_url,
+    read_bounded,
+    safe_urlopen,
+)
+
 try:
     import psutil
 except Exception:  # pragma: no cover
@@ -84,8 +91,8 @@ def system_info() -> dict:
 
 def ollama_available() -> bool:
     try:
-        req = urllib.request.Request(f"{_HOST}/api/tags")
-        with urllib.request.urlopen(req, timeout=4) as r:
+        req = urllib.request.Request(local_service_url(_HOST, "/api/tags"))
+        with safe_urlopen(req, policy=LOCAL_SERVICE_POLICY, timeout=4) as r:
             return r.status == 200
     except Exception:
         return False
@@ -282,11 +289,13 @@ def analyze(cve_rec: dict, timeout: float = 90.0) -> dict:
         "keep_alive": "30m",
         "options": {"temperature": 0},
     }).encode("utf-8")
-    req = urllib.request.Request(f"{_HOST}/api/chat", data=payload,
+    req = urllib.request.Request(local_service_url(_HOST, "/api/chat"), data=payload,
                                  headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        with safe_urlopen(
+            req, policy=LOCAL_SERVICE_POLICY, timeout=timeout
+        ) as resp:
+            data = json.loads(read_bounded(resp).decode("utf-8"))
         content = (data.get("message", {}) or {}).get("content", "")
         return _normalize(cve, _extract_json(content))
     except Exception as exc:

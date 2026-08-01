@@ -7,9 +7,14 @@ replace the running binary (that's a deliberate, user-initiated action).
 from __future__ import annotations
 
 import json
+import re
 import urllib.request
 
 from angerona import __version__
+from angerona.core.url_policy import host_policy, read_bounded, safe_urlopen
+
+_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
+_GITHUB_POLICY = host_policy("GitHub release API", {"api.github.com"})
 
 
 def _norm(tag: str) -> tuple:
@@ -23,14 +28,15 @@ def _norm(tag: str) -> tuple:
 
 def check_for_updates(repo: str) -> str:
     """Return a human-readable status string for the Settings page."""
-    if not repo or "/" not in repo or repo.startswith("your-user/"):
+    repo = str(repo or "").strip()
+    if not _REPOSITORY.fullmatch(repo) or repo.startswith("your-user/"):
         return "Set your GitHub repo (user/name) in Settings first."
     url = f"https://api.github.com/repos/{repo}/releases/latest"
     try:
         req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
                                                    "User-Agent": "Angerona-Updater"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        with safe_urlopen(req, policy=_GITHUB_POLICY, timeout=15) as resp:
+            data = json.loads(read_bounded(resp, 2 * 1024 * 1024).decode("utf-8"))
     except Exception as exc:
         return f"Update check failed: {exc}"
 

@@ -21,8 +21,10 @@ Dependencies (optional Windows-only):
 from __future__ import annotations
 
 import time
-import xml.etree.ElementTree as ET
 from typing import Optional
+
+from defusedxml import ElementTree as ET
+from defusedxml.common import DefusedXmlException
 
 from angerona.core.module_base import BaseModule, Severity
 
@@ -36,6 +38,7 @@ _EID_MAP: dict[int, tuple[str, list[str], Severity]] = {
     10: ("ProcessAccess",            ["T1003.001", "T1055"],      Severity.CRITICAL),
     25: ("ProcessTampering",         ["T1055.012"],               Severity.CRITICAL),
 }
+_MAX_EVENT_XML_CHARS = 1024 * 1024
 
 # win32evtlog constants (defined here so the module loads on non-Windows too)
 _EVTLOG_SEQ_FWD = 0x0001 | 0x0004   # EVENTLOG_SEQUENTIAL_READ | EVENTLOG_FORWARDS_READ
@@ -301,14 +304,22 @@ class SysmonListenerModule(BaseModule):
         except Exception:
             pass
 
-        if xml_str:
+        if xml_str and len(xml_str) <= _MAX_EVENT_XML_CHARS:
             try:
                 root = ET.fromstring(xml_str)
                 msg     = _build_message(eid, root)
                 details = _build_details(eid, root, label, tags)
-            except ET.ParseError:
+            except (ET.ParseError, DefusedXmlException):
                 msg     = f"Sysmon EID {eid}: {label} (XML parse error)"
                 details = {"eid": eid, "label": label, "mitre_tags": tags}
+        elif xml_str and len(xml_str) > _MAX_EVENT_XML_CHARS:
+            msg = f"Sysmon EID {eid}: {label} (XML payload exceeded safety bound)"
+            details = {
+                "eid": eid,
+                "label": label,
+                "mitre_tags": tags,
+                "xml_status": "oversized",
+            }
         else:
             msg     = f"Sysmon EID {eid}: {label}"
             details = {"eid": eid, "label": label, "mitre_tags": tags}

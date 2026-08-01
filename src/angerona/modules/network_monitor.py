@@ -61,7 +61,8 @@ _STATE_MAX = 10_000
 def _is_local(ip: str) -> bool:
     if not ip:
         return True
-    if ip in ("127.0.0.1", "::1", "0.0.0.0"):
+    # Address classification only; this module does not bind here.
+    if ip in ("127.0.0.1", "::1", "0.0.0.0"):  # nosec B104
         return True
     if ip.startswith(("10.", "192.168.", "169.254.", "fe80", "fc", "fd", "::")):
         return True

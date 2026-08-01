@@ -34,6 +34,13 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget,
 )
 
+from angerona.core.url_policy import (
+    LOCAL_SERVICE_POLICY,
+    local_service_url,
+    read_bounded,
+    safe_urlopen,
+)
+
 from angerona.core.attack_tracker import (
     TACTIC_ORDER, THREAT_ACTOR_PLAYBOOKS, _TACTIC_TO_TECHNIQUES, _TID_TO_META,
     get_tracker,
@@ -542,10 +549,10 @@ class AttackHeatmapWindow(QDialog):
                  "summarise this host's MITRE ATT&CK activity and what to watch. No markdown headers."},
                 {"role": "user", "content": facts}]}).encode()
         try:
-            req = urllib.request.Request(f"{host}/api/chat", data=payload,
+            req = urllib.request.Request(local_service_url(host, "/api/chat"), data=payload,
                                          headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode())
+            with safe_urlopen(req, policy=LOCAL_SERVICE_POLICY, timeout=30) as resp:
+                data = json.loads(read_bounded(resp).decode())
             return ((data.get("message", {}) or {}).get("content", "") or "").strip() or None
         except Exception:
             return None
