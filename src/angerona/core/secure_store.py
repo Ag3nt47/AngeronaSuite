@@ -28,6 +28,11 @@ _FILENAME = "secrets.dpapi"
 _MACOS_REFERENCE_FILENAME = "secrets.keychain-reference"
 _MACOS_KEYCHAIN_SERVICE = "org.angerona.security-suite"
 _MACOS_KEYCHAIN_ACCOUNT = "runtime-secrets-v1"
+_INTERNAL_SECRET_PREFIX = "ANGERONA_INTERNAL_"
+
+
+def _publishable_secret(key: str) -> bool:
+    return not key.startswith(_INTERNAL_SECRET_PREFIX)
 
 
 def secure_store_path(data_root: Path | None = None) -> Path:
@@ -146,7 +151,10 @@ def write_secret_map(updates: Mapping[str, object], data_root: Path | None = Non
                 "macOS Keychain verification failed; credentials were not accepted"
             )
         for key, value in values.items():
-            os.environ[key] = value
+            if _publishable_secret(key):
+                os.environ[key] = value
+            else:
+                os.environ.pop(key, None)
         for key in removed:
             os.environ.pop(key, None)
         # Kept as a stable API return value; no secret is written at this path.
@@ -205,7 +213,10 @@ def write_secret_map(updates: Mapping[str, object], data_root: Path | None = Non
         except OSError:
             pass
     for key, value in values.items():
-        os.environ[key] = value
+        if _publishable_secret(key):
+            os.environ[key] = value
+        else:
+            os.environ.pop(key, None)
     for key in removed:
         os.environ.pop(key, None)
     return path
@@ -230,7 +241,10 @@ def parse_env(path: Path) -> dict[str, str]:
 
 def load_into_environment(data_root: Path | None = None) -> None:
     for key, value in read_secret_map(data_root).items():
-        os.environ.setdefault(key, value)
+        if _publishable_secret(key):
+            os.environ.setdefault(key, value)
+        else:
+            os.environ.pop(key, None)
 
 
 def migrate_legacy_env(paths: list[Path], data_root: Path | None = None) -> list[Path]:

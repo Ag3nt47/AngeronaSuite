@@ -4,15 +4,18 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import re
 import threading
 import time
 from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from enum import Enum
-from typing import Any, Mapping, Sequence
+from types import MappingProxyType
+from typing import Any, Callable, Mapping, Sequence
 
 MAX_ROLES = 128
+MAX_PRINCIPALS = 5000
 MAX_BINDINGS = 5000
 MAX_PERMISSIONS = 256
 MAX_RECEIPTS = 10_000
@@ -34,6 +37,13 @@ class Principal:
     def __post_init__(self) -> None:
         if not _IDENTIFIER.fullmatch(self.principal_id):
             raise ValueError("invalid principal ID")
+        if (
+            isinstance(self.expires_at, bool)
+            or not isinstance(self.expires_at, (int, float))
+            or not math.isfinite(float(self.expires_at))
+            or self.expires_at < 0
+        ):
+            raise ValueError("principal expiry must be finite and non-negative")
         if self.kind is PrincipalKind.SERVICE and self.expires_at <= 0:
             raise ValueError("service accounts require explicit expiry")
 
@@ -68,6 +78,13 @@ class RoleBinding:
         )):
             raise ValueError("invalid binding identity or scope")
         _validate_scope(self.scope)
+        if (
+            isinstance(self.expires_at, bool)
+            or not isinstance(self.expires_at, (int, float))
+            or not math.isfinite(float(self.expires_at))
+            or self.expires_at < 0
+        ):
+            raise ValueError("binding expiry must be finite and non-negative")
 
 
 @dataclass(frozen=True)
@@ -102,6 +119,7 @@ class AuthorizationDecision:
     matched_roles: tuple[str, ...]
     principal_kind: str
     decided_at: float
+    valid_until: float
     policy_hash: str
     receipt_hmac: str
 
@@ -257,13 +275,20 @@ class AuthorizationPolicy:
         audit_key: bytes,
         *,
         duty_constraints: Sequence[frozenset[str]] = DEFAULT_DUTY_CONSTRAINTS,
+        audit_sink: Callable[[AuthorizationDecision], Any] | None = None,
     ) -> None:
         if len(audit_key) < 32:
             raise ValueError("audit key must be at least 32 bytes")
-        if len(roles) > MAX_ROLES or len(bindings) > MAX_BINDINGS:
+        if (
+            len(principals) > MAX_PRINCIPALS
+            or len(roles) > MAX_ROLES
+            or len(bindings) > MAX_BINDINGS
+        ):
             raise ValueError("authorization policy bound exceeded")
-        self.principals = {item.principal_id: item for item in principals}
-        self.roles = {item.role_id: item for item in roles}
+        principal_map = {item.principal_id: item for item in principals}
+        role_map = {item.role_id: item for item in roles}
+        self.principals: Mapping[str, Principal] = MappingProxyType(principal_map)
+        self.roles: Mapping[str, Role] = MappingProxyType(role_map)
         self.bindings = tuple(bindings)
         self.duty_constraints = tuple(
             sorted(
@@ -272,6 +297,7 @@ class AuthorizationPolicy:
             )
         )
         self._key = bytes(audit_key)
+        self._audit_sink = audit_sink
         self._receipt_lock = threading.RLock()
         self._receipts: OrderedDict[str, tuple[str, AuthorizationDecision]] = OrderedDict()
         if len(self.principals) != len(principals) or len(self.roles) != len(roles):
@@ -326,30 +352,40 @@ class AuthorizationPolicy:
             "resource_id": request.resource_id,
         }
         request_digest = hashlib.sha256(_canonical(request_core)).hexdigest()
+        stamp = time.time() if now is None else float(now)
+        if not math.isfinite(stamp) or stamp < 0:
+            raise ValueError("authorization time must be finite and non-negative")
         with self._receipt_lock:
             existing = self._receipts.get(request.request_id)
             if existing:
                 if existing[0] != request_digest:
                     raise ValueError("request ID is already bound to another operation")
-                self._receipts.move_to_end(request.request_id)
-                return existing[1]
-        stamp = time.time() if now is None else float(now)
+                decision = existing[1]
+                if not decision.valid_until or stamp < decision.valid_until:
+                    self._receipts.move_to_end(request.request_id)
+                    return decision
+                # A signed decision remains historical evidence, but it is no
+                # longer fresh execution authority once its principal/binding
+                # validity window closes. Re-evaluate the same bound request.
+                del self._receipts[request.request_id]
         principal = self.principals.get(request.principal_id)
         allowed = False
         reason = "principal not found"
         roles: list[Role] = []
+        valid_until = 0.0
         if principal is not None:
             if not principal.enabled:
                 reason = "principal disabled"
             elif principal.expires_at and principal.expires_at <= stamp:
                 reason = "principal expired"
             else:
-                role_ids = sorted({
-                    binding.role_id for binding in self.bindings
+                active_bindings = tuple(
+                    binding for binding in self.bindings
                     if binding.principal_id == principal.principal_id
                     and (not binding.expires_at or binding.expires_at > stamp)
                     and _scope_contains(binding.scope, request.scope)
-                })
+                )
+                role_ids = sorted({binding.role_id for binding in active_bindings})
                 roles = [self.roles[role_id] for role_id in role_ids]
                 denied = any(
                     _matches_permission(rule, request.permission)
@@ -365,14 +401,26 @@ class AuthorizationPolicy:
                     allowed, reason = True, "role permission matched"
                 else:
                     reason = "no matching role permission"
+                expiries = [
+                    float(value) for value in (
+                        principal.expires_at,
+                        *(binding.expires_at for binding in active_bindings),
+                    ) if value
+                ]
+                valid_until = min(expiries, default=0.0)
         core = {
             **request_core, "request_digest": request_digest, "allowed": allowed,
             "reason": reason, "matched_roles": tuple(role.role_id for role in roles),
             "principal_kind": principal.kind.value if principal else "unknown",
-            "decided_at": stamp, "policy_hash": self.policy_hash,
+            "decided_at": stamp, "valid_until": valid_until,
+            "policy_hash": self.policy_hash,
         }
         signature = hmac.new(self._key, _canonical(core), hashlib.sha256).hexdigest()
         decision = AuthorizationDecision(**core, receipt_hmac=signature)
+        if self._audit_sink is not None:
+            # Authorization is not complete until its configured durable audit
+            # boundary accepts the decision. Sink failure therefore fails closed.
+            self._audit_sink(decision)
         with self._receipt_lock:
             # Recheck under the lock in case two callers raced on one request ID.
             existing = self._receipts.get(request.request_id)

@@ -32,17 +32,18 @@ def test_loopback_service_auth_replay_tenant_and_lifecycle(tmp_path):
     device = {
         "device_id": "device-a", "public_key": "key-device-a",
         "hostname_token": "tok_device-a", "platform": "windows",
-        "version": "1.0", "group_id": "default", "state": "active",
-        "last_seen": 1,
+        "version": "1.0", "group_id": "default",
     }
     assert json.load(request(base, "POST", key, path, device))["ok"]
-    listing = json.load(request(base, "GET", key, "/v1/tenants/tenant-a"))
+    listing = json.load(request(
+        base, "GET", key, "/v1/tenants/tenant-a/devices"
+    ))
     assert listing["items"][0]["device_id"] == "device-a"
 
     nonce = "fixed-nonce-token-1234567890"
     stamp = 1000
     service.auth._clock = lambda: stamp
-    signed_path = "/v1/tenants/tenant-a"
+    signed_path = "/v1/tenants/tenant-a/devices"
     assert json.load(request(
         base, "GET", key, signed_path, timestamp=stamp, nonce=nonce
     ))["ok"]
@@ -62,8 +63,10 @@ def test_service_refuses_non_loopback_and_bad_signature(tmp_path):
     )
     port = service.start()
     request_obj = urllib.request.Request(
-        f"http://127.0.0.1:{port}/v1/tenants/tenant-a",
-        headers=sign_request(b"x" * 32, "GET", "/v1/tenants/tenant-a"),
+        f"http://127.0.0.1:{port}/v1/tenants/tenant-a/devices",
+        headers=sign_request(
+            b"x" * 32, "GET", "/v1/tenants/tenant-a/devices"
+        ),
     )
     with pytest.raises(urllib.error.HTTPError) as denied:
         urllib.request.urlopen(request_obj, timeout=3)
@@ -80,8 +83,8 @@ def test_query_parameters_are_covered_by_request_signature(tmp_path):
     )
     port = service.start()
     base = f"http://127.0.0.1:{port}"
-    signed = "/v1/tenants/tenant-a?resource=devices"
-    tampered = "/v1/tenants/tenant-a?resource=events"
+    signed = "/v1/tenants/tenant-a/devices?view=summary"
+    tampered = "/v1/tenants/tenant-a/devices?view=events"
     request_obj = urllib.request.Request(
         base + tampered, headers=sign_request(key, "GET", signed),
     )

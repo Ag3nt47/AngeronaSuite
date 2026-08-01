@@ -7,21 +7,31 @@ import json
 import math
 import os
 import re
+import tempfile
+import threading
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from angerona.core.atomic_io import replace_with_retry
 from angerona.core.data_governance import DataClass, EgressPolicy
 from angerona.core.privacy import redact_text
 
 MAX_INPUT_RECORDS = 100_000
+MAX_INPUT_BYTES = 64 * 1024 * 1024
 MAX_EXPORT_RECORDS = 10_000
 MAX_EVENT_BYTES = 64 * 1024
 MAX_EXPORT_BYTES = 64 * 1024 * 1024
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,159}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _OUTCOMES = {"success", "failure", "denied", "error", "unknown"}
+_PRIVACY_KEY_VALUE = re.compile(
+    r"(?i)\b(username|user|account|email|path|password|passwd|pwd|secret|token|"
+    r"api[-_ ]?key|authorization)\b\s*[:=]\s*.+"
+)
+_TARGET_LOCKS_GUARD = threading.Lock()
+_TARGET_LOCKS: dict[str, tuple[threading.Lock, int]] = {}
 
 
 def _canonical(value: Any) -> bytes:
@@ -31,17 +41,72 @@ def _canonical(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def _privacy_safe_key(key: object) -> str:
+    if not isinstance(key, str):
+        raise TypeError("audit detail mapping keys must be strings")
+    if "\x00" in key:
+        raise ValueError("audit detail mapping key contains a null byte")
+    normalized = redact_text(key, limit=128).strip()
+    normalized = _PRIVACY_KEY_VALUE.sub(
+        lambda match: f"{match.group(1).casefold()}=[REDACTED]",
+        normalized,
+    )
+    return normalized or "[REDACTED_KEY]"
+
+
+def _privacy_safe_keys(value: Any) -> Any:
+    """Normalize privacy-bearing keys without silently overwriting records."""
+    if isinstance(value, Mapping):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = _privacy_safe_key(key)
+            if normalized in out:
+                raise ValueError("audit detail mapping key normalization collision")
+            out[normalized] = _privacy_safe_keys(item)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [_privacy_safe_keys(item) for item in value]
+    return value
+
+
 def _redact_values(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return {
-            str(key)[:128]: _redact_values(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = _privacy_safe_key(key)
+            if normalized in out:
+                raise ValueError("audit detail mapping key normalization collision")
+            out[normalized] = _redact_values(item)
+        return out
+    if isinstance(value, (list, tuple)):
         return [_redact_values(item) for item in value]
     if isinstance(value, str):
         return redact_text(value, limit=8_192)
     return value
+
+
+def _target_lock_key(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+@contextmanager
+def _hold_target_lock(path: Path) -> Iterator[None]:
+    """Serialize writers to one target while bounding the process lock registry."""
+    key = _target_lock_key(path)
+    with _TARGET_LOCKS_GUARD:
+        lock, users = _TARGET_LOCKS.get(key, (threading.Lock(), 0))
+        _TARGET_LOCKS[key] = (lock, users + 1)
+    lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
+        with _TARGET_LOCKS_GUARD:
+            current_lock, users = _TARGET_LOCKS[key]
+            if current_lock is lock and users == 1:
+                del _TARGET_LOCKS[key]
+            else:
+                _TARGET_LOCKS[key] = (current_lock, users - 1)
 
 
 @dataclass(frozen=True)
@@ -168,18 +233,23 @@ class AuditExporter:
         events: Iterable[AuditEvent],
         request: AuditExportRequest,
     ) -> SignedAuditExport:
-        events = tuple(events)
-        if len(events) > MAX_INPUT_RECORDS:
-            raise ValueError("audit export input exceeds 100000 records")
-        matching = sorted(
-            (
-                event for event in events
-                if event.tenant_id == request.tenant_id
+        matching: list[AuditEvent] = []
+        input_bytes = 0
+        for index, event in enumerate(events):
+            if index >= MAX_INPUT_RECORDS:
+                raise ValueError("audit export input exceeds 100000 records")
+            if not isinstance(event, AuditEvent):
+                raise TypeError("audit export input must contain AuditEvent records")
+            input_bytes += len(_canonical(asdict(event)))
+            if input_bytes > MAX_INPUT_BYTES:
+                raise ValueError("audit export input exceeds 64 MiB")
+            if (
+                event.tenant_id == request.tenant_id
                 and event.scope in request.scopes
                 and request.start_time <= event.timestamp <= request.end_time
-            ),
-            key=lambda item: (item.timestamp, item.record_id),
-        )
+            ):
+                matching.append(event)
+        matching.sort(key=lambda item: (item.timestamp, item.record_id))
         if len({event.record_id for event in matching}) != len(matching):
             raise ValueError("audit export contains duplicate record IDs")
         truncated = len(matching) > request.max_records
@@ -187,8 +257,9 @@ class AuditExporter:
         records: list[ExportedAuditRecord] = []
         previous = "0" * 64
         for event in selected:
+            safe_details = _privacy_safe_keys(event.details)
             preview = self._policy.preview(
-                event.details,
+                safe_details,
                 purpose="audit export",
                 destination="operator-reviewed local file",
                 salt=self._salt,
@@ -285,16 +356,29 @@ def write_audit_export(path: Path, export: SignedAuditExport) -> None:
     if len(encoded) > MAX_EXPORT_BYTES:
         raise ValueError("audit export exceeds 64 MiB")
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
-    try:
-        with open(temporary, "xb") as stream:
-            stream.write(encoded)
-            stream.flush()
-            os.fsync(stream.fileno())
-        replace_with_retry(temporary, path)
-    finally:
+    with _hold_target_lock(path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = -1
+        temporary: Path | None = None
         try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                dir=path.parent,
+            )
+            temporary = Path(temporary_name)
+            stream = os.fdopen(descriptor, "wb")
+            descriptor = -1
+            with stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            replace_with_retry(temporary, path)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if temporary is not None:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass

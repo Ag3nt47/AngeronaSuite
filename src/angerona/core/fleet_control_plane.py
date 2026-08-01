@@ -6,6 +6,7 @@ binding its device identity to exactly one tenant.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -24,7 +25,8 @@ _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 MAX_EVENT_BYTES = 256 * 1024
 MAX_INGEST_BATCH = 256
 MAX_INGEST_BATCH_BYTES = 4 * 1024 * 1024
-MAX_QUERY_LIMIT = 5000
+MAX_QUERY_PAGE_EVENTS = 500
+MAX_QUERY_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_EVENT_DEPTH = 32
 MAX_EVENT_NODES = 20_000
 MAX_EVENT_CONTAINER_ITEMS = 4096
@@ -248,6 +250,14 @@ class IngestReceipt:
 
 
 @dataclass(frozen=True)
+class FleetEventPage:
+    items: tuple[Mapping[str, Any], ...]
+    next_cursor: str
+    truncated: bool
+    encoded_bytes: int
+
+
+@dataclass(frozen=True)
 class _PreparedEvent:
     device_id: str
     event_id: str
@@ -294,12 +304,14 @@ class FleetControlPlane:
           public_key TEXT NOT NULL, hostname_token TEXT NOT NULL,
           platform TEXT NOT NULL, version TEXT NOT NULL, group_id TEXT NOT NULL,
           state TEXT NOT NULL, last_seen REAL NOT NULL,
+          record_hmac TEXT NOT NULL DEFAULT '',
           PRIMARY KEY(tenant_id, device_id));
         CREATE TABLE IF NOT EXISTS fleet_events(
           tenant_id TEXT NOT NULL, event_id TEXT NOT NULL, device_id TEXT NOT NULL,
           observed_at REAL NOT NULL, received_at REAL NOT NULL,
           clock_quality TEXT NOT NULL, clock_skew_seconds REAL NOT NULL,
           event_hash TEXT NOT NULL, body_json TEXT NOT NULL,
+          record_hmac TEXT NOT NULL DEFAULT '',
           PRIMARY KEY(tenant_id, event_id),
           FOREIGN KEY(tenant_id,device_id)
             REFERENCES fleet_devices(tenant_id,device_id));
@@ -323,6 +335,14 @@ class FleetControlPlane:
 
     def _migrate_schema(self) -> None:
         """Upgrade older local-preview databases without discarding evidence."""
+        device_columns = {
+            row[1] for row in self._db.execute("PRAGMA table_info(fleet_devices)")
+        }
+        if "record_hmac" not in device_columns:
+            self._db.execute(
+                "ALTER TABLE fleet_devices ADD COLUMN "
+                "record_hmac TEXT NOT NULL DEFAULT ''"
+            )
         columns = {
             row[1] for row in self._db.execute("PRAGMA table_info(fleet_events)")
         }
@@ -330,6 +350,7 @@ class FleetControlPlane:
             "received_at": "REAL NOT NULL DEFAULT 0",
             "clock_quality": "TEXT NOT NULL DEFAULT 'legacy'",
             "clock_skew_seconds": "REAL NOT NULL DEFAULT 0",
+            "record_hmac": "TEXT NOT NULL DEFAULT ''",
         }
         for name, declaration in additions.items():
             if name not in columns:
@@ -378,38 +399,241 @@ class FleetControlPlane:
         except KeyError as exc:
             raise PermissionError("tenant is not authorized") from exc
 
+    @property
+    def tenant_ids(self) -> tuple[str, ...]:
+        """Return configured tenant identifiers without exposing their keys."""
+        return tuple(sorted(self._keys))
+
+    @staticmethod
+    def _event_record_core(
+        tenant_id: str,
+        event_id: str,
+        device_id: str,
+        observed_at: float,
+        received_at: float,
+        clock_quality: str,
+        clock_skew_seconds: float,
+        event_hash: str,
+    ) -> Mapping[str, Any]:
+        return {
+            "tenant_id": tenant_id,
+            "event_id": event_id,
+            "device_id": device_id,
+            "observed_at": float(observed_at),
+            "received_at": float(received_at),
+            "clock_quality": clock_quality,
+            "clock_skew_seconds": float(clock_skew_seconds),
+            "event_hash": event_hash,
+        }
+
+    @classmethod
+    def _event_record_hmac(
+        cls,
+        key: bytes,
+        tenant_id: str,
+        event_id: str,
+        device_id: str,
+        observed_at: float,
+        received_at: float,
+        clock_quality: str,
+        clock_skew_seconds: float,
+        event_hash: str,
+    ) -> str:
+        return hmac.new(
+            key,
+            _canonical(cls._event_record_core(
+                tenant_id, event_id, device_id, observed_at, received_at,
+                clock_quality, clock_skew_seconds, event_hash,
+            )),
+            hashlib.sha256,
+        ).hexdigest()
+
+    @staticmethod
+    def _device_record_core(
+        tenant_id: str,
+        device_id: str,
+        public_key: str,
+        hostname_token: str,
+        platform: str,
+        version: str,
+        group_id: str,
+        state: str,
+        last_seen: float,
+    ) -> Mapping[str, Any]:
+        return {
+            "tenant_id": tenant_id,
+            "device_id": device_id,
+            "public_key": public_key,
+            "hostname_token": hostname_token,
+            "platform": platform,
+            "version": version,
+            "group_id": group_id,
+            "state": state,
+            "last_seen": float(last_seen),
+        }
+
+    @classmethod
+    def _device_record_hmac(
+        cls, key: bytes, *fields: Any,
+    ) -> str:
+        return hmac.new(
+            key,
+            _canonical(cls._device_record_core(*fields)),
+            hashlib.sha256,
+        ).hexdigest()
+
+    @classmethod
+    def _verify_device_row(
+        cls, key: bytes, row: tuple[Any, ...]
+    ) -> FleetDevice:
+        if len(row) != 10:
+            raise RuntimeError("fleet device integrity verification failed")
+        device = FleetDevice(*row[:9])
+        record_hmac = str(row[9])
+        if record_hmac:
+            expected = cls._device_record_hmac(key, *row[:9])
+            if not hmac.compare_digest(record_hmac, expected):
+                raise RuntimeError("fleet device integrity verification failed")
+        return device
+
+    @classmethod
+    def _verify_event_row(
+        cls, key: bytes, tenant_id: str, row: tuple[Any, ...]
+    ) -> tuple[dict[str, Any], str]:
+        (
+            event_id, device_id, observed_at, received_at, clock_quality,
+            clock_skew_seconds, event_hash, body_json, record_hmac,
+        ) = row
+        try:
+            body_bytes = str(body_json).encode("utf-8")
+            body = json.loads(body_json)
+        except (UnicodeEncodeError, TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("fleet event integrity verification failed") from exc
+        if (
+            not isinstance(body, dict)
+            or not re.fullmatch(r"[0-9a-f]{64}", str(event_hash))
+            or not hmac.compare_digest(
+                hashlib.sha256(body_bytes).hexdigest(), str(event_hash)
+            )
+        ):
+            raise RuntimeError("fleet event integrity verification failed")
+        integrity = "legacy-unverified"
+        if record_hmac:
+            expected = cls._event_record_hmac(
+                key, tenant_id, str(event_id), str(device_id),
+                float(observed_at), float(received_at), str(clock_quality),
+                float(clock_skew_seconds), str(event_hash),
+            )
+            if not hmac.compare_digest(str(record_hmac), expected):
+                raise RuntimeError("fleet event integrity verification failed")
+            integrity = "verified"
+        return ({
+            "event_id": event_id, "device_id": device_id,
+            "observed_at": observed_at, "received_at": received_at,
+            "clock_quality": clock_quality,
+            "clock_skew_seconds": clock_skew_seconds,
+            "event_hash": event_hash, "body": body,
+            "integrity": integrity,
+        }, integrity)
+
     def register_device(self, device: FleetDevice) -> None:
-        self._key(device.tenant_id)
-        stamp = float(device.last_seen or self._clock())
+        key = self._key(device.tenant_id)
+        stamp = float(self._clock())
         if not math.isfinite(stamp) or stamp <= 0:
             raise ValueError("invalid device last-seen timestamp")
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
                 existing = self._db.execute(
-                    "SELECT public_key FROM fleet_devices "
+                    "SELECT tenant_id,device_id,public_key,hostname_token,"
+                    "platform,version,group_id,state,last_seen,record_hmac "
+                    "FROM fleet_devices "
                     "WHERE tenant_id=? AND device_id=?",
                     (device.tenant_id, device.device_id),
                 ).fetchone()
-                if existing and existing[0] != device.public_key:
+                existing_device = (
+                    self._verify_device_row(key, existing) if existing else None
+                )
+                if existing_device and existing_device.public_key != device.public_key:
                     raise ValueError("device identity key conflict")
+                if existing_device and existing_device.state != device.state:
+                    raise PermissionError(
+                        "device state transition requires the administrative API"
+                    )
+                if existing_device is None and device.state != "active":
+                    raise PermissionError("new device enrollment must be active")
+                state = existing_device.state if existing_device else device.state
+                fields = (
+                    device.tenant_id, device.device_id, device.public_key,
+                    device.hostname_token, device.platform, device.version,
+                    device.group_id, state, stamp,
+                )
+                record_hmac = self._device_record_hmac(key, *fields)
                 self._db.execute(
-                    "INSERT INTO fleet_devices VALUES(?,?,?,?,?,?,?,?,?) "
+                    "INSERT INTO fleet_devices(tenant_id,device_id,public_key,"
+                    "hostname_token,platform,version,group_id,state,last_seen,"
+                    "record_hmac) VALUES(?,?,?,?,?,?,?,?,?,?) "
                     "ON CONFLICT(tenant_id,device_id) DO UPDATE SET "
                     "hostname_token=excluded.hostname_token,"
                     "platform=excluded.platform,version=excluded.version,"
-                    "group_id=excluded.group_id,state=excluded.state,"
-                    "last_seen=excluded.last_seen",
-                    (
-                        device.tenant_id, device.device_id, device.public_key,
-                        device.hostname_token, device.platform, device.version,
-                        device.group_id, device.state, stamp,
-                    ),
+                    "group_id=excluded.group_id,"
+                    "last_seen=excluded.last_seen,"
+                    "record_hmac=excluded.record_hmac",
+                    (*fields, record_hmac),
                 )
                 self._db.execute("COMMIT")
             except Exception:
                 self._db.execute("ROLLBACK")
                 raise
+
+    def transition_device_state(
+        self,
+        tenant_id: str,
+        device_id: str,
+        new_state: str,
+        *,
+        expected_state: str,
+    ) -> FleetDevice:
+        """Perform an explicit compare-and-swap lifecycle transition."""
+        key = self._key(tenant_id)
+        device_id = _validate_id(device_id, "device ID")
+        allowed = {
+            "active": {"quarantined", "revoked", "retired"},
+            "quarantined": {"active", "revoked", "retired"},
+            "revoked": set(),
+            "retired": set(),
+        }
+        if new_state not in allowed or expected_state not in allowed:
+            raise ValueError("invalid device state")
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._db.execute(
+                    "SELECT tenant_id,device_id,public_key,hostname_token,"
+                    "platform,version,group_id,state,last_seen,record_hmac "
+                    "FROM fleet_devices WHERE tenant_id=? AND device_id=?",
+                    (tenant_id, device_id),
+                ).fetchone()
+                if row is None:
+                    raise KeyError("device is not enrolled in tenant")
+                current_device = self._verify_device_row(key, row)
+                current = current_device.state
+                if current != expected_state:
+                    raise RuntimeError("device state changed concurrently")
+                if new_state != current and new_state not in allowed[current]:
+                    raise PermissionError("device state transition is not permitted")
+                updated_fields = (*row[:7], new_state, row[8])
+                record_hmac = self._device_record_hmac(key, *updated_fields)
+                self._db.execute(
+                    "UPDATE fleet_devices SET state=?,record_hmac=? "
+                    "WHERE tenant_id=? AND device_id=? AND state=?",
+                    (new_state, record_hmac, tenant_id, device_id, current),
+                )
+                self._db.execute("COMMIT")
+            except Exception:
+                self._db.execute("ROLLBACK")
+                raise
+        return FleetDevice(*updated_fields)
 
     def ingest(
         self, tenant_id: str, device_id: str, event_id: str,
@@ -503,32 +727,43 @@ class FleetControlPlane:
                     item.device_id for item in prepared
                 }))
                 placeholders = ",".join("?" for _ in requested_devices)
-                device_states = {
-                    row[0]: row[1]
+                device_rows = {
+                    row[1]: row
                     for row in self._db.execute(
-                        "SELECT device_id,state FROM fleet_devices "
-                        f"WHERE tenant_id=? AND device_id IN ({placeholders})",
+                        "SELECT tenant_id,device_id,public_key,hostname_token,"
+                        "platform,version,group_id,state,last_seen,record_hmac "
+                        "FROM fleet_devices "
+                        # Placeholder count comes only from the already bounded
+                        # batch length; all tenant/device values are parameters.
+                        f"WHERE tenant_id=? AND device_id IN ({placeholders})",  # nosec B608
                         (tenant_id, *requested_devices),
                     )
                 }
                 for device_id in requested_devices:
-                    state = device_states.get(device_id)
-                    if state is None:
+                    row = device_rows.get(device_id)
+                    if row is None:
                         raise PermissionError("device is not enrolled in tenant")
-                    if state != "active":
-                        raise PermissionError(f"device state is {state}")
+                    enrolled = self._verify_device_row(key, row)
+                    if enrolled.state != "active":
+                        raise PermissionError(f"device state is {enrolled.state}")
                 self._rate_limiter.consume(
                     tenant_id, Counter(item.device_id for item in prepared)
                 )
                 for item in prepared:
                     existing = self._db.execute(
                         "SELECT event_hash,device_id,observed_at,received_at,"
-                        "clock_quality,clock_skew_seconds FROM fleet_events "
+                        "clock_quality,clock_skew_seconds,body_json,record_hmac "
+                        "FROM fleet_events "
                         "WHERE tenant_id=? AND event_id=?",
                         (tenant_id, item.event_id),
                     ).fetchone()
                     duplicate = existing is not None
                     if existing:
+                        self._verify_event_row(key, tenant_id, (
+                            item.event_id, existing[1], existing[2], existing[3],
+                            existing[4], existing[5], existing[0], existing[6],
+                            existing[7],
+                        ))
                         if existing[0] != item.event_hash:
                             raise ValueError(
                                 "event ID conflicts with different evidence"
@@ -543,16 +778,22 @@ class FleetControlPlane:
                         clock_skew = float(existing[5])
                         duplicates += 1
                     else:
+                        record_hmac = self._event_record_hmac(
+                            key, tenant_id, item.event_id, item.device_id,
+                            item.observed_at, received_at, item.clock_quality,
+                            item.clock_skew_seconds, item.event_hash,
+                        )
                         self._db.execute(
                             "INSERT INTO fleet_events("
                             "tenant_id,event_id,device_id,observed_at,received_at,"
-                            "clock_quality,clock_skew_seconds,event_hash,body_json"
-                            ") VALUES(?,?,?,?,?,?,?,?,?)",
+                            "clock_quality,clock_skew_seconds,event_hash,body_json,"
+                            "record_hmac) VALUES(?,?,?,?,?,?,?,?,?,?)",
                             (
                                 tenant_id, item.event_id, item.device_id,
                                 item.observed_at, received_at, item.clock_quality,
                                 item.clock_skew_seconds, item.event_hash,
                                 item.encoded_body.decode("utf-8"),
+                                record_hmac,
                             ),
                         )
                         recorded_at = item.observed_at
@@ -573,14 +814,17 @@ class FleetControlPlane:
                         "clock_skew_seconds": clock_skew,
                         "event_hash": item.event_hash,
                     })
-                self._db.executemany(
-                    "UPDATE fleet_devices SET last_seen=? "
-                    "WHERE tenant_id=? AND device_id=?",
-                    (
-                        (received_at, tenant_id, device_id)
-                        for device_id in touched_devices
-                    ),
-                )
+                for device_id in touched_devices:
+                    row = device_rows[device_id]
+                    updated_fields = (*row[:8], received_at)
+                    device_hmac = self._device_record_hmac(
+                        key, *updated_fields
+                    )
+                    self._db.execute(
+                        "UPDATE fleet_devices SET last_seen=?,record_hmac=? "
+                        "WHERE tenant_id=? AND device_id=?",
+                        (received_at, device_hmac, tenant_id, device_id),
+                    )
                 self._record_ingest_stats(
                     tenant_id, stored_by_quality, duplicates, len(prepared),
                     received_at,
@@ -644,44 +888,129 @@ class FleetControlPlane:
         )
 
     def devices(self, tenant_id: str) -> tuple[FleetDevice, ...]:
-        self._key(tenant_id)
+        key = self._key(tenant_id)
         with self._lock:
             rows = self._db.execute(
                 "SELECT tenant_id,device_id,public_key,hostname_token,platform,"
-                "version,group_id,state,last_seen FROM fleet_devices "
+                "version,group_id,state,last_seen,record_hmac FROM fleet_devices "
                 "WHERE tenant_id=? ORDER BY device_id", (tenant_id,),
             ).fetchall()
-        return tuple(FleetDevice(*row) for row in rows)
+        return tuple(self._verify_device_row(key, row) for row in rows)
 
     def events(
         self, tenant_id: str, *, device_id: str | None = None,
-        limit: int = 500,
+        limit: int = 500, cursor: str = "",
     ) -> tuple[Mapping[str, Any], ...]:
-        self._key(tenant_id)
-        limit = max(1, min(int(limit), MAX_QUERY_LIMIT))
+        page = self.event_page(
+            tenant_id, device_id=device_id, limit=limit, cursor=cursor
+        )
+        if page.truncated:
+            raise ValueError(
+                "event query exceeds one bounded page; use event_page pagination"
+            )
+        return page.items
+
+    def _encode_event_cursor(
+        self, tenant_id: str, received_at: float, event_id: str
+    ) -> str:
+        payload = _canonical({
+            "tenant_id": tenant_id,
+            "received_at": float(received_at),
+            "event_id": event_id,
+        })
+        signature = hmac.new(
+            self._key(tenant_id), b"fleet-cursor-v1\0" + payload, hashlib.sha256
+        ).digest()
+        return base64.urlsafe_b64encode(payload + signature).decode("ascii").rstrip("=")
+
+    def _decode_event_cursor(
+        self, tenant_id: str, cursor: str
+    ) -> tuple[float, str]:
+        if not isinstance(cursor, str) or not 1 <= len(cursor) <= 1024:
+            raise ValueError("invalid event cursor")
+        try:
+            padded = cursor + "=" * (-len(cursor) % 4)
+            value = base64.urlsafe_b64decode(padded.encode("ascii"))
+            payload, signature = value[:-32], value[-32:]
+            expected = hmac.new(
+                self._key(tenant_id), b"fleet-cursor-v1\0" + payload,
+                hashlib.sha256,
+            ).digest()
+            if len(signature) != 32 or not hmac.compare_digest(signature, expected):
+                raise ValueError
+            decoded = json.loads(payload.decode("utf-8"))
+            if set(decoded) != {"tenant_id", "received_at", "event_id"}:
+                raise ValueError
+            if decoded["tenant_id"] != tenant_id:
+                raise ValueError
+            received_at = float(decoded["received_at"])
+            event_id = _validate_id(decoded["event_id"], "event ID")
+            if not math.isfinite(received_at) or received_at <= 0:
+                raise ValueError
+            return received_at, event_id
+        except (UnicodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid event cursor") from exc
+
+    def event_page(
+        self,
+        tenant_id: str,
+        *,
+        device_id: str | None = None,
+        limit: int = 500,
+        cursor: str = "",
+    ) -> FleetEventPage:
+        key = self._key(tenant_id)
+        limit = max(1, min(int(limit), MAX_QUERY_PAGE_EVENTS))
         params: list[Any] = [tenant_id]
         sql = (
             "SELECT event_id,device_id,observed_at,received_at,clock_quality,"
-            "clock_skew_seconds,event_hash,body_json "
+            "clock_skew_seconds,event_hash,body_json,record_hmac "
             "FROM fleet_events WHERE tenant_id=?"
         )
         if device_id is not None:
             sql += " AND device_id=?"
             params.append(_validate_id(device_id, "device ID"))
-        sql += " ORDER BY observed_at DESC,event_id DESC LIMIT ?"
-        params.append(limit)
+        if cursor:
+            cursor_received, cursor_event = self._decode_event_cursor(
+                tenant_id, cursor
+            )
+            sql += (
+                " AND (received_at<? OR (received_at=? AND event_id<?))"
+            )
+            params.extend((cursor_received, cursor_received, cursor_event))
+        sql += " ORDER BY received_at DESC,event_id DESC LIMIT ?"
+        params.append(limit + 1)
+        items: list[Mapping[str, Any]] = []
+        encoded_bytes = 0
+        truncated = False
         with self._lock:
-            rows = self._db.execute(sql, params).fetchall()
-        return tuple({
-            "event_id": row[0], "device_id": row[1], "observed_at": row[2],
-            "received_at": row[3], "clock_quality": row[4],
-            "clock_skew_seconds": row[5], "event_hash": row[6],
-            "body": json.loads(row[7]),
-        } for row in rows)
+            query = self._db.execute(sql, params)
+            while len(items) < limit:
+                row = query.fetchone()
+                if row is None:
+                    break
+                item, _integrity = self._verify_event_row(key, tenant_id, row)
+                item_bytes = len(_canonical(item))
+                if items and encoded_bytes + item_bytes > MAX_QUERY_RESPONSE_BYTES:
+                    truncated = True
+                    break
+                if item_bytes > MAX_QUERY_RESPONSE_BYTES:
+                    raise RuntimeError("fleet event exceeds response byte budget")
+                items.append(item)
+                encoded_bytes += item_bytes
+            if not truncated:
+                truncated = query.fetchone() is not None
+        next_cursor = ""
+        if truncated and items:
+            tail = items[-1]
+            next_cursor = self._encode_event_cursor(
+                tenant_id, float(tail["received_at"]), str(tail["event_id"])
+            )
+        return FleetEventPage(tuple(items), next_cursor, truncated, encoded_bytes)
 
     def ingestion_health(self, tenant_id: str) -> Mapping[str, Any]:
         """Return bounded, low-cardinality ingestion and clock-quality health."""
-        self._key(tenant_id)
+        verified_devices = self.devices(tenant_id)
         with self._lock:
             counters = self._db.execute(
                 "SELECT stored,duplicates,synchronized,skewed,untrusted,"
@@ -690,11 +1019,7 @@ class FleetControlPlane:
                 "WHERE tenant_id=?",
                 (tenant_id,),
             ).fetchone() or (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0)
-            states = self._db.execute(
-                "SELECT state,COUNT(*) FROM fleet_devices WHERE tenant_id=? "
-                "GROUP BY state ORDER BY state",
-                (tenant_id,),
-            ).fetchall()
+        states = Counter(device.state for device in verified_devices)
         stored = int(counters[0])
         uncertain = int(counters[3]) + int(counters[4]) + int(counters[6])
         return {
@@ -718,7 +1043,9 @@ class FleetControlPlane:
                 "largest": int(counters[9]),
             },
             "last_received_at": float(counters[10]),
-            "device_states": {str(state): int(count) for state, count in states},
+            "device_states": {
+                str(state): int(count) for state, count in sorted(states.items())
+            },
             "admission": dict(self._rate_limiter.snapshot(tenant_id)),
         }
 

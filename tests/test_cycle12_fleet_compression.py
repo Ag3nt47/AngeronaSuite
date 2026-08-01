@@ -83,7 +83,7 @@ def test_authenticated_gzip_batch_and_capability_negotiation(tmp_path):
         assert capabilities["maximum_batch_events"] == 256
 
         contract = openapi_contract()
-        assert contract["info"]["version"] == "1.2.0"
+        assert contract["info"]["version"] == "2.0.0"
         assert capability_path in contract["paths"]
         assert contract["x-angerona-boundaries"]["requestEncodings"] == [
             "identity", "gzip",

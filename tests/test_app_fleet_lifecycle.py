@@ -44,6 +44,8 @@ def test_app_starts_and_stops_opt_in_fleet_service(tmp_path, monkeypatch):
     app._fleet_service = None
     app._fleet_plane.close()
     app._fleet_plane = None
+    app._admin_audit.close()
+    app._admin_audit = None
 
 
 def test_app_fleet_service_is_off_by_default(tmp_path, monkeypatch):
@@ -67,5 +69,5 @@ def test_app_fleet_service_fails_closed_without_protected_key(
     assert app._fleet_plane is None
     assert app._endpoint_identity is None
     assert messages == [
-        "local fleet service unavailable (ValueError); see Startup Health for impact."
+        "local fleet service unavailable (RuntimeError); see Startup Health for impact."
     ]

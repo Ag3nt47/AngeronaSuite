@@ -7,6 +7,7 @@ import json
 import math
 import re
 import secrets
+import sqlite3
 import threading
 import time
 import zlib
@@ -16,7 +17,13 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import parse_qs, urlsplit
 
-from angerona.core.endpoint_identity import ReplayLedger
+from angerona.core.authorization import AuthorizationPolicy, AuthorizationRequest
+from angerona.core.fleet_credentials import (
+    AuthenticatedFleetContext,
+    FleetCredential,
+    FleetCredentialKind,
+    FleetCredentialRegistry,
+)
 from angerona.core.fleet_control_plane import (
     DEFAULT_DEVICE_BURST,
     DEFAULT_DEVICE_EVENTS_PER_SECOND,
@@ -24,6 +31,8 @@ from angerona.core.fleet_control_plane import (
     DEFAULT_TENANT_EVENTS_PER_SECOND,
     MAX_INGEST_BATCH,
     MAX_INGEST_BATCH_BYTES,
+    MAX_QUERY_PAGE_EVENTS,
+    MAX_QUERY_RESPONSE_BYTES,
     FleetControlPlane,
     FleetDevice,
     FleetRateLimitError,
@@ -36,7 +45,34 @@ MAX_SKEW_SECONDS = 60
 MAX_AUTH_PATH = 8192
 _NONCE = re.compile(r"^[A-Za-z0-9_-]{22,128}$")
 OPENAPI_VERSION = "3.1.0"
-API_CONTRACT_VERSION = "1.2.0"
+API_CONTRACT_VERSION = "2.0.0"
+DEFAULT_FLEET_CREDENTIAL_ID = "local-preview"
+FLEET_CREDENTIAL_HEADER = "X-Angerona-Credential-ID"
+MAX_REPLAY_ENTRIES = 250_000
+MAX_HANDLER_THREADS = 64
+
+FLEET_CONTRACT_READ = "fleet.contract.read"
+FLEET_CAPABILITIES_READ = "fleet.capabilities.read"
+FLEET_DEVICE_READ = "fleet.device.read"
+FLEET_DEVICE_REGISTER = "fleet.device.register"
+FLEET_EVENT_READ = "fleet.event.read"
+FLEET_EVENT_INGEST = "fleet.event.ingest"
+FLEET_HEALTH_READ = "fleet.health.read"
+FLEET_TENANT_PERMISSIONS = (
+    FLEET_CONTRACT_READ,
+    FLEET_CAPABILITIES_READ,
+    FLEET_DEVICE_READ,
+    FLEET_DEVICE_REGISTER,
+    FLEET_EVENT_READ,
+    FLEET_HEALTH_READ,
+)
+FLEET_DEVICE_PERMISSIONS = (
+    FLEET_CAPABILITIES_READ,
+    FLEET_EVENT_INGEST,
+)
+FLEET_LEGACY_PERMISSIONS = tuple(sorted({
+    *FLEET_TENANT_PERMISSIONS, *FLEET_DEVICE_PERMISSIONS,
+}))
 
 
 class BodyTooLarge(ValueError):
@@ -89,9 +125,38 @@ def _decode_request_body(body: bytes, content_encoding: str) -> bytes:
     return decoded
 
 
+def _strict_json(body: bytes) -> Any:
+    """Decode exactly one strict UTF-8 JSON value with unique object keys."""
+    try:
+        text = body.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ValueError("request JSON must be strict UTF-8") from exc
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("request JSON contains duplicate object keys")
+            value[key] = item
+        return value
+
+    def reject_constant(_value: str) -> Any:
+        raise ValueError("request JSON numbers must be finite")
+
+    try:
+        return json.loads(
+            text,
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+        )
+    except json.JSONDecodeError as exc:
+        raise ValueError("invalid JSON") from exc
+
+
 def openapi_contract() -> dict[str, Any]:
     """Return the deterministic public contract for routes actually shipped."""
     auth = [{
+        "AngeronaCredential": [],
         "AngeronaTimestamp": [],
         "AngeronaNonce": [],
         "AngeronaSignature": [],
@@ -138,20 +203,29 @@ def openapi_contract() -> dict[str, Any]:
             "/v1/openapi": {
                 "get": {
                     "operationId": "fleetOpenApiContract",
-                    "responses": {"200": json_response, "401": json_response},
+                    "responses": {
+                        "200": json_response, "401": json_response,
+                        "403": json_response,
+                    },
                 }
             },
             "/v1/ingestion-capabilities": {
                 "get": {
                     "operationId": "fleetIngestionCapabilities",
-                    "responses": {"200": json_response, "401": json_response},
+                    "responses": {
+                        "200": json_response, "401": json_response,
+                        "403": json_response,
+                    },
                 }
             },
             "/v1/tenants/{tenant_id}/devices": {
                 "parameters": [tenant_parameter],
                 "get": {
                     "operationId": "listFleetDevices",
-                    "responses": {"200": json_response, "401": json_response},
+                    "responses": {
+                        "200": json_response, "401": json_response,
+                        "403": json_response,
+                    },
                 },
                 "post": {
                     "operationId": "registerFleetDevice",
@@ -167,6 +241,7 @@ def openapi_contract() -> dict[str, Any]:
                         "200": json_response,
                         "400": json_response,
                         "401": json_response,
+                        "403": json_response,
                         "413": json_response,
                     },
                 },
@@ -182,10 +257,16 @@ def openapi_contract() -> dict[str, Any]:
                         "name": "limit", "in": "query", "required": False,
                         "schema": {
                             "type": "integer", "minimum": 1,
-                            "maximum": 5000, "default": 500,
+                            "maximum": MAX_QUERY_PAGE_EVENTS, "default": 500,
                         },
+                    }, {
+                        "name": "cursor", "in": "query", "required": False,
+                        "schema": {"type": "string", "maxLength": 1024},
                     }],
-                    "responses": {"200": json_response, "401": json_response},
+                    "responses": {
+                        "200": json_response, "401": json_response,
+                        "403": json_response,
+                    },
                 },
                 "post": {
                     "operationId": "ingestFleetEvent",
@@ -201,6 +282,7 @@ def openapi_contract() -> dict[str, Any]:
                         "200": json_response,
                         "400": json_response,
                         "401": json_response,
+                        "403": json_response,
                         "413": json_response,
                         "429": json_response,
                     },
@@ -210,7 +292,10 @@ def openapi_contract() -> dict[str, Any]:
                 "parameters": [tenant_parameter],
                 "get": {
                     "operationId": "getFleetIngestionHealth",
-                    "responses": {"200": json_response, "401": json_response},
+                    "responses": {
+                        "200": json_response, "401": json_response,
+                        "403": json_response,
+                    },
                 },
             },
             "/v1/tenants/{tenant_id}/event-batches": {
@@ -231,6 +316,7 @@ def openapi_contract() -> dict[str, Any]:
                         "200": json_response,
                         "400": json_response,
                         "401": json_response,
+                        "403": json_response,
                         "413": json_response,
                         "429": json_response,
                     },
@@ -239,6 +325,14 @@ def openapi_contract() -> dict[str, Any]:
         },
         "components": {
             "securitySchemes": {
+                "AngeronaCredential": {
+                    "type": "apiKey", "in": "header",
+                    "name": FLEET_CREDENTIAL_HEADER,
+                    "description": (
+                        "Tenant- or device-bound local credential identifier. "
+                        "The identifier is included in the signed transcript."
+                    ),
+                },
                 "AngeronaTimestamp": {
                     "type": "apiKey", "in": "header",
                     "name": "X-Angerona-Timestamp",
@@ -251,8 +345,9 @@ def openapi_contract() -> dict[str, Any]:
                     "type": "apiKey", "in": "header",
                     "name": "X-Angerona-Signature",
                     "description": (
-                        "HMAC-SHA-256 over method, complete path and query, "
-                        "timestamp, nonce, and SHA-256 request-body digest."
+                        "HMAC-SHA-256 over credential ID, method, complete path "
+                        "and query, timestamp, nonce, and the SHA-256 "
+                        "request-body digest."
                     ),
                 },
             },
@@ -273,12 +368,6 @@ def openapi_contract() -> dict[str, Any]:
                         "platform": {"type": "string", "maxLength": 40},
                         "version": {"type": "string", "maxLength": 80},
                         "group_id": {"type": "string", "default": "default"},
-                        "state": {
-                            "type": "string",
-                            "enum": ["active", "quarantined", "revoked", "retired"],
-                            "default": "active",
-                        },
-                        "last_seen": {"type": "number", "minimum": 0},
                     },
                 },
                 "IngestEvent": {
@@ -326,6 +415,9 @@ def openapi_contract() -> dict[str, Any]:
                 PREFERRED_COMPRESSION_THRESHOLD
             ),
             "maximumClockSkewSeconds": MAX_SKEW_SECONDS,
+            "maximumEventPageBytes": MAX_QUERY_RESPONSE_BYTES,
+            "maximumEventPageItems": MAX_QUERY_PAGE_EVENTS,
+            "credentialBinding": "tenant-or-device",
             "arbitraryCommands": False,
             "productionMutualTls": False,
         },
@@ -340,10 +432,15 @@ def openapi_contract_sha256() -> str:
 
 
 def _canonical_auth(
-    method: str, path: str, timestamp: str, nonce: str, body: bytes
+    credential_id: str,
+    method: str,
+    path: str,
+    timestamp: str,
+    nonce: str,
+    body: bytes,
 ) -> bytes:
     return "\n".join((
-        method.upper(), path, timestamp, nonce,
+        credential_id, method.upper(), path, timestamp, nonce,
         hashlib.sha256(body).hexdigest(),
     )).encode("utf-8")
 
@@ -351,36 +448,122 @@ def _canonical_auth(
 def sign_request(
     key: bytes, method: str, path: str, body: bytes = b"", *,
     timestamp: float | None = None, nonce: str | None = None,
+    credential_id: str = DEFAULT_FLEET_CREDENTIAL_ID,
 ) -> dict[str, str]:
     if len(key) < 32:
         raise ValueError("fleet service key must contain at least 32 bytes")
     stamp = str(int(time.time() if timestamp is None else timestamp))
     token = nonce or secrets.token_urlsafe(24)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{2,127}", credential_id):
+        raise ValueError("invalid fleet credential ID")
     signature = hmac.new(
-        key, _canonical_auth(method, path, stamp, token, body), hashlib.sha256
+        key,
+        _canonical_auth(credential_id, method, path, stamp, token, body),
+        hashlib.sha256,
     ).hexdigest()
     return {
+        FLEET_CREDENTIAL_HEADER: credential_id,
         "X-Angerona-Timestamp": stamp,
         "X-Angerona-Nonce": token,
         "X-Angerona-Signature": signature,
     }
 
 
+class FleetReplayWindow:
+    """Indexed, freshness-window replay ledger that never evicts live nonces."""
+
+    def __init__(self, path: Path, *, max_entries: int = MAX_REPLAY_ENTRIES) -> None:
+        if type(max_entries) is not int or not 1 <= max_entries <= MAX_REPLAY_ENTRIES:
+            raise ValueError("invalid fleet replay bound")
+        supplied = Path(path)
+        self.path = supplied.with_name(supplied.name + ".sqlite3")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._max_entries = max_entries
+        self._lock = threading.RLock()
+        self._db = sqlite3.connect(
+            str(self.path), check_same_thread=False, isolation_level=None
+        )
+        self._db.execute("PRAGMA journal_mode=WAL")
+        self._db.execute("PRAGMA busy_timeout=3000")
+        self._db.execute("PRAGMA secure_delete=ON")
+        self._db.executescript("""
+        CREATE TABLE IF NOT EXISTS fleet_replay(
+          credential_id TEXT NOT NULL,
+          nonce TEXT NOT NULL,
+          expires_at REAL NOT NULL,
+          PRIMARY KEY(credential_id,nonce));
+        CREATE INDEX IF NOT EXISTS idx_fleet_replay_expiry
+          ON fleet_replay(expires_at);
+        """)
+
+    def consume(
+        self,
+        credential_id: str,
+        nonce: str,
+        *,
+        now: float,
+        expires_at: float,
+    ) -> bool:
+        if not math.isfinite(now) or not math.isfinite(expires_at):
+            raise ValueError("invalid replay time")
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                self._db.execute(
+                    "DELETE FROM fleet_replay WHERE expires_at<=?", (now,)
+                )
+                if self._db.execute(
+                    "SELECT 1 FROM fleet_replay "
+                    "WHERE credential_id=? AND nonce=?",
+                    (credential_id, nonce),
+                ).fetchone():
+                    self._db.execute("COMMIT")
+                    return False
+                count = int(self._db.execute(
+                    "SELECT COUNT(*) FROM fleet_replay"
+                ).fetchone()[0])
+                if count >= self._max_entries:
+                    raise RuntimeError("fleet replay window is at capacity")
+                self._db.execute(
+                    "INSERT INTO fleet_replay VALUES(?,?,?)",
+                    (credential_id, nonce, expires_at),
+                )
+                self._db.execute("COMMIT")
+                return True
+            except Exception:
+                self._db.execute("ROLLBACK")
+                raise
+
+
 class RequestAuthenticator:
     def __init__(
-        self, key: bytes, replay_path: Path, *,
+        self,
+        credentials: FleetCredentialRegistry | bytes,
+        replay_path: Path,
+        *,
         clock=time.time, max_skew: int = MAX_SKEW_SECONDS,
+        legacy_tenant_id: str = "local",
     ) -> None:
-        if len(key) < 32:
-            raise ValueError("fleet service key must contain at least 32 bytes")
-        self._key = bytes(key)
+        if isinstance(credentials, bytes):
+            if len(credentials) < 32:
+                raise ValueError("fleet service key must contain at least 32 bytes")
+            credentials = FleetCredentialRegistry((FleetCredential(
+                credential_id=DEFAULT_FLEET_CREDENTIAL_ID,
+                tenant_id=legacy_tenant_id,
+                kind=FleetCredentialKind.TENANT,
+                secret=credentials,
+                permissions=FLEET_LEGACY_PERMISSIONS,
+            ),))
+        if not isinstance(credentials, FleetCredentialRegistry):
+            raise TypeError("fleet credential registry is required")
+        self._credentials = credentials
         self._clock = clock
         self._max_skew = max(5, min(int(max_skew), 300))
-        self._replay = ReplayLedger(replay_path)
+        self._replay = FleetReplayWindow(replay_path)
 
-    def verify(
+    def authenticate(
         self, method: str, path: str, headers: Mapping[str, str], body: bytes
-    ) -> tuple[bool, str]:
+    ) -> tuple[AuthenticatedFleetContext | None, str]:
         if (
             not isinstance(method, str) or not method
             or len(method) > 32
@@ -388,45 +571,127 @@ class RequestAuthenticator:
             or len(path) > MAX_AUTH_PATH
             or not isinstance(body, bytes) or len(body) > MAX_BODY
         ):
-            return False, "request components are invalid"
+            return None, "request authentication failed"
         try:
+            credential_id = headers[FLEET_CREDENTIAL_HEADER]
             stamp_text = headers["X-Angerona-Timestamp"]
             nonce = headers["X-Angerona-Nonce"]
             signature = headers["X-Angerona-Signature"]
             if not all(isinstance(value, str) for value in (
-                stamp_text, nonce, signature,
+                credential_id, stamp_text, nonce, signature,
             )):
-                return False, "missing or invalid authentication headers"
+                return None, "request authentication failed"
             stamp = int(stamp_text)
-        except (KeyError, TypeError, ValueError):
-            return False, "missing or invalid authentication headers"
+            now = float(self._clock())
+            if not math.isfinite(now):
+                return None, "request authentication failed"
+            credential = self._credentials.resolve(credential_id, now=now)
+        except (KeyError, TypeError, ValueError, RuntimeError):
+            return None, "request authentication failed"
+        if credential is None:
+            return None, "request authentication failed"
         if not _NONCE.fullmatch(nonce):
-            return False, "request nonce is invalid"
+            return None, "request authentication failed"
         if not re.fullmatch(r"[0-9a-f]{64}", signature):
-            return False, "request signature is invalid"
-        if abs(float(self._clock()) - stamp) > self._max_skew:
-            return False, "request timestamp is outside the freshness window"
+            return None, "request authentication failed"
+        if abs(now - stamp) > self._max_skew:
+            return None, "request authentication failed"
         expected = hmac.new(
-            self._key,
-            _canonical_auth(method, path, stamp_text, nonce, body),
+            credential.secret,
+            _canonical_auth(
+                credential_id, method, path, stamp_text, nonce, body
+            ),
             hashlib.sha256,
         ).hexdigest()
         if not hmac.compare_digest(signature, expected):
-            return False, "request signature is invalid"
+            return None, "request authentication failed"
         try:
-            if not self._replay.consume(nonce):
-                return False, "request nonce was replayed"
+            if not self._replay.consume(
+                credential_id,
+                nonce,
+                now=now,
+                expires_at=float(stamp + self._max_skew + 1),
+            ):
+                return None, "request authentication failed"
+            context = credential.authenticated_context(now)
         except Exception:
-            return False, "replay ledger is unavailable"
-        return True, "authenticated"
+            return None, "request authentication failed"
+        return context, "authenticated"
+
+    def verify(
+        self, method: str, path: str, headers: Mapping[str, str], body: bytes
+    ) -> tuple[bool, str]:
+        context, reason = self.authenticate(method, path, headers, body)
+        return context is not None, reason
+
+
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """Thread-capped loopback server with observable bounded handler drain."""
+
+    daemon_threads = True
+    request_queue_size = MAX_HANDLER_THREADS
+
+    def __init__(self, server_address, handler_class) -> None:
+        self._slots = threading.BoundedSemaphore(MAX_HANDLER_THREADS)
+        self._handler_condition = threading.Condition()
+        self._active_handlers = 0
+        super().__init__(server_address, handler_class)
+
+    def process_request(self, request, client_address) -> None:
+        if not self._slots.acquire(blocking=False):
+            try:
+                request.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Connection: close\r\nContent-Length: 0\r\n\r\n"
+                )
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        with self._handler_condition:
+            self._active_handlers += 1
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._handler_finished()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._handler_finished()
+
+    def _handler_finished(self) -> None:
+        self._slots.release()
+        with self._handler_condition:
+            self._active_handlers -= 1
+            self._handler_condition.notify_all()
+
+    def wait_for_handlers(self, timeout: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._handler_condition:
+            while self._active_handlers:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._handler_condition.wait(remaining)
+            return True
 
 
 class FleetLoopbackService:
     """Small bounded service; refuses every non-loopback bind."""
 
     def __init__(
-        self, plane: FleetControlPlane, key: bytes, replay_path: Path,
-        *, host: str = "127.0.0.1", port: int = 47930,
+        self,
+        plane: FleetControlPlane,
+        credentials: FleetCredentialRegistry | bytes,
+        replay_path: Path,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 47930,
+        authorization_policy: AuthorizationPolicy | None = None,
     ) -> None:
         if host not in {"127.0.0.1", "::1", "localhost"}:
             raise ValueError("fleet service is loopback-only")
@@ -435,8 +700,20 @@ class FleetLoopbackService:
         self.plane = plane
         self.host = host
         self.port = int(port)
-        self.auth = RequestAuthenticator(key, replay_path)
-        self._server: ThreadingHTTPServer | None = None
+        self.authorization_policy = authorization_policy
+        if isinstance(credentials, bytes):
+            if len(plane.tenant_ids) != 1:
+                raise ValueError(
+                    "legacy fleet keys are allowed only for one tenant"
+                )
+            self.auth = RequestAuthenticator(
+                credentials,
+                replay_path,
+                legacy_tenant_id=plane.tenant_ids[0],
+            )
+        else:
+            self.auth = RequestAuthenticator(credentials, replay_path)
+        self._server: BoundedThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     def start(self) -> int:
@@ -452,6 +729,10 @@ class FleetLoopbackService:
 
             def log_message(self, _format, *_args):
                 return
+
+            def setup(self):
+                super().setup()
+                self.connection.settimeout(5.0)
 
             def _json(
                 self,
@@ -481,15 +762,101 @@ class FleetLoopbackService:
                     raise ValueError("invalid content length")
                 if length < 0 or length > MAX_BODY:
                     raise ValueError("request body exceeds byte budget")
-                return self.rfile.read(length)
+                body = self.rfile.read(length)
+                if len(body) != length:
+                    raise ValueError("request body is incomplete")
+                return body
 
-            def _authorize(self, body: bytes) -> bool:
-                ok, reason = owner.auth.verify(
+            def _authenticate(
+                self, body: bytes
+            ) -> AuthenticatedFleetContext | None:
+                context, reason = owner.auth.authenticate(
                     self.command, self.path, self.headers, body
                 )
-                if not ok:
+                if context is None:
                     self._json(401, {"ok": False, "error": reason})
-                return ok
+                return context
+
+            def _authorize(
+                self,
+                context: AuthenticatedFleetContext,
+                tenant: str | None,
+                permission: str,
+                *,
+                device_ids: set[str] | None = None,
+            ) -> bool:
+                structurally_allowed = True
+                if tenant is not None:
+                    structurally_allowed = context.tenant_id == tenant
+                if context.kind is FleetCredentialKind.DEVICE:
+                    if device_ids is not None:
+                        structurally_allowed = (
+                            structurally_allowed
+                            and device_ids == {context.device_id}
+                        )
+                if owner.authorization_policy is not None:
+                    if device_ids is not None:
+                        candidate = (
+                            next(iter(device_ids))
+                            if len(device_ids) == 1 else ""
+                        )
+                        requested_device = (
+                            candidate
+                            if re.fullmatch(
+                                r"[A-Za-z0-9][A-Za-z0-9._:-]{2,127}",
+                                candidate,
+                            )
+                            else "invalid-device"
+                        )
+                        scope = (
+                            f"fleet/{tenant or context.tenant_id}/device/"
+                            f"{requested_device}"
+                        )
+                        resource_id = requested_device
+                    elif context.kind is FleetCredentialKind.DEVICE:
+                        scope = context.scope
+                        resource_id = context.device_id
+                    else:
+                        scope = f"fleet/{tenant or context.tenant_id}"
+                        resource_id = ""
+                    request_seed = "\n".join((
+                        context.credential_id,
+                        self.command,
+                        self.path,
+                        permission,
+                        self.headers.get("X-Angerona-Timestamp", ""),
+                        self.headers.get("X-Angerona-Nonce", ""),
+                    )).encode("utf-8")
+                    request_id = "fleet:" + hashlib.sha256(request_seed).hexdigest()
+                    try:
+                        decision = owner.authorization_policy.decide(
+                            AuthorizationRequest(
+                                request_id=request_id,
+                                principal_id=context.principal_id,
+                                permission=permission,
+                                scope=scope,
+                                resource_id=resource_id,
+                            ),
+                            now=context.authenticated_at,
+                        )
+                        allowed = structurally_allowed and (
+                            decision.allowed
+                            and owner.authorization_policy.verify_decision(decision)
+                        )
+                    except Exception:
+                        self._json(503, {
+                            "ok": False,
+                            "error": "authorization audit is unavailable",
+                        })
+                        return False
+                else:
+                    allowed = structurally_allowed and context.allows(permission)
+                if not allowed:
+                    self._json(403, {
+                        "ok": False,
+                        "error": "request is not authorized",
+                    })
+                return allowed
 
             def do_GET(self):  # noqa: N802
                 parsed = urlsplit(self.path)
@@ -500,34 +867,58 @@ class FleetLoopbackService:
                         "api_contract_sha256": openapi_contract_sha256(),
                     })
                     return
-                if not self._authorize(b""):
+                context = self._authenticate(b"")
+                if context is None:
                     return
                 if parsed.path == "/v1/openapi":
+                    if not self._authorize(context, None, FLEET_CONTRACT_READ):
+                        return
                     self._json(200, openapi_contract())
                     return
                 if parsed.path == "/v1/ingestion-capabilities":
+                    if not self._authorize(
+                        context, None, FLEET_CAPABILITIES_READ
+                    ):
+                        return
                     self._json(200, ingestion_capabilities())
                     return
                 parts = parsed.path.strip("/").split("/")
-                if parts[:2] != ["v1", "tenants"] or len(parts) not in {3, 4}:
+                if parts[:2] != ["v1", "tenants"] or len(parts) != 4:
                     self._json(404, {"ok": False, "error": "route not found"})
                     return
-                tenant = parts[2]
+                tenant, resource = parts[2], parts[3]
                 query = parse_qs(parsed.query)
-                resource = (
-                    parts[3] if len(parts) == 4
-                    else query.get("resource", ["devices"])[0]
-                )
                 try:
                     if resource == "devices":
+                        if not self._authorize(
+                            context, tenant, FLEET_DEVICE_READ
+                        ):
+                            return
                         value = [asdict(item) for item in owner.plane.devices(tenant)]
                     elif resource == "events":
-                        value = list(owner.plane.events(
+                        if not self._authorize(
+                            context, tenant, FLEET_EVENT_READ
+                        ):
+                            return
+                        page = owner.plane.event_page(
                             tenant,
                             device_id=query.get("device_id", [None])[0],
                             limit=int(query.get("limit", ["500"])[0]),
-                        ))
+                            cursor=query.get("cursor", [""])[0],
+                        )
+                        self._json(200, {
+                            "ok": True,
+                            "items": list(page.items),
+                            "next_cursor": page.next_cursor,
+                            "truncated": page.truncated,
+                            "encoded_bytes": page.encoded_bytes,
+                        })
+                        return
                     elif resource == "ingestion-health":
+                        if not self._authorize(
+                            context, tenant, FLEET_HEALTH_READ
+                        ):
+                            return
                         self._json(200, owner.plane.ingestion_health(tenant))
                         return
                     else:
@@ -539,10 +930,11 @@ class FleetLoopbackService:
             def do_POST(self):  # noqa: N802
                 try:
                     body = self._body()
-                except ValueError as exc:
+                except (ValueError, TimeoutError, OSError) as exc:
                     self._json(413, {"ok": False, "error": str(exc)})
                     return
-                if not self._authorize(body):
+                context = self._authenticate(body)
+                if context is None:
                     return
                 try:
                     decoded_body = _decode_request_body(
@@ -562,15 +954,47 @@ class FleetLoopbackService:
                     return
                 parts = urlsplit(self.path).path.strip("/").split("/")
                 try:
-                    value = json.loads(decoded_body)
                     if parts[:2] != ["v1", "tenants"] or len(parts) != 4:
                         raise KeyError("route not found")
                     tenant, resource = parts[2], parts[3]
                     if resource == "devices":
-                        value["tenant_id"] = tenant
-                        owner.plane.register_device(FleetDevice(**value))
+                        permission = FLEET_DEVICE_REGISTER
+                    elif resource in {"events", "event-batches"}:
+                        permission = FLEET_EVENT_INGEST
+                    else:
+                        raise KeyError("route not found")
+                    if not self._authorize(context, tenant, permission):
+                        return
+                    value = _strict_json(decoded_body)
+                    if resource == "devices":
+                        if not isinstance(value, dict):
+                            raise ValueError("device envelope must be an object")
+                        allowed_fields = {
+                            "device_id", "public_key", "hostname_token",
+                            "platform", "version", "group_id",
+                        }
+                        if set(value) - allowed_fields:
+                            raise ValueError("device envelope has unknown fields")
+                        owner.plane.register_device(FleetDevice(
+                            tenant_id=tenant,
+                            device_id=value["device_id"],
+                            public_key=value["public_key"],
+                            hostname_token=value["hostname_token"],
+                            platform=value["platform"],
+                            version=value["version"],
+                            group_id=value.get("group_id", "default"),
+                        ))
                         result: Mapping[str, Any] = {"ok": True}
                     elif resource == "events":
+                        if not isinstance(value, dict):
+                            raise ValueError("event envelope must be an object")
+                        if not self._authorize(
+                            context,
+                            tenant,
+                            permission,
+                            device_ids={str(value.get("device_id", ""))},
+                        ):
+                            return
                         result = {
                             "ok": True,
                             "receipt": asdict(
@@ -582,6 +1006,18 @@ class FleetLoopbackService:
                             raise ValueError(
                                 "batch envelope must contain only events"
                             )
+                        device_ids = {
+                            str(event.get("device_id", ""))
+                            for event in value["events"]
+                            if isinstance(event, dict)
+                        }
+                        if not self._authorize(
+                            context,
+                            tenant,
+                            permission,
+                            device_ids=device_ids,
+                        ):
+                            return
                         result = {
                             "ok": True,
                             "receipts": [
@@ -613,8 +1049,9 @@ class FleetLoopbackService:
                 except (TypeError, ValueError, PermissionError, KeyError) as exc:
                     self._json(400, {"ok": False, "error": str(exc)})
 
-        self._server = ThreadingHTTPServer((self.host, self.port), Handler)
-        self._server.daemon_threads = True
+        self._server = BoundedThreadingHTTPServer(
+            (self.host, self.port), Handler
+        )
         self._thread = threading.Thread(
             target=self._server.serve_forever,
             name="AngeronaFleetLoopback",
@@ -629,9 +1066,11 @@ class FleetLoopbackService:
         self._thread = None
         if server is None:
             return True
+        started = time.monotonic()
         server.shutdown()
-        server.server_close()
         if thread is not None:
             thread.join(max(0.1, min(float(timeout), 10.0)))
-            return not thread.is_alive()
-        return True
+        elapsed = time.monotonic() - started
+        drained = server.wait_for_handlers(max(0.0, float(timeout) - elapsed))
+        server.server_close()
+        return drained and (thread is None or not thread.is_alive())

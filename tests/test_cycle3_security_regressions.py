@@ -25,6 +25,24 @@ def test_clearing_protected_credential_deletes_store_and_live_value(tmp_path, mo
     assert "TEST_ANGERONA_SECRET" not in os.environ
 
 
+def test_internal_protected_values_never_enter_process_environment(
+    tmp_path, monkeypatch
+):
+    key = "ANGERONA_INTERNAL_TEST_BUNDLE"
+    monkeypatch.setattr(secure_store, "_protect_bytes", lambda value: value)
+    monkeypatch.setattr(secure_store, "_unprotect_bytes", lambda value: value)
+    monkeypatch.setattr(secure_store, "_private_acl", lambda _path: None)
+    monkeypatch.setenv(key, "leaked-old-value")
+
+    secure_store.write_secret_map({key: "protected-only"}, tmp_path)
+
+    assert secure_store.read_secret_map(tmp_path)[key] == "protected-only"
+    assert key not in os.environ
+    monkeypatch.setenv(key, "leaked-again")
+    secure_store.load_into_environment(tmp_path)
+    assert key not in os.environ
+
+
 def test_cloud_privacy_redacts_short_secrets_ipv6_unc_hostname_and_urls(monkeypatch):
     monkeypatch.setenv("COMPUTERNAME", "PRIVATE-PC")
     text = privacy.redact_text(

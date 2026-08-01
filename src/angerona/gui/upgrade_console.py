@@ -51,8 +51,52 @@ _PROVIDER_ENV = {
 _DEFAULT_OLLAMA_MODELS = ["llama3:8b", "mistral:7b", "phi3:latest"]
 
 
-class _UpgradeWorkerSignals(QObject):
-    finished = Signal(str, int, object)
+class _UpgradeWorkerBridge(QObject):
+    """Keep worker result delivery alive until every submitted job finishes.
+
+    The console can be deleted while a request is still running.  Parenting this
+    bridge to the application, rather than the console or QRunnable, gives the
+    signal source a stable lifetime.  Qt automatically drops the connection to
+    a deleted console, and the bridge deletes itself after its final job.
+    """
+
+    _worker_finished = Signal(str, int, object)
+    result_ready = Signal(str, int, object)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._pending = 0
+        self._console_closed = False
+        self._worker_finished.connect(
+            self._deliver_result,
+            Qt.ConnectionType.QueuedConnection,
+        )
+
+    def track_submission(self) -> None:
+        self._pending += 1
+
+    def submission_failed(self, operation: str, token: int, result: object) -> None:
+        """Balance a job that the thread pool rejected before it could run."""
+        self._complete_one(operation, token, result)
+
+    def console_closed(self) -> None:
+        self._console_closed = True
+        self._delete_when_idle()
+
+    @Slot(str, int, object)
+    def _deliver_result(self, operation: str, token: int, result: object) -> None:
+        self._complete_one(operation, token, result)
+
+    def _complete_one(self, operation: str, token: int, result: object) -> None:
+        self._pending = max(0, self._pending - 1)
+        # Emitting remains safe after the console is deleted: Qt disconnects a
+        # destroyed receiver automatically, while this bridge remains alive.
+        self.result_ready.emit(operation, token, result)
+        self._delete_when_idle()
+
+    def _delete_when_idle(self) -> None:
+        if self._console_closed and self._pending == 0:
+            self.deleteLater()
 
 
 class _UpgradeWorker(QRunnable):
@@ -63,6 +107,7 @@ class _UpgradeWorker(QRunnable):
         operation: str,
         token: int,
         call: Callable,
+        bridge: _UpgradeWorkerBridge,
         *args,
     ) -> None:
         super().__init__()
@@ -70,7 +115,7 @@ class _UpgradeWorker(QRunnable):
         self._token = token
         self._call = call
         self._args = args
-        self.signals = _UpgradeWorkerSignals()
+        self._bridge = bridge
 
     @Slot()
     def run(self) -> None:
@@ -78,7 +123,16 @@ class _UpgradeWorker(QRunnable):
             result = self._call(*self._args)
         except Exception as exc:
             result = {"error": str(exc)}
-        self.signals.finished.emit(self._operation, self._token, result)
+        try:
+            self._bridge._worker_finished.emit(
+                self._operation,
+                self._token,
+                result,
+            )
+        except RuntimeError:
+            # QApplication shutdown may destroy the bridge while a bounded
+            # network call is still unwinding.  There is no UI left to update.
+            pass
 
 
 class AngeronaUpgradeConsole(QMainWindow):
@@ -88,6 +142,8 @@ class AngeronaUpgradeConsole(QMainWindow):
         self.config = config
         self.bus = bus
         self._async_pool = QThreadPool.globalInstance()
+        self._async_bridge = _UpgradeWorkerBridge(QApplication.instance())
+        self._async_bridge.result_ready.connect(self._handle_async_result)
         self._accept_async_results = True
         self._async_token = 0
         self._model_list_in_flight = False
@@ -311,12 +367,21 @@ class AngeronaUpgradeConsole(QMainWindow):
         token = self._new_async_token()
         self._model_list_token = token
         self._model_list_in_flight = True
-        worker = _UpgradeWorker("list_models", token, self._list_ollama_models)
-        worker.signals.finished.connect(self._handle_async_result)
+        worker = _UpgradeWorker(
+            "list_models",
+            token,
+            self._list_ollama_models,
+            self._async_bridge,
+        )
+        self._async_bridge.track_submission()
         try:
             self._async_pool.start(worker)
         except Exception as exc:
-            self._handle_async_result("list_models", token, {"error": str(exc)})
+            self._async_bridge.submission_failed(
+                "list_models",
+                token,
+                {"error": str(exc)},
+            )
 
     def _check_model(self):
         model = self.model_box.currentText().strip()
@@ -338,12 +403,22 @@ class AngeronaUpgradeConsole(QMainWindow):
         self._model_check_in_flight = True
         self._model_check_btn.setEnabled(False)
         self._model_status.setText(f"Checking {model}…")
-        worker = _UpgradeWorker("check_model", token, self._model_is_available, model)
-        worker.signals.finished.connect(self._handle_async_result)
+        worker = _UpgradeWorker(
+            "check_model",
+            token,
+            self._model_is_available,
+            self._async_bridge,
+            model,
+        )
+        self._async_bridge.track_submission()
         try:
             self._async_pool.start(worker)
         except Exception as exc:
-            self._handle_async_result("check_model", token, {"error": str(exc)})
+            self._async_bridge.submission_failed(
+                "check_model",
+                token,
+                {"error": str(exc)},
+            )
 
     def _model_is_available(self, model: str) -> bool:
         import json, urllib.request
@@ -412,6 +487,7 @@ class AngeronaUpgradeConsole(QMainWindow):
             timer = getattr(self, name, None)
             if timer is not None:
                 timer.stop()
+        self._async_bridge.console_closed()
         super().closeEvent(event)
 
     def _copy_dialog(self, title: str, body: str, command: str | None = None):

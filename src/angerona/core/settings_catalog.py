@@ -39,8 +39,9 @@ AREAS = (
     SettingsArea(
         "aria", "ARIA",
         "Assistant, microphone, voice, mailbox, Teams and optional egress.",
-        ("aria", "microphone", "mic", "voice", "speech", "cloud", "mail",
-         "teams", "research", "webhook", "notification"),
+        ("aria", "microphone", "mic", "voice", "voice model", "speech",
+         "privacy", "privacy defaults", "cloud", "mail", "teams",
+         "research", "webhook", "notification"),
         "Optional egress; off by default", False,
     ),
     SettingsArea(
@@ -59,7 +60,8 @@ AREAS = (
     SettingsArea(
         "keys", "API Keys",
         "Encrypted credentials and provider preference for optional cloud use.",
-        ("key", "api", "credential", "secret", "provider", "openai",
+        ("key", "api", "api key", "api keys", "cloud api key",
+         "cloud api keys", "credential", "secret", "provider", "openai",
          "anthropic", "gemini", "groq"),
         "Secrets stored outside settings.json", False,
     ),
@@ -88,21 +90,71 @@ def validate_catalog(areas=AREAS) -> None:
 
 
 def resolve_area(query: str) -> SettingsArea | None:
-    text = str(query or "").strip().casefold()
+    text, query_words = _normalize_search(query)
     if not text:
         return None
     exact = next(
-        (area for area in AREAS if text in {area.key, area.title.casefold()}),
+        (
+            area
+            for area in AREAS
+            if text
+            in {
+                _normalize_search(area.key)[0],
+                _normalize_search(area.title)[0],
+            }
+        ),
         None,
     )
     if exact is not None:
         return exact
-    scored = [
-        (max((len(word) for word in area.keywords if word in text), default=0), area)
-        for area in AREAS
-    ]
-    score, area = max(scored, key=lambda item: item[0])
-    return area if score else None
+
+    candidates: list[tuple[tuple[int, int, int, int], SettingsArea]] = []
+    for area in AREAS:
+        matches: list[tuple[str, tuple[str, ...]]] = []
+        for keyword in area.keywords:
+            normalized, keyword_words = _normalize_search(keyword)
+            if _contains_phrase(query_words, keyword_words):
+                matches.append((normalized, keyword_words))
+        if not matches:
+            continue
+        covered = {word for _keyword, words in matches for word in words}
+        score = (
+            max(len(words) for _keyword, words in matches),
+            max(len(keyword) for keyword, _words in matches),
+            len(covered),
+            len(matches),
+        )
+        candidates.append((score, area))
+
+    if not candidates:
+        return None
+    best_score = max(score for score, _area in candidates)
+    winners = [area for score, area in candidates if score == best_score]
+    # An unresolved semantic tie is safer than routing according to catalog order.
+    return winners[0] if len(winners) == 1 else None
+
+
+def _normalize_search(value: object) -> tuple[str, tuple[str, ...]]:
+    """Return punctuation-insensitive text and its words for bounded matching."""
+    folded = str(value or "").strip().casefold()
+    normalized = " ".join(
+        "".join(character if character.isalnum() else " " for character in folded)
+        .split()
+    )
+    return normalized, tuple(normalized.split())
+
+
+def _contains_phrase(
+    words: tuple[str, ...], phrase: tuple[str, ...],
+) -> bool:
+    """Match whole words in order; substrings such as ``api`` in ``capital`` fail."""
+    width = len(phrase)
+    if not width or width > len(words):
+        return False
+    return any(
+        words[index:index + width] == phrase
+        for index in range(len(words) - width + 1)
+    )
 
 
 validate_catalog()

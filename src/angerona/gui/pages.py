@@ -3742,16 +3742,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(_scroll(self._tab_enterprise()), "Enterprise")
         tabs.addTab(_scroll(self._tab_aria()),    "ARIA")
         tabs.addTab(_scroll(self._tab_trusted_processes()), "Trusted Processes")
-        # Mobile Integration is consolidated into the Advanced Management Console so
-        # there is only ONE place to configure it. Show a short redirect here.
-        _mob = QWidget(); _mv = QVBoxLayout(_mob)
-        _lbl = QLabel(
-            "Mobile Integration has moved to the Advanced Management Console.\n\n"
-            "Open the main window's  \U0001F9F0 CONSOLE  button, then the "
-            "'Mobile Integration' tab — configure the transport (Signal / ntfy / "
-            "Pushover / SMS), save the settings, and send a live test alert there.")
-        _lbl.setWordWrap(True); _mv.addWidget(_lbl); _mv.addStretch()
-        tabs.addTab(_scroll(_mob), "Mobile Integration")
+        tabs.addTab(_scroll(self._tab_mobile()), "Mobile Integration")
         tabs.addTab(_scroll(self._tab_apikeys()), "API Keys")
         self._settings_search.textChanged.connect(self._find_setting)
 
@@ -3759,7 +3750,8 @@ class SettingsDialog(QDialog):
         btn_row = QHBoxLayout()
         self._privacy_btn = QPushButton("Restore privacy defaults")
         self._privacy_btn.setToolTip(
-            "Turns off optional cloud, mailbox, channel, Teams, and research egress.")
+            "Turns off optional cloud, mailbox, channel, Teams, mobile, and research "
+            "egress.")
         self._privacy_btn.clicked.connect(self._restore_privacy_defaults)
         btn_row.addWidget(self._privacy_btn)
         btn_row.addStretch()
@@ -3810,13 +3802,14 @@ class SettingsDialog(QDialog):
         for name in ("_aria_voice_cloud_chk", "_aria_cloud_fallback_chk",
                      "_alert_analysis_cloud_chk",
                      "_aria_push_chk", "_aria_inbox_chk", "_aria_egress_chk",
-                     "_teams_chk", "_teams_skip_chk"):
+                     "_teams_chk", "_teams_skip_chk", "_mob_chk"):
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.setChecked(False)
         self._select_tab("ARIA")
         self._aria_test_status.setText(
-            "Privacy defaults staged: optional cloud and remote egress are off. Click Save.")
+            "Privacy defaults staged: optional cloud, mobile, and remote egress are "
+            "off. Click Save.")
 
     # ── Tab builders ──────────────────────────────────────────────────────────
 
@@ -5255,11 +5248,17 @@ class SettingsDialog(QDialog):
         if not pin:
             return
         try:
-            from angerona.engines.hardware_crypto import protect as _protect
             import base64
+            from angerona.modules.hardware_crypto import protect as _protect
+
             blob = _protect(pin.encode("utf-8"), b"Angerona-MOBILE-PIN-v1")
+            if not blob:
+                raise RuntimeError("Windows DPAPI is unavailable")
             from angerona.core.config import write_env_keys
-            write_env_keys({"ANGERONA_MOBILE_PIN_BLOB": base64.b64encode(blob).decode()})
+            write_env_keys({
+                "ANGERONA_MOBILE_PIN_DPAPI": base64.b64encode(blob).decode("ascii")
+            })
+            self._mob_pin.clear()
         except Exception as exc:
             QMessageBox.warning(self, "PIN save failed",
                                 f"Could not DPAPI-wrap the PIN: {exc}")
@@ -5438,16 +5437,11 @@ class SettingsDialog(QDialog):
         except Exception:
             pass
 
-        # Mobile configuration moved to the Advanced Management Console.  Older
-        # Settings layouts still create these controls, but the redirect-only
-        # layout intentionally does not. Preserve the existing config when the
-        # controls are absent instead of failing every Settings save.
-        if hasattr(self, "_mob_chk"):
-            self._cfg.mobile_enabled     = self._mob_chk.isChecked()
-            self._cfg.mobile_signal_cli  = self._mob_cli.text().strip()
-            self._cfg.mobile_host_number = self._mob_host.text().strip()
-            self._cfg.mobile_dest_number = self._mob_dest.text().strip()
-            self._save_mobile_pin()
+        self._cfg.mobile_enabled     = self._mob_chk.isChecked()
+        self._cfg.mobile_signal_cli  = self._mob_cli.text().strip()
+        self._cfg.mobile_host_number = self._mob_host.text().strip()
+        self._cfg.mobile_dest_number = self._mob_dest.text().strip()
+        self._save_mobile_pin()
 
         order = [self._ai_order_list.item(i).data(Qt.UserRole)
                  for i in range(self._ai_order_list.count())

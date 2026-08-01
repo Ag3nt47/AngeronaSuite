@@ -1,8 +1,12 @@
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import pytest
 
+import angerona.core.audit_export as audit_export
 from angerona.core.audit_export import (
     AuditEvent, AuditExportRequest, AuditExporter, SignedAuditExport,
     write_audit_export,
@@ -100,3 +104,114 @@ def test_request_scope_time_and_payload_bounds_are_validated():
         _request(scopes=())
     with pytest.raises(ValueError, match="64 KiB"):
         _event("event-001", 10, details={"message": "x" * (70 * 1024)})
+
+
+def test_input_record_and_byte_bounds_stop_generators_without_exhausting(monkeypatch):
+    exporter = AuditExporter(b"k" * 32, b"s" * 16, clock=lambda: 500)
+    yielded: list[int] = []
+
+    def too_many_events():
+        for index in range(4):
+            yielded.append(index)
+            if index == 3:
+                raise AssertionError("exporter exhausted the untrusted iterable")
+            yield _event(f"event-{index:03d}", index)
+
+    monkeypatch.setattr(audit_export, "MAX_INPUT_RECORDS", 2)
+    with pytest.raises(ValueError, match="100000 records"):
+        exporter.export(too_many_events(), _request())
+    assert yielded == [0, 1, 2]
+
+    byte_yielded: list[int] = []
+
+    def oversized_events():
+        byte_yielded.append(1)
+        yield _event("event-100", 100)
+        raise AssertionError("exporter read beyond the byte budget")
+
+    monkeypatch.setattr(audit_export, "MAX_INPUT_RECORDS", 100_000)
+    monkeypatch.setattr(audit_export, "MAX_INPUT_BYTES", 1)
+    with pytest.raises(ValueError, match="64 MiB"):
+        exporter.export(oversized_events(), _request())
+    assert byte_yielded == [1]
+
+
+def test_privacy_bearing_mapping_keys_are_redacted_from_export():
+    exporter = AuditExporter(b"k" * 32, b"s" * 16, clock=lambda: 500)
+    details = {
+        "contact=private.person@example.com": "contact record",
+        "username=PrivatePerson": "account record",
+        r"C:\Users\PrivatePerson\sensitive.txt": "file record",
+        "secret=do-not-export": "credential record",
+    }
+    export = exporter.export(
+        (_event("event-001", 10, details=details),),
+        _request(),
+    )
+    raw = export.canonical().decode("utf-8")
+    for private_value in (
+        "private.person@example.com",
+        "PrivatePerson",
+        r"C:\\Users",
+        "do-not-export",
+    ):
+        assert private_value not in raw
+    assert exporter.verify(export)
+
+
+@pytest.mark.parametrize(
+    "details",
+    (
+        {"one@example.com": 1, "two@example.com": 2},
+        {"x" * 128 + "a": 1, "x" * 128 + "b": 2},
+    ),
+)
+def test_mapping_key_normalization_and_truncation_collisions_fail_closed(details):
+    exporter = AuditExporter(b"k" * 32, b"s" * 16, clock=lambda: 500)
+    with pytest.raises(ValueError, match="normalization collision"):
+        exporter.export(
+            (_event("event-001", 10, details=details),),
+            _request(),
+        )
+
+
+def test_two_synchronized_writers_publish_whole_exports_without_temp_collision(
+    tmp_path, monkeypatch,
+):
+    exporter = AuditExporter(b"k" * 32, b"s" * 16, clock=lambda: 500)
+    first = exporter.export((_event("event-001", 10),), _request())
+    second = exporter.export((_event("event-002", 20),), _request())
+    target = tmp_path / "audit.json"
+    start = threading.Barrier(2)
+    first_replace = threading.Event()
+    release_replace = threading.Event()
+    call_guard = threading.Lock()
+    replace_calls = 0
+    original_replace = audit_export.replace_with_retry
+
+    def slow_first_replace(source, destination):
+        nonlocal replace_calls
+        with call_guard:
+            replace_calls += 1
+            is_first = replace_calls == 1
+        if is_first:
+            first_replace.set()
+            assert release_replace.wait(5)
+        original_replace(source, destination)
+
+    def writer(value):
+        start.wait(timeout=5)
+        write_audit_export(target, value)
+
+    monkeypatch.setattr(audit_export, "replace_with_retry", slow_first_replace)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(writer, value) for value in (first, second)]
+        assert first_replace.wait(5)
+        time.sleep(0.05)
+        release_replace.set()
+        for future in futures:
+            future.result(timeout=5)
+
+    assert target.read_bytes() in {first.canonical(), second.canonical()}
+    assert replace_calls == 2
+    assert not list(tmp_path.glob(".audit.json.*.tmp"))

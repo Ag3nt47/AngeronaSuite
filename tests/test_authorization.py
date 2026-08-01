@@ -2,6 +2,7 @@ from angerona.core.authorization import (
     AuthorizationPolicy, AuthorizationRequest, Principal, PrincipalKind, Role,
     RoleBinding, STANDARD_ROLES, STANDARD_ROLES_BY_ID,
 )
+import math
 import pytest
 
 
@@ -65,6 +66,35 @@ def test_service_account_requires_and_enforces_expiry():
     assert not expired.allowed and expired.reason == "principal expired"
 
 
+@pytest.mark.parametrize("expiry", [math.nan, math.inf, -math.inf, True, 0])
+def test_service_account_requires_finite_positive_expiry(expiry):
+    with pytest.raises(ValueError, match="expiry|explicit expiry"):
+        Principal("service:bad", PrincipalKind.SERVICE, expires_at=expiry)
+
+
+def test_cached_service_allow_is_not_execution_authority_after_expiry():
+    engine = policy()
+    request = AuthorizationRequest(
+        "expiring", "sensor:one", "evidence.append", "fleet/acme/host-1"
+    )
+    allowed = engine.decide(request, now=100)
+    denied = engine.decide(request, now=201)
+    assert allowed.allowed and allowed.valid_until == 200
+    assert not denied.allowed and denied.reason == "principal expired"
+    assert denied != allowed
+    assert engine.verify_decision(allowed)
+    assert engine.verify_decision(denied)
+
+
+@pytest.mark.parametrize("now", [math.nan, math.inf, -math.inf, -1])
+def test_authorization_rejects_invalid_decision_clock(now):
+    with pytest.raises(ValueError, match="time"):
+        policy().decide(
+            AuthorizationRequest("bad-time", "alice", "case.read", "fleet/acme"),
+            now=now,
+        )
+
+
 def test_wildcard_is_bounded_and_receipt_tampering_detected():
     engine = AuthorizationPolicy(
         (Principal("admin", PrincipalKind.HUMAN),),
@@ -98,6 +128,22 @@ def test_receipt_binds_every_operation_field_and_request_id_is_idempotent():
             ),
             now=10,
         )
+
+
+def test_policy_inputs_are_immutable_after_policy_hash_is_computed():
+    engine = policy()
+    original_hash = engine.policy_hash
+    with pytest.raises(TypeError):
+        engine.roles["backdoor"] = Role("backdoor", ("case.delete",))
+    with pytest.raises(TypeError):
+        engine.principals["mallory"] = Principal(
+            "mallory", PrincipalKind.HUMAN
+        )
+    assert engine.policy_hash == original_hash
+    assert not engine.decide(
+        AuthorizationRequest("immutable", "alice", "case.delete", "fleet/acme"),
+        now=100,
+    ).allowed
 
 
 @pytest.mark.parametrize("scope", (

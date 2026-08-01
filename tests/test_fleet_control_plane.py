@@ -53,7 +53,55 @@ def test_cross_tenant_and_conflicting_identity_operations_fail_closed(tmp_path):
 
 def test_quarantined_devices_cannot_ingest(tmp_path):
     plane = FleetControlPlane(tmp_path / "fleet.db", {"tenant-a": b"a" * 32})
-    plane.register_device(replace(device("tenant-a", "device-a"), state="quarantined"))
+    enrolled = device("tenant-a", "device-a")
+    plane.register_device(enrolled)
+    plane.transition_device_state(
+        "tenant-a", "device-a", "quarantined", expected_state="active"
+    )
     with pytest.raises(PermissionError, match="quarantined"):
         plane.ingest("tenant-a", "device-a", "event-001", {"kind": "x"})
+    plane.close()
+
+
+@pytest.mark.parametrize("state", ["quarantined", "revoked", "retired"])
+def test_reenrollment_cannot_clear_restrictive_device_state(tmp_path, state):
+    plane = FleetControlPlane(
+        tmp_path / "fleet.db", {"tenant-a": b"a" * 32}, clock=lambda: 100
+    )
+    enrolled = device("tenant-a", "device-a")
+    plane.register_device(enrolled)
+    plane.transition_device_state(
+        "tenant-a", "device-a", state, expected_state="active"
+    )
+    with pytest.raises(PermissionError, match="administrative API"):
+        plane.register_device(enrolled)
+    assert plane.devices("tenant-a")[0].state == state
+    plane.close()
+
+
+def test_device_state_transition_is_compare_and_swap_and_terminal(tmp_path):
+    plane = FleetControlPlane(tmp_path / "fleet.db", {"tenant-a": b"a" * 32})
+    plane.register_device(device("tenant-a", "device-a"))
+    plane.transition_device_state(
+        "tenant-a", "device-a", "revoked", expected_state="active"
+    )
+    with pytest.raises(RuntimeError, match="changed concurrently"):
+        plane.transition_device_state(
+            "tenant-a", "device-a", "retired", expected_state="active"
+        )
+    with pytest.raises(PermissionError, match="not permitted"):
+        plane.transition_device_state(
+            "tenant-a", "device-a", "active", expected_state="revoked"
+        )
+    plane.close()
+
+
+def test_registration_uses_server_time_not_caller_last_seen(tmp_path):
+    plane = FleetControlPlane(
+        tmp_path / "fleet.db", {"tenant-a": b"a" * 32}, clock=lambda: 1234
+    )
+    plane.register_device(replace(
+        device("tenant-a", "device-a"), last_seen=9_999_999_999
+    ))
+    assert plane.devices("tenant-a")[0].last_seen == 1234
     plane.close()

@@ -124,6 +124,7 @@ class AngeronaApp:
         self._resilience = None
         self._fleet_plane = None
         self._fleet_service = None
+        self._admin_audit = None
         self._endpoint_identity = None
 
         # MCP server — opt-in loopback tool server for Claude Desktop / Claude Code.
@@ -434,6 +435,8 @@ class AngeronaApp:
         """Start the opt-in, authenticated, loopback-only fleet endpoint."""
         if not getattr(self.config, "fleet_service_enabled", False):
             return False
+        if not hasattr(self, "_admin_audit"):
+            self._admin_audit = None
         try:
             import hashlib
             import hmac
@@ -441,46 +444,64 @@ class AngeronaApp:
             import os
             import platform
             import socket
+            import time
 
             secret = os.environ.get("ANGERONA_FLEET_SERVICE_KEY", "")
-            if len(secret) < 32:
-                raise ValueError("protected fleet service key is unavailable")
-            service_key = hashlib.sha256(
-                b"angerona-fleet-service-v1\0" + secret.encode("utf-8")
-            ).digest()
-            tenant_key = hmac.new(
-                service_key,
-                b"angerona-fleet-tenant-v1\0"
-                + self.config.fleet_tenant_id.encode("utf-8"),
-                hashlib.sha256,
-            ).digest()
             from angerona import __version__
             from angerona.core.endpoint_identity import EndpointIdentity
             from angerona.core.fleet_control_plane import (
                 FleetControlPlane,
                 FleetDevice,
             )
-            from angerona.core.fleet_service import FleetLoopbackService
+            from angerona.core.fleet_credentials import (
+                load_or_migrate_local_credentials,
+            )
+            from angerona.core.fleet_service import (
+                FLEET_DEVICE_PERMISSIONS,
+                FLEET_TENANT_PERMISSIONS,
+                FleetLoopbackService,
+            )
+            from angerona.core.admin_audit import AdminAuditLedger
+            from angerona.core.authorization import (
+                AuthorizationPolicy,
+                Principal,
+                PrincipalKind,
+                Role,
+                RoleBinding,
+            )
 
             self._endpoint_identity = EndpointIdentity(
                 self.config.data_dir / "identity"
             )
+            identity = self._endpoint_identity
+            credential_set = load_or_migrate_local_credentials(
+                self.config.data_dir,
+                self.config.fleet_tenant_id,
+                identity.device_id,
+                legacy_secret=secret,
+            )
+            tenant_key = credential_set.receipt_signing_key
             self._fleet_plane = FleetControlPlane(
                 self.config.data_dir / "fleet-control.db",
                 {self.config.fleet_tenant_id: tenant_key},
             )
-            identity = self._endpoint_identity
             hostname_token = "tok_" + hmac.new(
                 tenant_key,
                 b"angerona-hostname-v1\0"
                 + socket.gethostname().encode("utf-8", errors="replace"),
                 hashlib.sha256,
             ).hexdigest()[:48]
-            state = (
+            desired_state = (
                 "revoked" if identity.revoked
                 else "quarantined" if identity.quarantined
                 else "active"
             )
+            existing = next((
+                item for item in self._fleet_plane.devices(
+                    self.config.fleet_tenant_id
+                ) if item.device_id == identity.device_id
+            ), None)
+            current_state = existing.state if existing is not None else "active"
             self._fleet_plane.register_device(FleetDevice(
                 tenant_id=self.config.fleet_tenant_id,
                 device_id=identity.device_id,
@@ -490,20 +511,88 @@ class AngeronaApp:
                 hostname_token=hostname_token,
                 platform=platform.system().casefold()[:40] or "unknown",
                 version=__version__,
-                state=state,
+                state=current_state,
             ))
+            if desired_state != current_state:
+                restrictive = {
+                    "active": {"quarantined", "revoked"},
+                    "quarantined": {"revoked"},
+                    "revoked": set(),
+                    "retired": set(),
+                }
+                if desired_state in restrictive[current_state]:
+                    self._fleet_plane.transition_device_state(
+                        self.config.fleet_tenant_id,
+                        identity.device_id,
+                        desired_state,
+                        expected_state=current_state,
+                    )
+            credentials = credential_set.registry
+            audit_key = credential_set.authorization_audit_key
+            self._admin_audit = AdminAuditLedger(
+                self.config.data_dir / "admin-audit.db", audit_key
+            )
+            authorization_expiry = time.time() + (366 * 24 * 60 * 60)
+            authorization_policy = AuthorizationPolicy(
+                (
+                    Principal(
+                        credential_set.operator.authenticated_context(
+                            time.time()
+                        ).principal_id,
+                        PrincipalKind.SERVICE,
+                        expires_at=authorization_expiry,
+                    ),
+                    Principal(
+                        credential_set.device.authenticated_context(
+                            time.time()
+                        ).principal_id,
+                        PrincipalKind.SERVICE,
+                        expires_at=authorization_expiry,
+                    ),
+                ),
+                (
+                    Role("fleet-local-operator", FLEET_TENANT_PERMISSIONS),
+                    Role("fleet-local-device", FLEET_DEVICE_PERMISSIONS),
+                ),
+                (
+                    RoleBinding(
+                        credential_set.operator.authenticated_context(
+                            time.time()
+                        ).principal_id,
+                        "fleet-local-operator",
+                        f"fleet/{self.config.fleet_tenant_id}",
+                    ),
+                    RoleBinding(
+                        credential_set.device.authenticated_context(
+                            time.time()
+                        ).principal_id,
+                        "fleet-local-device",
+                        "fleet/"
+                        f"{self.config.fleet_tenant_id}/device/"
+                        f"{identity.device_id}",
+                    ),
+                ),
+                audit_key,
+                audit_sink=self._admin_audit.record_authorization,
+            )
             self._fleet_service = FleetLoopbackService(
                 self._fleet_plane,
-                service_key,
+                credentials,
                 self.config.data_dir / "fleet-replay.json",
                 port=self.config.fleet_service_port,
+                authorization_policy=authorization_policy,
             )
             self._fleet_service.start()
             return True
         except Exception as exc:
-            service, plane = self._fleet_service, self._fleet_plane
+            service, plane, admin_audit = (
+                self._fleet_service,
+                self._fleet_plane,
+                getattr(self, "_admin_audit", None),
+            )
             self._fleet_service = None
             self._fleet_plane = None
+            self._admin_audit = None
             self._endpoint_identity = None
             try:
                 if service is not None:
@@ -513,6 +602,11 @@ class AngeronaApp:
             try:
                 if plane is not None:
                     plane.close()
+            except Exception:
+                pass
+            try:
+                if admin_audit is not None:
+                    admin_audit.close()
             except Exception:
                 pass
             self._blackbox_note(
@@ -604,18 +698,26 @@ class AngeronaApp:
                 self._mcp.stop()
             except Exception:
                 pass
+        fleet_drained = True
         if self._fleet_service is not None:
             try:
-                self._fleet_service.stop()
+                fleet_drained = bool(self._fleet_service.stop())
             except Exception:
-                pass
+                fleet_drained = False
             self._fleet_service = None
-        if self._fleet_plane is not None:
+        if self._fleet_plane is not None and fleet_drained:
             try:
                 self._fleet_plane.close()
             except Exception:
                 pass
             self._fleet_plane = None
+        admin_audit = getattr(self, "_admin_audit", None)
+        if admin_audit is not None and fleet_drained:
+            try:
+                admin_audit.close()
+            except Exception:
+                pass
+            self._admin_audit = None
         self._endpoint_identity = None
         self.manager.stop_all()
         try:
