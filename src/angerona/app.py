@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import QApplication
 
 from angerona.core.config import Config
-from angerona.core.eventbus import EventBus
+from angerona.core.eventbus import Event, EventBus, Severity
 from angerona.core.storage import AsyncFlightRecorder, FlightRecorder
 from angerona.core.module_manager import ModuleManager
 from angerona.core.platforms import current_platform
@@ -22,6 +22,8 @@ class AngeronaApp:
     def __init__(self, qt: QApplication) -> None:
         self.qt = qt
         self.config = Config.load()
+        self._startup_degradations: list[Event] = []
+        self._startup_events_ready = False
         # Do not rewrite the highest-privilege Scheduled Task during ordinary
         # startup. That caused repeated Defender/UAC access prompts. Settings
         # changes registration only after an explicit operator toggle.
@@ -48,8 +50,13 @@ class AngeronaApp:
             )
             self.bus.subscribe(self.process_baseline.submit_event)
             self.process_baseline.start()
-        except Exception:
+        except Exception as exc:
             self.process_baseline = None
+            self._record_startup_degradation(
+                "Process Baseline Learner",
+                "normal-process learning is unavailable; protection remains active",
+                exc,
+            )
 
         # The authoritative recorder batches signed events off producer
         # threads. Queue overflow is preserved in the authenticated append-only
@@ -57,6 +64,8 @@ class AngeronaApp:
         self.flight_recorder_worker = AsyncFlightRecorder(self.storage)
         self.flight_recorder_worker.start()
         self.bus.subscribe(self.flight_recorder_worker.submit)
+        self._startup_events_ready = True
+        self._flush_startup_degradations()
 
         # Build the normalized hunt read-model asynchronously. EventBus invokes
         # subscribers inline, so this subscriber only performs a bounded
@@ -74,7 +83,7 @@ class AngeronaApp:
             )
             self.evidence_ingestion.start()
             self.bus.subscribe(self.evidence_ingestion.submit_event)
-        except Exception:
+        except Exception as exc:
             # The normalized read-model is additive. Its failure must not take
             # down the authoritative signed recorder or protection modules.
             if self.evidence_store is not None:
@@ -84,6 +93,11 @@ class AngeronaApp:
                     pass
             self.evidence_store = None
             self.evidence_ingestion = None
+            self._record_startup_degradation(
+                "Normalized Evidence Store",
+                "structured hunting is unavailable; the signed recorder remains authoritative",
+                exc,
+            )
 
         # Account for sensor sequence continuity independently of conclusions.
         # Legacy sensors without sequence metadata remain explicitly "unknown".
@@ -120,8 +134,12 @@ class AngeronaApp:
                 from angerona.engines.mcp_server import AngeronaMCPServer
                 self._mcp = AngeronaMCPServer(
                     self.storage, self.bus, self.manager, self.config)
-            except Exception:
-                pass   # MCP failure must never block startup
+            except Exception as exc:
+                self._record_startup_degradation(
+                    "Model Context Protocol Server",
+                    "the optional local tool server could not be prepared",
+                    exc,
+                )
 
         self.window = MainWindow(
             self.bus, self.storage, self.manager, self.config,
@@ -130,6 +148,45 @@ class AngeronaApp:
             flight_recorder_worker=self.flight_recorder_worker,
             process_baseline=self.process_baseline,
         )
+
+    def _record_startup_degradation(
+        self,
+        service: str,
+        impact: str,
+        exc: BaseException,
+        severity: Severity = Severity.MEDIUM,
+    ) -> None:
+        """Expose startup failures without leaking paths, secrets, or raw errors."""
+        event = Event(
+            module="Startup Health",
+            severity=severity,
+            message=f"{service} degraded: {impact}.",
+            details={
+                "service": str(service)[:120],
+                "impact": str(impact)[:300],
+                "error_type": type(exc).__name__[:120],
+                "startup_degraded": True,
+            },
+        )
+        if getattr(self, "_startup_events_ready", False):
+            bus = getattr(self, "bus", None)
+            if bus is not None:
+                bus.publish(event)
+                return
+        pending = getattr(self, "_startup_degradations", None)
+        if pending is None:
+            self._startup_degradations = [event]
+        else:
+            pending.append(event)
+
+    def _flush_startup_degradations(self) -> None:
+        bus = getattr(self, "bus", None)
+        if bus is None:
+            return
+        pending = list(getattr(self, "_startup_degradations", ()))
+        self._startup_degradations = []
+        for event in pending:
+            bus.publish(event)
 
     def start(self) -> None:
         # Show the window immediately so the user sees a responsive UI.
@@ -291,8 +348,23 @@ class AngeronaApp:
         Spawns a background thread for the slow work so the GUI stays
         responsive while modules import and start."""
         import threading
-        threading.Thread(target=self._load_modules, daemon=True,
+        threading.Thread(target=self._load_modules_guarded, daemon=True,
                          name="ModuleLoader").start()
+
+    def _load_modules_guarded(self) -> None:
+        """Keep a loader failure observable instead of losing a daemon thread."""
+        try:
+            self._load_modules()
+        except Exception as exc:
+            self._record_startup_degradation(
+                "Protection Module Loader",
+                "module discovery or startup stopped before completion",
+                exc,
+                Severity.CRITICAL,
+            )
+            self._blackbox_note(
+                "protection module loading failed; open Startup Health in Live Alerts"
+            )
 
     def _load_modules(self) -> None:
         """Background thread — no Qt widget access here, only thread-safe
@@ -318,8 +390,14 @@ class AngeronaApp:
                 from angerona.resilience import shutdown_token as _tok
                 _tok.clear_standdown()
                 self._resilience = start_resilience(self.bus)
-            except Exception:
+            except Exception as exc:
                 self._resilience = None
+                self._record_startup_degradation(
+                    "Resilience Supervisor",
+                    "watchdog, scanner, or Black Box supervision is unavailable",
+                    exc,
+                    Severity.HIGH,
+                )
 
         self.manager.discover()        # find built-in + drop-in modules
         # In startup Eco Mode, do not start heavy scanners merely to stop them a
@@ -339,8 +417,13 @@ class AngeronaApp:
         if self._mcp is not None:
             try:
                 self._mcp.start()
-            except Exception:
-                self._mcp = None   # port bind failure → silently disable
+            except Exception as exc:
+                self._mcp = None
+                self._record_startup_degradation(
+                    "Model Context Protocol Server",
+                    "the optional local tool server could not start",
+                    exc,
+                )
         self._start_fleet_service()
 
     def _start_fleet_service(self) -> bool:
@@ -394,6 +477,11 @@ class AngeronaApp:
             except Exception:
                 pass
             self._blackbox_note(f"local fleet service unavailable: {exc}")
+            self._record_startup_degradation(
+                "Fleet Control Plane",
+                "the opt-in loopback fleet service could not start",
+                exc,
+            )
             return False
 
     def shutdown(self) -> None:
