@@ -4235,6 +4235,13 @@ class SettingsDialog(QDialog):
         )
         lay.addWidget(self._enterprise_score)
 
+        self._enterprise_gate_summary = QLabel("")
+        self._enterprise_gate_summary.setWordWrap(True)
+        self._enterprise_gate_summary.setStyleSheet(
+            "color:#f59e0b; font-size:11px;"
+        )
+        lay.addWidget(self._enterprise_gate_summary)
+
         self._enterprise_report = QPlainTextEdit()
         self._enterprise_report.setReadOnly(True)
         self._enterprise_report.setMinimumHeight(360)
@@ -4244,10 +4251,17 @@ class SettingsDialog(QDialog):
         buttons = QHBoxLayout()
         refresh = QPushButton("Refresh assessment")
         causal = QPushButton("Build current causal snapshot")
+        copy_evidence = QPushButton("Copy public-safe evidence")
+        copy_evidence.setToolTip(
+            "Copies a bounded, content-addressed readiness report without host "
+            "names, user names, paths, credentials, or event payloads."
+        )
         refresh.clicked.connect(self._refresh_enterprise_assessment)
         causal.clicked.connect(self._refresh_enterprise_causal)
+        copy_evidence.clicked.connect(self._copy_enterprise_evidence)
         buttons.addWidget(refresh)
         buttons.addWidget(causal)
+        buttons.addWidget(copy_evidence)
         buttons.addStretch()
         lay.addLayout(buttons)
 
@@ -4268,10 +4282,11 @@ class SettingsDialog(QDialog):
         return (
             getattr(window, "manager", None),
             getattr(window, "bus", None),
+            getattr(window, "enterprise_runtime_provider", None),
         )
 
     def _refresh_enterprise_assessment(self) -> None:
-        manager, bus = self._enterprise_context()
+        manager, bus, runtime_provider = self._enterprise_context()
         if manager is None or bus is None:
             self._enterprise_score.setText("Assessment unavailable")
             self._enterprise_report.setPlainText(
@@ -4282,17 +4297,53 @@ class SettingsDialog(QDialog):
             from angerona.core.enterprise_readiness import assess, render_text
             from angerona.core.remediation_log import get_log
 
-            report = assess(manager, bus, self._cfg, get_log())
+            runtime = (
+                runtime_provider() if callable(runtime_provider) else {}
+            )
+            report = assess(manager, bus, self._cfg, get_log(), runtime)
+            self._enterprise_assessment = report
             self._enterprise_score.setText(
                 f"{report['percent']}% - {report['band']}"
+            )
+            gates = int(report.get("summary", {}).get("external_gates", 0))
+            self._enterprise_gate_summary.setText(
+                f"Deployment class: {report.get('deployment_class', 'local')}  |  "
+                f"{gates} production gate(s) require external infrastructure and "
+                "are not included in the local engineering score."
             )
             self._enterprise_report.setPlainText(render_text(report))
         except Exception as exc:
             self._enterprise_score.setText("Assessment error")
-            self._enterprise_report.setPlainText(str(exc))
+            self._enterprise_gate_summary.setText("")
+            self._enterprise_report.setPlainText(
+                f"Assessment unavailable ({type(exc).__name__})."
+            )
+
+    def _copy_enterprise_evidence(self) -> None:
+        """Copy only the redacted, deterministic enterprise evidence surface."""
+        try:
+            from angerona.core.enterprise_readiness import evidence_pack
+
+            report = getattr(self, "_enterprise_assessment", None)
+            if not isinstance(report, dict):
+                self._refresh_enterprise_assessment()
+                report = getattr(self, "_enterprise_assessment", None)
+            if not isinstance(report, dict):
+                raise RuntimeError("readiness evidence is unavailable")
+            packed = json.dumps(
+                evidence_pack(report), indent=2, sort_keys=True, ensure_ascii=False
+            )
+            QGuiApplication.clipboard().setText(packed)
+            self._enterprise_gate_summary.setText(
+                "Public-safe readiness evidence copied to the clipboard."
+            )
+        except Exception as exc:
+            self._enterprise_gate_summary.setText(
+                f"Evidence copy unavailable ({type(exc).__name__})."
+            )
 
     def _refresh_enterprise_causal(self) -> None:
-        manager, bus = self._enterprise_context()
+        manager, bus, _runtime_provider = self._enterprise_context()
         if manager is None or bus is None:
             return
         try:
@@ -4316,7 +4367,7 @@ class SettingsDialog(QDialog):
             )
         except Exception as exc:
             self._enterprise_report.appendPlainText(
-                f"\n\nCausal snapshot failed: {exc}"
+                f"\n\nCausal snapshot unavailable ({type(exc).__name__})."
             )
 
     def _tab_aria(self) -> QWidget:

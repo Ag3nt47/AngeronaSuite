@@ -124,6 +124,7 @@ class AngeronaApp:
         self._resilience = None
         self._fleet_plane = None
         self._fleet_service = None
+        self._endpoint_identity = None
 
         # MCP server — opt-in loopback tool server for Claude Desktop / Claude Code.
         # Exposes six read-only security-data tools; nothing leaves the machine.
@@ -148,6 +149,9 @@ class AngeronaApp:
             flight_recorder_worker=self.flight_recorder_worker,
             process_baseline=self.process_baseline,
         )
+        # Settings consumes only this bounded, privacy-safe status provider; it
+        # never receives fleet service keys or endpoint private-key material.
+        self.window.enterprise_runtime_provider = self.enterprise_runtime_snapshot
 
     def _record_startup_degradation(
         self,
@@ -433,7 +437,10 @@ class AngeronaApp:
         try:
             import hashlib
             import hmac
+            import base64
             import os
+            import platform
+            import socket
 
             secret = os.environ.get("ANGERONA_FLEET_SERVICE_KEY", "")
             if len(secret) < 32:
@@ -447,13 +454,44 @@ class AngeronaApp:
                 + self.config.fleet_tenant_id.encode("utf-8"),
                 hashlib.sha256,
             ).digest()
-            from angerona.core.fleet_control_plane import FleetControlPlane
+            from angerona import __version__
+            from angerona.core.endpoint_identity import EndpointIdentity
+            from angerona.core.fleet_control_plane import (
+                FleetControlPlane,
+                FleetDevice,
+            )
             from angerona.core.fleet_service import FleetLoopbackService
 
+            self._endpoint_identity = EndpointIdentity(
+                self.config.data_dir / "identity"
+            )
             self._fleet_plane = FleetControlPlane(
                 self.config.data_dir / "fleet-control.db",
                 {self.config.fleet_tenant_id: tenant_key},
             )
+            identity = self._endpoint_identity
+            hostname_token = "tok_" + hmac.new(
+                tenant_key,
+                b"angerona-hostname-v1\0"
+                + socket.gethostname().encode("utf-8", errors="replace"),
+                hashlib.sha256,
+            ).hexdigest()[:48]
+            state = (
+                "revoked" if identity.revoked
+                else "quarantined" if identity.quarantined
+                else "active"
+            )
+            self._fleet_plane.register_device(FleetDevice(
+                tenant_id=self.config.fleet_tenant_id,
+                device_id=identity.device_id,
+                public_key=base64.urlsafe_b64encode(
+                    identity.public_key
+                ).decode("ascii").rstrip("="),
+                hostname_token=hostname_token,
+                platform=platform.system().casefold()[:40] or "unknown",
+                version=__version__,
+                state=state,
+            ))
             self._fleet_service = FleetLoopbackService(
                 self._fleet_plane,
                 service_key,
@@ -466,6 +504,7 @@ class AngeronaApp:
             service, plane = self._fleet_service, self._fleet_plane
             self._fleet_service = None
             self._fleet_plane = None
+            self._endpoint_identity = None
             try:
                 if service is not None:
                     service.stop()
@@ -476,13 +515,43 @@ class AngeronaApp:
                     plane.close()
             except Exception:
                 pass
-            self._blackbox_note(f"local fleet service unavailable: {exc}")
+            self._blackbox_note(
+                "local fleet service unavailable "
+                f"({type(exc).__name__}); see Startup Health for impact."
+            )
             self._record_startup_degradation(
                 "Fleet Control Plane",
                 "the opt-in loopback fleet service could not start",
                 exc,
             )
             return False
+
+    def enterprise_runtime_snapshot(self) -> dict[str, object]:
+        """Return low-cardinality enterprise state without local identifiers."""
+        service = getattr(self, "_fleet_service", None)
+        identity = getattr(self, "_endpoint_identity", None)
+        server = getattr(service, "_server", None) if service is not None else None
+        if identity is None:
+            identity_state = "not-initialized"
+        elif bool(getattr(identity, "revoked", False)):
+            identity_state = "revoked"
+        elif bool(getattr(identity, "quarantined", False)):
+            identity_state = "quarantined"
+        else:
+            identity_state = "active"
+        device_count = 0
+        plane = getattr(self, "_fleet_plane", None)
+        if plane is not None:
+            try:
+                device_count = len(plane.devices(self.config.fleet_tenant_id))
+            except Exception:
+                device_count = 0
+        return {
+            "fleet_service": "running" if server is not None else "stopped",
+            "fleet_transport": "loopback",
+            "endpoint_identity": identity_state,
+            "registered_devices": min(max(int(device_count), 0), 100_000),
+        }
 
     def shutdown(self) -> None:
         # Clean shutdown: tell the ecosystem to STAND DOWN so the watchdog does
@@ -513,6 +582,7 @@ class AngeronaApp:
             except Exception:
                 pass
             self._fleet_plane = None
+        self._endpoint_identity = None
         self.manager.stop_all()
         try:
             if self.process_baseline is not None:

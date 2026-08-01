@@ -15,6 +15,7 @@ def _app(tmp_path: Path, *, enabled: bool = True):
     )
     app._fleet_plane = None
     app._fleet_service = None
+    app._endpoint_identity = None
     app._blackbox_note = lambda _message: None
     return app
 
@@ -24,6 +25,18 @@ def test_app_starts_and_stops_opt_in_fleet_service(tmp_path, monkeypatch):
     app = _app(tmp_path)
     assert app._start_fleet_service()
     assert app._fleet_service is not None
+    assert app._endpoint_identity is not None
+    snapshot = app.enterprise_runtime_snapshot()
+    assert snapshot == {
+        "fleet_service": "running",
+        "fleet_transport": "loopback",
+        "endpoint_identity": "active",
+        "registered_devices": 1,
+    }
+    devices = app._fleet_plane.devices("local")
+    assert devices[0].device_id == app._endpoint_identity.device_id
+    assert devices[0].hostname_token.startswith("tok_")
+    assert os.environ.get("COMPUTERNAME", "") not in devices[0].hostname_token
     assert app._fleet_service.stop()
     app._fleet_service = None
     app._fleet_plane.close()
@@ -36,6 +49,7 @@ def test_app_fleet_service_is_off_by_default(tmp_path, monkeypatch):
     assert not app._start_fleet_service()
     assert app._fleet_service is None
     assert app._fleet_plane is None
+    assert app._endpoint_identity is None
 
 
 def test_app_fleet_service_fails_closed_without_protected_key(
@@ -48,4 +62,7 @@ def test_app_fleet_service_fails_closed_without_protected_key(
     assert not app._start_fleet_service()
     assert app._fleet_service is None
     assert app._fleet_plane is None
-    assert "key is unavailable" in messages[0]
+    assert app._endpoint_identity is None
+    assert messages == [
+        "local fleet service unavailable (ValueError); see Startup Health for impact."
+    ]

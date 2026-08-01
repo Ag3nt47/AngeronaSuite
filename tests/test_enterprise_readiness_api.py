@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from angerona.core.enterprise_readiness import assess, render_text
+from angerona.core.enterprise_readiness import assess, evidence_pack, render_text
 from angerona.core.eventbus import Event, EventBus, Severity
 from angerona.engines.mcp_server import _make_tools
 
@@ -69,25 +69,55 @@ def _config(**changes):
     return SimpleNamespace(**defaults)
 
 
-def test_readiness_is_honest_about_enterprise_fleet_gaps() -> None:
+def test_readiness_credits_local_foundations_and_keeps_external_gates() -> None:
     bus = EventBus()
     bus._authority = object()  # assessment only needs the public armed-state property
     report = assess(_Manager(), bus, _config(), _ProofLog())
 
-    assert report["percent"] == 70
-    assert report["band"] == "strong standalone foundation"
-    assert report["summary"]["gaps"] == 4
+    assert report["assessment_version"] == 2
+    assert report["percent"] == 86
+    assert report["band"] == "advanced local enterprise foundation"
+    assert report["summary"]["gaps"] == 0
+    assert report["summary"]["external_gates"] == 4
     assert {
-        row["id"] for row in report["controls"] if row["status"] == "gap"
+        row["id"] for row in report["external_gates"]
     } == {
-        "fleet.enrollment",
-        "fleet.rbac",
-        "fleet.policy",
-        "fleet.scale",
+        "production.transport",
+        "production.identity",
+        "production.availability",
+        "production.publisher",
     }
     text = render_text(report)
     assert "Signed capability extension gate" in text
-    assert "mTLS endpoint enrollment" in text
+    assert "Endpoint identity and enrollment foundation" in text
+    assert "Mutual Transport Layer Security (mTLS)" in text
+    assert "not included in local score" in text
+
+
+def test_enterprise_evidence_pack_is_deterministic_bounded_and_public_safe() -> None:
+    bus = EventBus()
+    bus._authority = object()
+    report = assess(_Manager(), bus, _config(), _ProofLog())
+    report["controls"].append({
+        "id": "test.privacy",
+        "name": "Privacy check",
+        "status": "warn",
+        "score": 0,
+        "max_score": 1,
+        "detail": r"C:\Users\Agent47\secret.txt api_key=abcdefghijklmnop1234",
+        "action": "Remove local identifiers",
+    })
+
+    first = evidence_pack(report)
+    second = evidence_pack(report)
+
+    assert first == second
+    assert first["schema"] == "angerona.enterprise-evidence/v1"
+    assert len(first["evidence_sha256"]) == 64
+    encoded = str(first)
+    assert "Agent47" not in encoded
+    assert r"C:\Users" not in encoded
+    assert "abcdefghijklmnop1234" not in encoded
 
 
 def test_unsigned_override_and_optional_egress_are_visible_warnings() -> None:

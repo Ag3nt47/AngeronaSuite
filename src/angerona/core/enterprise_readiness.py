@@ -7,10 +7,20 @@ is never mislabeled as a complete enterprise deployment.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
+from angerona.core.privacy import redact_text
 
-ASSESSMENT_VERSION = 1
+
+ASSESSMENT_VERSION = 2
+EVIDENCE_SCHEMA = "angerona.enterprise-evidence/v1"
+
+
+def _safe(value: object, limit: int = 1_000) -> str:
+    """Keep readiness evidence public-safe, bounded, and single-record."""
+    return " ".join(redact_text(str(value or ""), limit=limit).split())
 
 
 def _control(
@@ -28,13 +38,16 @@ def _control(
         "status": status,
         "score": max(0, min(int(maximum), int(score))),
         "max_score": int(maximum),
-        "detail": detail,
-        "action": action,
+        "detail": _safe(detail),
+        "action": _safe(action),
     }
 
 
-def assess(manager, bus, config, remediation_log=None) -> dict[str, Any]:
+def assess(
+    manager, bus, config, remediation_log=None, runtime: dict[str, object] | None = None
+) -> dict[str, Any]:
     controls: list[dict[str, Any]] = []
+    runtime = dict(runtime or {})
 
     signed_bus = bool(getattr(bus, "integrity_enabled", False))
     controls.append(_control(
@@ -59,7 +72,7 @@ def assess(manager, bus, config, remediation_log=None) -> dict[str, Any]:
             "loaded_external": 0,
             "signed_external": 0,
             "rejected_external": 0,
-            "error": str(exc),
+            "error": type(exc).__name__,
         }
     unsigned_override = bool(extension.get("unsigned_development_override"))
     loaded_external = int(extension.get("loaded_external", 0))
@@ -99,7 +112,11 @@ def assess(manager, bus, config, remediation_log=None) -> dict[str, Any]:
         try:
             proof = remediation_log.verify_receipt_chain(limit=2_000)
         except Exception as exc:
-            proof = {"valid": False, "verified_receipts": 0, "reason": str(exc)}
+            proof = {
+                "valid": False,
+                "verified_receipts": 0,
+                "reason": f"verification unavailable ({type(exc).__name__})",
+            }
     proof_count = int(proof.get("verified_receipts", 0))
     if not proof.get("valid"):
         proof_status, proof_score = "gap", 0
@@ -234,73 +251,244 @@ def assess(manager, bus, config, remediation_log=None) -> dict[str, Any]:
         "Pin and validate the exported payload against a published OCSF schema version.",
     ))
 
-    # These are deliberately visible and unscored until a real fleet control
-    # plane exists. A local remote bridge is not equivalent to enterprise
-    # enrollment, authorization, policy, or high availability.
+    # Credit the shipped, tested local primitives while keeping their deployment
+    # limits explicit. None of these warnings is a claim that the loopback fleet
+    # preview is a production control plane.
+    fleet_enabled = bool(getattr(config, "fleet_service_enabled", False))
+    fleet_running = runtime.get("fleet_service") == "running"
+    identity_state = _safe(runtime.get("endpoint_identity", "not-initialized"), 40)
+    registered_devices = max(
+        0, min(int(runtime.get("registered_devices", 0) or 0), 100_000)
+    )
     controls.extend([
         _control(
             "fleet.enrollment",
-            "mTLS endpoint enrollment and device identity",
-            "gap",
-            0,
+            "Endpoint identity and enrollment foundation",
+            "warn",
+            6,
             10,
-            "No central certificate-backed fleet enrollment authority is implemented.",
-            "Build per-device identity, revocation, health, and staged agent upgrades.",
+            (
+                "Ed25519 per-endpoint identity, proof-of-possession enrollment, "
+                "key rotation, revocation states, signed connection envelopes, and "
+                "durable replay protection are implemented locally."
+            ),
+            (
+                "Deploy an external certificate authority and mutually authenticated "
+                "TLS transport; prefer non-exportable hardware-backed endpoint keys."
+            ),
         ),
         _control(
             "fleet.rbac",
-            "RBAC and immutable administrator audit",
-            "gap",
-            0,
+            "Scoped role-based access control foundation",
+            "warn",
+            5,
             8,
-            "Standalone operator controls do not yet provide organization-scoped RBAC.",
-            "Add roles, tenants, approval separation, and append-only admin audit.",
+            (
+                "Explicit-deny roles, tenant/fleet scopes, expiring service accounts, "
+                "idempotent decisions, and authenticated decision receipts are "
+                "available as local control-plane primitives."
+            ),
+            (
+                "Connect the authorization layer to an external identity provider, "
+                "separation-of-duty workflow, and append-only administrator ledger."
+            ),
         ),
         _control(
             "fleet.policy",
-            "Centrally signed policy and content distribution",
-            "gap",
-            0,
+            "Signed policy and content rollout foundation",
+            "warn",
+            5,
             7,
-            "Module settings are local; there is no signed fleet policy rollout.",
-            "Add canary deployment, compatibility checks, rollback, and policy signatures.",
+            (
+                "Ed25519 policy bundles support fleet/group/local precedence, locked "
+                "keys, staged and canary rollout, dry-run diffs, last-known-good "
+                "fallback, expiry, and two-person approval for high-impact changes."
+            ),
+            "Add authenticated fleet distribution, rollout health gates, and rollback orchestration.",
         ),
         _control(
             "fleet.scale",
-            "Fleet search, retention, and high availability",
-            "gap",
-            0,
+            "Tenant-isolated local fleet preview",
+            "warn",
+            4 if fleet_running else 3,
             5,
-            "The local FlightRecorder is not a horizontally scalable enterprise index.",
-            "Add an optional central OCSF ingestion tier without weakening local operation.",
+            (
+                "The authenticated loopback service is running with a "
+                f"{identity_state} endpoint identity and {registered_devices} "
+                "registered device record(s). Tenant-scoped inventory, "
+                "deduplicated ingestion, quarantine, and signed receipts are active."
+                if fleet_running else
+                "Tenant-scoped inventory, deduplicated ingestion, quarantine, and "
+                "signed receipts are installed; the loopback preview is "
+                + ("awaiting restart." if fleet_enabled else "disabled.")
+            ),
+            "Deploy an optional high-availability ingestion/search tier and prove tenant isolation under load.",
+        ),
+        _control(
+            "operations.recovery",
+            "Encrypted backup and controlled restore foundation",
+            "warn",
+            7,
+            10,
+            (
+                "Streaming authenticated encryption, SQLite-safe snapshots, bounded "
+                "manifests, restore planning, independent approval, and verified "
+                "restore receipts are implemented."
+            ),
+            "Schedule backups and prove recovery point and recovery time objectives on a separate host.",
+        ),
+        _control(
+            "supply_chain.release",
+            "Verifiable release and update foundation",
+            "warn",
+            6,
+            10,
+            (
+                "Strict signed release envelopes, safe update extraction, preflight "
+                "checks, staged-install plans, CycloneDX inventory, SLSA provenance, "
+                "and content-addressed quality evidence are implemented."
+            ),
+            "Apply an externally protected publisher signature and enforce repository release gates.",
+        ),
+        _control(
+            "audit.export",
+            "Privacy-minimized signed audit export",
+            "pass",
+            8,
+            8,
+            (
+                "Bounded tenant/scope/time exports minimize fields, tokenize actors, "
+                "redact free text, chain records, and authenticate the manifest."
+            ),
         ),
     ])
 
+    # Production gates are intentionally separate from the local engineering
+    # score. This prevents a missing external dependency from hiding the quality
+    # of the local foundation, while making it impossible to mistake the score
+    # for General Availability certification.
+    external_gates = [
+        {
+            "id": "production.transport",
+            "name": "Mutual Transport Layer Security (mTLS) fleet transport",
+            "status": "external-required",
+            "detail": "Loopback preview only; no remote listener is enabled.",
+        },
+        {
+            "id": "production.identity",
+            "name": "Single Sign-On (SSO) / OpenID Connect (OIDC)",
+            "status": "external-required",
+            "detail": "No organization identity provider is configured by the local application.",
+        },
+        {
+            "id": "production.availability",
+            "name": "High availability and disaster-recovery proof",
+            "status": "external-required",
+            "detail": "Clustering and independent-host recovery drills require deployment infrastructure.",
+        },
+        {
+            "id": "production.publisher",
+            "name": "Protected release publisher identity",
+            "status": "external-required",
+            "detail": "Publisher signing keys and repository enforcement must be established outside the source tree.",
+        },
+    ]
+
     score = sum(int(row["score"]) for row in controls)
     maximum = sum(int(row["max_score"]) for row in controls)
+    percent = round((score / maximum) * 100) if maximum else 0
     gaps = [row for row in controls if row["status"] == "gap"]
     warnings = [row for row in controls if row["status"] == "warn"]
     return {
         "assessment_version": ASSESSMENT_VERSION,
+        "deployment_class": "fleet-preview foundation",
+        "runtime": {
+            "fleet_service": "running" if fleet_running else (
+                "configured" if fleet_enabled else "disabled"
+            ),
+            "fleet_transport": "loopback",
+            "endpoint_identity": identity_state,
+            "registered_devices": registered_devices,
+        },
         "score": score,
         "max_score": maximum,
-        "percent": round((score / maximum) * 100) if maximum else 0,
+        "percent": percent,
         "band": (
-            "enterprise-ready foundation" if score >= 85
-            else "strong standalone foundation" if score >= 65
+            "advanced local enterprise foundation" if percent >= 85
+            else "strong standalone foundation" if percent >= 70
             else "developing foundation"
         ),
         "controls": controls,
+        "external_gates": external_gates,
         "summary": {
             "passed": sum(1 for row in controls if row["status"] == "pass"),
             "warnings": len(warnings),
             "gaps": len(gaps),
+            "external_gates": len(external_gates),
             "modules": len(inventory),
             "enabled_modules": len(enabled),
         },
         "next_priorities": [
             row["action"] for row in gaps + warnings if row.get("action")
         ][:8],
+    }
+
+
+def evidence_pack(report: dict[str, Any]) -> dict[str, Any]:
+    """Create deterministic, public-safe, content-addressed readiness evidence."""
+    controls = []
+    for row in list(report.get("controls", ()))[:64]:
+        controls.append({
+            "id": _safe(row.get("id"), 100),
+            "name": _safe(row.get("name"), 200),
+            "status": _safe(row.get("status"), 30),
+            "score": int(row.get("score", 0)),
+            "max_score": int(row.get("max_score", 0)),
+            "detail": _safe(row.get("detail"), 1_000),
+            "action": _safe(row.get("action"), 1_000),
+        })
+    gates = []
+    for row in list(report.get("external_gates", ()))[:32]:
+        gates.append({
+            "id": _safe(row.get("id"), 100),
+            "name": _safe(row.get("name"), 200),
+            "status": _safe(row.get("status"), 30),
+            "detail": _safe(row.get("detail"), 1_000),
+        })
+    core = {
+        "schema": EVIDENCE_SCHEMA,
+        "assessment_version": int(report.get("assessment_version", 0)),
+        "deployment_class": _safe(report.get("deployment_class"), 100),
+        "score": int(report.get("score", 0)),
+        "max_score": int(report.get("max_score", 0)),
+        "percent": int(report.get("percent", 0)),
+        "band": _safe(report.get("band"), 100),
+        "runtime": {
+            "fleet_service": _safe(
+                dict(report.get("runtime", {})).get("fleet_service"), 40
+            ),
+            "fleet_transport": _safe(
+                dict(report.get("runtime", {})).get("fleet_transport"), 40
+            ),
+            "endpoint_identity": _safe(
+                dict(report.get("runtime", {})).get("endpoint_identity"), 40
+            ),
+            "registered_devices": max(0, min(int(
+                dict(report.get("runtime", {})).get("registered_devices", 0) or 0
+            ), 100_000)),
+        },
+        "controls": controls,
+        "external_gates": gates,
+    }
+    canonical = json.dumps(
+        core, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    if len(canonical) > 128 * 1024:
+        raise ValueError("enterprise evidence exceeds 128 KiB")
+    return {
+        **core,
+        "evidence_sha256": hashlib.sha256(canonical).hexdigest(),
+        "privacy": "Public-safe summary; no hostnames, usernames, paths, keys, or event payloads.",
     }
 
 
@@ -322,4 +510,10 @@ def render_text(report: dict[str, Any]) -> str:
         lines.append(f"  {row.get('detail', '')}")
         if row.get("status") != "pass" and row.get("action"):
             lines.append(f"  Next: {row['action']}")
+    gates = report.get("external_gates", [])
+    if gates:
+        lines.extend(("", "PRODUCTION DEPLOYMENT GATES (not included in local score)"))
+        for row in gates:
+            lines.append(f"[EXTERNAL] {row.get('name')}")
+            lines.append(f"  {row.get('detail', '')}")
     return "\n".join(lines)
