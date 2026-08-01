@@ -103,25 +103,33 @@ def _read_macos_secret_map(*, strict: bool = False) -> dict[str, str]:
         return {}
 
 
-def read_secret_map(data_root: Path | None = None) -> dict[str, str]:
+def read_secret_map(
+    data_root: Path | None = None, *, strict: bool = False,
+) -> dict[str, str]:
     if sys.platform == "darwin":
-        return _read_macos_secret_map()
+        return _read_macos_secret_map(strict=strict)
     path = secure_store_path(data_root)
     if not path.exists():
         return {}
     try:
         raw = _unprotect_bytes(path.read_bytes())
         if raw is None:
-            return {}
+            raise ValueError("protected credential payload could not be decrypted")
         value = json.loads(raw.decode("utf-8"))
-        if not isinstance(value, dict):
-            return {}
-        return {
-            str(key): str(item)
+        if not isinstance(value, dict) or any(
+            not isinstance(key, str) or not isinstance(item, str)
             for key, item in value.items()
-            if isinstance(key, str) and isinstance(item, str)
+        ):
+            raise ValueError("protected credential map has an invalid shape")
+        return {
+            key: item
+            for key, item in value.items()
         }
-    except (OSError, UnicodeError, ValueError, TypeError):
+    except (OSError, UnicodeError, ValueError, TypeError) as exc:
+        if strict:
+            raise RuntimeError(
+                "Protected credentials are unreadable; refusing to overwrite them"
+            ) from exc
         return {}
 
 
@@ -130,7 +138,7 @@ def write_secret_map(updates: Mapping[str, object], data_root: Path | None = Non
     values = (
         _read_macos_secret_map(strict=True)
         if sys.platform == "darwin"
-        else read_secret_map(data_root)
+        else read_secret_map(data_root, strict=True)
     )
     removed: set[str] = set()
     for key, value in updates.items():
@@ -242,7 +250,10 @@ def parse_env(path: Path) -> dict[str, str]:
 def load_into_environment(data_root: Path | None = None) -> None:
     for key, value in read_secret_map(data_root).items():
         if _publishable_secret(key):
-            os.environ.setdefault(key, value)
+            # A verified protected value is authoritative over an inherited
+            # launch environment. This prevents a wrapper or stale shell from
+            # silently replacing the key the operator approved.
+            os.environ[key] = value
         else:
             os.environ.pop(key, None)
 

@@ -4,11 +4,10 @@ cloud_fallback.py — Cloud Escalation Router
 import json
 import logging
 import re
-import os
 import concurrent.futures
 from typing import Any
 
-from google import genai
+from angerona.core.provider_credentials import credential_values
 
 logger = logging.getLogger(__name__)
 
@@ -37,13 +36,12 @@ def _extract_json(text: str) -> dict[str, Any] | None:
 
 def query_gemini_live(prompt: str, system_prompt: str) -> dict:
     try:
-        # NOTE: the rest of this codebase uses GEMINI_API_KEYS (plural, comma-separated
-        # pool) -- this was checking the singular GEMINI_API_KEY and would always report
-        # "API Key missing" even with a valid pool configured. Fixed to check the pool.
-        api_keys = [k.strip() for k in os.getenv("GEMINI_API_KEYS", "").split(",") if k.strip()]
+        from google import genai
+
+        api_keys = credential_values("gemini")
         if not api_keys:
             return {"engine": "GEMINI-CLOUD", "error": "API Key missing"}
-        client = genai.Client()
+        client = genai.Client(api_key=api_keys[0])
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,

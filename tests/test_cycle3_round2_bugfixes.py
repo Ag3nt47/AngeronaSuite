@@ -121,3 +121,22 @@ def test_information_tab_search_and_take_me_there(tmp_path) -> None:
     assert dialog.tabs.tabText(dialog.tabs.currentIndex()) == "ARIA"
     dialog.close()
     app.processEvents()
+
+
+def test_information_tab_disables_library_only_navigation(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    dialog = SettingsDialog(
+        Config(data_dir=tmp_path), lambda: None, lambda _theme: None
+    )
+    dialog._select_tab("Information")
+    dialog._info_search.setText("response broker")
+    app.processEvents()
+
+    detail = dialog._info_detail.toPlainText()
+    assert "Library Only" in detail
+    assert "no operator navigation in this build" in detail
+    assert not dialog._info_take_me.isEnabled()
+    assert dialog._info_take_me.text() == "Guidance only"
+
+    dialog.close()
+    app.processEvents()

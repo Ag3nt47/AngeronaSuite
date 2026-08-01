@@ -3,12 +3,11 @@
 A tabbed operator console adapted from the mobile "Angerona GUI Upgrades" drop
 and wired into the real suite:
 
-  * Mobile Integration — configure host/operator/PIN + notification window,
-    persist to ``.env`` via ``config.write_env_keys``, and run a real delivery
-    test through the mobile bridge when one is available.
-  * AI Sandbox & Models — store custom-provider API keys to ``.env`` (never
-    hard-coded), check/switch the local Ollama model, and push AI-proposed code
-    into a chosen sandbox file (operator picks the file; confirmation required).
+  * Mobile Integration — show privacy-minimized readiness, route configuration
+    to canonical Settings, and run an operator-confirmed delivery test.
+  * AI Sandbox & Models — show read-only provider readiness, route credential
+    changes to canonical Settings, check/switch the local Ollama model, and push
+    AI-proposed code into an operator-chosen sandbox file.
   * Watchdog Hub / Telemetry Hub — LIVE module health + recent bus events pulled
     from the running ModuleManager/EventBus. When the console is opened
     standalone (no manager), the panels say so plainly instead of showing
@@ -34,20 +33,6 @@ from PySide6.QtWidgets import (
 
 from angerona.core.url_policy import LOCAL_SERVICE_POLICY, read_bounded, safe_urlopen
 
-# Env keys this console reads/writes (persisted to .env by config.write_env_keys).
-_ENV_MOBILE = {
-    "host": "ANGERONA_MOBILE_HOST",
-    "operator": "ANGERONA_MOBILE_OPERATOR",
-    "pin": "ANGERONA_MOBILE_PIN",
-    "window": "ANGERONA_MOBILE_NOTIFY_WINDOW",
-}
-_PROVIDER_ENV = {
-    "OpenAI Custom": "OPENAI_API_KEY",
-    "Anthropic Custom": "ANTHROPIC_API_KEY",
-    "HuggingFace Local": "HUGGINGFACE_API_KEY",
-    "Groq": "GROQ_API_KEY",
-    "Google Gemini": "GOOGLE_API_KEY",
-}
 _DEFAULT_OLLAMA_MODELS = ["llama3:8b", "mistral:7b", "phi3:latest"]
 
 
@@ -158,24 +143,12 @@ class AngeronaUpgradeConsole(QMainWindow):
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
+        self._init_mobile_tab()
         self._init_ai_sandbox_tab()
         self._init_watchdog_tab()
         self._init_telemetry_tab()
 
     # ── helpers ──────────────────────────────────────────────────────────────
-    def _persist_env(self, updates: dict) -> bool:
-        """Persist KEY=VALUE pairs to .env via the canonical config helper if
-        available; always mirror into os.environ so modules pick them up live."""
-        updates = {k: v for k, v in updates.items() if v}
-        for k, v in updates.items():
-            os.environ[k] = v
-        try:
-            from angerona.core.config import write_env_keys
-            write_env_keys(updates)
-            return True
-        except Exception:
-            return False   # env still updated live, just not persisted
-
     def _data_dir(self) -> Path:
         try:
             from angerona.core.data_paths import data_dir
@@ -188,77 +161,68 @@ class AngeronaUpgradeConsole(QMainWindow):
     def _init_mobile_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab)
 
-        inst = QGroupBox("Mobile Installation & Path Setup — where each value comes from")
-        il = QVBoxLayout(inst)
-        info = QLabel(
-            "Angerona sends alerts to your phone through one of these transports. Pick one:\n"
-            "\n"
-            "• Signal (recommended, free, end-to-end encrypted): install signal-cli on this PC and\n"
-            "   register/link it to a phone number you control. The 'Host Number' is that registered\n"
-            "   signal-cli number (e.g. +15555550100). The 'Operator Destination' is the phone number\n"
-            "   (or group id) the alerts should be sent TO — usually your personal phone.\n"
-            "• ntfy: 'Host Number' = your ntfy topic URL (e.g. https://ntfy.sh/my-secret-topic).\n"
-            "   'Operator Destination' can be left blank. Subscribe to the topic in the ntfy phone app.\n"
-            "• Pushover: 'Host Number' = your Pushover API token; 'Operator Destination' = your user key.\n"
-            "• SMS gateway / Twilio: 'Host Number' = the sending number/SID; 'Operator Destination' =\n"
-            "   your mobile number.\n"
-            "\n"
-            "Hardware PIN / Code: an optional local secret that gates who may change these settings\n"
-            "(store it in your password manager). Notification Window: hours alerts may be sent, e.g.\n"
-            "07:00-22:00 for quiet hours.\n"
-            "\n"
-            "Fill the fields below, click 'Save', then 'Test Mobile Integration' to send a real test\n"
-            "alert and confirm delivery (it reports pass/fail with the reason and fix).")
-        info.setWordWrap(True)
-        il.addWidget(info)
-        layout.addWidget(inst)
-
-        form = QGroupBox("Configuration"); fl = QFormLayout(form)
-        self.host_num_input = QLineEdit(os.environ.get(_ENV_MOBILE["host"], ""))
-        self.operator_dest_input = QLineEdit(os.environ.get(_ENV_MOBILE["operator"], ""))
-        self.hardware_pin_input = QLineEdit(os.environ.get(_ENV_MOBILE["pin"], ""))
-        self.hardware_pin_input.setEchoMode(QLineEdit.Password)
-        self.noti_time_input = QLineEdit(os.environ.get(_ENV_MOBILE["window"], "00:00-24:00"))
-        fl.addRow("Host Number:", self.host_num_input)
-        fl.addRow("Operator Destination:", self.operator_dest_input)
-        fl.addRow("Hardware PIN / Code:", self.hardware_pin_input)
-        fl.addRow("Notification Window:", self.noti_time_input)
-        layout.addWidget(form)
+        status_box = QGroupBox("Mobile Response Bridge (read-only status)")
+        status_layout = QVBoxLayout(status_box)
+        enabled = bool(getattr(self.config, "mobile_enabled", False))
+        cli_ready = bool(str(
+            getattr(self.config, "mobile_signal_cli", "") or ""
+        ).strip())
+        destination_ready = bool(str(
+            getattr(self.config, "mobile_dest_number", "") or ""
+        ).strip())
+        status_info = QLabel(
+            "Configuration is owned only by Settings > Mobile Integration. "
+            "This operations view never displays phone numbers, group IDs, "
+            "PINs, tokens, or transport secrets."
+        )
+        status_info.setWordWrap(True)
+        status_layout.addWidget(status_info)
+        for label, ready in (
+            ("Bridge enabled", enabled),
+            ("Signal client configured", cli_ready),
+            ("Destination configured", destination_ready),
+        ):
+            value = QLabel(f"{'PASS' if ready else 'NOT SET'}  {label}")
+            value.setStyleSheet("color:#22c55e;" if ready else "color:#94a3b8;")
+            status_layout.addWidget(value)
+        layout.addWidget(status_box)
 
         row = QHBoxLayout()
-        test_btn = QPushButton("Test Mobile Integration"); test_btn.clicked.connect(self._test_mobile)
-        save_btn = QPushButton("Save Notification Settings"); save_btn.clicked.connect(self._save_mobile)
-        row.addWidget(test_btn); row.addWidget(save_btn)
+        open_settings = QPushButton("Open Settings > Mobile Integration")
+        open_settings.clicked.connect(
+            lambda: self._open_settings_tab("Mobile Integration")
+        )
+        test_btn = QPushButton("Send confirmed test notification")
+        test_btn.setEnabled(enabled and cli_ready and destination_ready)
+        test_btn.clicked.connect(self._test_mobile)
+        row.addWidget(open_settings)
+        row.addWidget(test_btn)
         layout.addLayout(row)
-
+        layout.addStretch()
         self.tabs.addTab(tab, "Mobile Integration")
 
-    def _save_mobile(self):
-        persisted = self._persist_env({
-            _ENV_MOBILE["host"]: self.host_num_input.text().strip(),
-            _ENV_MOBILE["operator"]: self.operator_dest_input.text().strip(),
-            _ENV_MOBILE["pin"]: self.hardware_pin_input.text().strip(),
-            _ENV_MOBILE["window"]: self.noti_time_input.text().strip(),
-        })
-        QMessageBox.information(self, "Saved",
-                               "Notification settings saved to .env." if persisted
-                               else "Settings applied for this session (could not write .env).")
-
     def _test_mobile(self):
-        if not self.host_num_input.text().strip() or not self.hardware_pin_input.text().strip():
-            QMessageBox.critical(self, "Test Failed",
-                                 "Reason: missing Hardware PIN or Host Number.\n"
-                                 "Fix: provide a valid destination and PIN, then retry.")
+        answer = QMessageBox.question(
+            self,
+            "Send test notification?",
+            "This explicitly sends one test message to the configured mobile "
+            "destination. No event evidence is included. Continue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
             return
-        # Try a real send through whatever mobile bridge the suite exposes.
         sent, detail = self._try_mobile_send()
         if sent:
-            QMessageBox.information(self, "Test Passed",
-                                   f"Status: PASS\n{detail}")
+            QMessageBox.information(self, "Test Passed", f"Status: PASS\n{detail}")
         else:
-            QMessageBox.warning(self, "Test Inconclusive",
-                                f"Status: NOT SENT\nReason: {detail}\n"
-                                "Fix: confirm the mobile bridge is configured/enabled, then retry.")
+            QMessageBox.warning(
+                self,
+                "Test Inconclusive",
+                f"Status: NOT SENT\nReason: {detail}\n"
+                "Fix: confirm the mobile bridge is configured/enabled, then retry.",
+            )
+        return
 
     def _try_mobile_send(self) -> tuple[bool, str]:
         """Best-effort real delivery via the suite's mobile bridge module."""
@@ -290,14 +254,31 @@ class AngeronaUpgradeConsole(QMainWindow):
     def _init_ai_sandbox_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab)
 
-        keyg = QGroupBox("AI Provider & Custom API Keys"); kl = QFormLayout(keyg)
-        self.custom_provider = QComboBox()
-        self.custom_provider.addItems(["Ollama (Local)"] + list(_PROVIDER_ENV.keys()))
-        self.api_key_input = QLineEdit(); self.api_key_input.setEchoMode(QLineEdit.Password)
-        save_key_btn = QPushButton("Save API Key"); save_key_btn.clicked.connect(self._save_api_key)
-        kl.addRow("Provider:", self.custom_provider)
-        kl.addRow("API Key / Endpoint Token:", self.api_key_input)
-        kl.addRow("", save_key_btn)
+        keyg = QGroupBox("Cloud Provider Credentials (read-only)")
+        kl = QVBoxLayout(keyg)
+        key_info = QLabel(
+            "Credential editing is centralized in Settings ▸ API Keys. "
+            "This console shows readiness without revealing secret values."
+        )
+        key_info.setWordWrap(True)
+        kl.addWidget(key_info)
+        from angerona.core.provider_credentials import (
+            PROVIDER_CREDENTIALS,
+            credential_values,
+        )
+        for provider in PROVIDER_CREDENTIALS:
+            configured = bool(credential_values(provider.provider_id))
+            status = QLabel(
+                f"{'✓' if configured else '○'}  {provider.label}: "
+                f"{'configured' if configured else 'not configured'}"
+            )
+            status.setStyleSheet(
+                "color:#22c55e;" if configured else "color:#94a3b8;"
+            )
+            kl.addWidget(status)
+        open_keys = QPushButton("Open Settings ▸ API Keys")
+        open_keys.clicked.connect(self._open_api_key_settings)
+        kl.addWidget(open_keys)
         layout.addWidget(keyg)
 
         modg = QGroupBox("Local LLM Control (Ollama)"); ml = QHBoxLayout(modg)
@@ -327,22 +308,23 @@ class AngeronaUpgradeConsole(QMainWindow):
         self.tabs.addTab(tab, "AI Sandbox & Models")
         self._start_model_listing()
 
-    def _save_api_key(self):
-        provider = self.custom_provider.currentText()
-        key = self.api_key_input.text().strip()
-        env = _PROVIDER_ENV.get(provider)
-        if provider.startswith("Ollama"):
-            QMessageBox.information(self, "Local Provider",
-                                   "Ollama runs locally at 127.0.0.1:11434 — no API key required.")
-            return
-        if not env or not key:
-            QMessageBox.warning(self, "Nothing Saved", "Select a cloud provider and enter a key.")
-            return
-        ok = self._persist_env({env: key})
-        self.api_key_input.clear()
-        QMessageBox.information(self, "Saved",
-                               f"{provider} key saved to .env as {env}." if ok
-                               else f"{provider} key applied for this session (could not write .env).")
+    def _open_settings_tab(self, tab: str) -> None:
+        owner = self.parentWidget()
+        while owner is not None:
+            show_settings = getattr(owner, "_show_settings", None)
+            if callable(show_settings):
+                self.close()
+                show_settings(tab)
+                return
+            owner = owner.parentWidget()
+        QMessageBox.information(
+            self,
+            "Open Settings",
+            f"Open the main Angerona window, then choose Settings > {tab}.",
+        )
+
+    def _open_api_key_settings(self) -> None:
+        self._open_settings_tab("API Keys")
 
     def _list_ollama_models(self) -> list:
         try:

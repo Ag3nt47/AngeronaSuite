@@ -166,10 +166,12 @@ class PurpleGuard(BaseModule):
         self.sandbox = self.data_root / "drill-sandbox"
         self._seen: set[tuple[str, int, int]] = set()
         self._seen_events: set[tuple[float, str, object, str]] = set()
+        self._last_process_scan: tuple[int, tuple[str, ...]] | None = None
         self.detected = 0
 
-    def scan_once(self) -> int:
-        policy = _read_policy(self.data_root).get("techniques", {})
+    def scan_once(self, policy: dict | None = None) -> int:
+        if policy is None:
+            policy = _read_policy(self.data_root).get("techniques", {})
         if not isinstance(policy, dict) or not policy or not self.sandbox.is_dir():
             return 0
         hits = 0
@@ -202,10 +204,27 @@ class PurpleGuard(BaseModule):
             hits += 1
         return hits
 
-    def scan_process_once(self) -> int:
-        policy = _read_policy(self.data_root).get("techniques", {})
+    def scan_process_once(self, policy: dict | None = None) -> int:
+        if policy is None:
+            policy = _read_policy(self.data_root).get("techniques", {})
         if (not isinstance(policy, dict) or _PROCESS_TECHNIQUE not in policy
                 or self._bus is None):
+            return 0
+        # The EventBus token changes for every publication. When neither it nor
+        # the enabled technique set changed, rescanning the same newest 500
+        # immutable Event objects cannot produce a new detection. Test doubles
+        # without revision() retain the historical full scan.
+        revision_fn = getattr(self._bus, "revision", None)
+        scan_key = None
+        if callable(revision_fn):
+            try:
+                scan_key = (
+                    int(revision_fn()),
+                    tuple(sorted(str(key) for key in policy)),
+                )
+            except (TypeError, ValueError):
+                scan_key = None
+        if scan_key is not None and scan_key == self._last_process_scan:
             return 0
         hits = 0
         for event in self._bus.recent(500):
@@ -231,14 +250,27 @@ class PurpleGuard(BaseModule):
             hits += 1
         if len(self._seen_events) > 4096:
             self._seen_events.clear()
+        if scan_key is not None:
+            self._last_process_scan = scan_key
         return hits
+
+    def work_cycle(self) -> tuple[int, int, int]:
+        """Run one detector cycle using one coherent policy snapshot.
+
+        The old loop parsed ``purple_guard_policy.json`` three times per
+        second (health, file markers, and process markers). A single parse is
+        faster and makes every check in the cycle observe one policy version.
+        """
+        policy = _read_policy(self.data_root).get("techniques", {})
+        if not isinstance(policy, dict):
+            policy = {}
+        file_hits = self.scan_once(policy)
+        process_hits = self.scan_process_once(policy)
+        return file_hits, process_hits, len(policy)
 
     def run(self) -> None:
         while not self.stopping:
-            enabled = _read_policy(self.data_root).get("techniques", {})
-            self.scan_once()
-            self.scan_process_once()
-            count = len(enabled) if isinstance(enabled, dict) else 0
+            _file_hits, _process_hits, count = self.work_cycle()
             note = (f"{count} reviewed signature(s); {self.detected} verified hit(s)"
                     if count else "learning mode — no reviewed drill fixes installed")
             self.set_health(100, note)

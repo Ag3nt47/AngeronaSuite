@@ -13,7 +13,7 @@ import socket
 import urllib.request
 from dataclasses import dataclass
 from typing import Callable, Iterable
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 
 class UrlPolicyError(ValueError):
@@ -143,7 +143,6 @@ def validate_url(
 
 def local_service_url(base: str, path: str = "") -> str:
     """Join a loopback-only service base with one absolute API path."""
-    validate_url(base, LOCAL_SERVICE_POLICY)
     parsed = urlsplit(base)
     if parsed.query or parsed.fragment or parsed.path not in ("", "/"):
         raise UrlPolicyError("local service base URL must not include a path or query")
@@ -151,7 +150,41 @@ def local_service_url(base: str, path: str = "") -> str:
         raise UrlPolicyError("local service API path must start with '/'")
     if "?" in path or "#" in path or "\\" in path:
         raise UrlPolicyError("local service API path is invalid")
-    return base.rstrip("/") + path
+    # Resolve and validate the hostname exactly once, then connect to the
+    # selected numeric loopback address. This removes the DNS-rebinding window
+    # between policy validation and urllib's later socket resolution.
+    return _pin_loopback_url(base).rstrip("/") + path
+
+
+def _pin_loopback_url(url: str) -> str:
+    """Return a validated local URL whose connection target is an IP literal."""
+    records: list[tuple] = []
+
+    def capture(host: str, port: int, **kwargs):
+        resolved = socket.getaddrinfo(host, port, **kwargs)
+        records.extend(resolved)
+        return resolved
+
+    validate_url(url, LOCAL_SERVICE_POLICY, resolver=capture)
+    parsed = urlsplit(url)
+    host = _normalized_host(parsed.hostname or "")
+    try:
+        selected = ipaddress.ip_address(host)
+    except ValueError:
+        addresses = _resolved_addresses(
+            host,
+            parsed.port or (443 if parsed.scheme.casefold() == "https" else 80),
+            lambda *_args, **_kwargs: records,
+        )
+        # Prefer IPv4 where both localhost families are present because common
+        # local services such as Ollama listen only on 127.0.0.1 by default.
+        selected = next(
+            (address for address in addresses if isinstance(address, ipaddress.IPv4Address)),
+            addresses[0],
+        )
+    literal = f"[{selected}]" if selected.version == 6 else str(selected)
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    return urlunsplit((parsed.scheme.casefold(), literal + port, parsed.path, parsed.query, ""))
 
 
 class _PolicyRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -160,7 +193,10 @@ class _PolicyRedirectHandler(urllib.request.HTTPRedirectHandler):
         self._policy = policy
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        validate_url(newurl, self._policy)
+        if self._policy.loopback_only:
+            newurl = _pin_loopback_url(newurl)
+        else:
+            validate_url(newurl, self._policy)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -176,8 +212,26 @@ def safe_urlopen(
         if isinstance(request_or_url, urllib.request.Request)
         else str(request_or_url)
     )
-    validate_url(url, policy)
-    opener = urllib.request.build_opener(_PolicyRedirectHandler(policy))
+    if policy.loopback_only:
+        pinned_url = _pin_loopback_url(url)
+        if isinstance(request_or_url, urllib.request.Request):
+            request_or_url = urllib.request.Request(
+                pinned_url,
+                data=request_or_url.data,
+                headers=dict(request_or_url.header_items()),
+                method=request_or_url.get_method(),
+            )
+        else:
+            request_or_url = pinned_url
+    else:
+        validate_url(url, policy)
+    handlers = []
+    if policy.loopback_only:
+        # Never let HTTP_PROXY/HTTPS_PROXY redirect local prompts, telemetry, or
+        # model responses through an inherited proxy configuration.
+        handlers.append(urllib.request.ProxyHandler({}))
+    handlers.append(_PolicyRedirectHandler(policy))
+    opener = urllib.request.build_opener(*handlers)
     return opener.open(request_or_url, timeout=timeout)
 
 

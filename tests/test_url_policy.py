@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import socket
+import urllib.request
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -12,6 +15,7 @@ from angerona.core.url_policy import (
     local_json_request,
     local_service_url,
     read_bounded,
+    safe_urlopen,
     validate_url,
 )
 
@@ -134,3 +138,44 @@ def test_local_json_request_rejects_oversized_or_non_object_payload() -> None:
             "/api/generate",
             payload=["not", "an", "object"],
         )
+
+
+def test_local_transport_pins_one_resolution_and_disables_inherited_proxy(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+    resolutions = 0
+
+    def resolve(_host, port, **kwargs):
+        nonlocal resolutions
+        resolutions += 1
+        return [(socket.AF_INET, kwargs["type"], 6, "", ("127.0.0.1", port))]
+
+    class Opener:
+        def open(self, request, timeout):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return SimpleNamespace()
+
+    def build_opener(*handlers):
+        captured["handlers"] = handlers
+        return Opener()
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    monkeypatch.setattr(urllib.request, "build_opener", build_opener)
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+
+    request = urllib.request.Request("http://localhost:11434/api/chat")
+    safe_urlopen(request, policy=LOCAL_SERVICE_POLICY, timeout=3)
+
+    assert resolutions == 1
+    opened = captured["request"]
+    assert isinstance(opened, urllib.request.Request)
+    assert urlsplit(opened.full_url).hostname == "127.0.0.1"
+    proxies = [
+        handler for handler in captured["handlers"]
+        if isinstance(handler, urllib.request.ProxyHandler)
+    ]
+    assert len(proxies) == 1
+    assert proxies[0].proxies == {}

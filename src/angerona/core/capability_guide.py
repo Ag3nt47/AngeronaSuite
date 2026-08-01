@@ -1,7 +1,51 @@
-"""Searchable operator guidance and canonical destinations for capabilities."""
+"""Evidence-backed capability inventory and canonical operator destinations.
+
+This module is deliberately free of GUI imports.  Settings, Help, ARIA and the
+console can therefore render one honest inventory instead of maintaining
+slightly different capability claims.
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
+from enum import Enum
+from typing import Iterable
+
+
+class CapabilityMaturity(str, Enum):
+    """How much of a capability is currently supportable by local evidence."""
+
+    OPERATIONAL = "operational"
+    CONFIGURABLE_PREVIEW = "configurable-preview"
+    INTERNAL_CONTROL = "internal-control"
+    CLI_ONLY = "cli-only"
+    LIBRARY_ONLY = "library-only"
+    EXTERNAL_GATED = "external-gated"
+    UNAVAILABLE = "unavailable"
+
+
+class DestinationKind(str, Enum):
+    """The type of canonical operator surface."""
+
+    SETTINGS = "settings"
+    WINDOW = "window"
+    NONE = "none"
+
+
+class DestinationAvailability(str, Enum):
+    """Whether the declared destination exists in this build."""
+
+    AVAILABLE = "available"
+    CONDITIONAL = "conditional"
+    UNAVAILABLE = "unavailable"
+
+
+class DestinationActionability(str, Enum):
+    """How precisely a destination can place the operator."""
+
+    DIRECT = "direct"
+    CONTEXTUAL = "contextual"
+    GUIDANCE_ONLY = "guidance-only"
 
 
 @dataclass(frozen=True)
@@ -14,10 +58,41 @@ class CapabilityGuide:
     verify: str
     privacy: str
     destination: str
-    destination_kind: str = "settings"  # settings | window
+    destination_kind: DestinationKind = DestinationKind.SETTINGS
+    maturity: CapabilityMaturity = CapabilityMaturity.OPERATIONAL
+    evidence: tuple[str, ...] = ()
+    limitations: tuple[str, ...] = ()
+    aliases: tuple[str, ...] = ()
+    destination_availability: DestinationAvailability = (
+        DestinationAvailability.AVAILABLE
+    )
+    destination_actionability: DestinationActionability = (
+        DestinationActionability.DIRECT
+    )
+
+    @property
+    def is_actionable(self) -> bool:
+        """Return whether a UI may honestly offer a navigation action."""
+
+        return (
+            self.destination_availability is DestinationAvailability.AVAILABLE
+            and self.destination_actionability
+            is not DestinationActionability.GUIDANCE_ONLY
+            and self.destination_kind is not DestinationKind.NONE
+        )
+
+    @property
+    def maturity_label(self) -> str:
+        return self.maturity.value.replace("-", " ").title()
+
+    @property
+    def destination_label(self) -> str:
+        if self.destination_kind is DestinationKind.WINDOW:
+            return self.name
+        return self.destination or "Guidance only"
 
 
-GUIDES = (
+_BASE_GUIDES = (
     CapabilityGuide(
         "local-ai", "Local AI and ARIA", "Assistant",
         "A local conversational security assistant that explains evidence and "
@@ -79,7 +154,7 @@ GUIDES = (
          "Build and verify fixes, then rerun to prove closure."),
         "A rerun detects the marker and the report records a passing closure receipt.",
         "Uses inert local markers and never deploys real exploitation.",
-        "_open_simulation", "window",
+        "_open_simulation", DestinationKind.WINDOW,
     ),
     CapabilityGuide(
         "attack-map", "MITRE ATT&CK Coverage", "Visibility",
@@ -88,7 +163,7 @@ GUIDES = (
          "Select a technique for evidence and remediation detail."),
         "Coverage entries resolve to real detectors or simulations.",
         "Local evidence; links to MITRE require an explicit browser action.",
-        "_open_attack_heatmap", "window",
+        "_open_attack_heatmap", DestinationKind.WINDOW,
     ),
     CapabilityGuide(
         "threat-intel", "Threat Intelligence", "Exposure",
@@ -97,17 +172,19 @@ GUIDES = (
          "Review host-applicable entries.", "Stage rather than auto-run a fix."),
         "Confirm ignored or remediated entries no longer inflate posture incorrectly.",
         "Feed retrieval is inbound; host evidence is not uploaded.",
-        "_open_threat_intel", "window",
+        "_open_threat_intel", DestinationKind.WINDOW,
     ),
     CapabilityGuide(
-        "forensics", "Forensics and Cases", "Investigation",
-        "Preserves evidence references, timelines, custody, privacy-minimized exports "
-        "and investigation context.",
-        ("Open Forensics.", "Select an incident or evidence source.",
-         "Build the timeline.", "Add references to a case.", "Export a sanitized view."),
-        "Verify the custody chain and privacy manifest before sharing.",
-        "Restricted references and free-form comments are excluded by default.",
-        "_open_forensics_hub", "window",
+        "forensics", "Forensics Workbench", "Investigation",
+        "Opens the shipped collision, blast-radius, network, kill-chain, sandbox, "
+        "and privacy-minimized incident-response bundle tools.",
+        ("Open Forensics.", "Choose the evidence view that matches the question.",
+         "Inspect the bounded local evidence.",
+         "Create and review a sanitized triage bundle when sharing is required."),
+        "Verify the selected view and review the bundle privacy manifest before sharing.",
+        "The dashboard workbench does not yet expose the library-only case-management "
+        "and custody workflow.",
+        "_open_forensics_hub", DestinationKind.WINDOW,
     ),
     CapabilityGuide(
         "enterprise", "Enterprise Readiness", "Administration",
@@ -347,7 +424,7 @@ GUIDES = (
          "Click System Pulse for CPU, memory and network history."),
         "Unknown or stale sensors appear degraded rather than healthy.",
         "Host metrics remain local.",
-        "_open_worldview", "window",
+        "_open_worldview", DestinationKind.WINDOW,
     ),
     CapabilityGuide(
         "advanced-console", "Advanced Console", "Operations",
@@ -357,21 +434,419 @@ GUIDES = (
          "Review status before restarting a component.", "Return to Settings to configure it."),
         "A diagnostic action records its result without creating duplicate settings.",
         "May expose local diagnostic metadata on screen; no automatic egress.",
-        "_open_upgrade_console", "window",
+        "_open_upgrade_console", DestinationKind.WINDOW,
     ),
 )
 
 
-def search_guides(query: str) -> tuple[CapabilityGuide, ...]:
-    terms = tuple(part for part in str(query or "").casefold().split() if part)
-    if not terms:
-        return GUIDES
-    result = []
+@dataclass(frozen=True)
+class _CapabilityMetadata:
+    maturity: CapabilityMaturity
+    evidence: tuple[str, ...]
+    limitations: tuple[str, ...]
+    aliases: tuple[str, ...] = ()
+    destination_availability: DestinationAvailability = (
+        DestinationAvailability.AVAILABLE
+    )
+    destination_actionability: DestinationActionability = (
+        DestinationActionability.DIRECT
+    )
+
+
+_METADATA: dict[str, _CapabilityMetadata] = {
+    "local-ai": _CapabilityMetadata(
+        CapabilityMaturity.OPERATIONAL,
+        ("tests/test_ollama_transport.py", "tests/test_ai_security_broker.py"),
+        ("Answer quality depends on the installed local model; ARIA has no direct host authority.",),
+        ("aria", "voice", "microphone", "local assistant"),
+    ),
+    "trusted-processes": _CapabilityMetadata(
+        CapabilityMaturity.OPERATIONAL,
+        ("tests/test_process_baseline.py",),
+        ("Trust is an operator decision and does not prove that an approved binary is benign.",),
+        ("trusted apps", "allowlist", "false positives"),
+    ),
+    "performance": _CapabilityMetadata(
+        CapabilityMaturity.OPERATIONAL,
+        ("tests/test_performance_lifecycle.py", "tests/test_operational_slo.py"),
+        ("Resource governance reduces contention but cannot guarantee latency on an overloaded host.",),
+        ("eco mode", "system performance", "resource governance"),
+    ),
+    "mobile": _CapabilityMetadata(
+        CapabilityMaturity.EXTERNAL_GATED,
+        ("tests/test_remote_bridge_security.py",),
+        ("Delivery requires a separately installed and configured Signal client and account.",),
+        ("signal", "phone", "mobile response"),
+    ),
+    "api-keys": _CapabilityMetadata(
+        CapabilityMaturity.EXTERNAL_GATED,
+        ("tests/test_provider_credentials.py",),
+        ("Provider availability, terms, cost, and remote data handling remain external controls.",),
+        ("ai providers", "provider credentials", "cloud keys"),
+    ),
+    "red-team": _CapabilityMetadata(
+        CapabilityMaturity.OPERATIONAL,
+        ("tests/test_drill_remediation_lifecycle.py", "tests/test_purple_remediation_e2e.py"),
+        ("Inert simulations validate Angerona paths; they are not a substitute for an authorized penetration test.",),
+        ("shark attack", "red team drill", "after action report"),
+    ),
+    "attack-map": _CapabilityMetadata(
+        CapabilityMaturity.OPERATIONAL,
+        ("tests/test_enterprise_telemetry_coverage.py",),
+        ("Displayed coverage proves mapped local evidence, not complete protection against a technique.",),
+        ("mitre attack", "attack coverage", "coverage map"),
+    ),
+    "threat-intel": _CapabilityMetadata(
+        CapabilityMaturity.EXTERNAL_GATED,
+        ("tests/test_exposure_management.py",),
+        ("Fresh intelligence depends on explicitly permitted third-party feeds and network availability.",),
+        ("threat intelligence", "vulnerability feed", "cve intelligence"),
+    ),
+    "forensics": _CapabilityMetadata(
+        CapabilityMaturity.OPERATIONAL,
+        ("tests/test_ir_bundle_privacy.py", "tests/test_cycle4_round3_state_bounds.py"),
+        ("Case management and custody primitives exist as libraries but are not wired "
+         "into this operator destination.",),
+        ("forensics", "ir bundle", "incident investigation", "kill chain"),
+    ),
+    "enterprise": _CapabilityMetadata(
+        CapabilityMaturity.OPERATIONAL,
+        ("tests/test_enterprise_readiness_api.py", "tests/test_evidence_claims.py"),
+        ("Several production deployment, identity-provider, signing, and independent-assurance gates remain external.",),
+        ("enterprise readiness", "readiness assessment", "assurance status"),
+    ),
+    "fleet-preview": _CapabilityMetadata(
+        CapabilityMaturity.CONFIGURABLE_PREVIEW,
+        ("tests/test_cycle14_fleet_tenant_auth.py", "tests/test_cycle14_fleet_integrity.py"),
+        ("The service is loopback-only and is not an internet-facing or multi-host production control plane.",),
+        ("fleet", "fleet control plane", "device inventory"),
+        destination_actionability=DestinationActionability.CONTEXTUAL,
+    ),
+    "enterprise-rbac": _CapabilityMetadata(
+        CapabilityMaturity.INTERNAL_CONTROL,
+        ("tests/test_authorization.py",),
+        ("Local authorization is implemented; directory lifecycle and production identity-provider integration are not.",),
+        ("rbac", "role based access control", "separation of duties"),
+        destination_actionability=DestinationActionability.CONTEXTUAL,
+    ),
+    "response-broker": _CapabilityMetadata(
+        CapabilityMaturity.LIBRARY_ONLY,
+        ("tests/test_response_broker.py",),
+        ("Only registered typed operations are supported; endpoint-specific rollback still requires an implementation.",),
+        ("typed response", "approval broker", "containment approval"),
+        destination_actionability=DestinationActionability.CONTEXTUAL,
+    ),
+    "identity-defense": _CapabilityMetadata(
+        CapabilityMaturity.LIBRARY_ONLY,
+        ("tests/test_identity_analytics.py",),
+        ("Findings depend on supported authentication evidence and are not a full identity-provider replacement.",),
+        ("identity analytics", "password spray", "account defense"),
+        destination_actionability=DestinationActionability.CONTEXTUAL,
+    ),
+    "network-behavior": _CapabilityMetadata(
+        CapabilityMaturity.LIBRARY_ONLY,
+        ("tests/test_network_behavior.py",),
+        ("Flow analytics omit packet payloads and cannot inspect traffic that the host does not observe.",),
+        ("ndr", "network detection response", "beaconing"),
+        destination_actionability=DestinationActionability.CONTEXTUAL,
+    ),
+    "exposure-management": _CapabilityMetadata(
+        CapabilityMaturity.LIBRARY_ONLY,
+        ("tests/test_exposure_management.py", "tests/test_exposure_recovery.py"),
+        ("Applicability and closure depend on accurate inventory and trusted vulnerability intelligence.",),
+        ("vulnerability management", "exposure lifecycle", "risk exception"),
+        destination_actionability=DestinationActionability.CONTEXTUAL,
+    ),
+    "signed-plugins": _CapabilityMetadata(
+        CapabilityMaturity.LIBRARY_ONLY,
+        ("tests/test_plugin_lifecycle.py",),
+        ("Signature validity establishes provenance and integrity, not the safety of publisher code.",),
+        ("plugin lifecycle", "signed extensions", "plugin quarantine"),
+        destination_actionability=DestinationActionability.CONTEXTUAL,
+    ),
+    "interop": _CapabilityMetadata(
+        CapabilityMaturity.LIBRARY_ONLY,
+        ("tests/test_interop_gateway.py",),
+        ("Local envelopes and queues are implemented; delivery still needs an approved destination connector.",),
+        ("interoperability", "ocsf", "stix", "otlp"),
+        destination_actionability=DestinationActionability.CONTEXTUAL,
+    ),
+    "fleet-hunts": _CapabilityMetadata(
+        CapabilityMaturity.LIBRARY_ONLY,
+        ("tests/test_fleet_hunts.py", "tests/test_hunt_workspace.py"),
+        ("Collections are limited to registered artifacts and reachable enrolled endpoints.",),
+        ("fleet hunt", "fleet collection", "hunt workspace"),
+        destination_actionability=DestinationActionability.CONTEXTUAL,
+    ),
+    "safe-live-response": _CapabilityMetadata(
+        CapabilityMaturity.LIBRARY_ONLY,
+        ("tests/test_safe_response_session.py",),
+        ("Sessions expose only registered operations and do not provide a generic remote shell.",),
+        ("live response", "response session", "endpoint session"),
+        destination_actionability=DestinationActionability.CONTEXTUAL,
+    ),
+    "release-evidence": _CapabilityMetadata(
+        CapabilityMaturity.CLI_ONLY,
+        ("tests/test_release_evidence.py", "tests/test_release_integrity.py"),
+        ("Local evidence is content-addressed; publisher identity and external review remain separate gates.",),
+        ("release gate", "release assurance", "evidence manifest"),
+        destination_actionability=DestinationActionability.CONTEXTUAL,
+    ),
+    "reliability-drills": _CapabilityMetadata(
+        CapabilityMaturity.LIBRARY_ONLY,
+        ("tests/test_reliability_lab.py",),
+        ("Deterministic local drills do not constitute long-duration physical-host soak evidence.",),
+        ("chaos drill", "recovery drill", "reliability lab"),
+        destination_actionability=DestinationActionability.CONTEXTUAL,
+    ),
+    "backup-restore": _CapabilityMetadata(
+        CapabilityMaturity.LIBRARY_ONLY,
+        ("tests/test_backup_restore.py",),
+        ("Operators remain responsible for offline key custody, destination durability, and restore exercises.",),
+        ("encrypted backup", "offline restore", "disaster recovery"),
+        destination_actionability=DestinationActionability.CONTEXTUAL,
+    ),
+    "recovery-objectives": _CapabilityMetadata(
+        CapabilityMaturity.LIBRARY_ONLY,
+        ("tests/test_recovery_policy.py",),
+        ("The policy records evidence and objectives but does not independently perform backup or recovery.",),
+        ("rpo", "rto", "recovery policy"),
+        destination_actionability=DestinationActionability.CONTEXTUAL,
+    ),
+    "audit-export": _CapabilityMetadata(
+        CapabilityMaturity.LIBRARY_ONLY,
+        ("tests/test_audit_export.py", "tests/test_admin_audit.py"),
+        ("Export authenticity depends on protected signing-key custody and recipient verification.",),
+        ("signed audit", "audit export", "worm audit"),
+        destination_actionability=DestinationActionability.CONTEXTUAL,
+    ),
+    "world-view": _CapabilityMetadata(
+        CapabilityMaturity.OPERATIONAL,
+        ("tests/test_operational_slo.py",),
+        ("Host metrics are sampled observations and may be temporarily unknown after sleep or resume.",),
+        ("system pulse", "resource monitor", "world view"),
+    ),
+    "advanced-console": _CapabilityMetadata(
+        CapabilityMaturity.OPERATIONAL,
+        ("tests/test_upgrade_console_shutdown.py",),
+        ("The console is a diagnostic surface; durable configuration remains owned by Settings.",),
+        ("operations console", "diagnostics", "service recovery"),
+    ),
+}
+
+
+class CatalogValidationError(ValueError):
+    """Raised when a capability catalog could make an ambiguous or false claim."""
+
+
+_KEY_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _normalise(value: object) -> str:
+    return " ".join(_TOKEN_RE.findall(str(value or "").casefold()))
+
+
+def _require_text(value: object, field: str, key: str) -> None:
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise CatalogValidationError(f"{key}: {field} must be non-empty and trimmed")
+
+
+def validate_catalog(
+    guides: Iterable[CapabilityGuide],
+) -> tuple[CapabilityGuide, ...]:
+    """Validate and freeze a catalog, rejecting ambiguity and incomplete claims."""
+
+    catalog = tuple(guides)
+    if not catalog:
+        raise CatalogValidationError("capability catalog must not be empty")
+    seen_keys: set[str] = set()
+    seen_names: set[str] = set()
+    intent_owners: dict[str, str] = {}
+    for guide in catalog:
+        if not isinstance(guide, CapabilityGuide):
+            raise CatalogValidationError("catalog entries must be CapabilityGuide values")
+        if not _KEY_RE.fullmatch(guide.key):
+            raise CatalogValidationError(f"invalid capability key: {guide.key!r}")
+        if guide.key in seen_keys:
+            raise CatalogValidationError(f"duplicate capability key: {guide.key}")
+        seen_keys.add(guide.key)
+        _require_text(guide.name, "name", guide.key)
+        name_key = _normalise(guide.name)
+        if name_key in seen_names:
+            raise CatalogValidationError(f"duplicate capability name: {guide.name}")
+        seen_names.add(name_key)
+        for field in ("category", "definition", "verify", "privacy"):
+            _require_text(getattr(guide, field), field, guide.key)
+        for field in ("steps", "evidence", "limitations"):
+            values = getattr(guide, field)
+            if not isinstance(values, tuple) or not values:
+                raise CatalogValidationError(f"{guide.key}: {field} must be a non-empty tuple")
+            for value in values:
+                _require_text(value, field, guide.key)
+        if not isinstance(guide.aliases, tuple):
+            raise CatalogValidationError(f"{guide.key}: aliases must be a tuple")
+        if not isinstance(guide.maturity, CapabilityMaturity):
+            raise CatalogValidationError(f"{guide.key}: invalid maturity state")
+        if not isinstance(guide.destination_kind, DestinationKind):
+            raise CatalogValidationError(f"{guide.key}: invalid destination kind")
+        if not isinstance(guide.destination_availability, DestinationAvailability):
+            raise CatalogValidationError(f"{guide.key}: invalid destination availability")
+        if not isinstance(guide.destination_actionability, DestinationActionability):
+            raise CatalogValidationError(f"{guide.key}: invalid destination actionability")
+        if guide.destination_kind is DestinationKind.NONE:
+            if guide.destination or guide.destination_actionability is not DestinationActionability.GUIDANCE_ONLY:
+                raise CatalogValidationError(f"{guide.key}: non-navigable destination must be guidance-only")
+        else:
+            _require_text(guide.destination, "destination", guide.key)
+        if (
+            guide.destination_availability is DestinationAvailability.UNAVAILABLE
+            and guide.destination_actionability is not DestinationActionability.GUIDANCE_ONLY
+        ):
+            raise CatalogValidationError(f"{guide.key}: unavailable destination cannot be actionable")
+        identities = (guide.key, guide.name, *guide.aliases)
+        for identity in identities:
+            _require_text(identity, "search identity", guide.key)
+            intent = _normalise(identity)
+            owner = intent_owners.setdefault(intent, guide.key)
+            if owner != guide.key:
+                raise CatalogValidationError(
+                    f"ambiguous search intent {identity!r}: {owner} and {guide.key}"
+                )
+    return catalog
+
+
+def _build_catalog() -> tuple[CapabilityGuide, ...]:
+    base_keys = {guide.key for guide in _BASE_GUIDES}
+    metadata_keys = set(_METADATA)
+    if base_keys != metadata_keys:
+        missing = sorted(base_keys - metadata_keys)
+        extra = sorted(metadata_keys - base_keys)
+        raise CatalogValidationError(
+            f"capability metadata parity failure; missing={missing}, extra={extra}"
+        )
+    non_operator_maturity = {
+        CapabilityMaturity.INTERNAL_CONTROL,
+        CapabilityMaturity.CLI_ONLY,
+        CapabilityMaturity.LIBRARY_ONLY,
+        CapabilityMaturity.UNAVAILABLE,
+    }
+
+    def enrich(guide: CapabilityGuide) -> CapabilityGuide:
+        metadata = _METADATA[guide.key]
+        has_operator_surface = metadata.maturity not in non_operator_maturity
+        return replace(
+            guide,
+            maturity=metadata.maturity,
+            evidence=metadata.evidence,
+            limitations=metadata.limitations,
+            aliases=metadata.aliases,
+            destination=guide.destination if has_operator_surface else "",
+            destination_kind=(
+                guide.destination_kind if has_operator_surface
+                else DestinationKind.NONE
+            ),
+            destination_availability=(
+                metadata.destination_availability if has_operator_surface
+                else DestinationAvailability.UNAVAILABLE
+            ),
+            destination_actionability=(
+                metadata.destination_actionability if has_operator_surface
+                else DestinationActionability.GUIDANCE_ONLY
+            ),
+        )
+
+    enriched = (enrich(guide) for guide in _BASE_GUIDES)
+    return validate_catalog(enriched)
+
+
+GUIDES = _build_catalog()
+GUIDE_BY_KEY = {guide.key: guide for guide in GUIDES}
+
+
+def get_guide(key: str) -> CapabilityGuide | None:
+    """Return a capability by canonical key or an exact, unambiguous alias."""
+
+    intent = _normalise(key)
+    if not intent:
+        return None
+    direct = GUIDE_BY_KEY.get(intent.replace(" ", "-"))
+    if direct is not None:
+        return direct
     for guide in GUIDES:
-        text = " ".join((
-            guide.key, guide.name, guide.category, guide.definition,
-            " ".join(guide.steps), guide.verify, guide.privacy,
-        )).casefold()
-        if all(term in text for term in terms):
-            result.append(guide)
-    return tuple(result)
+        if intent in {_normalise(alias) for alias in guide.aliases}:
+            return guide
+    return None
+
+
+def actionable_guides() -> tuple[CapabilityGuide, ...]:
+    """Return the stable subset for which a UI may enable navigation."""
+
+    return tuple(guide for guide in GUIDES if guide.is_actionable)
+
+
+def _matches(token: str, searchable_tokens: tuple[str, ...]) -> bool:
+    return any(word == token or word.startswith(token) for word in searchable_tokens)
+
+
+def _search_rank(
+    guide: CapabilityGuide,
+    phrase: str,
+    query_tokens: tuple[str, ...],
+    catalog_index: int,
+) -> tuple[int, int, int, int] | None:
+    key = _normalise(guide.key)
+    name = _normalise(guide.name)
+    aliases = tuple(_normalise(alias) for alias in guide.aliases)
+    identities = (key, name, *aliases)
+    searchable = _normalise(
+        " ".join(
+            (
+                *identities,
+                guide.category,
+                guide.definition,
+                " ".join(guide.steps),
+                guide.verify,
+                guide.privacy,
+                " ".join(guide.evidence),
+                " ".join(guide.limitations),
+            )
+        )
+    )
+    searchable_tokens = tuple(searchable.split())
+    if not all(_matches(token, searchable_tokens) for token in query_tokens):
+        return None
+    identity_tokens = tuple(" ".join(identities).split())
+    identity_hits = sum(_matches(token, identity_tokens) for token in query_tokens)
+    if phrase in (key, name):
+        tier = 0
+    elif phrase in aliases:
+        tier = 1
+    elif any(identity.startswith(phrase) for identity in identities):
+        tier = 2
+    elif any(phrase in identity for identity in identities):
+        tier = 3
+    else:
+        tier = 4
+    return (tier, -identity_hits, len(name.split()), catalog_index)
+
+
+def search_guides(query: str) -> tuple[CapabilityGuide, ...]:
+    """Return deterministic intent-ranked results for a free-text query.
+
+    Exact canonical keys/names rank first, followed by exact aliases, then
+    identity phrases and finally all-token matches in the evidence-backed body.
+    Catalog order is the final stable tie-breaker.
+    """
+
+    phrase = _normalise(query)
+    if not phrase:
+        return GUIDES
+    query_tokens = tuple(phrase.split())
+    ranked: list[tuple[tuple[int, int, int, int], CapabilityGuide]] = []
+    for index, guide in enumerate(GUIDES):
+        rank = _search_rank(guide, phrase, query_tokens, index)
+        if rank is not None:
+            ranked.append((rank, guide))
+    ranked.sort(key=lambda item: item[0])
+    return tuple(guide for _, guide in ranked)

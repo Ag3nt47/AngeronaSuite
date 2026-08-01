@@ -146,12 +146,19 @@ class SystemPulseCard(QFrame):
 
         self._busy = threading.Event()
         self._closed = threading.Event()
+        self._sample_requested = threading.Event()
         self._last_net = None
         self._last_net_at = 0.0
         self._wifi_cache: int | None = None
         self._sample_index = 0
         self._latest: dict[str, object] = {}
         self._history: deque[dict[str, object]] = deque(maxlen=90)
+        self._sample_worker = threading.Thread(
+            target=self._sample_loop,
+            name="SystemPulseSampler",
+            daemon=True,
+        )
+        self._sample_worker.start()
         self.sample_ready.connect(self._apply_sample)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.request_sample)
@@ -162,11 +169,16 @@ class SystemPulseCard(QFrame):
         if self._closed.is_set() or self._busy.is_set() or not self.isVisible():
             return
         self._busy.set()
-        threading.Thread(
-            target=self._sample,
-            name="SystemPulseSampler",
-            daemon=True,
-        ).start()
+        self._sample_requested.set()
+
+    def _sample_loop(self) -> None:
+        """Service coalesced sample requests without per-pulse thread churn."""
+        while True:
+            self._sample_requested.wait()
+            self._sample_requested.clear()
+            if self._closed.is_set():
+                return
+            self._sample()
 
     def _sample(self) -> None:
         data: dict[str, object] = {}
@@ -209,6 +221,7 @@ class SystemPulseCard(QFrame):
             return
         self._closed.set()
         self._timer.stop()
+        self._sample_requested.set()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
         self.shutdown()

@@ -798,3 +798,74 @@ the HTTP/3 standard.
   aggregate count must be accompanied by its matching test transcript.
 - Package version remains **1.9.4**; Cycle 6 is documented as current
   development rather than an invented release.
+
+## Round 4 - Performance
+
+- Purple Guard now parses one coherent remediation-policy snapshot per active
+  cycle instead of three, reducing policy reads by **66.7%** without changing
+  signatures or cadence.
+- EventBus exposes a process-local publish revision, allowing Purple Guard to
+  skip an unchanged 500-event classify walk. The isolated unchanged-scan path
+  measured **168.6x faster**, while new publishes and policy enablement always
+  force a recheck.
+- System Pulse now reuses one sleeping sampler worker rather than creating a
+  native thread every two seconds, eliminating **1,800 thread creations/hour**
+  while preserving off-GUI-thread sampling and shutdown behavior.
+- Gates: changed-source compile and Ruff PASS; focused suites **53/53 PASS**;
+  Purple Guard self-test PASS; diff check PASS.
+- Full evidence: `analysis/loop/round4/performance_summary.md`.
+
+## Round 4 — Bug Test
+
+- Package compile completed **277/277** twice; all **67** module files imported,
+  **65** modules discovered with no errors, all **53** exposed `register()`
+  functions constructed, and no duplicate module `CODE` was found.
+- Module self-tests recorded **51 passes / 15 expected environment, stopped, or
+  platform skips**; all **18** runnable core self-tests passed.
+- Fixed the non-admin selfcheck startup regression: the diagnostic now uses a
+  per-process D: workspace sandbox instead of the ACL-protected production
+  flight recorder. Final selfcheck: **26/26 PASS**.
+- Focused enterprise regressions: **133/133 PASS**. Full serial suite: **705
+  passed / 2 intentional platform skips / 0 failed**. A post-performance-agent
+  regression added **34/34 PASS**.
+- The two-second soak smoke profile passed, but remains plumbing-only evidence;
+  it does not replace an 8-hour or 24-hour live-runtime soak.
+- Full evidence: `analysis/loop/round4/bugtest_results.md`.
+
+## Round 5 — Innovation
+
+- Completed a research/design-only audit of current enterprise capabilities and
+  2025–2026 primary sources; full report:
+  `analysis/loop/round5/innovation_recommendations.md`.
+- Ranked five offline-first, Windows user-mode additions: App Control Policy
+  Evidence Ledger; Signed Local Model Admission + ML-BOM; ClickFix and LOLBin
+  Behavior-Chain Pack; Detection Contract v2 (ATT&CK v19 + Sigma 2.1); and
+  ZTDNS/ECH-Aware Name-to-Flow Evidence.
+- Existing HMAC evidence transport, typed hunts/cases, detection-package
+  signing, identity/NDR foundations, AI broker, kernel posture, and WFP planning
+  are reused. Earlier NTFS Journal, NTLM Exit, call-stack, model-airlock, QUIC,
+  and split-token proposals were not relabeled as new work.
+- All proposals are passive or policy-gated, defensive-only, and explicitly
+  exclude kernel additions, cloud dependencies, payload decryption, arbitrary
+  executable rules, and automatic enforcement. No product code or host policy
+  changed in this round.
+
+## Round 4 - Red Team
+
+- R4-01 HIGH - Privileged startup trusts inherited environment values before
+  hardening, allowing trusted-tool resolution and watchdog/core command control
+  to cross the UAC boundary.
+- R4-02 HIGH - First fleet migration accepts an inherited legacy secret and
+  deterministically turns it into the tenant-operator credential.
+- R4-03 HIGH - The loopback URL policy validates localhost but the default
+  urllib proxy handler can route plaintext local-model prompts off-host; DNS
+  resolution is not pinned to the validated peer.
+- R4-04 MEDIUM - DPAPI/Keychain-protected provider, mail, and connector secrets
+  are republished into the global environment and inherited by unrelated
+  sidecars and interactive shells.
+- R4-05 MEDIUM - Generated fleet credentials have no fixed expiry, while the
+  service-account expiry is recalculated on every restart and therefore rolls
+  forward indefinitely.
+- No fleet HTTP framing, replay, tenant-authorization, or tracked-public-tree
+  secret bypass was confirmed. Full evidence and tests:
+  `analysis/loop/round4/redteam_findings.md`.

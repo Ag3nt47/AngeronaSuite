@@ -11,13 +11,13 @@ bounded, identifier-redacted event summary is sent; event details stay local.
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from typing import Optional
 
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.privacy import redact_text
+from angerona.core.provider_credentials import credential_values
 
 _SYSTEM = (
     "You are a Tier-3 SOC analyst. Review this security event triaged by a local "
@@ -60,7 +60,7 @@ class CloudEscalationModule(BaseModule):
     def __init__(self) -> None:
         super().__init__()
         self._last_ts = 0.0
-        self._keys = [k.strip() for k in os.getenv("GEMINI_API_KEYS", "").split(",") if k.strip()]
+        self._keys = list(credential_values("gemini"))
 
     def _ask_gemini(self, prompt: str) -> Optional[dict]:
         try:
@@ -81,26 +81,35 @@ class CloudEscalationModule(BaseModule):
             return None
 
     def run(self) -> None:
-        if not self._keys:
-            self.emit("Cloud escalation idle — no protected Gemini key (local-only mode).",
-                      Severity.INFO)
-            # Stay alive but dormant so the user can add a key without a restart.
-            while not self.stopping:
-                self.sleep(30)
-                self._keys = [k.strip() for k in os.getenv("GEMINI_API_KEYS", "").split(",") if k.strip()]
-                if self._keys:
-                    self.emit("Cloud escalation key detected — now active.", Severity.INFO)
-                    break
-            if self.stopping:
-                return
-
-        self.emit("Cloud CTI escalation active — CRITICAL events are sent to Gemini for a "
-                  "second opinion (explicit cloud egress).", Severity.INFO)
         _calls: list[float] = []          # recent cloud-call timestamps (rate cap)
         _CAP, _WINDOW = 20, 3600.0        # BL-15: cap API use — ≤20 cloud calls/hour
         _capped = False
+        announced_active: bool | None = None
         while not self.stopping:
-            self.sleep(8)
+            # Re-read the canonical registry every cycle so adding, rotating, or
+            # clearing a credential takes effect without a module restart.
+            self._keys = list(credential_values("gemini"))
+            active = bool(self._keys)
+            if active != announced_active:
+                if active:
+                    self.emit(
+                        "Cloud CTI escalation active — CRITICAL events are sent to "
+                        "Gemini for a second opinion (explicit cloud egress).",
+                        Severity.INFO,
+                    )
+                else:
+                    self.emit(
+                        "Cloud escalation idle — no protected Gemini key "
+                        "(local-only mode).",
+                        Severity.INFO,
+                    )
+                announced_active = active
+            self.sleep(8 if active else 30)
+            self._keys = list(credential_values("gemini"))
+            if bool(self._keys) != active:
+                continue
+            if not self._keys:
+                continue
             if self._bus is None:
                 continue
             for ev in self._bus.recent(15):

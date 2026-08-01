@@ -1,166 +1,189 @@
-"""gui/help_content.py — end-user Help / Info content (self-contained).
+"""Canonical, GUI-independent Help and capability content.
 
-Plain-language guidance for every operator-facing feature: what it is, how to turn
-it on, how to test it, and how to fix it when it misbehaves. Kept as pure data +
-tiny helpers so it can be surfaced anywhere — a Help window, the console ``guide``
-command, or ARIA — without any GUI dependency. No imports beyond stdlib.
+The capability portion is rendered from :mod:`angerona.core.capability_guide`.
+Only genuinely supplementary operator topics live here, preventing Help,
+Settings, the console and ARIA from drifting into different product claims.
 """
 from __future__ import annotations
 
-# topic key → (title, body). Bodies are plain text with simple bullet lines.
-TOPICS: "dict[str, tuple[str, str]]" = {
-    "getting-started": (
-        "Getting started",
-        "Angerona is a local, defensive security suite. It watches your Windows PC, "
-        "scores your posture (0–100), and never sends data off the machine unless you "
-        "explicitly turn on a cloud/online feature.\n"
-        "• The dashboard shows Modules running, Alerts, and your Threat level.\n"
-        "• The bottom Console takes commands OR plain questions — anything that isn't a "
-        "command goes to ARIA, your built-in assistant.\n"
-        "• Type 'guide <topic>' for any subject below, or just ask ARIA "
-        "(e.g. \"how do I turn on voice?\").\n"
-        "Topics: aria · actions · voice · signal · teams · trusted-apps · testing · "
-        "troubleshooting · threat-level · privacy",
-    ),
-    "aria": (
-        "ARIA — your assistant",
-        "ARIA is a local assistant melded into the bottom Console (and the ARIA tab).\n"
-        "• Ask anything about Angerona, security, or your device — she answers from the "
-        "local model (Ollama/llama3), grounded in your live environment and runbooks.\n"
-        "• She's also a coach: ask \"how do I set up X\", \"test my sensors\", or "
-        "\"why is my threat level high?\" for step-by-step help.\n"
-        "• If the local model is off, she can use an online AI when you add a key "
-        "(Settings ▸ API Keys); otherwise she says so.\n"
-        "Speed: the model is kept warm so replies are quick after the first one.",
-    ),
+from angerona.core.capability_guide import (
+    GUIDES,
+    CapabilityGuide,
+    DestinationActionability,
+    DestinationAvailability,
+    DestinationKind,
+    search_guides,
+)
+
+
+def _getting_started_body() -> str:
+    categories = ", ".join(sorted({guide.category for guide in GUIDES}))
+    return (
+        "Angerona is a local-first defensive security suite. It watches the host, "
+        "explains evidence, and keeps cloud or messaging features off until the "
+        "operator explicitly configures them.\n"
+        "• The dashboard shows module health, alerts, posture, and current threat level.\n"
+        "• The ARIA console accepts commands or plain-language questions.\n"
+        "• Run Self-Test to verify local pipelines; use only inert Red Team drills for "
+        "built-in validation.\n"
+        f"• Help contains {len(GUIDES)} evidence-backed capabilities across: {categories}.\n"
+        "• Type 'guide <capability or task>' or ask ARIA for a guided explanation."
+    )
+
+
+_SUPPLEMENTARY_TOPICS: dict[str, tuple[str, str]] = {
+    "getting-started": ("Getting started", _getting_started_body()),
     "actions": (
         "ARIA actions (safe, confirm-first)",
-        "ARIA can DO things, not just talk — every change is confirm-then-execute.\n"
-        "• Reads run immediately: \"list modules\", \"recent alerts\", \"threat level\", "
-        "\"top processes\", \"connections\", \"coverage\", \"incidents\", \"run diagnostics\".\n"
-        "• Changes are staged behind a token: \"suspend pid 1234\", \"kill 4812\", "
-        "\"disable the memory scanner module\", \"trust my running apps\". ARIA replies with "
-        "a preview + a token; say \"confirm\" (or \"confirm <token>\") to run it, or "
-        "\"cancel\" to drop it. Nothing changes until you confirm.\n"
-        "• Planning: ask \"what should I do?\" / \"strategize\" for a prioritized action plan.",
-    ),
-    "voice": (
-        "Voice conversation",
-        "Talk to ARIA hands-free.\n"
-        "1. Settings ▸ enable Voice. ARIA will speak her replies using the built-in "
-        "Windows voice (no install needed).\n"
-        "2. To talk to her, install speech-to-text: 'pip install vosk sounddevice' "
-        "(optionally set ANGERONA_VOSK_MODEL to a downloaded model).\n"
-        "3. Say \"hey aria …\" then your request, e.g. \"hey aria, what's my posture?\" or "
-        "\"hey aria, suspend pid 1234\" then \"hey aria, confirm\".\n"
-        "Nothing is sent to the cloud; speech stays on your machine.",
-    ),
-    "signal": (
-        "Signal — talk to ARIA from your phone",
-        "Message ARIA from Signal, end-to-end encrypted.\n"
-        "1. Install signal-cli and register/link your Signal number.\n"
-        "2. Settings ▸ Mobile Response Bridge: enable it, set the signal-cli path, your "
-        "host number, and your phone (destination) number. Set the PIN.\n"
-        "3. From your phone: 'STATUS' for posture, 'HELP' for commands, or just chat — any "
-        "plain message is answered by ARIA. Containment (KILL/SUSPEND/LOCKDOWN) needs the "
-        "token + PIN shown in the alert.\n"
-        "Only your configured number is accepted; other senders are logged as spoof attempts.",
-    ),
-    "teams": (
-        "Microsoft Teams bot",
-        "Chat with ARIA inside Teams (two-way).\n"
-        "1. Azure Portal → create an 'Azure Bot'; note the Microsoft App ID and create a "
-        "client secret.\n"
-        "2. Set the bot's Messaging endpoint to https://<your-tunnel>/api/messages and "
-        "expose Angerona's local endpoint with a dev tunnel/ngrok (HTTPS).\n"
-        "3. Add the Microsoft Teams channel; install the bot to your Teams.\n"
-        "4. Settings ▸ Teams Bot: enable, paste the App ID, set your allowed Teams user, "
-        "port (default 3978). Put the secret in .env as ANGERONA_TEAMS_APP_PASSWORD and "
-        "'pip install pyjwt' for inbound security.\n"
-        "Only your allow-listed user is answered; chat/reads only (no remote changes).",
-    ),
-    "trusted-apps": (
-        "Trusted apps (stop false flags)",
-        "Some normal apps (browsers, Electron apps like Claude/VS Code/Discord) use "
-        "read-write-execute memory legitimately, which can look suspicious.\n"
-        "• Type 'trust-running' in the console (or tell ARIA \"trust my running apps\") to "
-        "trust the programs you're using now by exact path.\n"
-        "• 'trust-running all' also includes system-path apps.\n"
-        "• Or trust one at a time in Settings ▸ Trusted Processes, or via Resolve Center ▸ "
-        "Allow on a specific alert.\n"
-        "Common JIT apps are already trusted out of the box.",
-    ),
-    "testing": (
-        "Testing your protection",
-        "• 'RUN SELF-TEST' (header) or console 'test [module]' checks a sensor's pipeline "
-        "end-to-end.\n"
-        "• 'RUN RED TEAM SIMULATION' fires a safe, benign ATT&CK drill against your own "
-        "host (inert markers, nothing malicious).\n"
-        "• Console 'aar' re-scores the last drill. Interval scanners (FIM ~30s, YARA ~5min) "
-        "may report a catch a bit later — re-run 'aar' after a few minutes.\n"
-        "• DRILL and CHAOS run automatically to prove your sensors aren't blinded.",
+        "ARIA can explain and stage defensive actions, but a model response is never "
+        "host authority.\n"
+        "• Reads such as module status, recent alerts, posture, and diagnostics may run "
+        "without changing the host.\n"
+        "• Changes are staged behind a short-lived confirmation token. Review the exact "
+        "target and effect, then confirm or cancel.\n"
+        "• High-impact enterprise actions also pass through typed authorization and "
+        "approval controls. There is no generic remote shell.\n"
+        "• Treat every recommendation as advice until the resulting evidence and receipt "
+        "have been verified.",
     ),
     "troubleshooting": (
         "Troubleshooting",
-        "• Threat level stuck High on your own apps → 'trust-running', or Resolve Center ▸ "
-        "Ignore/Allow the false positives.\n"
-        "• A module shows 'stopped' or 'quarantined' → console 'module <name> restart'.\n"
-        "• ARIA says the local AI is unavailable → make sure Ollama is running "
-        "(ollama serve · ollama pull llama3), or add an online key in Settings ▸ API Keys.\n"
-        "• Check state with console 'threat', 'modules', 'resources', 'iocs'.\n"
-        "• Logs live in the diagnostics folder: runtime_alerts.log, crash.log, "
-        "not_responding.log.\n"
-        "• Ask ARIA \"why is my threat level high?\" or \"run diagnostics\".",
+        "• Threat level remains elevated: open Resolve Center and review each detection; "
+        "allow only an exact, verified false positive.\n"
+        "• A module is stopped or quarantined: inspect its detail and recovery evidence "
+        "before restarting it.\n"
+        "• ARIA is unavailable: verify the configured local model service and model. "
+        "Optional provider credentials belong only in Settings > API Keys.\n"
+        "• After sleep or resume: allow sensor freshness to recover, then run Self-Test.\n"
+        "• For a crash or freeze: use Advanced Console diagnostics and inspect the local "
+        "diagnostics directory. Do not paste unrestricted logs into a public issue.\n"
+        "• Ask ARIA to explain posture or run diagnostics; do not authorize a change until "
+        "the target and rollback are clear.",
     ),
     "threat-level": (
         "How the threat level works",
-        "The level (Secure / High / Critical) reflects REAL detections in the last ~10 "
-        "minutes — not Angerona's own health or drills.\n"
-        "• Self-health events (a module restarting, a drill probe, SOAR summaries) do NOT "
-        "raise it.\n"
-        "• Genuine detections (credential theft, ransomware behaviour, C2 beacons) do.\n"
-        "• Clear false positives in Resolve Center (Ignore/Allow) to return to Secure.",
+        "The threat level reflects unresolved security evidence, not merely the number of "
+        "informational events. Self-health events and inert drills should not independently "
+        "raise it. Review elevated findings in Resolve Center, verify the underlying event, "
+        "and either remediate it or explicitly classify a proven false positive.",
     ),
     "privacy": (
-        "Privacy & data",
-        "Angerona is local-first. Nothing leaves your machine unless you turn on a feature "
-        "that clearly sends data:\n"
-        "• Online AI fallback (only with a key you add) · Teams/Signal/channel push (only "
-        "to endpoints you configure) · cloud threat-intel lookups you initiate.\n"
-        "Everything else — detection, ARIA's local answers, voice — runs entirely on-device.",
+        "Privacy and data boundaries",
+        "Angerona is local-first. Detection, local ARIA answers, evidence correlation, and "
+        "host metrics remain on the device. Optional online intelligence, provider-assisted "
+        "AI, messaging, or interoperability can create egress only after explicit setup. "
+        "Review each capability's privacy, limitations, and destination before enabling it. "
+        "Credentials must be stored through the protected Settings workflow, never in a "
+        "project file or diagnostic bundle.",
     ),
+}
+
+
+def render_capability_body(guide: CapabilityGuide) -> str:
+    """Render one canonical capability as plain text for Help, ARIA or console."""
+
+    steps = "\n".join(f"{index}. {step}" for index, step in enumerate(guide.steps, 1))
+    evidence = "\n".join(f"• {reference}" for reference in guide.evidence)
+    limitations = "\n".join(f"• {item}" for item in guide.limitations)
+    availability = guide.destination_availability.value.replace("-", " ")
+    actionability = guide.destination_actionability.value.replace("-", " ")
+    if guide.destination_kind is DestinationKind.WINDOW:
+        destination = "Main window > " + guide.name
+    elif guide.destination_kind is DestinationKind.SETTINGS:
+        destination = "Settings > " + guide.destination
+    else:
+        destination = "No in-product destination"
+    if guide.destination_actionability is DestinationActionability.CONTEXTUAL:
+        destination += " (opens the owning section; select this capability there)"
+    if guide.destination_availability is not DestinationAvailability.AVAILABLE:
+        destination += f" ({availability})"
+    return (
+        f"Maturity: {guide.maturity_label}\n"
+        f"Category: {guide.category}\n\n"
+        f"WHAT IT DOES\n{guide.definition}\n\n"
+        f"HOW TO USE IT\n{steps}\n\n"
+        f"VERIFY\n{guide.verify}\n\n"
+        f"PRIVACY AND SAFETY\n{guide.privacy}\n\n"
+        f"EVIDENCE\n{evidence}\n\n"
+        f"KNOWN LIMITATIONS\n{limitations}\n\n"
+        f"CANONICAL DESTINATION\n{destination}\n"
+        f"Navigation: {actionability}; availability: {availability}."
+    )
+
+
+def capability_topics() -> dict[str, tuple[str, str]]:
+    """Return capability Help topics in the canonical catalog order."""
+
+    return {
+        guide.key: (guide.name, render_capability_body(guide))
+        for guide in GUIDES
+    }
+
+
+CAPABILITY_TOPIC_KEYS = tuple(guide.key for guide in GUIDES)
+SUPPLEMENTARY_TOPIC_KEYS = tuple(_SUPPLEMENTARY_TOPICS)
+TOPICS: dict[str, tuple[str, str]] = {
+    **_SUPPLEMENTARY_TOPICS,
+    **capability_topics(),
 }
 
 _ALIASES = {
-    "start": "getting-started", "help": "getting-started", "overview": "getting-started",
-    "assistant": "aria", "action": "actions", "commands": "actions",
-    "stt": "voice", "tts": "voice", "mic": "voice",
-    "phone": "signal", "mobile": "signal",
-    "microsoft": "teams", "bot": "teams",
-    "trust": "trusted-apps", "trusted": "trusted-apps", "allowlist": "trusted-apps",
-    "test": "testing", "drill": "testing", "selftest": "testing",
-    "fix": "troubleshooting", "problem": "troubleshooting", "debug": "troubleshooting",
-    "threat": "threat-level", "posture": "threat-level",
+    "start": "getting-started",
+    "help": "getting-started",
+    "overview": "getting-started",
+    "action": "actions",
+    "commands": "actions",
+    "fix": "troubleshooting",
+    "problem": "troubleshooting",
+    "debug": "troubleshooting",
+    "threat": "threat-level",
+    "posture": "threat-level",
+    "data": "privacy",
+    "assistant": "local-ai",
+    "aria": "local-ai",
+    "voice": "local-ai",
+    "stt": "local-ai",
+    "tts": "local-ai",
+    "mic": "local-ai",
+    "phone": "mobile",
+    "signal": "mobile",
+    "trusted": "trusted-processes",
+    "trusted-apps": "trusted-processes",
+    "test": "red-team",
+    "testing": "red-team",
+    "drill": "red-team",
 }
 
 
-def topics() -> "list[str]":
+def topics() -> list[str]:
     return list(TOPICS)
 
 
-def resolve(name: str) -> "str | None":
-    key = (name or "").strip().lower().replace(" ", "-").replace("_", "-")
+def _topic_key(value: str) -> str:
+    return "-".join(str(value or "").strip().casefold().replace("_", " ").split())
+
+
+def resolve(name: str) -> str | None:
+    key = _topic_key(name)
     if key in TOPICS:
         return key
-    return _ALIASES.get(key)
+    alias = _ALIASES.get(key)
+    if alias is not None:
+        return alias
+    matches = search_guides(name)
+    return matches[0].key if matches else None
 
 
 def get(name: str = "getting-started") -> str:
-    """Return a rendered help topic (title + body), or a topic index if unknown."""
+    """Return a rendered Help topic, or the canonical topic index if unknown."""
+
     key = resolve(name)
     if key is None:
-        return ("Angerona guide — available topics:\n  " + " · ".join(topics())
-                + "\nType 'guide <topic>' or ask ARIA.")
+        return (
+            "Angerona guide - available topics:\n  "
+            + " · ".join(topics())
+            + "\nType 'guide <topic>' or ask ARIA."
+        )
     title, body = TOPICS[key]
     return f"── {title} ──\n{body}"
 

@@ -6,11 +6,12 @@ call is consented (the local-first / no-silent-egress guardrail is about
 *automatic* telemetry — a human clicking "Consult AI" is deliberate).
 
 Provider order (first with a key wins, each falls back to the next):
-    1. Anthropic  (ANTHROPIC_API_KEY)      — Claude, preferred
-    2. OpenAI     (OPENAI_API_KEY)
-    3. OpenRouter (OPENROUTER_API_KEY)
-    4. Gemini     (GEMINI_API_KEY / GEMINI_API_KEYS)
-    5. Local Ollama (always available offline) — last-resort fallback
+    1. Anthropic
+    2. Google Gemini
+    3. Groq
+    4. OpenAI
+    5. OpenRouter
+    6. Local Ollama (always available offline) — last-resort fallback
 
 Stdlib only (urllib) so importing this never fails on a missing SDK. Every call
 is best-effort and returns a dict; it never raises.
@@ -29,6 +30,10 @@ import urllib.error
 import urllib.request
 from typing import Optional
 
+from angerona.core.provider_credentials import (
+    configured_provider_ids,
+    credential_value,
+)
 from angerona.core.url_policy import (
     LOCAL_SERVICE_POLICY,
     host_policy,
@@ -37,11 +42,13 @@ from angerona.core.url_policy import (
     safe_urlopen,
 )
 
-# Env-overridable model ids (kept current-ish; the operator can override in .env).
+# Environment-overridable model IDs. Credentials themselves are supplied only
+# through the protected provider registry.
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest")
 OPENAI_MODEL    = os.environ.get("OPENAI_MODEL", "gpt-4o")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet")
 GEMINI_MODEL    = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GROQ_MODEL      = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 OLLAMA_MODEL    = os.environ.get("ANGERONA_MODEL", os.environ.get("OLLAMA_MODEL", "llama3"))
 OLLAMA_HOST     = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 
@@ -65,6 +72,7 @@ def _post(url: str, headers: dict, payload: dict) -> dict:
             "configured AI provider",
             {
                 "api.anthropic.com",
+                "api.groq.com",
                 "api.openai.com",
                 "openrouter.ai",
                 "generativelanguage.googleapis.com",
@@ -76,7 +84,7 @@ def _post(url: str, headers: dict, payload: dict) -> dict:
 
 # ── Providers ─────────────────────────────────────────────────────────────────
 def _anthropic(prompt: str, system: str) -> Optional[str]:
-    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    key = credential_value("anthropic")
     if not key:
         return None
     body = _post(
@@ -91,7 +99,7 @@ def _anthropic(prompt: str, system: str) -> Optional[str]:
 
 
 def _openai(prompt: str, system: str) -> Optional[str]:
-    key = os.environ.get("OPENAI_API_KEY", "").strip()
+    key = credential_value("openai")
     if not key:
         return None
     body = _post(
@@ -105,7 +113,7 @@ def _openai(prompt: str, system: str) -> Optional[str]:
 
 
 def _openrouter(prompt: str, system: str) -> Optional[str]:
-    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    key = credential_value("openrouter")
     if not key:
         return None
     body = _post(
@@ -119,14 +127,12 @@ def _openrouter(prompt: str, system: str) -> Optional[str]:
 
 
 def _gemini(prompt: str, system: str) -> Optional[str]:
-    key = (os.environ.get("GEMINI_API_KEY", "").strip()
-           or next((k.strip() for k in os.environ.get("GEMINI_API_KEYS", "").split(",")
-                    if k.strip()), ""))
+    key = credential_value("gemini")
     if not key:
         return None
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{GEMINI_MODEL}:generateContent?key={key}")
-    body = _post(url, {"content-type": "application/json"},
+           f"{GEMINI_MODEL}:generateContent")
+    body = _post(url, {"content-type": "application/json", "x-goog-api-key": key},
                  {"system_instruction": {"parts": [{"text": system}]},
                   "contents": [{"parts": [{"text": prompt}]}]})
     cands = body.get("candidates") or []
@@ -134,6 +140,20 @@ def _gemini(prompt: str, system: str) -> Optional[str]:
         return ""
     parts = cands[0].get("content", {}).get("parts", [])
     return "".join(p.get("text", "") for p in parts).strip()
+
+
+def _groq(prompt: str, system: str) -> Optional[str]:
+    key = credential_value("groq")
+    if not key:
+        return None
+    body = _post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {"Authorization": f"Bearer {key}", "content-type": "application/json"},
+        {"model": GROQ_MODEL, "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt}]},
+    )
+    return body["choices"][0]["message"]["content"].strip()
 
 
 def _ollama(prompt: str, system: str) -> Optional[str]:
@@ -149,9 +169,10 @@ def _ollama(prompt: str, system: str) -> Optional[str]:
 
 _PROVIDERS = [
     ("anthropic", _anthropic),
+    ("gemini", _gemini),
+    ("groq", _groq),
     ("openai", _openai),
     ("openrouter", _openrouter),
-    ("gemini", _gemini),
     ("ollama", _ollama),
 ]
 
@@ -178,16 +199,8 @@ def _ordered_providers():
 
 def available_providers() -> list[str]:
     """Names of providers that currently have a key configured (Ollama always)."""
-    out = []
-    if os.environ.get("ANTHROPIC_API_KEY", "").strip():
-        out.append("anthropic")
-    if os.environ.get("OPENAI_API_KEY", "").strip():
-        out.append("openai")
-    if os.environ.get("OPENROUTER_API_KEY", "").strip():
-        out.append("openrouter")
-    if (os.environ.get("GEMINI_API_KEY", "").strip()
-            or os.environ.get("GEMINI_API_KEYS", "").strip()):
-        out.append("gemini")
+    configured = set(configured_provider_ids())
+    out = [name for name, _fn in _PROVIDERS if name in configured]
     out.append("ollama")
     return out
 

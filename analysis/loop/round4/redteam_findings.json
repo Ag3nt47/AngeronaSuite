@@ -1,0 +1,42 @@
+[
+  {
+    "id": "R4-01",
+    "title": "Privileged startup trusts inherited environment before hardening",
+    "severity": "HIGH",
+    "component": "src/angerona/core/privilege.py:21-42; src/angerona/__main__.py:6-15; src/angerona/core/data_paths.py:42-50,92-115,179-229; src/angerona/app.py:383-397; src/angerona/resilience/manager.py:135-158; src/angerona/resilience/watchdog.py:87-121; start-angerona.bat:17-35,103-126",
+    "status": "OPEN",
+    "recommendation": "Sanitize immediately after elevation, resolve Windows system paths through WinAPI, rebuild a minimal privileged environment, derive canonical restart argv from verified executables, and attest any external watchdog rather than trusting environment flags."
+  },
+  {
+    "id": "R4-02",
+    "title": "First fleet migration accepts an inherited attacker-selected operator key",
+    "severity": "HIGH",
+    "component": "src/angerona/core/config.py:353-363; src/angerona/core/secure_store.py:250-258; src/angerona/app.py:440-482; src/angerona/core/fleet_credentials.py:624-708; src/angerona/gui/pages.py:5452-5474",
+    "status": "OPEN",
+    "recommendation": "Migrate only protected-provenance credentials or an explicit post-elevation import, purge inherited fleet key material, and atomically generate and verify a fresh protected key when no protected state exists."
+  },
+  {
+    "id": "R4-03",
+    "title": "Loopback HTTP can be proxied off-host and is vulnerable to resolution TOCTOU",
+    "severity": "HIGH",
+    "component": "src/angerona/core/url_policy.py:37-46,66-181; src/angerona/engines/ollama_client.py:198-222; src/angerona/modules/ai_triage.py:55-58,85-108,127-149",
+    "status": "OPEN",
+    "recommendation": "Disable proxies for local-service transport with ProxyHandler({}), prefer literal loopback or pin the validated numeric peer, and support enterprise proxies only through explicit protected policy."
+  },
+  {
+    "id": "R4-04",
+    "title": "Protected credentials are republished globally and inherited by every child",
+    "severity": "MEDIUM",
+    "component": "src/angerona/core/secure_store.py:31-35,136-167,223-229,250-258; src/angerona/core/provider_credentials.py:36-47,70-106; src/angerona/resilience/supervisor.py:56-81; src/angerona/gui/upgrade_console.py:475-503",
+    "status": "OPEN",
+    "recommendation": "Use a narrow just-in-time credential broker instead of os.environ and build minimal allowlisted child environments that exclude API keys, tokens, passwords, mail credentials, webhooks, and proxy controls."
+  },
+  {
+    "id": "R4-05",
+    "title": "Fleet credentials never expire and principal expiry rolls forward on restart",
+    "severity": "MEDIUM",
+    "component": "src/angerona/core/fleet_credentials.py:111-160,624-708; src/angerona/core/authorization.py:35-48,344-410; src/angerona/app.py:535-576",
+    "status": "OPEN",
+    "recommendation": "Persist fixed credential issue/expiry/revocation and rotation state, bind principal validity to that fixed expiry, and add audited operator/device rotation and re-enrollment."
+  }
+]

@@ -75,9 +75,9 @@ def test_readiness_credits_local_foundations_and_keeps_external_gates() -> None:
     bus._authority = object()  # assessment only needs the public armed-state property
     report = assess(_Manager(), bus, _config(), _ProofLog())
 
-    assert report["assessment_version"] == 3
-    assert report["percent"] == 86
-    assert report["band"] == "advanced local enterprise foundation"
+    assert report["assessment_version"] == 4
+    assert report["percent"] == 73
+    assert report["band"] == "strong standalone foundation"
     assert report["summary"]["gaps"] == 0
     assert report["summary"]["external_gates"] == 4
     assert {
@@ -130,6 +130,7 @@ def test_readiness_exports_clock_quality_and_api_contract_without_tenant_identit
         "registered_devices": 3,
         "fleet_ingestion": "degraded",
         "stored_events": 42,
+        "duplicate_retries": 7,
         "uncertain_clock_events": 2,
         "fleet_api_contract_sha256": "a" * 64,
     }
@@ -138,6 +139,8 @@ def test_readiness_exports_clock_quality_and_api_contract_without_tenant_identit
 
     assert packed["runtime"]["fleet_ingestion"] == "degraded"
     assert packed["runtime"]["stored_events"] == 42
+    assert report["runtime"]["duplicate_retries"] == 7
+    assert packed["runtime"]["duplicate_retries"] == 7
     assert packed["runtime"]["uncertain_clock_events"] == 2
     assert packed["runtime"]["fleet_api_contract_sha256"] == "a" * 64
     assert "tenant" not in json.dumps(packed["runtime"]).casefold()
@@ -155,6 +158,101 @@ def test_unsigned_override_and_optional_egress_are_visible_warnings() -> None:
     assert by_id["telemetry.integrity"]["status"] == "gap"
     assert by_id["extensions.trust"]["status"] == "warn"
     assert by_id["privacy.egress"]["status"] == "warn"
+
+
+def test_extension_summary_failure_is_unknown_and_never_passes() -> None:
+    extension_error = type("ExtensionSummary" + "X" * 2_000, (RuntimeError,), {})
+
+    class _BrokenExtensionManager(_Manager):
+        def extension_security_summary(self):
+            raise extension_error("do not expose this exception message")
+
+    report = assess(
+        _BrokenExtensionManager(), EventBus(), _config(), _ProofLog()
+    )
+    control = next(
+        row for row in report["controls"] if row["id"] == "extensions.trust"
+    )
+
+    assert control["status"] == "gap"
+    assert control["score"] == 0
+    assert "ExtensionSummary" in control["detail"]
+    assert "do not expose" not in control["detail"]
+    assert len(control["detail"]) < 250
+
+
+def test_absent_or_disabled_module_inventory_cannot_pass_health() -> None:
+    class _InventoryManager(_Manager):
+        def __init__(self, inventory):
+            super().__init__()
+            self._inventory = inventory
+
+        def capability_inventory(self):
+            return self._inventory
+
+    empty = assess(
+        _InventoryManager([]), EventBus(), _config(), _ProofLog()
+    )
+    disabled = assess(
+        _InventoryManager([{
+            "name": "Dormant sensor",
+            "status": "stopped",
+            "health": 100,
+            "enabled": False,
+        }]),
+        EventBus(),
+        _config(),
+        _ProofLog(),
+    )
+
+    empty_health = next(
+        row for row in empty["controls"]
+        if row["id"] == "operations.module_health"
+    )
+    disabled_health = next(
+        row for row in disabled["controls"]
+        if row["id"] == "operations.module_health"
+    )
+    assert (empty_health["status"], empty_health["score"]) == ("warn", 0)
+    assert (disabled_health["status"], disabled_health["score"]) == ("warn", 0)
+
+
+def test_inactive_probe_stays_developing_and_library_controls_are_warnings() -> None:
+    class _EmptyManager(_Manager):
+        def capability_inventory(self):
+            return []
+
+    class _EmptyProofLog:
+        def verify_receipt_chain(self, limit=2_000):
+            return {
+                "valid": True,
+                "verified_receipts": 0,
+                "reason": "no retained receipts",
+            }
+
+    report = assess(
+        _EmptyManager(),
+        EventBus(),
+        _config(require_signed_aar=False),
+        _EmptyProofLog(),
+    )
+    by_id = {row["id"]: row for row in report["controls"]}
+
+    assert report["percent"] < 70
+    assert report["band"] == "developing foundation"
+    assert len(report["external_gates"]) == 4
+    for control_id in (
+        "incidents.causal_graph",
+        "storage.bounds",
+        "interop.ocsf",
+        "audit.export",
+    ):
+        assert by_id[control_id]["status"] == "warn"
+    audit = by_id["audit.export"]
+    assert "HMAC authentication" in audit["detail"]
+    assert "signed audit export" not in (
+        audit["name"] + " " + audit["detail"]
+    ).casefold()
 
 
 def test_mcp_enterprise_tools_use_canonical_event_fields() -> None:

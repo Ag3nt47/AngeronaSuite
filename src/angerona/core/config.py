@@ -65,7 +65,9 @@ class Config:
     # ── Linux eBPF sensor node (headless Linux only) — opt-in, default off ──
     ebpf_enabled: bool = False
     # ── Online AI consult priority order (first with a key wins) ──
-    ai_provider_order: list = field(default_factory=lambda: ["anthropic", "gemini", "openai", "openrouter", "ollama"])
+    ai_provider_order: list = field(default_factory=lambda: [
+        "anthropic", "gemini", "groq", "openai", "openrouter", "ollama"
+    ])
     # ── MCP server (local loopback — opt-in, default off) ──────────────────
     mcp_enabled: bool = False                   # start engines/mcp_server.py at boot
     mcp_port:    int  = 47923                   # loopback port for the MCP SSE endpoint

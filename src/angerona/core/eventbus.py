@@ -193,6 +193,10 @@ class EventBus:
         self._ring:      Deque[Event]              = deque(maxlen=ring_size)
         self._lock:      threading.RLock           = threading.RLock()
         self._authority: Optional[BusAuthority]    = None   # G3-A
+        # Monotonic in-process change token for polling consumers. Reading an
+        # integer is much cheaper than repeatedly copying and scanning the ring
+        # merely to discover that no event arrived since the previous cycle.
+        self._revision: int = 0
 
     # G3-A: wire in the signing authority
     def arm(self, authority: BusAuthority) -> None:
@@ -229,6 +233,7 @@ class EventBus:
         # every new event still reaches subscribers and persistent storage.
         with self._lock:
             self._ring.append(event)
+            self._revision += 1
             subs = list(self._subs)
 
         # Notify outside the lock so a slow subscriber can't block publishers.
@@ -248,3 +253,14 @@ class EventBus:
             # Retain the historical zero/negative-limit semantics exactly.
             items = list(self._ring)
         return items[-limit:][::-1]  # newest first
+
+    def revision(self) -> int:
+        """Return a monotonic token that changes after every publication.
+
+        The token is process-local and intentionally carries no security
+        meaning. It is only a low-cost change detector; authoritative event
+        content still comes from :meth:`recent` and retains the existing HMAC
+        verification contract.
+        """
+        with self._lock:
+            return self._revision

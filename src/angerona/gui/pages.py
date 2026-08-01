@@ -31,15 +31,16 @@ from PySide6.QtWidgets import (
 )
 
 HELP_TEXT_SHORT = (
-    "Gemini & Groq offer free keys. Paste a key in the API Keys tab and Save — "
-    "it's encrypted for your Windows account and used only for opt-in cloud escalation."
+    "Cloud providers are optional. Keys entered in the API Keys tab are protected "
+    "by your operating-system account and used only after an explicit cloud action."
 )
 HELP_TEXT_FULL = """ANGERONA — API KEY SETUP
 
-Angerona runs fully local by default (Ollama). Cloud keys are OPTIONAL and only
-used for the 'Cloud CTI Escalation' second-opinion on CRITICAL events. Keys are
-stored in Angerona's current-user encrypted credential store and are NEVER committed or sent
-anywhere except the provider you choose.
+Angerona runs fully local by default (Ollama). Cloud keys are OPTIONAL and are
+used only for an explicit online consult/research action or the separately
+enabled 'Cloud CTI Escalation' second-opinion on CRITICAL events. Keys are
+stored in Angerona's current-user protected credential store and are NEVER
+committed or sent anywhere except the provider you choose.
 
 WHERE TO GET KEYS
   • Gemini (free tier):   https://aistudio.google.com/app/apikey
@@ -54,12 +55,14 @@ HOW TO ADD THEM
   3. In the 'API Keys' tab, paste it into the matching field.
      - Gemini supports a comma-separated POOL of keys for rotation, e.g.
        key1,key2,key3
-  4. Click 'Save keys'. They're encrypted with Windows DPAPI and loaded live.
+  4. Click 'Save keys' or the main Settings 'Save'. They're protected by the
+     operating-system credential store and loaded live.
   5. The Cloud CTI Escalation module picks them up within ~30 seconds — no
      restart needed. Its health/Overview tab will show it active.
 
 SECURITY NOTES
-  • The credential store is user+machine-bound; keys leave only for your chosen provider.
+  • Windows uses user-bound DPAPI; macOS uses the current user's Keychain.
+    Keys leave only for the provider you explicitly choose.
   • Remove a key anytime by clearing its field and saving.
   • Without any key, Angerona stays 100% local — nothing is sent externally.
 """
@@ -1788,36 +1791,47 @@ class ModuleInspector(QDialog):
 
     def _api_keys_tab(self) -> QWidget:
         w = QWidget(); lay = QVBoxLayout(w)
-        info = QLabel("Enter your own cloud API keys (optional). Encrypted for this "
-                      "Windows user, never committed, and used only for opt-in escalation.")
+        info = QLabel(
+            "Provider credentials are managed only in Settings ▸ API Keys. "
+            "This read-only view never reveals or duplicates a secret."
+        )
         info.setWordWrap(True); lay.addWidget(info)
-        self._key_fields = {}
-        grid = QGridLayout()
-        rows = [("Gemini (comma-separated pool)", "GEMINI_API_KEYS"),
-                ("Groq", "GROQ_API_KEY"), ("OpenAI", "OPENAI_API_KEY"),
-                ("Anthropic (Claude)", "ANTHROPIC_API_KEY"), ("OpenRouter", "OPENROUTER_API_KEY")]
-        for i, (label, env) in enumerate(rows):
-            grid.addWidget(QLabel(label), i, 0)
-            f = QLineEdit(os.environ.get(env, ""))
-            f.setEchoMode(QLineEdit.Password); f.setPlaceholderText(env)
-            self._key_fields[env] = f
-            grid.addWidget(f, i, 1)
-        lay.addLayout(grid)
-        save = QPushButton("Save keys"); save.setObjectName("Primary")
-        save.clicked.connect(self._save_keys); lay.addWidget(save)
-        self._keys_status = QLabel(""); self._keys_status.setWordWrap(True)
-        self._keys_status.setStyleSheet("color:#9aa4b2;"); lay.addWidget(self._keys_status)
+        from angerona.core.provider_credentials import (
+            PROVIDER_CREDENTIALS,
+            credential_values,
+        )
+
+        for provider in PROVIDER_CREDENTIALS:
+            configured = bool(credential_values(provider.provider_id))
+            status = QLabel(
+                f"{'✓' if configured else '○'}  {provider.label}: "
+                f"{'configured' if configured else 'not configured'}"
+            )
+            status.setStyleSheet(
+                "color:#22c55e;" if configured else "color:#94a3b8;"
+            )
+            lay.addWidget(status)
+        open_settings = QPushButton("Open Settings ▸ API Keys")
+        open_settings.setObjectName("Primary")
+        open_settings.clicked.connect(self._open_api_key_settings)
+        lay.addWidget(open_settings)
         lay.addStretch(1)
         return w
 
-    def _save_keys(self) -> None:
-        from angerona.core.config import write_env_keys
-        updates = {env: f.text().strip() for env, f in self._key_fields.items()}
-        try:
-            path = write_env_keys(updates)
-            self._keys_status.setText(f"Saved to {path}. Cloud escalation picks up keys within ~30s.")
-        except Exception as exc:
-            self._keys_status.setText(f"Error saving: {exc}")
+    def _open_api_key_settings(self) -> None:
+        owner = self.parentWidget()
+        while owner is not None:
+            show_settings = getattr(owner, "_show_settings", None)
+            if callable(show_settings):
+                self.close()
+                show_settings("API Keys")
+                return
+            owner = owner.parentWidget()
+        QMessageBox.information(
+            self,
+            "Open API Keys",
+            "Open the main Angerona window, then choose Settings ▸ API Keys.",
+        )
 
     def _help_tab(self) -> QWidget:
         w = QWidget(); lay = QVBoxLayout(w)
@@ -3907,8 +3921,13 @@ class SettingsDialog(QDialog):
         self._visible_guides = search_guides(query)
         self._info_list.clear()
         for guide in self._visible_guides:
-            item = QListWidgetItem(f"{guide.name}\n{guide.category}")
+            item = QListWidgetItem(
+                f"{guide.name}\n{guide.category} · {guide.maturity_label}"
+            )
             item.setData(Qt.UserRole, guide.key)
+            item.setToolTip(
+                f"{guide.maturity_label} · {guide.destination_label}"
+            )
             self._info_list.addItem(item)
         self._info_list.setCurrentRow(0 if self._visible_guides else -1)
         if not self._visible_guides:
@@ -3925,25 +3944,43 @@ class SettingsDialog(QDialog):
         steps = "\n".join(
             f"{index}. {step}" for index, step in enumerate(guide.steps, 1)
         )
+        evidence = "\n".join(f"• {item}" for item in guide.evidence)
+        limitations = "\n".join(f"• {item}" for item in guide.limitations)
+        destination = guide.destination_label
+        if not guide.is_actionable:
+            destination += " (no operator navigation in this build)"
         self._info_detail.setPlainText(
             f"{guide.name}\n"
             f"{'=' * len(guide.name)}\n\n"
+            f"MATURITY\n{guide.maturity_label}\n\n"
             f"WHAT IT DOES\n{guide.definition}\n\n"
             f"HOW TO USE IT\n{steps}\n\n"
             f"VERIFY\n{guide.verify}\n\n"
             f"PRIVACY AND SAFETY\n{guide.privacy}\n\n"
-            f"CANONICAL DESTINATION\n"
-            f"{guide.destination if guide.destination_kind == 'settings' else 'Main window'}"
+            f"EVIDENCE\n{evidence}\n\n"
+            f"KNOWN LIMITATIONS\n{limitations}\n\n"
+            f"CANONICAL DESTINATION\n{destination}"
         )
-        self._info_take_me.setEnabled(True)
+        self._info_take_me.setEnabled(guide.is_actionable)
+        self._info_take_me.setText(
+            "Take me there" if guide.is_actionable else "Guidance only"
+        )
 
     def _info_navigate(self) -> None:
         row = self._info_list.currentRow()
         if row < 0 or row >= len(getattr(self, "_visible_guides", ())):
             return
         guide = self._visible_guides[row]
+        if not guide.is_actionable:
+            return
         if guide.destination_kind == "settings":
-            self._select_tab(guide.destination)
+            if not self._select_tab(guide.destination):
+                self._info_take_me.setEnabled(False)
+                self._info_take_me.setText("Destination unavailable")
+                self._info_detail.appendPlainText(
+                    "\n\nNAVIGATION\nThe declared Settings destination is unavailable "
+                    "in this build. No action was taken."
+                )
             return
         owner = self.parent()
         callback = getattr(owner, guide.destination, None)
@@ -3952,6 +3989,13 @@ class SettingsDialog(QDialog):
             # real destination performs its own reveal.
             self.close()
             QTimer.singleShot(420, callback)
+            return
+        self._info_take_me.setEnabled(False)
+        self._info_take_me.setText("Destination unavailable")
+        self._info_detail.appendPlainText(
+            "\n\nNAVIGATION\nThe declared window is unavailable in this build. "
+            "No action was taken."
+        )
 
     def _tab_general(self) -> QWidget:
         w   = QWidget()
@@ -5133,28 +5177,33 @@ class SettingsDialog(QDialog):
 
         lay.addWidget(self._section("Cloud escalation API keys (optional)"))
 
+        from angerona.core.provider_credentials import (
+            PROVIDER_CREDENTIALS,
+            provider_form_values,
+        )
+
         grid = QGridLayout()
         grid.setColumnStretch(1, 1)
-        _KEYS = [
-            ("GEMINI_API_KEY",     "Gemini:"),
-            ("GROQ_API_KEY",       "Groq:"),
-            ("OPENAI_API_KEY",     "OpenAI:"),
-            ("ANTHROPIC_API_KEY",  "Anthropic:"),
-            ("OPENROUTER_API_KEY", "OpenRouter:"),
-        ]
+        current_values = provider_form_values()
+        self._initial_key_values = dict(current_values)
+        self._api_keys_dirty = False
         self._key_fields: dict[str, QLineEdit] = {}
-        for _row, (env, label) in enumerate(_KEYS):
-            grid.addWidget(QLabel(label), _row, 0)
-            field = QLineEdit(os.environ.get(env, ""))
+        for _row, provider in enumerate(PROVIDER_CREDENTIALS):
+            label = provider.label
+            if provider.supports_pool:
+                label += " (comma-separated pool)"
+            grid.addWidget(QLabel(f"{label}:"), _row, 0)
+            field = QLineEdit(current_values[provider.provider_id])
             field.setEchoMode(QLineEdit.Password)
-            field.setPlaceholderText("(not set)")
+            field.setPlaceholderText("(not set — clear and Save to remove)")
             grid.addWidget(field, _row, 1)
-            self._key_fields[env] = field
+            self._key_fields[provider.provider_id] = field
+            field.textChanged.connect(self._mark_api_keys_dirty)
         lay.addLayout(grid)
 
         btn_keys = QPushButton("Save keys")
         btn_keys.setFixedWidth(110)
-        btn_keys.clicked.connect(self._save_api_keys)
+        btn_keys.clicked.connect(lambda: self._save_api_keys(notify=True))
         lay.addWidget(btn_keys)
 
         lay.addWidget(self._section("Online AI consult order (first with a key wins)"))
@@ -5165,18 +5214,28 @@ class SettingsDialog(QDialog):
         order_info.setWordWrap(True); order_info.setStyleSheet("color: #94a3b8; font-size: 11px;")
         lay.addWidget(order_info)
 
-        _labels = {
-            "anthropic":  "Anthropic (Claude)",
-            "gemini":     "Google Gemini",
-            "openai":     "OpenAI (ChatGPT)",
-            "openrouter": "OpenRouter",
-            "ollama":     "Local Ollama (offline fallback)",
-        }
+        _labels = {provider.provider_id: provider.label
+                   for provider in PROVIDER_CREDENTIALS}
+        _labels["ollama"] = "Local Ollama (offline fallback)"
         self._ai_order_list = QListWidget()
-        cur_order = list(
+        configured_order = list(
             getattr(self._cfg, "ai_provider_order", None)
-            or ["anthropic", "gemini", "openai", "openrouter", "ollama"]
+            or []
         )
+        cur_order: list[str] = []
+        for key in configured_order:
+            if key in _labels and key not in cur_order:
+                cur_order.append(key)
+        for provider in PROVIDER_CREDENTIALS:
+            if provider.provider_id in cur_order:
+                continue
+            insert_at = (
+                cur_order.index("ollama")
+                if "ollama" in cur_order else len(cur_order)
+            )
+            cur_order.insert(insert_at, provider.provider_id)
+        if "ollama" not in cur_order:
+            cur_order.append("ollama")
         for key in cur_order:
             it = QListWidgetItem(_labels.get(key, key))
             it.setData(Qt.UserRole, key)
@@ -5232,16 +5291,32 @@ class SettingsDialog(QDialog):
             except Exception as exc:
                 QMessageBox.warning(self, "Update check failed", str(exc))
 
-    def _save_api_keys(self) -> None:
-        from angerona.core.config import write_env_keys
-        updates = {env: field.text().strip() for env, field in self._key_fields.items()}
+    def _mark_api_keys_dirty(self, _text: str = "") -> None:
+        self._api_keys_dirty = True
+
+    def _save_api_keys(self, notify: bool = True) -> bool:
+        from angerona.core.provider_credentials import save_provider_credentials
+
+        updates = {
+            provider_id: field.text().strip()
+            for provider_id, field in self._key_fields.items()
+        }
         try:
-            write_env_keys(updates)
-            QMessageBox.information(self, "Keys saved",
-                                    "API keys encrypted for this Windows user. Active "
-                                    "modules pick them up within ~30 s — no restart needed.")
+            save_provider_credentials(updates)
+            self._initial_key_values = dict(updates)
+            self._api_keys_dirty = False
+            if notify:
+                QMessageBox.information(
+                    self,
+                    "Keys saved",
+                    "API keys were saved to the operating-system protected credential "
+                    "store. Active modules pick them up without exposing the values.",
+                )
+            return True
         except Exception as exc:
+            self._select_tab("API Keys")
             QMessageBox.warning(self, "Save failed", str(exc))
+            return False
 
     def _save_mobile_pin(self) -> None:
         pin = self._mob_pin.text().strip()
@@ -5306,6 +5381,12 @@ class SettingsDialog(QDialog):
             self._select_tab("ARIA")
             QMessageBox.warning(self, "Mailbox settings required",
                                 "Enter the IMAP host and mailbox, or turn inbox triage off.")
+            return
+
+        # The main Save button is authoritative for every settings tab. Only
+        # touch the protected store when a field changed, so unrelated settings
+        # remain editable even when an external credential backend is offline.
+        if self._api_keys_dirty and not self._save_api_keys(notify=False):
             return
 
         self._cfg.ollama_host  = self._ollama_host.text().strip()

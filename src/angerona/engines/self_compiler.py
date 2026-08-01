@@ -4,13 +4,10 @@ import json
 import subprocess
 import importlib.util
 import urllib.request
-from dotenv import load_dotenv
 
+from angerona.core.provider_credentials import credential_value
 from angerona.core.url_policy import host_policy, read_bounded, safe_urlopen
 
-load_dotenv()
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 _CLOUD_SYNTHESIS_ENABLED = os.getenv("ANGERONA_CLOUD_CODE_SYNTHESIS", "0") == "1"
 _GEMINI_POLICY = host_policy(
     "operator-approved Gemini API",
@@ -26,14 +23,15 @@ def query_gemini_engineer(prompt_text):
     """Fallback gateway optimized to return pure, compilable Python source blocks."""
     if not _CLOUD_SYNTHESIS_ENABLED:
         return "ERROR: cloud code synthesis is disabled (offline-first default)."
-    if not GEMINI_API_KEY:
-        return "ERROR: GEMINI_API_KEY missing from environment rules."
+    gemini_api_key = credential_value("gemini")
+    if not gemini_api_key:
+        return "ERROR: Gemini API credential is not configured in Settings."
         
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
     headers = {
         "Content-Type": "application/json; charset=utf-8",
         "Accept": "application/json",
-        "x-goog-api-key": GEMINI_API_KEY,
+        "x-goog-api-key": gemini_api_key,
     }
     
     payload = {

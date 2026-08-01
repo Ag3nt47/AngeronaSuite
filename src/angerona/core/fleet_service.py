@@ -7,6 +7,7 @@ import json
 import math
 import re
 import secrets
+import socket
 import sqlite3
 import threading
 import time
@@ -50,6 +51,7 @@ DEFAULT_FLEET_CREDENTIAL_ID = "local-preview"
 FLEET_CREDENTIAL_HEADER = "X-Angerona-Credential-ID"
 MAX_REPLAY_ENTRIES = 250_000
 MAX_HANDLER_THREADS = 64
+DEFAULT_CLIENT_TIMEOUT_SECONDS = 5.0
 
 FLEET_CONTRACT_READ = "fleet.contract.read"
 FLEET_CAPABILITIES_READ = "fleet.capabilities.read"
@@ -143,14 +145,38 @@ def _strict_json(body: bytes) -> Any:
     def reject_constant(_value: str) -> Any:
         raise ValueError("request JSON numbers must be finite")
 
+    def finite_float(value: str) -> float:
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError("request JSON numbers must be finite")
+        return parsed
+
     try:
         return json.loads(
             text,
             object_pairs_hook=unique_object,
             parse_constant=reject_constant,
+            parse_float=finite_float,
         )
     except json.JSONDecodeError as exc:
         raise ValueError("invalid JSON") from exc
+
+
+def _json_bytes(value: Mapping[str, Any]) -> bytes:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), default=str,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _event_page_response(page) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "items": list(page.items),
+        "next_cursor": page.next_cursor,
+        "truncated": page.truncated,
+        "encoded_bytes": page.encoded_bytes,
+    }
 
 
 def openapi_contract() -> dict[str, Any]:
@@ -480,13 +506,16 @@ class FleetReplayWindow:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._max_entries = max_entries
         self._lock = threading.RLock()
-        self._db = sqlite3.connect(
+        self._db: sqlite3.Connection | None = self._open_database()
+
+    def _open_database(self) -> sqlite3.Connection:
+        database = sqlite3.connect(
             str(self.path), check_same_thread=False, isolation_level=None
         )
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA busy_timeout=3000")
-        self._db.execute("PRAGMA secure_delete=ON")
-        self._db.executescript("""
+        database.execute("PRAGMA journal_mode=WAL")
+        database.execute("PRAGMA busy_timeout=3000")
+        database.execute("PRAGMA secure_delete=ON")
+        database.executescript("""
         CREATE TABLE IF NOT EXISTS fleet_replay(
           credential_id TEXT NOT NULL,
           nonce TEXT NOT NULL,
@@ -495,6 +524,14 @@ class FleetReplayWindow:
         CREATE INDEX IF NOT EXISTS idx_fleet_replay_expiry
           ON fleet_replay(expires_at);
         """)
+        return database
+
+    def close(self) -> None:
+        """Release the SQLite handle; the ledger reopens lazily if restarted."""
+        with self._lock:
+            database, self._db = self._db, None
+            if database is not None:
+                database.close()
 
     def consume(
         self,
@@ -507,31 +544,37 @@ class FleetReplayWindow:
         if not math.isfinite(now) or not math.isfinite(expires_at):
             raise ValueError("invalid replay time")
         with self._lock:
-            self._db.execute("BEGIN IMMEDIATE")
+            if self._db is None:
+                self._db = self._open_database()
+            database = self._db
+            transaction_started = False
             try:
-                self._db.execute(
+                database.execute("BEGIN IMMEDIATE")
+                transaction_started = True
+                database.execute(
                     "DELETE FROM fleet_replay WHERE expires_at<=?", (now,)
                 )
-                if self._db.execute(
+                if database.execute(
                     "SELECT 1 FROM fleet_replay "
                     "WHERE credential_id=? AND nonce=?",
                     (credential_id, nonce),
                 ).fetchone():
-                    self._db.execute("COMMIT")
+                    database.execute("COMMIT")
                     return False
-                count = int(self._db.execute(
+                count = int(database.execute(
                     "SELECT COUNT(*) FROM fleet_replay"
                 ).fetchone()[0])
                 if count >= self._max_entries:
                     raise RuntimeError("fleet replay window is at capacity")
-                self._db.execute(
+                database.execute(
                     "INSERT INTO fleet_replay VALUES(?,?,?)",
                     (credential_id, nonce, expires_at),
                 )
-                self._db.execute("COMMIT")
+                database.execute("COMMIT")
                 return True
             except Exception:
-                self._db.execute("ROLLBACK")
+                if transaction_started:
+                    database.execute("ROLLBACK")
                 raise
 
 
@@ -624,6 +667,10 @@ class RequestAuthenticator:
         context, reason = self.authenticate(method, path, headers, body)
         return context is not None, reason
 
+    def close(self) -> None:
+        """Release the durable replay-ledger handle."""
+        self._replay.close()
+
 
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     """Thread-capped loopback server with observable bounded handler drain."""
@@ -635,6 +682,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         self._slots = threading.BoundedSemaphore(MAX_HANDLER_THREADS)
         self._handler_condition = threading.Condition()
         self._active_handlers = 0
+        self._active_requests: set[Any] = set()
         super().__init__(server_address, handler_class)
 
     def process_request(self, request, client_address) -> None:
@@ -651,23 +699,43 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             return
         with self._handler_condition:
             self._active_handlers += 1
+            self._active_requests.add(request)
         try:
             super().process_request(request, client_address)
         except Exception:
-            self._handler_finished()
+            self._handler_finished(request)
             raise
 
     def process_request_thread(self, request, client_address) -> None:
         try:
             super().process_request_thread(request, client_address)
         finally:
-            self._handler_finished()
+            self._handler_finished(request)
 
-    def _handler_finished(self) -> None:
+    def _handler_finished(self, request) -> None:
         self._slots.release()
         with self._handler_condition:
+            self._active_requests.discard(request)
             self._active_handlers -= 1
             self._handler_condition.notify_all()
+
+    def close_active_requests(self) -> None:
+        """Interrupt stalled accepted sockets during supervised shutdown."""
+        with self._handler_condition:
+            requests = tuple(self._active_requests)
+        for request in requests:
+            # Windows can leave a makefile-backed recv blocked after only a
+            # combined shutdown. Closing each direction first reliably wakes
+            # the buffered reader before the final socket close.
+            for direction in (socket.SHUT_RD, socket.SHUT_WR, socket.SHUT_RDWR):
+                try:
+                    request.shutdown(direction)
+                except OSError:
+                    pass
+            try:
+                request.close()
+            except OSError:
+                pass
 
     def wait_for_handlers(self, timeout: float) -> bool:
         deadline = time.monotonic() + max(0.0, timeout)
@@ -692,6 +760,7 @@ class FleetLoopbackService:
         host: str = "127.0.0.1",
         port: int = 47930,
         authorization_policy: AuthorizationPolicy | None = None,
+        client_timeout_seconds: float = DEFAULT_CLIENT_TIMEOUT_SECONDS,
     ) -> None:
         if host not in {"127.0.0.1", "::1", "localhost"}:
             raise ValueError("fleet service is loopback-only")
@@ -701,6 +770,12 @@ class FleetLoopbackService:
         self.host = host
         self.port = int(port)
         self.authorization_policy = authorization_policy
+        self.client_timeout_seconds = float(client_timeout_seconds)
+        if (
+            not math.isfinite(self.client_timeout_seconds)
+            or not 0.1 <= self.client_timeout_seconds <= 30.0
+        ):
+            raise ValueError("invalid fleet client timeout")
         if isinstance(credentials, bytes):
             if len(plane.tenant_ids) != 1:
                 raise ValueError(
@@ -732,7 +807,7 @@ class FleetLoopbackService:
 
             def setup(self):
                 super().setup()
-                self.connection.settimeout(5.0)
+                self.connection.settimeout(owner.client_timeout_seconds)
 
             def _json(
                 self,
@@ -741,31 +816,55 @@ class FleetLoopbackService:
                 *,
                 extra_headers: Mapping[str, str] | None = None,
             ) -> None:
-                data = json.dumps(
-                    value, sort_keys=True, separators=(",", ":"), default=str
-                ).encode("utf-8")
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(data)))
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("Pragma", "no-cache")
-                self.send_header("X-Content-Type-Options", "nosniff")
-                for name, header_value in (extra_headers or {}).items():
-                    self.send_header(name, header_value)
-                self.end_headers()
-                self.wfile.write(data)
+                data = _json_bytes(value)
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Pragma", "no-cache")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    for name, header_value in (extra_headers or {}).items():
+                        self.send_header(name, header_value)
+                    self.end_headers()
+                    self.wfile.write(data)
+                except OSError:
+                    self.close_connection = True
 
             def _body(self) -> bytes:
+                if self.headers.get("Transfer-Encoding") is not None:
+                    raise ValueError("transfer encoding is not supported")
+                lengths = self.headers.get_all("Content-Length", [])
+                if len(lengths) != 1:
+                    raise ValueError("exactly one content length is required")
                 try:
-                    length = int(self.headers.get("Content-Length", "0"))
+                    length = int(lengths[0])
                 except ValueError:
                     raise ValueError("invalid content length")
-                if length < 0 or length > MAX_BODY:
-                    raise ValueError("request body exceeds byte budget")
-                body = self.rfile.read(length)
+                if length < 0:
+                    raise ValueError("invalid content length")
+                if length > MAX_BODY:
+                    raise BodyTooLarge("request body exceeds byte budget")
+                try:
+                    body = self.rfile.read(length)
+                except (TimeoutError, socket.timeout) as exc:
+                    raise TimeoutError("request body read timed out") from exc
                 if len(body) != length:
                     raise ValueError("request body is incomplete")
                 return body
+
+            def _bodyless_request_is_valid(self) -> bool:
+                if self.headers.get("Transfer-Encoding") is not None:
+                    return False
+                lengths = self.headers.get_all("Content-Length", [])
+                if not lengths:
+                    return True
+                if len(lengths) != 1:
+                    return False
+                try:
+                    return int(lengths[0]) == 0
+                except ValueError:
+                    return False
 
             def _authenticate(
                 self, body: bytes
@@ -859,6 +958,13 @@ class FleetLoopbackService:
                 return allowed
 
             def do_GET(self):  # noqa: N802
+                if not self._bodyless_request_is_valid():
+                    self.close_connection = True
+                    self._json(400, {
+                        "ok": False,
+                        "error": "GET requests cannot contain a body",
+                    })
+                    return
                 parsed = urlsplit(self.path)
                 if parsed.path == "/health":
                     self._json(200, {
@@ -900,19 +1006,41 @@ class FleetLoopbackService:
                             context, tenant, FLEET_EVENT_READ
                         ):
                             return
+                        device_id = query.get("device_id", [None])[0]
+                        cursor = query.get("cursor", [""])[0]
+                        page_limit = int(query.get("limit", ["500"])[0])
                         page = owner.plane.event_page(
                             tenant,
-                            device_id=query.get("device_id", [None])[0],
-                            limit=int(query.get("limit", ["500"])[0]),
-                            cursor=query.get("cursor", [""])[0],
+                            device_id=device_id,
+                            limit=page_limit,
+                            cursor=cursor,
                         )
-                        self._json(200, {
-                            "ok": True,
-                            "items": list(page.items),
-                            "next_cursor": page.next_cursor,
-                            "truncated": page.truncated,
-                            "encoded_bytes": page.encoded_bytes,
-                        })
+                        response = _event_page_response(page)
+                        while len(_json_bytes(response)) > MAX_QUERY_RESPONSE_BYTES:
+                            item_count = len(page.items)
+                            if item_count <= 1:
+                                raise RuntimeError(
+                                    "fleet event response exceeds byte budget"
+                                )
+                            overage = (
+                                len(_json_bytes(response))
+                                - MAX_QUERY_RESPONSE_BYTES
+                            )
+                            average_item_bytes = max(
+                                1, page.encoded_bytes // item_count
+                            )
+                            reduction = max(
+                                1, math.ceil(overage / average_item_bytes)
+                            )
+                            page_limit = max(1, item_count - reduction)
+                            page = owner.plane.event_page(
+                                tenant,
+                                device_id=device_id,
+                                limit=page_limit,
+                                cursor=cursor,
+                            )
+                            response = _event_page_response(page)
+                        self._json(200, response)
                         return
                     elif resource == "ingestion-health":
                         if not self._authorize(
@@ -930,8 +1058,17 @@ class FleetLoopbackService:
             def do_POST(self):  # noqa: N802
                 try:
                     body = self._body()
-                except (ValueError, TimeoutError, OSError) as exc:
+                except BodyTooLarge as exc:
+                    self.close_connection = True
                     self._json(413, {"ok": False, "error": str(exc)})
+                    return
+                except TimeoutError as exc:
+                    self.close_connection = True
+                    self._json(408, {"ok": False, "error": str(exc)})
+                    return
+                except (ValueError, OSError) as exc:
+                    self.close_connection = True
+                    self._json(400, {"ok": False, "error": str(exc)})
                     return
                 context = self._authenticate(body)
                 if context is None:
@@ -1062,15 +1199,28 @@ class FleetLoopbackService:
 
     def stop(self, timeout: float = 3.0) -> bool:
         server, thread = self._server, self._thread
-        self._server = None
-        self._thread = None
         if server is None:
+            self.auth.close()
             return True
         started = time.monotonic()
+        # Wake blocked Windows socket readers before stopping the accept loop;
+        # closing them only after serve_forever exits can leave makefile reads
+        # pinned until their full client timeout.
+        server.close_active_requests()
         server.shutdown()
         if thread is not None:
             thread.join(max(0.1, min(float(timeout), 10.0)))
         elapsed = time.monotonic() - started
         drained = server.wait_for_handlers(max(0.0, float(timeout) - elapsed))
+        if not drained:
+            server.close_active_requests()
+            drained = server.wait_for_handlers(
+                min(1.0, max(0.5, float(timeout)))
+            )
         server.server_close()
-        return drained and (thread is None or not thread.is_alive())
+        stopped = drained and (thread is None or not thread.is_alive())
+        if stopped:
+            self._server = None
+            self._thread = None
+            self.auth.close()
+        return stopped

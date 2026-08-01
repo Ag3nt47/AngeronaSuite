@@ -17,6 +17,7 @@ import os
 import sys
 import time
 import traceback
+from pathlib import Path
 
 # Windows redirected consoles commonly default to CP1252, while Angerona's
 # reports intentionally contain Unicode arrows/status glyphs. Never let report
@@ -29,6 +30,16 @@ for _stream in (sys.stdout, sys.stderr):
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")   # no real display needed
 os.environ.setdefault("ANGERONA_SELFCHECK", "1")
+
+# ``run-selfcheck.bat`` is intentionally a non-admin diagnostic.  Production
+# runtime data is protected by an Administrators/SYSTEM-only ACL, so pointing
+# this process at the live flight recorder makes the harness fail before its
+# first check.  Keep every diagnostic write on the workspace's D: volume while
+# isolating it from live data and from concurrent self-check runs.
+os.environ.setdefault(
+    "ANGERONA_DATA",
+    str(Path(__file__).resolve().parents[1] / ".tmp" / "selfcheck" / str(os.getpid())),
+)
 
 # Match the production entry point before any test imports ``tempfile`` or a
 # component creates diagnostics. Running this file directly must not fall back

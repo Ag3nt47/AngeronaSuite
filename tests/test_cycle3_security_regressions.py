@@ -4,6 +4,8 @@ import json
 import os
 import time
 
+import pytest
+
 from angerona.connectors.teams_bot import TeamsBot
 from angerona.core import drill_resolution, privacy, report_attest, secure_store
 from angerona.engines import ai_consult
@@ -41,6 +43,36 @@ def test_internal_protected_values_never_enter_process_environment(
     monkeypatch.setenv(key, "leaked-again")
     secure_store.load_into_environment(tmp_path)
     assert key not in os.environ
+
+
+def test_verified_protected_secret_overrides_inherited_environment(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(secure_store, "_protect_bytes", lambda data: b"P" + data)
+    monkeypatch.setattr(
+        secure_store,
+        "_unprotect_bytes",
+        lambda data: data[1:] if data.startswith(b"P") else None,
+    )
+    monkeypatch.setattr(secure_store, "_private_acl", lambda _path: None)
+    secure_store.write_secret_map({"OPENAI_API_KEY": "protected"}, tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "inherited-untrusted")
+
+    secure_store.load_into_environment(tmp_path)
+
+    assert os.environ["OPENAI_API_KEY"] == "protected"
+
+
+def test_unreadable_secret_store_is_never_overwritten(monkeypatch, tmp_path) -> None:
+    path = secure_store.secure_store_path(tmp_path)
+    path.write_bytes(b"existing-unreadable-ciphertext")
+    monkeypatch.setattr(secure_store, "_unprotect_bytes", lambda _data: None)
+    monkeypatch.setattr(secure_store, "_protect_bytes", lambda data: b"new" + data)
+
+    with pytest.raises(RuntimeError, match="refusing to overwrite"):
+        secure_store.write_secret_map({"OPENAI_API_KEY": "replacement"}, tmp_path)
+
+    assert path.read_bytes() == b"existing-unreadable-ciphertext"
 
 
 def test_cloud_privacy_redacts_short_secrets_ipv6_unc_hostname_and_urls(monkeypatch):

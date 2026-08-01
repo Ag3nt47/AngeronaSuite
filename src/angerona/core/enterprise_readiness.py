@@ -1,9 +1,10 @@
 """Versioned enterprise-readiness assessment for Angerona.
 
-This is an evidence-based local snapshot, not a marketing grade. Implemented
-controls receive points only when their runtime state can be checked. Missing
-fleet features remain visible as explicit gaps so a healthy standalone endpoint
-is never mislabeled as a complete enterprise deployment.
+This is an evidence-based local snapshot, not a marketing grade. Operational
+passes require runtime evidence; installed foundations remain warnings with
+partial credit until exercised. Missing fleet features remain visible as
+explicit gates so a healthy standalone endpoint is never mislabeled as a
+complete enterprise deployment.
 """
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from typing import Any
 from angerona.core.privacy import redact_text
 
 
-ASSESSMENT_VERSION = 3
+ASSESSMENT_VERSION = 4
 EVIDENCE_SCHEMA = "angerona.enterprise-evidence/v1"
 
 
@@ -64,35 +65,62 @@ def assess(
         "Arm the EventBus from the FlightRecorder authority before modules start.",
     ))
 
+    extension_error = ""
     try:
-        extension = manager.extension_security_summary()
+        extension = dict(manager.extension_security_summary())
+        unsigned_override = bool(
+            extension.get("unsigned_development_override")
+        )
+        loaded_external = max(
+            0, min(int(extension.get("loaded_external", 0)), 100_000)
+        )
+        signed_external = max(
+            0, min(int(extension.get("signed_external", 0)), 100_000)
+        )
+        rejected_external = max(
+            0, min(int(extension.get("rejected_external", 0)), 100_000)
+        )
     except Exception as exc:
-        extension = {
-            "unsigned_development_override": False,
-            "loaded_external": 0,
-            "signed_external": 0,
-            "rejected_external": 0,
-            "error": type(exc).__name__,
-        }
-    unsigned_override = bool(extension.get("unsigned_development_override"))
-    loaded_external = int(extension.get("loaded_external", 0))
-    signed_external = int(extension.get("signed_external", 0))
-    extension_ok = not unsigned_override and signed_external == loaded_external
+        # A missing trust summary is unknown evidence, never evidence of trust.
+        extension_error = _safe(type(exc).__name__, 80) or "Exception"
+        unsigned_override = False
+        loaded_external = 0
+        signed_external = 0
+        rejected_external = 0
+    extension_ok = (
+        not extension_error
+        and not unsigned_override
+        and signed_external == loaded_external
+    )
+    if extension_error:
+        extension_status, extension_score = "gap", 0
+        extension_detail = (
+            "Extension trust state is unknown because its summary failed "
+            f"({extension_error}); no trust conclusion was made."
+        )
+        extension_action = (
+            "Restore extension inventory reporting and rerun the trust assessment."
+        )
+    else:
+        extension_status = "pass" if extension_ok else "warn"
+        extension_score = 10 if extension_ok else 4
+        extension_detail = (
+            f"{loaded_external} external module(s) loaded; {signed_external} carry "
+            f"a trusted publisher signature; {rejected_external} were rejected "
+            "before import."
+        )
+        extension_action = (
+            "Disable ANGERONA_ALLOW_UNSIGNED_EXTERNAL_MODULES and trust only reviewed "
+            "Ed25519 publisher keys."
+        )
     controls.append(_control(
         "extensions.trust",
         "Signed capability extension gate",
-        "pass" if extension_ok else "warn",
-        10 if extension_ok else 4,
+        extension_status,
+        extension_score,
         10,
-        (
-            f"{loaded_external} external module(s) loaded; {signed_external} carry "
-            f"a trusted publisher signature; {int(extension.get('rejected_external', 0))} "
-            "were rejected before import."
-        ),
-        (
-            "Disable ANGERONA_ALLOW_UNSIGNED_EXTERNAL_MODULES and trust only reviewed "
-            "Ed25519 publisher keys."
-        ),
+        extension_detail,
+        extension_action,
     ))
 
     if remediation_log is None:
@@ -142,14 +170,16 @@ def assess(
 
     controls.append(_control(
         "incidents.causal_graph",
-        "Bounded causal incident graph",
-        "pass",
-        10,
+        "Bounded causal incident graph foundation",
+        "warn",
+        5,
         10,
         (
-            "Entity-aware, PID-generation-aware graphing is available as a pure "
-            "read-side builder with explicit confidence and hard size limits."
+            "Entity-aware, PID-generation-aware graphing is installed as a pure "
+            "read-side builder with explicit confidence and hard size limits; this "
+            "snapshot does not include an exercised incident graph."
         ),
+        "Exercise the graph against retained telemetry and review its confidence evidence.",
     ))
 
     signed_aar = bool(getattr(config, "require_signed_aar", False))
@@ -194,22 +224,38 @@ def assess(
         "Review every active connector and document its data-flow approval.",
     ))
 
+    inventory_error = ""
     try:
-        inventory = manager.capability_inventory()
-    except Exception:
+        inventory = list(manager.capability_inventory() or ())
+        enabled = [row for row in inventory if row.get("enabled")]
+        failed = [
+            row for row in enabled
+            if row.get("status") == "error" or int(row.get("health", 0)) <= 0
+        ]
+        degraded = [
+            row for row in enabled
+            if row not in failed and int(row.get("health", 0)) < 50
+        ]
+    except Exception as exc:
+        inventory_error = _safe(type(exc).__name__, 80) or "Exception"
         inventory = []
-    enabled = [row for row in inventory if row.get("enabled")]
-    failed = [
-        row for row in enabled
-        if row.get("status") == "error" or int(row.get("health", 0)) <= 0
-    ]
-    degraded = [
-        row for row in enabled
-        if row not in failed and int(row.get("health", 0)) < 50
-    ]
-    if not inventory:
-        health_status, health_score = "warn", 4
-        health_detail = "Module discovery has not completed."
+        enabled = []
+        failed = []
+        degraded = []
+    if inventory_error:
+        health_status, health_score = "gap", 0
+        health_detail = (
+            "Module lifecycle state is unknown because inventory failed "
+            f"({inventory_error})."
+        )
+    elif not inventory:
+        health_status, health_score = "warn", 0
+        health_detail = "No module inventory evidence is available."
+    elif not enabled:
+        health_status, health_score = "warn", 0
+        health_detail = (
+            f"{len(inventory)} module(s) were discovered, but none are enabled."
+        )
     elif failed:
         health_status, health_score = "gap", 2
         health_detail = (
@@ -235,20 +281,29 @@ def assess(
 
     controls.append(_control(
         "storage.bounds",
-        "Bounded local evidence retention",
-        "pass",
+        "Bounded local evidence retention foundation",
+        "warn",
+        2,
         5,
-        5,
-        "Recent telemetry, incidents, and remediation ledgers have hard retention caps.",
+        (
+            "Telemetry, incident, and remediation ledger implementations have hard "
+            "retention caps; this snapshot does not prove configured retention or "
+            "successful pruning."
+        ),
+        "Verify configured retention limits and exercise pruning against a staged dataset.",
     ))
     controls.append(_control(
         "interop.ocsf",
-        "Normalized security export",
-        "pass",
+        "Normalized security export foundation",
+        "warn",
+        2,
         5,
-        5,
-        "OCSF export and privacy-reviewed IR bundle surfaces are present.",
-        "Pin and validate the exported payload against a published OCSF schema version.",
+        (
+            "OCSF normalization and privacy-reviewed IR bundle libraries are installed; "
+            "this snapshot has no evidence that export is configured, exercised, or "
+            "validated against a published schema version."
+        ),
+        "Configure an export and validate its payload against a pinned OCSF schema version.",
     ))
 
     # Credit the shipped, tested local primitives while keeping their deployment
@@ -263,6 +318,9 @@ def assess(
     ingestion_state = _safe(runtime.get("fleet_ingestion", "unknown"), 40)
     stored_events = max(
         0, min(int(runtime.get("stored_events", 0) or 0), 100_000_000)
+    )
+    duplicate_retries = max(
+        0, min(int(runtime.get("duplicate_retries", 0) or 0), 100_000_000)
     )
     uncertain_clock_events = max(
         0,
@@ -330,7 +388,8 @@ def assess(
                 "registered device record(s). Tenant-scoped inventory, "
                 "device-bound deduplicated ingestion, quarantine, signed receipts, "
                 f"and a versioned API contract are active. Ingestion is {ingestion_state}; "
-                f"{stored_events} event(s) are stored and {uncertain_clock_events} "
+                f"{stored_events} event(s) are stored, {duplicate_retries} duplicate "
+                f"ingestion attempt(s) were deduplicated, and {uncertain_clock_events} "
                 "carry uncertain endpoint clock evidence."
                 if fleet_running else
                 "Tenant-scoped inventory, device-bound deduplicated ingestion, "
@@ -368,13 +427,19 @@ def assess(
         ),
         _control(
             "audit.export",
-            "Privacy-minimized signed audit export",
-            "pass",
-            8,
+            "Privacy-minimized audit export foundation",
+            "warn",
+            3,
             8,
             (
-                "Bounded tenant/scope/time exports minimize fields, tokenize actors, "
-                "redact free text, chain records, and authenticate the manifest."
+                "Bounded tenant/scope/time export code minimizes fields, tokenizes "
+                "actors, redacts free text, chains records, and provides shared-secret "
+                "HMAC authentication for its manifest; this snapshot does not show an "
+                "operational export."
+            ),
+            (
+                "Configure and exercise an audit export, protect and rotate its shared "
+                "HMAC key, and verify the resulting manifest."
             ),
         ),
     ])
@@ -427,6 +492,7 @@ def assess(
             "registered_devices": registered_devices,
             "fleet_ingestion": ingestion_state,
             "stored_events": stored_events,
+            "duplicate_retries": duplicate_retries,
             "uncertain_clock_events": uncertain_clock_events,
             "fleet_api_contract_sha256": api_contract_sha256,
         },
@@ -501,6 +567,11 @@ def evidence_pack(report: dict[str, Any]) -> dict[str, Any]:
             ),
             "stored_events": max(0, min(int(
                 dict(report.get("runtime", {})).get("stored_events", 0) or 0
+            ), 100_000_000)),
+            "duplicate_retries": max(0, min(int(
+                dict(report.get("runtime", {})).get(
+                    "duplicate_retries", 0
+                ) or 0
             ), 100_000_000)),
             "uncertain_clock_events": max(0, min(int(
                 dict(report.get("runtime", {})).get(
