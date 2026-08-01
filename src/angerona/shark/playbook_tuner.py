@@ -22,6 +22,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from angerona.engines import ollama_client
+
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 MODEL = os.getenv("MODEL_NAME", "llama3:latest")
 
@@ -38,13 +40,18 @@ def _repo_root() -> Path:
 
 def _ollama_block(timeline: dict) -> str | None:
     try:
-        import requests
-        r = requests.post(f"{OLLAMA_HOST}/api/generate", timeout=90, json={
-            "model": MODEL, "stream": False, "keep_alive": "30m",
-            "options": {"temperature": 0},
-            "system": _SYS, "prompt": json.dumps(timeline, indent=2)})
-        r.raise_for_status()
-        t = re.sub(r"^```[a-zA-Z]*\n?|```$", "", (r.json().get("response") or "").strip()).strip()
+        result = ollama_client.analyze_telemetry(
+            "Create the defensive containment block requested by the system policy.",
+            json.dumps(timeline, indent=2),
+            MODEL,
+            system=_SYS,
+            host=OLLAMA_HOST,
+            timeout=90,
+            options={"temperature": 0},
+        )
+        if result.get("error"):
+            return None
+        t = re.sub(r"^```[a-zA-Z]*\n?|```$", "", str(result.get("response") or "").strip()).strip()
         return t or None
     except Exception:
         return None

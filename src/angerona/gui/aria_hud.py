@@ -256,6 +256,7 @@ if _HAVE_QT:
                 return
 
             self._log = QTextEdit(); self._log.setReadOnly(True)
+            self._log.document().setMaximumBlockCount(2000)
             self._input = QLineEdit(); self._input.setPlaceholderText("Ask ARIA…")
             self._input.returnPressed.connect(self._on_submit)
             # Answers come back from a worker thread — render on the GUI thread.

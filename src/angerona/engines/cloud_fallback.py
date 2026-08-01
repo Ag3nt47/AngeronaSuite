@@ -4,12 +4,10 @@ cloud_fallback.py — Cloud Escalation Router
 import json
 import logging
 import re
-import time
 import os
 import concurrent.futures
 from typing import Any
 
-import requests
 from google import genai
 
 logger = logging.getLogger(__name__)

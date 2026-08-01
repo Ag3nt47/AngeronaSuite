@@ -25,6 +25,7 @@ import threading
 import time
 from pathlib import Path
 
+from angerona.engines import ollama_client
 from angerona.shark.run_manifest import (
     DrillHistoryIntegrityError,
     load_verified_history,
@@ -260,16 +261,18 @@ class EvolutionEngine(BaseModule):
     # ── 3. local-AI YARA synthesis ───────────────────────────────────────────
     def _ollama_yara(self, footprint: dict) -> str | None:
         try:
-            import requests
-        except Exception:
-            return None
-        try:
-            r = requests.post(f"{OLLAMA_HOST}/api/generate", timeout=90, json={
-                "model": MODEL, "stream": False, "keep_alive": "30m",
-                "options": {"temperature": 0},
-                "system": _SYS_YARA, "prompt": json.dumps(footprint, indent=2)})
-            r.raise_for_status()
-            text = (r.json().get("response") or "").strip()
+            result = ollama_client.analyze_telemetry(
+                "Create the defensive YARA signature requested by the system policy.",
+                json.dumps(footprint, indent=2),
+                MODEL,
+                system=_SYS_YARA,
+                host=OLLAMA_HOST,
+                timeout=90,
+                options={"temperature": 0},
+            )
+            if result.get("error"):
+                return None
+            text = str(result.get("response") or "").strip()
             text = re.sub(r"^```[a-zA-Z]*\n?|```$", "", text).strip()  # strip any fences
             return text if "rule " in text and "{" in text else None
         except Exception:

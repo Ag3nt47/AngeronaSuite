@@ -210,6 +210,18 @@ class ThreatIntelDashboard(QDialog):
         self._load_and_render()
 
     # ── Data loading & rendering ─────────────────────────────────────────
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        super().showEvent(event)
+        if not self._timer.isActive():
+            self._timer.start()
+        self._load_and_render()
+
+    def hideEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        # The dashboard intentionally reuses this window. Hidden must mean
+        # idle; otherwise each background refresh continues doing CVE work.
+        self._timer.stop()
+        super().hideEvent(event)
+
     def _load_and_render(self) -> None:
         from angerona.core import cve_ignore
         data = _load_threats()

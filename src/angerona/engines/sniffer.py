@@ -1,42 +1,44 @@
 import string
-import requests
 import json
 import time
 import threading
 import os
-from queue import Queue
+from queue import Full, Queue
 from scapy.all import sniff, IP, TCP, UDP, ICMP
+from angerona.engines import ollama_client
 
 stats = {"TCP": 0, "UDP": 0, "ICMP": 0, "Total_Packets": 0}
 unique_ips = set()
 geo_cache = {}
 
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST") or os.getenv(
+    "OLLAMA_URL", "http://localhost:11434/api/generate"
+).removesuffix("/api/generate")
 MODEL_NAME = os.getenv("MODEL_NAME", "llama3:latest")
 
-dpi_processing_queue = Queue()
+dpi_processing_queue = Queue(maxsize=256)
 
 def asynchronous_dpi_worker():
     """Consumes frame payloads out-of-band so Scapy network loops never freeze."""
     while True:
         try:
             payload_text, packet_context = dpi_processing_queue.get()
-            prompt = f"""
+            prompt = """
             You are an NDR (Network Detection and Response) Deep Packet Inspection tool. 
             Analyze this raw text payload extracted from a network packet.
-            Context: {packet_context}
-            
-            Raw Extracted Payload Data:
-            \"\"\"{payload_text}\"\"\"
-            
             Determine if this text contains sensitive exposed data (unencrypted passwords, cleartext API keys, PII, or credentials).
             Respond strictly in one sentence using this exact format:
             [INSPECTION VERDICT]: (SAFE or CRITICAL LEAK) - (Brief reason why)
             """
-            payload = {"model": MODEL_NAME, "prompt": prompt, "stream": False, "keep_alive": "30m"}
             try:
-                response = requests.post(OLLAMA_URL, json=payload, timeout=5)
-                if response.status_code == 200:
+                response = ollama_client.analyze_telemetry(
+                    prompt,
+                    json.dumps({"context": packet_context, "payload": payload_text}),
+                    MODEL_NAME,
+                    host=OLLAMA_HOST,
+                    timeout=5,
+                )
+                if not response.get("error"):
                     pass
             except Exception:
                 pass
@@ -98,7 +100,10 @@ def packet_callback(packet):
                 ascii_snippet = raw_payload[:250].decode('ascii', errors='ignore').strip()
                 if ascii_snippet and len(ascii_snippet) > 10:
                     context_str = f"TCP packet from {src_ip}:{sport} to {dst_ip}:{dport}"
-                    dpi_processing_queue.put((ascii_snippet, context_str))
+                    try:
+                        dpi_processing_queue.put_nowait((ascii_snippet, context_str))
+                    except Full:
+                        pass
                     
         elif packet.haslayer(UDP):
             stats["UDP"] += 1

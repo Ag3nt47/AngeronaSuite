@@ -158,6 +158,7 @@ class FuturisticDetailDialog(QDialog):
         minimum_size: tuple[int, int] = (760, 520),
     ) -> None:
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.accent = accent
         self.setWindowTitle(title)
         self.setMinimumSize(*minimum_size)

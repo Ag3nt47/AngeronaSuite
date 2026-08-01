@@ -222,6 +222,7 @@ class RedTeamConsole(QDialog):
 
         # live log
         self.log = QTextEdit(); self.log.setReadOnly(True)
+        self.log.document().setMaximumBlockCount(4000)
         self.log.setStyleSheet("font-family:'Fira Code',monospace; font-size:11px; "
                                "background:#0b1220; border:1px solid #23324a; border-radius:6px;")
         self.log.setMinimumHeight(150)

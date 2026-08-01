@@ -46,6 +46,7 @@ class WorldViewDialog(QDialog):
     def __init__(self, parent=None, engine: WorldViewEngine | None = None,
                  event_count_fn=None) -> None:
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setWindowTitle("World View — Host Telemetry")
         self.resize(720, 560)
         self.setStyleSheet("QDialog{background:#0a0e14;} QLabel{color:#c8d3e0;font-family:Consolas;}")

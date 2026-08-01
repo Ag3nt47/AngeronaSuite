@@ -117,7 +117,10 @@ class PostureHistory:
         # timer records posture every tick and was freezing the Qt main thread
         # inside self._db.commit() — see diagnostics/not_responding.log
         # (_refresh_posture → posture_history.record → commit).
-        self._wq: "queue.Queue[Optional[tuple]]" = queue.Queue()
+        # A locked or unhealthy disk must not turn a harmless four-second HUD
+        # sample into an unbounded in-memory backlog. Keep the newest samples;
+        # a skipped intermediate point is preferable to exhausting RAM.
+        self._wq: "queue.Queue[Optional[tuple]]" = queue.Queue(maxsize=4096)
         self._writer = threading.Thread(
             target=self._writer_loop, name="PostureHistoryWriter", daemon=True
         )
@@ -133,7 +136,19 @@ class PostureHistory:
         s = max(0, min(100, int(score)))
         b = band or _band_for(s)
         t = time.time() if ts is None else float(ts)
-        self._wq.put((t, s, b, note))
+        point = (t, s, b, note)
+        try:
+            self._wq.put_nowait(point)
+        except queue.Full:
+            try:
+                self._wq.get_nowait()
+                self._wq.task_done()
+            except queue.Empty:
+                pass
+            try:
+                self._wq.put_nowait(point)
+            except queue.Full:
+                pass
         return PosturePoint(t, s, b, note)
 
     def _writer_loop(self) -> None:
@@ -342,7 +357,18 @@ class PostureHistory:
             return self._spark_cache.get(key, "")
 
     def close(self) -> None:
-        self._wq.put(None)                  # tell the writer to stop
+        try:
+            self._wq.put_nowait(None)       # tell the writer to stop
+        except queue.Full:
+            try:
+                self._wq.get_nowait()
+                self._wq.task_done()
+            except queue.Empty:
+                pass
+            try:
+                self._wq.put_nowait(None)
+            except queue.Full:
+                pass
         self._writer.join(timeout=2.0)
         if self._ui_db is not None:
             with self._ui_lock:

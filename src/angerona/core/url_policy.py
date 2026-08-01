@@ -8,6 +8,7 @@ Every redirect is revalidated under the same policy.
 from __future__ import annotations
 
 import ipaddress
+import json
 import socket
 import urllib.request
 from dataclasses import dataclass
@@ -200,6 +201,73 @@ def read_bounded(response, maximum: int = 4 * 1024 * 1024) -> bytes:
     return data
 
 
+def local_json_request(
+    base: str,
+    path: str,
+    *,
+    payload: dict | None = None,
+    method: str | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 30.0,
+    request_maximum: int = 2 * 1024 * 1024,
+    response_maximum: int = 4 * 1024 * 1024,
+) -> dict:
+    """Exchange one bounded JSON document with a loopback-only service.
+
+    This is the low-level transport for local service clients. It centralizes
+    URL validation, redirect revalidation, serialization bounds, and response
+    bounds without creating a new third-party HTTP session per request.
+    """
+    verb = (method or ("POST" if payload is not None else "GET")).upper()
+    if verb not in {"GET", "POST"}:
+        raise UrlPolicyError("local JSON request method is not permitted")
+    if payload is not None and not isinstance(payload, dict):
+        raise TypeError("local JSON request payload must be an object")
+    body = None
+    if payload is not None:
+        try:
+            body = json.dumps(
+                payload,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise UrlPolicyError("local JSON request payload is invalid") from exc
+        if not 1 <= int(request_maximum) <= 16 * 1024 * 1024:
+            raise ValueError("request bound is invalid")
+        if len(body) > int(request_maximum):
+            raise UrlPolicyError("local JSON request exceeds its size bound")
+
+    request_headers = {"Accept": "application/json"}
+    if body is not None:
+        request_headers["Content-Type"] = "application/json; charset=utf-8"
+    for key, value in (headers or {}).items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise TypeError("local JSON request headers must be strings")
+        request_headers[key] = value
+
+    request = urllib.request.Request(
+        local_service_url(base, path),
+        data=body,
+        headers=request_headers,
+        method=verb,
+    )
+    with safe_urlopen(
+        request,
+        policy=LOCAL_SERVICE_POLICY,
+        timeout=float(timeout),
+    ) as response:
+        raw = read_bounded(response, int(response_maximum))
+    try:
+        decoded = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UrlPolicyError("local service returned invalid JSON") from exc
+    if not isinstance(decoded, dict):
+        raise UrlPolicyError("local service JSON response must be an object")
+    return decoded
+
+
 def host_policy(
     name: str,
     hosts: Iterable[str],
@@ -224,6 +292,7 @@ __all__ = [
     "UrlPolicy",
     "UrlPolicyError",
     "host_policy",
+    "local_json_request",
     "local_service_url",
     "read_bounded",
     "safe_urlopen",

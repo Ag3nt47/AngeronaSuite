@@ -14,6 +14,9 @@ Pure engine (no GUI) so it's unit-testable; the GUI page just renders these dict
 from __future__ import annotations
 import os, time
 
+from angerona.core.url_policy import local_json_request
+from angerona.engines import ollama_client
+
 try:
     import psutil
 except Exception:
@@ -93,13 +96,15 @@ class WorldViewEngine:
 
     # ── 3. LOCAL AI DEEP DIAGNOSTICS ─────────────────────────────────────────
     def ollama_diagnostics(self) -> dict:
-        try:
-            import requests
-        except Exception:
-            return {"available": False, "reason": "requests not installed"}
         info = {"available": False}
         try:
-            ps = requests.get(f"{OLLAMA_HOST}/api/ps", timeout=3).json()
+            ps = local_json_request(
+                OLLAMA_HOST,
+                "/api/ps",
+                method="GET",
+                timeout=3,
+                response_maximum=512 * 1024,
+            )
             models = ps.get("models", [])
             if models:
                 m = models[0]
@@ -107,17 +112,11 @@ class WorldViewEngine:
                             vram_mb=round(m.get("size_vram", m.get("size", 0)) / 1e6, 1),
                             queue=len(models))
         except Exception as e:
-            info["reason"] = str(e)
-        # quick tokens/sec probe (tiny deterministic gen)
-        try:
-            r = requests.post(f"{OLLAMA_HOST}/api/generate", timeout=8, json={
-                "model": os.getenv("MODEL_NAME", "llama3:latest"), "prompt": "ok",
-                "stream": False, "options": {"temperature": 0, "num_predict": 8}}).json()
-            ec, ed = r.get("eval_count"), r.get("eval_duration")
-            if ec and ed:
-                info["tokens_per_sec"] = round(ec / (ed / 1e9), 1)
-        except Exception:
-            pass
+            info["reason"] = type(e).__name__
+        # Observability must not create model load. Reuse timing from the last
+        # real guarded inference instead of generating a synthetic probe every
+        # refresh (which previously kept Ollama hot and consumed CPU).
+        info.update(ollama_client.diagnostics_snapshot())
         return info
 
 

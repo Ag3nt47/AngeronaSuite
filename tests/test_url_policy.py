@@ -9,6 +9,7 @@ from angerona.core.url_policy import (
     PUBLIC_HTTPS_POLICY,
     UrlPolicyError,
     host_policy,
+    local_json_request,
     local_service_url,
     read_bounded,
     validate_url,
@@ -81,3 +82,55 @@ def test_response_reader_enforces_declared_and_actual_bounds() -> None:
     )
     with pytest.raises(UrlPolicyError, match="size bound"):
         read_bounded(declared, 10)
+
+
+def test_local_json_request_uses_bounded_loopback_transport(monkeypatch) -> None:
+    captured = {}
+
+    class Response:
+        headers = {"Content-Length": "11"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, amount):
+            assert amount == 1025
+            return b'{"ok":true}'
+
+    def fake_open(request, *, policy, timeout):
+        captured.update(request=request, policy=policy, timeout=timeout)
+        return Response()
+
+    monkeypatch.setattr("angerona.core.url_policy.safe_urlopen", fake_open)
+    result = local_json_request(
+        "http://127.0.0.1:11434",
+        "/api/generate",
+        payload={"prompt": "safe"},
+        timeout=7,
+        response_maximum=1024,
+    )
+
+    assert result == {"ok": True}
+    assert captured["request"].get_method() == "POST"
+    assert b'"prompt":"safe"' in captured["request"].data
+    assert captured["policy"] is LOCAL_SERVICE_POLICY
+    assert captured["timeout"] == 7
+
+
+def test_local_json_request_rejects_oversized_or_non_object_payload() -> None:
+    with pytest.raises(UrlPolicyError, match="size bound"):
+        local_json_request(
+            "http://127.0.0.1:11434",
+            "/api/generate",
+            payload={"prompt": "x" * 100},
+            request_maximum=8,
+        )
+    with pytest.raises(TypeError, match="object"):
+        local_json_request(  # type: ignore[arg-type]
+            "http://127.0.0.1:11434",
+            "/api/generate",
+            payload=["not", "an", "object"],
+        )

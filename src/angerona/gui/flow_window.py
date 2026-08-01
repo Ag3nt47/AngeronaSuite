@@ -187,6 +187,7 @@ class FlowWindow(QDialog):
 
     def __init__(self, bus, storage, manager, config, parent=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.bus, self.storage, self.manager, self.config = bus, storage, manager, config
         self.setWindowTitle("World View — System Flow (live)")
         self.setMinimumSize(1040, 640)

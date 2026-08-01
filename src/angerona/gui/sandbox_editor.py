@@ -163,6 +163,7 @@ class SandboxEditor(QMainWindow):
         preselect: Optional[str] = None,
     ) -> None:
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.manager = manager
         self.bus = bus
         self._threat_cb = threat_callback

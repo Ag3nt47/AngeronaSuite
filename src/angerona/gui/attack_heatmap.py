@@ -154,7 +154,7 @@ class AttackHeatmapWindow(QDialog):
         self.setWindowTitle("🔥  MITRE ATT&CK Heatmap  — Live")
         self.setMinimumSize(1420, 720)
         self.resize(1540, 820)
-        self.setAttribute(Qt.WA_DeleteOnClose, False)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
 
         self._cells: dict[str, _CellItem] = {}
         self._scene = QGraphicsScene(self)

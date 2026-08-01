@@ -22,6 +22,7 @@ from contextlib import closing
 from pathlib import Path
 
 from angerona.core.win import run_hidden, popen_hidden
+from angerona.engines import ollama_client
 
 # ── AngeronaSuite integration, with a standalone fallback for testing ────────
 try:
@@ -119,16 +120,18 @@ def _default_data_dir() -> Path:
 def _ollama(system: str, user: str, timeout: int = 60) -> str | None:
     """Deterministic (temperature 0) local Ollama call. Returns raw text or None."""
     try:
-        import requests
-    except Exception:
-        return None
-    try:
-        r = requests.post(f"{OLLAMA_HOST}/api/generate", timeout=timeout, json={
-            "model": MODEL, "stream": False, "keep_alive": "30m",
-            "options": {"temperature": 0}, "system": system, "prompt": user,
-        })
-        r.raise_for_status()
-        return (r.json().get("response") or "").strip() or None
+        result = ollama_client.analyze_telemetry(
+            "Prepare the defensive remediation requested by the system policy.",
+            user,
+            MODEL,
+            system=system,
+            host=OLLAMA_HOST,
+            timeout=timeout,
+            options={"temperature": 0},
+        )
+        if result.get("error"):
+            return None
+        return str(result.get("response") or "").strip() or None
     except Exception:
         return None
 

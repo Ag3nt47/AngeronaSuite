@@ -457,10 +457,23 @@ class Voice:
             rec = vosk.KaldiRecognizer(model, 16000)
 
             def _listen(timeout: float) -> Optional[str]:
-                q: "queue.Queue[bytes]" = queue.Queue()
+                # Never block the real-time audio callback behind a slow STT
+                # consumer. Two seconds of 0.5s blocks is ample headroom.
+                q: "queue.Queue[bytes]" = queue.Queue(maxsize=4)
 
                 def _cb(indata, _frames, _time, _status):
-                    q.put(bytes(indata))
+                    data = bytes(indata)
+                    try:
+                        q.put_nowait(data)
+                    except queue.Full:
+                        try:
+                            q.get_nowait()
+                        except queue.Empty:
+                            return
+                        try:
+                            q.put_nowait(data)
+                        except queue.Full:
+                            pass
 
                 with sd.RawInputStream(samplerate=16000, blocksize=8000, dtype="int16",
                                        channels=1, device=self.mic_device, callback=_cb):

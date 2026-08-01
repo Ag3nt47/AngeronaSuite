@@ -489,6 +489,8 @@ class AngeronaUpgradeConsole(QMainWindow):
 
         lg = QGroupBox("Recent Events"); ll = QVBoxLayout(lg)
         self.wd_logs = QTextEdit(); self.wd_logs.setReadOnly(True)
+        self.wd_logs.document().setMaximumBlockCount(1000)
+        self._last_wd_line = ""
         ll.addWidget(self.wd_logs); layout.addWidget(lg)
 
         self.tabs.addTab(tab, "Watchdog Hub")
@@ -526,9 +528,12 @@ class AngeronaUpgradeConsole(QMainWindow):
                        else "no standalone watchdog running (build the Go watchdog binary)")
             self._wd_status.setText(wd_line)
             if core_st:
-                self.wd_logs.append(f"core: frames_ingested={core_st.get('frames_ingested','?')}, "
-                                    f"supervised={core_st.get('supervised')}, "
-                                    f"safe_mode={core_st.get('safe_mode')}")
+                line = (f"core: frames_ingested={core_st.get('frames_ingested','?')}, "
+                        f"supervised={core_st.get('supervised')}, "
+                        f"safe_mode={core_st.get('safe_mode')}")
+                if line != self._last_wd_line:
+                    self.wd_logs.append(line)
+                    self._last_wd_line = line
             return
         # Fall back to the in-process module view.
         mods = getattr(self.manager, "modules", None)
@@ -573,6 +578,7 @@ class AngeronaUpgradeConsole(QMainWindow):
 
         sg = QGroupBox("Live Event Stream"); sl = QVBoxLayout(sg)
         self.term_stream = QTextEdit(); self.term_stream.setReadOnly(True)
+        self.term_stream.document().setMaximumBlockCount(2000)
         self.term_stream.setStyleSheet("background-color: #0b0b0b; color: #00ff88; font-family: Consolas, monospace;")
         sl.addWidget(self.term_stream); layout.addWidget(sg)
 

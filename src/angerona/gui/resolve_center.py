@@ -35,6 +35,7 @@ _SEV_COLOR = {"CRITICAL": "#f87171", "HIGH": "#fb923c", "MEDIUM": "#facc15"}
 class ResolveCenter(QDialog):
     def __init__(self, bus, storage, manager, parent=None, window_s: int = 86400) -> None:
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.bus, self.storage, self.manager = bus, storage, manager
         self.window_s = window_s
         self.setWindowTitle("🛠  Resolve Center — clear the threat level")

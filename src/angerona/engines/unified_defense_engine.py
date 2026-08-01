@@ -7,15 +7,17 @@ import hashlib
 import threading
 import ctypes
 from ctypes import wintypes
-from queue import Queue
+from queue import Full, Queue
 import psutil
-import requests
 from dotenv import load_dotenv
 from angerona.core.data_paths import data_dir
+from angerona.engines import ollama_client
 
 load_dotenv()
 
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST") or os.getenv(
+    "OLLAMA_URL", "http://localhost:11434/api/generate"
+).removesuffix("/api/generate")
 MODEL_NAME = os.getenv("MODEL_NAME", "llama3:latest")
 STATUS_FILE = "edr_status.json"
 
@@ -38,7 +40,16 @@ engine_state = {
     "memory_scans_completed": 0
 }
 state_lock = threading.Lock()
-alert_queue = Queue()
+alert_queue = Queue(maxsize=512)
+
+
+def _queue_alert(event: dict) -> bool:
+    """Keep legacy sensor loops non-blocking under model backpressure."""
+    try:
+        alert_queue.put_nowait(event)
+        return True
+    except Full:
+        return False
 
 fim_baseline = {}
 
@@ -83,14 +94,14 @@ def fim_watcher_worker():
                         current_hashes[full_path] = file_hash
 
                         if full_path not in fim_baseline:
-                            alert_queue.put({
+                            _queue_alert({
                                 "type": "FIM_NEW_FILE_DROP",
                                 "target": full_path,
                                 "details": f"Unrecognized asset dropped into monitored space: Hash {file_hash[:16]}"
                             })
                             fim_baseline[full_path] = file_hash
                         elif fim_baseline[full_path] != file_hash:
-                            alert_queue.put({
+                            _queue_alert({
                                 "type": "FIM_MODIFICATION",
                                 "target": full_path,
                                 "details": f"File modified! Previous: {fim_baseline[full_path][:12]} -> New: {file_hash[:12]}"
@@ -99,7 +110,7 @@ def fim_watcher_worker():
 
         deleted_files = [f for f in fim_baseline if f not in current_hashes]
         for f in deleted_files:
-            alert_queue.put({
+            _queue_alert({
                 "type": "FIM_DELETION",
                 "target": f,
                 "details": "Monitored protective asset removed from system."
@@ -192,7 +203,7 @@ def volatile_memory_scanner_worker():
                 scan_count += 1
                 
                 if memory_anomaly:
-                    alert_queue.put({
+                    _queue_alert({
                         "type": "FILELESS_MEMORY_INJECTION",
                         "target": f"{p_name} (PID: {pid})",
                         "details": memory_anomaly
@@ -206,13 +217,9 @@ def volatile_memory_scanner_worker():
 
 def analyze_anomaly_with_mitre(alert_event):
     payload_dump = json.dumps(alert_event, indent=4)
-    prompt = f"""
+    prompt = """
     You are an advanced defensive SecOps telemetry analyzer. 
     Correlate the following endpoint anomaly directly to the industry-standard MITRE ATT&CK Framework.
-    
-    Anomalous Event Context:
-    {payload_dump}
-    
     Provide your evaluation in exactly this strict, scannable structure:
     MITRE ATT&CK MAPPING:
     - Tactic: [Tactics matching the event]
@@ -222,9 +229,15 @@ def analyze_anomaly_with_mitre(alert_event):
     REASON: [1-sentence explanation detailing the parent/child lineage abnormality, RAM security violation, or file integrity threat]
     """
     try:
-        response = requests.post(OLLAMA_URL, json={"model": MODEL_NAME, "prompt": prompt, "stream": False, "keep_alive": "30m"}, timeout=45)
-        if response.status_code == 200:
-            return response.json().get("response", "").strip()
+        response = ollama_client.analyze_telemetry(
+            prompt,
+            payload_dump,
+            MODEL_NAME,
+            host=OLLAMA_HOST,
+            timeout=45,
+        )
+        if not response.get("error"):
+            return str(response.get("response", "")).strip()
     except Exception as e:
         return f"MITRE Engine Exception: Could not query model. Error: {str(e)}"
     return "Local processing timeout reached during MITRE technique mapping."
@@ -291,7 +304,7 @@ def live_ancestry_loop():
             
             if p_parent in ["explorer.exe", "svchost.exe"] and p_name in ["cmd.exe", "powershell.exe", "python.exe"]:
                 if "local-security-ai" not in proc["command_line"]:
-                    alert_queue.put({
+                    _queue_alert({
                         "type": "SUSPICIOUS_PARENT_CHILD_LINEAGE",
                         "target": f"{proc['process_name']} (PID: {proc['pid']})",
                         "details": f"Parent '{proc['parent_name']}' spawned shell runtime with arguments: {proc['command_line']}"

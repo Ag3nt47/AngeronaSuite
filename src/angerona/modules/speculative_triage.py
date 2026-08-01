@@ -31,6 +31,7 @@ import threading
 import time
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.engines import ollama_client
 
 _OLLAMA = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 _MODEL = os.getenv("MODEL_NAME", "llama3:latest")
@@ -138,12 +139,18 @@ class SpeculativeTriageModule(BaseModule):
         pid = marker.get("pid") or -1
         primed = {"prompt": prompt, "ts": time.time(), "warmed": False}
         try:
-            import requests
-            requests.post(f"{_OLLAMA}/api/generate", timeout=20, json={
-                "model": _MODEL, "stream": False, "keep_alive": self._KEEP_ALIVE,
-                "options": {"temperature": 0, "num_predict": 1},
-                "prompt": prompt})
-            primed["warmed"] = True
+            result = ollama_client.analyze_telemetry(
+                "Pre-warm the local model for a possible endpoint triage. Return one token.",
+                prompt,
+                _MODEL,
+                host=_OLLAMA,
+                timeout=20,
+                keep_alive=self._KEEP_ALIVE,
+                options={"temperature": 0, "num_predict": 1},
+            )
+            primed["warmed"] = not bool(result.get("error"))
+            if not primed["warmed"]:
+                self.last_error = str(result.get("error"))
         except Exception as exc:
             self.last_error = str(exc)      # offline: intent recorded, not warmed
         with self.state_lock:

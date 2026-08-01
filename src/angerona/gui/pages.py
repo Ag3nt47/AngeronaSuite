@@ -168,6 +168,11 @@ def _show_nonmodal(dlg):
     """Show a dialog NON-modally (user can click out and return later)."""
     try:
         dlg.setModal(False)
+        # These windows are produced by factories and are never reused after
+        # close. Deleting them prevents hidden timers, tables, and parent-owned
+        # widget trees from accumulating over a long dashboard session.
+        if not bool(getattr(dlg, "_angerona_preserve_on_close", False)):
+            dlg.setAttribute(Qt.WA_DeleteOnClose, True)
     except Exception:
         pass
     _OPEN_DIALOGS.append(dlg)
@@ -3303,6 +3308,7 @@ class CommandConsolePanel(QFrame):
 
         self.out = QPlainTextEdit()
         self.out.setReadOnly(True)
+        self.out.setMaximumBlockCount(4000)
         self.out.setFont(QFont("Fira Code", 10))
         self.out.setStyleSheet("background:#0b0d12; color:#cbd5e1; border:1px solid #232a36; border-radius:8px;")
         lay.addWidget(self.out)
@@ -3484,6 +3490,7 @@ class SharkMonitorDialog(QDialog):
         left.addWidget(lh)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
+        self.log.setMaximumBlockCount(4000)
         self.log.setFont(QFont("Fira Code", 10))
         self.log.setStyleSheet(
             "background:#0b0d12; color:#7dd3fc; border:1px solid #232a36; border-radius:8px;")
@@ -3496,6 +3503,7 @@ class SharkMonitorDialog(QDialog):
         right.addWidget(rh)
         self.instructor = QPlainTextEdit()
         self.instructor.setReadOnly(True)
+        self.instructor.setMaximumBlockCount(4000)
         self.instructor.setFont(QFont("Fira Code", 10))
         self.instructor.setStyleSheet(
             "background:#0b0d12; color:#c4b5fd; border:1px solid #232a36; border-radius:8px;")

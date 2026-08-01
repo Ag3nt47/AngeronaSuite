@@ -1,15 +1,21 @@
 import os
 import sys
 import json
-import socket
-import requests
 import subprocess
 import importlib.util
+import urllib.request
 from dotenv import load_dotenv
+
+from angerona.core.url_policy import host_policy, read_bounded, safe_urlopen
 
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+_CLOUD_SYNTHESIS_ENABLED = os.getenv("ANGERONA_CLOUD_CODE_SYNTHESIS", "0") == "1"
+_GEMINI_POLICY = host_policy(
+    "operator-approved Gemini API",
+    ["generativelanguage.googleapis.com"],
+)
 STAGING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "staging_core")
 
 # Ensure the isolation sandbox directory exists
@@ -18,11 +24,17 @@ if not os.path.exists(STAGING_DIR):
 
 def query_gemini_engineer(prompt_text):
     """Fallback gateway optimized to return pure, compilable Python source blocks."""
+    if not _CLOUD_SYNTHESIS_ENABLED:
+        return "ERROR: cloud code synthesis is disabled (offline-first default)."
     if not GEMINI_API_KEY:
         return "ERROR: GEMINI_API_KEY missing from environment rules."
         
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    headers = {"Content-Type": "application/json"}
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+    headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "Accept": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY,
+    }
     
     payload = {
         "contents": [{
@@ -35,14 +47,18 @@ def query_gemini_engineer(prompt_text):
     }
     
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=45)
-        if res.status_code == 200:
-            candidates = res.json().get("candidates", [])
-            if candidates:
-                return candidates[0]["content"]["parts"][0]["text"].strip()
-        return f"ERROR: API Communication Fault (HTTP {res.status_code})"
+        body = json.dumps(payload, allow_nan=False, separators=(",", ":")).encode("utf-8")
+        if len(body) > 512 * 1024:
+            return "ERROR: cloud synthesis request exceeded its safety bound."
+        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        with safe_urlopen(request, policy=_GEMINI_POLICY, timeout=45) as response:
+            result = json.loads(read_bounded(response, 2 * 1024 * 1024).decode("utf-8"))
+        candidates = result.get("candidates", []) if isinstance(result, dict) else []
+        if candidates:
+            return candidates[0]["content"]["parts"][0]["text"].strip()
+        return "ERROR: API Communication Fault (empty response)"
     except Exception as e:
-        return f"ERROR: Gateway Exception ({str(e)})"
+        return f"ERROR: Gateway Exception ({type(e).__name__})"
 
 def extract_pure_code(raw_response):
     """Strips Markdown backticks out of the model payload response to isolate raw code."""

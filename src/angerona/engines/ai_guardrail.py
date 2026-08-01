@@ -21,7 +21,7 @@ Sits in front of the local Ollama API and enforces guardrails on every request:
 Design:
   * The scanning / redaction / risk logic is PURE stdlib (re, json, time) and is
     unit-testable without a server or a running model.
-  * FastAPI / uvicorn / requests are imported lazily inside ``build_app`` / ``run``
+  * FastAPI / uvicorn are imported lazily inside ``build_app`` / ``run``
     so importing this module never forces those deps on the GUI app. Run the
     proxy standalone with:  ``python -m angerona.engines.ai_guardrail``
 """
@@ -204,16 +204,24 @@ def process_request(payload: dict) -> dict:
 
 # ── FastAPI proxy (lazily imported) ──────────────────────────────────────────
 def build_app():
-    """Build the FastAPI interception proxy. Imports fastapi/requests lazily."""
+    """Build the FastAPI interception proxy with bounded local transport."""
+    import asyncio
+
+    from angerona.core.url_policy import local_json_request
     from fastapi import FastAPI, Request
     from fastapi.responses import JSONResponse
-    import requests
 
     app = FastAPI(title="Angerona AI Guardrail")
+    maximum_request = 2 * 1024 * 1024
 
     def _forward(path: str, payload: dict):
-        r = requests.post(f"{OLLAMA_UPSTREAM}{path}", json=payload, timeout=120)
-        return r.json()
+        return local_json_request(
+            OLLAMA_UPSTREAM,
+            path,
+            payload=payload,
+            timeout=120,
+            request_maximum=maximum_request,
+        )
 
     async def _guard(request: Request, path: str):
         t0 = time.time()
@@ -222,7 +230,21 @@ def build_app():
         if not check_token(request.headers):
             audit("Auth Rejected", "High", 0, time.time() - t0, {"path": path})
             return JSONResponse(status_code=401, content={"error": "missing/invalid guardrail token"})
-        payload = await request.json()
+        try:
+            declared = int(request.headers.get("content-length", "0") or "0")
+        except ValueError:
+            return JSONResponse(status_code=400, content={"error": "invalid request length"})
+        if declared < 0 or declared > maximum_request:
+            return JSONResponse(status_code=413, content={"error": "request too large"})
+        body = await request.body()
+        if len(body) > maximum_request:
+            return JSONResponse(status_code=413, content={"error": "request too large"})
+        try:
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return JSONResponse(status_code=400, content={"error": "invalid JSON object"})
+        if not isinstance(payload, dict):
+            return JSONResponse(status_code=400, content={"error": "invalid JSON object"})
         plen = _prompt_len_of(payload)
         decision = process_request(payload)
         if not decision["allow"]:
@@ -232,10 +254,14 @@ def build_app():
                                 content={"error": "blocked by AI guardrail",
                                          "reasons": decision["verdict"]["reasons"]})
         try:
-            raw = _forward(path, decision["payload"])
+            raw = await asyncio.to_thread(_forward, path, decision["payload"])
         except Exception as exc:
-            audit("Upstream Error", "Med", plen, time.time() - t0, {"error": str(exc)})
-            return JSONResponse(status_code=502, content={"error": f"upstream: {exc}"})
+            kind = type(exc).__name__
+            audit("Upstream Error", "Med", plen, time.time() - t0,
+                  {"error_type": kind, "path": path})
+            return JSONResponse(status_code=502,
+                                content={"error": "local model unavailable",
+                                         "error_type": kind})
         key = "response" if "response" in raw else None
         if key:
             clean, applied = redact_output(str(raw.get(key, "")))
