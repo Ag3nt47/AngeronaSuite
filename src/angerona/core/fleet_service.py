@@ -21,6 +21,206 @@ MAX_BODY = 256 * 1024
 MAX_SKEW_SECONDS = 60
 MAX_AUTH_PATH = 8192
 _NONCE = re.compile(r"^[A-Za-z0-9_-]{22,128}$")
+OPENAPI_VERSION = "3.1.0"
+API_CONTRACT_VERSION = "1.0.0"
+
+
+def openapi_contract() -> dict[str, Any]:
+    """Return the deterministic public contract for routes actually shipped."""
+    auth = [{
+        "AngeronaTimestamp": [],
+        "AngeronaNonce": [],
+        "AngeronaSignature": [],
+    }]
+    tenant_parameter = {
+        "name": "tenant_id",
+        "in": "path",
+        "required": True,
+        "schema": {
+            "type": "string",
+            "pattern": r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$",
+        },
+    }
+    json_response = {
+        "description": "Bounded JSON response",
+        "content": {"application/json": {"schema": {"type": "object"}}},
+    }
+    return {
+        "openapi": OPENAPI_VERSION,
+        "info": {
+            "title": "Angerona Local Fleet Preview API",
+            "version": API_CONTRACT_VERSION,
+            "description": (
+                "Authenticated, loopback-only preview. This contract does not "
+                "claim production mutual TLS, internet exposure, or multi-tenant "
+                "high availability."
+            ),
+        },
+        "servers": [{
+            "url": "http://127.0.0.1:{port}",
+            "variables": {
+                "port": {"default": "47930", "description": "Local preview port"}
+            },
+        }],
+        "security": auth,
+        "paths": {
+            "/health": {
+                "get": {
+                    "operationId": "fleetHealth",
+                    "security": [],
+                    "responses": {"200": json_response},
+                }
+            },
+            "/v1/openapi": {
+                "get": {
+                    "operationId": "fleetOpenApiContract",
+                    "responses": {"200": json_response, "401": json_response},
+                }
+            },
+            "/v1/tenants/{tenant_id}/devices": {
+                "parameters": [tenant_parameter],
+                "get": {
+                    "operationId": "listFleetDevices",
+                    "responses": {"200": json_response, "401": json_response},
+                },
+                "post": {
+                    "operationId": "registerFleetDevice",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/FleetDevice"}
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": json_response,
+                        "400": json_response,
+                        "401": json_response,
+                        "413": json_response,
+                    },
+                },
+            },
+            "/v1/tenants/{tenant_id}/events": {
+                "parameters": [tenant_parameter],
+                "get": {
+                    "operationId": "listFleetEvents",
+                    "parameters": [{
+                        "name": "device_id", "in": "query", "required": False,
+                        "schema": {"type": "string"},
+                    }, {
+                        "name": "limit", "in": "query", "required": False,
+                        "schema": {
+                            "type": "integer", "minimum": 1,
+                            "maximum": 5000, "default": 500,
+                        },
+                    }],
+                    "responses": {"200": json_response, "401": json_response},
+                },
+                "post": {
+                    "operationId": "ingestFleetEvent",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/IngestEvent"}
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": json_response,
+                        "400": json_response,
+                        "401": json_response,
+                        "413": json_response,
+                    },
+                },
+            },
+            "/v1/tenants/{tenant_id}/ingestion-health": {
+                "parameters": [tenant_parameter],
+                "get": {
+                    "operationId": "getFleetIngestionHealth",
+                    "responses": {"200": json_response, "401": json_response},
+                },
+            },
+        },
+        "components": {
+            "securitySchemes": {
+                "AngeronaTimestamp": {
+                    "type": "apiKey", "in": "header",
+                    "name": "X-Angerona-Timestamp",
+                },
+                "AngeronaNonce": {
+                    "type": "apiKey", "in": "header",
+                    "name": "X-Angerona-Nonce",
+                },
+                "AngeronaSignature": {
+                    "type": "apiKey", "in": "header",
+                    "name": "X-Angerona-Signature",
+                    "description": (
+                        "HMAC-SHA-256 over method, complete path and query, "
+                        "timestamp, nonce, and SHA-256 request-body digest."
+                    ),
+                },
+            },
+            "schemas": {
+                "FleetDevice": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "device_id", "public_key", "hostname_token",
+                        "platform", "version",
+                    ],
+                    "properties": {
+                        "device_id": {"type": "string"},
+                        "public_key": {"type": "string", "maxLength": 512},
+                        "hostname_token": {
+                            "type": "string", "pattern": "^tok_", "maxLength": 80,
+                        },
+                        "platform": {"type": "string", "maxLength": 40},
+                        "version": {"type": "string", "maxLength": 80},
+                        "group_id": {"type": "string", "default": "default"},
+                        "state": {
+                            "type": "string",
+                            "enum": ["active", "quarantined", "revoked", "retired"],
+                            "default": "active",
+                        },
+                        "last_seen": {"type": "number", "minimum": 0},
+                    },
+                },
+                "IngestEvent": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["device_id", "event_id", "body"],
+                    "properties": {
+                        "device_id": {"type": "string"},
+                        "event_id": {"type": "string"},
+                        "body": {"type": "object"},
+                        "observed_at": {
+                            "type": "number", "exclusiveMinimum": 0,
+                            "description": (
+                                "Finite endpoint time. Clock quality and signed "
+                                "server receipt time are returned separately."
+                            ),
+                        },
+                    },
+                },
+            },
+        },
+        "x-angerona-boundaries": {
+            "transport": "loopback-only",
+            "maximumRequestBytes": MAX_BODY,
+            "maximumClockSkewSeconds": MAX_SKEW_SECONDS,
+            "arbitraryCommands": False,
+            "productionMutualTls": False,
+        },
+    }
+
+
+def openapi_contract_sha256() -> str:
+    encoded = json.dumps(
+        openapi_contract(), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _canonical_auth(
@@ -131,6 +331,9 @@ class FleetLoopbackService:
         class Handler(BaseHTTPRequestHandler):
             server_version = "AngeronaFleet/1"
 
+            def version_string(self) -> str:
+                return self.server_version
+
             def log_message(self, _format, *_args):
                 return
 
@@ -142,6 +345,8 @@ class FleetLoopbackService:
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-store")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("X-Content-Type-Options", "nosniff")
                 self.end_headers()
                 self.wfile.write(data)
 
@@ -168,17 +373,24 @@ class FleetLoopbackService:
                     self._json(200, {
                         "ok": True, "service": "angerona-fleet",
                         "transport": "loopback", "version": 1,
+                        "api_contract_sha256": openapi_contract_sha256(),
                     })
                     return
                 if not self._authorize(b""):
                     return
+                if parsed.path == "/v1/openapi":
+                    self._json(200, openapi_contract())
+                    return
                 parts = parsed.path.strip("/").split("/")
-                if len(parts) != 3 or parts[:2] != ["v1", "tenants"]:
+                if parts[:2] != ["v1", "tenants"] or len(parts) not in {3, 4}:
                     self._json(404, {"ok": False, "error": "route not found"})
                     return
                 tenant = parts[2]
                 query = parse_qs(parsed.query)
-                resource = query.get("resource", ["devices"])[0]
+                resource = (
+                    parts[3] if len(parts) == 4
+                    else query.get("resource", ["devices"])[0]
+                )
                 try:
                     if resource == "devices":
                         value = [asdict(item) for item in owner.plane.devices(tenant)]
@@ -188,6 +400,9 @@ class FleetLoopbackService:
                             device_id=query.get("device_id", [None])[0],
                             limit=int(query.get("limit", ["500"])[0]),
                         ))
+                    elif resource == "ingestion-health":
+                        self._json(200, owner.plane.ingestion_health(tenant))
+                        return
                     else:
                         raise KeyError(resource)
                     self._json(200, {"ok": True, "items": value})
@@ -201,6 +416,12 @@ class FleetLoopbackService:
                     self._json(413, {"ok": False, "error": str(exc)})
                     return
                 if not self._authorize(body):
+                    return
+                media_type = self.headers.get("Content-Type", "").split(";", 1)[0]
+                if media_type.strip().casefold() != "application/json":
+                    self._json(415, {
+                        "ok": False, "error": "content type must be application/json"
+                    })
                     return
                 parts = urlsplit(self.path).path.strip("/").split("/")
                 try:

@@ -1,6 +1,6 @@
 from angerona.core.authorization import (
     AuthorizationPolicy, AuthorizationRequest, Principal, PrincipalKind, Role,
-    RoleBinding,
+    RoleBinding, STANDARD_ROLES, STANDARD_ROLES_BY_ID,
 )
 import pytest
 
@@ -107,3 +107,70 @@ def test_receipt_binds_every_operation_field_and_request_id_is_idempotent():
 def test_noncanonical_scopes_are_rejected(scope):
     with pytest.raises(ValueError, match="scope"):
         AuthorizationRequest("r", "alice", "case.read", scope)
+
+
+def test_standard_enterprise_roles_are_complete_and_default_deny():
+    assert set(STANDARD_ROLES_BY_ID) == {
+        "viewer", "analyst", "hunter", "responder", "detection-engineer",
+        "fleet-operator", "tenant-administrator", "platform-administrator",
+        "auditor",
+    }
+    engine = AuthorizationPolicy(
+        (Principal("viewer-one", PrincipalKind.HUMAN),),
+        STANDARD_ROLES,
+        (RoleBinding("viewer-one", "viewer", "fleet/acme"),),
+        KEY,
+    )
+    assert engine.decide(AuthorizationRequest(
+        "view-1", "viewer-one", "inventory.read", "fleet/acme"
+    ), now=1).allowed
+    denied = engine.decide(AuthorizationRequest(
+        "view-2", "viewer-one", "response.execute", "fleet/acme"
+    ), now=1)
+    assert not denied.allowed
+    assert denied.reason == "no matching role permission"
+
+
+def test_separation_of_duties_rejects_overlapping_privileged_bindings():
+    principal = Principal("dual-role", PrincipalKind.HUMAN)
+    with pytest.raises(ValueError, match="separation-of-duty"):
+        AuthorizationPolicy(
+            (principal,),
+            STANDARD_ROLES,
+            (
+                RoleBinding("dual-role", "auditor", "fleet/acme"),
+                RoleBinding(
+                    "dual-role", "platform-administrator", "fleet/acme/group-a"
+                ),
+            ),
+            KEY,
+        )
+    with pytest.raises(ValueError, match="separation-of-duty"):
+        AuthorizationPolicy(
+            (principal,),
+            STANDARD_ROLES,
+            (
+                RoleBinding("dual-role", "detection-engineer", "fleet/acme"),
+                RoleBinding("dual-role", "tenant-administrator", "fleet/acme"),
+            ),
+            KEY,
+        )
+
+
+def test_separation_of_duties_allows_distinct_nonoverlapping_scopes():
+    principal = Principal("regional-role", PrincipalKind.HUMAN)
+    engine = AuthorizationPolicy(
+        (principal,),
+        STANDARD_ROLES,
+        (
+            RoleBinding("regional-role", "auditor", "fleet/east"),
+            RoleBinding("regional-role", "platform-administrator", "fleet/west"),
+        ),
+        KEY,
+    )
+    assert engine.decide(AuthorizationRequest(
+        "audit-east", "regional-role", "audit.read", "fleet/east"
+    ), now=1).allowed
+    assert engine.decide(AuthorizationRequest(
+        "configure-west", "regional-role", "platform.configure", "fleet/west"
+    ), now=1).allowed

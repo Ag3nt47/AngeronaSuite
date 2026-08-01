@@ -121,15 +121,36 @@ GUIDES = (
     CapabilityGuide(
         "fleet-preview", "Local Fleet Control Plane", "Administration",
         "An opt-in authenticated loopback service for tenant-isolated device "
-        "inventory and deduplicated event ingestion. It is a local preview "
-        "boundary, not an internet-facing enterprise server.",
+        "inventory, device-bound deduplicated ingestion, clock-quality evidence, "
+        "and a versioned OpenAPI contract. It is a local preview boundary, not "
+        "an internet-facing enterprise server.",
         ("Open Enterprise Settings.", "Choose a tenant and unused loopback port.",
          "Enable the fleet service and save.", "Restart Angerona.",
-         "Use signed, fresh, one-time requests from a local integration."),
+         "Use signed, fresh, one-time requests from a local integration.",
+         "Inspect /v1/openapi and the tenant ingestion-health route."),
         "The loopback health endpoint responds, signed requests work once, and "
-        "replayed, stale, tampered, cross-tenant, or quarantined requests fail.",
+        "replayed, stale, tampered, cross-tenant, cross-device, or quarantined "
+        "requests fail. Uncertain endpoint clocks are explicit rather than trusted.",
         "Disabled by default, bound to 127.0.0.1, and stores data under the "
         "configured Angerona data directory.",
+        "Enterprise",
+    ),
+    CapabilityGuide(
+        "enterprise-rbac", "Enterprise Roles and Separation of Duties",
+        "Administration",
+        "A local Role-Based Access Control (RBAC) policy boundary with nine "
+        "least-privilege roles, canonical tenant/fleet scopes, explicit-deny "
+        "precedence, expiring service principals, signed decisions, and binding-"
+        "time separation-of-duty checks.",
+        ("Choose the smallest standard role that fits the task.",
+         "Bind it to the narrowest tenant, fleet, group, or host scope.",
+         "Keep auditors separate from operational roles.",
+         "Keep detection authors separate from overlapping policy activation.",
+         "Verify the authenticated authorization receipt."),
+        "Out-of-scope and unlisted actions default deny; overlapping auditor/admin "
+        "or detection-author/policy-approver bindings fail before activation.",
+        "Policy identifiers, scopes and decisions remain local. Production identity "
+        "provider and directory lifecycle integration are separate deployment gates.",
         "Enterprise",
     ),
     CapabilityGuide(

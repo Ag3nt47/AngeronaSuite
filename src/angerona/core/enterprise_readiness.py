@@ -14,7 +14,7 @@ from typing import Any
 from angerona.core.privacy import redact_text
 
 
-ASSESSMENT_VERSION = 2
+ASSESSMENT_VERSION = 3
 EVIDENCE_SCHEMA = "angerona.enterprise-evidence/v1"
 
 
@@ -260,6 +260,17 @@ def assess(
     registered_devices = max(
         0, min(int(runtime.get("registered_devices", 0) or 0), 100_000)
     )
+    ingestion_state = _safe(runtime.get("fleet_ingestion", "unknown"), 40)
+    stored_events = max(
+        0, min(int(runtime.get("stored_events", 0) or 0), 100_000_000)
+    )
+    uncertain_clock_events = max(
+        0,
+        min(int(runtime.get("uncertain_clock_events", 0) or 0), 100_000_000),
+    )
+    api_contract_sha256 = _safe(
+        runtime.get("fleet_api_contract_sha256", "unavailable"), 80
+    )
     controls.extend([
         _control(
             "fleet.enrollment",
@@ -284,13 +295,14 @@ def assess(
             5,
             8,
             (
-                "Explicit-deny roles, tenant/fleet scopes, expiring service accounts, "
-                "idempotent decisions, and authenticated decision receipts are "
-                "available as local control-plane primitives."
+                "Nine least-privilege standard roles, explicit-deny precedence, "
+                "tenant/fleet scopes, expiring service accounts, binding-time "
+                "separation of duties, idempotent decisions, and authenticated "
+                "decision receipts are available as local control-plane primitives."
             ),
             (
                 "Connect the authorization layer to an external identity provider, "
-                "separation-of-duty workflow, and append-only administrator ledger."
+                "organization lifecycle, and append-only administrator ledger."
             ),
         ),
         _control(
@@ -316,10 +328,14 @@ def assess(
                 "The authenticated loopback service is running with a "
                 f"{identity_state} endpoint identity and {registered_devices} "
                 "registered device record(s). Tenant-scoped inventory, "
-                "deduplicated ingestion, quarantine, and signed receipts are active."
+                "device-bound deduplicated ingestion, quarantine, signed receipts, "
+                f"and a versioned API contract are active. Ingestion is {ingestion_state}; "
+                f"{stored_events} event(s) are stored and {uncertain_clock_events} "
+                "carry uncertain endpoint clock evidence."
                 if fleet_running else
-                "Tenant-scoped inventory, deduplicated ingestion, quarantine, and "
-                "signed receipts are installed; the loopback preview is "
+                "Tenant-scoped inventory, device-bound deduplicated ingestion, "
+                "clock-quality evidence, quarantine, signed receipts, and a versioned "
+                "API contract are installed; the loopback preview is "
                 + ("awaiting restart." if fleet_enabled else "disabled.")
             ),
             "Deploy an optional high-availability ingestion/search tier and prove tenant isolation under load.",
@@ -409,6 +425,10 @@ def assess(
             "fleet_transport": "loopback",
             "endpoint_identity": identity_state,
             "registered_devices": registered_devices,
+            "fleet_ingestion": ingestion_state,
+            "stored_events": stored_events,
+            "uncertain_clock_events": uncertain_clock_events,
+            "fleet_api_contract_sha256": api_contract_sha256,
         },
         "score": score,
         "max_score": maximum,
@@ -476,6 +496,23 @@ def evidence_pack(report: dict[str, Any]) -> dict[str, Any]:
             "registered_devices": max(0, min(int(
                 dict(report.get("runtime", {})).get("registered_devices", 0) or 0
             ), 100_000)),
+            "fleet_ingestion": _safe(
+                dict(report.get("runtime", {})).get("fleet_ingestion"), 40
+            ),
+            "stored_events": max(0, min(int(
+                dict(report.get("runtime", {})).get("stored_events", 0) or 0
+            ), 100_000_000)),
+            "uncertain_clock_events": max(0, min(int(
+                dict(report.get("runtime", {})).get(
+                    "uncertain_clock_events", 0
+                ) or 0
+            ), 100_000_000)),
+            "fleet_api_contract_sha256": _safe(
+                dict(report.get("runtime", {})).get(
+                    "fleet_api_contract_sha256"
+                ),
+                80,
+            ),
         },
         "controls": controls,
         "external_gates": gates,

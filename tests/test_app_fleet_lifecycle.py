@@ -27,12 +27,15 @@ def test_app_starts_and_stops_opt_in_fleet_service(tmp_path, monkeypatch):
     assert app._fleet_service is not None
     assert app._endpoint_identity is not None
     snapshot = app.enterprise_runtime_snapshot()
-    assert snapshot == {
-        "fleet_service": "running",
-        "fleet_transport": "loopback",
-        "endpoint_identity": "active",
-        "registered_devices": 1,
-    }
+    assert snapshot["fleet_service"] == "running"
+    assert snapshot["fleet_transport"] == "loopback"
+    assert snapshot["endpoint_identity"] == "active"
+    assert snapshot["registered_devices"] == 1
+    assert snapshot["fleet_ingestion"] == "unknown"
+    assert snapshot["stored_events"] == 0
+    assert snapshot["duplicate_retries"] == 0
+    assert snapshot["uncertain_clock_events"] == 0
+    assert len(snapshot["fleet_api_contract_sha256"]) == 64
     devices = app._fleet_plane.devices("local")
     assert devices[0].device_id == app._endpoint_identity.device_id
     assert devices[0].hostname_token.startswith("tok_")

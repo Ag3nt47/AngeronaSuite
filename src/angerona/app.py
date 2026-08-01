@@ -540,17 +540,51 @@ class AngeronaApp:
         else:
             identity_state = "active"
         device_count = 0
+        ingestion_state = "unknown"
+        stored_events = 0
+        duplicate_retries = 0
+        uncertain_clock_events = 0
         plane = getattr(self, "_fleet_plane", None)
         if plane is not None:
             try:
                 device_count = len(plane.devices(self.config.fleet_tenant_id))
             except Exception:
                 device_count = 0
+            try:
+                health = plane.ingestion_health(self.config.fleet_tenant_id)
+                ingestion_state = str(
+                    health.get("clock_quality_state", "unknown")
+                )[:40]
+                stored_events = int(health.get("stored_events", 0) or 0)
+                duplicate_retries = int(
+                    health.get("duplicate_retries", 0) or 0
+                )
+                quality = dict(health.get("clock_quality", {}))
+                uncertain_clock_events = int(quality.get("skewed", 0) or 0) + int(
+                    quality.get("untrusted", 0) or 0
+                ) + int(quality.get("legacy", 0) or 0)
+            except Exception:
+                ingestion_state = "unavailable"
+        try:
+            from angerona.core.fleet_service import openapi_contract_sha256
+
+            api_contract_sha256 = openapi_contract_sha256()
+        except Exception:
+            api_contract_sha256 = "unavailable"
+
+        def bounded_count(value: int) -> int:
+            return min(max(int(value), 0), 100_000_000)
+
         return {
             "fleet_service": "running" if server is not None else "stopped",
             "fleet_transport": "loopback",
             "endpoint_identity": identity_state,
             "registered_devices": min(max(int(device_count), 0), 100_000),
+            "fleet_ingestion": ingestion_state,
+            "stored_events": bounded_count(stored_events),
+            "duplicate_retries": bounded_count(duplicate_retries),
+            "uncertain_clock_events": bounded_count(uncertain_clock_events),
+            "fleet_api_contract_sha256": api_contract_sha256,
         }
 
     def shutdown(self) -> None:

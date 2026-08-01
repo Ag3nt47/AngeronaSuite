@@ -128,6 +128,10 @@ def _scope_contains(binding_scope: str, requested_scope: str) -> bool:
     )
 
 
+def _scopes_overlap(first: str, second: str) -> bool:
+    return _scope_contains(first, second) or _scope_contains(second, first)
+
+
 def _validate_scope(scope: str) -> None:
     if not _IDENTIFIER.fullmatch(scope):
         raise ValueError("invalid authorization scope")
@@ -136,6 +140,103 @@ def _validate_scope(scope: str) -> None:
     parts = scope.split("/")
     if any(not part or part in {".", ".."} for part in parts):
         raise ValueError("authorization scope must not contain traversal segments")
+
+
+STANDARD_ROLES = (
+    Role(
+        "viewer",
+        (
+            "alert.read", "case.read", "evidence.read", "inventory.read",
+            "module.read", "posture.read",
+        ),
+    ),
+    Role(
+        "analyst",
+        (
+            "alert.acknowledge", "alert.read", "case.comment", "case.create",
+            "case.read", "evidence.read", "inventory.read", "posture.read",
+        ),
+    ),
+    Role(
+        "hunter",
+        (
+            "case.comment", "case.create", "case.read", "evidence.read",
+            "hunt.cancel", "hunt.create", "hunt.preview", "hunt.read",
+            "inventory.read",
+        ),
+    ),
+    Role(
+        "responder",
+        (
+            "alert.read", "case.comment", "case.read", "evidence.read",
+            "response.approve", "response.execute", "response.preview",
+            "response.propose",
+        ),
+        ("response.register",),
+    ),
+    Role(
+        "detection-engineer",
+        (
+            "detection.create", "detection.export", "detection.read",
+            "detection.stage", "detection.test", "policy.preview",
+        ),
+        ("detection.activate", "release.sign"),
+    ),
+    Role(
+        "fleet-operator",
+        (
+            "collection.preview", "device.quarantine", "device.read",
+            "device.revoke", "job.cancel", "job.create", "job.read",
+            "policy.read",
+        ),
+        ("policy.activate", "release.sign"),
+    ),
+    Role(
+        "tenant-administrator",
+        (
+            "device.read", "identity.bind", "identity.read", "identity.revoke",
+            "policy.approve", "policy.preview", "role.bind", "role.read",
+            "tenant.read", "tenant.update",
+        ),
+        ("platform.configure", "release.sign"),
+    ),
+    Role(
+        "platform-administrator",
+        (
+            "platform.configure", "platform.read", "policy.activate",
+            "policy.approve", "policy.preview", "release.read", "release.verify",
+            "role.bind", "role.read",
+        ),
+        ("audit.delete", "evidence.delete", "release.sign"),
+    ),
+    Role(
+        "auditor",
+        (
+            "audit.export", "audit.read", "case.read", "evidence.read",
+            "policy.read", "release.read",
+        ),
+        (
+            "audit.write", "case.write", "evidence.write", "policy.activate",
+            "response.execute",
+        ),
+    ),
+)
+
+STANDARD_ROLES_BY_ID = {role.role_id: role for role in STANDARD_ROLES}
+
+# A principal may hold these roles in distinct scopes, but never in overlapping
+# scopes. This keeps auditors independent and separates detection authors from
+# policy activation authority without relying on a user-interface convention.
+DEFAULT_DUTY_CONSTRAINTS = tuple(
+    frozenset(("auditor", role_id))
+    for role_id in (
+        "analyst", "hunter", "responder", "detection-engineer",
+        "fleet-operator", "tenant-administrator", "platform-administrator",
+    )
+) + (
+    frozenset(("detection-engineer", "tenant-administrator")),
+    frozenset(("detection-engineer", "platform-administrator")),
+)
 
 
 def _canonical(value: Any) -> bytes:
@@ -154,6 +255,8 @@ class AuthorizationPolicy:
         roles: Sequence[Role],
         bindings: Sequence[RoleBinding],
         audit_key: bytes,
+        *,
+        duty_constraints: Sequence[frozenset[str]] = DEFAULT_DUTY_CONSTRAINTS,
     ) -> None:
         if len(audit_key) < 32:
             raise ValueError("audit key must be at least 32 bytes")
@@ -162,6 +265,12 @@ class AuthorizationPolicy:
         self.principals = {item.principal_id: item for item in principals}
         self.roles = {item.role_id: item for item in roles}
         self.bindings = tuple(bindings)
+        self.duty_constraints = tuple(
+            sorted(
+                (frozenset(rule) for rule in duty_constraints),
+                key=lambda rule: tuple(sorted(rule)),
+            )
+        )
         self._key = bytes(audit_key)
         self._receipt_lock = threading.RLock()
         self._receipts: OrderedDict[str, tuple[str, AuthorizationDecision]] = OrderedDict()
@@ -172,6 +281,23 @@ class AuthorizationPolicy:
                 raise ValueError("binding references unknown principal")
             if binding.role_id not in self.roles:
                 raise ValueError("binding references unknown role")
+        for rule in self.duty_constraints:
+            if len(rule) != 2 or any(
+                not _IDENTIFIER.fullmatch(role_id) for role_id in rule
+            ):
+                raise ValueError("invalid separation-of-duty constraint")
+        for index, first in enumerate(self.bindings):
+            for second in self.bindings[index + 1:]:
+                if first.principal_id != second.principal_id:
+                    continue
+                pair = frozenset((first.role_id, second.role_id))
+                if (
+                    pair in self.duty_constraints
+                    and _scopes_overlap(first.scope, second.scope)
+                ):
+                    raise ValueError(
+                        "separation-of-duty conflict for overlapping scope"
+                    )
         self.policy_hash = hashlib.sha256(_canonical({
             "principals": [asdict(item) for item in sorted(
                 self.principals.values(), key=lambda item: item.principal_id
@@ -183,6 +309,10 @@ class AuthorizationPolicy:
                 self.bindings,
                 key=lambda item: (item.principal_id, item.role_id, item.scope),
             )],
+            "duty_constraints": [
+                sorted(rule) for rule in self.duty_constraints
+                if rule.issubset(self.roles)
+            ],
         })).hexdigest()
 
     def decide(

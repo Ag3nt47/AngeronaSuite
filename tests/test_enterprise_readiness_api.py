@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from angerona.core.enterprise_readiness import assess, evidence_pack, render_text
@@ -74,7 +75,7 @@ def test_readiness_credits_local_foundations_and_keeps_external_gates() -> None:
     bus._authority = object()  # assessment only needs the public armed-state property
     report = assess(_Manager(), bus, _config(), _ProofLog())
 
-    assert report["assessment_version"] == 2
+    assert report["assessment_version"] == 3
     assert report["percent"] == 86
     assert report["band"] == "advanced local enterprise foundation"
     assert report["summary"]["gaps"] == 0
@@ -118,6 +119,28 @@ def test_enterprise_evidence_pack_is_deterministic_bounded_and_public_safe() -> 
     assert "Agent47" not in encoded
     assert r"C:\Users" not in encoded
     assert "abcdefghijklmnop1234" not in encoded
+
+
+def test_readiness_exports_clock_quality_and_api_contract_without_tenant_identity() -> None:
+    bus = EventBus()
+    bus._authority = object()
+    runtime = {
+        "fleet_service": "running",
+        "endpoint_identity": "active",
+        "registered_devices": 3,
+        "fleet_ingestion": "degraded",
+        "stored_events": 42,
+        "uncertain_clock_events": 2,
+        "fleet_api_contract_sha256": "a" * 64,
+    }
+    report = assess(_Manager(), bus, _config(), _ProofLog(), runtime)
+    packed = evidence_pack(report)
+
+    assert packed["runtime"]["fleet_ingestion"] == "degraded"
+    assert packed["runtime"]["stored_events"] == 42
+    assert packed["runtime"]["uncertain_clock_events"] == 2
+    assert packed["runtime"]["fleet_api_contract_sha256"] == "a" * 64
+    assert "tenant" not in json.dumps(packed["runtime"]).casefold()
 
 
 def test_unsigned_override_and_optional_egress_are_visible_warnings() -> None:

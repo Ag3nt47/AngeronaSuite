@@ -4251,6 +4251,11 @@ class SettingsDialog(QDialog):
         buttons = QHBoxLayout()
         refresh = QPushButton("Refresh assessment")
         causal = QPushButton("Build current causal snapshot")
+        copy_api = QPushButton("Copy fleet API contract")
+        copy_api.setToolTip(
+            "Copies the versioned OpenAPI contract for the authenticated, "
+            "loopback-only fleet preview. No key or local identifier is included."
+        )
         copy_evidence = QPushButton("Copy public-safe evidence")
         copy_evidence.setToolTip(
             "Copies a bounded, content-addressed readiness report without host "
@@ -4258,9 +4263,11 @@ class SettingsDialog(QDialog):
         )
         refresh.clicked.connect(self._refresh_enterprise_assessment)
         causal.clicked.connect(self._refresh_enterprise_causal)
+        copy_api.clicked.connect(self._copy_fleet_api_contract)
         copy_evidence.clicked.connect(self._copy_enterprise_evidence)
         buttons.addWidget(refresh)
         buttons.addWidget(causal)
+        buttons.addWidget(copy_api)
         buttons.addWidget(copy_evidence)
         buttons.addStretch()
         lay.addLayout(buttons)
@@ -4340,6 +4347,24 @@ class SettingsDialog(QDialog):
         except Exception as exc:
             self._enterprise_gate_summary.setText(
                 f"Evidence copy unavailable ({type(exc).__name__})."
+            )
+
+    def _copy_fleet_api_contract(self) -> None:
+        """Copy the deterministic loopback API contract without credentials."""
+        try:
+            from angerona.core.fleet_service import openapi_contract
+
+            packed = json.dumps(
+                openapi_contract(), indent=2, sort_keys=True, ensure_ascii=False
+            )
+            QGuiApplication.clipboard().setText(packed)
+            self._enterprise_gate_summary.setText(
+                "Versioned fleet API contract copied; no service key or local "
+                "identifier is included."
+            )
+        except Exception as exc:
+            self._enterprise_gate_summary.setText(
+                f"Fleet API contract unavailable ({type(exc).__name__})."
             )
 
     def _refresh_enterprise_causal(self) -> None:
