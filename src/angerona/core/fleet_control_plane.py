@@ -14,6 +14,7 @@ import re
 import sqlite3
 import threading
 import time
+from collections import Counter, OrderedDict
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -29,9 +30,115 @@ MAX_EVENT_NODES = 20_000
 MAX_EVENT_CONTAINER_ITEMS = 4096
 CLOCK_SYNC_WINDOW_SECONDS = 5 * 60
 CLOCK_SKEW_WINDOW_SECONDS = 24 * 60 * 60
+DEFAULT_TENANT_EVENTS_PER_SECOND = 2000.0
+DEFAULT_TENANT_BURST = 4000
+DEFAULT_DEVICE_EVENTS_PER_SECOND = 500.0
+DEFAULT_DEVICE_BURST = 1000
+MAX_RATE_BUCKETS = 50_000
 _CLOCK_QUALITIES = frozenset({
     "synchronized", "skewed", "untrusted", "server-assigned",
 })
+
+
+class FleetRateLimitError(RuntimeError):
+    def __init__(self, retry_after_ms: int) -> None:
+        self.retry_after_ms = max(1, int(retry_after_ms))
+        super().__init__("fleet ingestion rate limit exceeded")
+
+
+class FleetIngestionRateLimiter:
+    """Thread-safe bounded token buckets for valid tenant/device identities."""
+
+    def __init__(
+        self,
+        *,
+        tenant_rate: float = DEFAULT_TENANT_EVENTS_PER_SECOND,
+        tenant_burst: int = DEFAULT_TENANT_BURST,
+        device_rate: float = DEFAULT_DEVICE_EVENTS_PER_SECOND,
+        device_burst: int = DEFAULT_DEVICE_BURST,
+        max_buckets: int = MAX_RATE_BUCKETS,
+        clock=time.monotonic,
+    ) -> None:
+        for value, label in (
+            (tenant_rate, "tenant rate"), (device_rate, "device rate"),
+            (tenant_burst, "tenant burst"), (device_burst, "device burst"),
+        ):
+            if not math.isfinite(float(value)) or float(value) <= 0:
+                raise ValueError(f"{label} must be finite and positive")
+        self.tenant_rate = float(tenant_rate)
+        self.tenant_burst = max(1, int(tenant_burst))
+        self.device_rate = float(device_rate)
+        self.device_burst = max(1, int(device_burst))
+        self.max_buckets = max(100, min(int(max_buckets), 500_000))
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._buckets: OrderedDict[
+            tuple[str, str], tuple[float, float]
+        ] = OrderedDict()
+        self._stats: dict[str, list[int]] = {}
+
+    def _refill(
+        self,
+        key: tuple[str, str],
+        *,
+        rate: float,
+        burst: int,
+        now: float,
+    ) -> float:
+        prior = self._buckets.pop(key, None)
+        if prior is None:
+            if len(self._buckets) >= self.max_buckets:
+                raise FleetRateLimitError(1000)
+            tokens = float(burst)
+        else:
+            tokens = min(float(burst), prior[0] + max(0.0, now - prior[1]) * rate)
+        self._buckets[key] = (tokens, now)
+        return tokens
+
+    def consume(self, tenant_id: str, device_counts: Mapping[str, int]) -> None:
+        total = sum(int(count) for count in device_counts.values())
+        if total < 1 or any(int(count) < 1 for count in device_counts.values()):
+            raise ValueError("rate-limit event counts must be positive")
+        now = float(self._clock())
+        if not math.isfinite(now):
+            raise RuntimeError("fleet admission clock is unavailable")
+        requirements = [(tenant_id, "", total, self.tenant_rate, self.tenant_burst)]
+        requirements.extend(
+            (tenant_id, device_id, int(count), self.device_rate, self.device_burst)
+            for device_id, count in sorted(device_counts.items())
+        )
+        with self._lock:
+            available: list[tuple[tuple[str, str], float, int, float]] = []
+            retry_seconds = 0.0
+            for tenant, device, required, rate, burst in requirements:
+                key = (tenant, device)
+                tokens = self._refill(key, rate=rate, burst=burst, now=now)
+                available.append((key, tokens, required, rate))
+                if tokens < required:
+                    retry_seconds = max(
+                        retry_seconds, (required - tokens) / rate
+                    )
+            stats = self._stats.setdefault(tenant_id, [0, 0])
+            if retry_seconds > 0:
+                stats[1] += total
+                raise FleetRateLimitError(math.ceil(retry_seconds * 1000))
+            for key, tokens, required, _rate in available:
+                self._buckets[key] = (tokens - required, now)
+            stats[0] += total
+
+    def snapshot(self, tenant_id: str) -> Mapping[str, int | float]:
+        with self._lock:
+            accepted, rejected = self._stats.get(tenant_id, [0, 0])
+            tracked = sum(1 for tenant, _device in self._buckets if tenant == tenant_id)
+        return {
+            "admitted_events": accepted,
+            "rejected_events": rejected,
+            "tracked_buckets": tracked,
+            "tenant_events_per_second": self.tenant_rate,
+            "tenant_burst": self.tenant_burst,
+            "device_events_per_second": self.device_rate,
+            "device_burst": self.device_burst,
+        }
 
 
 def _canonical(value: Any) -> bytes:
@@ -160,6 +267,7 @@ class FleetControlPlane:
         tenant_keys: Mapping[str, bytes],
         *,
         clock=time.time,
+        rate_limiter: FleetIngestionRateLimiter | None = None,
     ) -> None:
         if not tenant_keys:
             raise ValueError("at least one tenant key is required")
@@ -171,6 +279,7 @@ class FleetControlPlane:
             self._keys[tenant] = bytes(key)
         self.path = Path(path)
         self._clock = clock
+        self._rate_limiter = rate_limiter or FleetIngestionRateLimiter()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._db = sqlite3.connect(
@@ -402,12 +511,16 @@ class FleetControlPlane:
                         (tenant_id, *requested_devices),
                     )
                 }
-                for item in prepared:
-                    state = device_states.get(item.device_id)
+                for device_id in requested_devices:
+                    state = device_states.get(device_id)
                     if state is None:
                         raise PermissionError("device is not enrolled in tenant")
                     if state != "active":
                         raise PermissionError(f"device state is {state}")
+                self._rate_limiter.consume(
+                    tenant_id, Counter(item.device_id for item in prepared)
+                )
+                for item in prepared:
                     existing = self._db.execute(
                         "SELECT event_hash,device_id,observed_at,received_at,"
                         "clock_quality,clock_skew_seconds FROM fleet_events "
@@ -606,6 +719,7 @@ class FleetControlPlane:
             },
             "last_received_at": float(counters[10]),
             "device_states": {str(state): int(count) for state, count in states},
+            "admission": dict(self._rate_limiter.snapshot(tenant_id)),
         }
 
     def close(self) -> None:

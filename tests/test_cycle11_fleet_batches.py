@@ -85,7 +85,15 @@ def test_conflicting_batch_rolls_back_events_devices_and_counters(tmp_path):
     assert {item["event_id"] for item in plane.events("tenant-a")} == {
         "event-existing"
     }
-    assert plane.ingestion_health("tenant-a") == before_health
+    after_health = plane.ingestion_health("tenant-a")
+    assert {
+        key: value for key, value in after_health.items() if key != "admission"
+    } == {
+        key: value for key, value in before_health.items() if key != "admission"
+    }
+    assert after_health["admission"]["admitted_events"] == (
+        before_health["admission"]["admitted_events"] + 2
+    )
     assert plane.devices("tenant-a")[0].last_seen == before_seen
     plane.close()
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import re
 import secrets
 import threading
@@ -17,10 +18,15 @@ from urllib.parse import parse_qs, urlsplit
 
 from angerona.core.endpoint_identity import ReplayLedger
 from angerona.core.fleet_control_plane import (
+    DEFAULT_DEVICE_BURST,
+    DEFAULT_DEVICE_EVENTS_PER_SECOND,
+    DEFAULT_TENANT_BURST,
+    DEFAULT_TENANT_EVENTS_PER_SECOND,
     MAX_INGEST_BATCH,
     MAX_INGEST_BATCH_BYTES,
     FleetControlPlane,
     FleetDevice,
+    FleetRateLimitError,
 )
 
 MAX_BODY = 5 * 1024 * 1024
@@ -48,6 +54,12 @@ def ingestion_capabilities() -> dict[str, Any]:
         "maximum_decoded_bytes": MAX_DECODED_BODY,
         "maximum_normalized_batch_bytes": MAX_INGEST_BATCH_BYTES,
         "maximum_batch_events": MAX_INGEST_BATCH,
+        "default_rate_limits": {
+            "tenant_events_per_second": DEFAULT_TENANT_EVENTS_PER_SECOND,
+            "tenant_burst": DEFAULT_TENANT_BURST,
+            "device_events_per_second": DEFAULT_DEVICE_EVENTS_PER_SECOND,
+            "device_burst": DEFAULT_DEVICE_BURST,
+        },
         "retry_after_ms": 0,
     }
 
@@ -190,6 +202,7 @@ def openapi_contract() -> dict[str, Any]:
                         "400": json_response,
                         "401": json_response,
                         "413": json_response,
+                        "429": json_response,
                     },
                 },
             },
@@ -219,6 +232,7 @@ def openapi_contract() -> dict[str, Any]:
                         "400": json_response,
                         "401": json_response,
                         "413": json_response,
+                        "429": json_response,
                     },
                 },
             },
@@ -439,7 +453,13 @@ class FleetLoopbackService:
             def log_message(self, _format, *_args):
                 return
 
-            def _json(self, status: int, value: Mapping[str, Any]) -> None:
+            def _json(
+                self,
+                status: int,
+                value: Mapping[str, Any],
+                *,
+                extra_headers: Mapping[str, str] | None = None,
+            ) -> None:
                 data = json.dumps(
                     value, sort_keys=True, separators=(",", ":"), default=str
                 ).encode("utf-8")
@@ -449,6 +469,8 @@ class FleetLoopbackService:
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Pragma", "no-cache")
                 self.send_header("X-Content-Type-Options", "nosniff")
+                for name, header_value in (extra_headers or {}).items():
+                    self.send_header(name, header_value)
                 self.end_headers()
                 self.wfile.write(data)
 
@@ -574,6 +596,20 @@ class FleetLoopbackService:
                     self._json(200, result)
                 except json.JSONDecodeError:
                     self._json(400, {"ok": False, "error": "invalid JSON"})
+                except FleetRateLimitError as exc:
+                    self._json(
+                        429,
+                        {
+                            "ok": False,
+                            "error": str(exc),
+                            "retry_after_ms": exc.retry_after_ms,
+                        },
+                        extra_headers={
+                            "Retry-After": str(max(
+                                1, math.ceil(exc.retry_after_ms / 1000)
+                            ))
+                        },
+                    )
                 except (TypeError, ValueError, PermissionError, KeyError) as exc:
                     self._json(400, {"ok": False, "error": str(exc)})
 
