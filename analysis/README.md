@@ -11,7 +11,9 @@ Key terms used below: Graphical User Interface (GUI), Artificial Intelligence
 Berkeley Packet Filter (eBPF), Berkeley Packet Filter Compiler Collection (BCC),
 Role-Based Access Control (RBAC), Continuous Integration (CI), Software Bill of
 Materials (SBOM), Supply-chain Levels for Software Artifacts (SLSA), and
-Hash-based Message Authentication Code (HMAC).
+Hash-based Message Authentication Code (HMAC), Application Programming
+Interface (API), JavaScript Object Notation (JSON), Mutual Transport Layer
+Security (mTLS), Single Sign-On (SSO), and OpenID Connect (OIDC).
 
 ![Windows](https://img.shields.io/badge/Windows-Protect-0078D6)
 ![macOS](https://img.shields.io/badge/macOS-Observe%20preview-555555)
@@ -1125,4 +1127,42 @@ email scanning, channel push, research) — each has a one-click test button.
   remains a local user-mode security platform, not a claim of enterprise
   certification, kernel tamper-proofing, or a production multi-tenant service.
 
-<!-- ANGERONA_DOC_STATUS tests=556 skips=2 modules=65 -->
+## LATEST (2026-08-01 - fleet integrity and access-governance pass)
+
+- **Device-bound fleet evidence.** A tenant event identifier is now permanently
+  bound to its originating endpoint and body. Exact retries retain the original
+  timing evidence; reuse from another endpoint or with changed evidence fails
+  closed. Event bodies accept only finite, bounded, plain JavaScript Object
+  Notation (JSON) with byte, depth, node, container, integer, and UTF-8 limits.
+- **Clock-quality honesty.** Fleet ingestion keeps endpoint-observed time,
+  server-received time, and signed clock skew separate. Endpoint clocks are
+  classified as synchronized, skewed, untrusted, server-assigned, or legacy;
+  uncertain time is never silently promoted to trustworthy chronology. Device
+  last-seen health uses server time so a drifting endpoint cannot move inventory
+  state into the future or past. Existing preview databases migrate in place.
+- **Versioned local application programming interface.** The loopback Fleet
+  Preview publishes a deterministic OpenAPI 3.1 contract for the health,
+  contract, device, event, and ingestion-health routes actually shipped. The
+  contract remains behind fresh, replay-protected, complete-target Hash-based
+  Message Authentication Code using Secure Hash Algorithm 256 (HMAC-SHA-256)
+  authentication, is content-addressed in health/readiness evidence, and can be
+  copied from Enterprise Settings without including a key or local identifier.
+- **Least-privilege enterprise roles.** The local Role-Based Access Control
+  (RBAC) boundary now supplies Viewer, Analyst, Hunter, Responder, Detection
+  Engineer, Fleet Operator, Tenant Administrator, Platform Administrator, and
+  Auditor roles. Default deny, explicit-deny precedence, expiring principals,
+  canonical scopes, and authenticated decisions remain enforced. Overlapping
+  auditor/operational and detection-author/policy-approver bindings are refused
+  before activation; non-overlapping organizational scopes remain valid.
+- **Privacy-safe ingestion health.** Enterprise Readiness version 3 exposes
+  bounded stored-event, duplicate-retry, clock-uncertainty, and contract-digest
+  evidence without tenant, endpoint, hostname, username, path, payload, or key
+  identity. It remains a local engineering preview, not a production fleet
+  service.
+- **Final Cycle 10 verification.** The authoritative serial Windows suite passes **576 tests with 2 intentional platform skips** and 0 failures. Ruff, Python
+  bytecode compilation, and the focused Bandit medium/high scan pass. Production
+  mutual Transport Layer Security (mTLS), Single Sign-On (SSO) / OpenID Connect
+  (OIDC), protected publisher signing, high availability, external penetration
+  testing, and long-duration physical-host soaks remain separate gates.
+
+<!-- ANGERONA_DOC_STATUS tests=576 skips=2 modules=65 -->

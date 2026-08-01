@@ -355,6 +355,54 @@ CYCLE 8 IMPLEMENTATION RECORD — 2026-07-29
   - Separate Bandit/Vulture/pytest-timeout environment; no runtime dependency.
 
 
+CYCLE 10 IMPLEMENTATION RECORD - 2026-08-01
+-------------------------------------------
+
+[DONE/P1] ENT-ING-CLOCK-001  Device clock-quality and receipt-time evidence.
+  - Finite positive endpoint timestamps are classified as synchronized, skewed,
+    untrusted, server-assigned, or legacy.
+  - Observed time, signed server receipt time, and bounded signed skew remain
+    distinct; device last-seen state uses server time so endpoint drift cannot
+    move inventory health into the future or past.
+  - Legacy fleet databases migrate in place and retain explicit uncertainty.
+
+[DONE/P1] ENT-ING-IDEMP-001  Device-bound event idempotency and strict JSON.
+  - A tenant event ID is permanently bound to its originating device and body.
+  - Exact retries return original timing evidence; cross-device reuse and
+    changed bodies fail closed.
+  - Event bodies accept only finite, signed-64-bit, bounded plain JSON with
+    explicit byte, depth, node, object, array, and UTF-8 limits.
+
+[DONE/P2] ENT-ING-HEALTH-001  Privacy-safe ingestion health evidence.
+  - Durable per-tenant stored/duplicate and clock-quality counters.
+  - Low-cardinality healthy/degraded/unknown state and device-state counts.
+  - Enterprise Settings and public-safe readiness evidence expose no tenant,
+    endpoint, hostname, user, path, payload, or key identity.
+
+[DONE/P1] ENT-API-LOCAL-001  Versioned local Fleet Preview OpenAPI contract.
+  - Deterministic OpenAPI 3.1 contract covers the routes actually shipped.
+  - Canonical device, event, ingestion-health, and contract routes retain full-
+    target HMAC freshness/replay authentication and loopback-only binding.
+  - Contract digest appears in health/readiness evidence; Enterprise Settings
+    can copy the contract without a service key or local identifier.
+  - Production mTLS, case/search APIs, organization identity, remote rate
+    limiting, and high availability remain separate gates.
+
+[DONE/P1] ENT-AUTH-STD-001  Standard least-privilege roles and duty separation.
+  - Viewer, Analyst, Hunter, Responder, Detection Engineer, Fleet Operator,
+    Tenant Administrator, Platform Administrator, and Auditor are canonical.
+  - Default deny, explicit-deny precedence, bounded hierarchical scopes,
+    expiring principals, and authenticated decisions remain enforced.
+  - Overlapping auditor/operational and detection-author/policy-approver role
+    bindings fail before policy activation; non-overlapping scopes remain valid.
+
+[DONE/P0] ENT-QA-C10-001  Adversarial fleet boundary regression coverage.
+  - Covers migration, invalid/non-finite/deep/cyclic JSON, device-bound replay,
+    clock drift, concurrent ingestion, authenticated OpenAPI access, canonical
+    routes, content type, public-safe evidence, and separation of duties.
+  - Focused Ruff, Bandit medium/high, and regression gates pass.
+
+
 02. FLEET IDENTITY, ENROLLMENT, AND ZERO TRUST
 ----------------------------------------------
 
@@ -433,7 +481,7 @@ Acceptance gate:
   - Deprovisioning removes active sessions.
   - Idempotent and tenant-scoped.
 
-[TODO/P1] ENT-AUTH-005  Define least-privilege roles.
+[DONE/P1] ENT-AUTH-005  Define least-privilege roles.
   Initial roles:
   - Viewer.
   - Analyst.
@@ -445,7 +493,7 @@ Acceptance gate:
   - Platform Administrator.
   - Auditor.
 
-[TODO/P1] ENT-AUTH-006  Add resource and action scopes.
+[DONE/P1] ENT-AUTH-006  Add resource and action scopes.
   - Fleet/group/host.
   - Event/case/evidence.
   - Detection/policy.
@@ -453,10 +501,13 @@ Acceptance gate:
   - Remediation approval/execution.
   - Export/integration/admin.
 
-[TODO/P1] ENT-AUTH-007  Add separation of duties.
+[PARTIAL/P1] ENT-AUTH-007  Add separation of duties.
   - High-impact policy author cannot self-approve.
   - Response requester and approver can be required to differ.
   - Trust-root and release-key changes require two-person control.
+  Implemented locally: overlapping auditor/operational and detection-author/
+  policy-approver bindings fail before activation; the Response Broker already
+  requires distinct approvers. External trust-root/release-key ceremony remains.
 
 [TODO/P1] ENT-AUTH-008  Add immutable admin audit.
   - Actor, tenant, session, source, action, target, before/after, decision,
@@ -538,12 +589,16 @@ Acceptance gate:
     sensor sequence, observed time, received time, severity, category, payload
     type/version, integrity status, policy/content version, trace/correlation ID.
 
-[TODO/P1] ENT-ING-002  Build authenticated ingestion.
+[PARTIAL/P1] ENT-ING-002  Build authenticated ingestion.
   - mTLS device identity.
   - Payload size/type validation.
   - Decompression limits.
   - Per-device and per-tenant rate limits.
   - Reject unknown schemas safely.
+  Implemented locally: loopback-only HMAC freshness/replay authentication,
+  device-bound idempotency, strict bounded plain-JSON validation, and protected
+  tenant keys. Production mTLS, remote rate limiting, decompression negotiation,
+  and a multi-schema registry remain open.
 
 [PARTIAL/P1] ENT-ING-003  Add durable endpoint buffering.
   - Bounded encrypted queue on D:/configured data root.
@@ -561,7 +616,7 @@ Acceptance gate:
   Remaining: durable restart continuity, stable cross-process event identity,
   and server-side at-least-once deduplication.
 
-[TODO/P1] ENT-ING-005  Add clock-quality handling.
+[DONE/P1] ENT-ING-005  Add clock-quality handling.
   - Track host offset and uncertainty.
   - Keep observed and received times.
   - Flag severe clock drift.
@@ -576,9 +631,13 @@ Acceptance gate:
   - Dead-letter queue with privacy-safe diagnostics.
   - Replay with idempotency.
 
-[TODO/P2] ENT-ING-008  Add ingestion health dashboards.
+[PARTIAL/P2] ENT-ING-008  Add ingestion health dashboards.
   - Lag, errors, duplicates, drops, sequence gaps, queue depth, schema rejects,
     tenant usage, endpoint offline backlog, and oldest unprocessed event.
+  Implemented locally: durable stored/duplicate and clock-quality counters,
+  device-state counts, and a low-cardinality health state in readiness evidence.
+  Queue depth, schema rejects, offline backlog, and remote tenant quotas depend
+  on the future production ingestion tier.
 
 Acceptance gate:
   TEST + PERF + OPS. Network loss, duplicate batches, restart, full disk, schema
@@ -1734,13 +1793,17 @@ Acceptance gate:
 23. API, SDK, WEBHOOK, AND INTEGRATION PLATFORM
 -----------------------------------------------
 
-[TODO/P1] ENT-API-001  Publish versioned OpenAPI for control/case/search APIs.
+[PARTIAL/P1] ENT-API-001  Publish versioned OpenAPI for control/case/search APIs.
   - Stable errors.
   - pagination.
   - filtering.
   - idempotency.
   - rate limits.
   - tenant and permission documentation.
+  Implemented locally: deterministic OpenAPI 3.1 for the authenticated Fleet
+  Preview health, contract, device inventory, event, and ingestion-health routes.
+  Case/search contracts, pagination, remote rate limits, and production identity
+  documentation remain open until those network services exist.
 
 [TODO/P1] ENT-API-002  Use gRPC/Protobuf internally only where it materially helps.
   - Version compatibility.
@@ -2396,7 +2459,7 @@ Research promotion gate:
 31. DOCUMENTATION, TRAINING, AND SUPPORT
 ---------------------------------------
 
-[TODO/P0] ENT-DOC-001  Keep README honest and current.
+[PARTIAL/P0] ENT-DOC-001  Keep README honest and current.
   - What Angerona is/is not.
   - supported platforms.
   - verified install.
@@ -2405,7 +2468,7 @@ Research promotion gate:
   - screenshots from current build.
   - limitations.
 
-[TODO/P0] ENT-DOC-002  Keep llms.txt current.
+[PARTIAL/P0] ENT-DOC-002  Keep llms.txt current.
   - architecture.
   - safety boundaries.
   - canonical commands.
@@ -2414,7 +2477,7 @@ Research promotion gate:
   - extension rules.
   - current limitations.
 
-[TODO/P1] ENT-DOC-003  Maintain operator/admin manuals.
+[PARTIAL/P1] ENT-DOC-003  Maintain operator/admin manuals.
   - Install/upgrade/rollback/uninstall.
   - enrollment.
   - policy.
@@ -2424,7 +2487,7 @@ Research promotion gate:
   - backup/restore/DR.
   - troubleshooting.
 
-[TODO/P1] ENT-DOC-004  Maintain developer architecture.
+[PARTIAL/P1] ENT-DOC-004  Maintain developer architecture.
   - Components and trust boundaries.
   - schemas/protocols.
   - ADRs.
@@ -2432,7 +2495,7 @@ Research promotion gate:
   - test strategy.
   - performance budgets.
 
-[TODO/P1] ENT-DOC-005  Maintain security/privacy documentation.
+[PARTIAL/P1] ENT-DOC-005  Maintain security/privacy documentation.
   - Threat model.
   - secure defaults.
   - data inventory/flows.
@@ -2451,7 +2514,7 @@ Research promotion gate:
 
 [TODO/P2] ENT-DOC-007  Add interactive safe labs and sample synthetic data.
 
-[TODO/P2] ENT-DOC-008  Automate documentation drift checks.
+[DONE/P2] ENT-DOC-008  Automate documentation drift checks.
   - CLI/API/schema examples.
   - version references.
   - file paths.

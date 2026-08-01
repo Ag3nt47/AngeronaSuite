@@ -641,6 +641,56 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   long physical-host soaks, independent disaster-recovery exercises, and
   production mTLS/OIDC/HA remain external gates.
 
+## CYCLE 10 - FLEET INTEGRITY AND ACCESS GOVERNANCE
+
+- `core/fleet_control_plane.py` treats endpoint time and content as untrusted.
+  Event bodies are copied into bounded plain JSON and reject non-string/empty/
+  oversized keys, non-finite numbers, integers outside signed 64-bit range,
+  invalid UTF-8, custom objects, cycles, and depth/node/container/byte overflow.
+  Keep these checks before hashing or SQLite insertion.
+- Fleet event identity is `(tenant_id, event_id)` plus a permanent device and
+  body binding. An exact retry may return `duplicate=True`, but it must retain
+  the original observed time, server receipt time, clock classification, skew,
+  device identity, and event hash. Never accept the same ID from a different
+  device even when the body hash matches.
+- Endpoint `observed_at` is never inventory liveness. `received_at` comes from
+  the control-plane clock and updates device `last_seen`. Clock quality is one
+  of `synchronized`, `skewed`, `untrusted`, `server-assigned`, or `legacy`;
+  non-finite/non-positive timestamps fail. Legacy databases add the new columns
+  in place and backfill explicit legacy uncertainty without deleting events.
+- `ingestion_health()` is tenant-authorized and low-cardinality. It exposes
+  stored events, duplicate retries, clock-quality counts, last receipt time, and
+  device-state counts; it never returns event payloads. The public readiness
+  snapshot further removes tenant and device identity and keeps only bounded
+  counts/state plus the public API-contract digest.
+- `core/fleet_service.py::openapi_contract()` is the deterministic OpenAPI 3.1
+  source for routes actually implemented. Canonical device, event, ingestion-
+  health, and `/v1/openapi` routes use the same complete-path/query/body HMAC,
+  freshness, and durable nonce replay boundary. `/health` is the only unsigned
+  route and discloses only service/loopback/version/contract-digest state. Do not
+  advertise production mTLS, remote exposure, case/search APIs, or high
+  availability through this local contract.
+- The fleet HTTP boundary accepts POST bodies only as `application/json`, caps
+  content length, returns no-store/nosniff headers, and suppresses the Python
+  runtime version from the Server header. Do not add a generic command route.
+- `core/authorization.py::STANDARD_ROLES` is the canonical nine-role catalog:
+  Viewer, Analyst, Hunter, Responder, Detection Engineer, Fleet Operator,
+  Tenant Administrator, Platform Administrator, and Auditor. Permissions remain
+  default-deny and scoped. `DEFAULT_DUTY_CONSTRAINTS` rejects overlapping
+  auditor/operational and detection-author/policy-approver bindings before the
+  policy hash is created. Response Broker still enforces distinct requesters and
+  approvers at action time; external identity and release-key ceremony remain
+  separate gates.
+- Enterprise Readiness assessment v3 includes bounded fleet-ingestion state,
+  event/uncertain-clock counts, and the public OpenAPI digest. The copy actions
+  in Enterprise Settings must never include a tenant ID, endpoint ID, hostname,
+  username, local path, payload, service key, or identity key.
+- Final Cycle 10 evidence: 576 passed / 2 intentional platform skips / 0 failed;
+  full Ruff and Python compilation clean; focused Bandit medium/high clean.
+  Production mTLS, SSO/OIDC, protected publisher signing, repository rulesets,
+  HA/DR infrastructure, external penetration review, and physical-host soaks
+  remain external gates.
+
 ## NEVER DO
 - **Cycle 7 enterprise foundations (newest, 2026-07-29)** — The authoritative
   flight recorder and normalized evidence path use bounded asynchronous workers,
