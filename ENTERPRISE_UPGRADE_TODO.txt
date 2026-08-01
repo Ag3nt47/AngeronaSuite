@@ -621,10 +621,14 @@ Acceptance gate:
   - Keep observed and received times.
   - Flag severe clock drift.
 
-[TODO/P2] ENT-ING-006  Add compression and batch negotiation.
+[PARTIAL/P2] ENT-ING-006  Add compression and batch negotiation.
   - Bounded batches.
   - Adaptive flow control.
   - CPU/network budgets.
+  Implemented locally: atomic 1-256 event batches, 256 KiB per-event and 4 MiB
+  aggregate normalized-payload budgets, one transaction per batch, signed
+  per-event receipts, and OpenAPI-advertised item limits. Compression, adaptive
+  endpoint flow control, and remote CPU/network quota negotiation remain open.
 
 [TODO/P2] ENT-ING-007  Add a durable server queue.
   - Separate intake from indexing/analytics.
@@ -2912,6 +2916,45 @@ CYCLE 9 IMPLEMENTATION RECORD - 2026-08-01
   - Python compilation and Ruff correctness checks pass.
   - Release evidence records fixed bytecode, dependency-audit,
     documentation-drift, lint, and unit-test gates.
+
+CYCLE 11 IMPLEMENTATION RECORD - 2026-08-01
+-------------------------------------------
+
+[DONE/P1] ENT-ING-BATCH-011  Atomic bounded fleet delivery.
+  - The canonical write path accepts 1-256 events and commits or rolls back the
+    entire batch. Single-event ingestion is a one-item wrapper over that path.
+  - Every envelope and event body is normalized before the database write lock;
+    per-event and aggregate byte budgets prevent unbounded memory or disk work.
+  - Device-state lookup is limited to distinct endpoints named by the batch.
+  - One transaction, one device last-seen update per touched endpoint, and one
+    aggregate health update reduce SQLite overhead without weakening controls.
+
+[DONE/P1] ENT-ING-BATCH-IDEMP-011  Batch retry and conflict integrity.
+  - Exact at-least-once retries return signed duplicate receipts that preserve
+    original chronology and evidence binding.
+  - Cross-device event-ID reuse, changed evidence, unknown fields, invalid time,
+    missing enrollment, and inactive device state fail the complete transaction.
+  - Failure leaves events, device liveness, and health counters unchanged.
+
+[DONE/P2] ENT-API-BATCH-011  Versioned local batch contract.
+  - OpenAPI 3.1 contract version 1.1.0 documents the authenticated event-batch
+    route, exact envelope, item bounds, and unchanged loopback/HMAC boundary.
+  - Durable health exposes accepted batch count, attempted event count, and
+    largest accepted batch without endpoint identity or event payloads.
+
+[DONE/P0] ENT-QA-C11-011  Fleet batch regression evidence.
+  - Tests cover one-transaction behavior, signed receipts, exact retry,
+    full rollback after a late conflict, count/field/aggregate-byte rejection,
+    authenticated HTTP use, contract fidelity, and migration-compatible health.
+  - Full serial repository suite: 580 passed, 2 intentional platform skips,
+    0 failures. Ruff, Python compilation, whitespace validation, and focused
+    Bandit medium/high checks pass.
+
+[PARTIAL/P2] ENT-ING-COMPRESS-011  Compression and adaptive flow control.
+  - Bounded batches and explicit contract limits are shipped locally.
+  - Bounded decompression, per-device/tenant remote quotas, backoff negotiation,
+    storm/full-disk drills, and production transport remain open work.
+
 
 REMAINING EXTERNAL / DEPLOYMENT GATES
 -------------------------------------

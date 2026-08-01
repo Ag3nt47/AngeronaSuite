@@ -691,6 +691,40 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   HA/DR infrastructure, external penetration review, and physical-host soaks
   remain external gates.
 
+## CYCLE 11 - ATOMIC FLEET DELIVERY
+
+- `core/fleet_control_plane.py::ingest_batch()` is the single event write path.
+  It accepts 1-256 mapping envelopes, normalizes every event before acquiring
+  the database write lock, caps each event at 256 KiB and the aggregate normalized
+  payload at 4 MiB, and commits or rolls back the complete batch. Keep single-
+  event `ingest()` as a one-item wrapper so validation and idempotency cannot
+  drift between APIs.
+- Batch envelope fields are exactly `device_id`, `event_id`, `body`, and optional
+  `observed_at`. Unknown fields, missing required fields, non-mapping events,
+  invalid device/event identifiers, non-plain JSON, and invalid timestamps fail
+  before persistence. Never silently truncate an oversized batch.
+- Device state is read only for the distinct endpoint identifiers named by the
+  batch. Every named device must be enrolled and active. Revoked, quarantined,
+  retired, or absent devices fail the transaction before any event, last-seen,
+  or health-counter change survives.
+- At-least-once semantics remain device-bound. An exact retry returns a signed
+  duplicate receipt with the original chronology; changed evidence or reuse by
+  another endpoint rolls the entire batch back. Multiple events in a batch do
+  not imply total ordering across endpoints or sensors.
+- Batch health updates are aggregate and low-cardinality: accepted batches,
+  attempted event count, largest batch, stored events, duplicates, and clock
+  classifications. Do not add payloads, hostnames, user names, local paths,
+  endpoint identifiers, or keys to this health view.
+- `core/fleet_service.py` OpenAPI contract version 1.1.0 publishes the
+  authenticated `/v1/tenants/{tenant_id}/event-batches` route and 256-event
+  limit. Request freshness, full path/query/body HMAC, durable nonce replay
+  defense, loopback binding, JSON media type, and request byte cap remain
+  unchanged. Compression and adaptive flow control are not yet advertised.
+- Final Cycle 11 evidence: 580 passed / 2 intentional platform skips / 0 failed;
+  full Ruff and Python compilation clean; focused Bandit medium/high clean.
+  Production mTLS, remote quotas/rate limits, compression negotiation, high
+  availability, and physical-host fault/soak evidence remain separate gates.
+
 ## NEVER DO
 - **Cycle 7 enterprise foundations (newest, 2026-07-29)** — The authoritative
   flight recorder and normalized evidence path use bounded asynchronous workers,

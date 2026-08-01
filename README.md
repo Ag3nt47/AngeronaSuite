@@ -1165,4 +1165,29 @@ email scanning, channel push, research) — each has a one-click test button.
   (OIDC), protected publisher signing, high availability, external penetration
   testing, and long-duration physical-host soaks remain separate gates.
 
-<!-- ANGERONA_DOC_STATUS tests=576 skips=2 modules=65 -->
+## LATEST (2026-08-01 - atomic fleet delivery pass)
+
+- **Atomic bounded delivery.** Fleet Preview can ingest 1 to 256 endpoint events
+  as one all-or-nothing batch. Every event is validated before the write begins;
+  a missing, revoked, or quarantined device, changed replay, invalid timestamp,
+  unknown envelope field, or oversized body rolls back the whole batch.
+- **Efficient tenant-safe writes.** A batch uses one immediate SQLite transaction,
+  one aggregate health update, and device-state lookup only for endpoints named
+  in that batch. The total normalized payload is capped at 4 MiB, while each
+  event retains the existing 256 KiB, depth, node, container, number, and UTF-8
+  limits. This reduces transaction overhead without weakening validation.
+- **At-least-once retry evidence.** Exact retries produce signed duplicate
+  receipts with their original observed and server-received times. Reusing an
+  event identifier for another endpoint or changed body fails closed, including
+  when the conflict appears after otherwise valid events in the same batch.
+- **Versioned batch contract and health.** OpenAPI contract version 1.1.0 adds
+  the authenticated event-batch route and its maximum item count. Durable,
+  low-cardinality health now reports accepted batches, attempted events, and the
+  largest accepted batch without retaining payloads or endpoint identity.
+- **Final Cycle 11 verification.** The authoritative serial Windows suite passes **580 tests with 2 intentional platform skips** and 0 failures. Ruff, Python
+  bytecode compilation, whitespace validation, and the focused Bandit
+  medium/high scan pass. Compression/adaptive flow control, production mutual
+  Transport Layer Security (mTLS), remote rate limits, and high availability
+  remain separate gates.
+
+<!-- ANGERONA_DOC_STATUS tests=580 skips=2 modules=65 -->
