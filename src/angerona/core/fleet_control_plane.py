@@ -14,36 +14,24 @@ import re
 import sqlite3
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 MAX_EVENT_BYTES = 256 * 1024
+MAX_INGEST_BATCH = 256
+MAX_INGEST_BATCH_BYTES = 4 * 1024 * 1024
 MAX_QUERY_LIMIT = 5000
 MAX_EVENT_DEPTH = 32
 MAX_EVENT_NODES = 20_000
 MAX_EVENT_CONTAINER_ITEMS = 4096
 CLOCK_SYNC_WINDOW_SECONDS = 5 * 60
 CLOCK_SKEW_WINDOW_SECONDS = 24 * 60 * 60
-_CLOCK_QUALITY_UPDATES = {
-    "synchronized": (
-        "UPDATE fleet_ingest_stats SET stored=stored+1,"
-        "synchronized=synchronized+1,last_received_at=? WHERE tenant_id=?"
-    ),
-    "skewed": (
-        "UPDATE fleet_ingest_stats SET stored=stored+1,"
-        "skewed=skewed+1,last_received_at=? WHERE tenant_id=?"
-    ),
-    "untrusted": (
-        "UPDATE fleet_ingest_stats SET stored=stored+1,"
-        "untrusted=untrusted+1,last_received_at=? WHERE tenant_id=?"
-    ),
-    "server-assigned": (
-        "UPDATE fleet_ingest_stats SET stored=stored+1,"
-        "server_assigned=server_assigned+1,last_received_at=? WHERE tenant_id=?"
-    ),
-}
+_CLOCK_QUALITIES = frozenset({
+    "synchronized", "skewed", "untrusted", "server-assigned",
+})
 
 
 def _canonical(value: Any) -> bytes:
@@ -152,6 +140,17 @@ class IngestReceipt:
     receipt_hmac: str
 
 
+@dataclass(frozen=True)
+class _PreparedEvent:
+    device_id: str
+    event_id: str
+    encoded_body: bytes
+    event_hash: str
+    observed_at: float
+    clock_quality: str
+    clock_skew_seconds: float
+
+
 class FleetControlPlane:
     """Durable local store with mandatory tenant predicates on every operation."""
 
@@ -206,6 +205,9 @@ class FleetControlPlane:
           untrusted INTEGER NOT NULL DEFAULT 0,
           server_assigned INTEGER NOT NULL DEFAULT 0,
           legacy INTEGER NOT NULL DEFAULT 0,
+          batches INTEGER NOT NULL DEFAULT 0,
+          batch_events INTEGER NOT NULL DEFAULT 0,
+          largest_batch INTEGER NOT NULL DEFAULT 0,
           last_received_at REAL NOT NULL DEFAULT 0);
         """)
         self._migrate_schema()
@@ -238,11 +240,17 @@ class FleetControlPlane:
                 "PRAGMA table_info(fleet_ingest_stats)"
             )
         }
-        if "legacy" not in stats_columns:
-            self._db.execute(
-                "ALTER TABLE fleet_ingest_stats "
-                "ADD COLUMN legacy INTEGER NOT NULL DEFAULT 0"
-            )
+        stats_additions = {
+            "legacy": "INTEGER NOT NULL DEFAULT 0",
+            "batches": "INTEGER NOT NULL DEFAULT 0",
+            "batch_events": "INTEGER NOT NULL DEFAULT 0",
+            "largest_batch": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for name, declaration in stats_additions.items():
+            if name not in stats_columns:
+                self._db.execute(
+                    f"ALTER TABLE fleet_ingest_stats ADD COLUMN {name} {declaration}"
+                )
         self._db.execute(
             "INSERT OR IGNORE INTO fleet_ingest_stats("
             "tenant_id,stored,duplicates,synchronized,skewed,untrusted,"
@@ -298,128 +306,218 @@ class FleetControlPlane:
         self, tenant_id: str, device_id: str, event_id: str,
         body: Mapping[str, Any], *, observed_at: float | None = None,
     ) -> IngestReceipt:
-        key = self._key(tenant_id)
-        device_id = _validate_id(device_id, "device ID")
-        event_id = _validate_id(event_id, "event ID")
+        return self.ingest_batch(tenant_id, ({
+            "device_id": device_id,
+            "event_id": event_id,
+            "body": body,
+            "observed_at": observed_at,
+        },))[0]
+
+    @staticmethod
+    def _prepare_event(
+        event: Mapping[str, Any], received_at: float,
+    ) -> _PreparedEvent:
+        if not isinstance(event, Mapping):
+            raise TypeError("batch events must be mappings")
+        allowed = {"device_id", "event_id", "body", "observed_at"}
+        unknown = set(event) - allowed
+        missing = {"device_id", "event_id", "body"} - set(event)
+        if unknown:
+            raise ValueError("event envelope contains unknown fields")
+        if missing:
+            raise ValueError("event envelope is missing required fields")
+        device_id = _validate_id(event["device_id"], "device ID")
+        event_id = _validate_id(event["event_id"], "event ID")
+        body = event["body"]
         if not isinstance(body, Mapping):
             raise TypeError("event body must be a mapping")
-        normalized_body = _normalize_event_body(body)
-        encoded = _canonical(normalized_body)
+        encoded = _canonical(_normalize_event_body(body))
         if len(encoded) > MAX_EVENT_BYTES:
             raise ValueError("event exceeds ingestion byte budget")
-        event_hash = hashlib.sha256(encoded).hexdigest()
-        received_at = float(self._clock())
-        if not math.isfinite(received_at) or received_at <= 0:
-            raise RuntimeError("fleet ingestion clock is unavailable")
+        observed_at = event.get("observed_at")
         if observed_at is None:
             stamp = received_at
-            clock_quality = "server-assigned"
-            clock_skew = 0.0
+            quality = "server-assigned"
+            skew = 0.0
         else:
             stamp = float(observed_at)
             if not math.isfinite(stamp) or stamp <= 0:
                 raise ValueError("observed timestamp must be finite and positive")
-            clock_skew = stamp - received_at
-            absolute_skew = abs(clock_skew)
+            skew = stamp - received_at
+            absolute_skew = abs(skew)
             if absolute_skew <= CLOCK_SYNC_WINDOW_SECONDS:
-                clock_quality = "synchronized"
+                quality = "synchronized"
             elif absolute_skew <= CLOCK_SKEW_WINDOW_SECONDS:
-                clock_quality = "skewed"
+                quality = "skewed"
             else:
-                clock_quality = "untrusted"
-        duplicate = False
+                quality = "untrusted"
+        return _PreparedEvent(
+            device_id=device_id,
+            event_id=event_id,
+            encoded_body=encoded,
+            event_hash=hashlib.sha256(encoded).hexdigest(),
+            observed_at=stamp,
+            clock_quality=quality,
+            clock_skew_seconds=skew,
+        )
+
+    def ingest_batch(
+        self,
+        tenant_id: str,
+        events: Sequence[Mapping[str, Any]],
+    ) -> tuple[IngestReceipt, ...]:
+        """Atomically ingest one bounded batch and return signed receipts."""
+        key = self._key(tenant_id)
+        if not isinstance(events, Sequence) or isinstance(events, (str, bytes)):
+            raise TypeError("events must be a sequence")
+        if not 1 <= len(events) <= MAX_INGEST_BATCH:
+            raise ValueError(
+                f"batch must contain 1 to {MAX_INGEST_BATCH} events"
+            )
+        received_at = float(self._clock())
+        if not math.isfinite(received_at) or received_at <= 0:
+            raise RuntimeError("fleet ingestion clock is unavailable")
+        prepared = tuple(
+            self._prepare_event(event, received_at) for event in events
+        )
+        if sum(len(event.encoded_body) for event in prepared) > MAX_INGEST_BATCH_BYTES:
+            raise ValueError("batch exceeds aggregate ingestion byte budget")
+
+        receipt_cores: list[dict[str, Any]] = []
+        stored_by_quality = {quality: 0 for quality in _CLOCK_QUALITIES}
+        duplicates = 0
+        touched_devices: set[str] = set()
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
-                device = self._db.execute(
-                    "SELECT state FROM fleet_devices WHERE tenant_id=? AND device_id=?",
-                    (tenant_id, device_id),
-                ).fetchone()
-                if device is None:
-                    raise PermissionError("device is not enrolled in tenant")
-                if device[0] != "active":
-                    raise PermissionError(f"device state is {device[0]}")
-                existing = self._db.execute(
-                    "SELECT event_hash,device_id,observed_at,received_at,"
-                    "clock_quality,clock_skew_seconds FROM fleet_events "
-                    "WHERE tenant_id=? AND event_id=?",
-                    (tenant_id, event_id),
-                ).fetchone()
-                if existing:
-                    if existing[0] != event_hash:
-                        raise ValueError("event ID conflicts with different evidence")
-                    if existing[1] != device_id:
-                        raise ValueError("event ID is already bound to another device")
-                    duplicate = True
-                    stamp = float(existing[2])
-                    received_for_receipt = float(existing[3])
-                    clock_quality = str(existing[4])
-                    clock_skew = float(existing[5])
-                else:
-                    self._db.execute(
-                        "INSERT INTO fleet_events("
-                        "tenant_id,event_id,device_id,observed_at,received_at,"
-                        "clock_quality,clock_skew_seconds,event_hash,body_json"
-                        ") VALUES(?,?,?,?,?,?,?,?,?)",
-                        (
-                            tenant_id, event_id, device_id, stamp, received_at,
-                            clock_quality, clock_skew, event_hash,
-                            encoded.decode("utf-8"),
-                        ),
+                requested_devices = tuple(sorted({
+                    item.device_id for item in prepared
+                }))
+                placeholders = ",".join("?" for _ in requested_devices)
+                device_states = {
+                    row[0]: row[1]
+                    for row in self._db.execute(
+                        "SELECT device_id,state FROM fleet_devices "
+                        f"WHERE tenant_id=? AND device_id IN ({placeholders})",
+                        (tenant_id, *requested_devices),
                     )
-                    received_for_receipt = received_at
-                self._db.execute(
+                }
+                for item in prepared:
+                    state = device_states.get(item.device_id)
+                    if state is None:
+                        raise PermissionError("device is not enrolled in tenant")
+                    if state != "active":
+                        raise PermissionError(f"device state is {state}")
+                    existing = self._db.execute(
+                        "SELECT event_hash,device_id,observed_at,received_at,"
+                        "clock_quality,clock_skew_seconds FROM fleet_events "
+                        "WHERE tenant_id=? AND event_id=?",
+                        (tenant_id, item.event_id),
+                    ).fetchone()
+                    duplicate = existing is not None
+                    if existing:
+                        if existing[0] != item.event_hash:
+                            raise ValueError(
+                                "event ID conflicts with different evidence"
+                            )
+                        if existing[1] != item.device_id:
+                            raise ValueError(
+                                "event ID is already bound to another device"
+                            )
+                        recorded_at = float(existing[2])
+                        received_for_receipt = float(existing[3])
+                        clock_quality = str(existing[4])
+                        clock_skew = float(existing[5])
+                        duplicates += 1
+                    else:
+                        self._db.execute(
+                            "INSERT INTO fleet_events("
+                            "tenant_id,event_id,device_id,observed_at,received_at,"
+                            "clock_quality,clock_skew_seconds,event_hash,body_json"
+                            ") VALUES(?,?,?,?,?,?,?,?,?)",
+                            (
+                                tenant_id, item.event_id, item.device_id,
+                                item.observed_at, received_at, item.clock_quality,
+                                item.clock_skew_seconds, item.event_hash,
+                                item.encoded_body.decode("utf-8"),
+                            ),
+                        )
+                        recorded_at = item.observed_at
+                        received_for_receipt = received_at
+                        clock_quality = item.clock_quality
+                        clock_skew = item.clock_skew_seconds
+                        stored_by_quality[clock_quality] += 1
+                    touched_devices.add(item.device_id)
+                    receipt_cores.append({
+                        "tenant_id": tenant_id,
+                        "device_id": item.device_id,
+                        "event_id": item.event_id,
+                        "accepted": True,
+                        "duplicate": duplicate,
+                        "recorded_at": recorded_at,
+                        "received_at": received_for_receipt,
+                        "clock_quality": clock_quality,
+                        "clock_skew_seconds": clock_skew,
+                        "event_hash": item.event_hash,
+                    })
+                self._db.executemany(
                     "UPDATE fleet_devices SET last_seen=? "
                     "WHERE tenant_id=? AND device_id=?",
-                    (received_at, tenant_id, device_id),
+                    (
+                        (received_at, tenant_id, device_id)
+                        for device_id in touched_devices
+                    ),
                 )
-                self._record_ingest_stat(
-                    tenant_id,
-                    duplicate=duplicate,
-                    clock_quality=clock_quality,
-                    received_at=received_at,
+                self._record_ingest_stats(
+                    tenant_id, stored_by_quality, duplicates, len(prepared),
+                    received_at,
                 )
                 self._db.execute("COMMIT")
             except Exception:
                 self._db.execute("ROLLBACK")
                 raise
-        core = {
-            "tenant_id": tenant_id, "device_id": device_id,
-            "event_id": event_id, "accepted": True, "duplicate": duplicate,
-            "recorded_at": stamp, "received_at": received_for_receipt,
-            "clock_quality": clock_quality,
-            "clock_skew_seconds": clock_skew,
-            "event_hash": event_hash,
-        }
-        signature = hmac.new(key, _canonical(core), hashlib.sha256).hexdigest()
-        return IngestReceipt(**core, receipt_hmac=signature)
 
-    def _record_ingest_stat(
+        return tuple(
+            IngestReceipt(
+                **core,
+                receipt_hmac=hmac.new(
+                    key, _canonical(core), hashlib.sha256
+                ).hexdigest(),
+            )
+            for core in receipt_cores
+        )
+
+    def _record_ingest_stats(
         self,
         tenant_id: str,
-        *,
-        duplicate: bool,
-        clock_quality: str,
+        stored_by_quality: Mapping[str, int],
+        duplicates: int,
+        batch_size: int,
         received_at: float,
     ) -> None:
-        update_sql = _CLOCK_QUALITY_UPDATES.get(clock_quality)
-        if update_sql is None and not duplicate:
-            raise ValueError("invalid clock quality classification")
+        if set(stored_by_quality) != _CLOCK_QUALITIES:
+            raise ValueError("invalid clock quality counters")
         self._db.execute(
             "INSERT OR IGNORE INTO fleet_ingest_stats(tenant_id) VALUES(?)",
             (tenant_id,),
         )
-        if duplicate:
-            self._db.execute(
-                "UPDATE fleet_ingest_stats SET duplicates=duplicates+1,"
-                "last_received_at=? WHERE tenant_id=?",
-                (received_at, tenant_id),
-            )
-        else:
-            self._db.execute(
-                update_sql,
-                (received_at, tenant_id),
-            )
+        self._db.execute(
+            "UPDATE fleet_ingest_stats SET stored=stored+?,"
+            "duplicates=duplicates+?,synchronized=synchronized+?,"
+            "skewed=skewed+?,untrusted=untrusted+?,"
+            "server_assigned=server_assigned+?,batches=batches+1,"
+            "batch_events=batch_events+?,largest_batch=MAX(largest_batch,?),"
+            "last_received_at=? "
+            "WHERE tenant_id=?",
+            (
+                sum(stored_by_quality.values()), duplicates,
+                stored_by_quality["synchronized"],
+                stored_by_quality["skewed"],
+                stored_by_quality["untrusted"],
+                stored_by_quality["server-assigned"],
+                batch_size, batch_size, received_at, tenant_id,
+            ),
+        )
 
     def verify_receipt(self, receipt: IngestReceipt) -> bool:
         try:
@@ -474,10 +572,11 @@ class FleetControlPlane:
         with self._lock:
             counters = self._db.execute(
                 "SELECT stored,duplicates,synchronized,skewed,untrusted,"
-                "server_assigned,legacy,last_received_at FROM fleet_ingest_stats "
+                "server_assigned,legacy,batches,batch_events,largest_batch,"
+                "last_received_at FROM fleet_ingest_stats "
                 "WHERE tenant_id=?",
                 (tenant_id,),
-            ).fetchone() or (0, 0, 0, 0, 0, 0, 0, 0.0)
+            ).fetchone() or (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0)
             states = self._db.execute(
                 "SELECT state,COUNT(*) FROM fleet_devices WHERE tenant_id=? "
                 "GROUP BY state ORDER BY state",
@@ -500,7 +599,12 @@ class FleetControlPlane:
             "clock_quality_state": (
                 "degraded" if uncertain else "healthy" if stored else "unknown"
             ),
-            "last_received_at": float(counters[7]),
+            "batches": {
+                "accepted": int(counters[7]),
+                "event_attempts": int(counters[8]),
+                "largest": int(counters[9]),
+            },
+            "last_received_at": float(counters[10]),
             "device_states": {str(state): int(count) for state, count in states},
         }
 

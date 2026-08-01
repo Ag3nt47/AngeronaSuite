@@ -15,14 +15,18 @@ from typing import Any, Mapping
 from urllib.parse import parse_qs, urlsplit
 
 from angerona.core.endpoint_identity import ReplayLedger
-from angerona.core.fleet_control_plane import FleetControlPlane, FleetDevice
+from angerona.core.fleet_control_plane import (
+    MAX_INGEST_BATCH,
+    FleetControlPlane,
+    FleetDevice,
+)
 
 MAX_BODY = 256 * 1024
 MAX_SKEW_SECONDS = 60
 MAX_AUTH_PATH = 8192
 _NONCE = re.compile(r"^[A-Za-z0-9_-]{22,128}$")
 OPENAPI_VERSION = "3.1.0"
-API_CONTRACT_VERSION = "1.0.0"
+API_CONTRACT_VERSION = "1.1.0"
 
 
 def openapi_contract() -> dict[str, Any]:
@@ -142,6 +146,28 @@ def openapi_contract() -> dict[str, Any]:
                     "responses": {"200": json_response, "401": json_response},
                 },
             },
+            "/v1/tenants/{tenant_id}/event-batches": {
+                "parameters": [tenant_parameter],
+                "post": {
+                    "operationId": "ingestFleetEventBatch",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/IngestBatch"
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": json_response,
+                        "400": json_response,
+                        "401": json_response,
+                        "413": json_response,
+                    },
+                },
+            },
         },
         "components": {
             "securitySchemes": {
@@ -204,11 +230,27 @@ def openapi_contract() -> dict[str, Any]:
                         },
                     },
                 },
+                "IngestBatch": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["events"],
+                    "properties": {
+                        "events": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": MAX_INGEST_BATCH,
+                            "items": {
+                                "$ref": "#/components/schemas/IngestEvent"
+                            },
+                        },
+                    },
+                },
             },
         },
         "x-angerona-boundaries": {
             "transport": "loopback-only",
             "maximumRequestBytes": MAX_BODY,
+            "maximumBatchEvents": MAX_INGEST_BATCH,
             "maximumClockSkewSeconds": MAX_SKEW_SECONDS,
             "arbitraryCommands": False,
             "productionMutualTls": False,
@@ -436,10 +478,23 @@ class FleetLoopbackService:
                     elif resource == "events":
                         result = {
                             "ok": True,
-                            "receipt": asdict(owner.plane.ingest(
-                                tenant, value["device_id"], value["event_id"],
-                                value["body"], observed_at=value.get("observed_at"),
-                            )),
+                            "receipt": asdict(
+                                owner.plane.ingest_batch(tenant, (value,))[0]
+                            ),
+                        }
+                    elif resource == "event-batches":
+                        if not isinstance(value, dict) or set(value) != {"events"}:
+                            raise ValueError(
+                                "batch envelope must contain only events"
+                            )
+                        result = {
+                            "ok": True,
+                            "receipts": [
+                                asdict(receipt)
+                                for receipt in owner.plane.ingest_batch(
+                                    tenant, value["events"]
+                                )
+                            ],
                         }
                     else:
                         raise KeyError("route not found")
