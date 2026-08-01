@@ -1190,4 +1190,26 @@ email scanning, channel push, research) — each has a one-click test button.
   Transport Layer Security (mTLS), remote rate limits, and high availability
   remain separate gates.
 
-<!-- ANGERONA_DOC_STATUS tests=580 skips=2 modules=65 -->
+## LATEST (2026-08-01 - compressed delivery and overload control)
+
+- **Bounded compression.** Fleet Preview accepts either identity or gzip request
+  bodies. The authenticated signature covers the exact wire bytes; decompression
+  is capped at 5 MiB and rejects malformed streams, trailing data, concatenated
+  members, and expansion beyond budget before JSON parsing. Per-event and
+  normalized batch limits still apply after decompression.
+- **Explicit transport negotiation.** OpenAPI contract version 1.2.0 and the
+  authenticated ingestion-capabilities route publish supported encodings, wire,
+  decoded, normalized, and item limits, a compression threshold, and default
+  rate budgets. Clients never need to guess or probe by sending oversized data.
+- **Per-tenant and per-device admission control.** Bounded token buckets count
+  event attempts only after tenant authorization and active-device validation.
+  Overload rolls back before evidence, liveness, or durable ingestion counters
+  change and returns HTTP 429 with a bounded Retry-After instruction. Bucket
+  identity and health metrics remain memory-bounded and low-cardinality.
+- **Final Cycle 13 verification.** The authoritative serial Windows suite passes **586 tests with 2 intentional platform skips** and 0 failures. Ruff, Python
+  bytecode compilation, whitespace validation, focused Bandit medium/high checks,
+  gzip-bomb/ambiguity tests, atomic rate-limit tests, and HTTP retry-contract
+  tests pass. Production remote quotas, adaptive backpressure, mutual Transport
+  Layer Security (mTLS), and high availability remain separate gates.
+
+<!-- ANGERONA_DOC_STATUS tests=586 skips=2 modules=65 -->

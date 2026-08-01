@@ -597,8 +597,9 @@ Acceptance gate:
   - Reject unknown schemas safely.
   Implemented locally: loopback-only HMAC freshness/replay authentication,
   device-bound idempotency, strict bounded plain-JSON validation, and protected
-  tenant keys. Production mTLS, remote rate limiting, decompression negotiation,
-  and a multi-schema registry remain open.
+  tenant keys; bounded single-member gzip; and per-tenant/per-device token-bucket
+  admission after active-device validation. Production mTLS, distributed remote
+  quotas, adaptive backpressure, and a multi-schema registry remain open.
 
 [PARTIAL/P1] ENT-ING-003  Add durable endpoint buffering.
   - Bounded encrypted queue on D:/configured data root.
@@ -627,8 +628,9 @@ Acceptance gate:
   - CPU/network budgets.
   Implemented locally: atomic 1-256 event batches, 256 KiB per-event and 4 MiB
   aggregate normalized-payload budgets, one transaction per batch, signed
-  per-event receipts, and OpenAPI-advertised item limits. Compression, adaptive
-  endpoint flow control, and remote CPU/network quota negotiation remain open.
+  per-event receipts, bounded 5 MiB single-member gzip decoding, an authenticated
+  capability-negotiation route, and OpenAPI-advertised limits. Adaptive endpoint
+  flow control and distributed remote CPU/network quota negotiation remain open.
 
 [TODO/P2] ENT-ING-007  Add a durable server queue.
   - Separate intake from indexing/analytics.
@@ -2951,9 +2953,48 @@ CYCLE 11 IMPLEMENTATION RECORD - 2026-08-01
     Bandit medium/high checks pass.
 
 [PARTIAL/P2] ENT-ING-COMPRESS-011  Compression and adaptive flow control.
-  - Bounded batches and explicit contract limits are shipped locally.
-  - Bounded decompression, per-device/tenant remote quotas, backoff negotiation,
-    storm/full-disk drills, and production transport remain open work.
+  - Bounded batches, single-member gzip, and explicit negotiation are local.
+  - Adaptive endpoint backpressure, distributed quotas, storm/full-disk drills,
+    and production transport remain open work.
+
+
+CYCLES 12-13 IMPLEMENTATION RECORD - 2026-08-01
+------------------------------------------------
+
+[DONE/P1] ENT-ING-COMPRESS-012  Bounded authenticated compression.
+  - HMAC authentication covers exact wire bytes before decoding.
+  - Identity and gzip are the only encodings; gzip must be exactly one complete
+    member with no trailing or concatenated data.
+  - Wire and decoded bodies are capped at 5 MiB. Expansion beyond the decoded
+    budget fails before JSON parsing; normalized event/batch budgets still apply.
+
+[DONE/P1] ENT-API-NEGOTIATE-012  Explicit ingestion capability negotiation.
+  - OpenAPI 3.1 contract version 1.2.0 and an authenticated capability route
+    publish encoding, wire, decoded, normalized, item, threshold, and default
+    admission budgets without any local identity.
+
+[DONE/P1] ENT-ING-RATE-013  Bounded local admission control.
+  - Token buckets enforce per-tenant and per-active-device event rates inside
+    the authoritative transaction and before evidence writes.
+  - Missing or inactive devices cannot allocate rate identities. Bucket count is
+    hard-bounded; overload cannot silently evict active identity state.
+  - A denied request rolls back before stored evidence, device liveness, or
+    durable ingestion counters change and returns HTTP 429 plus Retry-After.
+  - Process-local admitted/rejected counts are separated from durable storage
+    counts so restarts and failed evidence checks remain honest.
+
+[DONE/P0] ENT-QA-C13-013  Compression and overload adversarial regression.
+  - Tests cover valid compressed delivery, unsupported encoding, gzip expansion,
+    trailing data, capability fidelity, tenant/device bucket isolation, refill,
+    atomic denial, low-cardinality health, and HTTP retry semantics.
+  - Full serial repository suite: 586 passed, 2 intentional platform skips,
+    0 failures. Ruff, Python compilation, whitespace validation, and focused
+    Bandit medium/high checks pass.
+
+[PARTIAL/P2] ENT-ING-FLOW-013  Distributed adaptive flow control.
+  - Deterministic local limits and retry evidence are shipped.
+  - Dynamic endpoint backoff, durable distributed quotas, production overload
+    coordination, and independent storm/full-disk lab evidence remain open.
 
 
 REMAINING EXTERNAL / DEPLOYMENT GATES

@@ -725,6 +725,38 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   Production mTLS, remote quotas/rate limits, compression negotiation, high
   availability, and physical-host fault/soak evidence remain separate gates.
 
+## CYCLES 12-13 - COMPRESSED DELIVERY AND ADMISSION CONTROL
+
+- Fleet request authentication always covers the exact wire body. Only after a
+  fresh complete-target HMAC and one-time nonce pass may `fleet_service.py`
+  decode the body. Identity and gzip are the only supported encodings.
+- Gzip decoding uses a bounded single-member stream. Reject malformed streams,
+  incomplete streams, concatenated members, trailing bytes, and output beyond
+  5 MiB before JSON parsing. The 256 KiB per-event and 4 MiB aggregate normalized
+  batch limits remain independent checks after decoding. Never replace this with
+  an unbounded `gzip.decompress()` call on request data.
+- OpenAPI contract version 1.2.0 and authenticated
+  `/v1/ingestion-capabilities` are the deterministic transport-negotiation
+  sources. They publish supported encodings, fixed wire/decoded/normalized/item
+  budgets, compression threshold, and default admission budgets without tenant,
+  endpoint, payload, path, user, host, or key identity.
+- `FleetIngestionRateLimiter` enforces bounded token buckets per authorized
+  tenant and active endpoint. It runs inside the fleet transaction after all
+  named devices are proven active and before event lookup/insertion. A denied
+  batch rolls the transaction back and raises `FleetRateLimitError` with a
+  bounded retry delay; the HTTP service maps that to 429 and Retry-After.
+- Admission attempts count even if later evidence conflict checks fail. This is
+  intentional abuse resistance. Durable stored/duplicate/clock/batch counters
+  and device liveness still remain unchanged on rollback. Admission health is
+  explicitly process-local and resets at restart.
+- Rate state has a hard bucket bound and never creates identities for missing or
+  inactive devices. Do not move admission after persistence or silently evict
+  an active bucket to admit attacker-controlled identities.
+- Final Cycle 13 evidence: 586 passed / 2 intentional platform skips / 0 failed;
+  full Ruff and Python compilation clean; focused Bandit medium/high clean.
+  Production distributed quotas, adaptive endpoint backpressure, mTLS, high
+  availability, and physical-host storm/full-disk drills remain separate gates.
+
 ## NEVER DO
 - **Cycle 7 enterprise foundations (newest, 2026-07-29)** — The authoritative
   flight recorder and normalized evidence path use bounded asynchronous workers,
