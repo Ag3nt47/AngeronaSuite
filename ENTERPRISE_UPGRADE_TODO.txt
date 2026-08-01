@@ -173,31 +173,42 @@ MASTER BUILD ORDER
 ------------------
 
 PHASE 0 - TRUSTWORTHY PUBLIC RELEASE (P0)
-  [TODO] Public-repository privacy/secrets sweep.
-  [TODO] Reproducible packaged release and publisher identity.
-  [TODO] Signed installer/uninstaller/update foundation.
-  [TODO] Release SBOM, provenance, checksums, and verification instructions.
-  [TODO] Stable standalone reliability/performance/soak gates.
+  [DONE] Public-repository privacy/secrets sweep and automated regression gate.
+  [PARTIAL] Reproducible packaged release; publisher identity remains external.
+  [PARTIAL] Verified installer/uninstaller/update foundation; Authenticode open.
+  [PARTIAL] SBOM, provenance, checksums, and local verification are implemented;
+            externally protected release signing remains open.
+  [PARTIAL] Reliability/performance budgets and deterministic failure tests are
+            implemented; 8-hour, 24-hour, and 7-day physical-host soaks remain.
 
 PHASE 1 - FLEET PREVIEW FOUNDATION (P1)
-  [TODO] Device identity, enrollment, rotation, and revocation.
-  [TODO] Authenticated ingestion and durable offline queue.
-  [TODO] Minimal control plane with tenant, fleet, group, and host inventory.
-  [TODO] RBAC, SSO/OIDC, admin audit, and emergency access.
-  [TODO] Signed configuration/rule/content bundles with canary rollout.
+  [PARTIAL] Device identity, enrollment, rotation, and revocation are local;
+            hardware custody and production certificate transport remain open.
+  [PARTIAL] Authenticated ingestion and durable queues are local-preview only.
+  [PARTIAL] Tenant/group/host inventory and jobs exist as a local preview.
+  [PARTIAL] Scoped RBAC and signed decisions exist; SSO/OIDC, immutable external
+            admin audit, and emergency access operations remain open.
+  [PARTIAL] Signed configuration/rule/content bundles support dry-run, canary,
+            approval, last-known-good, and rollback; fleet distribution is open.
 
 PHASE 2 - ENTERPRISE OPERATIONS (P2)
-  [TODO] Search, hunts, cases, evidence retention, and export.
-  [TODO] Remote signed upgrades with rollback and compatibility gates.
-  [TODO] High availability, backup/restore, disaster recovery, and SLOs.
-  [TODO] Standard APIs, webhooks, SIEM/SOAR/ITSM, STIX/TAXII.
-  [TODO] Enterprise deployment packages and air-gapped operation.
+  [PARTIAL] Local search, typed hunts, cases, evidence, retention, and exports.
+  [PARTIAL] Signed staged upgrades, rollback and compatibility foundations;
+            remote production orchestration remains open.
+  [PARTIAL] Encrypted backup/restore, recovery objectives, drills, and SLO models;
+            high availability and independent-site exercises remain open.
+  [PARTIAL] Local APIs, privacy-reviewed interoperability queues, OCSF/STIX/OTLP;
+            production SIEM/SOAR/ITSM connectors and supported SDKs remain open.
+  [PARTIAL] Offline bundles and Windows packaging foundations; signed enterprise
+            deployment, proxy, VDI/golden-image, and fleet operations remain open.
 
 PHASE 3 - ADVANCED DEFENSE (P3)
-  [TODO] Detection-as-code and fleet replay validation.
-  [TODO] Stronger process/network isolation using supported Windows primitives.
-  [TODO] Cross-host causal graph, identity-aware detections, exposure context.
-  [TODO] Windows/Linux/macOS sensor roadmap with honest per-platform coverage.
+  [PARTIAL] Detection-as-code, fixtures, replay primitives, and coverage contracts.
+  [PARTIAL] Typed process/network containment plans; privileged production broker open.
+  [PARTIAL] Local causal graph, identity analytics, NDR, and exposure context;
+            cross-host correlation remains open.
+  [PARTIAL] Windows Protect, Linux headless, and macOS Observe contracts;
+            signed native macOS enforcement remains open.
 
 PHASE 4 - VISIONARY RESEARCH (P4)
   [RESEARCH] Privacy-preserving federated detection learning.
@@ -2794,11 +2805,79 @@ Use this template for anything not already captured:
   Status:
 
 
+CYCLE 9 IMPLEMENTATION RECORD - 2026-08-01
+------------------------------------------
+
+[DONE/P0] ENT-SEC-BOUNDARY-009  Central network and parser boundary.
+  - One URL policy governs public HTTPS and loopback services, including
+    destination class, redirects, credentials, timeouts, and byte budgets.
+  - Product callers no longer bypass the boundary with direct requests.
+  - Hardened XML parsing and bounded archive/JSON/YAML contracts remain enforced.
+
+[DONE/P0] ENT-AI-TRANSPORT-009  Guarded local inference transport.
+  - Every Ollama generation uses the loopback-only bounded client.
+  - Streaming output is redacted before display; prompts/responses are not kept
+    in performance diagnostics.
+  - World View reads the last real inference metrics and no longer creates a
+    synthetic generation every eight seconds.
+
+[DONE/P0] ENT-PERF-BOUND-009  Long-runtime backpressure tranche.
+  - Posture, voice, legacy sensor, defense, presentation, and diagnostic text
+    histories use bounded newest-retained behavior.
+  - Hidden Threat Intel polling sleeps; asynchronous dialogs reject late work.
+
+[DONE/P0] ENT-OPS-HEALTH-009  Observable startup degradation.
+  - Optional service failures publish privacy-minimized signed Startup Health.
+  - Protection module loader death is Critical and cannot disappear silently.
+
+[DONE/P1] ENT-ID-RUNTIME-009  Fleet Preview endpoint identity activation.
+  - Enabling Fleet Preview creates/loads protected Ed25519 endpoint identity.
+  - Local registration uses public identity plus tenant-keyed hostname token;
+    raw hostname and private key never enter the fleet database or UI evidence.
+  - Revocation/quarantine state carries into the tenant-scoped device record.
+
+[DONE/P1] ENT-READINESS-009  Versioned public-safe enterprise evidence.
+  - Readiness v2 scores tested local controls and reports disabled/configured/
+    running Fleet Preview state without local identifiers.
+  - Production mTLS, OIDC/SSO, HA/disaster-recovery proof, and publisher signing
+    are separate external gates and are not hidden inside the local score.
+  - Deterministic copied evidence is bounded, content-addressed, and excludes
+    host/user names, paths, credentials, endpoint IDs, keys, and event payloads.
+
+[DONE/P0] ENT-QA-CYCLE9-009  Five-loop regression evidence.
+  - Full serial suite: 556 passed, 2 intentional platform skips, 0 failures.
+  - Python compilation and Ruff correctness checks pass.
+  - Release evidence records fixed bytecode, dependency-audit,
+    documentation-drift, lint, and unit-test gates.
+
+REMAINING EXTERNAL / DEPLOYMENT GATES
+-------------------------------------
+
+[BLOCKED/P0] ENT-UPD-SIGNER-EXT  Authenticode publisher certificate and
+  independently protected release-signing custody.
+[BLOCKED/P0] ENT-GITHUB-RULES-EXT  Repository branch/ruleset enforcement; requires
+  repository-owner configuration outside this source tree.
+[BLOCKED/P1] ENT-FLEET-MTLS-EXT  Production mTLS termination, certificate
+  authority, rotation, revocation service, and preferably hardware-backed keys.
+[BLOCKED/P1] ENT-IDENTITY-OIDC-EXT  Organization OIDC/SSO, directory lifecycle,
+  emergency access operations, and independent administrator audit retention.
+[BLOCKED/P2] ENT-HA-DR-EXT  Multi-node HA plus independent-site recovery and key
+  loss exercises against declared RPO/RTO.
+[BLOCKED/P0] ENT-QA-LABS-EXT  8-hour/24-hour/7-day physical-host soaks, external
+  penetration test, compatibility lab, and platform-vendor qualification.
+
+These items cannot be truthfully completed by adding more local source code or
+unit tests. They require external infrastructure, credentials, owners, time, or
+independent evidence. Angerona must continue to expose them as gates rather than
+claiming General Availability or certification.
+
+
 END OF MASTER TODO
 ------------------
 
-The next best move is not the flashiest feature. It is Gate A: make the public,
-standalone Angerona release verifiable, privacy-clean, signed, reproducible,
-stable under long soaks, and honest about its current limits. Fleet identity,
-signed policy, typed jobs, tenant isolation, and durable ingestion then create
-the foundation on which the more legendary capabilities can safely stand.
+The local foundations are now broad and evidence-backed. The next best move is
+not another unbounded local feature: it is closing the named external gates -
+publisher identity, enforced repository policy, production mTLS/OIDC, HA/DR,
+long-duration soak evidence, compatibility labs, and independent assessment.
+Until those exist, the Fleet Preview and advanced local foundation labels remain
+the honest product boundary.

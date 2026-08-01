@@ -1082,4 +1082,47 @@ email scanning, channel push, research) — each has a one-click test button.
   the full run. Scanner loop and scanner-to-core lifecycle/respawn self-tests:
   **PASS**. Python compilation, Ruff, and whitespace validation: **PASS**.
 
-<!-- ANGERONA_DOC_STATUS tests=522 skips=2 modules=65 -->
+## LATEST (2026-08-01 - five-loop security and enterprise evidence pass)
+
+- **Tighter network and parser boundaries.** Product web requests now share a
+  central policy for scheme, destination class, credentials, redirects,
+  timeouts, and request/response size. Public retrieval rejects private,
+  loopback, link-local, and metadata-service destinations. Local service calls
+  remain loopback-only. Extensible Markup Language (XML) inputs use hardened
+  parsing plus explicit document budgets.
+- **Guarded local model transport.** Every Ollama generation path now passes
+  through one bounded loopback client. Streaming output is redacted before it
+  reaches the interface, errors expose only safe categories, and diagnostics
+  retain aggregate timing instead of prompts or responses. World View no longer
+  runs a synthetic generation every eight seconds, which removes a recurring
+  source of processor load and model wakeups.
+- **Bounded long-runtime work.** Posture, voice, legacy sensor, defense, and
+  presentation queues retain fixed newest-first windows and never block a
+  producer on overflow. Diagnostic text views are capped, hidden Threat Intel
+  polling sleeps until shown, and asynchronous dialogs reject late completion
+  without deleting a live worker.
+- **Observable startup degradation.** Optional-service failures create signed
+  Startup Health evidence, and a protection-module loader failure is Critical
+  instead of disappearing in a background thread. Diagnostics record impact and
+  exception type without copying local paths or secrets.
+- **Runtime endpoint identity for Fleet Preview.** Enabling the authenticated
+  loopback preview now creates or loads a protected per-endpoint Ed25519
+  identity, registers its public identity under the configured tenant, and
+  stores the hostname only as a tenant-keyed token. Revoked or quarantined state
+  carries into the local fleet record.
+- **Evidence-based enterprise status.** Enterprise Readiness version 2 credits
+  the tested local identity, Role-Based Access Control (RBAC), signed policy,
+  backup/restore, release, audit, privacy, integrity, and bounded-storage
+  foundations. Mutual Transport Layer Security (mTLS), Single Sign-On (SSO) /
+  OpenID Connect (OIDC), high availability, independent disaster-recovery
+  proof, and publisher signing remain visibly separate production gates.
+  Settings can copy a deterministic public-safe evidence pack containing no
+  hostname, username, path, credential, event payload, or endpoint identifier.
+- **Final Cycle 9 verification.** The authoritative serial repository suite
+  passes **556 tests with 2 intentional platform skips** and 0 failures. Python
+  compilation and Ruff pass. The release gate separately records dependency
+  audit, documentation drift, tests, lint, and bytecode evidence. Angerona
+  remains a local user-mode security platform, not a claim of enterprise
+  certification, kernel tamper-proofing, or a production multi-tenant service.
+
+<!-- ANGERONA_DOC_STATUS tests=556 skips=2 modules=65 -->

@@ -589,9 +589,57 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
   selection covers forged identity/policy/update/receipt/AAR, tenant isolation,
   replay/expiry, path traversal/symlink/reparse, untrusted plugins, and prompt
   injection/tool abuse.
-- Current evidence: 522 passed /
-  2 intentional platform skips; compile and Ruff clean; no known
-  installed-package vulnerability reported.
+- Current Cycle 8 evidence: 522 passed / 2 intentional platform skips; compile
+  and Ruff clean; no known installed-package vulnerability reported.
+
+## CYCLE 9 - FIVE-LOOP SECURITY, PERFORMANCE, AND ENTERPRISE EVIDENCE
+
+- `core/url_policy.py` is the single outbound transport boundary. Public HTTPS
+  retrieval rejects credentials, private/loopback/link-local/metadata targets,
+  unsafe redirects, oversize requests/responses, and unapproved hosts. Local
+  service JSON is loopback-only and bounded. Do not restore direct product
+  `requests.get/post` or `urllib.request.urlopen` callers.
+- XML consumers use `defusedxml` plus explicit byte limits. Archive, JSON, YAML,
+  process-baseline, and fleet inputs remain exact-schema, bounded, and
+  reparse-aware. Malformed external input must fail closed without leaking a
+  local path or raw payload into diagnostics.
+- `engines/ollama_client.py` is the guarded local model choke point. All
+  generation callers use it. It enforces loopback, endpoint allowlisting,
+  bounded request/NDJSON response, safe errors, and full-output redaction before
+  emitting stream chunks. Diagnostics expose only aggregate timing; never cache
+  prompts or model responses for World View.
+- World View must not create synthetic generations to measure Ollama. It reads
+  `diagnostics_snapshot()` from the latest real inference. The AI proxy keeps
+  upstream work off its event loop, and cloud code synthesis stays disabled
+  unless `ANGERONA_CLOUD_CODE_SYNTHESIS=1` is explicitly set.
+- Long-runtime queues and text histories are fixed-size newest-retained buffers.
+  Voice and legacy publishers use non-blocking drop-oldest behavior. Hidden
+  Threat Intel polling stops until show. Do not add unbounded histories or
+  blocking persistence/model/network work to the Qt thread or EventBus path.
+- Startup optional-service failures publish signed, privacy-minimized Startup
+  Health events. Protection module loader failure is Critical. Store impact and
+  exception type, not raw exceptions, paths, credentials, or source content.
+- Fleet Preview now initializes `EndpointIdentity` under the configured data
+  root, registers its Ed25519 public identity with the tenant-scoped local plane,
+  and stores only an HMAC-derived hostname token. The service remains disabled
+  by default and loopback-only; no public/LAN listener or generic remote shell.
+- Enterprise Readiness assessment v2 separates local engineering maturity from
+  production deployment gates. It credits shipped and tested identity, scoped
+  Role-Based Access Control (RBAC), signed policy/canary, backup/restore, release,
+  audit, privacy, integrity, and storage controls. It must continue to list
+  mutual Transport Layer Security (mTLS), Single Sign-On (SSO) / OpenID Connect
+  (OIDC), high availability/disaster-recovery proof, and publisher signing as
+  external requirements.
+- `evidence_pack()` is deterministic, content-addressed, bounded to 128 KiB, and
+  public-safe. It contains low-cardinality runtime state only: never add
+  hostnames, usernames, paths, credentials, event payloads, private/public keys,
+  endpoint identifiers, prompts, or model responses.
+- Final Cycle 9 evidence: 556 passed / 2 intentional platform skips / 0 failed;
+  Python compilation and Ruff clean. The release evidence pack records the
+  fixed bytecode, dependency-audit, documentation-drift, lint, and serial-test
+  gates. Publisher signing, repository rulesets, external penetration testing,
+  long physical-host soaks, independent disaster-recovery exercises, and
+  production mTLS/OIDC/HA remain external gates.
 
 ## NEVER DO
 - **Cycle 7 enterprise foundations (newest, 2026-07-29)** — The authoritative
