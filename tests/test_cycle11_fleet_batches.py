@@ -131,7 +131,7 @@ def test_authenticated_batch_route_and_contract(tmp_path):
         contract = openapi_contract()
         operation = contract["paths"][path.replace("tenant-a", "{tenant_id}")]
         assert operation["post"]["operationId"] == "ingestFleetEventBatch"
-        assert contract["info"]["version"] == "1.1.0"
+        assert contract["info"]["version"] == "1.2.0"
         assert contract["x-angerona-boundaries"]["maximumBatchEvents"] == 256
     finally:
         assert service.stop()

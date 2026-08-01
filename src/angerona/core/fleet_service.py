@@ -8,6 +8,7 @@ import re
 import secrets
 import threading
 import time
+import zlib
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -17,16 +18,63 @@ from urllib.parse import parse_qs, urlsplit
 from angerona.core.endpoint_identity import ReplayLedger
 from angerona.core.fleet_control_plane import (
     MAX_INGEST_BATCH,
+    MAX_INGEST_BATCH_BYTES,
     FleetControlPlane,
     FleetDevice,
 )
 
-MAX_BODY = 256 * 1024
+MAX_BODY = 5 * 1024 * 1024
+MAX_DECODED_BODY = 5 * 1024 * 1024
+PREFERRED_COMPRESSION_THRESHOLD = 32 * 1024
 MAX_SKEW_SECONDS = 60
 MAX_AUTH_PATH = 8192
 _NONCE = re.compile(r"^[A-Za-z0-9_-]{22,128}$")
 OPENAPI_VERSION = "3.1.0"
-API_CONTRACT_VERSION = "1.1.0"
+API_CONTRACT_VERSION = "1.2.0"
+
+
+class BodyTooLarge(ValueError):
+    """The wire or decoded representation exceeded a fixed service budget."""
+
+
+def ingestion_capabilities() -> dict[str, Any]:
+    """Return bounded transport limits suitable for endpoint negotiation."""
+    return {
+        "schema": "angerona.fleet-ingestion-capabilities/v1",
+        "encodings": ["identity", "gzip"],
+        "preferred_encoding": "gzip",
+        "preferred_compression_threshold_bytes": PREFERRED_COMPRESSION_THRESHOLD,
+        "maximum_wire_bytes": MAX_BODY,
+        "maximum_decoded_bytes": MAX_DECODED_BODY,
+        "maximum_normalized_batch_bytes": MAX_INGEST_BATCH_BYTES,
+        "maximum_batch_events": MAX_INGEST_BATCH,
+        "retry_after_ms": 0,
+    }
+
+
+def _decode_request_body(body: bytes, content_encoding: str) -> bytes:
+    encoding = content_encoding.strip().casefold() or "identity"
+    if encoding == "identity":
+        if len(body) > MAX_DECODED_BODY:
+            raise BodyTooLarge("decoded request exceeds byte budget")
+        return body
+    if encoding != "gzip":
+        raise ValueError("content encoding must be identity or gzip")
+    try:
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        decoded = decoder.decompress(body, MAX_DECODED_BODY + 1)
+        if len(decoded) > MAX_DECODED_BODY or decoder.unconsumed_tail:
+            raise BodyTooLarge("decoded request exceeds byte budget")
+        decoded += decoder.flush(MAX_DECODED_BODY + 1 - len(decoded))
+    except BodyTooLarge:
+        raise
+    except zlib.error as exc:
+        raise ValueError("gzip request body is invalid") from exc
+    if len(decoded) > MAX_DECODED_BODY:
+        raise BodyTooLarge("decoded request exceeds byte budget")
+    if not decoder.eof or decoder.unused_data:
+        raise ValueError("gzip request body must contain exactly one complete member")
+    return decoded
 
 
 def openapi_contract() -> dict[str, Any]:
@@ -78,6 +126,12 @@ def openapi_contract() -> dict[str, Any]:
             "/v1/openapi": {
                 "get": {
                     "operationId": "fleetOpenApiContract",
+                    "responses": {"200": json_response, "401": json_response},
+                }
+            },
+            "/v1/ingestion-capabilities": {
+                "get": {
+                    "operationId": "fleetIngestionCapabilities",
                     "responses": {"200": json_response, "401": json_response},
                 }
             },
@@ -250,7 +304,13 @@ def openapi_contract() -> dict[str, Any]:
         "x-angerona-boundaries": {
             "transport": "loopback-only",
             "maximumRequestBytes": MAX_BODY,
+            "maximumDecodedRequestBytes": MAX_DECODED_BODY,
+            "maximumNormalizedBatchBytes": MAX_INGEST_BATCH_BYTES,
             "maximumBatchEvents": MAX_INGEST_BATCH,
+            "requestEncodings": ["identity", "gzip"],
+            "preferredCompressionThresholdBytes": (
+                PREFERRED_COMPRESSION_THRESHOLD
+            ),
             "maximumClockSkewSeconds": MAX_SKEW_SECONDS,
             "arbitraryCommands": False,
             "productionMutualTls": False,
@@ -423,6 +483,9 @@ class FleetLoopbackService:
                 if parsed.path == "/v1/openapi":
                     self._json(200, openapi_contract())
                     return
+                if parsed.path == "/v1/ingestion-capabilities":
+                    self._json(200, ingestion_capabilities())
+                    return
                 parts = parsed.path.strip("/").split("/")
                 if parts[:2] != ["v1", "tenants"] or len(parts) not in {3, 4}:
                     self._json(404, {"ok": False, "error": "route not found"})
@@ -459,6 +522,16 @@ class FleetLoopbackService:
                     return
                 if not self._authorize(body):
                     return
+                try:
+                    decoded_body = _decode_request_body(
+                        body, self.headers.get("Content-Encoding", "identity")
+                    )
+                except BodyTooLarge as exc:
+                    self._json(413, {"ok": False, "error": str(exc)})
+                    return
+                except ValueError as exc:
+                    self._json(415, {"ok": False, "error": str(exc)})
+                    return
                 media_type = self.headers.get("Content-Type", "").split(";", 1)[0]
                 if media_type.strip().casefold() != "application/json":
                     self._json(415, {
@@ -467,7 +540,7 @@ class FleetLoopbackService:
                     return
                 parts = urlsplit(self.path).path.strip("/").split("/")
                 try:
-                    value = json.loads(body)
+                    value = json.loads(decoded_body)
                     if parts[:2] != ["v1", "tenants"] or len(parts) != 4:
                         raise KeyError("route not found")
                     tenant, resource = parts[2], parts[3]
