@@ -37,7 +37,7 @@ def test_cloud_disabled_by_default_blocks_provider_and_network(monkeypatch):
         ),
     )
     results = []
-    worker.finished.connect(results.append)
+    worker.result_ready.connect(results.append)
 
     # The egress boundary itself is authoritative, even for a direct caller.
     assert worker._escalate_cloud() is None
@@ -101,7 +101,7 @@ def test_enabled_cloud_receives_only_recursive_redacted_bounded_prompt(monkeypat
     worker = AnalysisWorker(alert, allow_cloud=True, cloud_query=provider)
     monkeypatch.setattr(worker, "_query_ollama", _low_confidence_local)
     results = []
-    worker.finished.connect(results.append)
+    worker.result_ready.connect(results.append)
     worker.run()
 
     assert len(captured) == 1

@@ -22,9 +22,11 @@ E2EE channel — the Settings tab shows the required security-posture warning.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
-import random
+import re
+import secrets
 import subprocess
 import time
 from typing import Optional
@@ -39,7 +41,8 @@ except Exception:   # pragma: no cover
 
 # Entropy must match what the Settings save used when DPAPI-wrapping the PIN.
 _PIN_ENTROPY = b"Angerona-MOBILE-PIN-v1"
-_PIN_ENV = "ANGERONA_MOBILE_PIN_DPAPI"     # base64(DPAPI blob) in .env
+_PIN_ENV = "ANGERONA_MOBILE_PIN_DPAPI"     # legacy base64(DPAPI blob) from OS store
+_PORTABLE_PIN_ENV = "ANGERONA_MOBILE_PIN"  # delivered by the protected OS store
 
 _TTL_SECONDS = 600.0        # token lifetime (10 min)
 _TTL_SWEEP_S = 10.0         # cleanup cadence
@@ -62,6 +65,22 @@ _HELP_TEXT = (
     "-----------------------------------------\n"
     "Note: Token-based commands expire in 10 minutes.\n"
 )
+
+
+def _signal_identity(value: object) -> str:
+    """Canonicalize the configured phone identity or fail closed.
+
+    The end-user setup contract accepts an international phone number. Signal's
+    JSON envelope may add spaces, dashes, or parentheses; no missing/ambiguous
+    sender identity is ever treated as the configured operator.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    compact = re.sub(r"[\s().-]+", "", text)
+    if not re.fullmatch(r"\+[1-9][0-9]{6,14}", compact):
+        return ""
+    return compact
 
 
 class MobileResponseBridge(BaseModule):
@@ -117,7 +136,15 @@ class MobileResponseBridge(BaseModule):
         }
 
     def _pin(self) -> Optional[str]:
-        """Unwrap the DPAPI-protected 4-digit PIN from the environment."""
+        """Read a four-digit PIN delivered by the protected OS credential store.
+
+        The legacy nested-DPAPI value remains readable for existing Windows
+        installations. Linux Secret Service and macOS Keychain use the canonical
+        value so the mobile gate has the same semantics on every platform.
+        """
+        portable = os.environ.get(_PORTABLE_PIN_ENV, "").strip()
+        if re.fullmatch(r"[0-9]{4}", portable):
+            return portable
         blob_b64 = os.environ.get(_PIN_ENV, "")
         if not blob_b64:
             return None
@@ -125,7 +152,8 @@ class MobileResponseBridge(BaseModule):
             import base64
             from angerona.modules.hardware_crypto import unprotect
             raw = unprotect(base64.b64decode(blob_b64), _PIN_ENTROPY)
-            return raw.decode("utf-8").strip() if raw else None
+            value = raw.decode("utf-8").strip() if raw else ""
+            return value if re.fullmatch(r"[0-9]{4}", value) else None
         except Exception:
             return None
 
@@ -230,10 +258,10 @@ class MobileResponseBridge(BaseModule):
 
     def _new_token(self) -> str:
         for _ in range(50):
-            t = f"{random.randint(1000, 9999)}"
+            t = str(secrets.randbelow(9000) + 1000)
             if t not in self.pending_alerts:
                 return t
-        return f"{random.randint(1000, 9999)}"
+        return str(secrets.randbelow(9000) + 1000)
 
     # ── TTL sweep ───────────────────────────────────────────────────────────────
     def _sweep_tokens(self) -> None:
@@ -261,9 +289,16 @@ class MobileResponseBridge(BaseModule):
     # ── Command parser ─────────────────────────────────────────────────────────
     def _handle(self, sender: str, body: str) -> None:
         cfg = self._cfg()
-        # Only accept commands from the configured operator number.
-        if cfg["dest"] and sender and sender.replace(" ", "") != cfg["dest"].replace(" ", ""):
-            return self._spoof(body, f"unknown sender {sender}")
+        # Only accept commands from an explicit, unambiguous configured operator
+        # identity. Missing sender metadata must never inherit operator authority.
+        expected_sender = _signal_identity(cfg["dest"])
+        actual_sender = _signal_identity(sender)
+        if (
+            not expected_sender
+            or not actual_sender
+            or not hmac.compare_digest(actual_sender, expected_sender)
+        ):
+            return self._spoof(body, "missing or unauthorized sender identity")
 
         parts = body.strip().split()
         if not parts:
@@ -308,7 +343,7 @@ class MobileResponseBridge(BaseModule):
 
     def _pin_ok(self, given: str) -> bool:
         pin = self._pin()
-        return bool(pin) and given.strip() == pin
+        return bool(pin) and hmac.compare_digest(given.strip(), pin)
 
     def _token_ok(self, token: str) -> bool:
         return token in self.pending_alerts

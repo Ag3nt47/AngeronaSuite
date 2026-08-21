@@ -9,8 +9,10 @@ the same logical map as one current-user Keychain item.
 
 Windows uses a current-user DPAPI blob with a private ACL. macOS uses one
 generic-password item in the current user's Keychain through Security.framework.
+Linux uses the current desktop session's Secret Service through libsecret's
+``secret-tool`` without ever putting the secret on a command line.
 Legacy ``.env`` files are migrated only after a protected write/read verification
-succeeds; the plaintext source is then removed. Other platforms fail closed
+succeeds; the plaintext source is then removed. Unsupported platforms fail closed
 instead of silently creating another plaintext credential file.
 """
 from __future__ import annotations
@@ -28,6 +30,9 @@ _FILENAME = "secrets.dpapi"
 _MACOS_REFERENCE_FILENAME = "secrets.keychain-reference"
 _MACOS_KEYCHAIN_SERVICE = "org.angerona.security-suite"
 _MACOS_KEYCHAIN_ACCOUNT = "runtime-secrets-v1"
+_LINUX_REFERENCE_FILENAME = "secrets.secret-service-reference"
+_LINUX_SECRET_SERVICE = "org.angerona.security-suite"
+_LINUX_SECRET_ACCOUNT = "runtime-secrets-v1"
 _INTERNAL_SECRET_PREFIX = "ANGERONA_INTERNAL_"
 
 
@@ -39,7 +44,12 @@ def secure_store_path(data_root: Path | None = None) -> Path:
     if data_root is None:
         from angerona.core.data_paths import data_dir
         data_root = data_dir()
-    filename = _MACOS_REFERENCE_FILENAME if sys.platform == "darwin" else _FILENAME
+    if sys.platform == "darwin":
+        filename = _MACOS_REFERENCE_FILENAME
+    elif sys.platform.startswith("linux"):
+        filename = _LINUX_REFERENCE_FILENAME
+    else:
+        filename = _FILENAME
     return Path(data_root) / filename
 
 
@@ -103,11 +113,34 @@ def _read_macos_secret_map(*, strict: bool = False) -> dict[str, str]:
         return {}
 
 
+def _read_linux_secret_map(*, strict: bool = False) -> dict[str, str]:
+    try:
+        from angerona.platforms.linux.secret_service import read_blob
+        raw = read_blob(_LINUX_SECRET_SERVICE, _LINUX_SECRET_ACCOUNT)
+        if raw is None:
+            return {}
+        value = json.loads(raw.decode("utf-8"))
+        if not isinstance(value, dict) or any(
+            not isinstance(key, str) or not isinstance(item, str)
+            for key, item in value.items()
+        ):
+            raise ValueError("Linux Secret Service map has an invalid shape")
+        return dict(value)
+    except (OSError, UnicodeError, ValueError, TypeError, RuntimeError) as exc:
+        if strict:
+            raise RuntimeError(
+                "Linux Secret Service secrets are unreadable; refusing to overwrite them"
+            ) from exc
+        return {}
+
+
 def read_secret_map(
     data_root: Path | None = None, *, strict: bool = False,
 ) -> dict[str, str]:
     if sys.platform == "darwin":
         return _read_macos_secret_map(strict=strict)
+    if sys.platform.startswith("linux"):
+        return _read_linux_secret_map(strict=strict)
     path = secure_store_path(data_root)
     if not path.exists():
         return {}
@@ -138,6 +171,8 @@ def write_secret_map(updates: Mapping[str, object], data_root: Path | None = Non
     values = (
         _read_macos_secret_map(strict=True)
         if sys.platform == "darwin"
+        else _read_linux_secret_map(strict=True)
+        if sys.platform.startswith("linux")
         else read_secret_map(data_root, strict=True)
     )
     removed: set[str] = set()
@@ -166,6 +201,21 @@ def write_secret_map(updates: Mapping[str, object], data_root: Path | None = Non
         for key in removed:
             os.environ.pop(key, None)
         # Kept as a stable API return value; no secret is written at this path.
+        return path
+    if sys.platform.startswith("linux"):
+        from angerona.platforms.linux.secret_service import write_blob
+        write_blob(_LINUX_SECRET_SERVICE, _LINUX_SECRET_ACCOUNT, payload)
+        if _read_linux_secret_map(strict=True) != values:
+            raise RuntimeError(
+                "Linux Secret Service verification failed; credentials were not accepted"
+            )
+        for key, value in values.items():
+            if _publishable_secret(key):
+                os.environ[key] = value
+            else:
+                os.environ.pop(key, None)
+        for key in removed:
+            os.environ.pop(key, None)
         return path
     blob = _protect_bytes(payload)
     if blob is None:

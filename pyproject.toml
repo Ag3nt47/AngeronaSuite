@@ -1,11 +1,11 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools==83.0.0", "wheel==0.47.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "angerona"
-version = "1.9.4"
-description = "Local-first endpoint security suite: Windows protection with a macOS Observe preview."
+version = "1.10.0"
+description = "Local-first endpoint security suite for Windows, macOS, and Linux."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -15,7 +15,7 @@ dependencies = [
     "psutil>=5.9",
     "requests>=2.31",
     "python-dotenv>=1.0",
-    "cryptography>=42.0",
+    "cryptography>=50.0.0",
     "PyYAML>=6.0.2",
     "defusedxml>=0.7.1",
 ]
@@ -30,6 +30,9 @@ windows = [
     "pywintrace>=0.2",
 ]
 macos = [
+    "yara-x>=1.15",
+]
+linux = [
     "yara-x>=1.15",
 ]
 voice = [

@@ -15,6 +15,7 @@ from angerona.modules.purple_guard import install_policies
 
 
 def test_clearing_protected_credential_deletes_store_and_live_value(tmp_path, monkeypatch):
+    monkeypatch.setattr(secure_store.sys, "platform", "win32")
     monkeypatch.setattr(secure_store, "_protect_bytes", lambda value: value)
     monkeypatch.setattr(secure_store, "_unprotect_bytes", lambda value: value)
     monkeypatch.setattr(secure_store, "_private_acl", lambda _path: None)
@@ -30,6 +31,7 @@ def test_clearing_protected_credential_deletes_store_and_live_value(tmp_path, mo
 def test_internal_protected_values_never_enter_process_environment(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setattr(secure_store.sys, "platform", "win32")
     key = "ANGERONA_INTERNAL_TEST_BUNDLE"
     monkeypatch.setattr(secure_store, "_protect_bytes", lambda value: value)
     monkeypatch.setattr(secure_store, "_unprotect_bytes", lambda value: value)
@@ -48,6 +50,7 @@ def test_internal_protected_values_never_enter_process_environment(
 def test_verified_protected_secret_overrides_inherited_environment(
     monkeypatch, tmp_path
 ) -> None:
+    monkeypatch.setattr(secure_store.sys, "platform", "win32")
     monkeypatch.setattr(secure_store, "_protect_bytes", lambda data: b"P" + data)
     monkeypatch.setattr(
         secure_store,
@@ -64,6 +67,7 @@ def test_verified_protected_secret_overrides_inherited_environment(
 
 
 def test_unreadable_secret_store_is_never_overwritten(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(secure_store.sys, "platform", "win32")
     path = secure_store.secure_store_path(tmp_path)
     path.write_bytes(b"existing-unreadable-ciphertext")
     monkeypatch.setattr(secure_store, "_unprotect_bytes", lambda _data: None)

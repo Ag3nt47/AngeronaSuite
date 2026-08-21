@@ -157,6 +157,35 @@ _BASE_GUIDES = (
         "_open_simulation", DestinationKind.WINDOW,
     ),
     CapabilityGuide(
+        "device-security-lab", "Device Security Lab", "Validation",
+        "Owner-authorized passive assessment for this computer and fresh signed "
+        "posture evidence from an explicitly enrolled companion device.",
+        ("Open Red Team Simulation > Device Security Lab.",
+         "Attest ownership or explicit authorization and choose the connection scope.",
+         "Inspect this computer, or export a short-lived companion challenge.",
+         "Import the companion's Ed25519-signed response and posture evidence.",
+         "Review redacted weaknesses, remediation, patch guidance, and limitations."),
+        "A forged, replayed, stale, target-swapped, or out-of-scope evidence file is refused.",
+        "Private device keys never leave companion devices. Evidence is bounded and "
+        "excludes usernames, addresses, commands, packets, and raw device identifiers.",
+        "_open_device_lab", DestinationKind.WINDOW,
+    ),
+    CapabilityGuide(
+        "scan-center", "Scan Center", "Exposure",
+        "Local malware-indicator, selected-folder, listening-port, network-posture, "
+        "and Microsoft Defender scan orchestration attached to Live Alerts.",
+        ("Open Live Alerts and press Scan Center.",
+         "Choose a local folder or drive for bounded Angerona scanning.",
+         "Optionally confirm a Microsoft Defender custom or quick scan on Windows.",
+         "Run passive listening-port or aggregate interface posture review.",
+         "Review or export the privacy-redacted result."),
+        "The result identifies the local operation, resource bounds, support state, "
+        "findings, errors, and whether Defender actually executed.",
+        "This-host only. It returns no IP, MAC, SSID, username, PID, or full path, "
+        "and performs no remote probing, packet capture, exploitation, or credential test.",
+        "_open_scan_center", DestinationKind.WINDOW,
+    ),
+    CapabilityGuide(
         "attack-map", "MITRE ATT&CK Coverage", "Visibility",
         "Maps observed activity and verified detection coverage to ATT&CK techniques.",
         ("Open ATT&CK Map.", "Review Coverage and blind spots.",
@@ -489,6 +518,24 @@ _METADATA: dict[str, _CapabilityMetadata] = {
         ("tests/test_drill_remediation_lifecycle.py", "tests/test_purple_remediation_e2e.py"),
         ("Inert simulations validate Angerona paths; they are not a substitute for an authorized penetration test.",),
         ("shark attack", "red team drill", "after action report"),
+    ),
+    "device-security-lab": _CapabilityMetadata(
+        CapabilityMaturity.CONFIGURABLE_PREVIEW,
+        ("tests/test_device_security_lab.py", "tests/test_device_scan_ui.py"),
+        ("The current cross-device transport is a signed file exchange. A separately "
+         "reviewed pinned-mTLS companion transport remains a deployment gate.",
+         "Passive local USB and Bluetooth detail depends on safe platform APIs and may "
+         "honestly report unsupported."),
+        ("device lab", "companion assessment", "usb security", "bluetooth security", "hdmi security"),
+    ),
+    "scan-center": _CapabilityMetadata(
+        CapabilityMaturity.OPERATIONAL,
+        ("tests/test_security_scan_center.py", "tests/test_device_scan_ui.py"),
+        ("Angerona complements rather than replaces Microsoft Defender's kernel, AMSI, "
+         "cloud, reputation, and platform protections.",
+         "Defender orchestration is Windows-only; quick/full scans may apply the "
+         "actions configured in Windows Security."),
+        ("scan center", "malware scan", "drive scan", "listening ports", "defender scan"),
     ),
     "attack-map": _CapabilityMetadata(
         CapabilityMaturity.OPERATIONAL,

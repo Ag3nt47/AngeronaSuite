@@ -15,6 +15,7 @@ import time
 from typing import List
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.eventbus import is_remote_observe_only
 from angerona.core.process_allowlist import (
     is_event_allowed as _process_event_allowed,
     policy_snapshot as _process_policy_snapshot,
@@ -100,6 +101,8 @@ class SOARModule(BaseModule):
                 if ev.module in (self.name, "Console"):
                     continue
                 self._last_ts = max(self._last_ts, ev.ts)
+                if is_remote_observe_only(ev):
+                    continue
                 if _process_event_allowed(ev, policy=process_policy):
                     continue
                 self._track_attack(ev)
@@ -108,7 +111,37 @@ class SOARModule(BaseModule):
             self._write_stats()
 
     # ── Playbooks ────────────────────────────────────────────────────────────
+    def _event_integrity_ok(self, ev) -> bool:
+        """Re-verify authenticated evidence at the response action sink.
+
+        ``Event`` is frozen, but its legacy ``details`` mapping is mutable. A
+        buggy in-process subscriber can therefore invalidate a previously
+        signed event after publication. Production buses are armed, so refuse
+        automatic response when that final integrity check fails. Unarmed test
+        and development buses retain their established behavior.
+        """
+        bus = self._bus
+        if bus is None or not getattr(bus, "integrity_enabled", False):
+            return True
+        try:
+            return bool(bus.verify(ev))
+        except Exception:
+            return False
+
     def _run_playbook(self, ev) -> None:
+        if not self._event_integrity_ok(ev):
+            self.emit(
+                "Playbook refused: event integrity verification failed before response.",
+                Severity.HIGH,
+            )
+            return
+        if is_remote_observe_only(ev):
+            self.emit(
+                "Playbook[remote]: observe-only cross-host evidence; local process "
+                "containment is forbidden.",
+                Severity.INFO,
+            )
+            return
         pid = ev.details.get("pid")
 
         # Playbook 1: CRITICAL event tied to a process → corroborate then contain.

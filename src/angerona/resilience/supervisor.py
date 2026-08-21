@@ -52,6 +52,51 @@ _VALID_RESTART_TARGETS = {
 }
 
 
+def cached_cmdline_probe(*needles: str, psutil_module=None) -> Callable[[], bool]:
+    """Return a liveness probe that scans the process table only on adoption.
+
+    Heartbeat-less sidecars used to call ``process_iter(cmdline)`` on every
+    supervisor tick in both the Core and peer Watchdog. Once a matching process
+    is found, psutil's ``Process.is_running`` preserves PID-reuse identity and is
+    sufficient until that exact process exits. A dead cached process triggers an
+    immediate full rescan, preserving adopt/restart behavior without perpetual
+    whole-host enumeration.
+
+    ``psutil_module`` is an injection seam for deterministic regression tests.
+    """
+    cached_process = None
+    loaded_psutil = psutil_module
+
+    def _probe() -> bool:
+        nonlocal cached_process, loaded_psutil
+        if cached_process is not None:
+            try:
+                status_reader = getattr(cached_process, "status", None)
+                zombie = getattr(loaded_psutil, "STATUS_ZOMBIE", "zombie")
+                is_zombie = (
+                    callable(status_reader) and status_reader() == zombie
+                )
+                if cached_process.is_running() and not is_zombie:
+                    return True
+            except Exception:
+                pass
+            cached_process = None
+        try:
+            if loaded_psutil is None:
+                import psutil as loaded_psutil_module
+                loaded_psutil = loaded_psutil_module
+            for process in loaded_psutil.process_iter(["cmdline"]):
+                command = " ".join(process.info.get("cmdline") or [])
+                if command and all(needle in command for needle in needles):
+                    cached_process = process
+                    return True
+        except Exception:
+            cached_process = None
+        return False
+
+    return _probe
+
+
 # ── detached, windowed spawning ──────────────────────────────────────────────
 def spawn_detached(argv: list[str], env: Optional[dict] = None,
                    window: str = "minimized") -> subprocess.Popen:
@@ -60,7 +105,15 @@ def spawn_detached(argv: list[str], env: Optional[dict] = None,
     window: 'minimized' (own console, minimized), 'hidden' (no window), or
     'normal' (own console, foreground). On POSIX the window hint is ignored and
     the child is placed in a new session (setsid)."""
-    kwargs: dict = {"env": {**os.environ, **(env or {})}, "close_fds": True}
+    from angerona.core.privilege import sanitized_child_environment
+
+    # Sidecars need local runtime/heartbeat coordinates, not the core's cloud,
+    # mail, webhook, fleet, or provider credentials. Building the block from an
+    # allowlist also prevents proxy/Python controls from crossing this boundary.
+    kwargs: dict = {
+        "env": sanitized_child_environment(env),
+        "close_fds": True,
+    }
     if os.name == "nt":
         DETACHED_PROCESS = 0x00000008
         CREATE_NEW_PROCESS_GROUP = 0x00000200

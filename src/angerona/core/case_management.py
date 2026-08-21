@@ -59,6 +59,15 @@ class EvidenceReference:
     privacy_class: str
 
 
+@dataclass(frozen=True)
+class CaseTimelineEntry:
+    entry_id: int
+    kind: str
+    actor: str
+    text: str
+    timestamp: float
+
+
 def _canonical(value: Any) -> bytes:
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
@@ -178,6 +187,76 @@ class CaseStore:
             row[0], row[1], row[2], row[3], tuple(json.loads(row[4])),
             int(row[5]), bool(row[6]), float(row[7]), float(row[8]), float(row[9]),
         )
+
+    def list_cases(
+        self, *, status: str | None = None, limit: int = 500,
+        newest_first: bool = True,
+    ) -> tuple[CaseRecord, ...]:
+        """Return a bounded case queue for a local operator interface."""
+        if status is not None and status not in _STATUSES:
+            raise ValueError("invalid case status")
+        limit = max(1, min(int(limit), 2000))
+        direction = "DESC" if newest_first else "ASC"
+        sql = "SELECT * FROM cases"
+        params: list[Any] = []
+        if status is not None:
+            sql += " WHERE status=?"
+            params.append(status)
+        # ``direction`` is selected from the fixed literals above; all caller
+        # values remain SQLite parameters.
+        sql += f" ORDER BY updated_at {direction},case_id {direction} LIMIT ?"  # nosec B608
+        params.append(limit)
+        with self._lock:
+            rows = self._db.execute(sql, params).fetchall()
+        return tuple(CaseRecord(
+            row[0], row[1], row[2], row[3], tuple(json.loads(row[4])),
+            int(row[5]), bool(row[6]), float(row[7]), float(row[8]),
+            float(row[9]),
+        ) for row in rows)
+
+    def timeline(
+        self, case_id: str, *, limit: int = 1000,
+        newest_first: bool = False,
+    ) -> tuple[CaseTimelineEntry, ...]:
+        """Return attributed local timeline entries without sanitizing them."""
+        self.get_case(case_id)
+        limit = max(1, min(int(limit), MAX_TIMELINE))
+        direction = "DESC" if newest_first else "ASC"
+        with self._lock:
+            rows = self._db.execute(  # nosec B608
+                "SELECT entry_id,kind,actor,text,ts FROM timeline "
+                f"WHERE case_id=? ORDER BY entry_id {direction} LIMIT ?",
+                (case_id, limit),
+            ).fetchall()
+        return tuple(CaseTimelineEntry(
+            int(row[0]), str(row[1]), str(row[2]), str(row[3]), float(row[4])
+        ) for row in rows)
+
+    def evidence(
+        self, case_id: str, *, limit: int = 1000,
+    ) -> tuple[EvidenceReference, ...]:
+        """Return bounded evidence metadata; raw content is never stored here."""
+        self.get_case(case_id)
+        limit = max(1, min(int(limit), MAX_EVIDENCE))
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT evidence_id,display_name,sha256,size,source,provenance,"
+                "collected_at,privacy_class FROM evidence WHERE case_id=? "
+                "ORDER BY collected_at,evidence_id LIMIT ?",
+                (case_id, limit),
+            ).fetchall()
+        return tuple(EvidenceReference(
+            str(row[0]), str(row[1]), str(row[2]), int(row[3]), str(row[4]),
+            str(row[5]), float(row[6]), str(row[7]),
+        ) for row in rows)
+
+    def evidence_counts(self) -> dict[str, int]:
+        """Return all case evidence counts in one bounded aggregate query."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT case_id,COUNT(*) FROM evidence GROUP BY case_id"
+            ).fetchall()
+        return {str(case_id): int(count) for case_id, count in rows}
 
     def update_case(
         self, case_id: str, expected_version: int, *, status: str | None = None,

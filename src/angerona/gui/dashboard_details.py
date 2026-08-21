@@ -135,12 +135,18 @@ class MetricTile(QFrame):
         caption.setStyleSheet("color:#64748b; font-size:9px; font-weight:800;")
         self.value = QLabel(value)
         self.value.setStyleSheet(f"color:{color}; font-size:20px; font-weight:800;")
+        self._rendered_value = str(value)
+        self._rendered_color = str(color)
         layout.addWidget(caption)
         layout.addWidget(self.value)
 
     def set_value(self, value: object, color: str | None = None) -> None:
-        self.value.setText(str(value))
-        if color:
+        text = str(value)
+        if text != self._rendered_value:
+            self._rendered_value = text
+            self.value.setText(text)
+        if color and str(color) != self._rendered_color:
+            self._rendered_color = str(color)
             self.value.setStyleSheet(
                 f"color:{color}; font-size:20px; font-weight:800;"
             )
@@ -275,13 +281,31 @@ class SystemPulseDetailDialog(FuturisticDetailDialog):
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.content.addWidget(self.table)
+        self._last_sample_revision: int | None = None
+        self._pulse_rows: dict[str, QTableWidgetItem] = {}
+        for row, name in enumerate(
+            ("Network receive", "Network send", "Sampling state", "Retained samples")
+        ):
+            self.table.insertRow(row)
+            self.table.setItem(row, 0, QTableWidgetItem(name))
+            value = QTableWidgetItem("--")
+            self.table.setItem(row, 1, value)
+            self._pulse_rows[name] = value
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(900)
         self._refresh()
 
     def _refresh(self) -> None:
+        revision_fn = getattr(self._pulse, "sample_revision", None)
+        busy_fn = getattr(self._pulse, "sample_busy", None)
+        revision = int(revision_fn()) if callable(revision_fn) else None
+        busy = bool(busy_fn()) if callable(busy_fn) else False
+        self._pulse_rows["Sampling state"].setText("Busy" if busy else "Ready")
+        if revision is not None and revision == self._last_sample_revision:
+            return
         snapshot = self._pulse.snapshot()
+        self._last_sample_revision = revision
         latest = snapshot.get("latest") or {}
         self.cpu.set_value(f"{float(latest.get('cpu', 0.0)):.0f}%")
         self.ram.set_value(f"{float(latest.get('ram', 0.0)):.0f}%")
@@ -290,16 +314,18 @@ class SystemPulseDetailDialog(FuturisticDetailDialog):
         available = float(latest.get("available", 0.0)) / (1024.0 ** 3)
         self.available.set_value(f"{available:.1f} GB")
         self.graph.set_samples(snapshot.get("history") or [])
-        rows = [
-            ("Network receive", _rate(float(latest.get("down", 0.0)))),
-            ("Network send", _rate(float(latest.get("up", 0.0)))),
-            ("Sampling state", "Busy" if snapshot.get("busy") else "Ready"),
-            ("Retained samples", str(len(snapshot.get("history") or []))),
-        ]
-        self.table.setRowCount(len(rows))
-        for row, (name, value) in enumerate(rows):
-            self.table.setItem(row, 0, QTableWidgetItem(name))
-            self.table.setItem(row, 1, QTableWidgetItem(value))
+        self._pulse_rows["Network receive"].setText(
+            _rate(float(latest.get("down", 0.0)))
+        )
+        self._pulse_rows["Network send"].setText(
+            _rate(float(latest.get("up", 0.0)))
+        )
+        self._pulse_rows["Sampling state"].setText(
+            "Busy" if snapshot.get("busy") else "Ready"
+        )
+        self._pulse_rows["Retained samples"].setText(
+            str(len(snapshot.get("history") or []))
+        )
 
 
 class ConsoleDetailDialog(FuturisticDetailDialog):
@@ -340,6 +366,7 @@ class ConsoleDetailDialog(FuturisticDetailDialog):
         self.content.addWidget(help_text)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
+        self._console_revision: int | None = None
         self._timer.start(650)
         self._refresh()
 
@@ -353,14 +380,17 @@ class ConsoleDetailDialog(FuturisticDetailDialog):
         QTimer.singleShot(120, self._refresh)
 
     def _refresh(self) -> None:
-        text = self._console.out.toPlainText()
-        bounded = text[-80_000:]
-        if self.transcript.toPlainText() != bounded:
+        document = self._console.out.document()
+        revision = int(document.revision())
+        if revision != self._console_revision:
+            text = self._console.out.toPlainText()
+            bounded = text[-80_000:]
             self.transcript.setPlainText(bounded)
             self.transcript.verticalScrollBar().setValue(
                 self.transcript.verticalScrollBar().maximum()
             )
-        self.lines.set_value(str(text.count("\n") + (1 if text else 0)))
+            self.lines.set_value(str(text.count("\n") + (1 if text else 0)))
+            self._console_revision = revision
         self.busy.set_value(str(int(getattr(self._console, "_busy", 0))))
 
 
@@ -482,6 +512,7 @@ class ModuleResourceDialog(FuturisticDetailDialog):
         self.content.addWidget(self.table, 1)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
+        self._events_fingerprint: tuple | None = None
         self._timer.start(1300)
         self._refresh()
 
@@ -492,6 +523,18 @@ class ModuleResourceDialog(FuturisticDetailDialog):
         self.status.set_value(str(snapshot.get("status", "unknown")))
         events = snapshot.get("events") or []
         self.events.set_value(str(len(events)))
+        fingerprint = tuple(
+            (
+                float(getattr(event, "ts", 0.0)),
+                str(getattr(event, "module", "")),
+                int(getattr(event, "severity", 0)),
+                str(getattr(event, "message", "")),
+            )
+            for event in events
+        )
+        if fingerprint == self._events_fingerprint:
+            return
+        self._events_fingerprint = fingerprint
         self.table.setRowCount(len(events))
         for row, event in enumerate(events):
             self.table.setItem(

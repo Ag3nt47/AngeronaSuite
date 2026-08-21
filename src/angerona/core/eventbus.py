@@ -72,6 +72,25 @@ class Event:
         return time.strftime("%H:%M:%S", time.localtime(self.ts))
 
 
+REMOTE_OBSERVE_AUTHORITY = "remote-observe-only"
+
+
+def is_remote_observe_only(event: object) -> bool:
+    """Return whether an event is cross-host evidence with no local authority.
+
+    A mutually authenticated sensor peer is trusted to describe its own host,
+    not to name a process or file that response engines may alter on this host.
+    The legacy ``node_origin`` check keeps older forwarded events fail-safe.
+    """
+    details = getattr(event, "details", None)
+    if not isinstance(details, dict):
+        return False
+    return (
+        details.get("response_authority") == REMOTE_OBSERVE_AUTHORITY
+        or bool(details.get("node_origin"))
+    )
+
+
 Subscriber = Callable[[Event], None]
 
 

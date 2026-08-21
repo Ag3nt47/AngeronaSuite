@@ -230,13 +230,14 @@ class AnalysisWorker(QThread):
     Signals:
         analysis_started()      — emitted the instant run() begins
         progress(str)           — human-readable stage updates for the UI
-        finished(dict)          — final merged result payload
+        result_ready(dict)      — final merged result payload
+        finished()              — native QThread completion, after run() returns
         error(str)              — any caught failure; UI should re-enable + show
     """
 
     analysis_started = Signal()
     progress         = Signal(str)
-    finished         = Signal(dict)
+    result_ready     = Signal(dict)
     error            = Signal(str)
 
     def __init__(
@@ -348,7 +349,12 @@ class AnalysisWorker(QThread):
                         result["final_confidence"] = round(float(cc) * 100)
 
             self.progress.emit("Analysis complete.")
-            self.finished.emit(result)
+            # Keep the result signal distinct from QThread.finished.  The
+            # native signal is emitted only after run() returns and is the only
+            # safe boundary for deleteLater(); shadowing it with Signal(dict)
+            # allowed the UI to destroy a still-running QThread and could abort
+            # the entire process inside Qt6Core.dll.
+            self.result_ready.emit(result)
 
         except urllib.error.URLError as exc:
             self.error.emit(f"Local model unreachable on :11434 ({exc.reason}).")
@@ -442,7 +448,7 @@ class AlertActionsRow(QWidget):
         # Keep a reference — a worker without one is garbage-collected mid-run.
         self._worker = AnalysisWorker(self._alert, parent=self)
         self._worker.progress.connect(self._status.setText)
-        self._worker.finished.connect(self._on_finished)
+        self._worker.result_ready.connect(self._on_finished)
         self._worker.error.connect(self._on_error)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()

@@ -37,6 +37,7 @@ import zipfile
 from pathlib import Path
 
 from angerona.core.archive_safety import read_bounded_member, validate_zip_members
+from angerona.core.eventbus import is_remote_observe_only
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.process_allowlist import (
     is_event_allowed as _process_event_allowed,
@@ -99,6 +100,8 @@ class ActiveResponseSOAR(BaseModule):
                 if ev.module in (self.name, "Console", "SOAR Automation"):
                     continue
                 self._last_ts = max(self._last_ts, ev.ts)
+                if is_remote_observe_only(ev):
+                    continue
                 if _process_event_allowed(ev, policy=process_policy):
                     continue
                 if not self._event_in_response_scope(ev):
@@ -191,7 +194,35 @@ class ActiveResponseSOAR(BaseModule):
         path = Path(raw_path)
         return self._inside(path, roots) and self._is_known_drill_artifact(path)
 
+    def _event_integrity_ok(self, ev) -> bool:
+        """Re-verify authenticated evidence immediately before host mutation."""
+        bus = self._bus
+        if bus is None or not getattr(bus, "integrity_enabled", False):
+            return True
+        try:
+            return bool(bus.verify(ev))
+        except Exception:
+            return False
+
     def _kill_and_rollback(self, ev) -> None:
+        if not self._event_integrity_ok(ev):
+            self.emit(
+                "Refusing kill/rollback: event integrity verification failed.",
+                Severity.HIGH,
+            )
+            return
+        if is_remote_observe_only(ev):
+            self.emit(
+                "Refusing local kill/rollback for observe-only cross-host evidence.",
+                Severity.INFO,
+            )
+            return
+        if not self._event_in_response_scope(ev):
+            self.emit(
+                "Refusing kill/rollback: event is outside the authorized response scope.",
+                Severity.INFO,
+            )
+            return
         t0 = time.time()
         pid = ev.details.get("pid")
         path = self._event_path(ev) or None

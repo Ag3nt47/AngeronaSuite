@@ -79,6 +79,16 @@ class StatusReporter:
             })
         telemetry = {}
         evicted_sensors = 0
+        visibility = {
+            "authority_configured": False,
+            "sensors": {},
+            "evicted_sensors": 0,
+            "rejected_documents": 0,
+            "limitation": (
+                "No sensor visibility authority is configured; no native or "
+                "hardware-backed visibility proof is claimed."
+            ),
+        }
         if self.telemetry_coverage is not None:
             telemetry = {
                 sensor_id: {
@@ -96,6 +106,11 @@ class StatusReporter:
                 for sensor_id, item in self.telemetry_coverage.snapshot().items()
             }
             evicted_sensors = self.telemetry_coverage.evicted_sensors
+            visibility_snapshot = getattr(
+                self.telemetry_coverage, "visibility_snapshot", None
+            )
+            if callable(visibility_snapshot):
+                visibility = visibility_snapshot()
         return {
             "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
             "app_version": __version__,
@@ -116,6 +131,7 @@ class StatusReporter:
                     "process lifetime; it does not prove complete collection."
                 ),
             },
+            "sensor_visibility_attestations": visibility,
             "modules": mods,
             "recent_events": [
                 {"time": e.time_str, "module": e.module,
@@ -154,6 +170,28 @@ class StatusReporter:
                 f"  Sensor records evicted by cardinality bound: "
                 f"{coverage['evicted_sensors']}"
             )
+        visibility = s["sensor_visibility_attestations"]
+        lines += ["", " SENSOR VISIBILITY ATTESTATIONS"]
+        if not visibility["authority_configured"]:
+            lines.append("  Not configured; no sensor visibility proof is claimed.")
+        elif not visibility["sensors"]:
+            lines.append("  No authenticated sensor visibility assertions received.")
+        for sensor_id, item in visibility["sensors"].items():
+            lines.append(
+                f"  {sensor_id:<26} {item['classification']:<10} "
+                f"seq={item['sequence']} drops={item['drop_count']} "
+                f"clock={item['clock_quality']}"
+            )
+        if visibility["evicted_sensors"]:
+            lines.append(
+                "  Visibility records evicted by cardinality bound: "
+                f"{visibility['evicted_sensors']}"
+            )
+        if visibility["rejected_documents"]:
+            lines.append(
+                f"  Rejected visibility documents: {visibility['rejected_documents']}"
+            )
+        lines.append(f"  Limitation: {visibility['limitation']}")
         lines += [
             "",
             "-" * 78,

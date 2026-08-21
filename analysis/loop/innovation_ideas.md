@@ -1,490 +1,484 @@
-# Loop 1 Innovation Ideas — 2026-07-29
+# Round 1 Innovation Challenge — 2026-08-20
 
 ## Decision
 
-This cycle should strengthen Angerona at the boundaries where an enterprise
-operator must be able to ask, and prove:
+Angerona does not need another broad subsystem in this sweep. It needs a few
+high-leverage boundaries that make the suite more diagnosable, safer to operate,
+and harder to misuse while preserving its local-first design.
 
-1. What happened at the Windows kernel boundary without trusting an unshippable
-   custom driver?
-2. Did network containment take effect, remain scoped, and preserve recovery?
-3. How much telemetry was lost or delayed?
-4. Can AI-assisted investigation remain useful without gaining authority?
-5. Can every important conclusion be traced to immutable source evidence?
+This review compared the current 65-module tree, `README.md`, `llms.txt`, and
+`ENTERPRISE_UPGRADE_TODO.txt` against current primary/authoritative sources. It
+intentionally excludes ideas that Angerona already implements or has already
+designed: the kernel-boundary posture ledger, transactional WFP containment,
+telemetry-loss accounting, evidence claim resolution, Pktmon flight recording,
+USN ransomware pulse, NTLM exit mapping, call-stack provenance, model airlock,
+QUIC sightline, split-token architecture, App Control evidence, signed model
+admission/ML-BOM, ClickFix correlation, ATT&CK v19/Sigma 2.1 contracts, and
+ZTDNS/ECH correlation. Production mTLS/OIDC, Authenticode custody, HA/DR, and
+physical-host soaks remain important external gates rather than new local
+features.
 
-The proposals below are ranked by expected impact divided by effort. They are
-designs only; no product code is implemented here. They deliberately do not
-re-propose Angerona's existing Cortex, Evidence Lattice, TECT canary, receipt
-chain, OCSF exporter, WFP connection snapshot, or proof-carrying Purple Guard.
+Ranking uses ordinal impact divided by effort weight (`S=1`, `S-M=1.5`, `M=2`,
+`M-L=2.5`). The quotient is a prioritization aid, not an engineering estimate.
 
-## Ranked shortlist
-
-| Rank | Proposal | Effort | Primary mode | Why this cycle |
-|---:|---|:---:|---|---|
-| 1 | Windows Kernel-Boundary Posture Ledger | M | Detect / Harden / Visualize | High assurance without shipping a custom driver |
-| 2 | Transactional WFP Containment with Independent Proof | M | Respond / Harden | Turns “rule created” into verified, reversible isolation |
-| 3 | Telemetry Loss Accounting and Coverage SLOs | M | Detect / Visualize | Makes sensor blindness measurable instead of implicit |
-| 4 | Deterministic Investigation Broker with Capability Leases | M | Harden / Respond | Useful autonomy with no model-derived authority |
-| 5 | Evidence Reference Resolver and Claim Gate | M | Harden / Visualize | Forces AI, incident, and response claims to cite real records |
-| 6 | Pktmon Counter Flight Recorder | S-M | Detect / Visualize | Adds low-payload network-path and drop evidence on demand |
+| Rank | Proposal | Impact | Effort | Impact / effort | Mode |
+|---:|---|---:|:---:|---:|---|
+| 1 | Crash Breadcrumb Capsule + Fault-Domain Circuit Breaker | 5 | S-M | 3.33 | Detect / Harden / Visualize |
+| 2 | RMM and Remote-Support Trust Ledger | 5 | S-M | 3.33 | Detect / Harden / Visualize |
+| 3 | WinRE / Quick Machine Recovery Readiness | 3 | S | 3.00 | Harden / Visualize |
+| 4 | Windows Hello–Bound Response Approval | 5 | M | 2.50 | Respond / Harden |
+| 5 | MCP Tool-and-Data Provenance Firewall | 5 | M | 2.50 | Detect / Harden / Visualize |
+| 6 | Purpose- and Epoch-Bound Telemetry Tokens | 4 | M | 2.00 | Harden / Privacy |
+| 7 | Browser Session-Theft Behavior Correlator | 5 | M-L | 2.00 | Detect / Respond |
 
 ---
 
-## 1. Windows Kernel-Boundary Posture Ledger
+## 1. Crash Breadcrumb Capsule + Fault-Domain Circuit Breaker
 
-**Pitch.** Build a read-only, user-mode ledger of driver loads, Code Integrity
-decisions, HVCI/VBS state, vulnerable-driver controls, and kernel-telemetry
-availability; keep Angerona's custom driver unavailable in production until its
-separate assurance gates are met.
+**Pitch.** Keep a tiny, privacy-minimized, process-external record of which
+Angerona fault domains were active immediately before a native crash, then use
+repeatable evidence—not guesswork—to quarantine only an optional suspect module.
 
-### Why now
+### Why now and threat model
 
-Microsoft says attackers abuse legitimate signed but vulnerable drivers to gain
-kernel access, recommends HVCI and the vulnerable-driver blocklist, and advises
-audit-mode validation before enforcement because blocks can break devices or
-cause a bugcheck:
-[Microsoft recommended driver block rules](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/design/microsoft-recommended-driver-block-rules).
-Microsoft's 2026 Windows Driver Policy also uses an evaluation/audit phase and
-records Code Integrity evidence before enforcement:
-[The Windows Driver Policy](https://support.microsoft.com/en-us/windows/the-windows-driver-policy-ecd2a78c-750c-415d-93f2-e37302ce0443).
+Angerona already records Python/Qt exceptions and GUI stalls, and its watchdog
+has restart budgets and safe mode. A native fail-fast can still terminate the
+process before buffered logs identify the responsible QThread, dialog, native
+library, or module generation. Windows Error Reporting (WER) can collect local
+user-mode dumps, and Application Recovery and Restart can preserve state before
+restart; Microsoft notes that local dumps are collected before the recovery
+callback and that restart applies only after an application has run for at least
+60 seconds. Sources: [Collecting user-mode dumps](https://learn.microsoft.com/en-us/windows/win32/wer/collecting-user-mode-dumps),
+[Registering for Application Restart](https://learn.microsoft.com/en-us/windows/win32/recovery/registering-for-application-restart).
 
-### Fit and file-specific implementation plan
+Threats include a crashing native dependency, stale Qt worker ownership,
+restart storms, attacker-induced crash loops, and a diagnostics subsystem that
+accidentally captures secrets. The capsule must help attribution without
+becoming a memory dump or a new recovery authority.
 
-- **Core:** add `src/angerona/core/kernel_posture.py` with a bounded typed
-  `KernelPostureSnapshot`. It should distinguish `observed`, `not_configured`,
-  `unavailable`, `access_denied`, and `unknown`; absence must never mean safe.
-- **BaseModule:** add `src/angerona/modules/kernel_posture.py` (`windows`,
-  `detect`) to consume documented Windows Security, System, and Code Integrity
-  event channels; inventory only bounded driver metadata: service/image
-  basename, SHA-256, version, publisher/result, first/last seen, and source event
-  reference.
-- **Existing boundary:** change no code this cycle, but an implementation should
-  gate `src/angerona/modules/kernel_bridge.py` behind an explicit lab-only
-  capability contract. Its current “park at 50%” state must not imply production
-  coverage, and raw command lines must not enter ordinary INFO messages.
-- **GUI:** add a “Kernel boundary” evidence card to
-  `src/angerona/gui/dashboard_details.py` and Settings enterprise evidence view:
-  HVCI/VBS, vulnerable-driver blocklist, ASR driver rule, Code Integrity channel
-  health, recent driver decisions, and explicit limitations.
-- **Export:** normalize findings through `core/sensor_events.py`; optionally emit
-  OCSF-compatible findings through the existing `core/ocsf_export.py`.
+### Fit and architecture
 
-Maps to `ENT-WIN-006/007/008` and `ENT-KRN-001/003`.
+- **Core:** add `core/crash_capsule.py`, a fixed-size, checksummed shared-memory
+  record containing release digest, monotonic boot/session ID, EventBus revision,
+  module generation/state codes, active Qt worker IDs, dialog class identifiers,
+  and the last bounded lifecycle transition. Never store event bodies, command
+  lines, paths, prompts, network addresses, usernames, or stack memory.
+- **Existing seams:** `module_manager.py`, `thread_lifecycle.py`, `crashlog.py`,
+  and `uiwatchdog.py` update O(1) breadcrumbs. The independent Watchdog reads a
+  sealed snapshot only after Core death and attaches its digest to existing
+  `recovery_state.py` evidence.
+- **Circuit breaker:** phase two may quarantine only a nonessential module after
+  the same signed crash signature repeats across at least three fresh process
+  generations. Core telemetry, recovery, storage integrity, and the watchdog are
+  never automatically disabled. Operator reset and expiry are mandatory.
 
-### Abuse cases and failure handling
+### Implementation slices
 
-- A signed malicious/vulnerable driver must not become “trusted” solely because
-  Authenticode succeeds.
-- A disabled or unreadable Code Integrity channel must produce a coverage gap,
-  not a clean posture.
-- A stale cached blocklist must display its observed timestamp and Windows build.
-- No automatic WDAC/HVCI/ASR enforcement; incompatible drivers can interrupt
-  boot or hardware.
-- The optional custom driver must never be loaded, installed, or recommended by
-  this module.
+1. **S / recommended now:** diagnostic-only capsule and post-crash viewer; no
+   behavior change, quarantine, dump collection, or registry mutation.
+2. **S-M:** deterministic signature grouping and a GUI “Crash lineage” card.
+3. **M:** policy-gated optional-module circuit breaker after physical-host soak.
 
-### Performance budget
+### Tests and performance budget
 
-- Event-driven after startup; inventory refresh no more than every 15 minutes.
-- Startup scan: <= 250 ms CPU time, <= 2,000 retained driver observations.
-- Steady state: <= 0.2% average CPU, <= 25 MiB private memory, <= 1 MiB/day
-  metadata before retention compaction.
-
-### Acceptance tests
-
-- Fixtures cover allowed, audit-blocked, enforced-blocked, unsigned, vulnerable,
-  access-denied, malformed XML, channel-disabled, and event-gap cases.
-- A valid signature alone never clears a vulnerable/blocklisted finding.
-- Unsupported Windows builds show `unavailable`, not 100% health.
-- No raw command line, full user path, certificate private data, or driver bytes
-  are retained.
-- Module discovery and GUI remain healthy with no custom driver installed.
+- Kill/fail-fast fixtures verify the last committed capsule survives and never
+  contains forbidden data classes.
+- Torn writes, checksum corruption, stale PID reuse, clock rollback, full disk,
+  concurrent QThreads, clean shutdown, and watchdog restart are covered.
+- A single crash cannot disable anything; differing signatures do not aggregate.
+- Update cost: p99 below 50 microseconds, one preallocated page, no per-event I/O,
+  and no GUI-thread blocking.
 
 ### Safety
 
-Defensive and read-only. It inventories posture and explains supported Windows
-controls. It does not load drivers, develop an exploit, bypass Code Integrity,
-or provide vulnerable-driver weaponization guidance.
+Defensive diagnostics only. Phase one does not change host policy, install WER
+registry settings, capture process memory, or disable a module. Any later circuit
+breaker is bounded, reversible, signed, optional-module-only, and never grants
+the AI or watchdog arbitrary process-control authority.
 
 ---
 
-## 2. Transactional WFP Containment with Independent Proof
+## 2. RMM and Remote-Support Trust Ledger
 
-**Pitch.** Replace “firewall command returned success” with a typed containment
-transaction: preflight, narrowly scoped rule, independent WFP evidence, expiry,
-rollback, and a recovery-channel invariant.
+**Pitch.** Treat remote-management software as a time-bound administrative
+session with provenance, not as globally good or globally malicious software.
 
-### Why now
+### Why now and threat model
 
-WFP supports per-application, per-user, and per-connection policy through the
-Base Filtering Engine:
-[About Windows Filtering Platform](https://learn.microsoft.com/en-us/windows/win32/fwp/about-windows-filtering-platform).
-Windows exposes allowed/blocked connection audits and WFP policy-change events:
-[WFP auditing and logging](https://learn.microsoft.com/en-us/windows/win32/fwp/auditing-and-logging).
-On current Windows versions, Filter Origin and Interface Index improve the
-explainability of 5152/5157 drop events:
-[Filter Origin Audit Log](https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/filter-origin-documentation).
+CISA says ransomware actors continue to abuse Remote Monitoring and Management
+(RMM) tools and recommends auditing authorized tools, unexpected execution, and
+portable copies. A June 2025 advisory documented exploitation of SimpleHelp RMM
+against multiple organizations. Sources: [CISA JCDC RMM Cyber Defense Plan](https://www.cisa.gov/topics/partnerships-and-collaboration/joint-cyber-defense-collaborative/jcdc-remote-monitoring-and-management-cyber-defense-plan),
+[CISA StopRansomware Guide](https://www.cisa.gov/stopransomware/ransomware-guide),
+[CISA SimpleHelp RMM advisory](https://www.cisa.gov/sites/default/files/2025-06/aa25-163a-ransomware-simplehelp-rmm-compromise.pdf).
 
-### Fit and file-specific implementation plan
+Angerona recognizes RDP/WinRM ATT&CK events but has no RMM/Quick Assist trust
+object. The threat is a legitimate signed product launched from an unexpected
+path, a portable/unmanaged copy, a new unattended service, an out-of-window
+session, or an approved tool whose signer/hash/lineage suddenly changes.
 
-- **Core:** add `src/angerona/core/action_contracts/network_isolation.py`.
-  Contract fields: immutable action ID, canonical process identity
-  `(pid,start_time,image_hash)`, destination/interface scope, duration,
-  protected endpoints, preconditions, rollback deadline, idempotency key, and
-  evidence references.
-- **Respond engine:** adapt `src/angerona/modules/soar_engine.py` and
-  `src/angerona/modules/soar.py` to stage this typed contract. Revalidate process
-  identity immediately before mutation to defeat PID reuse.
-- **WFP boundary:** extend `src/angerona/modules/wfp_controller.py` with
-  read-side rule/filter enumeration and 5152/5157 correlation. Mutation should
-  use a single supported Windows firewall/WFP adapter, never shell text assembled
-  from model output.
-- **Proof:** write the before state, requested change, OS result, independently
-  observed filter origin, bounded negative/positive micro-probe outcome, expiry,
-  and rollback result through `src/angerona/core/remediation_log.py`.
-- **GUI:** preview exact scope and recovery exclusions in Resolve Center; show
-  `STAGED -> APPLIED -> VERIFIED -> EXPIRED/ROLLED_BACK`, with `UNVERIFIED`
-  remaining open.
+### Fit and architecture
 
-Maps to `ENT-NET-006` and `ENT-SOAR-002/004/005/006/007`.
+- **Core:** add `core/remote_support_trust.py` with a bounded `SupportSession`
+  keyed by immutable process identity. Expected state binds exact path digest,
+  signer/publisher, file hash/version, service identity, allowed parent, user
+  session type, maintenance window, and expected network class.
+- **BaseModule:** consume existing process, service/persistence, asset inventory,
+  Authenticode, and network observations. Do not packet-inspect or enumerate
+  remote screen content.
+- **Trusted Processes:** add a separate “Remote support” policy category. An
+  ordinary process allowlist must not silently authorize unattended access.
+- **GUI:** display `approved-active`, `approved-out-of-window`, `portable`,
+  `drifted`, `unexpected`, or `unknown`; show exact supporting evidence and
+  policy expiry.
 
-### Abuse cases and failure handling
+### Implementation slices
 
-- PID reuse cannot redirect a block to an unrelated process.
-- Wildcard, loopback, DHCP, DNS resolver, Angerona IPC, and configured
-  management/recovery endpoints are denied by default unless an explicit
-  emergency policy names them.
-- A forged EventBus “blocked” message is not proof; proof must reference an OS
-  event or enumerated rule plus the bound action receipt.
-- Timeout, restart, or partial failure must leave a discoverable lease that the
-  recovery worker can roll back.
-- An attacker cannot make a permanent block by submitting an extreme duration;
-  policy caps it.
+1. **S-M:** read-only inventory and exact-provenance drift alerts for an
+   operator-supplied catalog; no vendor-name blacklist.
+2. **M:** bounded session correlation across process/service/network evidence.
+3. **M:** existing typed Response Broker may offer a preview to suspend an
+   immutable process identity; never auto-contain on product name alone.
 
-### Performance budget
+### Tests and performance budget
 
-- Preflight plus apply target: p95 <= 500 ms excluding OS audit delivery.
-- Verification deadline <= 5 seconds; no polling faster than 250 ms.
-- At most 128 active Angerona containment leases and 1,000 retained receipts.
-- WFP success auditing remains off by default because Microsoft documents it as
-  high volume; use narrowly filtered failure/policy evidence.
-
-### Acceptance tests
-
-- Deterministic tests cover PID reuse, duplicate retry, expired lease, restart
-  recovery, rule-name collision, IPv4/IPv6, VPN interface change, missing audit
-  privilege, full disk, and rollback failure.
-- A synthetic containment is “verified” only when scope and OS evidence match.
-- Recovery/management endpoints remain reachable in the network namespace test.
-- Retrying one idempotency key creates no second rule.
-- Forced process exit between preflight and apply fails closed.
+- Fixtures cover installed/portable RMM, valid update, signer drift, service
+  creation, renamed binary, DLL side-load evidence, VPN/proxy use, expired
+  maintenance window, PID reuse, missing signature service, and ordinary remote
+  work tools.
+- A signed binary is not automatically trusted; a basename match is never enough.
+- One signal remains Low/Informational. High requires provenance drift plus a
+  session/network/persistence signal.
+- Reuse current process/network caches; no scan faster than 30 seconds, at most
+  512 active/recent session records, and steady-state CPU below 0.2%.
 
 ### Safety
 
-Defensive containment only. No packet modification, interception, credential
-capture, persistence beyond the bounded lease, or arbitrary firewall scripting.
+Defensive observation and existing typed response only. The feature never
+connects to an RMM service, records a screen, captures credentials, discovers
+vendor secrets, or teaches remote-tool exploitation.
 
 ---
 
-## 3. Telemetry Loss Accounting and Coverage SLOs
+## 3. WinRE / Quick Machine Recovery Readiness
 
-**Pitch.** Give every ETW/Event Log sensor a source cursor, queue watermark,
-loss counter, freshness deadline, and explicit coverage state that follows each
-derived detection.
+**Pitch.** Show whether a Windows endpoint can recover from a boot-breaking
+update or driver event—and whether recovery would make an unexpected cloud or
+Wi-Fi egress—without modifying recovery configuration.
 
-### Why now
+### Why now and threat model
 
-Microsoft documents bounded ETW buffers and that new events can be ignored when
-real-time buffers fill:
-[EVENT_TRACE_PROPERTIES](https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-event_trace_properties).
-ETW session tooling exposes “Events Lost” when allocated buffers are full:
-[Tracelog Properties Display](https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/tracelog-properties-display).
-Microsoft also documents buffer callbacks for consumer-side buffer statistics:
-[EVENT_TRACE_LOGFILEW](https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-event_trace_logfilew).
+Microsoft's Quick Machine Recovery (QMR), available on supported Windows 11
+24H2+ builds, uses Windows Recovery Environment and can contact Windows Update
+after repeated boot failure. Its configuration can include cloud remediation,
+automatic retries, and Wi-Fi credentials. Microsoft calls it best effort and
+documents exact version/edition gates. Sources: [Quick Machine Recovery](https://learn.microsoft.com/en-us/windows/configuration/quick-machine-recovery/),
+[Recovery CSP](https://learn.microsoft.com/en-us/windows/client-management/mdm/recovery-csp).
 
-### Fit and file-specific implementation plan
+Threats are a false “recoverable” claim when WinRE is disabled, unreviewed cloud
+egress from recovery, recovery retry loops, unsupported builds, and accidental
+display or retention of Wi-Fi secrets.
 
-- **Core:** add `src/angerona/core/telemetry_quality.py` with per-source bounded
-  counters: session epoch, source cursor/bookmark, received, parsed, rejected,
-  queue high-water, OS-reported loss, inferred sequence gaps, last event,
-  last heartbeat, and clock discontinuity.
-- **Sensors:** instrument `modules/etw_listener.py`,
-  `modules/etw_realtime_sensor.py`, `modules/sysmon_listener.py`,
-  `modules/av_telemetry_bridge.py`, and `modules/amsi_bridge.py`. Preserve each
-  source's native meaning; never fabricate a universal loss number.
-- **Event contract:** add a bounded `telemetry_quality_ref` to derived normalized
-  events in `core/sensor_events.py`, pointing to a snapshot/epoch rather than
-  copying large diagnostics into every event.
-- **Cortex/ELAT:** allow `core/cortex.py` and
-  `modules/evidence_lattice.py` to reduce confidence or mark “coverage degraded”;
-  loss must not erase a true alert.
-- **GUI:** World View shows freshness, OS loss, internal drops, and backlog by
-  source. Alerts show the quality epoch that supported them.
+### Fit and architecture
 
-Maps to `ENT-WIN-001/002` and the enterprise proof requirements.
+- **Core:** add a pure parser/model for `enabled`, `disabled`, `unsupported`,
+  `unreadable`, and `unknown`, plus cloud/auto-remediation booleans and bounded
+  retry/time-to-reboot values.
+- **Collector:** a Windows-only read-side module invokes the absolute trusted
+  `%SystemRoot%\System32\reagentc.exe` with a short timeout. It parses only a
+  bounded schema and discards Wi-Fi SSID/password elements before logging.
+- **GUI:** add recovery readiness to Kernel/Posture evidence, explicitly marking
+  cloud contact as opt-in egress—not universally good or bad.
+- **Fleet:** expose only aggregate readiness state and policy digest; no recovery
+  XML, SSID, password, path, or device identifier.
 
-### Abuse cases and failure handling
+### Implementation slices
 
-- An attacker flooding a provider cannot turn dropped events into a green sensor.
-- Counter reset/restart creates a new epoch; it must not hide the prior gap.
-- Clock rollback cannot make stale data appear fresh; use monotonic deadlines.
-- Malformed events increment rejected counts without logging their unbounded raw
-  contents.
-- Unknown provider loss semantics are labeled unknown, not zero.
+1. **S / recommended now:** version-gated, read-only status and privacy-safe UI.
+2. **S-M:** signed drift evidence after Windows update/reboot.
+3. **External lab only:** QMR test-mode evidence; never run recovery simulation
+   from the ordinary desktop product.
 
-### Performance budget
+### Tests and performance budget
 
-- O(1) counter updates; no synchronous storage per event.
-- <= 100 ns-scale Python bookkeeping is unrealistic as a claim; measured gate
-  instead: <= 3% throughput regression at 50,000 synthetic events/minute.
-- Flush aggregate quality snapshots at most every 5 seconds and on state change.
-- <= 256 source epochs in memory and <= 10,000 persisted snapshots.
-
-### Acceptance tests
-
-- Deterministic overflow, queue saturation, parse rejection, bookmark resume,
-  restart, clock rollback, subscriber stall, and source-disable fixtures.
-- A loss burst changes coverage to degraded within 5 seconds.
-- A later healthy epoch does not rewrite historical alert quality.
-- Event throughput regression stays within 3% and GUI reads remain nonblocking.
-- TECT canary health and loss accounting remain separate, complementary signals.
+- Fixtures cover supported/unsupported builds, WinRE disabled, malformed XML,
+  secret-bearing XML, timeout, access denial, cloud on/off, auto-retry, and
+  localization-safe parsing.
+- Tests prove no SSID/password survives parsing, logs, exports, or exceptions.
+- Poll at startup and no more than every six hours; timeout at five seconds;
+  work stays off the GUI thread.
 
 ### Safety
 
-Defensive observability only. It exposes blind spots and confidence limits; it
-does not weaken providers, suppress events, or claim that loss identifies an
-attacker.
+Read-only and defensive. Angerona does not enable QMR, store recovery Wi-Fi
+credentials, enter WinRE, run test mode, change retry policy, download a fix, or
+claim QMR guarantees recovery.
 
 ---
 
-## 4. Deterministic Investigation Broker with Capability Leases
+## 4. Windows Hello–Bound Response Approval
 
-**Pitch.** Let ARIA/local models propose bounded read-only investigations while
-only deterministic code can issue short-lived, schema-validated tool leases;
-response remains a separate human/policy-approved action.
+**Pitch.** Bind every high-impact local response approval to the exact action
+digest and an explicit Windows Hello or FIDO2 user gesture.
 
-### Why now
+### Why now and threat model
 
-NIST's 2025 adversarial machine-learning taxonomy explicitly covers direct
-prompt injection and AI supply-chain risks:
-[NIST AI 100-2e2025, Adversarial Machine Learning](https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.100-2e2025.pdf).
-NIST's Generative AI Profile treats prompt injection and over-reliance on model
-output as risks requiring governance and evaluation:
-[NIST AI 600-1, Generative AI Profile](https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.600-1.pdf).
+NIST SP 800-63B-4, finalized in 2025, requires phishing-resistant options at
+Authentication Assurance Level 2 and explains why manually entered OTPs are not
+phishing-resistant. Windows exposes Win32 WebAuthn APIs for native applications
+to use Windows Hello or external FIDO2 keys. Sources: [NIST SP 800-63B-4](https://www.nist.gov/publications/nist-sp-800-63b-4digital-identity-guidelines-authentication-and-authenticator),
+[Windows WebAuthn APIs](https://learn.microsoft.com/en-us/windows/security/identity-protection/hello-for-business/webauthn-apis).
 
-### Fit and file-specific implementation plan
+Angerona already has typed, expiring, idempotent response plans and approvals.
+The remaining local threat is session/UI compromise, voice spoofing, stolen PIN,
+or a confused operator approving a different action than the preview.
 
-- **Core:** add `src/angerona/core/investigation_broker.py`. The immutable
-  registry exposes read-only typed queries such as `event.lookup`,
-  `process.snapshot`, `network.snapshot`, `evidence.resolve`, and
-  `posture.read`; each has JSON schema, row/byte/deadline/rate/privacy budgets.
-- **Policy:** make `src/angerona/core/action_policy.py` authoritative for broker
-  admission only after shadow-mode equivalence tests. A lease binds tool,
-  normalized arguments, evidence/case ID, requester, expiry, budget, and policy
-  version.
-- **ARIA:** adapt `core/assistant.py`, `core/copilot.py`, and
-  `modules/ai_triage.py` so model output is an untrusted proposal. A deterministic
-  parser chooses only registered tools; unknown fields and free-form commands
-  fail closed.
-- **Isolation:** execute higher-risk parsers in the existing worker/process
-  isolation pattern, later using Job Objects/restricted tokens per
-  `ENT-ISO-001/002/003`.
-- **Audit:** record proposal, admission/denial, bounded result digest, citations,
-  and budget use. Never store hidden chain-of-thought.
+### Fit and architecture
 
-Maps to `ENT-AI-001/002/003/007/009` and `ENT-VIS-009`.
+- **Core:** add `core/operator_presence.py` behind an injectable adapter. The
+  WebAuthn challenge binds action digest, target identity, expiry, policy
+  version, case ID, and a nonce. The receipt stores credential ID token,
+  authenticator flags, counter/result, and assertion digest—not biometric data.
+- **Response:** `safe_response_session.py` and `response_broker.py` can require
+  this receipt for policy-selected High/Critical actions. Existing multi-person
+  approval remains separate; one Hello gesture cannot impersonate two people.
+- **GUI:** the Windows-controlled verification prompt follows the exact action
+  preview. Voice may navigate to the preview but cannot satisfy user presence.
 
-### Abuse cases and failure handling
+### Implementation slices
 
-- Prompt text inside email, web results, logs, filenames, or model output cannot
-  mint a lease or widen a scope.
-- A read tool cannot invoke a response tool transitively.
-- Symlink/path traversal, PID reuse, oversized result, recursive query, tool
-  fan-out, and timeout fail closed.
-- Model unavailability yields deterministic “insufficient evidence”; it does not
-  bypass policy.
-- No voice-only approval and no generated PowerShell, Python, SQL, or firewall
-  expression is executable.
+1. **M:** optional local step-up for one reversible action, with injected fake
+   authenticator tests and explicit unsupported/degraded states.
+2. **M:** policy-required step-up for high-impact actions after accessibility,
+   recovery, credential rotation, and lockout testing.
 
-### Performance budget
+### Tests and performance budget
 
-- Broker admission p95 <= 10 ms without model time.
-- Default plan: <= 8 tool calls, <= 5 seconds wall time, <= 1 MiB total result,
-  <= 500 rows, and no more than two concurrent plans.
-- All queries use bounded indexes/snapshots and cancellation; no GUI-thread work.
-
-### Acceptance tests
-
-- Injection corpus includes hostile email, event message, webpage, Unicode
-  confusables, nested JSON, tool-result poisoning, multilingual coercion, and
-  “ignore policy” text.
-- Fuzzed arguments never reach an unregistered callable or shell.
-- Expired/replayed leases are rejected; identical approved read plans are
-  deterministic over a fixed fixture.
-- Every returned claim carries resolvable evidence references or explicitly
-  says insufficient evidence.
-- Response actions remain impossible through the investigation broker.
+- Reject replay, wrong action digest, wrong relying-party ID, expired challenge,
+  cloned credential record, missing user-verification flag, counter regression,
+  cancellation, and changed target/PID generation.
+- Reboot, credential deletion, Hello unavailable, external security key, and
+  accessibility flows fail visibly without silently downgrading a required gate.
+- No biometric template, PIN, authenticator secret, or raw attestation is logged.
+- Verification adds no background work; target p95 after user gesture is below
+  one second excluding human interaction.
 
 ### Safety
 
-Defensive investigation only. It offers cataloged reads, not unrestricted shell,
-code execution, credential access, exploit generation, or autonomous destructive
-response.
+Defensive authorization only. It never reads biometric material or makes an AI
+decision. A passkey assertion proves an approved user gesture bound to a request;
+it does not prove the requested response is technically correct.
 
 ---
 
-## 5. Evidence Reference Resolver and Claim Gate
+## 5. MCP Tool-and-Data Provenance Firewall
 
-**Pitch.** Introduce one bounded evidence-reference format so incident, AI,
-containment, and compliance claims can be mechanically resolved to original
-records and their transformations.
+**Pitch.** Upgrade Angerona's older MCP surface so every request, tool result,
+and model-visible datum carries identity, scope, taint, and an auditable lineage
+receipt.
 
-### Why now
+### Why now and threat model
 
-NIST SP 800-86 emphasizes preserving and documenting digital evidence during
-incident response:
-[NIST SP 800-86, Guide to Integrating Forensic Techniques into Incident Response](https://csrc.nist.gov/pubs/sp/800/86/final).
-OCSF provides an open, vendor-neutral schema intended to simplify consistent
-security-event normalization:
-[Open Cybersecurity Schema Framework](https://schema.ocsf.io/).
+Angerona currently implements MCP 2024-11-05 on loopback with an optional bearer
+token. MCP 2025-06-18 adds structured tool output and resource-server
+authorization requirements, including audience validation, resource indicators,
+PKCE, and an explicit ban on token passthrough. The specification also says tool
+descriptions are untrusted and users should understand and consent to tool use.
+Sources: [MCP 2025-06-18 specification](https://modelcontextprotocol.io/specification/2025-06-18/index),
+[MCP authorization](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization),
+[MCP change log](https://modelcontextprotocol.io/specification/2025-06-18/changelog).
 
-### Fit and file-specific implementation plan
+Threats are unauthorized local processes querying security data, confused-deputy
+token reuse, malicious tool/result descriptions, telemetry prompt injection,
+and an agent presenting an inference as if it were a sensor fact.
 
-- **Core:** add `src/angerona/core/evidence_refs.py` defining
-  `EvidenceRef(source_kind, source_id, revision, observed_at, digest,
-  transform_id, quality_epoch)`. IDs are opaque and privacy-minimized.
-- **Storage:** add an append-only evidence index beside
-  `core/storage.py`; resolve references against committed revisions only.
-  Transform records bind input digests to redaction/normalization version and
-  output digest.
-- **Existing proof:** bridge, do not replace,
-  `core/remediation_log.py`, `modules/provenance_graph.py`,
-  `modules/evidence_lattice.py`, `core/ocsf_export.py`, and
-  `shark/run_manifest.py`.
-- **Claim gate:** `core/copilot.py`, `modules/ai_triage.py`, incident summaries,
-  and compliance exports may label a sentence as `observed` only if all cited
-  refs resolve and verify. Otherwise use `inferred`, `unverified`, or
-  `insufficient evidence`.
-- **GUI:** Alert/incident detail resolves a citation to a redacted source preview,
-  collection time, quality state, transforms, and integrity result.
+### Fit and architecture
 
-Maps to `DEF-005`, `ENT-CASE-002/003`, `ENT-AI-008`, and `ENT-COMP-002`.
+- **Transport:** migrate to the current lifecycle/structured-output contract.
+  Local mode gets an installation-generated short-lived scoped credential; a
+  future non-loopback mode requires the enterprise authorization design rather
+  than reusing the local token.
+- **Core:** add a provenance envelope around every tool call/result:
+  client identity, tool schema/version, normalized argument digest, scope,
+  source evidence references, privacy class, untrusted-data taint, truncation,
+  timestamp, and receipt digest.
+- **AI boundary:** `analysis_worker.py`, `ai_security_broker.py`, and ARIA keep
+  sensor evidence, operator text, external content, model inference, and
+  deterministic policy decisions as different types. Taint can narrow access
+  or force quotation; it can never grant a capability.
+- **GUI:** show active clients, scopes, expiry, calls, denied calls, and exact
+  fields disclosed. Revocation is immediate and audited.
 
-### Abuse cases and failure handling
+### Implementation slices
 
-- Event text cannot claim another event's identifier.
-- Deleted/expired evidence leaves a tombstone and retention reason; it cannot
-  silently resolve to a newer row.
-- Hash validity proves integrity, not truth; UI wording must preserve that
-  distinction.
-- Circular references, transform loops, oversized provenance chains, and
-  cross-case access are rejected.
-- Redaction transforms never expose the original through a preview or error.
+1. **S-M:** make local authentication mandatory when MCP is enabled, rotate it,
+   and add structured result schemas without adding write tools.
+2. **M:** provenance/taint envelope and deterministic hostile-result eval corpus.
+3. **L/external:** OAuth resource-server interoperability only with production
+   identity infrastructure; never invent a home-grown remote auth server.
 
-### Performance budget
+### Tests and performance budget
 
-- Resolve one reference p95 <= 5 ms from a local index.
-- At most 64 references per claim and 32 transformation hops.
-- Batch GUI resolution <= 100 refs and <= 50 ms p95 from committed snapshots.
-- Retention is policy-bounded; no automatic raw packet/content preservation.
-
-### Acceptance tests
-
-- Tests cover valid, missing, tampered, expired, wrong-revision, cross-case,
-  transform-loop, redacted, and quality-degraded references.
-- A model hallucinated ID cannot render as observed evidence.
-- Modifying a stored source or transform invalidates dependent verification.
-- OCSF export preserves the local reference without leaking local paths/identity.
-- Existing remediation and drill receipt verification still passes unchanged.
+- Cover missing/expired/wrong-audience tokens, token passthrough, DNS rebinding,
+  session fixation, malicious tool annotations, hostile event text, nested JSON,
+  Unicode confusables, oversized results, replay, client revocation, and mixed
+  privacy classes.
+- No MCP path can invoke a shell or cross into Response Broker authority.
+- Admission and envelope work p95 below 10 ms; maximum 1 MiB result, 500 rows,
+  eight calls per plan, two concurrent plans, and existing server thread caps.
 
 ### Safety
 
-Defensive evidence handling only. The resolver neither executes evidence nor
-equates integrity with maliciousness; previews remain bounded and non-executable.
+Defensive read-only interoperability. No new offensive tools, generic shell,
+credential relay, autonomous remediation, or hidden network listener. Remote
+authorization remains out of scope until the external mTLS/OIDC gate exists.
 
 ---
 
-## 6. Pktmon Counter Flight Recorder
+## 6. Purpose- and Epoch-Bound Telemetry Tokens
 
-**Pitch.** Use Windows' in-box Packet Monitor in counters-only, tightly filtered
-mode to capture network-path health and drop reasons around a suspicious flow or
-containment action without retaining payloads.
+**Pitch.** Replace indefinitely linkable pseudonyms with domain-separated,
+purpose-specific tokens that rotate on policy epochs and require an audited
+join permit for longitudinal analysis.
 
-### Why now
+### Why now and threat model
 
-Packet Monitor is an in-box Windows component that exposes cross-component packet
-counts, drop detection/reasons, ETW/WPP integration, and circular or memory
-modes:
-[Packet Monitor overview](https://learn.microsoft.com/en-us/windows-server/networking/technologies/pktmon/pktmon).
-Microsoft recommends filters because unfiltered capture is noisy and documents
-counters as a lower-cost alternative to log analysis:
-[Pktmon command formatting](https://learn.microsoft.com/en-us/windows-server/networking/technologies/pktmon/pktmon-syntax).
+Angerona already HMAC-tokenizes accounts, sources, processes, and destinations,
+but a stable token can still become a long-lived tracking identifier. NIST SP
+800-188 stresses that masking is not automatically sufficient de-identification
+and calls for measurable re-identification review. The IETF Privacy Pass
+architecture formalizes unlinkability across issuance/redemption contexts; this
+proposal borrows the *context separation goal*, not its protocol. Sources:
+[NIST SP 800-188](https://csrc.nist.gov/pubs/sp/800/188/final),
+[RFC 9576 Privacy Pass Architecture](https://www.ietf.org/rfc/rfc9576.html).
 
-### Fit and file-specific implementation plan
+Threats are accidental cross-purpose joins, breach-driven long-term tracking,
+salt reuse between tenants/exports, and a rotation that silently destroys the
+minimum correlation needed for detection.
 
-- **BaseModule:** add `src/angerona/modules/pktmon_counters.py` (`windows`,
-  `observe/detect`) as an opt-in worker-backed sensor. Default to
-  `--counters-only`; permit bounded drop-only ETL only with explicit diagnostic
-  consent.
-- **Isolation:** follow `modules/packet_sniffer.py` /
-  `packet_sniffer_worker.py`: hidden worker, strict executable path, fixed argv
-  grammar, Job Object, timeout, capped output, and cleanup.
-- **Correlation:** attach a short recording to a network flow ID or containment
-  action; retain component category, Tx/Rx/drop counts, last drop reason,
-  filter digest, OS build, and time bounds—not packet bytes.
-- **GUI:** expose “Capture network-path evidence (30 s)” from a flow/action
-  detail, with an explicit overhead/privacy notice.
+### Fit and architecture
 
-Maps to `ENT-NET-001/006` and improves response proof without a custom callout.
+- **Core:** extend `data_governance.py` with HKDF-derived keys scoped to
+  `(tenant, purpose, field class, epoch, schema version)`. A token includes only
+  a short purpose/epoch identifier and MAC output.
+- **Analytics:** identity/network analytics declare required lookback and
+  purpose. A bounded overlap permits current/previous epoch comparison; broader
+  joins require a short-lived, typed, audited re-tokenization plan executed at
+  the protected local source.
+- **Export:** each privacy manifest records token domain, epoch, joinability,
+  retention, and deletion state without exposing derivation keys.
+- **Migration:** stable legacy tokens remain labeled `legacy-linkable`; they are
+  never silently relabeled or recomputed without source evidence.
 
-### Abuse cases and failure handling
+### Implementation slices
 
-- Never accept free-form pktmon arguments or executable paths.
-- One Angerona-owned session at a time; detect foreign sessions without stopping
-  them.
-- Component IDs are boot/session-local and must not be treated as durable
-  identity.
-- Timeout, crash, privilege failure, or unsupported build yields an incomplete
-  diagnostic, not “no drops.”
-- No full packet capture, TLS interception, session keys, credential scanning,
-  or remote destinations by default.
+1. **M:** domain separation for new exports and tests; no database migration.
+2. **M:** epoch rotation for new analytics with measured detection impact.
+3. **M-L:** controlled join permits only after privacy review and recovery tests.
 
-### Performance budget
+### Tests and performance budget
 
-- Default duration <= 30 seconds; <= 32 narrow filters; one concurrent session.
-- Counters-only steady overhead target <= 1% CPU and <= 32 MiB worker memory,
-  measured on the supported Windows matrix.
-- Diagnostic ETL, if explicitly enabled, is circular and capped at 16 MiB with
-  automatic deletion after derived metadata is committed.
-
-### Acceptance tests
-
-- Validate exact argv for IPv4/IPv6/TCP/UDP filters and reject injection tokens.
-- Verify timeout/kill-on-close, foreign-session preservation, bounded files,
-  unsupported build, privilege denial, malformed JSON, and cleanup after crash.
-- Prove default output contains no payload bytes or credential values.
-- Correlate a synthetic blocked flow to a bounded counter/drop record without
-  declaring the WFP rule verified from pktmon alone.
+- Same input in different tenant/purpose/field/epoch domains never matches;
+  same authorized domain is deterministic.
+- Reject weak/missing keys, epoch rollback, cross-tenant salt reuse, unknown
+  versions, oversized values, and unauthorized join attempts.
+- Replay current identity/NDR fixtures across an epoch boundary to quantify lost
+  detections; no privacy change ships if safety-critical correlation regresses.
+- Tokenization remains O(1), adds below 5% to current minimization benchmarks,
+  and retains at most current plus previous epoch keys in memory.
 
 ### Safety
 
-Defensive local diagnostics only. It is metadata-first, consent-gated, bounded,
-and supplies no interception, evasion, offensive packet generation, or payload
-collection capability.
+Privacy hardening only. It does not claim anonymization, export raw identifiers,
+or weaken critical local detections. If privacy and essential response evidence
+conflict, the feature must abstain and show the conflict rather than silently
+breaking either guarantee.
 
 ---
 
-## Recommended cycle cut
+## 7. Browser Session-Theft Behavior Correlator
 
-Implement the first three as the enterprise foundation:
+**Pitch.** Detect an infostealer's behavior chain—unexpected access to browser
+credential stores, decryption activity, staging, and outbound transfer—without
+reading, copying, or logging a credential or cookie.
 
-1. **Kernel-Boundary Posture Ledger** gives honest coverage and a safe roadblock
-   against prematurely shipping the custom driver.
-2. **Transactional WFP Containment** provides the highest-value response proof.
-3. **Telemetry Loss Accounting** makes all later detection evidence more
-   trustworthy.
+### Why now and threat model
 
-If capacity remains, build the Investigation Broker's deterministic registry and
-lease verifier without wiring model-driven execution. The Evidence Reference
-Resolver can then become the common proof substrate. Pktmon is a small,
-independent diagnostic slice after the containment contract exists.
+Microsoft's May 2025 Lumma Stealer analysis shows practical hunting patterns for
+non-browser processes opening sensitive browser files and for suspicious
+cryptographic unprotect operations associated with browser data. Source:
+[Microsoft: Lumma Stealer delivery and capabilities](https://www.microsoft.com/en-us/security/blog/2025/05/21/lumma-stealer-breaking-down-the-delivery-techniques-and-capabilities-of-a-prolific-infostealer/).
+
+Angerona detects LSASS dumping but does not model theft of Chromium/Firefox
+cookies, login databases, or session material. The threat is a signed or renamed
+process accessing browser profile stores, invoking decryption, staging an
+archive, then contacting a new destination. Browser backup, migration,
+password-manager, AV, and enterprise-management software are major benign cases.
+
+### Fit and architecture
+
+- **Core:** add a bounded temporal state machine keyed by immutable process
+  identity. Features are only category flags and keyed path digests:
+  `browser-store-open`, `unexpected-reader`, `decrypt-operation`, `archive-stage`,
+  `new-destination`, `user-session`, and `telemetry-missing`.
+- **Sensors:** consume supported ETW/Event Log/Sysmon or normalized vendor events
+  only when available. Do not install audit policy, read browser databases, hook
+  crypto APIs, or scan cookie values. Missing file-open/decryption evidence is a
+  visible coverage gap.
+- **Baseline:** reuse `process_baseline.py`, exact signer/path/hash provenance,
+  and supervised allowlisting. Never trust basename or publisher alone.
+- **Response:** High confidence requires at least three independent classes,
+  including behavior after access. Resolve Center may stage an exact-process
+  scan/containment preview through existing typed actions.
+
+### Implementation slices
+
+1. **M:** offline analytic/replay engine with synthetic normalized evidence.
+2. **M-L:** one version-gated passive Windows collector after physical-host
+   privacy and performance measurement.
+3. **M:** signed detection package and benign-enterprise fixture corpus.
+
+### Tests and performance budget
+
+- Positive fixtures cover direct database access, copied database, renamed
+  runtime, decrypt-plus-stage, and stage-plus-egress. Negative fixtures cover
+  browsers, backup/migration, AV, password managers, developer tools, updates,
+  and profile repair.
+- Path strings, URLs, cookie values, passwords, tokens, browser history, and file
+  contents never reach persisted/exported evidence.
+- Missing telemetry, PID reuse, out-of-order data, duplicated records, a single
+  file open, or decryption alone cannot produce High/Critical or authorize action.
+- Fixed five-minute windows, at most 2,048 process states, O(1) updates, and a
+  measured throughput regression below 3% at 50,000 synthetic events/minute.
+
+### Safety
+
+Defensive detection only. It never opens a browser credential database, calls a
+decryption routine, captures a cookie, simulates theft, generates an exfiltration
+sample, or exposes an infostealer recipe.
+
+---
+
+## Recommended low-risk cut for this sweep
+
+1. **Crash Breadcrumb Capsule, diagnostic-only slice.** It directly addresses
+   the current random-crash problem, is one fixed page of metadata, and changes
+   no recovery decision. It should land only after forbidden-field and forced-
+   crash tests prove the capsule is privacy safe.
+2. **WinRE/QMR Readiness, read-only slice.** It is small, version-gated, has no
+   policy mutation, and makes a new Windows recovery/privacy boundary visible.
+   Parsing must discard Wi-Fi elements before any log or model can see them.
+
+The RMM trust ledger is the next detection feature after those two. WebAuthn,
+MCP modernization, rotating telemetry tokens, and browser-theft correlation
+change larger trust or data contracts and should receive their own threat-model
+review before implementation.
+
+## Defensive-only boundary
+
+Every proposal is defensive, local-first, bounded, and fail-visible. None adds
+exploitation, credential access, destructive payloads, stealth, arbitrary remote
+execution, model-authored executable actions, packet decryption, offensive
+simulation, or an unsigned kernel component. Observation does not authorize
+response; response continues through Angerona's deterministic typed policy and
+human approval paths.

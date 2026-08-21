@@ -19,7 +19,7 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST") or os.getenv(
     "OLLAMA_URL", "http://localhost:11434/api/generate"
 ).removesuffix("/api/generate")
 MODEL_NAME = os.getenv("MODEL_NAME", "llama3:latest")
-STATUS_FILE = "edr_status.json"
+STATUS_FILE = data_dir() / "edr_status.json"
 
 PROCESS_VM_READ = 0x0010
 PROCESS_QUERY_INFORMATION = 0x0400
@@ -287,7 +287,7 @@ def export_engine_status():
             "active_code_trace": list(engine_state["active_code_trace"])
         }
     try:
-        temp_file = STATUS_FILE + ".tmp"
+        temp_file = STATUS_FILE.with_suffix(STATUS_FILE.suffix + ".tmp")
         with open(temp_file, "w") as f:
             json.dump(status_update, f, indent=4)
         # Safe atomic swap

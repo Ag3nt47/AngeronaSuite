@@ -18,7 +18,8 @@ AREAS = (
     SettingsArea(
         "general", "General",
         "Local model, appearance, motion, integrity and updates.",
-        ("ollama", "model", "theme", "appearance", "animation", "motion",
+        ("ollama", "model", "theme", "appearance", "dashboard", "flow",
+         "local soc", "animation", "motion",
          "orb", "update", "github", "integrity"),
         "Local configuration", False,
     ),

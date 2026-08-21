@@ -6,10 +6,10 @@ any ``BaseModule`` and reload it live — behind hard safety guardrails.
 
 Safety model
 ------------
-1. Environmental isolation — on launch it asks the ``ModuleManager`` to stop every
-   active daemon thread, overrides the Threat Level indicator to
-   "⚠️ DIAGNOSTIC OVERRIDE: TESTING IN PROGRESS", and suppresses all outbound
-   ``EventBus`` traffic so test noise can't trigger SOAR / cloud escalation.
+1. Process isolation — opening the editor does not pause production sensors or
+   replace the process-global ``EventBus`` publisher. A self-test runs in a
+   disposable Python process with a sanitized environment, temporary data root,
+   and a hard deadline.
 2. AST gate — code is never written to disk unless ``ast.parse()`` succeeds.
 3. Backups + history — every applied change is backed up (in-memory + temp file)
    and logged to a timestamped ledger so any edit can be reverted or audited.
@@ -20,10 +20,8 @@ Embed in the app: ``launch_sandbox_editor(manager, bus, threat_callback=...)``.
 from __future__ import annotations
 
 import ast
-import contextlib
 import importlib
 import inspect
-import io
 import sys
 import time
 import traceback
@@ -41,6 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from angerona.core.module_base import BaseModule
+from angerona.core.sandbox_runner import run_isolated_self_test
 
 
 # ── Syntax highlighting ───────────────────────────────────────────────────────
@@ -97,33 +96,25 @@ class PythonHighlighter(QSyntaxHighlighter):
 
 # ── Isolated self_test runner ─────────────────────────────────────────────────
 class IsolatedTestWorker(QThread):
-    """Runs a module's ``self_test()`` on a decoupled thread with stdout/stderr
-    captured, so a test can't touch the GUI thread or the live EventBus."""
+    """Waits for the bounded subprocess without blocking the GUI thread."""
 
     done = Signal(bool, str)   # (passed, captured_output)
 
     def __init__(self, module: BaseModule, parent=None) -> None:
         super().__init__(parent)
-        self._module = module
+        self._module_name = type(module).__module__
+        self._class_name = type(module).__name__
+        self._expected_name = str(getattr(module, "name", ""))
 
     def run(self) -> None:
-        buf = io.StringIO()
-        passed = False
         try:
-            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                result = self._module.self_test()
-            if isinstance(result, tuple):
-                passed = bool(result[0])
-                detail = str(result[1]) if len(result) > 1 else ""
-            else:
-                passed = bool(result)
-                detail = ""
-            if detail:
-                buf.write(f"\n[self_test detail] {detail}")
+            passed, output = run_isolated_self_test(
+                self._module_name, self._class_name, self._expected_name,
+            )
         except Exception:
-            buf.write("\n" + traceback.format_exc())
             passed = False
-        self.done.emit(passed, buf.getvalue().strip() or "(no output)")
+            output = traceback.format_exc()
+        self.done.emit(passed, output)
 
 
 # ── History ledger ────────────────────────────────────────────────────────────
@@ -175,11 +166,9 @@ class SandboxEditor(QMainWindow):
         self._history: Dict[str, List[dict]] = {}   # name -> ledger entries
         self._current: Optional[str] = None
         self._test_worker: Optional[IsolatedTestWorker] = None
-        self._orig_publish = None
         self._close_confirmed = False
 
         self._build_ui()
-        self._enter_isolation()
         self._populate_modules()
         # Auto-open the requested module's file (used by a module window's
         # "Edit code (Sandbox)" button so you land straight on its code).
@@ -201,9 +190,9 @@ class SandboxEditor(QMainWindow):
         root = QVBoxLayout(central)
         root.setContentsMargins(8, 8, 8, 8)
 
-        banner = QLabel("⚠️  DIAGNOSTIC OVERRIDE: TESTING IN PROGRESS — live sensors are paused")
+        banner = QLabel("🧪  ISOLATED TESTING — live sensors and the production EventBus remain active")
         banner.setStyleSheet(
-            "background:#7f1d1d; color:#fee2e2; font-weight:800; padding:8px 12px;"
+            "background:#0c4a6e; color:#e0f2fe; font-weight:800; padding:8px 12px;"
             "border-radius:6px;")
         root.addWidget(banner)
 
@@ -298,41 +287,12 @@ class SandboxEditor(QMainWindow):
             "QHeaderView::section { background:#111827; color:#93c5fd; border:none; padding:4px; }"
         )
 
-    # ── Isolation lifecycle ─────────────────────────────────────────────────
-    def _enter_isolation(self) -> None:
-        # 1) stop all live daemon threads
-        try:
-            self.manager.stop_all()
-        except Exception as exc:
-            self._log(f"[!] could not stop modules: {exc}")
-        # 2) suppress outbound bus traffic
-        if self.bus is not None and hasattr(self.bus, "publish"):
-            self._orig_publish = self.bus.publish
-            self.bus.publish = lambda *a, **k: None   # type: ignore[assignment]
-        # 3) override threat indicator
-        if self._threat_cb:
-            try:
-                self._threat_cb("⚠️ DIAGNOSTIC OVERRIDE: TESTING IN PROGRESS")
-            except Exception:
-                pass
-        self._log("Sandbox armed — all sensors paused, EventBus muted.")
-
-    def _exit_isolation(self) -> None:
-        if self._orig_publish is not None and self.bus is not None:
-            self.bus.publish = self._orig_publish   # type: ignore[assignment]
-            self._orig_publish = None
-        if self._threat_cb:
-            try:
-                self._threat_cb("")   # clear override
-            except Exception:
-                pass
-
     def closeEvent(self, event) -> None:  # noqa: N802
         if not self._close_confirmed:
             if QMessageBox.question(
                 self, "Exit Sandbox",
-                "Restore live sensors and leave the sandbox?\n\n"
-                "Modules you edited will be (re)started with the applied code.",
+                "Leave the sandbox?\n\nProduction sensors stay active. A running isolated "
+                "self-test will be allowed to reach its hard deadline before cleanup.",
             ) != QMessageBox.Yes:
                 event.ignore()
                 return
@@ -345,12 +305,6 @@ class SandboxEditor(QMainWindow):
 
         if defer_close_until_threads(self, event, (self._test_worker,)):
             return
-        self._exit_isolation()
-        # Best-effort: bring previously-enabled modules back online.
-        try:
-            self.manager.start_enabled()
-        except Exception as exc:
-            self._log(f"[!] restart failed: {exc}")
         event.accept()
 
     # ── Module list ───────────────────────────────────────────────────────────
@@ -393,6 +347,9 @@ class SandboxEditor(QMainWindow):
         mod = self.manager.modules.get(name)
         if mod is None:
             self._log(f"[!] {name} not found.")
+            return
+        if self._test_worker is not None and self._test_worker.isRunning():
+            self._log("[!] an isolated self-test is already running.")
             return
         self._log(f"── Running isolated self_test() for {name} …")
         self._test_worker = IsolatedTestWorker(mod, self)
@@ -573,12 +530,12 @@ class SandboxEditor(QMainWindow):
     def _emit_module_alert(self, name: str, detail: str) -> None:
         """Surface a reload/restart failure onto the live alert feed (via the real
         publish, temporarily) so it lands in the user's module alert history."""
-        if self._orig_publish is None or self.bus is None:
+        if self.bus is None or not hasattr(self.bus, "publish"):
             return
         try:
             from angerona.core.eventbus import Event, Severity
-            self._orig_publish(Event(name, f"SANDBOX: {detail}", Severity.HIGH,
-                                     time.time(), {"sandbox": True}))
+            self.bus.publish(Event(name, f"SANDBOX: {detail}", Severity.HIGH,
+                                   time.time(), {"sandbox": True}))
         except Exception:
             pass
 

@@ -6,12 +6,24 @@ import sqlite3
 import time
 import threading
 from queue import Queue
+from pathlib import Path
 
-# C:\Windows\Temp is ACL-restricted — a non-elevated run can't create the DB there,
-# so the flight recorder would silently never persist. Default to a file next to this
-# script (works on any drive/folder, elevated or not), overridable via EDR_FLIGHT_DB.
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.getenv("EDR_FLIGHT_DB", os.path.join(_SCRIPT_DIR, "ude_telemetry.db"))
+try:
+    from angerona.core.data_paths import data_dir
+except ModuleNotFoundError:  # Support direct execution from a source checkout.
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from angerona.core.data_paths import data_dir
+
+# Keep even this manually runnable legacy recorder under Angerona's canonical
+# runtime root.  An explicit absolute override remains available for operators;
+# relative overrides are contained beneath the canonical root.
+_configured_db = os.getenv("EDR_FLIGHT_DB", "").strip()
+if _configured_db:
+    _candidate_db = Path(_configured_db).expanduser()
+    DB_PATH = _candidate_db if _candidate_db.is_absolute() else data_dir() / _candidate_db
+else:
+    DB_PATH = data_dir() / "ude_telemetry.db"
 
 def _ensure_column(cursor, table: str, column: str, col_type: str):
     """Adds `column` to `table` if it doesn't already exist.
@@ -28,7 +40,7 @@ def _ensure_column(cursor, table: str, column: str, col_type: str):
 def initialize_flight_recorder(db_queue: Queue, log_module) -> threading.Thread:
     """Verifies schema table structures and initializes the async background database writer."""
     try:
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         

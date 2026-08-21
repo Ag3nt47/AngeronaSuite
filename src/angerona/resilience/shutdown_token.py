@@ -19,7 +19,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
+import re
 import secrets
 import time
 from pathlib import Path
@@ -108,6 +110,9 @@ def verify_response(nonce: str, sig: str, key: Optional[bytes] = None) -> bool:
 def request_standdown(reason: str = "maintenance", key: Optional[bytes] = None,
                       path: Optional[Path] = None) -> dict:
     """Write a signed stand-down command. Returns the command dict."""
+    reason = str(reason).strip()
+    if not reason or len(reason) > 256 or any(ord(char) < 32 for char in reason):
+        raise ValueError("stand-down reason must be 1-256 printable characters")
     nonce = make_challenge()
     ts = time.time()
     payload = f"{nonce}\x00{int(ts)}\x00{reason}"
@@ -122,18 +127,38 @@ def request_standdown(reason: str = "maintenance", key: Optional[bytes] = None,
 
 
 def is_standdown_requested(max_age_s: float = 3600.0, key: Optional[bytes] = None,
-                           path: Optional[Path] = None) -> bool:
+                           path: Optional[Path] = None,
+                           max_future_skew_s: float = 30.0) -> bool:
     """True only if a fresh, correctly-signed stand-down command is present."""
     p = Path(path) if path else _standdown_path()
     try:
         cmd = json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return False
-    nonce = cmd.get("nonce", "")
-    ts = float(cmd.get("ts", 0))
-    reason = cmd.get("reason", "")
-    sig = cmd.get("sig", "")
-    if time.time() - ts > max_age_s:
+    try:
+        nonce = str(cmd.get("nonce", ""))
+        ts = float(cmd.get("ts", 0))
+        reason = str(cmd.get("reason", ""))
+        sig = str(cmd.get("sig", ""))
+        max_age = float(max_age_s)
+        max_future_skew = float(max_future_skew_s)
+    except (TypeError, ValueError):
+        return False
+    if (
+        not math.isfinite(ts)
+        or not math.isfinite(max_age)
+        or not math.isfinite(max_future_skew)
+        or max_age < 0
+        or max_future_skew < 0
+        or not re.fullmatch(r"[0-9a-f]{32}", nonce)
+        or not re.fullmatch(r"[0-9a-f]{64}", sig)
+        or not reason
+        or len(reason) > 256
+        or any(ord(char) < 32 for char in reason)
+    ):
+        return False
+    age = time.time() - ts
+    if age < -max_future_skew or age > max_age:
         return False
     payload = f"{nonce}\x00{int(ts)}\x00{reason}"
     expected = hmac.new(key if key is not None else _load_key(),

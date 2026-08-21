@@ -1,0 +1,50 @@
+[
+  {
+    "id": "C7-R1-01",
+    "title": "Authenticated Remote Bridge telemetry can trigger destructive local SOAR response",
+    "severity": "HIGH",
+    "component": "src/angerona/modules/remote_bridge.py:411-435; src/angerona/core/eventbus.py:226-230; src/angerona/modules/soar.py:67-75,94-106,112-131,158-183,203-225",
+    "status": "FIXED",
+    "recommendation": "Give remote evidence a non-overridable transport origin, reject it from local response, and address any approved remote action to a stable endpoint/process generation through a typed authorized fleet command."
+  },
+  {
+    "id": "C7-R1-02",
+    "title": "Threat Intel reports staged proposals as executed fixes",
+    "severity": "MEDIUM",
+    "component": "src/angerona/core/cve_fix_advisor.py:336-378; src/angerona/gui/threat_intel_page.py:457-503; README.md:106",
+    "status": "FIXED",
+    "recommendation": "Render staged, executed, and verified as separate states and reserve fixed/applied wording for a typed operation with a passed postcondition and authenticated receipt."
+  },
+  {
+    "id": "C7-R1-03",
+    "title": "No-fix and AI-outage states can hide real KEV vulnerabilities",
+    "severity": "MEDIUM",
+    "component": "src/angerona/gui/threat_intel_page.py:420-455; src/angerona/core/cve_ignore.py:62-85,105-114; src/angerona/modules/intel_sync.py:365-385",
+    "status": "FIXED",
+    "recommendation": "Keep no-fix CVEs active, remove AI-driven bulk ignore, and use separate expiring states for false positive, accepted risk, and compensating control."
+  },
+  {
+    "id": "C7-R1-04",
+    "title": "Sandbox self-tests can leave every detector stopped indefinitely",
+    "severity": "MEDIUM",
+    "component": "src/angerona/gui/sandbox_editor.py:99-126,180-183,302-354,388-405; src/angerona/gui/thread_lifecycle.py:25-67",
+    "status": "FIXED",
+    "recommendation": "Run self-tests in a restricted subprocess with a hard deadline and make EventBus/sensor restoration independent of worker completion."
+  },
+  {
+    "id": "C7-R1-05",
+    "title": "Release builds trust version pins without artifact hashes",
+    "severity": "MEDIUM",
+    "component": ".github/workflows/release.yml:26-39; constraints-release.txt:1-73; start-angerona.bat:76-80; Install-Angerona.bat:83-104",
+    "status": "FIXED",
+    "recommendation": "Use a reviewed hash-locked wheelhouse with --require-hashes and pin/verify the Inno compiler rather than trusting the mutable runner tool image."
+  },
+  {
+    "id": "C7-R1-06",
+    "title": "One-click Setup accepts rollback to an older vulnerable build",
+    "severity": "MEDIUM",
+    "component": "installer/Angerona.iss:12-34,36-44; .github/workflows/release.yml:127-145",
+    "status": "FIXED",
+    "recommendation": "Persist and enforce a protected monotonic installed version, reject downgrades by default, and require a separately audited recovery flow for intentional rollback."
+  }
+]

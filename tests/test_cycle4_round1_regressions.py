@@ -117,6 +117,11 @@ def test_launchers_keep_diagnostics_inside_the_runtime_root() -> None:
         text = (root / name).read_text(encoding="utf-8")
         assert 'set "ANGERONA_DIAG_DIR=%ANGERONA_DATA%\\diagnostics"' in text
         assert 'set "ANGERONA_DIAG_DIR=%~dp0diagnostics"' not in text
+        assert "if not defined ANGERONA_DATA" not in text
+        assert (
+            'for %%I in ("%~dp0..\\AngeronaData") do '
+            'set "ANGERONA_DATA=%%~fI"'
+        ) in text
     guarded = (root / "start-angerona-guarded.bat").read_text(encoding="utf-8")
     assert 'call "%~dp0start-angerona.bat"' in guarded
     assert 'angerona_watchdog.exe "venv\\Scripts\\pythonw.exe"' not in guarded

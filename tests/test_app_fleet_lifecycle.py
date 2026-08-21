@@ -21,7 +21,10 @@ def _app(tmp_path: Path, *, enabled: bool = True):
 
 
 def test_app_starts_and_stops_opt_in_fleet_service(tmp_path, monkeypatch):
-    monkeypatch.setenv("ANGERONA_FLEET_SERVICE_KEY", "s" * 48)
+    from angerona.core.fleet_credentials import LEGACY_FLEET_SERVICE_KEY
+    from angerona.core.secure_store import write_secret_map
+
+    write_secret_map({LEGACY_FLEET_SERVICE_KEY: "s" * 48}, tmp_path)
     app = _app(tmp_path)
     assert app._start_fleet_service()
     assert app._fleet_service is not None

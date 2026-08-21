@@ -128,6 +128,8 @@ def _():
     # not a product failure, when this harness runs on another OS.
     if sys.platform != "darwin":
         expected.append("macos observe is available only on macos")
+    if not sys.platform.startswith("linux"):
+        expected.append("linux observe is available only on linux")
     real_fails = []
     for ln in report.splitlines():
         if "[FAIL]" in ln and not any(e in ln.lower() for e in expected):

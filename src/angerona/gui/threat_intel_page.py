@@ -3,20 +3,17 @@
 Displays the CISA Known Exploited Vulnerabilities (KEV) matches that the
 INTL module writes to ``shared_logs/upstream_threats.json``.
 
-Analyst controls (v1.7.1):
-  - **Ignore / Revert** per CVE: some CVEs are too vague to action or have no
-    fix. Ignoring flags the ID (kept in memory with a full per-ID history) and
-    removes it from the THREAT LEVEL — so Angerona stops reporting HIGH/CRITICAL
-    over things you can't fix. A Revert button undoes it any time. (core/cve_ignore.py)
+Analyst controls:
+  - **Not applicable / Revert** per CVE: an operator can exclude only a verified
+    host-correlation false positive, with a rationale, approver, and expiry.
+    No-fix and AI-unavailable results remain active. (core/cve_ignore.py)
   - **AI fix analysis** (local llama3): compares each CVE to this host's system
     info; if a specific scriptable fix exists it shows ❗ "Potential fix
-    available" with an Apply (confirm-then-execute) button and a Revert-change
-    button after implementation. If none, offers Flag & Ignore. (core/cve_fix_advisor.py)
-  - **Mass Flag & Ignore**: analyze everything and bulk-ignore the CVEs with no
-    available fix in one click.
+    available" with a Stage proposal button. Generated scripts are review
+    artifacts and are never executed by this workflow. (core/cve_fix_advisor.py)
 
-Remediation is REVIEW-GATED — Apply always shows the exact commands and requires
-explicit confirmation before running; a revert script is captured automatically.
+Remediation is REVIEW-GATED — staging shows the exact proposed commands and
+records staged/executed/verified as separate states.
 """
 from __future__ import annotations
 
@@ -28,7 +25,7 @@ from typing import Optional
 from PySide6.QtCore import Qt, QTimer, QThread, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QDialog, QFrame, QHBoxLayout, QHeaderView, QLabel, QMessageBox,
+    QDialog, QFrame, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMessageBox,
     QPushButton, QSizePolicy, QTableWidget, QTableWidgetItem, QTextEdit,
     QVBoxLayout, QWidget,
 )
@@ -37,6 +34,7 @@ from angerona.gui.cve_analysis_window import CveAnalysisWindow
 # ── tunables ──────────────────────────────────────────────────────────────────
 _AUTO_REFRESH_MS = 60_000   # re-read upstream_threats.json every 60 s
 _MAX_REMEDIATION_CELL = 120 # truncate remediation text in the table cell
+_NOT_APPLICABLE_TTL_SECONDS = 30 * 24 * 60 * 60
 
 
 def _repo_root() -> Path:
@@ -56,6 +54,27 @@ def _load_threats() -> dict:
         return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return {"matches": [], "generated": "parse error", "match_count": 0}
+
+
+def _proposal_result_copy(cve: str, result: dict) -> tuple[str, str, bool]:
+    """Return operator-facing copy without conflating staging and execution."""
+    output = str((result or {}).get("output", ""))[:1500] or "(none)"
+    if result.get("ok") and result.get("staged") and not result.get("executed"):
+        path = str(result.get("proposal_path", ""))
+        location = f"\n\nReview artifact:\n{path}" if path else ""
+        return (
+            "Proposal staged — not executed",
+            f"{cve} proposal was staged for operator review. No command ran and "
+            f"the vulnerability is not verified as fixed.{location}\n\nDetails:\n{output}",
+            True,
+        )
+    if result.get("ok") and result.get("executed") and result.get("verified"):
+        return "Fix executed and verified", f"{cve} passed its postcondition.\n\n{output}", True
+    return (
+        "Proposal not staged",
+        f"{cve} did not produce an executable or verified fix.\n\nDetails:\n{output}",
+        False,
+    )
 
 
 class _FixWorker(QThread):
@@ -129,9 +148,9 @@ class ThreatIntelDashboard(QDialog):
         analyze_btn.clicked.connect(self._analyze_all)
         hdr.addWidget(analyze_btn)
 
-        mass_btn = QPushButton("🚫  Mass Flag & Ignore")
-        mass_btn.setToolTip("Analyze all applicable CVEs and bulk-ignore the ones with NO available "
-                            "fix, so they stop affecting the threat level. Reversible per CVE.")
+        mass_btn = QPushButton("ⓘ  Why no bulk ignore?")
+        mass_btn.setToolTip("No-fix and AI-unavailable results remain active; only a verified "
+                            "per-CVE applicability failure can be excluded.")
         mass_btn.setStyleSheet(
             "background:#4a1d1d; color:#fca5a5; border:1px solid #b91c1c;"
             "border-radius:6px; padding:5px 12px; font-weight:700;")
@@ -167,8 +186,8 @@ class ThreatIntelDashboard(QDialog):
         # ── Info bar ─────────────────────────────────────────────────────
         self._info = QLabel(
             "⚠  Only inbound CISA data is used — no host data leaves the machine. "
-            "Ignored CVEs stay listed but are removed from the threat level. Apply is "
-            "confirm-then-execute with an auto-captured Revert."
+            "Only verified not-applicable CVEs can be excluded, with an expiring record. "
+            "AI proposals are staged for review and are never executed here."
         )
         self._info.setWordWrap(True)
         self._info.setStyleSheet(
@@ -291,24 +310,31 @@ class ThreatIntelDashboard(QDialog):
             self._footer.setStyleSheet("color:#f59e0b; font-size:11px;")
 
     def _set_fix_cell(self, row: int, cve: str, rec: dict, ignored: bool) -> None:
-        """Fix column: ❗ clickable Apply when a fix exists, else status text."""
+        """Fix column: represent staged, executed, and verified states distinctly."""
         from angerona.core import cve_fix_advisor
         applied = cve_fix_advisor.applied_state(cve)
         analysis = self._fix_cache.get(cve)
-        if applied and applied.get("applied") and not applied.get("reverted"):
-            btn = self._mini_btn("↩ Revert fix", "#7c2d12", "#fdba74",
+        if (applied and applied.get("executed") and applied.get("verified")
+                and not applied.get("reverted")):
+            btn = self._mini_btn("↩ Stage rollback", "#7c2d12", "#fdba74",
                                   lambda: self._revert_fix(cve))
             self._table.setCellWidget(row, self._C_FIX, self._wrap(btn)); return
+        if applied and applied.get("staged") and not applied.get("executed"):
+            self._table.removeCellWidget(row, self._C_FIX)
+            it = QTableWidgetItem("📋 staged — not executed")
+            it.setForeground(QColor("#fbbf24"))
+            it.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self._table.setItem(row, self._C_FIX, it); return
         if ignored:
             self._table.removeCellWidget(row, self._C_FIX)
-            it = QTableWidgetItem("🚫 ignored"); it.setForeground(QColor("#64748b"))
+            it = QTableWidgetItem("🚫 not applicable"); it.setForeground(QColor("#64748b"))
             it.setFlags(Qt.ItemFlag.ItemIsEnabled); self._table.setItem(row, self._C_FIX, it); return
         if analysis is None:
             self._table.removeCellWidget(row, self._C_FIX)
             it = QTableWidgetItem("—"); it.setForeground(QColor("#64748b"))
             it.setFlags(Qt.ItemFlag.ItemIsEnabled); self._table.setItem(row, self._C_FIX, it); return
         if analysis.get("fix_available"):
-            btn = self._mini_btn("❗ Apply fix", "#14532d", "#86efac",
+            btn = self._mini_btn("📋 Stage proposal", "#14532d", "#86efac",
                                   lambda: self._apply_fix(cve, analysis))
             self._table.setCellWidget(row, self._C_FIX, self._wrap(btn))
         else:
@@ -320,11 +346,11 @@ class ThreatIntelDashboard(QDialog):
         detail = self._mini_btn("Detail", "#1e3a5f", "#38bdf8",
                                 lambda: self._stage_review(cve, rec))
         if ignored:
-            toggle = self._mini_btn("Revert ignore", "#334155", "#e2e8f0",
-                                    lambda: self._toggle_ignore(cve, False))
+            toggle = self._mini_btn("Restore active", "#334155", "#e2e8f0",
+                                     lambda: self._toggle_ignore(cve, False))
         else:
-            toggle = self._mini_btn("Ignore", "#3f3f46", "#d4d4d8",
-                                    lambda: self._toggle_ignore(cve, True))
+            toggle = self._mini_btn("Not applicable", "#3f3f46", "#d4d4d8",
+                                     lambda: self._toggle_ignore(cve, True))
         cell = QWidget(); cl = QHBoxLayout(cell)
         cl.setContentsMargins(4, 1, 4, 1); cl.setSpacing(4)
         cl.addWidget(detail); cl.addWidget(toggle)
@@ -343,19 +369,37 @@ class ThreatIntelDashboard(QDialog):
         l.setContentsMargins(4, 1, 4, 1); l.addWidget(w); return cell
 
     # ── Ignore / Revert / History ────────────────────────────────────────
-    def _toggle_ignore(self, cve: str, ignore_it: bool) -> None:
+    def _toggle_ignore(self, cve: str, ignore_it: bool) -> bool:
         from angerona.core import cve_ignore
         if ignore_it:
-            reason = "operator ignore (too vague / no fix / accepted risk)"
-            cve_ignore.ignore(cve, reason)
+            reason, accepted = QInputDialog.getText(
+                self, "Mark CVE not applicable",
+                "Evidence that this host/product correlation is a false positive:\n"
+                "(No fix, accepted risk, or AI failure is not sufficient.)",
+            )
+            reason = reason.strip()
+            if not accepted or not reason:
+                return False
+            approver, accepted = QInputDialog.getText(
+                self, "Record approver", "Operator/approver identifier for the audit record:",
+            )
+            approver = approver.strip()
+            if not accepted or not approver:
+                return False
+            cve_ignore.ignore(
+                cve, reason, classification="not_applicable",
+                expires_at=time.time() + _NOT_APPLICABLE_TTL_SECONDS,
+                approver=approver,
+            )
         else:
-            cve_ignore.revert(cve, "operator reverted ignore")
+            cve_ignore.revert(cve, "operator restored finding to active scoring")
         self._load_and_render()
+        return True
 
     def _show_history(self, cve: str) -> None:
         from angerona.core import cve_ignore
         hist = cve_ignore.history(cve)
-        dlg = QDialog(self); dlg.setWindowTitle(f"Ignore history — {cve}"); dlg.resize(560, 360)
+        dlg = QDialog(self); dlg.setWindowTitle(f"Applicability history — {cve}"); dlg.resize(560, 360)
         v = QVBoxLayout(dlg)
         v.addWidget(QLabel(f"<b>{cve}</b> — flag/ignore audit trail "
                            f"(currently {'IGNORED' if cve_ignore.is_ignored(cve) else 'active'}):"))
@@ -406,7 +450,7 @@ class ThreatIntelDashboard(QDialog):
     def _on_fix_done(self, analyzed: int, fixes: int) -> None:
         self._footer.setText(
             f"✅  AI analysis complete: {analyzed} analyzed, {fixes} with a potential fix (❗). "
-            "Click ❗ Apply fix, or use Mass Flag & Ignore for the no-fix ones.")
+            "Stage a proposal for review where available; no-fix CVEs remain active.")
         self._footer.setStyleSheet("color:#22c55e; font-size:11px;")
 
     def closeEvent(self, event) -> None:  # noqa: N802
@@ -418,43 +462,15 @@ class ThreatIntelDashboard(QDialog):
         super().closeEvent(event)
 
     def _mass_flag_ignore(self) -> None:
-        from angerona.core import cve_fix_advisor, cve_ignore
-        active = [(m.get("cve"), m) for m in getattr(self, "_matches", [])
-                  if m.get("cve") and not cve_ignore.is_ignored(m.get("cve"))]
-        if not active:
-            QMessageBox.information(self, "Nothing to ignore",
-                                    "There are no active (non-ignored) CVEs.")
-            return
-        if cve_fix_advisor.ollama_available():
-            msg = (f"Analyze all {len(active)} active CVE(s) with local AI and IGNORE the ones "
-                   "with NO available fix?\n\nThey'll stay listed (with history) and can be "
-                   "reverted, but will stop affecting the threat level.")
-        else:
-            msg = (f"Local AI is unavailable. Ignore ALL {len(active)} active CVE(s) shown?\n\n"
-                   "They'll stay listed (with history) and can be reverted per CVE, but will "
-                   "stop affecting the threat level.")
-        if QMessageBox.question(self, "Mass Flag & Ignore", msg,
-                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                                ) != QMessageBox.StandardButton.Yes:
-            return
-        ignored = 0
-        if cve_fix_advisor.ollama_available():
-            for cve, rec in active:
-                analysis = self._fix_cache.get(cve) or cve_fix_advisor.analyze(rec)
-                self._fix_cache[cve] = analysis
-                if not analysis.get("fix_available"):
-                    cve_ignore.ignore(cve, f"mass-ignore: no fix ({analysis.get('reason','')[:80]})")
-                    ignored += 1
-        else:
-            for cve, _rec in active:
-                cve_ignore.ignore(cve, "mass-ignore (AI unavailable)")
-                ignored += 1
-        self._load_and_render()
-        QMessageBox.information(self, "Mass Flag & Ignore",
-                                f"Ignored {ignored} CVE(s) with no available fix. "
-                                "Revert any of them from its row or the detail dialog.")
+        QMessageBox.information(
+            self, "Bulk ignore is disabled",
+            "No-fix, model failure, and local-AI outage states do not prove that a CISA KEV "
+            "is a false positive. They remain active and continue affecting posture.\n\n"
+            "To exclude a bad host correlation, use the per-CVE Not applicable action and "
+            "record evidence, an approver, and an expiry.",
+        )
 
-    # ── Apply / Revert an AI fix (confirm-then-execute) ──────────────────
+    # ── Stage AI remediation proposals (never execute model output) ──────
     def _apply_fix(self, cve: str, analysis: dict) -> None:
         from angerona.core import cve_fix_advisor
         script = (analysis or {}).get("fix_script", "").strip()
@@ -462,7 +478,7 @@ class ThreatIntelDashboard(QDialog):
         if not script:
             QMessageBox.information(self, "No fix", "No fix script is available for this CVE.")
             return
-        dlg = QDialog(self); dlg.setWindowTitle(f"Apply fix — {cve}"); dlg.resize(680, 560)
+        dlg = QDialog(self); dlg.setWindowTitle(f"Stage proposal — {cve}"); dlg.resize(680, 560)
         v = QVBoxLayout(dlg)
         v.addWidget(QLabel(f"<b>❗ Potential fix for {cve}</b>"))
         if analysis.get("summary"):
@@ -471,19 +487,19 @@ class ThreatIntelDashboard(QDialog):
             v.addWidget(QLabel("<b>What this does:</b>"))
             ins = QTextEdit(); ins.setReadOnly(True); ins.setPlainText(analysis["instructions"])
             ins.setMaximumHeight(90); v.addWidget(ins)
-        v.addWidget(QLabel("<b>Commands that will run (PowerShell):</b>"))
+        v.addWidget(QLabel("<b>Proposed PowerShell (review artifact; will not run):</b>"))
         code = QTextEdit(); code.setReadOnly(True); code.setPlainText(script)
         code.setStyleSheet("font-family:'Fira Code',monospace; font-size:11px;"); v.addWidget(code)
         if revert:
-            v.addWidget(QLabel("<b>Auto-captured revert (used by ↩ Revert change):</b>"))
+            v.addWidget(QLabel("<b>Proposed rollback steps (also never auto-executed):</b>"))
             rc = QTextEdit(); rc.setReadOnly(True); rc.setPlainText(revert)
             rc.setMaximumHeight(80); rc.setStyleSheet("font-family:'Fira Code',monospace; font-size:11px;")
             v.addWidget(rc)
-        warn = QLabel("⚠ This runs AI-generated commands on THIS machine. Review them above. "
-                      "You can undo with the Revert change button afterward.")
+        warn = QLabel("⚠ This stages inert model-generated text for review. No command is "
+                      "executed and this action does not verify that the CVE is fixed.")
         warn.setWordWrap(True); warn.setStyleSheet("color:#fbbf24;"); v.addWidget(warn)
         row = QHBoxLayout(); row.addStretch()
-        run = QPushButton("⚙  Confirm & Run fix")
+        run = QPushButton("📋  Confirm & Stage proposal")
         run.setStyleSheet("background:#14532d;color:#86efac;border:1px solid #10b981;"
                           "border-radius:5px;padding:5px 12px;font-weight:700;")
         cancel = QPushButton("Cancel")
@@ -491,13 +507,11 @@ class ThreatIntelDashboard(QDialog):
 
         def _run():
             res = cve_fix_advisor.apply_fix(cve, analysis)
-            if res.get("ok"):
-                QMessageBox.information(self, "Fix applied",
-                    f"{cve} fix ran successfully.\n\nOutput:\n{res.get('output','')[:1500] or '(none)'}\n\n"
-                    "Use ↩ Revert fix (in the row) to undo.")
+            title, message, informational = _proposal_result_copy(cve, res)
+            if informational:
+                QMessageBox.information(self, title, message)
             else:
-                QMessageBox.warning(self, "Fix failed",
-                    f"{cve} fix did not complete cleanly.\n\nOutput:\n{res.get('output','')[:1500]}")
+                QMessageBox.warning(self, title, message)
             dlg.accept(); self._load_and_render()
         run.clicked.connect(_run); cancel.clicked.connect(dlg.reject)
         dlg.exec()
@@ -505,18 +519,18 @@ class ThreatIntelDashboard(QDialog):
     def _revert_fix(self, cve: str) -> None:
         from angerona.core import cve_fix_advisor
         if QMessageBox.question(
-                self, "Revert change",
-                f"Run the captured revert script to undo the {cve} fix?",
+                self, "Stage rollback proposal",
+                f"Stage the captured rollback text for {cve}? It will not be executed.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                 ) != QMessageBox.StandardButton.Yes:
             return
         res = cve_fix_advisor.revert_fix(cve)
         if res.get("ok"):
-            QMessageBox.information(self, "Reverted",
-                f"{cve} change reverted.\n\nOutput:\n{res.get('output','')[:1200] or '(none)'}")
+            QMessageBox.information(self, "Rollback proposal staged — not executed",
+                f"No rollback command ran.\n\nDetails:\n{res.get('output','')[:1200] or '(none)'}")
         else:
             QMessageBox.warning(self, "Revert failed",
-                f"Could not revert {cve}.\n\nOutput:\n{res.get('output','')[:1200]}")
+                f"Could not stage rollback for {cve}.\n\nOutput:\n{res.get('output','')[:1200]}")
         self._load_and_render()
 
     # ── Row detail dialog (adds Ignore/Revert, History, Analyze fix) ─────
@@ -542,7 +556,8 @@ class ThreatIntelDashboard(QDialog):
         dlg = QDialog(self); dlg.setWindowTitle(f"Threat detail — {cve}"); dlg.resize(700, 620)
         lay = QVBoxLayout(dlg)
         ignored = cve_ignore.is_ignored(cve)
-        state_txt = "🚫 IGNORED (excluded from threat level)" if ignored else "active"
+        state_txt = ("🚫 NOT APPLICABLE (temporarily excluded from threat level)"
+                     if ignored else "active")
         head = QLabel(f"<b>{name}</b><br><b>CVE:</b> {cve} &nbsp; "
                       f"<b>Vendor:</b> {vendor} &nbsp; <b>Product:</b> {prod}<br>"
                       f"<b>MITRE:</b> {mitre} &nbsp; <b>Ransomware:</b> {rans} &nbsp; "
@@ -555,10 +570,12 @@ class ThreatIntelDashboard(QDialog):
 
         # ── Ignore / Revert / History row ──
         ig_row = QHBoxLayout()
-        ig_btn = QPushButton("🚫 Revert ignore" if ignored else "🚫 Ignore this CVE")
-        ig_btn.setToolTip("Ignored CVEs stay listed with full history but don't affect the threat level.")
+        ig_btn = QPushButton("🚫 Restore to active" if ignored else "🚫 Mark not applicable")
+        ig_btn.setToolTip("Only verified host-correlation false positives may be excluded, "
+                          "with evidence, approver, and expiry.")
         def _toggle():
-            self._toggle_ignore(cve, not ignored); dlg.accept()
+            if self._toggle_ignore(cve, not ignored):
+                dlg.accept()
         ig_btn.clicked.connect(_toggle)
         hist_btn = QPushButton("🕑 History")
         hist_btn.clicked.connect(lambda: self._show_history(cve))
@@ -573,16 +590,18 @@ class ThreatIntelDashboard(QDialog):
         lay.addWidget(fix_box)
         fix_actions = QHBoxLayout()
         analyze1 = QPushButton("🔎 Analyze fix")
-        apply1 = QPushButton("⚙ Apply fix"); apply1.setEnabled(False)
-        revert1 = QPushButton("↩ Revert change")
-        flag1 = QPushButton("🚫 Flag & Ignore (no fix)")
+        apply1 = QPushButton("📋 Stage proposal"); apply1.setEnabled(False)
+        revert1 = QPushButton("↩ Stage rollback")
+        flag1 = QPushButton("🚫 Mark not applicable")
+        flag1.setEnabled(not ignored)
         for b in (analyze1, apply1, revert1, flag1):
             fix_actions.addWidget(b)
         lay.addLayout(fix_actions)
 
         from angerona.core import cve_fix_advisor
         applied = cve_fix_advisor.applied_state(cve)
-        revert1.setEnabled(bool(applied and applied.get("applied") and not applied.get("reverted")))
+        revert1.setEnabled(bool(applied and applied.get("executed")
+                                and applied.get("verified") and not applied.get("reverted")))
 
         def _render_analysis(a: dict):
             self._fix_cache[cve] = a
@@ -604,7 +623,7 @@ class ThreatIntelDashboard(QDialog):
         def _do_analyze():
             if not cve_fix_advisor.ollama_available():
                 fix_box.setText("Local AI (Ollama) unavailable. Use 🌐 Consult AI for an online "
-                                "analysis, or Flag & Ignore if no fix is expected.")
+                                "analysis. The CVE remains active until resolved or proven not applicable.")
                 return
             fix_box.setText("🔎 Analyzing with local AI…")
             QApp = __import__("PySide6.QtWidgets", fromlist=["QApplication"]).QApplication
@@ -614,7 +633,10 @@ class ThreatIntelDashboard(QDialog):
         apply1.clicked.connect(lambda: (self._apply_fix(cve, self._fix_cache.get(cve, {})),
                                         dlg.accept()))
         revert1.clicked.connect(lambda: (self._revert_fix(cve), dlg.accept()))
-        flag1.clicked.connect(lambda: (self._toggle_ignore(cve, True), dlg.accept()))
+        def _mark_not_applicable():
+            if self._toggle_ignore(cve, True):
+                dlg.accept()
+        flag1.clicked.connect(_mark_not_applicable)
 
         # ── Web research + stage ──
         lay.addWidget(QLabel("<b>Research the specific fix on the web:</b>"))

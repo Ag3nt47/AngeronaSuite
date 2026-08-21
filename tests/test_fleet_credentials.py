@@ -273,11 +273,11 @@ def test_one_time_legacy_migration_preserves_derivations_and_separates_keys(
 def test_existing_v1_wins_over_every_legacy_source_and_retries_cleanup(
     tmp_path, memory_store
 ):
+    memory_store.values[LEGACY_FLEET_SERVICE_KEY] = "a" * 48
     original = load_or_migrate_local_credentials(
         tmp_path,
         "tenant-acme",
         "device-123",
-        legacy_secret="a" * 48,
         clock=lambda: 100,
     )
     encoded = memory_store.values[INTERNAL_FLEET_CREDENTIALS_KEY]
@@ -327,11 +327,11 @@ def test_existing_corrupt_or_oversize_v1_fails_closed_without_legacy_fallback(
 def test_v1_must_match_exact_runtime_tenant_and_device(
     tmp_path, memory_store, field, replacement
 ):
+    memory_store.values[LEGACY_FLEET_SERVICE_KEY] = "a" * 48
     load_or_migrate_local_credentials(
         tmp_path,
         "tenant-acme",
         "device-123",
-        legacy_secret="a" * 48,
         clock=lambda: 100,
     )
     value = json.loads(memory_store.values[INTERNAL_FLEET_CREDENTIALS_KEY])
@@ -346,11 +346,11 @@ def test_v1_must_match_exact_runtime_tenant_and_device(
 def test_v1_rejects_unknown_fields_noncanonical_keys_and_excess_credentials(
     tmp_path, memory_store
 ):
+    memory_store.values[LEGACY_FLEET_SERVICE_KEY] = "a" * 48
     load_or_migrate_local_credentials(
         tmp_path,
         "tenant-acme",
         "device-123",
-        legacy_secret="a" * 48,
         clock=lambda: 100,
     )
     original = json.loads(memory_store.values[INTERNAL_FLEET_CREDENTIALS_KEY])
@@ -437,11 +437,11 @@ def test_cleanup_failure_keeps_verified_v1_and_next_load_retries(
 def test_expired_or_revoked_protected_credentials_fail_closed(
     tmp_path, memory_store, credential_id, state_field
 ):
+    memory_store.values[LEGACY_FLEET_SERVICE_KEY] = "a" * 48
     load_or_migrate_local_credentials(
         tmp_path,
         "tenant-acme",
         "device-123",
-        legacy_secret="a" * 48,
         clock=lambda: 10,
     )
     value = json.loads(memory_store.values[INTERNAL_FLEET_CREDENTIALS_KEY])

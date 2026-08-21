@@ -6,7 +6,7 @@ REM  Idempotent infrastructure-as-code bootstrapper. Safe to run repeatedly: it
 REM  checks for each dependency before installing and never clobbers existing
 REM  configuration. Steps (in order):
 REM     1. Self-elevate to Administrator (UAC).
-REM     2. Ensure Python 3.10+ (winget install if missing).
+REM     2. Ensure signed CPython 3.12 x64 (winget install if missing).
 REM     3. Create venv + install Angerona and dependencies.
 REM     4. Ensure Ollama + pull the llama3:8b local model (with progress).
 REM     5. Compile the Go hypervisor watchdog (if the Go toolchain is present).
@@ -17,7 +17,9 @@ REM ============================================================================
 setlocal EnableExtensions
 title Angerona Installer
 cd /d "%~dp0"
-if not defined ANGERONA_DATA for %%I in ("%~dp0..\AngeronaData") do set "ANGERONA_DATA=%%~fI"
+REM This script self-elevates. Do not let an inherited environment variable
+REM redirect privileged temporary/runtime writes into a caller-selected tree.
+for %%I in ("%~dp0..\AngeronaData") do set "ANGERONA_DATA=%%~fI"
 set "ANGERONA_DIAG_DIR=%ANGERONA_DATA%\diagnostics"
 set "TEMP=%ANGERONA_DATA%\tmp"
 set "TMP=%TEMP%"
@@ -54,16 +56,16 @@ if not exist "%TEMP%" mkdir "%TEMP%"
 
 call :log INFO "Angerona bootstrapper starting"
 
-REM ── 2. Python 3.10+ ─────────────────────────────────────────────────────────
+REM ── 2. Hash-lock target: signed CPython 3.12 x64 ────────────────────────────
 call :find_python
 if not defined PYCMD (
-    call :log INFO "Python 3.10+ not found - attempting winget install ..."
+    call :log INFO "Signed CPython 3.12 x64 not found - attempting winget install ..."
     call :find_winget
     if not defined WINGET_EXE (
-        call :log ERROR "winget not available. Install Python 3.10+ from https://python.org and re-run."
+        call :log ERROR "winget unavailable. Install Python 3.12 x64 from https://python.org and re-run."
         goto :fail
     )
-    "%WINGET_EXE%" install --id Python.Python.3.10 --scope machine --silent --accept-package-agreements --accept-source-agreements
+    "%WINGET_EXE%" install --id Python.Python.3.12 --scope machine --silent --accept-package-agreements --accept-source-agreements
     call :find_python
 )
 if not defined PYCMD (
@@ -80,28 +82,30 @@ if exist "venv\Scripts\python.exe" (
     %PYCMD% -m venv venv
     if errorlevel 1 ( call :log ERROR "venv creation failed" & goto :fail )
 )
-call :log INFO "Upgrading pip ..."
-"venv\Scripts\python.exe" -m pip install --isolated --only-binary :all: --upgrade "pip==26.1.2" >nul 2>&1
-call :log INFO "Installing Angerona + dependencies (this can take a minute) ..."
-if exist "pyproject.toml" (
-    "venv\Scripts\python.exe" -m pip install --isolated --only-binary :all: --build-constraint constraints-release.txt -c constraints-release.txt -e .[windows,voice]
-    if errorlevel 1 (
-        "venv\Scripts\python.exe" -m pip install --isolated --only-binary :all: -c constraints-release.txt -r requirements.txt
-        if not errorlevel 1 "venv\Scripts\python.exe" -m pip install --isolated --build-constraint constraints-release.txt --no-deps -e .
-    )
-) else (
+"venv\Scripts\python.exe" -c "import sys,sysconfig; raise SystemExit(0 if sys.version_info[:2] == (3, 12) and sysconfig.get_platform() == 'win-amd64' else 1)" >nul 2>&1
+if errorlevel 1 (
+    call :log ERROR "Existing venv is not CPython 3.12 x64. Remove it or use the packaged Setup release."
+    goto :fail
+)
+call :log INFO "Installing SHA-256-locked dependencies (this can take a minute) ..."
+if not exist "pyproject.toml" (
     call :log ERROR "pyproject.toml is missing; refusing an incomplete installation"
     goto :fail
 )
+if not exist "requirements-release-hashed.txt" (
+    call :log ERROR "requirements-release-hashed.txt is missing; refusing an unhashed install"
+    goto :fail
+)
+"venv\Scripts\python.exe" -m pip install --isolated --only-binary :all: --require-hashes --no-deps -r requirements-release-hashed.txt
+if errorlevel 1 ( call :log ERROR "Hash-locked dependency install failed" & goto :fail )
+"venv\Scripts\python.exe" -m pip install --isolated --no-build-isolation --no-deps -e .
 if errorlevel 1 ( call :log ERROR "Dependency install failed" & goto :fail )
 REM Vosk's audited wheel is installed without its source-only srt dependency.
 REM Angerona ships the tiny Subtitle/compose compatibility surface it needs.
 "venv\Scripts\python.exe" "tools\build_srt_compat_wheel.py" --out "%TEMP%\wheels"
 if errorlevel 1 ( call :log ERROR "Speech compatibility wheel build failed" & goto :fail )
-"venv\Scripts\python.exe" -m pip install --isolated --only-binary :all: "%TEMP%\wheels\srt-0.0.0+angerona.1-py3-none-any.whl"
+"venv\Scripts\python.exe" -m pip install --isolated --only-binary :all: --no-deps "%TEMP%\wheels\srt-0.0.0+angerona.1-py3-none-any.whl"
 if errorlevel 1 ( call :log ERROR "Speech compatibility wheel install failed" & goto :fail )
-"venv\Scripts\python.exe" -m pip install --isolated --only-binary :all: --no-deps "vosk==0.3.45"
-if errorlevel 1 ( call :log ERROR "Offline speech engine install failed" & goto :fail )
 call :log OK "Python dependencies installed"
 call :log INFO "Installing the verified offline speech model to Angerona's data drive ..."
 "venv\Scripts\python.exe" -c "from angerona.connectors.voice import install_offline_model; print(install_offline_model())"
@@ -192,15 +196,13 @@ set "ANGERONA_LOG_COLOR=%COLOR%"
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "Write-Host ('['+$env:ANGERONA_LOG_LEVEL+'] '+$env:ANGERONA_LOG_MESSAGE) -ForegroundColor $env:ANGERONA_LOG_COLOR"
 goto :eof
 
-REM ── Locate a real Python 3.10+, skipping the Microsoft Store stub ────────────
+REM ── Locate the signed interpreter matching the committed wheel lock ─────────
 :find_python
 set "PYCMD="
 for %%P in (
-    "%ProgramFiles%\Python314\python.exe"
-    "%ProgramFiles%\Python313\python.exe"
     "%ProgramFiles%\Python312\python.exe"
-    "%ProgramFiles%\Python311\python.exe"
-    "%ProgramFiles%\Python310\python.exe"
+    "%LocalAppData%\Python\pythoncore-3.12-64\python.exe"
+    "%LocalAppData%\Programs\Python\Python312\python.exe"
 ) do if not defined PYCMD if exist "%%~P" call :accept_python "%%~P"
 goto :eof
 
@@ -215,7 +217,7 @@ goto :eof
 set "ANGERONA_CANDIDATE=%~1"
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "$s=Get-AuthenticodeSignature -LiteralPath $env:ANGERONA_CANDIDATE; if ($s.Status -eq 'Valid' -and $s.SignerCertificate.Subject -match 'Python Software Foundation') {exit 0}; exit 1" >nul 2>&1
 if errorlevel 1 goto :eof
-"%~1" -c "import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)" >nul 2>&1
+"%~1" -c "import sys,sysconfig; raise SystemExit(0 if sys.version_info[:2] == (3, 12) and sysconfig.get_platform() == 'win-amd64' else 1)" >nul 2>&1
 if not errorlevel 1 set "PYCMD="%~1""
 goto :eof
 

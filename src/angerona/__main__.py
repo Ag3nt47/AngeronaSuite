@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 
 def main() -> int:
+    setup_requested = "--setup" in sys.argv
     # Elevate before creating or trusting any persistent packaged data path. A
     # medium-token process must not prepare inputs for the elevated instance.
     from angerona.core.privilege import ensure_admin
@@ -63,7 +64,10 @@ def main() -> int:
 
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication, QMessageBox
-    qt = QApplication(sys.argv)
+    # ``--setup`` is an Angerona switch, not a Qt switch. Remove it before Qt
+    # parses arguments so the same dedicated setup shortcut works in source and
+    # frozen releases without an unknown-option warning.
+    qt = QApplication([arg for arg in sys.argv if arg != "--setup"])
     qt.setApplicationName("Angerona")
 
     # Custom shield icon (assets/icons/angerona.ico) — sets the taskbar/
@@ -88,6 +92,9 @@ def main() -> int:
     app = AngeronaApp(qt)
     app._instance_lock = lock  # keep the lock socket alive for the app's lifetime
     app.start()
+    if setup_requested:
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(700, app.window._open_setup)
     return qt.exec()
 
 

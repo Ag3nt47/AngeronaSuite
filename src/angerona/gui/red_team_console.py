@@ -21,6 +21,7 @@ intensity, campaign, target_dir, custom, auto_remediate, analogy.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -30,7 +31,7 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
     QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSlider,
-    QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from angerona.core.data_paths import data_dir
@@ -102,6 +103,7 @@ class RedTeamConsole(QDialog):
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_run_tab(default_target), "▶  Run")
         self._tabs.addTab(self._build_history_tab(), "🕑  History")
+        self._tabs.addTab(self._build_device_lab_tab(), "🛰  Device Security Lab")
         self._tabs.addTab(self._build_editor_tab(), "🧪  Sandbox Editor")
         self._tabs.currentChanged.connect(self._on_tab_changed)
         root.addWidget(self._tabs, 1)
@@ -336,6 +338,416 @@ class RedTeamConsole(QDialog):
                 subprocess.Popen(["xdg-open", str(d)])
         except Exception:
             pass
+
+    # ── Device Security Lab ──────────────────────────────────────
+    def _device_lab_root(self) -> Path:
+        try:
+            root = Path(self._parent.config.data_dir)
+        except Exception:
+            root = data_dir()
+        return root / "device-security-lab"
+
+    def _device_lab_service(self):
+        service = getattr(self, "_device_lab", None)
+        if service is None:
+            from angerona.core.device_security_lab import DeviceSecurityLab
+
+            service = DeviceSecurityLab(self._device_lab_root())
+            self._device_lab = service
+        return service
+
+    def _build_device_lab_tab(self) -> QWidget:
+        w = QWidget()
+        outer = QVBoxLayout(w)
+        outer.setContentsMargins(4, 4, 4, 4)
+        outer.setSpacing(8)
+
+        safety = QLabel(
+            "Owner-authorized posture assessment only. Angerona passively inspects "
+            "this computer or verifies fresh signed evidence from an enrolled companion. "
+            "It does not scan arbitrary targets, crack wireless security, inject packets, "
+            "guess credentials, or execute exploits."
+        )
+        safety.setWordWrap(True)
+        safety.setStyleSheet(
+            "background:#10223a; color:#bfdbfe; border:1px solid #2563eb; "
+            "border-radius:6px; padding:8px;"
+        )
+        outer.addWidget(safety)
+
+        enrollment = QFrame()
+        enrollment.setObjectName("Card")
+        form = QGridLayout(enrollment)
+        form.addWidget(self._h("Authenticated device enrollment"), 0, 0, 1, 4)
+        self.device_label = QLineEdit()
+        self.device_label.setPlaceholderText("Friendly name, e.g. Living-room Mac")
+        self.device_source = QComboBox()
+        self.device_source.addItem("This computer (passive inspection)", "local")
+        self.device_source.addItem("Owned companion device (signed evidence)", "enrolled_agent")
+        form.addWidget(QLabel("Device"), 1, 0)
+        form.addWidget(self.device_label, 1, 1)
+        form.addWidget(QLabel("Evidence source"), 1, 2)
+        form.addWidget(self.device_source, 1, 3)
+
+        self.device_owner_attested = QCheckBox(
+            "I own this device or have explicit permission to assess it"
+        )
+        form.addWidget(self.device_owner_attested, 2, 0, 1, 4)
+        form.addWidget(QLabel("Allowed connection evidence"), 3, 0, 1, 4)
+        self._device_connection_checks: dict[str, QCheckBox] = {}
+        connection_row = QHBoxLayout()
+        for key, label in (
+            ("usb", "USB"),
+            ("ethernet", "Ethernet + local ports"),
+            ("wifi", "Wi-Fi"),
+            ("bluetooth", "Bluetooth"),
+            ("display_hdmi", "Display / HDMI"),
+        ):
+            check = QCheckBox(label)
+            check.setChecked(True)
+            self._device_connection_checks[key] = check
+            connection_row.addWidget(check)
+        connection_row.addStretch()
+        form.addLayout(connection_row, 4, 0, 1, 4)
+
+        enroll_button = QPushButton("➕  Create enrollment")
+        enroll_button.clicked.connect(self._create_device_enrollment)
+        refresh_button = QPushButton("↻  Refresh")
+        refresh_button.clicked.connect(self._refresh_device_enrollments)
+        form.addWidget(enroll_button, 5, 2)
+        form.addWidget(refresh_button, 5, 3)
+        outer.addWidget(enrollment)
+
+        pairing = QFrame()
+        pairing.setObjectName("Card")
+        pairing_layout = QGridLayout(pairing)
+        pairing_layout.addWidget(self._h("Companion pairing response"), 0, 0, 1, 4)
+        pairing_help = QLabel(
+            "For a companion enrollment, transfer the displayed short-lived challenge "
+            "to the owned device. Paste its Ed25519 signature and public key here. "
+            "The private device key must never leave that device."
+        )
+        pairing_help.setWordWrap(True)
+        pairing_layout.addWidget(pairing_help, 1, 0, 1, 4)
+        self.device_pairing_proof = QLineEdit()
+        self.device_pairing_proof.setPlaceholderText("Challenge signature (base64)")
+        self.device_pairing_key = QLineEdit()
+        self.device_pairing_key.setPlaceholderText("Ed25519 public key (base64)")
+        confirm_button = QPushButton("🔐  Confirm companion")
+        confirm_button.clicked.connect(self._confirm_device_enrollment)
+        export_challenge = QPushButton("📤  Export challenge")
+        export_challenge.clicked.connect(self._export_device_challenge)
+        import_response = QPushButton("📥  Import response")
+        import_response.clicked.connect(self._import_device_pairing_response)
+        pairing_layout.addWidget(self.device_pairing_proof, 2, 0, 1, 2)
+        pairing_layout.addWidget(self.device_pairing_key, 2, 2)
+        pairing_layout.addWidget(confirm_button, 2, 3)
+        pairing_layout.addWidget(export_challenge, 3, 2)
+        pairing_layout.addWidget(import_response, 3, 3)
+        outer.addWidget(pairing)
+
+        body = QHBoxLayout()
+        self.device_enrollments = QListWidget()
+        self.device_enrollments.setMinimumWidth(260)
+        body.addWidget(self.device_enrollments)
+        self.device_findings = QTableWidget(0, 5)
+        self.device_findings.setHorizontalHeaderLabels(
+            ["Severity", "Weakness", "Evidence", "Solution", "Patch guidance"]
+        )
+        self.device_findings.setWordWrap(True)
+        self.device_findings.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.device_findings.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        self.device_findings.horizontalHeader().setStretchLastSection(True)
+        body.addWidget(self.device_findings, 1)
+        outer.addLayout(body, 1)
+
+        self.device_lab_log = QPlainTextEdit()
+        self.device_lab_log.setReadOnly(True)
+        self.device_lab_log.document().setMaximumBlockCount(1000)
+        self.device_lab_log.setMaximumHeight(120)
+        outer.addWidget(self.device_lab_log)
+
+        actions = QHBoxLayout()
+        inspect_button = QPushButton("🖥  Inspect this computer")
+        inspect_button.clicked.connect(self._inspect_local_device)
+        import_button = QPushButton("📥  Import signed device report")
+        import_button.clicked.connect(self._import_device_evidence)
+        export_button = QPushButton("📤  Export findings")
+        export_button.clicked.connect(self._export_device_report)
+        actions.addWidget(inspect_button)
+        actions.addWidget(import_button)
+        actions.addStretch()
+        actions.addWidget(export_button)
+        outer.addLayout(actions)
+        self._device_pending_id = ""
+        self._device_pending_challenge: dict[str, object] | None = None
+        self._device_report: dict[str, object] | None = None
+        self._refresh_device_enrollments()
+        return w
+
+    def _selected_device_enrollment(self) -> str:
+        item = self.device_enrollments.currentItem()
+        if item is None:
+            return ""
+        return str(item.data(Qt.ItemDataRole.UserRole) or "")
+
+    def _allowed_device_connections(self) -> list[str]:
+        return [
+            key for key, check in self._device_connection_checks.items()
+            if check.isChecked()
+        ]
+
+    def _create_device_enrollment(self) -> None:
+        if not self.device_owner_attested.isChecked():
+            QMessageBox.warning(
+                self,
+                "Authorization required",
+                "Confirm that you own the device or have explicit permission.",
+            )
+            return
+        label = self.device_label.text().strip()
+        if not label:
+            QMessageBox.information(self, "Device name", "Enter a friendly device name.")
+            return
+        source = str(self.device_source.currentData())
+        try:
+            service = self._device_lab_service()
+            record, challenge = service.create_enrollment(
+                label,
+                True,
+                evidence_source=source,
+                allowed_connections=self._allowed_device_connections(),
+            )
+            record_data = record.to_dict()
+            enrollment_id = str(record_data["enrollment_id"])
+            if source == "local":
+                self._device_pending_id = ""
+                self._device_pending_challenge = None
+                service.confirm_local_enrollment(enrollment_id, owner_attested=True)
+                self.device_lab_log.setPlainText(
+                    "Local enrollment confirmed. Select it, then press Inspect this computer."
+                )
+            else:
+                self._device_pending_id = enrollment_id
+                challenge_data = challenge.to_dict()
+                self._device_pending_challenge = challenge_data
+                self.device_lab_log.setPlainText(
+                    "PAIRING CHALLENGE (safe to transfer to the owned device):\n"
+                    + json.dumps(challenge_data, indent=2, sort_keys=True)
+                )
+            self._refresh_device_enrollments(enrollment_id)
+        except Exception as exc:
+            QMessageBox.warning(self, "Enrollment failed", str(exc))
+
+    def _confirm_device_enrollment(self) -> None:
+        enrollment_id = self._device_pending_id or self._selected_device_enrollment()
+        if not enrollment_id:
+            QMessageBox.information(
+                self, "Companion pairing", "Create or select a pending companion enrollment."
+            )
+            return
+        try:
+            self._device_lab_service().confirm_enrollment(
+                enrollment_id,
+                self.device_pairing_proof.text().strip(),
+                self.device_pairing_key.text().strip(),
+            )
+            self.device_pairing_key.clear()
+            self.device_pairing_proof.clear()
+            self._device_pending_id = ""
+            self._device_pending_challenge = None
+            self.device_lab_log.setPlainText(
+                "Companion public identity confirmed. Import only its fresh signed "
+                "evidence reports; its private key was never shared."
+            )
+            self._refresh_device_enrollments(enrollment_id)
+        except Exception as exc:
+            self.device_pairing_key.clear()
+            QMessageBox.warning(self, "Pairing refused", str(exc))
+
+    def _export_device_challenge(self) -> None:
+        challenge = self._device_pending_challenge
+        if challenge is None:
+            QMessageBox.information(
+                self, "Pairing challenge", "Create a companion enrollment first."
+            )
+            return
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export short-lived companion challenge",
+            str(Path.home() / "angerona-device-challenge.json"),
+            "JSON challenge (*.json)",
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(
+                json.dumps(challenge, indent=2, sort_keys=True), encoding="utf-8"
+            )
+            self.device_lab_log.appendPlainText(
+                "Challenge exported. It expires quickly and contains no private key."
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
+
+    def _import_device_pairing_response(self) -> None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Import companion pairing response",
+            str(Path.home()),
+            "JSON response (*.json)",
+        )
+        if not path:
+            return
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("pairing response must contain a JSON object")
+            enrollment_id = str(payload.get("enrollment_id", ""))
+            if enrollment_id != self._device_pending_id:
+                raise ValueError("pairing response does not match the pending enrollment")
+            self.device_pairing_proof.setText(str(payload.get("signature_ed25519", "")))
+            self.device_pairing_key.setText(str(payload.get("public_key_ed25519", "")))
+            self._confirm_device_enrollment()
+        except Exception as exc:
+            QMessageBox.warning(self, "Pairing response refused", str(exc))
+
+    def _refresh_device_enrollments(self, select_id: str = "") -> None:
+        widget = getattr(self, "device_enrollments", None)
+        if widget is None:
+            return
+        widget.clear()
+        try:
+            records = self._device_lab_service().list_enrollments()
+        except Exception as exc:
+            widget.addItem(f"Device Lab unavailable: {exc}")
+            return
+        for record in records:
+            data = record.to_dict()
+            enrollment_id = str(data.get("enrollment_id", ""))
+            state = str(data.get("state", data.get("status", "pending")))
+            source = str(data.get("evidence_source", "device"))
+            item = QListWidgetItem(
+                f"{data.get('label', 'Device')}  ·  {source}  ·  {state}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, enrollment_id)
+            widget.addItem(item)
+            if enrollment_id == select_id:
+                widget.setCurrentItem(item)
+
+    def _inspect_local_device(self) -> None:
+        enrollment_id = self._selected_device_enrollment()
+        if not enrollment_id:
+            QMessageBox.information(
+                self, "Device Security Lab", "Select a confirmed local enrollment first."
+            )
+            return
+        if not self.device_owner_attested.isChecked():
+            QMessageBox.warning(
+                self,
+                "Authorization required",
+                "Reconfirm ownership or explicit permission for this assessment.",
+            )
+            return
+        try:
+            service = self._device_lab_service()
+            observations = service.collect_local_observations(
+                enrollment_id, owner_attested=True
+            )
+            report = service.assess(enrollment_id, observations)
+            self._show_device_report(report.to_dict())
+        except Exception as exc:
+            QMessageBox.warning(self, "Assessment refused", str(exc))
+
+    def _import_device_evidence(self) -> None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Import signed Device Security Lab evidence",
+            str(Path.home()),
+            "JSON evidence (*.json)",
+        )
+        if not path:
+            return
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("evidence file must contain a JSON object")
+            if isinstance(payload.get("payload"), dict):
+                envelope_payload = payload["payload"]
+                enrollment_id = str(envelope_payload.get("enrollment_id", ""))
+                observations = envelope_payload.get("observations", [])
+                evidence = payload
+            else:
+                enrollment_id = str(payload.get("enrollment_id", ""))
+                observations = payload.get("observations", [])
+                evidence = payload.get("evidence")
+            report = self._device_lab_service().assess(
+                enrollment_id, observations, evidence=evidence
+            )
+            self._show_device_report(report.to_dict())
+        except Exception as exc:
+            QMessageBox.warning(self, "Evidence refused", str(exc))
+
+    def _show_device_report(self, report: dict[str, object]) -> None:
+        self._device_report = report
+        findings = report.get("findings", [])
+        if not isinstance(findings, list):
+            findings = []
+        self.device_findings.setRowCount(len(findings))
+        for row, finding in enumerate(findings):
+            data = finding if isinstance(finding, dict) else {}
+            values = (
+                data.get("severity", "Info"),
+                data.get("title", data.get("weakness", "Posture observation")),
+                data.get("evidence", "Redacted evidence available in export"),
+                data.get("remediation", data.get("solution", "Review configuration")),
+                data.get("patch_guidance", data.get("patch", "Follow vendor guidance")),
+            )
+            for column, value in enumerate(values):
+                if isinstance(value, (dict, list)):
+                    text = json.dumps(value, sort_keys=True)
+                else:
+                    text = str(value)
+                self.device_findings.setItem(row, column, QTableWidgetItem(text))
+        self.device_findings.resizeRowsToContents()
+        summary = report.get("summary")
+        if not isinstance(summary, dict):
+            summary = {
+                "outcome": report.get("outcome", "complete"),
+                "severity_counts": report.get("severity_counts", {}),
+                "observation_count": report.get("observation_count", 0),
+                "limitations": report.get("limitations", []),
+            }
+        self.device_lab_log.setPlainText(
+            "ASSESSMENT COMPLETE\n" + json.dumps(summary, indent=2, sort_keys=True)
+        )
+
+    def _export_device_report(self) -> None:
+        if self._device_report is None:
+            QMessageBox.information(
+                self, "Export findings", "Run or import an assessment first."
+            )
+            return
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export redacted Device Security Lab findings",
+            str(self._device_lab_root() / "device-security-findings.json"),
+            "JSON report (*.json)",
+        )
+        if not path:
+            return
+        try:
+            target = Path(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
+                json.dumps(self._device_report, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            self.device_lab_log.appendPlainText(f"Exported redacted report: {target.name}")
+        except Exception as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
 
     def _build_editor_tab(self) -> QWidget:
         w = QWidget(); lay = QVBoxLayout(w)

@@ -1,4 +1,4 @@
-"""core/cve_fix_advisor.py — local-AI CVE fix analysis + gated apply/revert.
+"""core/cve_fix_advisor.py — local-AI CVE analysis + inert proposal staging.
 
 For each host-applicable CVE, ask the LOCAL model (Ollama / llama3) to compare
 the vulnerability against this machine's system info and decide whether a
@@ -12,10 +12,10 @@ the vulnerability against this machine's system info and decide whether a
         "reason"                            # why no fix, when fix_available False
     }
 
-If a fix is available the GUI shows ❗ "Potential fix available" with an Action
-button. Applying is **confirm-then-execute**: the caller shows the exact commands,
-and only on approval calls apply_fix(), which runs the PowerShell and records an
-applied-state entry (plus the AI's revert script) so revert_fix() can undo it.
+If a potential fix is available, the GUI can stage the exact model-authored text
+as a ``.ps1.txt`` review artifact. ``apply_fix()`` and ``revert_fix()`` never run
+that text. Executable remediation must be converted to a registered typed
+operation with its own authorization, postcondition, and receipt.
 
 Local-first: the only network call is to 127.0.0.1 Ollama. Cloud escalation is
 NOT done here — that stays behind the dashboard's explicit "Consult AI" button.
@@ -303,7 +303,7 @@ def analyze(cve_rec: dict, timeout: float = 90.0) -> dict:
                 "reason": f"Local AI analysis failed: {exc}"}
 
 
-# ── apply / revert (confirm-then-execute; the GUI shows the commands first) ────
+# ── stage / rollback-proposal (model-authored text is never executed) ─────────
 
 def _run_powershell(script: str, timeout: float = 120.0) -> tuple[int, str]:
     """Compatibility guard: arbitrary model-authored PowerShell is forbidden."""
@@ -361,6 +361,8 @@ def apply_fix(cve: str, analysis: dict) -> dict:
     data[cve] = {
         "applied": False,
         "staged": True,
+        "executed": False,
+        "verified": False,
         "staged_ts": time.time(),
         "staged_iso": time.strftime("%Y-%m-%d %H:%M:%S"),
         "proposal_sha256": digest,
@@ -384,7 +386,7 @@ def revert_fix(cve: str) -> dict:
     data = _load_applied()
     rec = data.get(cve)
     if not rec:
-        return {"ok": False, "output": "No applied fix recorded for this CVE."}
+        return {"ok": False, "output": "No staged remediation record exists for this CVE."}
     script = (rec.get("revert_script") or "").strip()
     if not script:
         return {"ok": False, "output": "No revert script was captured for this fix."}
@@ -403,6 +405,8 @@ def revert_fix(cve: str) -> dict:
     )
     rec["reverted"] = False
     rec["revert_staged"] = True
+    rec["revert_executed"] = False
+    rec["revert_verified"] = False
     rec["revert_staged_ts"] = time.time()
     rec["revert_proposal_sha256"] = digest
     rec["revert_proposal_path"] = str(staged_path)

@@ -1,7 +1,9 @@
 import json
 import os
-import subprocess
+import tempfile
+from pathlib import Path
 from typing import Literal
+from angerona.core.data_paths import runtime_temp_dir
 from angerona.core.win import run_hidden
 from pydantic import BaseModel, Field
 import ollama
@@ -62,19 +64,30 @@ def trigger_mitigation_gate(incident: SecurityIncident):
     print(f"\n[⚠️] CRITICAL ALERT TRIGGERED: {incident.category} ({incident.severity})")
     print(f"Proposed Action: {incident.recommended_action} on target: {incident.target_identifier}")
     
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    ps_script_path = os.path.join(script_dir, "mitigation_gate.ps1")
-    temp_payload_path = os.path.join(script_dir, "incident_payload.json")
-    
+    script_dir = Path(__file__).resolve().parent
+    ps_script_path = script_dir / "mitigation_gate.ps1"
+    payload_fd, payload_name = tempfile.mkstemp(
+        prefix="incident_payload_",
+        suffix=".json",
+        dir=runtime_temp_dir(),
+    )
+    temp_payload_path = Path(payload_name)
+
     try:
-        with open(temp_payload_path, "w", encoding='utf-8') as f:
+        with os.fdopen(payload_fd, "w", encoding='utf-8') as f:
             json.dump(incident.model_dump(), f, indent=4)
-        
-        ps_cmd = f"& '{ps_script_path}' -PayloadPath '{temp_payload_path}'"
-        run_hidden(["powershell.exe", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd])
+        run_hidden([
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(ps_script_path),
+            "-PayloadPath",
+            str(temp_payload_path),
+        ])
     finally:
-        if os.path.exists(temp_payload_path):
-            os.remove(temp_payload_path)
+        temp_payload_path.unlink(missing_ok=True)
 
 if __name__ == "__main__":
     target_log = "system_activity_log.txt"

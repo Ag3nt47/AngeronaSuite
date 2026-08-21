@@ -225,6 +225,7 @@ class TopTalkersDialog(QDialog):
         self._ai_request_token = 0
         self._ai_context: Optional[dict] = None
         self._accept_results = True
+        self._render_key: tuple | None = None
         self.finished.connect(self._stop_refreshes)
 
         self._timer = QTimer(self)
@@ -258,9 +259,26 @@ class TopTalkersDialog(QDialog):
         if error:
             self.summary.setText(str(error))
             return
+        rows = list(snapshot.get("rows", []))
+        render_key = tuple(
+            (
+                rec.get("name"), rec.get("pid"), rec.get("conns"), rec.get("ext"),
+                rec.get("top"), rec.get("iface"),
+            )
+            for rec in rows
+        )
+        summary = (
+            f"{snapshot.get('process_count', 0)} process(es) with live outbound connections · "
+            f"{snapshot.get('total_ext', 0)} connection(s) to untrusted external hosts"
+        )
+        if render_key == self._render_key:
+            if self.summary.text() != summary:
+                self.summary.setText(summary)
+            return
+        self._render_key = render_key
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
-        for rec in snapshot.get("rows", []):
+        for rec in rows:
             r = self.table.rowCount()
             self.table.insertRow(r)
             self.table.setItem(r, 0, QTableWidgetItem(rec["name"]))
@@ -273,9 +291,7 @@ class TopTalkersDialog(QDialog):
             self.table.setItem(r, 4, QTableWidgetItem(rec["top"]))
             self.table.setItem(r, 5, QTableWidgetItem(rec["iface"]))
         self.table.setSortingEnabled(True)
-        self.summary.setText(
-            f"{snapshot.get('process_count', 0)} process(es) with live outbound connections · "
-            f"{snapshot.get('total_ext', 0)} connection(s) to untrusted external hosts")
+        self.summary.setText(summary)
 
     @Slot(int)
     def _stop_refreshes(self, _result: int) -> None:

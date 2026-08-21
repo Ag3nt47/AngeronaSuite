@@ -869,3 +869,229 @@ the HTTP/3 standard.
 - No fleet HTTP framing, replay, tenant-authorization, or tracked-public-tree
   secret bypass was confirmed. Full evidence and tests:
   `analysis/loop/round4/redteam_findings.md`.
+
+## Round 1 — Innovation
+
+2026-08-20 visionary/enterprise challenge completed. Seven defensive-only
+proposals were researched against the current 65-module tree and canonical
+enterprise backlog; prior USN, NTLM, call-stack, QUIC, split-token, App Control,
+model-admission, ClickFix, ATT&CK/Sigma, and ZTDNS designs were deliberately not
+recycled. Ranked proposals cover a privacy-minimized crash breadcrumb capsule,
+RMM/remote-support session trust, read-only WinRE/QMR readiness, Windows
+Hello-bound response approval, current MCP tool/data provenance, purpose/epoch
+telemetry tokens, and browser-session-theft correlation. The recommended
+low-risk cut is diagnostic-only crash breadcrumbs plus read-only QMR posture.
+Full threat models, architecture slices, tests, performance budgets, safety
+boundaries, and primary-source citations are in
+`analysis/loop/innovation_ideas.md`; no product code or host policy changed.
+## Round 1 — Red Team (Cycle 7, 2026-08-20)
+
+- C7-R1-01 HIGH — Authenticated Remote Bridge telemetry can supply receiver-local PIDs and attacker-selected module identities that satisfy default SOAR active-defense corroboration and trigger local process containment.
+- C7-R1-02 MEDIUM — Threat Intel says an AI fix ran successfully even though the hardened backend only stages an inert review file.
+- C7-R1-03 MEDIUM — “No fix” or unavailable AI can bulk-ignore applicable CISA KEVs and remove them from threat scoring.
+- C7-R1-04 MEDIUM — A hung in-process “isolated” self-test can keep all modules stopped and EventBus publishing muted indefinitely.
+- C7-R1-05 MEDIUM — Release dependencies are version-pinned but not artifact-hash locked, so provenance can faithfully attest a compromised upstream build input.
+- C7-R1-06 MEDIUM — The constant-AppId Inno installer has no downgrade gate and uses `ignoreversion`, allowing an older genuine release to overwrite a fixed build.
+- Expanded known R4-01: inherited `ANGERONA_DATA` reaches an elevated recursive DACL reset without canonical-path confinement; not counted as a new finding.
+
+## Round 1 — Bug Test (Cycle 7, 2026-08-20)
+
+- Reproduced a fresh native `Qt6Core.dll 6.11.1 / 0xc0000409` abort during the
+  aggregate suite and fixed a concrete early-destruction path: AnalysisWorker
+  no longer shadows native `QThread.finished()` with a result payload signal,
+  and workers are reaped only after native completion.
+- Post-fix Qt lifecycle stress passed **30/30** fresh-process repetitions with
+  no subsequent crash dump. Final compile: **279/279**; module discovery:
+  **65 / 0 errors**; module self-tests: **51 pass / 15 expected skips**; core
+  self-tests: **18/18**; selfcheck: **26/26**.
+- Reported a real Windows Fleet API shutdown race: stalled handler interruption
+  failed **2/20** isolated repetitions and could retain the replay-ledger file
+  handle. Explicit host sleep/resume grace and legacy manual engine write paths
+  also remain open validation/remediation work.
+- The latest combined aggregate completed without a Qt abort at **731 passed /
+  2 platform skips / 1 reported Fleet shutdown failure**. Full evidence:
+  `analysis/loop/cycle7/round1/bugtest_results.md`.
+
+## Round 2 — Performance (Cycle 7, 2026-08-20)
+
+- Purple Guard now identity-caches unchanged remediation policy JSON. A 5,000
+  call benchmark improved **2.26x** and removes up to **86,399 redundant file
+  opens/parses per active day** while atomic/in-place updates invalidate on the
+  next cycle.
+- Expanded Console refresh now uses Qt document revisioning. The unchanged
+  804-KiB transcript benchmark improved from **3.708455 s to 0.002480 s for 500
+  ticks (1,495x)** while changed output still renders immediately.
+- System Pulse details copy history and rebuild graph/table state only for a new
+  two-second sample; 20 unchanged refreshes caused zero copies/rebuilds.
+- Module-resource and Top-Talkers views skip unchanged Qt table reconstruction;
+  20 unchanged-refresh regressions caused zero rebuilds and changed evidence
+  invalidated immediately.
+- Gates: owned compile and Ruff PASS; Purple Guard self-test PASS; focused suite
+  **34/34 PASS**; wider owned/relevant suite **70/70 PASS**. Full evidence:
+  `analysis/loop/cycle7/round2/performance_summary.md`.
+
+## Round 1 — Remediation (Cycle 7, 2026-08-20)
+
+- C7-R1-02 FIXED — Threat Intel now renders model-authored CVE PowerShell as an
+  inert **staged — not executed** proposal and never claims an unverified fix ran.
+- C7-R1-03 FIXED — removed AI/no-fix bulk suppression; only an expiring, evidenced,
+  approved `not_applicable` record can leave KEV threat scoring. Legacy ignores
+  fail safe and become active.
+- C7-R1-04 FIXED — Sandbox opening no longer pauses sensors or mutes EventBus;
+  self-tests run in a disposable child with sanitized integrations and a hard
+  deadline. Three consecutive never-returning probes were terminated on time.
+- C7-R1-06 FIXED — Setup rejects versions older than the protected highest
+  installed version and persists the monotonic marker under HKLM64.
+- Gates: Python compile PASS; focused suite **7 passed, 1 environment skip**;
+  CVE advisor, CVE exclusion, and Intel Sync self-tests PASS; local ISCC was not
+  installed, so real installer compilation remains a release-CI gate. Details:
+  `analysis/loop/cycle7/round1/remediation_summary.md`.
+
+## Round 3 — Adversarial Re-challenge (Cycle 7, 2026-08-20)
+
+- C7-R3-01 MEDIUM — authenticated Remote Bridge telemetry is correctly
+  observe-only for SOAR and has receiver-local PID/path keys stripped, but the
+  Evolution Engine still trusts peer-controlled `verified=SUCCESS` + `technique`
+  fields and can start local work and replace the active generated YARA rule.
+- C7-R1 verification: **4 resolved / 2 partial or open**. Threat Intel truth,
+  AI/no-fix suppression, hung sandbox blackout, downgrade protection for the
+  first public release, inherited data-root overwrite, and AnalysisWorker native
+  completion ordering passed re-challenge. Remote mutating-consumer coverage and
+  the elevated source installer's unhashed pip path remain open.
+- Gates: focused tests **18/18 PASS**; malicious remote SOAR challenge **8 events
+  / 0 actions**; remote Evolution proof **1 unauthorized activation**; hung-test
+  cleanup **5/5 with 0 surviving descendants**; additional fresh-process Qt
+  lifecycle stress **15/15 PASS** and no post-fix crash event.
+- Full evidence:
+  `analysis/loop/cycle7/round3/adversarial_verification.md`.
+
+## Round 2 — Bug Remediation Follow-up (Cycle 7, 2026-08-20)
+
+- C7-BT-02 FIXED — Fleet shutdown now atomically rejects setup-racing sockets,
+  interrupts registered readers through a service-owned event, drains handlers
+  before closing the durable replay ledger, and returns a reliable saturation
+  503 on Windows. Stalled shutdown passed **25/25** isolated repetitions;
+  saturation passed **20/20**; new internal partial/setup races passed **15/15**
+  and **10/10** respectively.
+- C7-BT-04 FIXED — Unified Defense/EDR status, the legacy flight recorder, and
+  Defense Monitor payload staging now use the canonical Angerona data/temp
+  helpers. Relative database overrides can no longer escape into the working
+  directory; explicit absolute operator overrides remain supported.
+- Gates: compile and Ruff PASS; focused suite **25/25 PASS**; wider Fleet suite
+  **78/78 PASS**. Full evidence:
+  `analysis/loop/cycle7/round2/remediation_followup.md`.
+
+## Round 3 — Adversarial Closure (Cycle 7, 2026-08-20)
+
+- C7-R3-01 FIXED — Evolution Engine now rejects observe-only remote evidence
+  before peer-controlled verification fields can trigger local YARA mutation;
+  post-fix Remote Bridge security tests pass **4/4**.
+- C7-R1-05 FIXED — packaged and elevated source dependency paths are SHA-256
+  locked. The source bootstrap is explicitly CPython 3.12 x64 and contains no
+  unhashed pip/requirements/Vosk fallback. Release/source trust gates pass
+  **32/32**.
+- The exact SHA-256-verified Inno Setup 6.7.1 compiler parsed and compiled the
+  complete installer locally with placeholder payloads. Real release binaries,
+  clean install, upgrade, and downgrade rejection remain CI/VM acceptance gates.
+
+## Round 3 — Full Validation (Cycle 7, 2026-08-20)
+
+- Final current-tree compile completed **279/279**; all **67** module files
+  imported; all **53** registration factories constructed; discovery completed
+  **65 modules / 0 errors**; **48** module codes had **0 duplicates**.
+- Module self-tests recorded **51 passes / 15 expected environment, idle, or
+  platform skips / 0 unexpected failures**. Runnable core self-tests completed
+  **18/18**, and the final headless selfcheck completed **26/26**.
+- The first aggregate reproduced the known Windows Fleet partial-request
+  shutdown race at **732 passed / 2 skipped / 1 failed**. After remediation,
+  the authoritative final aggregate completed **744 passed / 2 intentional
+  platform skips / 0 failed**; the final crash/lifecycle/remediation/security/
+  performance/release focus set completed **34/34**.
+- Ruff, documentation drift, source-trust preflight, workflow policy, and diff
+  checks passed. No new crash dump or Windows crash/hang event appeared after
+  the 21:58 validation start; the newest Python dump remains the pre-fix 21:25
+  Qt event.
+- Bandit was unavailable in the venv. Physical sleep/resume, a long interactive
+  live-sensor/Ollama soak, and clean-VM release acceptance remain explicit
+  external gates. Full evidence:
+  `analysis/loop/cycle7/round3/full_validation.md`.
+
+## Round 19 — Bug Test
+
+- Baseline: **283/283** package files compiled; **66 modules / 0 discovery
+  errors**; module self-tests **51 pass / 16 expected skips / 0 unexpected
+  failures**; core self-tests **18/18**; headless selfcheck **26/26**.
+- **C19-BT-01 FIXED (High):** both SOAR response tiers now re-verify EventBus
+  HMAC integrity at the final action sink; Active Response also rechecks its
+  configured response scope. A post-signature PID/path mutation now causes zero
+  process or file mutation. Post-fix security gates: **30/30 pass**.
+- Flood challenge: **40,000** signed events, no loss in the authoritative
+  recorder/DLQ path, bounded SQLite/read-model rows, clean worker drains, and no
+  crash. **C19-BT-02/03 REPORTED:** synchronous overflow spilling limited the run
+  to about **1,182 events/s**, and the unbounded DLQ grew to **7.23 MB** in one
+  run; performance/remediation owns a bounded authenticated spool/replay design.
+- Drill closure lifecycle passed: applied remains unverified, the source run
+  cannot self-certify, and a separate exact Purple Guard proof changes the AAR
+  from 0% to **1/1 (100%)** verified closure. Lifecycle challenge: **100**
+  start/stop cycles, **0** leaks; crash probe quarantined after 3 attempts and
+  wrote its diagnostic snapshot.
+- Full evidence: `analysis/loop/cycle19/bugtest.md`.
+
+## Cycle 19 — Final Convergence (2026-08-21)
+
+- Full Setup now has one 16-step path across installer first-run, the GUI SETUP
+  button, `--setup`, and `angerona-setup`; integration secrets and the Signal PIN
+  use OS-protected storage.
+- The Windows inherited-environment/UAC launcher chain is closed. Supervised
+  children and operator shells receive allowlisted, secret-free environments.
+  R4-04 child secret propagation is fixed; a just-in-time in-process credential
+  broker remains architectural debt for legacy in-process consumers.
+- C19-RT-01 is fixed. Linux x86-64 and macOS arm64 source/release paths verify
+  exact filename, size, and SHA-256 for 75 wheels per target before offline
+  installation. Intel macOS fails closed until a safe current wheel exists.
+- The recorder flood path improved from 33.855 seconds to 2.080 seconds for
+  40,000 events (16.3x) without losing authoritative evidence. Overflow now uses
+  a bounded authenticated 64 MiB spool with replay receipts, quarantine,
+  backpressure, bounded shutdown, and a fix for the final full-cap replay
+  deadlock.
+- SOAR re-verifies Event HMAC at action time; shutdown token future-skew/replay
+  state and Signal sender identity fail closed. A software-HMAC visibility MVP
+  reports healthy/degraded/blind/untrusted without raw telemetry or response
+  authority; it is not hardware-backed attestation.
+- Final red-team outcome: **0 Critical / 0 High / 1 Medium**, with the Medium
+  supply finding fixed. The public-tree secret scan is clean; historical Git
+  author email remains operator-owned history privacy debt and was not rewritten.
+- Final gates: **839 passed / 3 intentional platform skips / 0 failed**;
+  **66 modules / 0 discovery errors**; selfcheck **26/26**; focused final group
+  **84/84** and performance/settings **18/18**. Ruff, compileall, source trust,
+  workflow YAML/policy, diff checks, documentation drift, requirements audit
+  (0 known vulnerabilities), and Bandit Medium/High (0 findings; warnings only)
+  pass. No post-fix crash was observed.
+- External gates remain explicit: native target-runner release execution,
+  clean-machine lifecycle, publisher signing/notarization, physical sleep/resume,
+  long elevated soak, independent assessment, production fleet identity/HA, and
+  a hardware-backed visibility proof.
+- Visionary proposals remain backlog except for the bounded software-HMAC
+  visibility MVP. Full ranking and implementation gates are in
+  `analysis/loop/cycle19/innovation.md`.
+
+## Cycle 19 — Device Security Lab and Scan Center Addendum (2026-08-21)
+
+- Device Security Lab adds an owner-authorized Red Team tab for passive, local
+  USB, Ethernet, Wi-Fi, Bluetooth, and display/HDMI posture. File-based
+  companion enrollment uses short-lived Ed25519 proof-of-possession; only the
+  public key/fingerprint is retained by the controller. Evidence is signed,
+  fresh, replay-protected, and redacted.
+- The lab exposes no target address, listener, active scanner, exploit, packet,
+  credential, or response action. Pinned mutual-TLS companion transport remains
+  a future gate.
+- Live Alerts now opens Scan Center: bounded
+  symlink/reparse/UNC/remote-mount-safe YARA-X/metadata path scans, passive local
+  listener audit, privacy-safe aggregate network posture, trusted `MpCmdRun`
+  Defender orchestration, cancellation, progress, and export.
+- Custom Defender scans disable remediation. Quick/full scans may apply only
+  configured Windows Security actions. Angerona complements rather than
+  replaces Defender's kernel, AMSI, cloud, and reputation stack.
+- Updated authoritative evidence: **839 passed / 3 intentional platform skips /
+  0 failed**; discovery **66 modules / 0 errors**; selfcheck **26/26**;
+  compileall, Ruff, source-trust, workflow-policy, and diff checks pass.

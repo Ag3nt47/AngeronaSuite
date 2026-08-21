@@ -167,6 +167,7 @@ def test_secret_store_uses_exclusive_random_temp_not_pid_path(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr(secure_store.sys, "platform", "win32")
     predictable = tmp_path / f"secrets.dpapi.{os.getpid()}.tmp"
     predictable.write_bytes(b"attacker-controlled")
     monkeypatch.setattr(secure_store, "_protect_bytes", lambda data: b"enc:" + data)

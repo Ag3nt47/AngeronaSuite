@@ -39,6 +39,7 @@ _PATTERNS: tuple[tuple[str, str, str], ...] = (
 _PROCESS_TECHNIQUE = "T1059"
 _PROCESS_LABEL = "benign tagged execution marker"
 _PROCESS_TOKEN = re.compile(r"\bANGERONA_REDTEAM_[0-9a-f]{8}\b", re.I)
+_POLICY_CACHE_UNSET = object()
 
 
 def policy_path(data_root: Path | None = None) -> Path:
@@ -167,7 +168,37 @@ class PurpleGuard(BaseModule):
         self._seen: set[tuple[str, int, int]] = set()
         self._seen_events: set[tuple[float, str, object, str]] = set()
         self._last_process_scan: tuple[int, tuple[str, ...]] | None = None
+        self._policy_cache_key: object = _POLICY_CACHE_UNSET
+        self._policy_cache: dict = {}
         self.detected = 0
+
+    def _policy_snapshot(self) -> dict:
+        """Return the policy, reparsing only after the file identity changes.
+
+        An installed remediation policy is normally unchanged between drills,
+        yet the active detector runs once per second.  A stat-based identity
+        check avoids tens of thousands of identical JSON reads per day.  The
+        key includes both change timestamps, size, and file identity so atomic
+        replacement or an in-place rewrite invalidates the cache immediately.
+        """
+        path = policy_path(self.data_root)
+        try:
+            stat = path.stat()
+            key: object = (
+                int(getattr(stat, "st_dev", 0)),
+                int(getattr(stat, "st_ino", 0)),
+                int(stat.st_mtime_ns),
+                int(stat.st_ctime_ns),
+                int(stat.st_size),
+            )
+        except OSError:
+            key = None
+        if key == self._policy_cache_key:
+            return self._policy_cache
+        value = _read_policy(self.data_root).get("techniques", {})
+        self._policy_cache = value if isinstance(value, dict) else {}
+        self._policy_cache_key = key
+        return self._policy_cache
 
     def scan_once(self, policy: dict | None = None) -> int:
         if policy is None:
@@ -261,9 +292,7 @@ class PurpleGuard(BaseModule):
         second (health, file markers, and process markers). A single parse is
         faster and makes every check in the cycle observe one policy version.
         """
-        policy = _read_policy(self.data_root).get("techniques", {})
-        if not isinstance(policy, dict):
-            policy = {}
+        policy = self._policy_snapshot()
         file_hits = self.scan_once(policy)
         process_hits = self.scan_process_once(policy)
         return file_hits, process_hits, len(policy)

@@ -40,7 +40,9 @@ def _fixed_volume_available(root: Path) -> bool:
 
 
 def _frozen_default_data_root() -> Path:
-    """Prefer the operator's fixed D: data volume, with a safe C: fallback."""
+    """Return the platform-native persistent state root for a frozen build."""
+    if not sys.platform.startswith("win"):
+        return _posix_default_data_root()
     drive = os.environ.get("ANGERONA_DATA_DRIVE", "D:").strip().upper()
     if len(drive) == 2 and drive[0].isalpha() and drive[1] == ":":
         preferred = Path(drive + "\\")
@@ -48,6 +50,37 @@ def _frozen_default_data_root() -> Path:
             return preferred / "AngeronaData"
     program_data = Path(os.environ.get("PROGRAMDATA", str(project_root())))
     return program_data / "Angerona"
+
+
+def _posix_default_data_root() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Angerona"
+    configured = os.environ.get("XDG_STATE_HOME", "").strip()
+    base = Path(configured).expanduser() if configured else Path.home() / ".local" / "state"
+    if not base.is_absolute():
+        base = Path.home() / ".local" / "state"
+    return base / "angerona"
+
+
+def _harden_posix_data_root(path: Path) -> None:
+    """Require a current-user-owned, non-symlink state directory with mode 0700."""
+    if sys.platform.startswith("win"):
+        return
+    try:
+        if path.is_symlink() or not path.is_dir():
+            raise PermissionError(f"Refusing unsafe Angerona data directory: {path}")
+        info = path.stat()
+        getuid = getattr(os, "geteuid", None)
+        if callable(getuid) and info.st_uid != getuid():
+            raise PermissionError(
+                f"Angerona data directory is owned by another account: {path}"
+            )
+        if stat.S_IMODE(info.st_mode) != 0o700:
+            os.chmod(path, 0o700)
+        if stat.S_IMODE(path.stat().st_mode) != 0o700:
+            raise PermissionError(f"Could not protect Angerona data directory: {path}")
+    except OSError as exc:
+        raise PermissionError(f"Could not verify Angerona data directory: {path}") from exc
 
 
 def _create_admin_directory_atomic(path: Path) -> bool:
@@ -91,8 +124,15 @@ def _create_admin_directory_atomic(path: Path) -> bool:
 
 def _admin_acl_valid(path: Path) -> bool:
     """Verify owner and every DACL identity without interpolating the path."""
-    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
-    powershell = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    from angerona.core.privilege import (
+        sanitized_child_environment,
+        trusted_powershell_path,
+    )
+
+    try:
+        powershell = trusted_powershell_path()
+    except OSError:
+        return False
     if not powershell.is_file():
         return False
     script = (
@@ -106,8 +146,7 @@ def _admin_acl_valid(path: Path) -> bool:
         "if ($o -notin @('S-1-5-18','S-1-5-32-544') -or $bad.Count -ne 0 "
         "-or $a.Access.Count -lt 2) {exit 1}; exit 0"
     )
-    env = os.environ.copy()
-    env["ANGERONA_ACL_PATH"] = str(path)
+    env = sanitized_child_environment({"ANGERONA_ACL_PATH": str(path)})
     result = subprocess.run([str(powershell), "-NoProfile", "-Command", script],
                             env=env, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, timeout=20, check=False,
@@ -157,6 +196,8 @@ def _canonical_data_path(
     _program_data: str,
     _executable: str,
     _cwd: str,
+    _xdg_state_home: str,
+    _user_home: str,
 ) -> Path:
     """Resolve the runtime root once per effective environment.
 
@@ -170,9 +211,14 @@ def _canonical_data_path(
     elif frozen:
         path = _frozen_default_data_root()
     else:
-        # Keep mutable state outside the Git checkout. Hardened runtime ACLs
-        # must never prevent source updates, tests, or a clean uninstall.
-        path = project_root().parent / "AngeronaData"
+        # Keep mutable state outside the Git checkout. Windows source installs
+        # preserve the suite's D:-drive boundary; POSIX installs follow the XDG
+        # state directory or macOS Application Support convention.
+        path = (
+            project_root().parent / "AngeronaData"
+            if sys.platform.startswith("win")
+            else _posix_default_data_root()
+        )
     if frozen:
         return Path(os.path.abspath(path))
     return path.resolve()
@@ -181,10 +227,11 @@ def _canonical_data_path(
 def data_dir(create: bool = True) -> Path:
     """Return the sole persistent runtime root.
 
-    Source installs use a sibling ``AngeronaData`` directory (D: in this
-    workspace). Frozen releases prefer protected ``D:\\AngeronaData`` on a
-    fixed D: volume, with protected ProgramData as the no-D: fallback.
-    ``ANGERONA_DATA`` remains an explicit override.
+    Windows source installs use a sibling ``AngeronaData`` directory (D: in
+    this workspace); frozen Windows releases prefer protected
+    ``D:\\AngeronaData``. Linux follows ``XDG_STATE_HOME`` and macOS uses the
+    current user's Application Support directory. ``ANGERONA_DATA`` remains an
+    explicit override on every platform.
     """
     frozen = getattr(sys, "frozen", False)
     configured = os.environ.get("ANGERONA_DATA", "").strip()
@@ -196,12 +243,14 @@ def data_dir(create: bool = True) -> Path:
         os.environ.get("PROGRAMDATA", ""),
         sys.executable,
         os.getcwd(),
+        os.environ.get("XDG_STATE_HOME", ""),
+        str(Path.home()),
     )
     if frozen and str(path).casefold().startswith("d:\\"):
         # Relocate any legacy per-user C: spill into the canonical fixed data
         # drive on the Storage Hygiene module's first pass (collision-safe).
         os.environ.setdefault("ANGERONA_STORAGE_AUTOMIGRATE", "1")
-    if frozen:
+    if frozen and sys.platform.startswith("win"):
         if not path.parent.is_dir() or _is_reparse_point(path.parent):
             raise PermissionError(f"Refusing unsafe Angerona data parent: {path.parent}")
         if create:
@@ -216,6 +265,18 @@ def data_dir(create: bool = True) -> Path:
                 if not path.is_dir() or _is_reparse_point(path):
                     raise PermissionError(f"Refusing unsafe Angerona data directory: {path}")
                 path = path.resolve(strict=True)
+    elif frozen:
+        existed = path.exists()
+        if create:
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if path.is_symlink():
+                raise PermissionError(f"Refusing unsafe Angerona data directory: {path}")
+            path.mkdir(mode=0o700, exist_ok=True)
+            path = path.resolve(strict=True)
+        elif existed:
+            if path.is_symlink() or not path.is_dir():
+                raise PermissionError(f"Refusing unsafe Angerona data directory: {path}")
+            path = path.resolve(strict=True)
     else:
         existed = False
     os.environ.setdefault("ANGERONA_DATA", str(path))
@@ -226,16 +287,22 @@ def data_dir(create: bool = True) -> Path:
                 with _data_path_lock:
                     if key not in _ready_source_roots:
                         path.mkdir(parents=True, exist_ok=True)
+                        _harden_posix_data_root(path)
                         _ready_source_roots.add(key)
         else:
-            _harden_frozen_data_root(path, existed)
+            if sys.platform.startswith("win"):
+                _harden_frozen_data_root(path, existed)
+            else:
+                _harden_posix_data_root(path)
     return path
 
 
 def runtime_temp_dir(create: bool = True) -> Path:
     path = data_dir(create=create) / "tmp"
     if create:
-        path.mkdir(parents=True, exist_ok=True)
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if not sys.platform.startswith("win"):
+            os.chmod(path, 0o700)
     return path
 
 

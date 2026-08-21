@@ -1,0 +1,24 @@
+# Direct dependencies and release tooling for native CPython 3.12 POSIX builds.
+# Every item is exact-pinned; transitive wheels are captured in the per-target
+# hashed locks under release/locks/posix.
+PySide6==6.11.1
+psutil==7.2.2
+requests==2.34.2
+python-dotenv==1.2.2
+# Intel macOS is intentionally excluded: cryptography 50 publishes no safe
+# CPython Intel wheel, and release builds never fall back to executing sdists.
+cryptography==50.0.0
+PyYAML==6.0.2
+defusedxml==0.7.1
+yara-x==1.19.0
+PyInstaller==6.21.0
+cyclonedx-bom==7.3.0
+pip-audit==2.10.1
+pytest==9.1.1
+setuptools==83.0.0
+wheel==0.47.0
+# Local conversational controls are bundled in native desktop releases.
+sounddevice==0.5.5
+pyttsx3==2.99
+tqdm==4.68.4
+websockets==16.1

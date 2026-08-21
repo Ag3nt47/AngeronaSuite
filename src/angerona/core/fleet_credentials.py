@@ -628,11 +628,14 @@ def load_or_migrate_local_credentials(
     legacy_secret: str = "",
     clock: Callable[[], float] = time.time,
 ) -> LocalFleetCredentialSet:
-    """Load V1 protected credentials or atomically migrate the legacy secret.
+    """Load V1 protected credentials or migrate a protected legacy secret.
 
     An existing V1 bundle always wins, including when it is corrupt: a legacy
     value must never silently replace protected credential state. Migration
     writes and byte-verifies V1 before separately requesting legacy cleanup.
+    ``legacy_secret`` is retained only as a compatibility argument and is never
+    accepted as authority; callers must explicitly import into the OS-protected
+    store before invoking this function.
     """
     from angerona.core import secure_store
 
@@ -655,7 +658,12 @@ def load_or_migrate_local_credentials(
         return loaded
 
     protected_legacy = values.get(LEGACY_FLEET_SERVICE_KEY, "")
-    source_secret = protected_legacy or legacy_secret
+    if legacy_secret and not protected_legacy:
+        raise RuntimeError(
+            "unprotected legacy fleet credentials are not accepted; import "
+            "the value into the OS-protected store first"
+        )
+    source_secret = protected_legacy
     if not isinstance(source_secret, str) or len(source_secret) < 32:
         raise RuntimeError("protected legacy fleet credential is unavailable")
     try:

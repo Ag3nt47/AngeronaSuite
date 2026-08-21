@@ -362,9 +362,8 @@ class IntelSyncModule(BaseModule):
             elif "matches" in _result:
                 matches = _result["matches"]
                 kev_count = _result.get("kev_count", 0)
-                # Analyst-ignored CVEs (no fix / too vague) stay in the feed and the
-                # dashboard, but are excluded from the threat level so Angerona doesn't
-                # report HIGH/CRITICAL over things the operator can't action.
+                # Only current, typed not-applicable exclusions leave threat scoring.
+                # No-fix, AI-outage, accepted-risk, and legacy ignore records remain active.
                 try:
                     from angerona.core.cve_ignore import filter_active
                     active = filter_active(matches)
@@ -373,16 +372,18 @@ class IntelSyncModule(BaseModule):
                 ignored_n = len(matches) - len(active)
                 if active:
                     self.alert_pending = True
-                    note = f" ({ignored_n} ignored)" if ignored_n else ""
+                    note = f" ({ignored_n} verified not applicable)" if ignored_n else ""
                     self.set_health(60, f"{len(active)} applicable KEV CVE(s){note}")
                     top = ", ".join(m["cve"] for m in active[:5] if m.get("cve"))
                     self.emit(f"{len(active)} host-applicable CISA KEV CVEs (e.g. {top}). "
                               f"Operator confirmation required before any fix.",
-                              Severity.HIGH, count=len(active), cves=top, ignored=ignored_n)
+                              Severity.HIGH, count=len(active), cves=top,
+                              not_applicable=ignored_n)
                 elif matches:
-                    # every applicable CVE is analyst-ignored → no threat-level impact
+                    # Every correlation has a current, evidenced not-applicable exclusion.
                     self.alert_pending = False
-                    self.set_health(100, f"{len(matches)} applicable KEV CVE(s), all ignored")
+                    self.set_health(
+                        100, f"{len(matches)} KEV correlation(s), all verified not applicable")
                 else:
                     self.alert_pending = False
                     self.set_health(100, f"{kev_count} KEV records, none applicable")

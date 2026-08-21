@@ -57,6 +57,7 @@ _ICON_COLORS = {
     "attack": "#fb923c",
     "intel": "#60a5fa",
     "forensics": "#c084fc",
+    "operations": "#22d3ee",
     "console": "#2dd4bf",
     "setup": "#f472b6",
     "help": "#facc15",
@@ -131,6 +132,15 @@ def _icon_pixmap(kind: str, color: str, size: int = 22) -> QPixmap:
         p.drawLine(QPointF(13.0, 13.0), QPointF(19.0, 19.0))
         p.drawLine(QPointF(6.0, 8.0), QPointF(11.5, 8.0))
         p.drawLine(QPointF(8.75, 5.25), QPointF(8.75, 10.75))
+    elif kind == "operations":
+        # Local SOC hub: a protected central core linked to four workflows.
+        p.drawEllipse(QRectF(8.0, 8.0, 6.0, 6.0))
+        for point in (
+            QPointF(4.0, 4.0), QPointF(18.0, 4.0),
+            QPointF(4.0, 18.0), QPointF(18.0, 18.0),
+        ):
+            p.drawLine(QPointF(cx, cy), point)
+            p.drawEllipse(QRectF(point.x() - 1.5, point.y() - 1.5, 3.0, 3.0))
     elif kind == "console":
         p.drawRoundedRect(QRectF(2.5, 4.0, s - 5.0, s - 8.0), 2.0, 2.0)
         p.drawLine(QPointF(6.0, 8.0), QPointF(9.0, 11.0))

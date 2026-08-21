@@ -1,8 +1,9 @@
 """Configuration + canonical filesystem paths.
 
 All runtime state lives under a dedicated data directory so the app folder
-itself stays clean and read-only-friendly. Credentials are persisted in a
-current-user DPAPI store; legacy plaintext imports require an explicit action.
+itself stays clean and read-only-friendly. Credentials use the current-user OS
+store (Windows DPAPI, macOS Keychain, or Linux Secret Service); legacy
+plaintext imports require an explicit action.
 """
 from __future__ import annotations
 
@@ -36,7 +37,7 @@ def _data_dir() -> Path:
 
 
 def write_env_keys(updates: dict) -> Path:
-    """Persist credentials in the DPAPI store and publish them live.
+    """Persist credentials in the current-user OS store and publish them live.
 
     The historical function name remains for UI compatibility, but this no
     longer creates a plaintext ``.env`` in the elevated application checkout.
@@ -54,7 +55,7 @@ class Config:
     theme: str = "cyber"                       # gui theme key (see gui/theme.py)
     accent: str = ""                           # optional custom accent hex tint
     module_states: Dict[str, bool] = field(default_factory=dict)
-    autostart_enabled: bool = True              # launch at Windows logon (core/autostart.py)
+    autostart_enabled: bool = True              # platform-native per-user logon startup
     eco_mode: bool = True                        # start in Eco Mode (heavy scanners paused) for a fast, responsive launch
     blackbox_enabled: bool = True                # auto-launch the decoupled Black Box diagnostic recorder at startup
     # ── Mobile Response Bridge (Signal / signal-cli) — opt-in, default off ──
@@ -62,7 +63,7 @@ class Config:
     mobile_signal_cli: str = ""                   # path to the signal-cli binary
     mobile_host_number: str = ""                  # this machine's registered Signal number
     mobile_dest_number: str = ""                  # operator's destination phone number
-    # ── Linux eBPF sensor node (headless Linux only) — opt-in, default off ──
+    # ── Linux eBPF kernel sensor — optional privileged supplement ──────────
     ebpf_enabled: bool = False
     # ── Online AI consult priority order (first with a key wins) ──
     ai_provider_order: list = field(default_factory=lambda: [
@@ -93,12 +94,12 @@ class Config:
     aria_push_url: str = ""                      # channel webhook URL (blank = disabled)
     aria_inbox_enabled: bool = False            # inbox phishing triage (background IMAP poller)
     aria_imap_host: str = ""                     # IMAP server, e.g. imap.gmail.com
-    aria_imap_user: str = ""                     # mailbox address (password lives in .env: ARIA_IMAP_PASS)
+    aria_imap_user: str = ""                     # mailbox address; password stays in the OS credential store
     aria_inbox_interval_min: int = 5             # how often to scan the mailbox (minutes)
     aria_research_egress: bool = False          # allow headless research fetches (else browser-surface)
     # ── Microsoft Teams bot (two-way ARIA over Teams) — opt-in, default off ──
     teams_bot_enabled: bool = False
-    teams_app_id: str = ""                       # Azure Bot App (client) ID; secret in .env
+    teams_app_id: str = ""                       # Azure Bot App ID; secret stays in the OS credential store
     teams_allowed_users: str = ""                # comma/semicolon-separated immutable Teams user IDs
     teams_bot_port: int = 3978                   # local Bot Framework messaging-endpoint port
     teams_bot_skip_auth: bool = False            # runtime-only dev switch; never persisted
@@ -113,6 +114,7 @@ class Config:
     ui_scale_mode: str = "auto"                  # "auto" | "fixed"
     ui_scale_fixed: float = 1.0                  # honored only when mode == "fixed"
     ui_motion_enabled: bool = True                # polished panel reveals; OS reduced-motion still wins
+    dashboard_mode: str = "classic"              # "classic" | "flow" (Local SOC workspace)
     holographic_orb_enabled: bool = True          # minimized-window token + radial service controls
     holographic_orb_x: int = -1                   # global center; -1 selects the active screen corner
     holographic_orb_y: int = -1
@@ -207,7 +209,7 @@ class Config:
                     data, "aria_push_enabled", cfg.aria_push_enabled)
                 cfg.aria_push_kind        = data.get("aria_push_kind", cfg.aria_push_kind)
                 # Webhook URLs contain bearer-like channel credentials. Prefer
-                # the DPAPI store and read the settings value only as a legacy
+                # the OS credential store and read the settings value only as a legacy
                 # in-memory fallback that the next successful save migrates.
                 cfg.aria_push_url = os.environ.get(
                     _ARIA_PUSH_URL_KEY,
@@ -235,6 +237,14 @@ class Config:
                     pass
                 cfg.ui_motion_enabled = _bool_setting(
                     data, "ui_motion_enabled", cfg.ui_motion_enabled)
+                requested_dashboard = str(
+                    data.get("dashboard_mode", cfg.dashboard_mode)
+                ).strip().lower()
+                cfg.dashboard_mode = (
+                    requested_dashboard
+                    if requested_dashboard in {"classic", "flow"}
+                    else "classic"
+                )
                 cfg.holographic_orb_enabled = _bool_setting(
                     data,
                     "holographic_orb_enabled",
@@ -283,7 +293,7 @@ class Config:
         return cfg
 
     def save(self) -> None:
-        # Persist the push webhook before replacing settings.json. If DPAPI is
+        # Persist the push webhook before replacing settings.json. If the OS store is
         # unavailable, fail the save rather than falling back to a plaintext
         # credential in the general settings file.
         if self.aria_push_url or os.environ.get(_ARIA_PUSH_URL_KEY):
@@ -338,6 +348,7 @@ class Config:
                     "ui_scale_mode":         self.ui_scale_mode,
                     "ui_scale_fixed":        self.ui_scale_fixed,
                     "ui_motion_enabled":     self.ui_motion_enabled,
+                    "dashboard_mode":        self.dashboard_mode,
                     "holographic_orb_enabled": self.holographic_orb_enabled,
                     "holographic_orb_x":     self.holographic_orb_x,
                     "holographic_orb_y":     self.holographic_orb_y,

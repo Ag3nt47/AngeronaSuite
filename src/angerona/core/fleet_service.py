@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import json
 import math
 import re
@@ -52,6 +53,8 @@ FLEET_CREDENTIAL_HEADER = "X-Angerona-Credential-ID"
 MAX_REPLAY_ENTRIES = 250_000
 MAX_HANDLER_THREADS = 64
 DEFAULT_CLIENT_TIMEOUT_SECONDS = 5.0
+SHUTDOWN_POLL_SECONDS = 0.05
+SATURATION_DRAIN_BYTES = 64 * 1024
 
 FLEET_CONTRACT_READ = "fleet.contract.read"
 FLEET_CAPABILITIES_READ = "fleet.capabilities.read"
@@ -672,6 +675,43 @@ class RequestAuthenticator:
         self._replay.close()
 
 
+class _ShutdownAwareSocketReader(io.RawIOBase):
+    """Socket reader that can be interrupted without cross-thread closes.
+
+    Closing a socket in another thread does not reliably cancel an already
+    blocked ``recv`` on Windows.  Polling a service-owned event keeps ordinary
+    client deadlines intact while making shutdown deterministic.
+    """
+
+    def __init__(
+        self,
+        connection: socket.socket,
+        stopping: threading.Event,
+        client_timeout: float,
+    ) -> None:
+        super().__init__()
+        self._connection = connection
+        self._stopping = stopping
+        self._client_timeout = client_timeout
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int | None:
+        deadline = time.monotonic() + self._client_timeout
+        while not self._stopping.is_set():
+            try:
+                return self._connection.recv_into(buffer)
+            except (TimeoutError, socket.timeout):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("fleet request read timed out") from None
+            except OSError:
+                if self._stopping.is_set():
+                    return 0
+                raise
+        return 0
+
+
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     """Thread-capped loopback server with observable bounded handler drain."""
 
@@ -683,26 +723,57 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         self._handler_condition = threading.Condition()
         self._active_handlers = 0
         self._active_requests: set[Any] = set()
+        self._stopping = False
+        self._shutdown_event = threading.Event()
         super().__init__(server_address, handler_class)
 
     def process_request(self, request, client_address) -> None:
         if not self._slots.acquire(blocking=False):
             try:
+                # Windows resets a TCP connection closed with unread inbound
+                # bytes, which can hide the promised 503 behind WinError 10053.
+                # Drain one bounded header before the graceful rejection.
+                request.settimeout(SHUTDOWN_POLL_SECONDS)
+                received = bytearray()
+                while (
+                    b"\r\n\r\n" not in received
+                    and len(received) < SATURATION_DRAIN_BYTES
+                ):
+                    chunk = request.recv(min(
+                        4096, SATURATION_DRAIN_BYTES - len(received)
+                    ))
+                    if not chunk:
+                        break
+                    received.extend(chunk)
+            except (OSError, TimeoutError):
+                pass
+            try:
                 request.sendall(
                     b"HTTP/1.1 503 Service Unavailable\r\n"
                     b"Connection: close\r\nContent-Length: 0\r\n\r\n"
                 )
-            except OSError:
+            except (OSError, TimeoutError):
                 pass
             finally:
                 self.shutdown_request(request)
             return
+        accepted = False
         with self._handler_condition:
-            self._active_handlers += 1
-            self._active_requests.add(request)
+            # Stop and request registration share this lock.  Without that
+            # handshake, shutdown can take its socket snapshot while an
+            # accepted Windows socket is between accept() and handler setup,
+            # leaving its buffered reader alive after the replay ledger closes.
+            if not self._stopping:
+                self._active_handlers += 1
+                self._active_requests.add(request)
+                accepted = True
+        if not accepted:
+            self._slots.release()
+            self.shutdown_request(request)
+            return
         try:
             super().process_request(request, client_address)
-        except Exception:
+        except BaseException:
             self._handler_finished(request)
             raise
 
@@ -713,11 +784,21 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._handler_finished(request)
 
     def _handler_finished(self, request) -> None:
-        self._slots.release()
         with self._handler_condition:
+            # Thread creation/setup failures and socket cancellation can race
+            # on Windows.  Membership makes cleanup exactly-once.
+            if request not in self._active_requests:
+                return
             self._active_requests.discard(request)
             self._active_handlers -= 1
             self._handler_condition.notify_all()
+        self._slots.release()
+
+    def begin_shutdown(self) -> None:
+        """Atomically reject new handlers and interrupt every registered one."""
+        with self._handler_condition:
+            self._stopping = True
+            self._shutdown_event.set()
 
     def close_active_requests(self) -> None:
         """Interrupt stalled accepted sockets during supervised shutdown."""
@@ -790,10 +871,15 @@ class FleetLoopbackService:
             self.auth = RequestAuthenticator(credentials, replay_path)
         self._server: BoundedThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._lifecycle_lock = threading.RLock()
 
     def start(self) -> int:
-        if self._server is not None:
-            return int(self._server.server_port)
+        with self._lifecycle_lock:
+            if self._server is not None:
+                return int(self._server.server_port)
+            return self._start_locked()
+
+    def _start_locked(self) -> int:
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -807,7 +893,17 @@ class FleetLoopbackService:
 
             def setup(self):
                 super().setup()
-                self.connection.settimeout(owner.client_timeout_seconds)
+                # Use a short polling timeout around a reader that preserves
+                # the configured client deadline.  This avoids the Windows
+                # makefile/recv cancellation race during supervised shutdown.
+                original_reader = self.rfile
+                self.connection.settimeout(SHUTDOWN_POLL_SECONDS)
+                self.rfile = io.BufferedReader(_ShutdownAwareSocketReader(
+                    self.connection,
+                    self.server._shutdown_event,
+                    owner.client_timeout_seconds,
+                ))
+                original_reader.close()
 
             def _json(
                 self,
@@ -1191,6 +1287,7 @@ class FleetLoopbackService:
         )
         self._thread = threading.Thread(
             target=self._server.serve_forever,
+            kwargs={"poll_interval": SHUTDOWN_POLL_SECONDS},
             name="AngeronaFleetLoopback",
             daemon=True,
         )
@@ -1198,6 +1295,10 @@ class FleetLoopbackService:
         return int(self._server.server_port)
 
     def stop(self, timeout: float = 3.0) -> bool:
+        with self._lifecycle_lock:
+            return self._stop_locked(timeout)
+
+    def _stop_locked(self, timeout: float) -> bool:
         server, thread = self._server, self._thread
         if server is None:
             self.auth.close()
@@ -1206,7 +1307,7 @@ class FleetLoopbackService:
         # Wake blocked Windows socket readers before stopping the accept loop;
         # closing them only after serve_forever exits can leave makefile reads
         # pinned until their full client timeout.
-        server.close_active_requests()
+        server.begin_shutdown()
         server.shutdown()
         if thread is not None:
             thread.join(max(0.1, min(float(timeout), 10.0)))

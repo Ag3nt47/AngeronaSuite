@@ -1,0 +1,41 @@
+{
+  "cycle": 7,
+  "round": 3,
+  "date": "2026-08-20",
+  "base_commit": "478e65e28cd8",
+  "new_findings": [
+    {
+      "id": "C7-R3-01",
+      "title": "Observe-only remote evidence can still mutate local detection policy",
+      "severity": "MEDIUM",
+      "component": "src/angerona/modules/remote_bridge.py:411-449; src/angerona/core/eventbus.py:75-91; src/angerona/modules/evolution_engine.py:157-171,334-384; src/angerona/modules/yara_scanner.py:99-132",
+      "status": "FIXED",
+      "recommendation": "Assign immutable transport origin/authority outside peer-controlled details, default-deny observe-only evidence in every state-mutating subscriber, and require a typed local Posture Hardening verification receipt before Evolution may activate or replace rules."
+    }
+  ],
+  "prior_verification": [
+    {"id": "C7-R1-01", "status": "RESOLVED", "note": "SOAR process/file actions and Evolution policy mutation reject observe-only remote evidence."},
+    {"id": "C7-R1-02", "status": "RESOLVED", "note": "Staged, executed, and verified states are distinct and rendered truthfully."},
+    {"id": "C7-R1-03", "status": "RESOLVED", "note": "AI outage and no-fix outcomes cannot bulk-suppress KEVs."},
+    {"id": "C7-R1-04", "status": "RESOLVED", "note": "Production sensors stay active and hanging child tests are deadline-terminated."},
+    {"id": "C7-R1-05", "status": "RESOLVED", "note": "Release CI wheels, exact Inno compiler, and CPython 3.12 x64 elevated source bootstraps are hash-pinned with no unhashed dependency fallback."},
+    {"id": "C7-R1-06", "status": "RESOLVED", "note": "The first public release boundary has a monotonic Setup gate and no older public release currently exists."},
+    {"id": "R4-01-expanded-data-root", "status": "RESOLVED", "note": "Every self-elevating launcher overwrites inherited ANGERONA_DATA before elevation."},
+    {"id": "C7-BT-01", "status": "RESOLVED", "note": "AnalysisWorker payload and native completion signals are separated; native completion owns cleanup."}
+  ],
+  "tests": {
+    "focused_pytest": {"passed": 18, "failed": 0, "seconds": 4.32},
+    "remote_events": 8,
+    "remote_destructive_actions": 0,
+    "pre_fix_remote_evolution_unauthorized_activations": 1,
+    "post_fix_remote_evolution_unauthorized_activations": 0,
+    "post_fix_remote_security_tests_passed": 4,
+    "release_source_trust_tests_passed": 32,
+    "hung_children_terminated": 5,
+    "hung_child_survivors": 0,
+    "fresh_process_lifecycle_passes": 15,
+    "post_fix_qt_crashes": 0
+  },
+  "prior_counts": {"resolved": 6, "partial_or_open": 0},
+  "new_severity_counts": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 1, "LOW": 0, "INFO": 0}
+}

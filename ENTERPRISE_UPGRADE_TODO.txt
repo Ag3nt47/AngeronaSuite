@@ -117,8 +117,15 @@ CURRENT FOUNDATION TO PRESERVE AND REVALIDATE
 [DONE] BASE-015  Reduced-motion-aware vertical-line panel reveal animation.
 [DONE] BASE-016  Non-blocking System Pulse card for CPU, RAM, available memory,
                  Wi-Fi signal, and aggregate network throughput.
+[DONE] BASE-017  Toggleable Flow Dashboard / Local SOC workspace with animated
+                 radial infographics, cases, typed local hunts, evidence custody,
+                 privacy-minimized asset/SBOM inventory, signed detection-content
+                 lifecycle, append-only administrator audit, and Classic fallback.
+[DONE] BASE-018  Local operations safety boundary: no cloud requirement, generic
+                 remote shell, arbitrary query language, raw-evidence copy into
+                 cases, or unsigned detection activation.
 
-[DONE/P0] BASE-017  Re-run the full regression, security, performance, and privacy
+[DONE/P0] BASE-019  Re-run the full regression, security, performance, and privacy
   suite before every release and archive results with the release manifest.
 
 
@@ -2995,6 +3002,46 @@ CYCLES 12-13 IMPLEMENTATION RECORD - 2026-08-01
   - Deterministic local limits and retry evidence are shipped.
   - Dynamic endpoint backoff, durable distributed quotas, production overload
     coordination, and independent storm/full-disk lab evidence remain open.
+
+
+CYCLE 21 IMPLEMENTATION RECORD - 2026-08-21
+--------------------------------------------
+
+[DONE/P1] ENT-PARITY-MATRIX-021  Evidence-backed capability coverage registry.
+  - Twelve security domains map Angerona evidence to Wazuh, Velociraptor,
+    Security Onion, osquery/Fleet, CALDERA, TheHive, and MISP patterns.
+  - Operational, integrated, preview, foundation, and external-gate states are
+    distinct. The versioned schema explicitly denies an unqualified parity claim.
+  - Flow Dashboard renders the canonical rows and remaining boundary in a new
+    Parity & Interop tab; no marketing-only score is generated.
+
+[DONE/P1] ENT-NDR-IMPORT-021  Bounded local defensive evidence ingestion.
+  - Explicitly selected Suricata EVE, Zeek JSON, OCSF, and generic defensive
+    JSON/JSONL normalize into the existing local EvidenceStore.
+  - UNC/network paths, links/reparse points, files over 32 MiB, lines over
+    256 KiB, more than 5,000 scanned lines, and more than 1,000 retained records
+    fail or truncate visibly. Only reviewed fields cross normalization.
+  - Source path and raw payload never enter admin audit; SHA-256 and bounded
+    outcome counts provide provenance.
+
+[DONE/P1] ENT-OSQUERY-GUARD-021  Fixed read-only osquery integration.
+  - Known system locations, exact executable name, regular-file validation,
+    platform-specific internal SELECT templates, a minimal environment, shell
+    disablement, 15-second timeout, 500-row and 4-MiB response limits are fixed.
+  - No caller SQL, command, executable path, remote target, extension loading,
+    PATH discovery, package installation, or mutation API exists.
+  - Results reuse typed hunts, case custody, local retention and append-only audit.
+
+[DONE/P0] ENT-QA-C21-021  Parity and interoperability regression evidence.
+  - Full repository suite: 848 passed, 3 intentional platform skips, 0 failures.
+  - Focused parity/interop/Local SOC suite: 9 passed. Full Ruff and compile,
+    changed-surface Bandit medium/high, and diff/whitespace gates pass.
+
+[PARTIAL/P1] ENT-SPECIALIST-PARITY-021  Deployment-scale specialist coverage.
+  - Local workflow and open-format integration are implemented.
+  - Full packet capture, distributed search/storage, real-time multi-analyst
+    tenancy, production endpoint transport, identity lifecycle, hardware-backed
+    key custody, and platform-native privileged sensors remain separate work.
 
 
 REMAINING EXTERNAL / DEPLOYMENT GATES

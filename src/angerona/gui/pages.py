@@ -61,7 +61,7 @@ HOW TO ADD THEM
      restart needed. Its health/Overview tab will show it active.
 
 SECURITY NOTES
-  • Windows uses user-bound DPAPI; macOS uses the current user's Keychain.
+  • Windows uses user-bound DPAPI; macOS uses Keychain; Linux uses Secret Service.
     Keys leave only for the provider you explicitly choose.
   • Remove a key anytime by clearing its field and saving.
   • Without any key, Angerona stays 100% local — nothing is sent externally.
@@ -2217,7 +2217,7 @@ class AlertDetailDialog(QDialog):
         self._b_analyze.setEnabled(False); self._b_analyze.setText("Analyzing…")
         self._analyze_worker = AnalysisWorker(alert, parent=self)
         self._analyze_worker.progress.connect(self._action_status.setText)
-        self._analyze_worker.finished.connect(self._on_standalone_analyze)
+        self._analyze_worker.result_ready.connect(self._on_standalone_analyze)
         self._analyze_worker.error.connect(
             lambda m: (self._action_status.setText(f"⚠ {m}"),
                        self._b_analyze.setEnabled(True), self._b_analyze.setText("Analyze")))
@@ -2230,6 +2230,15 @@ class AlertDetailDialog(QDialog):
         detail = (res.get("cloud") or res.get("local") or {})
         reason = detail.get("reasoning") or detail.get("justification") or ""
         self._action_status.setText(f"🔍 [{verdict} · {conf}%] {reason}")
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        """Keep a standalone triage worker alive until its blocking call returns."""
+        from angerona.gui.thread_lifecycle import defer_close_until_threads
+
+        worker = getattr(self, "_analyze_worker", None)
+        if defer_close_until_threads(self, event, (worker,)):
+            return
+        super().closeEvent(event)
 
     def _act_copy(self) -> None:
         _copy_event_to_clipboard(self._event)
@@ -2255,6 +2264,7 @@ class AlertDetailDialog(QDialog):
 
 class AlertsPanel(QFrame):
     events_loaded = Signal(object, object)
+    scan_requested = Signal()
 
     def __init__(self, storage, allow_cloud=False, bus=None) -> None:
         super().__init__()
@@ -2282,7 +2292,18 @@ class AlertsPanel(QFrame):
             "Open a full-size newest-first alert evidence window.",
         )
         self._title.clicked.connect(self._open_overview)
-        lay.addWidget(self._title)
+        title_row = QHBoxLayout()
+        title_row.addWidget(self._title, 1)
+        scan_button = QPushButton("🛡  Scan Center")
+        scan_button.setToolTip(
+            "Scan this computer with bounded Angerona checks, Microsoft Defender, "
+            "and passive listening-port/network posture review."
+        )
+        scan_button.clicked.connect(
+            lambda _checked=False: self.scan_requested.emit()
+        )
+        title_row.addWidget(scan_button)
+        lay.addLayout(title_row)
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
             ["Time", "Module", "Severity", "Message", "Allow", "Block", "Analyze"]
@@ -2429,8 +2450,14 @@ class AlertsPanel(QFrame):
         )
         self._analyze_workers.append(worker)
         worker.progress.connect(self._status.setText)
-        worker.finished.connect(lambda res, b=btn, w=worker: self._on_analyze_done(res, b, w))
-        worker.error.connect(lambda msg, b=btn, w=worker: self._on_analyze_err(msg, b, w))
+        worker.result_ready.connect(
+            lambda res, b=btn: self._on_analyze_done(res, b)
+        )
+        worker.error.connect(lambda msg, b=btn: self._on_analyze_err(msg, b))
+        # Retain the worker until Qt confirms run() has returned. Reaping from
+        # result_ready/error could delete a native QThread that is still
+        # unwinding, which aborts the process on Windows.
+        worker.finished.connect(lambda w=worker: self._reap_worker(w))
         worker.start()
 
     @staticmethod
@@ -2450,7 +2477,7 @@ class AlertsPanel(QFrame):
             pass
         worker.deleteLater()
 
-    def _on_analyze_done(self, result: dict, btn, worker) -> None:
+    def _on_analyze_done(self, result: dict, btn) -> None:
         self._reset_analyze_btn(btn)
         verdict = result.get("final_verdict", "UNKNOWN")
         conf = result.get("final_confidence", 0)
@@ -2458,12 +2485,10 @@ class AlertsPanel(QFrame):
         detail = (result.get("cloud") or result.get("local") or {})
         reason = detail.get("reasoning") or detail.get("justification") or ""
         self._status.setText(f"🔍 [{verdict} · {conf}% · {src}] {reason}")
-        self._reap_worker(worker)
 
-    def _on_analyze_err(self, msg: str, btn, worker) -> None:
+    def _on_analyze_err(self, msg: str, btn) -> None:
         self._reset_analyze_btn(btn)
         self._status.setText(f"⚠ Analyze failed: {msg}")
-        self._reap_worker(worker)
 
     def _allow_event(self, event) -> None:
         """Suppress future events from this module in the live feed."""
@@ -4038,6 +4063,25 @@ class SettingsDialog(QDialog):
         theme_row.addStretch()
         lay.addLayout(theme_row)
 
+        dashboard_row = QHBoxLayout()
+        dashboard_row.addWidget(QLabel("Startup dashboard:"))
+        self._dashboard_mode_combo = QComboBox()
+        self._dashboard_mode_combo.addItem("Classic dashboard", "classic")
+        self._dashboard_mode_combo.addItem(
+            "Flow Dashboard · Local SOC", "flow")
+        self._dashboard_mode_combo.setToolTip(
+            "Classic keeps the familiar monitoring screen. Flow opens the "
+            "interactive Local SOC workspace for cases, hunts, assets, signed "
+            "detections, and tamper-evident audit history. You can switch back "
+            "at any time and both modes stay entirely local.")
+        _dashboard_index = self._dashboard_mode_combo.findData(
+            str(getattr(self._cfg, "dashboard_mode", "classic")).lower())
+        self._dashboard_mode_combo.setCurrentIndex(
+            _dashboard_index if _dashboard_index >= 0 else 0)
+        dashboard_row.addWidget(self._dashboard_mode_combo)
+        dashboard_row.addStretch()
+        lay.addLayout(dashboard_row)
+
         # UI scale — Auto grows/shrinks buttons + text with the window; Fixed
         # pins a size (useful on large or high-DPI monitors). Values match the
         # readable clamp band in gui/theme.clamp_scale (75–135%).
@@ -4119,7 +4163,9 @@ class SettingsDialog(QDialog):
         lay.setSpacing(10)
 
         # ── Startup on boot ──
-        lay.addWidget(self._section("Windows startup"))
+        from angerona.core.autostart import ui_copy as _autostart_ui_copy
+        startup_section, startup_checkbox, startup_note, _backend = _autostart_ui_copy()
+        lay.addWidget(self._section(startup_section))
 
         boot_box = QGroupBox()
         boot_box.setFlat(True)
@@ -4129,17 +4175,14 @@ class SettingsDialog(QDialog):
         from angerona.core.autostart import is_enabled as _autostart_is_enabled
         currently_enabled = _autostart_is_enabled()
 
-        self._autostart_chk = QCheckBox("Launch Angerona automatically at Windows logon")
+        self._autostart_chk = QCheckBox(startup_checkbox)
         self._autostart_chk.setChecked(
             currently_enabled if currently_enabled is not None
             else self._cfg.autostart_enabled
         )
         boot_lay.addWidget(self._autostart_chk)
 
-        note = QLabel(
-            "Uses a Windows Scheduled Task with highest-privilege runLevel — "
-            "starts Angerona silently at logon without a UAC prompt."
-        )
+        note = QLabel(startup_note)
         note.setWordWrap(True)
         note.setStyleSheet("color: #94a3b8; font-size: 11px;")
         boot_lay.addWidget(note)
@@ -4180,23 +4223,29 @@ class SettingsDialog(QDialog):
         lay.addWidget(self._section("Black Box (out-of-band diagnostic recorder)"))
         self._blackbox_chk = QCheckBox("Launch the Black Box recorder automatically with Angerona")
         self._blackbox_chk.setChecked(getattr(self._cfg, "blackbox_enabled", True))
+        import sys as _platform_sys
+        if not _platform_sys.platform.startswith("win"):
+            self._blackbox_chk.setChecked(False)
+            self._blackbox_chk.setEnabled(False)
         lay.addWidget(self._blackbox_chk)
         bb_note = QLabel(
-            "A separate, strictly read-only process that tails crash/diagnostic files, "
-            "host telemetry, thread state and memory — it survives even if the main suite "
-            "deadlocks. Runs quietly in the system tray; restart Angerona to apply a change."
+            ("A separate, strictly read-only Windows process that tails crash/diagnostic "
+             "files and survives a main-suite deadlock."
+             if _platform_sys.platform.startswith("win") else
+             "The decoupled Black Box currently consumes Windows-only evidence and is "
+             "disabled on this platform; portable crash logging remains active.")
         )
         bb_note.setWordWrap(True); bb_note.setStyleSheet("color: #94a3b8; font-size: 11px;")
         lay.addWidget(bb_note)
 
-        lay.addWidget(self._section("Linux eBPF sensor (headless Linux node)"))
+        lay.addWidget(self._section("Linux kernel telemetry (optional supplement)"))
         self._ebpf_chk = QCheckBox("Enable native eBPF kernel telemetry (Linux + BCC + root only)")
         self._ebpf_chk.setChecked(getattr(self._cfg, "ebpf_enabled", False))
         lay.addWidget(self._ebpf_chk)
         ebpf_note = QLabel(
-            "Off by default. On a Linux sensor node with BCC and kernel headers, this "
-            "hooks execve + tcp_sendmsg in-kernel and forwards events over the Remote Bridge. "
-            "Inert on Windows / without BCC (degrades gracefully)."
+            "Off by default. Rootless Linux Observe works without this option. BCC/eBPF "
+            "adds privileged execve + tcp_sendmsg kernel visibility on a dedicated sensor "
+            "deployment; do not run the desktop GUI as root."
         )
         ebpf_note.setWordWrap(True); ebpf_note.setStyleSheet("color: #94a3b8; font-size: 11px;")
         lay.addWidget(ebpf_note)
@@ -4555,7 +4604,9 @@ class SettingsDialog(QDialog):
         igrid.addWidget(QLabel("Password / app-password:"), 2, 0)
         self._aria_imap_pass = QLineEdit(os.environ.get("ARIA_IMAP_PASS", ""))
         self._aria_imap_pass.setEchoMode(QLineEdit.Password)
-        self._aria_imap_pass.setPlaceholderText("encrypted with Windows DPAPI")
+        self._aria_imap_pass.setPlaceholderText(
+            "protected by the operating-system credential store"
+        )
         igrid.addWidget(self._aria_imap_pass, 2, 1)
         igrid.addWidget(QLabel("Scan every (min):"), 3, 0)
         self._aria_inbox_interval = QLineEdit(str(getattr(self._cfg, "aria_inbox_interval_min", 5)))
@@ -4586,7 +4637,9 @@ class SettingsDialog(QDialog):
         tgrid.addWidget(QLabel("App password:"), 1, 0)
         self._teams_pw = QLineEdit(os.environ.get("ANGERONA_TEAMS_APP_PASSWORD", ""))
         self._teams_pw.setEchoMode(QLineEdit.Password)
-        self._teams_pw.setPlaceholderText("encrypted with Windows DPAPI")
+        self._teams_pw.setPlaceholderText(
+            "protected by the operating-system credential store"
+        )
         tgrid.addWidget(self._teams_pw, 1, 1)
         tgrid.addWidget(QLabel("Allowed Teams AAD object ID(s):"), 2, 0)
         self._teams_users = QLineEdit(getattr(self._cfg, "teams_allowed_users", ""))
@@ -5105,7 +5158,7 @@ class SettingsDialog(QDialog):
         warn = QLabel(
             "⚠  Requires signal-cli installed and a registered Signal phone number. "
             "Commands received are rate-limited and PIN-gated. The PIN is stored "
-            "DPAPI-wrapped — never in plain text."
+            "in the operating-system protected credential store — never in plain text."
         )
         warn.setWordWrap(True)
         warn.setStyleSheet("color: #f59e0b; font-size: 11px;")
@@ -5143,8 +5196,10 @@ class SettingsDialog(QDialog):
         grid.addWidget(self._mob_pin, 3, 1, 1, 2)
         lay.addLayout(grid)
 
-        note = QLabel("The PIN is DPAPI-wrapped (user+machine bound) in Angerona's "
-                      "credential store. Type HELP from your phone for the command menu.")
+        note = QLabel(
+            "The PIN uses current-user DPAPI on Windows, Keychain on macOS, or "
+            "Secret Service on Linux. Type HELP from your phone for the command menu."
+        )
         note.setWordWrap(True); note.setStyleSheet("color: #94a3b8; font-size: 11px;")
         lay.addWidget(note)
 
@@ -5274,14 +5329,16 @@ class SettingsDialog(QDialog):
         return lbl
 
     def _refresh_autostart_status(self, enabled) -> None:
+        from angerona.core.autostart import ui_copy as _autostart_ui_copy
+        _section, _checkbox, _note, backend = _autostart_ui_copy()
         if enabled:
-            self._autostart_status.setText("Status: scheduled task exists (AngeronaAutostart)")
+            self._autostart_status.setText(f"Status: enabled via {backend}")
             self._autostart_status.setStyleSheet("color: #22c55e; font-size: 11px;")
         elif enabled is False:
             self._autostart_status.setText("Status: no startup task found")
             self._autostart_status.setStyleSheet("color: #94a3b8; font-size: 11px;")
         else:
-            self._autostart_status.setText("Status: could not detect (check Task Scheduler)")
+            self._autostart_status.setText(f"Status: could not detect ({backend})")
             self._autostart_status.setStyleSheet("color: #f59e0b; font-size: 11px;")
 
     def _on_check_updates(self) -> None:
@@ -5322,21 +5379,27 @@ class SettingsDialog(QDialog):
         pin = self._mob_pin.text().strip()
         if not pin:
             return
+        if not re.fullmatch(r"\d{4}", pin):
+            QMessageBox.warning(
+                self, "PIN save failed", "The response PIN must contain exactly 4 digits."
+            )
+            return
         try:
-            import base64
-            from angerona.modules.hardware_crypto import protect as _protect
-
-            blob = _protect(pin.encode("utf-8"), b"Angerona-MOBILE-PIN-v1")
-            if not blob:
-                raise RuntimeError("Windows DPAPI is unavailable")
             from angerona.core.config import write_env_keys
+
+            # Use the canonical cross-platform protected map.  Clear the legacy
+            # nested-DPAPI slot only after the new value has been accepted by the
+            # OS store; the bridge still reads it for existing installations.
             write_env_keys({
-                "ANGERONA_MOBILE_PIN_DPAPI": base64.b64encode(blob).decode("ascii")
+                "ANGERONA_MOBILE_PIN": pin,
+                "ANGERONA_MOBILE_PIN_DPAPI": "",
             })
             self._mob_pin.clear()
         except Exception as exc:
-            QMessageBox.warning(self, "PIN save failed",
-                                f"Could not DPAPI-wrap the PIN: {exc}")
+            QMessageBox.warning(
+                self, "PIN save failed",
+                f"Could not save the PIN to the protected credential store: {exc}",
+            )
 
     def _save(self) -> None:
         from angerona.core.autostart import enable_autostart as _autostart_enable, \
@@ -5406,6 +5469,8 @@ class SettingsDialog(QDialog):
             except (TypeError, ValueError):
                 pass
         self._cfg.ui_motion_enabled = self._ui_motion_chk.isChecked()
+        self._cfg.dashboard_mode = str(
+            self._dashboard_mode_combo.currentData() or "classic")
         self._cfg.holographic_orb_enabled = (
             self._holographic_orb_chk.isChecked()
         )
@@ -5455,15 +5520,27 @@ class SettingsDialog(QDialog):
             self._cfg.fleet_service_port = int(self._fleet_port.text().strip())
         except ValueError:
             pass
-        if self._cfg.fleet_service_enabled and not os.environ.get(
-            "ANGERONA_FLEET_SERVICE_KEY"
-        ):
+        if self._cfg.fleet_service_enabled:
             import secrets
+            os.environ.pop("ANGERONA_FLEET_SERVICE_KEY", None)
             try:
                 from angerona.core.config import write_env_keys
-                write_env_keys({
-                    "ANGERONA_FLEET_SERVICE_KEY": secrets.token_urlsafe(48)
-                })
+                from angerona.core.fleet_credentials import (
+                    INTERNAL_FLEET_CREDENTIALS_KEY,
+                    LEGACY_FLEET_SERVICE_KEY,
+                )
+                from angerona.core.secure_store import read_secret_map
+
+                protected = read_secret_map(self._cfg.data_dir)
+                if not protected.get(INTERNAL_FLEET_CREDENTIALS_KEY) and not (
+                    protected.get(LEGACY_FLEET_SERVICE_KEY)
+                ):
+                    write_env_keys({
+                        LEGACY_FLEET_SERVICE_KEY: secrets.token_urlsafe(48)
+                    })
+                # The protected store, not the process-global environment, is
+                # the only permitted source for first fleet migration.
+                os.environ.pop(LEGACY_FLEET_SERVICE_KEY, None)
             except Exception as exc:
                 QMessageBox.warning(
                     self, "Fleet service key unavailable",
@@ -5493,7 +5570,7 @@ class SettingsDialog(QDialog):
             self._cfg.aria_inbox_interval_min = max(1, int(self._aria_inbox_interval.text().strip() or "5"))
         except ValueError:
             pass
-        # The mailbox password is DPAPI-protected, never stored in settings.json.
+        # The mailbox password uses the OS protected store, never settings.json.
         _imap_pw = self._aria_imap_pass.text()
         try:
             from angerona.core.config import write_env_keys

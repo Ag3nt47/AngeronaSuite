@@ -29,15 +29,16 @@ jobs:
       - name: Install audited dependencies
         shell: pwsh
         run: |
-          python -m pip install --upgrade "pip==26.1.2"
-          python -m pip install --only-binary :all: --build-constraint constraints-release.txt `
-            -c constraints-release.txt ".[windows,voice]" `
-            "PyInstaller==6.21.0" "cyclonedx-bom==7.3.0" "pytest==9.1.1"
+          # Every third-party wheel is both version-pinned and SHA-256-gated.
+          # --no-deps is safe because the reviewed lock enumerates the complete
+          # transitive Windows/Python 3.12 environment.
+          python -m pip install --require-hashes --no-deps `
+            -r requirements-release-hashed.txt
+          python -m pip install --no-build-isolation --no-deps .
           # Vosk's wheel is audited, but its upstream srt dependency is source-only.
           # Angerona ships the two-function compatibility surface Vosk actually uses.
           python tools/build_srt_compat_wheel.py --out build/vendor-wheels
           python -m pip install --only-binary :all: build/vendor-wheels/srt-0.0.0+angerona.1-py3-none-any.whl
-          python -m pip install --only-binary :all: --no-deps "vosk==0.3.45"
 
       - name: Run release gates
         shell: pwsh
@@ -127,12 +128,36 @@ jobs:
       - name: Build single-file Windows Setup
         shell: pwsh
         run: |
+          # Do not trust whichever compiler happens to be on the mutable runner
+          # image. Fetch the exact upstream release and bind it to the SHA-256
+          # published in jrsoftware's signed .issig metadata.
+          $innoVersion = '6.7.1'
+          $innoSha256 = '4d11e8050b6185e0d49bd9e8cc661a7a59f44959a621d31d11033124c4e8a7b0'
+          $innoInstaller = Join-Path $env:RUNNER_TEMP "innosetup-$innoVersion.exe"
+          $innoDir = Join-Path $env:RUNNER_TEMP "InnoSetup-$innoVersion"
+          Invoke-WebRequest -UseBasicParsing `
+            -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_1/innosetup-6.7.1.exe' `
+            -OutFile $innoInstaller
+          $actualInnoHash = (Get-FileHash -Algorithm SHA256 $innoInstaller).Hash.ToLowerInvariant()
+          if ($actualInnoHash -ne $innoSha256) {
+            throw "Inno Setup compiler hash mismatch: $actualInnoHash"
+          }
+          $install = Start-Process -FilePath $innoInstaller -WindowStyle Hidden `
+            -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', `
+              '/SP-', '/CURRENTUSER', "/DIR=$innoDir") -Wait -PassThru
+          if ($install.ExitCode -ne 0) {
+            throw "Verified Inno Setup install failed with exit $($install.ExitCode)"
+          }
+
           $artifactTag = "${{ github.ref_name }}" -replace '[^A-Za-z0-9._-]', '-'
           $appVersion = $artifactTag -replace '^v', ''
           if ($appVersion -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') {
             $appVersion = '0.0.0'
           }
-          $compiler = (Get-Command ISCC.exe -ErrorAction Stop).Source
+          $compiler = Join-Path $innoDir 'ISCC.exe'
+          if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) {
+            throw "Verified Inno Setup compiler was not installed: $compiler"
+          }
           & $compiler "/DAppVersion=$appVersion" "/DArtifactTag=$artifactTag" `
             "installer/Angerona.iss"
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit $LASTEXITCODE" }
@@ -165,9 +190,142 @@ jobs:
             Angerona-${{ github.ref_name }}-win64.zip.sha256
             Angerona-SBOM.json
 
+  build-posix:
+    name: Build ${{ matrix.artifact }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+            artifact: linux-x86_64
+          - os: macos-15
+            platform: macos
+            artifact: macos-arm64
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Download and verify locked platform wheels
+        shell: bash
+        run: |
+          set -euo pipefail
+          lock="release/locks/posix/${{ matrix.artifact }}.txt"
+          manifest="release/locks/posix/${{ matrix.artifact }}.manifest.json"
+          wheelhouse="$RUNNER_TEMP/angerona-wheelhouse-${{ matrix.artifact }}"
+          mkdir -m 700 "$wheelhouse"
+          PIP_DISABLE_PIP_VERSION_CHECK=1 python -m pip download \
+            --dest "$wheelhouse" --only-binary=:all: \
+            --require-hashes --no-deps -r "$lock"
+          python tools/verify_wheelhouse.py \
+            --target "${{ matrix.artifact }}" --wheelhouse "$wheelhouse" \
+            --lock "$lock" --manifest "$manifest"
+
+      - name: Install verified platform dependencies offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          lock="release/locks/posix/${{ matrix.artifact }}.txt"
+          wheelhouse="$RUNNER_TEMP/angerona-wheelhouse-${{ matrix.artifact }}"
+          PIP_DISABLE_PIP_VERSION_CHECK=1 python -m pip install \
+            --no-index --find-links "$wheelhouse" \
+            --require-hashes --no-deps -r "$lock"
+          PIP_DISABLE_PIP_VERSION_CHECK=1 python -m pip install \
+            --no-index --find-links "$wheelhouse" \
+            --no-build-isolation --no-deps .
+          python -m pip check
+
+      - name: Run platform release gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q src tests tools
+          python -m pytest -q
+          python -m pip_audit
+          python - <<'PY'
+          from angerona.core.config import Config
+          from angerona.core.eventbus import EventBus
+          from angerona.core.module_manager import ModuleManager
+
+          manager = ModuleManager(EventBus(), Config.load())
+          manager.discover()
+          if manager.discovery_errors:
+              raise SystemExit(manager.discovery_errors)
+          print(f"platform discovery: {len(manager.modules)} capabilities")
+          PY
+
+      - name: Build native application
+        shell: bash
+        run: |
+          set -euo pipefail
+          pyinstaller --noconfirm --clean --windowed --onefile \
+            --name Angerona \
+            --distpath dist \
+            --workpath build/Angerona \
+            --specpath build \
+            --paths src \
+            --collect-all PySide6 \
+            --collect-all yara_x \
+            --collect-all psutil \
+            --collect-submodules angerona.modules \
+            --collect-submodules angerona.resilience \
+            --add-data "modules:modules" \
+            --add-data "assets:assets" \
+            --add-data "rules.yar:." \
+            --hidden-import angerona \
+            src/angerona/__main__.py
+
+      - name: Verify and package native application
+        shell: bash
+        env:
+          ARTIFACT: ${{ matrix.artifact }}
+          PLATFORM: ${{ matrix.platform }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          listing=$(pyi-archive_viewer --recursive \
+            "$([ "$PLATFORM" = macos ] && printf 'dist/Angerona.app/Contents/MacOS/Angerona' || printf 'dist/Angerona')")
+          printf '%s' "$listing" | grep -q 'angerona.modules.linux_observe\|angerona.modules.macos_observe'
+          printf '%s' "$listing" | grep -q 'angerona.core.sensor_events'
+
+          package="package-$ARTIFACT"
+          mkdir -p "$package"
+          cp README.md LICENSE Install-Angerona-Release.sh uninstall-angerona.sh "$package/"
+          if [ "$PLATFORM" = macos ]; then
+            cp -R dist/Angerona.app "$package/"
+            archive="Angerona-$TAG-$ARTIFACT.zip"
+            ditto -c -k --sequesterRsrc --keepParent "$package" "$archive"
+          else
+            install -m 0755 dist/Angerona "$package/Angerona"
+            archive="Angerona-$TAG-$ARTIFACT.tar.gz"
+            tar -czf "$archive" "$package"
+          fi
+          shasum -a 256 "$archive" > "$archive.sha256"
+          cyclonedx-py environment --output-format JSON \
+            --output-file "Angerona-SBOM-$ARTIFACT.json"
+          python -m pip freeze --all > "Angerona-dependencies-$ARTIFACT.txt"
+
+      - name: Upload platform release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: angerona-${{ matrix.artifact }}
+          if-no-files-found: error
+          path: |
+            Angerona-${{ github.ref_name }}-${{ matrix.artifact }}.*
+            Angerona-SBOM-${{ matrix.artifact }}.json
+            Angerona-dependencies-${{ matrix.artifact }}.txt
+
   publish-release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build-windows
+    needs: [build-windows, build-posix]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -178,7 +336,8 @@ jobs:
       - name: Download gated assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: angerona-release-assets
+          pattern: angerona-*
+          merge-multiple: true
 
       - name: Attest release archive
         uses: actions/attest-build-provenance@78e6cbd37d0ac1a40113c04f2037dacf1ea3f12e # v4
@@ -186,6 +345,8 @@ jobs:
           subject-path: |
             Angerona-${{ github.ref_name }}-win64-setup.exe
             Angerona-${{ github.ref_name }}-win64.zip
+            Angerona-${{ github.ref_name }}-linux-x86_64.tar.gz
+            Angerona-${{ github.ref_name }}-macos-arm64.zip
 
       - name: Attest software bill of materials
         uses: actions/attest-sbom@51e74621a501c89df81fc1391c5a8f4cfc9fab2f # v3
@@ -199,9 +360,7 @@ jobs:
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           files: |
-            Angerona-${{ github.ref_name }}-win64-setup.exe
-            Angerona-${{ github.ref_name }}-win64-setup.exe.sha256
-            Angerona-${{ github.ref_name }}-win64.zip
-            Angerona-${{ github.ref_name }}-win64.zip.sha256
-            Angerona-SBOM.json
+            Angerona-${{ github.ref_name }}-*
+            Angerona-SBOM*.json
+            Angerona-dependencies-*.txt
           generate_release_notes: true

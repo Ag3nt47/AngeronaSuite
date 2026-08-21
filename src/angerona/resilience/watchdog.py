@@ -30,7 +30,7 @@ from pathlib import Path
 from angerona.resilience import heartbeat as hb
 from angerona.resilience import diagnostics as diag
 from angerona.resilience import shutdown_token as tok
-from angerona.resilience.supervisor import ProcessSupervisor
+from angerona.resilience.supervisor import ProcessSupervisor, cached_cmdline_probe
 
 _CORE_STALE_AFTER_SECONDS = 12.0
 _SCANNER_STALE_AFTER_SECONDS = 8.0
@@ -71,17 +71,7 @@ def _blackbox_script():
 
 
 def _cmdline_probe(*needles: str):
-    def _probe() -> bool:
-        try:
-            import psutil
-            for pr in psutil.process_iter(["cmdline"]):
-                cl = " ".join(pr.info.get("cmdline") or [])
-                if cl and all(n in cl for n in needles):
-                    return True
-        except Exception:
-            pass
-        return False
-    return _probe
+    return cached_cmdline_probe(*needles)
 
 
 def main(argv: list[str] | None = None) -> int:

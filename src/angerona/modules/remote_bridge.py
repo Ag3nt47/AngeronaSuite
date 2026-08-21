@@ -44,7 +44,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from angerona.core.eventbus import Event, Severity
+from angerona.core.eventbus import Event, REMOTE_OBSERVE_AUTHORITY, Severity
 from angerona.core.module_base import BaseModule
 from angerona.core.privacy import redact_text
 
@@ -424,14 +424,28 @@ class RemoteBridge(BaseModule):
         details = _safe_details(raw_details if isinstance(raw_details, dict) else {})
         if not isinstance(details, dict):
             details = {}
-        details["node_origin"] = origin
+        # Cross-host identifiers have meaning only on the sender. Never expose
+        # them under the local-action keys consumed by SOAR/rollback modules.
+        # Preserve bounded copies for investigation under an explicit namespace.
+        for key in (
+            "pid", "ppid", "path", "artifact_path", "exe", "process_path", "image"
+        ):
+            if key in details:
+                details[f"source_{key}"] = details.pop(key)
+        source_module = _redact_text(d.get("module") or "REMOTE")[:128] or "REMOTE"
+        details.update({
+            "node_origin": origin,
+            "source_module": source_module,
+            "response_authority": REMOTE_OBSERVE_AUTHORITY,
+        })
         try:
             sev = Severity(int(d.get("severity", int(Severity.INFO))))
         except (ValueError, TypeError):
             sev = Severity.INFO
-        module = _redact_text(d.get("module") or "REMOTE")[:128] or "REMOTE"
         msg = f"[{origin}] {_redact_text(d.get('message', ''))}"
-        self._bus.publish(Event(module, msg, sev,
+        # The transport owns the local module identity. A keyed peer must not be
+        # able to impersonate two local detectors and satisfy corroboration.
+        self._bus.publish(Event(self.name, msg, sev,
                                 time.time(), details))
         self.received += 1
 

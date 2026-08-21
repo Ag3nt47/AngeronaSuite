@@ -33,7 +33,7 @@ from angerona.shark.run_manifest import (
 
 try:
     from angerona.core.module_base import BaseModule
-    from angerona.core.eventbus import Severity
+    from angerona.core.eventbus import Severity, is_remote_observe_only
     from angerona.core.config import Config
     _HAVE_SUITE = True
 except Exception:                                   # standalone/test fallback
@@ -50,6 +50,8 @@ except Exception:                                   # standalone/test fallback
         def sleep(self, s): time.sleep(min(s, 0.02))
         @property
         def stopping(self): return getattr(self, "_stopflag", False)
+    def is_remote_observe_only(_event):
+        return False
 
 try:
     from angerona.engines import edr_logger as _edrlog
@@ -166,6 +168,12 @@ class EvolutionEngine(BaseModule):
 
     def _on_bus_event(self, ev) -> None:
         try:
+            # An authenticated fleet peer may report evidence about its own
+            # endpoint, but it has no authority to mutate this endpoint's YARA
+            # policy.  Only a receiver-local, verified hardening receipt can
+            # activate the self-evolution loop.
+            if is_remote_observe_only(ev):
+                return
             det = getattr(ev, "details", None) or {}
             if det.get("verified") == "SUCCESS" and det.get("technique"):
                 self.activate(det["technique"])

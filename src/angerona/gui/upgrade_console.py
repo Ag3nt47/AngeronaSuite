@@ -490,9 +490,22 @@ class AngeronaUpgradeConsole(QMainWindow):
             def _open_ps():
                 import subprocess
                 try:
+                    from angerona.core.privilege import (
+                        sanitized_child_environment,
+                        trusted_powershell_path,
+                    )
                     # Explicit console flag → bypasses the global hidden-launch default.
                     flags = 0x00000010 if os.name == "nt" else 0   # CREATE_NEW_CONSOLE
-                    subprocess.Popen(["powershell", "-NoExit"], creationflags=flags)
+                    executable = (
+                        str(trusted_powershell_path())
+                        if os.name == "nt" else "powershell"
+                    )
+                    subprocess.Popen(
+                        [executable, "-NoExit"],
+                        creationflags=flags,
+                        close_fds=True,
+                        env=sanitized_child_environment(),
+                    )
                 except Exception:
                     pass
             b_ps.clicked.connect(_open_ps)

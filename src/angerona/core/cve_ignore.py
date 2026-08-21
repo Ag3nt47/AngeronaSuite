@@ -1,17 +1,17 @@
-"""core/cve_ignore.py — analyst "ignore" list for CVEs, with revertable history.
+"""core/cve_ignore.py — expiring CVE applicability exclusions with history.
 
-Some host-applicable CVEs are too vague to action, or have no fix available.
-Leaving them in the feed keeps the dashboard (and the threat level) screaming
-HIGH/CRITICAL about things the operator can't do anything about. This module
-lets the analyst **ignore** a specific CVE: it's flagged and kept in memory
-(never silently dropped), removed from threat-level consideration, and can be
-**reverted** at any time. Every ignore/revert is recorded in a per-CVE history.
+Only a verified host-correlation false positive may leave threat scoring. A
+missing fix, accepted risk, compensating control, or AI outage is not an
+applicability decision and remains active. Exclusions require a rationale,
+approver identifier, and future expiry; legacy/untyped ignore records fail safe
+and no longer suppress a CISA KEV.
 
 Single JSON store at ``shared_logs/cve_ignore.json``:
 
     { "CVE-2024-1234": {
-        "ignored": true,
-        "reason": "no fix available",
+        "ignored": true, "classification": "not_applicable",
+        "reason": "product not installed", "expires_at": 1234567890,
+        "approver": "analyst-id",
         "history": [ {"action":"ignore","ts":...,"iso":"...","reason":"..."},
                      {"action":"revert","ts":...,"iso":"...","reason":""} ] } }
 
@@ -59,29 +59,76 @@ def _norm(cve: str) -> str:
     return (cve or "").strip().upper()
 
 
+def _is_active_exclusion(rec: dict | None, now: float | None = None) -> bool:
+    """Fail closed unless a typed, approved exclusion is still in force."""
+    if not isinstance(rec, dict) or not rec.get("ignored"):
+        return False
+    if rec.get("classification") != "not_applicable":
+        return False
+    if not str(rec.get("reason", "")).strip() or not str(rec.get("approver", "")).strip():
+        return False
+    try:
+        expiry = float(rec.get("expires_at", 0))
+    except (TypeError, ValueError):
+        return False
+    return expiry > (time.time() if now is None else now)
+
+
 def is_ignored(cve: str, data: dict | None = None) -> bool:
+    """True only for a current, typed ``not_applicable`` exclusion."""
     data = load() if data is None else data
-    rec = data.get(_norm(cve))
-    return bool(rec and rec.get("ignored"))
+    return _is_active_exclusion(data.get(_norm(cve)))
 
 
 def ignored_set(data: dict | None = None) -> set[str]:
     """All currently-ignored CVE IDs."""
     data = load() if data is None else data
-    return {cid for cid, rec in data.items() if rec.get("ignored")}
+    return {cid for cid, rec in data.items() if _is_active_exclusion(rec)}
 
 
-def ignore(cve: str, reason: str = "") -> dict:
-    """Flag *cve* as ignored (idempotent); append a history entry. Returns the record."""
+def ignore(
+    cve: str,
+    reason: str,
+    *,
+    classification: str,
+    expires_at: float,
+    approver: str,
+) -> dict:
+    """Exclude a verified non-applicable CVE until a bounded future expiry.
+
+    The intentionally strict signature prevents callers from turning AI/no-fix
+    outcomes into a posture suppression without supplying the audit contract.
+    """
     cve = _norm(cve)
     if not cve:
         raise ValueError("empty CVE id")
+    reason = (reason or "").strip()
+    approver = (approver or "").strip()
+    if classification != "not_applicable":
+        raise ValueError("only not_applicable findings may leave threat scoring")
+    if not reason:
+        raise ValueError("not-applicable evidence is required")
+    if not approver:
+        raise ValueError("approver identifier is required")
+    try:
+        expires_at = float(expires_at)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("valid exclusion expiry is required") from exc
+    now = time.time()
+    if expires_at <= now:
+        raise ValueError("exclusion expiry must be in the future")
     with _LOCK:
         data = load()
         rec = data.setdefault(cve, {"ignored": False, "reason": "", "history": []})
         rec["ignored"] = True
-        rec["reason"] = reason or rec.get("reason", "")
-        rec["history"].append(_event("ignore", reason))
+        rec["classification"] = classification
+        rec["reason"] = reason
+        rec["approver"] = approver
+        rec["expires_at"] = expires_at
+        rec["history"].append(_event(
+            "ignore", reason, classification=classification,
+            expires_at=expires_at, approver=approver,
+        ))
         _save(data)
         return rec
 
@@ -120,11 +167,13 @@ def counts(matches: list[dict]) -> tuple[int, int]:
     return active, len(matches) - active
 
 
-def _event(action: str, reason: str) -> dict:
+def _event(action: str, reason: str, **audit) -> dict:
     now = time.time()
-    return {"action": action, "ts": now,
-            "iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
-            "reason": reason or ""}
+    event = {"action": action, "ts": now,
+             "iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+             "reason": reason or ""}
+    event.update(audit)
+    return event
 
 
 def self_test() -> tuple[bool, str]:
@@ -137,17 +186,24 @@ def self_test() -> tuple[bool, str]:
         _store_path = lambda: Path(td) / "shared_logs" / "cve_ignore.json"  # type: ignore
         try:
             cve = "CVE-2024-9999"
-            ignore(cve, "no fix available")
+            ignore(cve, "sample product is not installed", classification="not_applicable",
+                   expires_at=time.time() + 60, approver="self-test")
             a = is_ignored(cve)
             matches = [{"cve": cve}, {"cve": "CVE-2024-0001"}]
             active_after_ignore, ignored_after = counts(matches)
             revert(cve, "changed my mind")
             b = is_ignored(cve)
             hist = history(cve)
+            legacy = {"ignored": True, "reason": "no fix available", "history": []}
+            expired = {"ignored": True, "classification": "not_applicable",
+                       "reason": "old evidence", "approver": "self-test",
+                       "expires_at": time.time() - 1, "history": []}
             ok = (a is True and b is False and active_after_ignore == 1
                   and ignored_after == 1 and len(hist) == 2
-                  and hist[0]["action"] == "ignore" and hist[1]["action"] == "revert")
-            return ok, ("ignore/revert/history + active filtering verified"
+                  and hist[0]["action"] == "ignore" and hist[1]["action"] == "revert"
+                  and not _is_active_exclusion(legacy)
+                  and not _is_active_exclusion(expired))
+            return ok, ("typed expiry + ignore/revert/history + active filtering verified"
                         if ok else f"failed: a={a} b={b} active={active_after_ignore} hist={hist}")
         finally:
             _store_path = orig  # type: ignore

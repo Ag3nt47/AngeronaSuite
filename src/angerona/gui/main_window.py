@@ -37,6 +37,7 @@ from angerona.gui.pages import (
     StatusStrip,
 )
 from angerona.gui.sandbox_editor import launch_sandbox_editor
+from angerona.gui.scan_center import ScanCenterPanel
 from angerona.gui.upgrade_console import launch_upgrade_console
 from angerona.gui.system_pulse import SystemPulseCard
 from angerona.gui.theme import build_qss, clamp_scale
@@ -76,7 +77,10 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
         self.bus, self.storage, self.manager, self.config = bus, storage, manager, config
+        self.evidence_store = evidence_store
         self.process_baseline = process_baseline
+        self._operations_service = None
+        self._operations_dialog = None
         self._voice_loop_lock = threading.Lock()
         self._voice_loop_thread: threading.Thread | None = None
         self._selftest_active = threading.Event()
@@ -246,6 +250,17 @@ class MainWindow(QMainWindow):
         forensics_btn.clicked.connect(
             lambda _checked=False: self._run_header_action(
                 forensics_btn, self._open_forensics_hub, "#c084fc"))
+        operations_btn = HeaderActionButton(
+            "LOCAL SOC",
+            "operations",
+            "Flow Dashboard · Local SOC",
+            "Connects cases, bounded evidence hunts, local assets, trusted "
+            "detection content, and tamper-evident audit history in one "
+            "interactive operations workspace.",
+        )
+        operations_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                operations_btn, self._open_operations_center, "#22d3ee"))
         console_btn = HeaderActionButton(
             "CONSOLE",
             "console",
@@ -302,6 +317,7 @@ class MainWindow(QMainWindow):
         rl.addWidget(worldview_btn); rl.addWidget(attack_heatmap_btn)
         rl.addWidget(self.threat_intel_btn)
         rl.addWidget(forensics_btn)
+        rl.addWidget(operations_btn)
         rl.addWidget(console_btn); rl.addWidget(setup_btn); rl.addWidget(self._help_btn)
         rl.addWidget(settings_btn); rl.addWidget(stop_btn)
 
@@ -311,6 +327,7 @@ class MainWindow(QMainWindow):
         self._worldview_btn = worldview_btn
         self._attack_btn = attack_heatmap_btn
         self._forensics_btn = forensics_btn
+        self._operations_btn = operations_btn
         self._console_btn = console_btn
         self._setup_btn = setup_btn
         self._settings_btn = settings_btn
@@ -321,6 +338,7 @@ class MainWindow(QMainWindow):
             attack_heatmap_btn,
             self.threat_intel_btn,
             forensics_btn,
+            operations_btn,
             console_btn,
             setup_btn,
             self._help_btn,
@@ -348,11 +366,17 @@ class MainWindow(QMainWindow):
             allow_cloud=getattr(config, "alert_analysis_cloud_fallback", False),
             bus=bus,
         )
-        # Right side is now tabbed: Live Alerts + the persistent SOAR Queue.
+        # Right side keeps live evidence, response review, and explicit local
+        # scanning together without blocking the dashboard thread.
         self.soar_panel = SoarPanel(bus, manager)
+        self.scan_center = ScanCenterPanel(bus=bus)
         self._right_tabs = QTabWidget()
         self._right_tabs.addTab(self.alerts_panel, "Live Alerts")
         self._right_tabs.addTab(self.soar_panel, "SOAR Queue")
+        self._right_tabs.addTab(self.scan_center, "🛡 Scan Center")
+        self.alerts_panel.scan_requested.connect(
+            lambda: self._right_tabs.setCurrentWidget(self.scan_center)
+        )
         top_split = QSplitter(Qt.Horizontal)
         top_split.addWidget(self.modules_panel)
         top_split.addWidget(self._right_tabs)
@@ -524,6 +548,12 @@ class MainWindow(QMainWindow):
             self._beat_timer.start(1000)
         except Exception:
             self._ui_watchdog = None
+
+        # The selected dashboard is a startup preference, never a migration.
+        # Classic stays available behind the Flow workspace and its data stores
+        # are shared, so switching modes cannot orphan alerts or cases.
+        if str(getattr(self.config, "dashboard_mode", "classic")).lower() == "flow":
+            QTimer.singleShot(900, self._open_operations_center)
 
     # ── Theme ────────────────────────────────────────────────────────────────
     def _qss(self) -> str:
@@ -965,6 +995,25 @@ class MainWindow(QMainWindow):
         self._rt_console.show()
         self._rt_console.raise_()
         self._rt_console.activateWindow()
+
+    def _open_device_lab(self) -> None:
+        """Open Red Team directly to the owner-authorized Device Security Lab."""
+        self._open_simulation()
+        console = getattr(self, "_rt_console", None)
+        tabs = getattr(console, "_tabs", None)
+        if tabs is None:
+            return
+        for index in range(tabs.count()):
+            if "Device Security Lab" in tabs.tabText(index):
+                tabs.setCurrentIndex(index)
+                break
+
+    def _open_scan_center(self) -> None:
+        """Bring the main window forward and select its local-only Scan Center."""
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self._right_tabs.setCurrentWidget(self.scan_center)
 
     def _run_simulation(self, cfg) -> None:
         if self.shark_engine.is_running or self.red_team_engine.is_running:
@@ -2323,6 +2372,55 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Console", f"Could not open the console: {exc}")
 
+    def _show_classic_dashboard(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _show_scan_center(self) -> None:
+        self._show_classic_dashboard()
+        self._right_tabs.setCurrentWidget(self.scan_center)
+
+    def _open_operations_center(self) -> None:
+        """Open the shared, local-only case/hunt/asset operations workspace."""
+        try:
+            from angerona.core.operations_center import LocalOperationsCenter
+            from angerona.gui.operations_center import OperationsCenterDialog
+
+            if self._operations_service is None:
+                self._operations_service = LocalOperationsCenter(
+                    self.config.data_dir,
+                    evidence_store=self.evidence_store,
+                    manager=self.manager,
+                    config=self.config,
+                )
+            if self._operations_dialog is None:
+                self._operations_dialog = OperationsCenterDialog(
+                    self._operations_service,
+                    callbacks={
+                        "scan": self._show_scan_center,
+                        "forensics": self._open_forensics_hub,
+                        "simulation": self._open_simulation,
+                        "classic": self._show_classic_dashboard,
+                    },
+                    parent=self,
+                )
+            self._operations_dialog.setStyleSheet(self._qss())
+            self._operations_dialog.show()
+            self._operations_dialog.raise_()
+            self._operations_dialog.activateWindow()
+            return self._operations_dialog
+        except Exception as exc:
+            try:
+                self.console._append(f"[local-soc] failed to open: {exc}")
+            except Exception:
+                pass
+            QMessageBox.warning(
+                self, "Flow Dashboard",
+                "The Local SOC workspace could not open. The Classic dashboard "
+                f"is still available.\n\n{exc}")
+            return None
+
     def _open_help(self) -> None:
         """End-user Help & Info — one tab per topic (ARIA, voice, Signal, Teams,
         trusted apps, testing, troubleshooting, …)."""
@@ -2361,16 +2459,15 @@ class MainWindow(QMainWindow):
                 pass
 
     def _open_setup(self) -> None:
-        """One-swoop Setup Wizard — steps through AI, voice, Signal, Teams, trusted
-        apps and startup with Next/Skip, saving config at the end."""
+        """Open the comprehensive, platform-aware end-user setup program."""
         try:
             from angerona.gui.setup_wizard import SetupWizard
 
             def _trust():
                 try:
-                    self.console.backend._trust_running([])
+                    return self.console.backend._trust_running([])
                 except Exception:
-                    pass
+                    return "Trusted applications could not be updated."
             dlg = SetupWizard(self.config,
                               apply_theme_fn=getattr(self, "_apply_theme", None),
                               trust_running_fn=_trust, parent=self)
@@ -2522,6 +2619,7 @@ class MainWindow(QMainWindow):
             dlg.setStyleSheet(self._qss())
             if dlg.exec():
                 self._apply_voice_settings_live()
+                self._apply_dashboard_mode_live()
         except Exception as exc:
             import traceback
             tb = traceback.format_exc()
@@ -2533,6 +2631,19 @@ class MainWindow(QMainWindow):
                 self, "Settings",
                 f"The Settings window failed to open:\n\n{exc}\n\n"
                 "The full traceback was written to the console panel.")
+
+    def _apply_dashboard_mode_live(self) -> None:
+        """Apply the Settings dashboard choice without requiring a restart."""
+        mode = str(getattr(self.config, "dashboard_mode", "classic")).lower()
+        if mode == "flow":
+            self._open_operations_center()
+            return
+        dialog = getattr(self, "_operations_dialog", None)
+        if dialog is not None:
+            dialog.close()
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
 
     def _apply_voice_settings_live(self) -> None:
         """Apply microphone/voice choices immediately after Settings is saved."""
@@ -2770,6 +2881,12 @@ class MainWindow(QMainWindow):
 
     def _terminate(self) -> None:
         """Best-effort graceful cleanup, then an unconditional hard exit."""
+        try:
+            if self._operations_service is not None:
+                self._operations_service.close()
+                self._operations_service = None
+        except Exception:
+            pass
         try:
             self.manager.stop_all()
         except Exception:

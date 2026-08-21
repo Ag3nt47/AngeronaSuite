@@ -70,6 +70,7 @@ class _Metric:
         self.title.setToolTip(tooltip)
         self.value.setToolTip(tooltip)
         self.bar.setToolTip(tooltip)
+        self._rendered: tuple[str, int | None] | None = None
 
     def add(self, layout: QGridLayout, row: int) -> None:
         layout.addWidget(self.title, row, 0)
@@ -78,14 +79,22 @@ class _Metric:
 
     def update(self, value: str, percent: float | None) -> None:
         text = str(value)
-        if self.value.text() != text:
-            self.value.setText(text)
-        if percent is None:
+        bounded = (
+            None
+            if percent is None
+            else max(0, min(100, int(round(percent))))
+        )
+        rendered = (text, bounded)
+        if rendered == self._rendered:
+            return
+        self._rendered = rendered
+        self.value.setText(text)
+        if bounded is None:
             self.bar.setValue(0)
             self.bar.setProperty("unknown", True)
         else:
             self.bar.setProperty("unknown", False)
-            self.bar.setValue(max(0, min(100, int(round(percent)))))
+            self.bar.setValue(bounded)
 
 
 class SystemPulseCard(QFrame):
@@ -153,6 +162,8 @@ class SystemPulseCard(QFrame):
         self._sample_index = 0
         self._latest: dict[str, object] = {}
         self._history: deque[dict[str, object]] = deque(maxlen=90)
+        self._sample_revision = 0
+        self._rendered_state: tuple[str, str] | None = None
         self._sample_worker = threading.Thread(
             target=self._sample_loop,
             name="SystemPulseSampler",
@@ -235,6 +246,22 @@ class SystemPulseCard(QFrame):
             "busy": self._busy.is_set(),
         }
 
+    def sample_revision(self) -> int:
+        """Cheap change token for detail views that mirror retained samples."""
+        return self._sample_revision
+
+    def sample_busy(self) -> bool:
+        """Return sampler activity without copying the retained history."""
+        return self._busy.is_set()
+
+    def _set_state(self, text: str, style: str) -> None:
+        rendered = (text, style)
+        if rendered == self._rendered_state:
+            return
+        self._rendered_state = rendered
+        self._state.setText(text)
+        self._state.setStyleSheet(style)
+
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt signature
         if event.button() == Qt.LeftButton:
             self.details_requested.emit()
@@ -244,23 +271,30 @@ class SystemPulseCard(QFrame):
         if self._closed.is_set():
             return
         if data.get("error"):
-            self._state.setText("● WAIT")
-            self._state.setStyleSheet("color:#f59e0b; font-size:10px; font-weight:800;")
+            self._set_state(
+                "● WAIT", "color:#f59e0b; font-size:10px; font-weight:800;"
+            )
             return
-        self._state.setText("● LIVE")
-        self._state.setStyleSheet("color:#2fe38a; font-size:10px; font-weight:800;")
+        self._set_state(
+            "● LIVE", "color:#2fe38a; font-size:10px; font-weight:800;"
+        )
         sample = dict(data)
         sample["ts"] = time.time()
         self._latest = sample
         self._history.append(sample)
+        self._sample_revision += 1
         cpu = float(data.get("cpu", 0.0))
         ram = float(data.get("ram", 0.0))
         wifi = data.get("wifi")
         self._cpu.update(f"{cpu:.0f}%", cpu)
         self._ram.update(f"{ram:.0f}%", ram)
         self._wifi.update("Not connected" if wifi is None else f"{int(wifi)}%", wifi)
-        self._memory.setText(f"Available memory  {_memory(float(data.get('available', 0.0)))}")
-        self._network.setText(
+        memory_text = f"Available memory  {_memory(float(data.get('available', 0.0)))}"
+        if self._memory.text() != memory_text:
+            self._memory.setText(memory_text)
+        network_text = (
             f"↓ {_rate(float(data.get('down', 0.0)))}   "
             f"↑ {_rate(float(data.get('up', 0.0)))}"
         )
+        if self._network.text() != network_text:
+            self._network.setText(network_text)

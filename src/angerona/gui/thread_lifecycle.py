@@ -63,7 +63,13 @@ def defer_close_until_threads(owner: Any, event: Any, workers: Iterable[Any]) ->
         for worker in running:
             try:
                 worker.requestInterruption()
-                worker.finished.connect(lambda _owner=owner: _retry_deferred_close(_owner))
+                # Some Angerona workers intentionally shadow QThread.finished
+                # with a result-bearing signal (for example AnalysisWorker's
+                # ``finished(dict)``). Swallow every payload so it can never
+                # replace the captured owner and strand a hidden dialog.
+                worker.finished.connect(
+                    lambda *_args, _owner=owner: _retry_deferred_close(_owner)
+                )
             except RuntimeError:
                 continue
         # Close the tiny race where a worker can finish between ``isRunning``

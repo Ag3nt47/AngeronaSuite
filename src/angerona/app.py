@@ -244,14 +244,19 @@ class AngeronaApp:
         diagnosable, and a liveness check reports to the console if it dies fast
         (the usual cause: PySide6-Addons/QtCharts missing — now handled gracefully
         in the recorder itself). Single-instance guarded; fail-open."""
+        import sys
+        if not sys.platform.startswith("win"):
+            # The existing decoupled recorder consumes Windows watchdog/ETW
+            # evidence. A missing .exe in a POSIX frozen build is not a fault.
+            return
         if not force and not getattr(self.config, "blackbox_enabled", True):
             return
         try:
             import os
             import subprocess
-            import sys
             from pathlib import Path
             from angerona.core.data_paths import project_root
+            from angerona.core.privilege import sanitized_child_environment
 
             frozen = bool(getattr(sys, "frozen", False))
             bb = project_root() / (
@@ -310,6 +315,7 @@ class AngeronaApp:
             self._blackbox_proc = subprocess.Popen(
                 command,
                 cwd=str(bb.parent),
+                env=sanitized_child_environment(),
                 creationflags=creationflags,
                 stdin=subprocess.DEVNULL,
                 stdout=logf,
@@ -446,7 +452,6 @@ class AngeronaApp:
             import socket
             import time
 
-            secret = os.environ.get("ANGERONA_FLEET_SERVICE_KEY", "")
             from angerona import __version__
             from angerona.core.endpoint_identity import EndpointIdentity
             from angerona.core.fleet_control_plane import (
@@ -454,6 +459,7 @@ class AngeronaApp:
                 FleetDevice,
             )
             from angerona.core.fleet_credentials import (
+                LEGACY_FLEET_SERVICE_KEY,
                 load_or_migrate_local_credentials,
             )
             from angerona.core.fleet_service import (
@@ -474,11 +480,13 @@ class AngeronaApp:
                 self.config.data_dir / "identity"
             )
             identity = self._endpoint_identity
+            # A fleet key is durable authority. Never accept it from a wrapper's
+            # inherited environment; migration reads only the OS-protected store.
+            os.environ.pop(LEGACY_FLEET_SERVICE_KEY, None)
             credential_set = load_or_migrate_local_credentials(
                 self.config.data_dir,
                 self.config.fleet_tenant_id,
                 identity.device_id,
-                legacy_secret=secret,
             )
             tenant_key = credential_set.receipt_signing_key
             self._fleet_plane = FleetControlPlane(

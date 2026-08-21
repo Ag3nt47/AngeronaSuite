@@ -21,9 +21,16 @@ import sys
 import time
 import json
 import socket
+from pathlib import Path
+
+try:
+    from angerona.core.data_paths import data_dir
+except ModuleNotFoundError:  # Support direct execution from a source checkout.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from angerona.core.data_paths import data_dir
 
 # Configuration matching the agent pipeline
-STATUS_FILE = "edr_status.json"
+STATUS_FILE = data_dir() / "edr_status.json"
 END_SENTINEL = b"<<END>>" 
 
 # ANSI Terminal Formatting Colors

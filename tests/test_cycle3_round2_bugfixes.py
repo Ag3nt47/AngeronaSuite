@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from base64 import b64encode
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -75,20 +74,13 @@ def test_restore_privacy_defaults_disables_mobile_in_ui_and_config(
     app.processEvents()
 
 
-def test_mobile_pin_uses_bridge_dpapi_key_and_hardware_module(
+def test_mobile_pin_uses_cross_platform_protected_store_key(
     tmp_path, monkeypatch
 ) -> None:
     app = QApplication.instance() or QApplication([])
     from angerona.core import config as config_module
-    from angerona.modules import hardware_crypto
 
-    protected: list[tuple[bytes, bytes]] = []
     updates: list[dict[str, str]] = []
-    monkeypatch.setattr(
-        hardware_crypto,
-        "protect",
-        lambda data, entropy: protected.append((data, entropy)) or b"protected-pin",
-    )
     monkeypatch.setattr(config_module, "write_env_keys", updates.append)
     dialog = SettingsDialog(
         Config(data_dir=tmp_path), lambda: None, lambda _theme: None
@@ -97,9 +89,8 @@ def test_mobile_pin_uses_bridge_dpapi_key_and_hardware_module(
 
     dialog._save_mobile_pin()
 
-    assert protected == [(b"1234", b"Angerona-MOBILE-PIN-v1")]
     assert updates == [
-        {"ANGERONA_MOBILE_PIN_DPAPI": b64encode(b"protected-pin").decode("ascii")}
+        {"ANGERONA_MOBILE_PIN": "1234", "ANGERONA_MOBILE_PIN_DPAPI": ""}
     ]
     assert dialog._mob_pin.text() == ""
     dialog.close()

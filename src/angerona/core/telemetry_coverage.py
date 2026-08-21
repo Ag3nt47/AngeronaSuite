@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import Callable, Mapping, Optional
 
 from angerona.core.eventbus import Event
+from angerona.core.visibility_attestation import (
+    LIMITATION as VISIBILITY_LIMITATION,
+    VisibilityAttestationRegistry,
+)
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,7 @@ class TelemetryCoverageAccountant:
         max_sensors: int = 256,
         stale_after_s: float = 300.0,
         clock: Callable[[], float] = time.time,
+        visibility_registry: Optional[VisibilityAttestationRegistry] = None,
     ) -> None:
         if max_sensors < 1:
             raise ValueError("max_sensors must be positive")
@@ -73,6 +78,7 @@ class TelemetryCoverageAccountant:
         self._states: "OrderedDict[str, _MutableCoverage]" = OrderedDict()
         self._evicted_sensors = 0
         self._lock = threading.Lock()
+        self._visibility_registry = visibility_registry
 
     @property
     def evicted_sensors(self) -> int:
@@ -141,6 +147,51 @@ class TelemetryCoverageAccountant:
         # Freshness is based on local receipt time. Sensor-provided/event time may
         # be skewed and must not make a live sensor falsely stale or future-fresh.
         self.observe(str(sensor_id), sequence)
+
+    def observe_visibility_attestation(self, document: object):
+        """Verify bounded sensor-health metadata when an authority is configured."""
+        if self._visibility_registry is None:
+            raise RuntimeError("visibility attestation authority is not configured")
+        return self._visibility_registry.ingest(document)
+
+    def visibility_snapshot(self, *, now: Optional[float] = None) -> dict[str, object]:
+        """Expose an honest, privacy-minimal visibility state for status output."""
+        if self._visibility_registry is None:
+            return {
+                "authority_configured": False,
+                "sensors": {},
+                "evicted_sensors": 0,
+                "rejected_documents": 0,
+                "limitation": VISIBILITY_LIMITATION,
+            }
+        sensors = {
+            sensor_id: {
+                "classification": item.classification,
+                "accepted": item.accepted,
+                "reason": item.reason,
+                "platform": item.platform,
+                "build_sha256": item.build_sha256,
+                "policy_sha256": item.policy_sha256,
+                "session_epoch": item.session_epoch,
+                "sequence": item.sequence,
+                "expected_canary_families": list(item.expected_canary_families),
+                "observed_canary_families": list(item.observed_canary_families),
+                "missing_canary_families": list(item.missing_canary_families),
+                "drop_count": item.drop_count,
+                "issued_at": item.issued_at,
+                "expires_at": item.expires_at,
+                "clock_quality": item.clock_quality,
+                "received_at": item.received_at,
+            }
+            for sensor_id, item in self._visibility_registry.snapshot(now=now).items()
+        }
+        return {
+            "authority_configured": True,
+            "sensors": sensors,
+            "evicted_sensors": self._visibility_registry.evicted_sensors,
+            "rejected_documents": self._visibility_registry.rejected_documents,
+            "limitation": VISIBILITY_LIMITATION,
+        }
 
     def snapshot(self, *, now: Optional[float] = None) -> dict[str, SensorCoverage]:
         current = self._clock() if now is None else float(now)

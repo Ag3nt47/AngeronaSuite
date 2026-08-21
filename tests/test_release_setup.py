@@ -27,11 +27,62 @@ def test_release_workflow_publishes_and_attests_setup_executable() -> None:
 
     assert isinstance(parsed, dict)
     setup = "Angerona-${{ github.ref_name }}-win64-setup.exe"
-    assert "Get-Command ISCC.exe" in text
-    assert text.count(setup) >= 6
+    assert "innosetup-6.7.1.exe" in text
+    assert "Get-FileHash -Algorithm SHA256 $innoInstaller" in text
+    assert "Join-Path $innoDir 'ISCC.exe'" in text
+    assert "Get-Command ISCC.exe" not in text
+    assert text.count(setup) >= 4
     assert f"{setup}.sha256" in text
     assert "Attest release archive" in text
     assert "Attest software bill of materials" in text
+
+
+def test_release_workflow_builds_only_wheel_locked_posix_architectures() -> None:
+    text = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "build-posix:" in text
+    assert "ubuntu-24.04" in text
+    assert "macos-15" in text
+    assert "linux-x86_64" in text
+    assert "macos-arm64" in text
+    assert "macos-15-intel" not in text
+    assert "macos-x86_64" not in text
+    assert "tests/test_linux_platform_contract.py" not in text  # full suite is the gate
+    assert "Angerona-${{ github.ref_name }}-linux-x86_64.tar.gz" in text
+    assert "Angerona-${{ github.ref_name }}-macos-arm64.zip" in text
+
+
+def test_posix_installer_is_local_user_scoped_and_has_safe_uninstall() -> None:
+    installer = (ROOT / "install-angerona.sh").read_text(encoding="utf-8")
+    release_installer = (ROOT / "Install-Angerona-Release.sh").read_text(
+        encoding="utf-8"
+    )
+    uninstall = (ROOT / "uninstall-angerona.sh").read_text(encoding="utf-8")
+    unit = (ROOT / "installer" / "linux" / "angerona-headless.service").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'if [ "$(id -u)" -eq 0 ]' in installer
+    assert "Python 3.12 is required for the reviewed source installation" in installer
+    assert "--require-hashes --no-deps" in installer
+    assert "tools/verify_wheelhouse.py" in installer
+    assert "--no-build-isolation --no-deps" in installer
+    assert "systemctl --user enable --now" in installer
+    assert 'if [ "$(id -u)" -eq 0 ]' in release_installer
+    assert "XDG_DATA_HOME" in release_installer
+    assert "Angerona.app" in release_installer
+    assert "install -m 0755" in release_installer
+    assert "angerona-setup" in installer
+    assert "angerona-setup" in release_installer
+    assert "--args --setup" in release_installer
+    assert '"$HOME/.local/bin/angerona-setup"' in uninstall
+    assert "NoNewPrivileges=yes" in unit
+    assert "ProtectSystem=strict" in unit
+    assert "MemoryDenyWriteExecute=yes" in unit
+    assert "--purge-data" in uninstall
+    assert "Refusing unexpected data path" in uninstall
 
 
 def test_readme_leads_with_setup_and_keeps_verified_zip_fallback() -> None:

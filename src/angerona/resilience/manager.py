@@ -31,7 +31,7 @@ from angerona.resilience import ipc_ring
 from angerona.resilience import heartbeat as hb
 from angerona.resilience import diagnostics as diag
 from angerona.resilience import shutdown_token as tok
-from angerona.resilience.supervisor import ProcessSupervisor
+from angerona.resilience.supervisor import ProcessSupervisor, cached_cmdline_probe
 
 _SENSOR_LABELS = {1: "process_creation"}
 
@@ -66,17 +66,7 @@ def _pythonw() -> str:
 
 
 def _cmdline_probe(*needles: str) -> Callable[[], bool]:
-    def _probe() -> bool:
-        try:
-            import psutil
-            for pr in psutil.process_iter(["cmdline"]):
-                cl = " ".join(pr.info.get("cmdline") or [])
-                if cl and all(n in cl for n in needles):
-                    return True
-        except Exception:
-            pass
-        return False
-    return _probe
+    return cached_cmdline_probe(*needles)
 
 
 class ResilienceManager:

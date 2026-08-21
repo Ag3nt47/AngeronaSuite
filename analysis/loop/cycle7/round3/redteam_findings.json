@@ -1,0 +1,10 @@
+[
+  {
+    "id": "C7-R3-01",
+    "title": "Observe-only remote evidence can still mutate local detection policy",
+    "severity": "MEDIUM",
+    "component": "src/angerona/modules/remote_bridge.py:411-449; src/angerona/core/eventbus.py:75-91; src/angerona/modules/evolution_engine.py:157-171,334-384; src/angerona/modules/yara_scanner.py:99-132",
+    "status": "FIXED",
+    "recommendation": "Make remote origin immutable and default-deny observe-only evidence for all mutating consumers; require a typed local Posture Hardening receipt before Evolution changes rules."
+  }
+]
