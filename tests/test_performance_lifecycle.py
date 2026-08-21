@@ -210,7 +210,7 @@ def test_default_runtime_data_is_on_installation_drive(monkeypatch) -> None:
     data_paths._canonical_data_path.cache_clear()
     monkeypatch.delenv("ANGERONA_DATA", raising=False)
     root = data_paths.data_dir(create=False)
-    assert root == data_paths.project_root() / "runtime-data"
+    assert root == data_paths.project_root().parent / "AngeronaData"
     assert root.drive.casefold() == data_paths.project_root().drive.casefold()
     assert root.drive.casefold() == "d:"
 

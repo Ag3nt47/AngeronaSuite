@@ -4,7 +4,7 @@ param(
     [string]$Models = $(if ($env:ANGERONA_DATA) {
         Join-Path $env:ANGERONA_DATA 'ollama\models'
     } else {
-        Join-Path $PSScriptRoot 'runtime-data\ollama\models'
+        Join-Path (Split-Path -Parent $PSScriptRoot) 'AngeronaData\ollama\models'
     })
 )
 $ErrorActionPreference = 'Stop'

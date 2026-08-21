@@ -69,6 +69,7 @@ class AIConsultDialog(QDialog):
 
         self._default_filename = default_filename
         self._worker: Optional[AIConsultWorker] = None
+        self._fu_worker: Optional[AIConsultWorker] = None
 
         lay = QVBoxLayout(self)
         self._status = QLabel("Consulting AI (Claude first, then fallbacks)…")
@@ -186,6 +187,14 @@ class AIConsultDialog(QDialog):
         self._output.appendPlainText(f"🤖  AI ({prov}): {text}")
         self._thread_text = (self._thread_text or f"User: {self._prompt}") \
             + f"\n\nUser: {question}\nAssistant: {text}"
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        """Do not destroy a dialog while either AI request is still running."""
+        from angerona.gui.thread_lifecycle import defer_close_until_threads
+
+        if defer_close_until_threads(self, event, (self._worker, self._fu_worker)):
+            return
+        super().closeEvent(event)
 
     def _save(self) -> None:
         text = self._output.toPlainText().strip()

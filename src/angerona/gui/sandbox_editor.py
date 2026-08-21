@@ -176,6 +176,7 @@ class SandboxEditor(QMainWindow):
         self._current: Optional[str] = None
         self._test_worker: Optional[IsolatedTestWorker] = None
         self._orig_publish = None
+        self._close_confirmed = False
 
         self._build_ui()
         self._enter_isolation()
@@ -327,12 +328,22 @@ class SandboxEditor(QMainWindow):
                 pass
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        if QMessageBox.question(
-            self, "Exit Sandbox",
-            "Restore live sensors and leave the sandbox?\n\n"
-            "Modules you edited will be (re)started with the applied code.",
-        ) != QMessageBox.Yes:
-            event.ignore()
+        if not self._close_confirmed:
+            if QMessageBox.question(
+                self, "Exit Sandbox",
+                "Restore live sensors and leave the sandbox?\n\n"
+                "Modules you edited will be (re)started with the applied code.",
+            ) != QMessageBox.Yes:
+                event.ignore()
+                return
+            self._close_confirmed = True
+
+        # A self-test may be blocked in native/module code and cannot be killed
+        # safely. Keep this window alive (but hidden) until it returns; deleting
+        # its QThread used to abort all of Angerona in Qt6Core.dll.
+        from angerona.gui.thread_lifecycle import defer_close_until_threads
+
+        if defer_close_until_threads(self, event, (self._test_worker,)):
             return
         self._exit_isolation()
         # Best-effort: bring previously-enabled modules back online.

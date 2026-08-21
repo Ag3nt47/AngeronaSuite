@@ -432,9 +432,11 @@ class FlowWindow(QDialog):
         self._timer.stop()
         if hasattr(self, "_ollama_timer"):
             self._ollama_timer.stop()
-        if hasattr(self, "_ollama_worker") and self._ollama_worker is not None:
-            self._ollama_worker.quit()
-            self._ollama_worker.wait(1000)
+        from angerona.gui.thread_lifecycle import defer_close_until_threads
+
+        worker = getattr(self, "_ollama_worker", None)
+        if defer_close_until_threads(self, event, (worker,)):
+            return
         super().closeEvent(event)
 
     def _select(self, nid):

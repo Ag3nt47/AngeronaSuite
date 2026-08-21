@@ -88,9 +88,10 @@ class WorldViewDialog(QDialog):
     def closeEvent(self, event) -> None:
         self._timer.stop()
         self._ollama_timer.stop()
-        if self._ollama_worker is not None:
-            self._ollama_worker.quit()
-            self._ollama_worker.wait(1000)
+        from angerona.gui.thread_lifecycle import defer_close_until_threads
+
+        if defer_close_until_threads(self, event, (self._ollama_worker,)):
+            return
         super().closeEvent(event)
 
     def _refresh_fast(self) -> None:

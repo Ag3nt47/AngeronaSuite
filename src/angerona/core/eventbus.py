@@ -9,7 +9,7 @@ G3-A — HMAC-SHA256 bus authentication
 --------------------------------------
 Each event is optionally signed with HMAC-SHA256 before entering the ring.
 A per-install 32-byte secret key is stored (or generated on first run) at
-``<installation>/runtime-data/bus.key``.
+``<ANGERONA_DATA>/bus.key``.
 
 Why:
   A threat actor with filesystem access could tamper with the SQLite ledger
@@ -80,7 +80,7 @@ Subscriber = Callable[[Event], None]
 class BusAuthority:
     """Loads or generates the per-install HMAC key for event signing.
 
-    Key file: ``<installation>/runtime-data/bus.key`` (32 random bytes, hex-encoded).
+    Key file: ``<ANGERONA_DATA>/bus.key`` (32 random bytes, hex-encoded).
     On first run call ``BusAuthority.generate()`` to create a new key.
     On subsequent runs call ``BusAuthority.load()`` to read the existing key.
     """

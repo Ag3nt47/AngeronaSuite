@@ -409,6 +409,14 @@ class ThreatIntelDashboard(QDialog):
             "Click ❗ Apply fix, or use Mass Flag & Ignore for the no-fix ones.")
         self._footer.setStyleSheet("color:#22c55e; font-size:11px;")
 
+    def closeEvent(self, event) -> None:  # noqa: N802
+        """Let a running batch analysis finish without destroying its QThread."""
+        from angerona.gui.thread_lifecycle import defer_close_until_threads
+
+        if defer_close_until_threads(self, event, (self._worker,)):
+            return
+        super().closeEvent(event)
+
     def _mass_flag_ignore(self) -> None:
         from angerona.core import cve_fix_advisor, cve_ignore
         active = [(m.get("cve"), m) for m in getattr(self, "_matches", [])

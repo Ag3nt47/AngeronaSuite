@@ -170,7 +170,9 @@ def _canonical_data_path(
     elif frozen:
         path = _frozen_default_data_root()
     else:
-        path = project_root() / "runtime-data"
+        # Keep mutable state outside the Git checkout. Hardened runtime ACLs
+        # must never prevent source updates, tests, or a clean uninstall.
+        path = project_root().parent / "AngeronaData"
     if frozen:
         return Path(os.path.abspath(path))
     return path.resolve()
@@ -179,7 +181,7 @@ def _canonical_data_path(
 def data_dir(create: bool = True) -> Path:
     """Return the sole persistent runtime root.
 
-    Source installs use a sibling ``runtime-data`` directory (D: in this
+    Source installs use a sibling ``AngeronaData`` directory (D: in this
     workspace). Frozen releases prefer protected ``D:\\AngeronaData`` on a
     fixed D: volume, with protected ProgramData as the no-D: fallback.
     ``ANGERONA_DATA`` remains an explicit override.

@@ -105,7 +105,7 @@ def test_enterprise_evidence_pack_is_deterministic_bounded_and_public_safe() -> 
         "status": "warn",
         "score": 0,
         "max_score": 1,
-        "detail": r"C:\Users\Agent47\secret.txt api_key=abcdefghijklmnop1234",
+        "detail": r"C:\Users\ExampleUser\secret.txt api_key=abcdefghijklmnop1234",
         "action": "Remove local identifiers",
     })
 
@@ -116,7 +116,7 @@ def test_enterprise_evidence_pack_is_deterministic_bounded_and_public_safe() -> 
     assert first["schema"] == "angerona.enterprise-evidence/v1"
     assert len(first["evidence_sha256"]) == 64
     encoded = str(first)
-    assert "Agent47" not in encoded
+    assert "ExampleUser" not in encoded
     assert r"C:\Users" not in encoded
     assert "abcdefghijklmnop1234" not in encoded
 

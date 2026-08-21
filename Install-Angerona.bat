@@ -17,9 +17,9 @@ REM ============================================================================
 setlocal EnableExtensions
 title Angerona Installer
 cd /d "%~dp0"
-set "ANGERONA_DATA=%~dp0runtime-data"
-set "ANGERONA_DIAG_DIR=%~dp0runtime-data\diagnostics"
-set "TEMP=%~dp0runtime-data\tmp"
+if not defined ANGERONA_DATA for %%I in ("%~dp0..\AngeronaData") do set "ANGERONA_DATA=%%~fI"
+set "ANGERONA_DIAG_DIR=%ANGERONA_DATA%\diagnostics"
+set "TEMP=%ANGERONA_DATA%\tmp"
 set "TMP=%TEMP%"
 set "ANGERONA_INSTALL_ROOT=%~dp0"
 set "ANGERONA_PRETRUSTED="

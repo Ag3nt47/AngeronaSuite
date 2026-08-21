@@ -4,7 +4,7 @@ The UI needs a small persistent key/value store for optional provider tokens,
 mail credentials, and connector secrets.  Keeping those values in a project
 ``.env`` file made them readable to every account that inherited access to the
 checkout. Windows stores one current-user DPAPI blob under Angerona's
-runtime-data directory and applies a private ACL as a second layer. macOS stores
+canonical runtime-data directory and applies a private ACL as a second layer. macOS stores
 the same logical map as one current-user Keychain item.
 
 Windows uses a current-user DPAPI blob with a private ACL. macOS uses one

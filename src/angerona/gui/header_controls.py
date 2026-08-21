@@ -943,6 +943,11 @@ class PanelRevealOverlay(QWidget):
                 if frame is not None:
                     frame.deleteLater()
                 closed = target.close()
+                if not closed and getattr(target, "_angerona_deferred_close", False):
+                    # A tool window may be waiting for a bounded Qt worker to
+                    # finish. Its reverse animation is already done; leave it
+                    # hidden rather than risking QThread destruction.
+                    return
                 if not closed:
                     # A destination is allowed to veto close for unsaved work.
                     # Restore it fully and re-arm the reverse transition.

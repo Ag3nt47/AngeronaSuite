@@ -113,14 +113,14 @@ claim Endpoint Security or Network Extension enforcement.
 
 ## 🚀 One-click Windows install from GitHub (recommended)
 
-1. Download `Angerona-<version>-win64.zip` and its adjacent `.sha256` from the
-   [Releases](../../releases) page, then verify the SHA-256 and GitHub build
-   attestation.
-2. Extract the ZIP and double-click **`Install-Angerona-Release.bat`**. It
-   verifies the packaged executables again, installs the one-file app and
-   exact-hash-gated Black Box under protected `%ProgramFiles%\Angerona`, and
-   creates the desktop shortcut.
-3. Launch from that shortcut. Mutable data defaults to protected
+1. Download **`Angerona-<version>-win64-setup.exe`** from the
+   [Releases](../../releases) page. Its adjacent `.sha256`, SBOM, and GitHub
+   build attestation provide independent verification.
+2. Double-click the Setup file and approve the Windows UAC prompt. Setup installs
+   the bundled application under protected `%ProgramFiles%\Angerona`, creates
+   Start-menu and desktop shortcuts, registers a clean uninstaller, and can
+   launch Angerona immediately. No Python or terminal is required.
+3. Mutable data defaults to protected
    `D:\AngeronaData` on a fixed D: volume, with protected
    `%ProgramData%\Angerona` only when D: is unavailable. Legacy per-user C:
    spill is migrated collision-safely on the first storage-hygiene pass.
@@ -129,18 +129,25 @@ Python, YARA-X, voice libraries, and the verified offline speech model are
 bundled; no terminal commands or dependency downloads are required. Releases
 also publish a complete locked dependency set, an SBOM, and build attestations.
 
+The release ZIP remains available as a portable/manual-verification fallback.
+Extract it and run `Install-Angerona-Release.bat`; that path verifies the two
+embedded executables against `release-files.sha256` before installation.
+
 The automated release currently provides checksum/provenance verification, not
 an Authenticode publisher certificate, so Windows may display **Unknown
 Publisher**. Verify the SHA-256 file and GitHub attestation before approving UAC.
 
-## 🧰 Source/developer install
+## 🧰 Hardened source deployment
 
-Contributors can clone the repository and double-click `Install-Angerona.bat`.
+Users who need a source-based deployment can clone the repository and
+double-click `Install-Angerona.bat`.
 It accepts only Authenticode-valid official Python/Ollama executables, uses the
 locked binary-wheel dependency set, discards a pre-existing virtual environment
 unless the checkout was already administrator-protected, and then hardens the
-checkout. Source scripts are not signed release installers, so this route is for
-reviewed development trees; use the protected release installer for normal use.
+checkout. That hardening deliberately makes the tree read-only to the launching
+user, so active contributors should work in a separate writable clone and avoid
+running this deployment script inside it. Source scripts are not signed release
+installers; use the protected release installer for normal use.
 
 Development and security checks use the optional, non-runtime tool set:
 
@@ -406,8 +413,8 @@ Seven **additive, read-only, self-tested** engines that turn Angerona's ~61 inde
 
 - **No-overlap scanner wake-up** — turning Eco Mode off now waits for each heavy module to finish one complete baseline/scan cycle before starting the next. ETW, Sysmon, AMSI, Defender telemetry, and the lightweight network decoder remain awake continuously.
 - **Alert-storm responsiveness** — Live Alerts no longer creates hundreds of button widgets, and Resolve Center reads only a bounded recent HIGH/CRITICAL window instead of rebuilding from a full day of INFO telemetry.
-- **Install-drive runtime storage** — databases, drill/AAR output, scanner reports, settings, allowlists, diagnostics, watchdog state, Black Box data, and temporary work live under `<install-folder>\runtime-data` for source installs. SQLite retention releases unused pages and caps its WAL footprint.
-- **Bounded drill/report growth** — benign markers default to `runtime-data\drill-sandbox` (also watched by FIM and YARA); timestamped AAR history keeps at most 40 runs and 30 days. The UI watchdog keeps one bounded 4 MiB archive instead of preserving oversized legacy thread dumps.
+- **D-drive runtime storage** — databases, drill/AAR output, scanner reports, settings, allowlists, diagnostics, watchdog state, Black Box data, and temporary work live under the sibling `AngeronaData` directory for source installs (for example, `D:\Projects\AngeronaData`). SQLite retention releases unused pages and caps its WAL footprint.
+- **Bounded drill/report growth** — benign markers default to `%ANGERONA_DATA%\drill-sandbox` (also watched by FIM and YARA); timestamped AAR history keeps at most 40 runs and 30 days. The UI watchdog keeps one bounded 4 MiB archive instead of preserving oversized legacy thread dumps.
 - **Clean local-AI stop** — closing/stopping Angerona immediately unloads resident llama3 models; `kill-all-angerona.bat` also handles a wedged Ollama model runner.
 
 The legacy `%LOCALAPPDATA%\Angerona` folder is no longer used for runtime writes.
@@ -482,8 +489,9 @@ email scanning, channel push, research) — each has a one-click test button.
 - **Scoped shutdown** — emergency recovery recognizes only Angerona-owned
   Python entry points, gracefully unloads Angerona llama3 models, and never
   image-kills all Python or Ollama runners.
-- **D:-resident, bounded evidence** — runtime data and temporary work remain
-  under `<install-folder>\runtime-data` (install on D: to keep all writes on D:). SQLite stays
+- **D:-resident, bounded evidence** — source runtime data and temporary work remain
+  under the checkout's sibling `AngeronaData` directory. Packaged installs use
+  `D:\AngeronaData` when D: is available. SQLite stays
   hard-bounded and prunes lower-severity rows before HIGH/CRITICAL evidence;
   AAR history, WAL growth, and watchdog logs remain capped.
 - **Long-session responsiveness** — unchanged SOAR queue parsing and dashboard
@@ -612,7 +620,7 @@ email scanning, channel push, research) — each has a one-click test button.
   improved 816×; status reporting performs about 19% less work. Network,
   forensics, and HEAL long-session/PID state is now pruned and bounded.
 - **Runtime and public-release hygiene.** Launcher diagnostics now live under
-  `<install-folder>\runtime-data\diagnostics`, alongside the other bounded
+  `%ANGERONA_DATA%\diagnostics`, alongside the other bounded
   D-drive state. Future repository commits use a GitHub noreply identity. The
   existing Git history and unsigned-publisher boundary still require deliberate
   owner action before publication; see [Privacy](PRIVACY.md) and
@@ -1212,4 +1220,33 @@ email scanning, channel push, research) — each has a one-click test button.
   tests pass. Production remote quotas, adaptive backpressure, mutual Transport
   Layer Security (mTLS), and high availability remain separate gates.
 
-<!-- ANGERONA_DOC_STATUS tests=586 skips=2 modules=65 -->
+## LATEST (2026-08-20 — crash resilience and one-click setup)
+
+- **Native crash root cause fixed.** Windows crash evidence identified a Qt
+  worker-lifecycle abort: a closeable window could be deleted while its
+  background worker was still blocked in local-AI or network work. A shared
+  deferred-close guard now hides the window immediately, requests interruption,
+  waits without freezing the interface, and deletes the native objects only
+  after every worker has finished. Reverse-close animation respects the same
+  lifecycle, and a real Qt regression test covers the formerly fatal sequence.
+- **Cleaner long-running storage boundary.** Source launches now default to the
+  sibling `AngeronaData` directory, keeping mutable databases, reports, drill
+  evidence, diagnostics, and temporary work outside the Git checkout. Existing
+  data can be migrated intact, and an explicit `ANGERONA_DATA` override is still
+  honored.
+- **Actual one-click Windows release.** Tagged GitHub releases now build an
+  administrator-aware x64 Inno Setup executable that installs Angerona under
+  Program Files, creates Start-menu and optional desktop shortcuts, launches the
+  suite, and supplies an uninstaller. The workflow publishes SHA-256 checksums,
+  a software bill of materials, and GitHub artifact attestations for both the
+  installer and portable ZIP. The ZIP remains the inspectable fallback.
+- **Security and performance challenge pass.** Static checks found no active
+  shell execution shortcut, disabled TLS verification, embedded private key, or
+  newly introduced unbounded worker wait. Ruff and Python bytecode compilation
+  pass; the application self-check passes **26/26**.
+- **Final Cycle 16 verification.** The authoritative serial Windows suite passes **714 tests with
+  2 intentional platform skips** and 0 failures. The installer
+  script is statically gated in the repository; final binary compilation and
+  launch verification run on GitHub's Windows release runner.
+
+<!-- ANGERONA_DOC_STATUS tests=714 skips=2 modules=65 -->

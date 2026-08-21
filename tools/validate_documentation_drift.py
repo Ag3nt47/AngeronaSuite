@@ -100,7 +100,7 @@ def validate(root: Path) -> list[str]:
             )
 
     required_claims = {
-        "source runtime path": r"<install-folder>\\runtime-data",
+        "source runtime path": r"sibling `AngeronaData` directory",
         "packaged D-drive data root": r"D:\\AngeronaData",
         "protected fallback data root": r"%ProgramData%\\Angerona",
         "optional cloud boundary": r"Cloud\s+integrations are optional and off by default",

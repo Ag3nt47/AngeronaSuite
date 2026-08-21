@@ -124,14 +124,34 @@ jobs:
           }
           $manifest | Set-Content -Encoding ascii "dist/Angerona/release-files.sha256"
 
+      - name: Build single-file Windows Setup
+        shell: pwsh
+        run: |
+          $artifactTag = "${{ github.ref_name }}" -replace '[^A-Za-z0-9._-]', '-'
+          $appVersion = $artifactTag -replace '^v', ''
+          if ($appVersion -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') {
+            $appVersion = '0.0.0'
+          }
+          $compiler = (Get-Command ISCC.exe -ErrorAction Stop).Source
+          & $compiler "/DAppVersion=$appVersion" "/DArtifactTag=$artifactTag" `
+            "installer/Angerona.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit $LASTEXITCODE" }
+          $setup = "Angerona-$artifactTag-win64-setup.exe"
+          if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) {
+            throw "Expected setup artifact was not created: $setup"
+          }
+
       - name: Create SBOM, package, and checksum
         shell: pwsh
         run: |
           cyclonedx-py environment --output-format JSON --output-file Angerona-SBOM.json
           $zip = "Angerona-${{ github.ref_name }}-win64.zip"
+          $setup = "Angerona-${{ github.ref_name }}-win64-setup.exe"
           Compress-Archive -Path dist/Angerona/* -DestinationPath $zip
           (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower() + "  " + $zip |
             Set-Content -Encoding ascii "$zip.sha256"
+          (Get-FileHash -Algorithm SHA256 $setup).Hash.ToLower() + "  " + $setup |
+            Set-Content -Encoding ascii "$setup.sha256"
 
       - name: Upload gated release assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -139,6 +159,8 @@ jobs:
           name: angerona-release-assets
           if-no-files-found: error
           path: |
+            Angerona-${{ github.ref_name }}-win64-setup.exe
+            Angerona-${{ github.ref_name }}-win64-setup.exe.sha256
             Angerona-${{ github.ref_name }}-win64.zip
             Angerona-${{ github.ref_name }}-win64.zip.sha256
             Angerona-SBOM.json
@@ -161,18 +183,24 @@ jobs:
       - name: Attest release archive
         uses: actions/attest-build-provenance@78e6cbd37d0ac1a40113c04f2037dacf1ea3f12e # v4
         with:
-          subject-path: Angerona-${{ github.ref_name }}-win64.zip
+          subject-path: |
+            Angerona-${{ github.ref_name }}-win64-setup.exe
+            Angerona-${{ github.ref_name }}-win64.zip
 
       - name: Attest software bill of materials
         uses: actions/attest-sbom@51e74621a501c89df81fc1391c5a8f4cfc9fab2f # v3
         with:
-          subject-path: Angerona-${{ github.ref_name }}-win64.zip
+          subject-path: |
+            Angerona-${{ github.ref_name }}-win64-setup.exe
+            Angerona-${{ github.ref_name }}-win64.zip
           sbom-path: Angerona-SBOM.json
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           files: |
+            Angerona-${{ github.ref_name }}-win64-setup.exe
+            Angerona-${{ github.ref_name }}-win64-setup.exe.sha256
             Angerona-${{ github.ref_name }}-win64.zip
             Angerona-${{ github.ref_name }}-win64.zip.sha256
             Angerona-SBOM.json

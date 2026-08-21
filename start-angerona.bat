@@ -14,11 +14,13 @@ echo  [ANGERONA] Starting the security suite...
 echo  [ANGERONA] This window will close after the dashboard is confirmed alive.
 echo.
 
-REM Keep every persistent/runtime write on the D: installation drive.
-set "ANGERONA_DATA=%~dp0runtime-data"
-set "ANGERONA_DIAG_DIR=%~dp0runtime-data\diagnostics"
+REM Keep mutable/protected data beside (not inside) the Git checkout. This lets
+REM source updates replace files without colliding with hardened runtime ACLs.
+REM An explicit ANGERONA_DATA value still wins for managed deployments.
+if not defined ANGERONA_DATA for %%I in ("%~dp0..\AngeronaData") do set "ANGERONA_DATA=%%~fI"
+set "ANGERONA_DIAG_DIR=%ANGERONA_DATA%\diagnostics"
 set "ANGERONA_STORAGE_AUTOMIGRATE=1"
-set "TEMP=%~dp0runtime-data\tmp"
+set "TEMP=%ANGERONA_DATA%\tmp"
 set "TMP=%TEMP%"
 set "ANGERONA_INSTALL_ROOT=%~dp0"
 set "ANGERONA_ENFORCE_KEY_ACL=1"
