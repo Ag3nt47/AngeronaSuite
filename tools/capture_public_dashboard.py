@@ -170,7 +170,7 @@ def capture(destination: Path) -> None:
     )
     window.console.out.setPlainText(
         "[PUBLIC DEMO] Synthetic telemetry only — no host data is displayed.\n"
-        "[PASS] 63 defensive modules discovered\n"
+        f"[PASS] {len(manager.modules)} defensive modules discovered\n"
         "[PASS] Event authenticity and bounded retention verified\n"
         "[PASS] Purple remediation proof chain ready\n"
         "[PASS] Local-first privacy controls enabled\n\n"
@@ -201,8 +201,8 @@ def capture(destination: Path) -> None:
     # fixed synthetic strings above. This guard prevents accidental path reuse.
     forbidden = (
         str(Path.home()).casefold(),
+        os.environ.get("USERNAME", "").casefold(),
         os.environ.get("COMPUTERNAME", "").casefold(),
-        "agent47",
         "c:\\users\\",
     )
     visible_text = "\n".join(

@@ -36,16 +36,10 @@ from angerona.core.url_policy import (
     read_bounded,
     safe_urlopen,
 )
+from angerona.core.ollama_lifecycle import effective_keep_alive
 
 
 ANCHOR_TOKEN = "UDE_DECOY_TOKEN::CONFIDENTIAL_DATA_DO_NOT_MODIFY_OR_ENCRYPT"
-
-DOCS_DIR = os.path.expandvars(r"%USERPROFILE%\Documents")
-DEPLOY_TARGETS = [
-    os.path.expandvars(r"%USERPROFILE%\Desktop"),
-    os.path.expandvars(r"%USERPROFILE%\Documents"),
-    os.path.expandvars(r"%APPDATA%"),
-]
 
 _OLLAMA_HOST  = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 _OLLAMA_MODEL = os.environ.get("ANGERONA_MODEL", "llama3")
@@ -69,6 +63,24 @@ _GEN_SYSTEM_PROMPT = (
 )
 
 
+def _user_folder_deception_enabled() -> bool:
+    return os.environ.get("ANGERONA_USER_FOLDER_DECEPTION", "0").strip().casefold() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _runtime_deception_root() -> Path:
+    from angerona.core.data_paths import data_dir
+
+    return data_dir() / "deception" / "smart"
+
+
+def _personal_deception_targets() -> tuple[Path, ...]:
+    home = Path(os.environ.get("USERPROFILE", str(Path.home())))
+    appdata = Path(os.environ.get("APPDATA", str(home / "AppData" / "Roaming")))
+    return home / "Desktop", home / "Documents", appdata
+
+
 class SmartDeception(BaseModule):
     name = "Smart Deception"
     CODE = "SDEC"
@@ -84,6 +96,17 @@ class SmartDeception(BaseModule):
 
     def __init__(self) -> None:
         super().__init__()
+        self._user_scope = _user_folder_deception_enabled()
+        self._runtime_root = _runtime_deception_root()
+        self._sample_root = (
+            _personal_deception_targets()[1] if self._user_scope else None
+        )
+        self._targets = (
+            _personal_deception_targets()
+            if self._user_scope
+            else (self._runtime_root,)
+        )
+        self._manifest = self._runtime_root.parent / "smart_manifest.json"
         self._decoys: list[str] = []      # deployed decoy file paths
         self._last_refresh = 0.0
         self._trips = 0
@@ -91,8 +114,10 @@ class SmartDeception(BaseModule):
     # ── Generation ────────────────────────────────────────────────────────────
     def _sample_documents(self) -> list[str]:
         names: list[str] = []
+        if self._sample_root is None:
+            return names
         try:
-            for root, dirs, files in os.walk(DOCS_DIR):
+            for root, dirs, files in os.walk(self._sample_root):
                 for fn in files:
                     names.append(fn)
                     if len(names) >= _MAX_SAMPLE:
@@ -115,7 +140,7 @@ class SmartDeception(BaseModule):
             ],
             "stream": False,
             "format": "json",
-            "keep_alive": "30m",
+            "keep_alive": effective_keep_alive("30m"),
         }).encode("utf-8")
         req = urllib.request.Request(
             local_service_url(_OLLAMA_HOST, "/api/chat"), data=payload,
@@ -142,28 +167,81 @@ class SmartDeception(BaseModule):
         return "".join(c for c in base if c not in '<>:"|?*').strip()
 
     # ── Deployment ────────────────────────────────────────────────────────────
+    def _allowed_decoy_path(self, path: Path) -> bool:
+        try:
+            candidate = path.resolve(strict=False)
+            if path.is_symlink():
+                return False
+            return any(
+                os.path.commonpath((str(candidate), str(root.resolve(strict=False))))
+                == str(root.resolve(strict=False))
+                for root in self._targets
+            )
+        except (OSError, RuntimeError, ValueError):
+            return False
+
+    def _manifest_paths(self) -> list[Path]:
+        try:
+            if self._manifest.is_symlink() or self._manifest.stat().st_size > 256 * 1024:
+                return []
+            value = json.loads(self._manifest.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, UnicodeError, ValueError, TypeError):
+            return []
+        if not isinstance(value, list) or len(value) > 256:
+            return []
+        return [Path(item) for item in value if isinstance(item, str)]
+
+    def _write_manifest(self) -> None:
+        self._manifest.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(sorted(set(self._decoys)), ensure_ascii=True)
+        temp = self._manifest.with_suffix(f".tmp.{os.getpid()}")
+        try:
+            temp.write_text(payload, encoding="utf-8")
+            os.replace(temp, self._manifest)
+        finally:
+            try:
+                temp.unlink()
+            except FileNotFoundError:
+                pass
+
+    def _cleanup_deployed_decoys(self) -> None:
+        candidates = {Path(item) for item in self._decoys}
+        candidates.update(self._manifest_paths())
+        for path in candidates:
+            if not self._allowed_decoy_path(path):
+                continue
+            try:
+                if path.is_file() and path.read_text(encoding="utf-8") == ANCHOR_TOKEN:
+                    path.unlink()
+            except (OSError, UnicodeError):
+                continue
+        self._decoys.clear()
+        try:
+            self._manifest.unlink()
+        except FileNotFoundError:
+            pass
+
     def _deploy(self, names: list[str]) -> None:
         # Remove previously-deployed decoys first so the daily REFRESH_S
         # regeneration doesn't leave orphaned, unmonitored honeytokens piling up
         # in Documents/Desktop/APPDATA.
-        for old in self._decoys:
-            try:
-                os.remove(old)
-            except Exception:
-                pass
-        self._decoys.clear()
-        for target in DEPLOY_TARGETS:
-            if not os.path.isdir(target):
-                continue
+        self._cleanup_deployed_decoys()
+        for target_path in self._targets:
+            target_path.mkdir(parents=True, exist_ok=True)
+            target = str(target_path)
             for name in random.sample(names, min(_DECOYS_PER_TARGET, len(names))):
                 path = os.path.join(target, name)
                 if self._write_decoy(path):
                     self._decoys.append(path)
+        self._write_manifest()
         self.emit(f"Deployed {len(self._decoys)} AI honeytokens across "
-                  f"{len(DEPLOY_TARGETS)} locations.", Severity.INFO)
+                  f"{len(self._targets)} explicitly allowed location(s).", Severity.INFO)
 
     def _write_decoy(self, path: str) -> bool:
         try:
+            candidate = Path(path)
+            if not self._allowed_decoy_path(candidate):
+                return False
             if os.path.exists(path):   # never clobber a real user file
                 return False
             with open(path, "w", encoding="utf-8") as f:
@@ -219,11 +297,7 @@ class SmartDeception(BaseModule):
 
     def stop(self) -> None:
         # Best-effort cleanup so we don't leave decoys behind on shutdown.
-        for path in self._decoys:
-            try:
-                os.remove(path)
-            except Exception:
-                pass
+        self._cleanup_deployed_decoys()
         super().stop()
 
     def self_test(self) -> tuple[bool, str]:

@@ -116,6 +116,8 @@ class CollapseTrail(QWidget):
     """Click-through holographic outline used for collapse and restore."""
 
     completed = Signal()
+    ANIMATION_DURATION_MS = 440
+    COMPLETION_GRACE_MS = 750
 
     def __init__(
         self,
@@ -141,12 +143,21 @@ class CollapseTrail(QWidget):
         self._expanding = bool(expanding)
         self._color = QColor(color)
         self._progress = 0.0
+        self._completed = False
         self._animation = QPropertyAnimation(self, b"trailProgress", self)
-        self._animation.setDuration(440)
+        self._animation.setDuration(self.ANIMATION_DURATION_MS)
         self._animation.setEasingCurve(QEasingCurve.InOutCubic)
         self._animation.setStartValue(0.0)
         self._animation.setEndValue(1.0)
         self._animation.finished.connect(self._finish)
+        # QPropertyAnimation normally emits ``finished`` after 440 ms.  A
+        # heavily loaded GUI thread, display-driver transition, or an external
+        # stop can leave that signal delayed or absent, though.  Restoring a
+        # hidden window must not depend on a presentation-only animation, so a
+        # separate one-shot guard completes the same idempotent path.
+        self._completion_guard = QTimer(self)
+        self._completion_guard.setSingleShot(True)
+        self._completion_guard.timeout.connect(self._finish)
 
     def animated_rect(self, progress: float | None = None) -> QRectF:
         """Return the current outline geometry in overlay-local coordinates."""
@@ -179,8 +190,13 @@ class CollapseTrail(QWidget):
         )
 
     def start(self) -> None:
+        if self._completed:
+            return
         self.show()
         self.raise_()
+        self._completion_guard.start(
+            self.ANIMATION_DURATION_MS + self.COMPLETION_GRACE_MS
+        )
         self._animation.start()
 
     def get_trail_progress(self) -> float:
@@ -197,6 +213,12 @@ class CollapseTrail(QWidget):
     )
 
     def _finish(self) -> None:
+        if self._completed:
+            return
+        self._completed = True
+        self._completion_guard.stop()
+        self._animation.stop()
+        self.set_trail_progress(1.0)
         self.hide()
         self.completed.emit()
         self.deleteLater()

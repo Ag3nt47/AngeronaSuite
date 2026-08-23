@@ -182,8 +182,12 @@ class EvolutionEngine(BaseModule):
 
     def run(self) -> None:
         self.set_health(100, "idle — waiting for a verification bypass")
-        while not self.stopping:
-            self.sleep(5.0)
+        # Activation is delivered synchronously by the EventBus subscription in
+        # ``bind()``; this module has no periodic work.  The old five-second
+        # sleep loop woke 17,280 times/day merely to discover that it was still
+        # idle.  Publish readiness once, then park interruptibly until stop().
+        self.mark_cycle_complete()
+        self.generation_stop_event().wait()
 
     # ── 1. activation interface ──────────────────────────────────────────────
     def activate(self, technique_id: str) -> None:

@@ -3,39 +3,47 @@ from __future__ import annotations
 import os
 import sys
 import threading
-import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QThreadPool, Qt, qInstallMessageHandler
+from PySide6.QtCore import Qt, qInstallMessageHandler
 from PySide6.QtWidgets import QApplication
 
 from angerona.gui import upgrade_console
+
+
+class _HoldingPool:
+    def __init__(self) -> None:
+        self.jobs: list[object] = []
+
+    def start(self, worker, _priority: int = 0) -> None:
+        self.jobs.append(worker)
 
 
 def test_upgrade_console_immediate_close_during_model_listing_is_quiet(
     monkeypatch,
 ) -> None:
     app = QApplication.instance() or QApplication([])
-    entered = threading.Event()
-    release = threading.Event()
-    returned = threading.Event()
+    pool = _HoldingPool()
     python_errors: list[BaseException] = []
     qt_messages: list[str] = []
 
-    def slow_list(_self) -> list[str]:
-        entered.set()
-        release.wait(timeout=2.0)
-        returned.set()
+    def list_models(_self) -> list[str]:
         return ["unit-model:latest"]
 
     def capture_thread_error(args: threading.ExceptHookArgs) -> None:
         python_errors.append(args.exc_value)
 
+    monkeypatch.setattr(upgrade_console, "_upgrade_ui_pool", lambda: pool)
+    monkeypatch.setattr(
+        upgrade_console.AngeronaUpgradeConsole,
+        "_refresh_watchdog",
+        lambda _self: None,
+    )
     monkeypatch.setattr(
         upgrade_console.AngeronaUpgradeConsole,
         "_list_ollama_models",
-        slow_list,
+        list_models,
     )
     monkeypatch.setattr(
         sys,
@@ -56,16 +64,26 @@ def test_upgrade_console_immediate_close_during_model_listing_is_quiet(
     window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
     window.show()
     try:
-        assert entered.wait(timeout=1.0)
-        started_at = time.perf_counter()
+        assert len(pool.jobs) == 1
+        # The held worker proves close is not coupled to request completion;
+        # elapsed-time limits would only measure scheduler load on the host.
         window.close()
         app.processEvents()
-        assert time.perf_counter() - started_at < 0.2
 
-        release.set()
-        assert returned.wait(timeout=1.0)
-        assert QThreadPool.globalInstance().waitForDone(2_000)
-        for _ in range(4):
+        errors: list[BaseException] = []
+
+        def run_worker() -> None:
+            try:
+                pool.jobs.pop().run()
+            except BaseException as exc:  # pragma: no cover - assertion aid
+                errors.append(exc)
+
+        thread = threading.Thread(target=run_worker)
+        thread.start()
+        thread.join(timeout=10.0)
+        assert not thread.is_alive()
+        assert errors == []
+        for _ in range(6):
             app.processEvents()
 
         assert python_errors == []
@@ -74,5 +92,4 @@ def test_upgrade_console_immediate_close_during_model_listing_is_quiet(
             for message in qt_messages
         )
     finally:
-        release.set()
         qInstallMessageHandler(previous_handler)

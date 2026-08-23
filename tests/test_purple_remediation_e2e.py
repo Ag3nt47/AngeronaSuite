@@ -22,7 +22,12 @@ def test_fresh_purple_detection_and_correlated_soar_action_change_scorecard():
     }
     catch = Event(
         "Purple Remediation Guard", "exact candidate detected", Severity.HIGH,
-        started + 0.2, {"path": path, "artifact_path": path, "mitre": "T1003"})
+        started + 0.2, {
+            "path": path,
+            "artifact_path": path,
+            "mitre": "T1003",
+            "detector_policy": "reviewed-redteam-candidate",
+        })
     action = Event(
         "Active Response SOAR", "artifact removed", Severity.HIGH,
         started + 0.3, {"path": path, "trigger_ts": catch.ts, "mitigated": True})
@@ -34,4 +39,6 @@ def test_fresh_purple_detection_and_correlated_soar_action_change_scorecard():
     assert verdicts[0].remediation is action
     report = render(history, verdicts, "RED TEAM ATTACK")
     assert "Response success   : 1/1" in report
-    assert "Detector fixes proven by rerun: 1" in report
+    # A Purple event without an applied, authenticated action contract is a
+    # detection, not proof that a fix was installed and closed.
+    assert "Detector fixes proven by rerun" not in report

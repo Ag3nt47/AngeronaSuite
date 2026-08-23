@@ -40,7 +40,7 @@ echo.
 
 set "MSG="
 set /p "MSG=Commit message (leave blank to CANCEL): "
-if "%MSG%"=="" (
+if not defined MSG (
     echo [CANCELLED] No commit message entered - nothing was pushed.
     pause & exit /b 0
 )
@@ -48,7 +48,30 @@ if "%MSG%"=="" (
 echo.
 echo [*] Staging + committing ...
 git add -A
-git commit -m "%MSG%"
+if errorlevel 1 (
+    echo [ERROR] Git could not stage the current tree. Nothing was pushed.
+    pause & exit /b 1
+)
+git diff --cached --quiet
+if not errorlevel 1 (
+    echo [INFO] No staged changes exist. Nothing was committed or pushed.
+    pause & exit /b 0
+)
+REM Never expand operator text into cmd.exe syntax. Write it through the
+REM environment to a repo-internal temporary file, then let Git read the file.
+set "MSGFILE=%CD%\.git\ANGERONA_COMMIT_MESSAGE.tmp"
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "[IO.File]::WriteAllText($env:MSGFILE, $env:MSG, [Text.UTF8Encoding]::new($false))"
+if errorlevel 1 (
+    echo [ERROR] The commit message could not be prepared. Nothing was pushed.
+    pause & exit /b 1
+)
+git commit -F "%MSGFILE%"
+set "COMMIT_RC=%ERRORLEVEL%"
+del /q "%MSGFILE%" >nul 2>&1
+if not "%COMMIT_RC%"=="0" (
+    echo [ERROR] Commit failed. Nothing was pushed.
+    pause & exit /b 1
+)
 
 echo.
 echo [*] Pushing to GitHub ...

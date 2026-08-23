@@ -15,8 +15,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from pathlib import Path
+from typing import TypeAlias
 
 from angerona.core.atomic_io import replace_with_retry
 from angerona.core.data_paths import data_dir as canonical_data_dir
@@ -39,7 +41,86 @@ _PATTERNS: tuple[tuple[str, str, str], ...] = (
 _PROCESS_TECHNIQUE = "T1059"
 _PROCESS_LABEL = "benign tagged execution marker"
 _PROCESS_TOKEN = re.compile(r"\bANGERONA_REDTEAM_[0-9a-f]{8}\b", re.I)
+_PRACTICE_FILE_TOKEN = re.compile(
+    r"_practice_(?P<id>[0-9a-f]{8,64})\.txt$",
+    re.I,
+)
+_SAFE_LINEAGE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _POLICY_CACHE_UNSET = object()
+_PathInput: TypeAlias = str | os.PathLike[str]
+_RUNTIME_TARGETS: set[Path] = set()
+_RUNTIME_TARGETS_LOCK = threading.RLock()
+
+
+def _normalize_runtime_target(target: _PathInput, *, require_directory: bool) -> Path:
+    """Return a stable local directory path suitable for the drill scanner."""
+    try:
+        raw = os.fspath(target)
+    except TypeError as exc:
+        raise ValueError("runtime drill target must be a filesystem path") from exc
+    if not raw or not raw.strip() or "\x00" in raw:
+        raise ValueError("runtime drill target must be a non-empty local path")
+    if len(raw) > 1024:
+        raise ValueError("runtime drill target path is too long")
+    windows_form = raw.replace("/", "\\")
+    if windows_form.startswith(("\\\\", "\\\\?\\", "\\\\.\\")):
+        raise ValueError("network and device paths are not runtime drill targets")
+    try:
+        path = Path(os.path.expandvars(os.path.expanduser(raw))).resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("runtime drill target path is invalid") from exc
+    if path == Path(path.anchor):
+        raise ValueError("a filesystem root is not a runtime drill target")
+    if path.exists() and not path.is_dir():
+        raise ValueError("runtime drill target must be a directory path")
+    if require_directory and not path.is_dir():
+        raise ValueError("runtime drill target must be an existing directory")
+    return path
+
+
+def register_runtime_target(target: _PathInput) -> Path:
+    """Pre-register one local drill directory for this process lifetime.
+
+    Registration never widens marker matching: Purple Guard still inspects only
+    direct children whose names match ``_redteam_*.txt``.  The bounded drill
+    may create the directory immediately after this call, so absence is valid;
+    roots, UNC/device paths, and non-directory values remain non-scannable.
+    """
+    path = _normalize_runtime_target(target, require_directory=False)
+    with _RUNTIME_TARGETS_LOCK:
+        _RUNTIME_TARGETS.add(path)
+    return path
+
+
+def unregister_runtime_target(target: _PathInput) -> bool:
+    """Remove a runtime target, including one whose directory was deleted."""
+    path = _normalize_runtime_target(target, require_directory=False)
+    with _RUNTIME_TARGETS_LOCK:
+        if path not in _RUNTIME_TARGETS:
+            return False
+        _RUNTIME_TARGETS.remove(path)
+        return True
+
+
+def _runtime_targets_snapshot() -> tuple[Path, ...]:
+    with _RUNTIME_TARGETS_LOCK:
+        return tuple(
+            sorted(_RUNTIME_TARGETS, key=lambda path: os.path.normcase(str(path)))
+        )
+
+
+def _safe_lineage_details(details: dict) -> dict[str, str]:
+    lineage: dict[str, str] = {}
+    for key in ("practice_verification_id", "run_id", "step_id"):
+        value = str(details.get(key) or "").strip()
+        if value and _SAFE_LINEAGE_ID.fullmatch(value):
+            lineage[key] = value
+    return lineage
+
+
+def _practice_id_from_marker(path: Path) -> str:
+    match = _PRACTICE_FILE_TOKEN.search(path.name)
+    return match.group("id").lower() if match else ""
 
 
 def policy_path(data_root: Path | None = None) -> Path:
@@ -203,36 +284,51 @@ class PurpleGuard(BaseModule):
     def scan_once(self, policy: dict | None = None) -> int:
         if policy is None:
             policy = _read_policy(self.data_root).get("techniques", {})
-        if not isinstance(policy, dict) or not policy or not self.sandbox.is_dir():
+        if not isinstance(policy, dict) or not policy:
             return 0
         hits = 0
-        try:
-            paths = list(self.sandbox.glob("_redteam_*.txt"))
-        except OSError:
-            return 0
-        for path in paths:
-            classified = classify_marker(path)
-            if classified is None:
+        targets = (self.sandbox.resolve(strict=False), *_runtime_targets_snapshot())
+        visited: set[Path] = set()
+        for target in targets:
+            if target in visited or not target.is_dir():
                 continue
-            mitre, label = classified
-            if mitre not in policy:
-                continue
+            visited.add(target)
             try:
-                stat = path.stat()
-                key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+                # Direct children only. Broad file scanning or recursive walking
+                # would turn this exact drill detector into a general-purpose
+                # content scanner, which is intentionally outside its contract.
+                paths = list(target.glob("_redteam_*.txt"))
             except OSError:
                 continue
-            if key in self._seen:
-                continue
-            self._seen.add(key)
-            self.emit(
-                f"Purple Guard detected {label} ({mitre}) in the isolated drill sandbox.",
-                Severity.HIGH,
-                path=str(path), artifact_path=str(path), mitre=mitre,
-                detector_policy="reviewed-redteam-candidate",
-            )
-            self.detected += 1
-            hits += 1
+            for path in paths:
+                classified = classify_marker(path)
+                if classified is None:
+                    continue
+                mitre, label = classified
+                if mitre not in policy:
+                    continue
+                try:
+                    stat = path.stat()
+                    key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+                except OSError:
+                    continue
+                if key in self._seen:
+                    continue
+                self._seen.add(key)
+                practice_id = _practice_id_from_marker(path)
+                practice_details = (
+                    {"practice_verification_id": practice_id} if practice_id else {}
+                )
+                self.emit(
+                    f"Purple Guard detected {label} ({mitre}) in a registered drill target.",
+                    Severity.HIGH,
+                    path=str(path), artifact_path=str(path), mitre=mitre,
+                    drill_target=str(target),
+                    detector_policy="reviewed-redteam-candidate",
+                    **practice_details,
+                )
+                self.detected += 1
+                hits += 1
         return hits
 
     def scan_process_once(self, policy: dict | None = None) -> int:
@@ -276,6 +372,7 @@ class PurpleGuard(BaseModule):
                 event_type="purple_process_detection", mitre=mitre,
                 correlation_token=token,
                 detector_policy="reviewed-redteam-candidate",
+                **_safe_lineage_details(details),
             )
             self.detected += 1
             hits += 1

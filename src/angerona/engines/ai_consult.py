@@ -41,6 +41,7 @@ from angerona.core.url_policy import (
     read_bounded,
     safe_urlopen,
 )
+from angerona.core.ollama_lifecycle import effective_keep_alive
 
 # Environment-overridable model IDs. Credentials themselves are supplied only
 # through the protected provider registry.
@@ -160,7 +161,8 @@ def _ollama(prompt: str, system: str) -> Optional[str]:
     body = _post(
         local_service_url(OLLAMA_HOST, "/api/chat"),
         {"content-type": "application/json"},
-        {"model": OLLAMA_MODEL, "stream": False, "messages": [
+        {"model": OLLAMA_MODEL, "stream": False,
+         "keep_alive": effective_keep_alive("30m"), "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt}]},
     )

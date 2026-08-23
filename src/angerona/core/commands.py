@@ -837,12 +837,15 @@ class CommandConsole:
 
     def _threat(self, args: List[str]) -> str:
         events = self.bus.recent(80)
-        worst = max((e.severity for e in events), default=Severity.INFO)
-        crit = sum(1 for e in events if e.severity == Severity.CRITICAL)
+        from angerona.core.threat import active_threat_events, threat_label
+
+        active = active_threat_events(events)
+        label, _color = threat_label(events)
+        crit = sum(1 for e in active if e.severity == Severity.CRITICAL)
         running = sum(1 for m in self.manager.modules.values() if m.status == "running")
-        return (f"Threat level: {worst.label}\n"
+        return (f"Threat level: {label}\n"
                 f"Modules running: {running}/{len(self.manager.modules)}\n"
-                f"Critical in recent window: {crit}")
+                f"Active critical threats (10m): {crit}")
 
     # ── Enterprise: Scheduled tasks ─────────────────
     def _schtasks(self, args):
@@ -1170,9 +1173,17 @@ class CommandConsole:
                 pass   # fall through to the raw local model
         import json
         import urllib.request
+        from angerona.core.ollama_lifecycle import effective_keep_alive
         host = getattr(self.config, "ollama_host", "http://localhost:11434")
         model = getattr(self.config, "ollama_model", "llama3")
-        payload = json.dumps({"model": model, "prompt": query, "stream": False}).encode()
+        payload = json.dumps({
+            "model": model,
+            "prompt": query,
+            "stream": False,
+            "keep_alive": effective_keep_alive(
+                getattr(self.config, "ollama_keep_alive", "30m")
+            ),
+        }).encode()
         try:
             req = urllib.request.Request(
                 local_service_url(host, "/api/generate"),

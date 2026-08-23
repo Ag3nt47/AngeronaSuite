@@ -74,9 +74,14 @@ def _hb_state(component: str) -> str:
         return "unknown"
 
 
+def _monitor_refresh_interval_ms(*, visible: bool, minimized: bool, active: bool) -> int:
+    """Presentation cadence only; supervision remains in the sidecar process."""
+    return 1_000 if visible and not minimized and active else 10_000
+
+
 def build_status_widget(component: str, title: str | None = None):
     """Return a themed, tabbed QWidget presenting <component>. Requires PySide6."""
-    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtCore import QEvent, Qt, QTimer
     from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
                                    QGroupBox, QLabel, QTextEdit, QTabWidget,
                                    QListWidget, QPushButton, QMessageBox)
@@ -99,8 +104,33 @@ def build_status_widget(component: str, title: str | None = None):
 
             self._timer = QTimer(self)
             self._timer.timeout.connect(self.refresh)
-            self._timer.start(1000)
+            self._timer.start(10_000)
+            self._last_log_line = ""
+            self._last_modules: tuple[str, ...] | None = None
             self.refresh()
+
+        def _sync_refresh_timer(self):
+            window = self.window()
+            interval = _monitor_refresh_interval_ms(
+                visible=bool(window and window.isVisible()),
+                minimized=bool(window and window.isMinimized()),
+                active=bool(window and window.isActiveWindow()),
+            )
+            if self._timer.interval() != interval:
+                self._timer.setInterval(interval)
+
+        def showEvent(self, event):  # noqa: N802 (Qt signature)
+            super().showEvent(event)
+            QTimer.singleShot(0, self._sync_refresh_timer)
+
+        def hideEvent(self, event):  # noqa: N802 (Qt signature)
+            super().hideEvent(event)
+            QTimer.singleShot(0, self._sync_refresh_timer)
+
+        def changeEvent(self, event):  # noqa: N802 (Qt signature)
+            super().changeEvent(event)
+            if event.type() in (QEvent.WindowStateChange, QEvent.ActivationChange):
+                QTimer.singleShot(0, self._sync_refresh_timer)
 
         # ── Status tab ───────────────────────────────────────────────────────
         def _status_tab(self):
@@ -224,21 +254,26 @@ def build_status_widget(component: str, title: str | None = None):
             ts = st.get("ts_iso") or ""
             if ts:
                 line = f"[{ts}] {hbst}"
-                cur = self._log.toPlainText().splitlines()[-1:] if self._log.toPlainText() else []
-                if cur != [line]:
+                if self._last_log_line != line:
                     self._log.append(line)
+                    self._last_log_line = line
             # modules list
-            self._modules.clear()
             if self.component == "scanner":
-                for s in st.get("sensors", []) or ["(sensor list pending)"]:
-                    self._modules.addItem(f"● {s}")
-                self._modules.addItem("— downstream: core modules act on this raw feed —")
+                modules = tuple(
+                    [f"● {s}" for s in st.get("sensors", []) or ["(sensor list pending)"]]
+                    + ["— downstream: core modules act on this raw feed —"]
+                )
             elif self.component == "watchdog":
-                for s in st.get("supervised", []) or ["(none yet)"]:
-                    self._modules.addItem(f"● keeps alive: {s}")
+                modules = tuple(
+                    f"● keeps alive: {s}"
+                    for s in st.get("supervised", []) or ["(none yet)"]
+                )
             else:
-                for s in st.get("supervised", []):
-                    self._modules.addItem(f"● {s}")
+                modules = tuple(f"● {s}" for s in st.get("supervised", []))
+            if modules != self._last_modules:
+                self._modules.clear()
+                self._modules.addItems(list(modules))
+                self._last_modules = modules
 
     return MonitorWidget()
 

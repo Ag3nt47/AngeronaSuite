@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import threading
 import time
 from pathlib import Path
@@ -56,9 +57,93 @@ def _same_path(a: Path, b: Path) -> bool:
         return str(a).rstrip("\\/").lower() == str(b).rstrip("\\/").lower()
 
 
+def _is_link_or_reparse(path: Path) -> bool:
+    """Inspect *path* without following it.
+
+    Windows junctions are not consistently reported by ``Path.is_symlink``;
+    the reparse attribute is the authoritative signal there.
+    """
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    attributes = getattr(info, "st_file_attributes", 0)
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISLNK(info.st_mode) or bool(attributes & reparse)
+
+
+def _existing_path_has_reparse(path: Path) -> bool:
+    """Return True when any existing component redirects path traversal."""
+    current = Path(os.path.abspath(path))
+    while True:
+        if os.path.lexists(current) and _is_link_or_reparse(current):
+            return True
+        parent = current.parent
+        if parent == current:
+            return False
+        current = parent
+
+
+def _tree_has_reparse(root: Path) -> bool:
+    """Inspect a migration tree without following links or junctions."""
+    if _existing_path_has_reparse(root):
+        return True
+    try:
+        root_info = root.lstat()
+    except OSError:
+        return True
+    if stat.S_ISREG(root_info.st_mode):
+        return False
+    if not stat.S_ISDIR(root_info.st_mode):
+        return True
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
+            # An unreadable source is unsafe to move or delete while elevated.
+            return True
+        for entry in entries:
+            try:
+                info = entry.lstat()
+            except OSError:
+                return True
+            if _is_link_or_reparse(entry):
+                return True
+            if stat.S_ISDIR(info.st_mode):
+                pending.append(entry)
+    return False
+
+
+def _roots_overlap(source: Path, dest: Path) -> bool:
+    """Reject self/ancestor moves before ``shutil.move`` can recurse."""
+    try:
+        source_resolved = source.resolve(strict=False)
+        dest_resolved = dest.resolve(strict=False)
+        return (
+            source_resolved == dest_resolved
+            or source_resolved in dest_resolved.parents
+            or dest_resolved in source_resolved.parents
+        )
+    except (OSError, RuntimeError):
+        return True
+
+
+def _migration_safety_error(source: Path, dest: Path) -> str | None:
+    if _roots_overlap(source, dest):
+        return "source and destination overlap"
+    if _existing_path_has_reparse(dest):
+        return "destination traverses a link or reparse point"
+    if _tree_has_reparse(source):
+        return "source contains or traverses a link, reparse point, or unreadable entry"
+    return None
+
+
 def find_stray(source: Path, dest: Path) -> bool:
     """True if `source` exists, differs from `dest`, and actually holds data."""
-    if not source.exists() or not source.is_dir():
+    if (not source.exists() or not source.is_dir()
+            or _is_link_or_reparse(source)):
         return False
     if _same_path(source, dest):
         return False
@@ -72,11 +157,15 @@ def _collision_safe_dest(dest_dir: Path, name: str) -> Path:
     """Return a destination path under dest_dir that won't clobber an existing
     entry — appends a timestamp suffix if `name` already exists."""
     target = dest_dir / name
-    if not target.exists():
+    if not os.path.lexists(target):
         return target
     stamp = time.strftime("%Y%m%d-%H%M%S")
     stem, suffix = os.path.splitext(name)
-    return dest_dir / f"{stem}.spilled-{stamp}{suffix}"
+    for serial in range(1, 10_000):
+        candidate = dest_dir / f"{stem}.spilled-{stamp}-{serial}{suffix}"
+        if not os.path.lexists(candidate):
+            return candidate
+    raise RuntimeError("could not allocate a collision-safe migration name")
 
 
 def migrate_stray(source: Path, dest: Path, dry_run: bool = False) -> dict:
@@ -84,6 +173,11 @@ def migrate_stray(source: Path, dest: Path, dry_run: bool = False) -> dict:
     report dict: {moved: [...], errors: [...], dry_run: bool}. Never overwrites."""
     report: dict = {"moved": [], "errors": [], "dry_run": dry_run,
                     "source": str(source), "dest": str(dest)}
+    if source.exists() and source.is_dir() and not _same_path(source, dest):
+        safety_error = _migration_safety_error(source, dest)
+        if safety_error:
+            report["errors"].append(f"unsafe migration refused: {safety_error}")
+            return report
     if not find_stray(source, dest):
         return report
     try:
@@ -92,6 +186,13 @@ def migrate_stray(source: Path, dest: Path, dry_run: bool = False) -> dict:
         report["errors"].append(f"cannot create dest {dest}: {exc}")
         return report
     for item in list(source.iterdir()):
+        # Recheck immediately before each move. This narrows the opportunity for
+        # an unprivileged writer to swap an item after the initial tree scan.
+        if _tree_has_reparse(item):
+            report["errors"].append(
+                f"{item}: unsafe item appeared during migration; left in place"
+            )
+            continue
         target = _collision_safe_dest(dest, item.name)
         try:
             if not dry_run:
@@ -144,6 +245,9 @@ class StorageHygieneModule(BaseModule):
             return {"ok": True, "purged": False, "note": "nothing to purge"}
         if not confirm:
             return {"ok": False, "error": "purge requires confirm=True (operator confirmation)"}
+        safety_error = _migration_safety_error(source, dest)
+        if safety_error:
+            return {"ok": False, "error": f"unsafe purge refused: {safety_error}"}
         try:
             shutil.rmtree(source)
             self.emit(f"Storage hygiene: operator-confirmed purge of stray C: data at {source}.",

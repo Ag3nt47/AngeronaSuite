@@ -3,8 +3,7 @@
 :: Run from the AngeronaSuite/frz/ directory or the repo root.
 ::
 :: Prerequisites:
-::   go install golang.org/x/sys/windows@latest
-::   (Go 1.21+ required)
+::   Go 1.25+ (the exact x/sys dependency is pinned by go.mod/go.sum)
 
 setlocal
 
@@ -15,15 +14,18 @@ if errorlevel 1 (
 )
 
 cd /d "%~dp0"
-echo [FRZ] Fetching dependencies...
-go get golang.org/x/sys/windows
+set "GOWORK=off"
+echo [FRZ] Downloading the checksum-pinned module graph...
+go mod download
+if errorlevel 1 goto :err
+go mod verify
 if errorlevel 1 goto :err
 
-echo [FRZ] Compiling frz_watchdog.exe ...
-go build -ldflags="-s -w" -o ..\frz_watchdog.exe frz_watchdog.go
+echo [FRZ] Compiling authenticated frz_watchdog_v2.exe ...
+go build -mod=readonly -trimpath -buildvcs=false -ldflags="-s -w" -o frz_watchdog_v2.exe frz_watchdog.go
 if errorlevel 1 goto :err
 
-echo [FRZ] Build successful: AngeronaSuite\frz_watchdog.exe
+echo [FRZ] Build successful: AngeronaSuite\frz\frz_watchdog_v2.exe
 exit /b 0
 
 :err

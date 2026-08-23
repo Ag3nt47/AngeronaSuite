@@ -101,6 +101,8 @@ def test_parallel_overflow_flood_is_batched_nonblocking_and_lossless() -> None:
     release_worker = threading.Event()
     primary: list[Event] = []
     dlq: list[Event] = []
+    dlq_batch_sizes: list[int] = []
+    synchronous_calls: list[str] = []
 
     class FloodRecorder:
         def __init__(self) -> None:
@@ -115,12 +117,14 @@ def test_parallel_overflow_flood_is_batched_nonblocking_and_lossless() -> None:
 
         def _route_batch_to_dlq(self, events):
             batch = list(events)
+            dlq_batch_sizes.append(len(batch))
             dlq.extend(batch)
             return len(batch)
 
         def _route_to_dlq(self, event):
             # Model the per-event lock/open/write cost that caused the original
             # publisher stall. The batched lane must carry almost all traffic.
+            synchronous_calls.append(event.message)
             time.sleep(0.0005)
             dlq.append(event)
             return True
@@ -144,7 +148,6 @@ def test_parallel_overflow_flood_is_batched_nonblocking_and_lossless() -> None:
                 Event("flood", f"{publisher}:{sequence}", Severity.HIGH)
             )
 
-    started = time.perf_counter()
     threads = [
         threading.Thread(target=publish, args=(publisher,))
         for publisher in range(publisher_count)
@@ -152,23 +155,28 @@ def test_parallel_overflow_flood_is_batched_nonblocking_and_lossless() -> None:
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join()
-    publisher_elapsed = time.perf_counter() - started
-
-    # The old synchronous append path took about 27 seconds for this 40k-event
-    # shape on the Windows test host. Keep a generous CI gate while still
-    # preventing a regression back to per-event publisher I/O.
-    assert publisher_elapsed < 5.0
+        thread.join(30.0)
+    assert not any(thread.is_alive() for thread in threads)
     release_worker.set()
     assert async_recorder.stop(10.0)
 
     metrics = async_recorder.metrics()
+    overflow_count = publisher_count * per_publisher
     assert len(primary) == 2
-    assert len(dlq) == publisher_count * per_publisher
+    assert len(dlq) == overflow_count
     assert metrics.overflow_queue_depth == 0
     assert metrics.overflow_queue_capacity == 4096
     assert metrics.overflow_queued + metrics.overflow_synchronous == len(dlq)
     assert metrics.overflow_queued > metrics.overflow_synchronous
+    # Prove the performance property directly instead of comparing wall-clock
+    # time across idle and loaded Windows hosts. At least 95% of publishers must
+    # avoid per-event durable I/O, and the overflow worker must aggregate many
+    # events per write rather than merely moving the same N+1 pattern off-thread.
+    assert metrics.overflow_synchronous == len(synchronous_calls)
+    assert metrics.overflow_synchronous <= overflow_count // 20
+    assert sum(dlq_batch_sizes) == metrics.overflow_queued
+    assert len(dlq_batch_sizes) < max(2, metrics.overflow_queued // 8)
+    assert max(dlq_batch_sizes, default=0) > 1
     assert metrics.dlq_failures == 0
     assert all(authority.verify(event) for event in dlq)
 

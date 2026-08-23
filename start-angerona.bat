@@ -6,6 +6,8 @@ REM  (downloads PySide6, ~1-2 min). Every run after: just launches the GUI.
 REM
 REM  Finds a REAL Python even when the Microsoft Store "python.exe" stub is on
 REM  PATH (the #1 cause of "Python was not found" on a fresh Windows machine).
+REM  Standalone guarantee: this launcher starts Angerona components only.  The
+REM  optional authenticated JARVIS adapter is passive and never launches JARVIS.
 REM ============================================================================
 
 REM cmd.exe supplies __APPDIR__ from its own loaded image and ignores an
@@ -59,6 +61,7 @@ set "ANGERONA_FLEET_SERVICE_KEY="
 set "ANGERONA_BRIDGE_KEY="
 set "ANGERONA_MCP_TOKEN="
 set "ANGERONA_GUARD_TOKEN="
+set "ANGERONA_JARVIS_CONTROL_TOKEN="
 set "ANGERONA_HOME="
 set "ANGERONA_DATA_DRIVE="
 set "ANGERONA_CORE_CMD="
@@ -90,6 +93,7 @@ if /i "%~1"=="--bootstrap-selftest" (
     if defined PYTHONPATH exit /b 1
     if defined ANGERONA_CORE_CMD exit /b 1
     if defined ANGERONA_FLEET_SERVICE_KEY exit /b 1
+    if defined ANGERONA_JARVIS_CONTROL_TOKEN exit /b 1
     if defined OPENAI_API_KEY exit /b 1
     echo ANGERONA_BOOTSTRAP_SELFTEST_OK
     exit /b 0
@@ -162,6 +166,7 @@ if not defined PYCMD (
 )
 echo [*] Using Python: %PYCMD%
 %PYCMD% -m venv venv || (echo [!] venv creation failed. & pause & exit /b 1)
+"venv\Scripts\python.exe" -m pip install --isolated --only-binary :all: --require-hashes --no-deps -r requirements-bootstrap-pip.txt || (echo [!] Verified pip bootstrap failed. & pause & exit /b 1)
 "venv\Scripts\python.exe" -m pip install --isolated --only-binary :all: --require-hashes --no-deps -r requirements-release-hashed.txt || (echo [!] Hash-locked dependency install failed. & pause & exit /b 1)
 "venv\Scripts\python.exe" -m pip install --isolated --no-build-isolation --no-deps -e . || (echo [!] Local Angerona install failed. & pause & exit /b 1)
 "venv\Scripts\python.exe" "tools\build_srt_compat_wheel.py" --out "%TEMP%\wheels" || (echo [!] Speech compatibility wheel build failed. & pause & exit /b 1)
@@ -173,6 +178,27 @@ echo [*] Installing the verified offline speech model to the D-drive data folder
 REM Fail visibly before using pythonw, which intentionally has no console output.
 title Angerona launcher - checking application
 echo [3/4] Checking the application and its dependencies...
+REM Never trust existence alone: an older/developer venv can use an ABI that is
+REM outside the reviewed Windows wheel lock.  Keep that environment untouched
+REM and fail visibly instead of launching an unsupported Python/Qt combination.
+"venv\Scripts\python.exe" -c "import sys,sysconfig; raise SystemExit(0 if sys.version_info[:2] == (3, 12) and sysconfig.get_platform() == 'win-amd64' else 1)" >nul 2>&1
+if errorlevel 1 (
+    echo [!] This virtual environment is not the reviewed CPython 3.12 x64 build.
+    echo     Angerona did not modify or delete it.
+    echo     Source checkout repair: double-click Repair-Angerona-Python.bat.
+    echo     It asks first, preserves the old venv, and builds the reviewed one.
+    echo     Packaged release repair: double-click Install-Angerona-Release.bat.
+    pause
+    exit /b 1
+)
+"venv\Scripts\python.exe" -c "import importlib.metadata as m; raise SystemExit(0 if m.version('pip') == '26.2.1' else 1)" >nul 2>&1
+if errorlevel 1 (
+    echo [!] This environment does not contain the reviewed pip 26.2.1 build.
+    echo     Double-click Repair-Angerona-Python.bat to upgrade it through the
+    echo     exact SHA-256-verified wheel before Angerona starts.
+    pause
+    exit /b 1
+)
 set "ANGERONA_PREFLIGHT_LOG=%ANGERONA_DATA%\logs\launcher-preflight.log"
 "venv\Scripts\python.exe" "tools\source_trust_preflight.py" > "%ANGERONA_PREFLIGHT_LOG%" 2>&1
 if errorlevel 1 (
@@ -208,12 +234,12 @@ if defined ANGERONA_WATCHDOG_SIGNED (
     set "ANGERONA_EXTERNAL_WATCHDOG=1"
     for /f %%H in ('"%SAFE_SYSTEM32%certutil.exe" -hashfile "venv\Scripts\pythonw.exe" SHA256 ^| "%SAFE_SYSTEM32%findstr.exe" /r "^[0-9a-f]*$"') do set "ANGERONA_AGENT_SHA256=%%H"
     echo [*] Using signed watchdog as resilience parent.
-    start "" "%ANGERONA_WATCHDOG%" "venv\Scripts\pythonw.exe" -m angerona
+    start "" "%ANGERONA_WATCHDOG%" "venv\Scripts\pythonw.exe" -m angerona --chill
 ) else (
     REM Keep observing the hidden bootstrap through its high-risk initialization
     REM window. The old 1.5-second check could close this launcher just before a
     REM delayed Qt/storage failure, leaving no dashboard and no visible error.
-    "%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "$p=Start-Process -FilePath $env:ANGERONA_PYTHON -ArgumentList @('-m','angerona') -WorkingDirectory $env:ANGERONA_INSTALL_ROOT -WindowStyle Hidden -RedirectStandardOutput $env:ANGERONA_STDOUT_LOG -RedirectStandardError $env:ANGERONA_STDERR_LOG -PassThru; $deadline=[DateTime]::UtcNow.AddSeconds(12); do {Start-Sleep -Milliseconds 250; if ($p.HasExited) {exit 1}} while ([DateTime]::UtcNow -lt $deadline); exit 0"
+    "%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "$p=Start-Process -FilePath $env:ANGERONA_PYTHON -ArgumentList @('-m','angerona','--chill') -WorkingDirectory $env:ANGERONA_INSTALL_ROOT -WindowStyle Hidden -RedirectStandardOutput $env:ANGERONA_STDOUT_LOG -RedirectStandardError $env:ANGERONA_STDERR_LOG -PassThru; $deadline=[DateTime]::UtcNow.AddSeconds(12); do {Start-Sleep -Milliseconds 250; if ($p.HasExited) {exit 1}} while ([DateTime]::UtcNow -lt $deadline); exit 0"
     if errorlevel 1 (
         echo [!] Angerona exited before its window opened.
         echo     Error log: %ANGERONA_STDERR_LOG%

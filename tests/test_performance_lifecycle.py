@@ -192,7 +192,9 @@ def test_resilience_sidecars_start_before_module_discovery(monkeypatch) -> None:
     monkeypatch.setattr(
         resilience,
         "start_resilience",
-        lambda _bus: trace.append("resilience") or object(),
+        lambda _bus, **kwargs: trace.append(
+            f"resilience-ui={kwargs.get('with_ui')}"
+        ) or object(),
     )
     monkeypatch.setattr(
         "angerona.resilience.shutdown_token.clear_standdown", lambda: None
@@ -200,7 +202,7 @@ def test_resilience_sidecars_start_before_module_discovery(monkeypatch) -> None:
 
     app._load_modules()
 
-    assert trace.index("resilience") < trace.index("discover")
+    assert trace.index("resilience-ui=False") < trace.index("discover")
     assert trace.index("discover") < trace.index("modules-start")
 
 

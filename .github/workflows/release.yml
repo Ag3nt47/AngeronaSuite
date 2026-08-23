@@ -26,12 +26,27 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Resolve filesystem-safe artifact label
+        id: artifact_name
+        shell: pwsh
+        env:
+          ANGERONA_RELEASE_EVENT: ${{ github.event_name }}
+          ANGERONA_RELEASE_REF: ${{ github.ref_name }}
+        run: |
+          $artifactTag = python tools/release_artifact_tag.py
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($artifactTag)) {
+            throw 'Could not derive a safe release artifact label.'
+          }
+          "tag=$artifactTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Install audited dependencies
         shell: pwsh
         run: |
           # Every third-party wheel is both version-pinned and SHA-256-gated.
           # --no-deps is safe because the reviewed lock enumerates the complete
           # transitive Windows/Python 3.12 environment.
+          python -m pip install --require-hashes --no-deps `
+            -r requirements-bootstrap-pip.txt
           python -m pip install --require-hashes --no-deps `
             -r requirements-release-hashed.txt
           python -m pip install --no-build-isolation --no-deps .
@@ -127,6 +142,8 @@ jobs:
 
       - name: Build single-file Windows Setup
         shell: pwsh
+        env:
+          ANGERONA_ARTIFACT_TAG: ${{ steps.artifact_name.outputs.tag }}
         run: |
           # Do not trust whichever compiler happens to be on the mutable runner
           # image. Fetch the exact upstream release and bind it to the SHA-256
@@ -149,7 +166,7 @@ jobs:
             throw "Verified Inno Setup install failed with exit $($install.ExitCode)"
           }
 
-          $artifactTag = "${{ github.ref_name }}" -replace '[^A-Za-z0-9._-]', '-'
+          $artifactTag = $env:ANGERONA_ARTIFACT_TAG
           $appVersion = $artifactTag -replace '^v', ''
           if ($appVersion -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') {
             $appVersion = '0.0.0'
@@ -168,10 +185,12 @@ jobs:
 
       - name: Create SBOM, package, and checksum
         shell: pwsh
+        env:
+          ANGERONA_ARTIFACT_TAG: ${{ steps.artifact_name.outputs.tag }}
         run: |
           cyclonedx-py environment --output-format JSON --output-file Angerona-SBOM.json
-          $zip = "Angerona-${{ github.ref_name }}-win64.zip"
-          $setup = "Angerona-${{ github.ref_name }}-win64-setup.exe"
+          $zip = "Angerona-$env:ANGERONA_ARTIFACT_TAG-win64.zip"
+          $setup = "Angerona-$env:ANGERONA_ARTIFACT_TAG-win64-setup.exe"
           Compress-Archive -Path dist/Angerona/* -DestinationPath $zip
           (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower() + "  " + $zip |
             Set-Content -Encoding ascii "$zip.sha256"
@@ -184,10 +203,10 @@ jobs:
           name: angerona-release-assets
           if-no-files-found: error
           path: |
-            Angerona-${{ github.ref_name }}-win64-setup.exe
-            Angerona-${{ github.ref_name }}-win64-setup.exe.sha256
-            Angerona-${{ github.ref_name }}-win64.zip
-            Angerona-${{ github.ref_name }}-win64.zip.sha256
+            Angerona-${{ steps.artifact_name.outputs.tag }}-win64-setup.exe
+            Angerona-${{ steps.artifact_name.outputs.tag }}-win64-setup.exe.sha256
+            Angerona-${{ steps.artifact_name.outputs.tag }}-win64.zip
+            Angerona-${{ steps.artifact_name.outputs.tag }}-win64.zip.sha256
             Angerona-SBOM.json
 
   build-posix:
@@ -213,6 +232,18 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      - name: Resolve filesystem-safe artifact label
+        id: artifact_name
+        shell: bash
+        env:
+          ANGERONA_RELEASE_EVENT: ${{ github.event_name }}
+          ANGERONA_RELEASE_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          artifact_tag="$(python tools/release_artifact_tag.py)"
+          test -n "$artifact_tag"
+          printf 'tag=%s\n' "$artifact_tag" >> "$GITHUB_OUTPUT"
 
       - name: Download and verify locked platform wheels
         shell: bash
@@ -288,7 +319,7 @@ jobs:
         env:
           ARTIFACT: ${{ matrix.artifact }}
           PLATFORM: ${{ matrix.platform }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ steps.artifact_name.outputs.tag }}
         run: |
           set -euo pipefail
           listing=$(pyi-archive_viewer --recursive \
@@ -319,7 +350,7 @@ jobs:
           name: angerona-${{ matrix.artifact }}
           if-no-files-found: error
           path: |
-            Angerona-${{ github.ref_name }}-${{ matrix.artifact }}.*
+            Angerona-${{ steps.artifact_name.outputs.tag }}-${{ matrix.artifact }}.*
             Angerona-SBOM-${{ matrix.artifact }}.json
             Angerona-dependencies-${{ matrix.artifact }}.txt
 

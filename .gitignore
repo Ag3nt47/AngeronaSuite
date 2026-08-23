@@ -42,6 +42,7 @@ __pycache__/
 .eggs/
 .venv/
 venv/
+/venv.incompatible.*/
 env/
 pip-wheel-metadata/
 .pytest_cache/
@@ -54,6 +55,10 @@ htmlcov/
 # ── Go (compiled hypervisor watchdog — build artifact) ──────────────────────
 frz/angerona_watchdog.exe
 frz/frz_watchdog.exe
+frz/frz_watchdog_v2.exe
+frz/*.dll
+frz/*.obj
+frz/*.pdb
 frz/hypervisor/*.exe
 frz/hypervisor/go.sum
 *.test
@@ -109,6 +114,7 @@ selfcheck_report*.txt
 /analysis/release-evidence-local.json
 /analysis/soak-evidence-local-*.json
 /LibreOffice_*_Machine_X64_msi_en-US/
+/.tmp/repair-wheels/
 
 # Verified, development-only GitHub tools. The reproducible lock manifest and
 # bootstrap scripts are committed; downloaded binaries/environments are not.

@@ -19,6 +19,7 @@ from angerona.core.security_scan_center import (
     ScanProgress,
     SecurityScanCenter,
 )
+from angerona.core.usb_policy import UsbApprovalPolicy
 
 
 class _FakeCompiler:
@@ -158,6 +159,65 @@ def test_scan_rejects_remote_missing_and_link_roots(tmp_path: Path) -> None:
     except OSError:
         return
     assert center.scan_path(link).status == "rejected"
+
+
+def test_scan_and_defender_fail_closed_for_unapproved_removable_media(
+    tmp_path: Path,
+) -> None:
+    root, executable = _defender_fixture(tmp_path)
+    selected = tmp_path / "removable"
+    selected.mkdir()
+    (selected / "sample.txt").write_text("inert", encoding="utf-8")
+    decisions: list[Path] = []
+
+    def deny(target: Path) -> tuple[bool | None, str]:
+        decisions.append(target)
+        return False, "pending"
+
+    center = SecurityScanCenter(
+        platform_system="Windows",
+        trusted_defender_roots=(root,),
+        trusted_defender_executable=executable,
+        psutil_module=_NoRemoteMounts(),
+        yara_module=_FakeYara,
+        usb_authorizer=deny,
+    )
+
+    local = center.scan_path(selected)
+    defender = center.run_microsoft_defender_scan(selected, execute=True)
+
+    assert local.status == "rejected"
+    assert local.executed is False
+    assert defender.status == "rejected"
+    assert defender.executed is False
+    assert "not approved" in local.summary
+    assert len(decisions) == 2
+
+
+def test_scan_accepts_explicitly_trusted_removable_media(tmp_path: Path) -> None:
+    selected = tmp_path / "approved"
+    selected.mkdir()
+    (selected / "sample.txt").write_text("inert", encoding="utf-8")
+    center = _center(usb_authorizer=lambda _target: (True, "trusted"))
+
+    result = center.scan_path(selected)
+
+    assert result.status == "completed"
+    assert result.executed is True
+    assert result.metrics["files_scanned"] == 1
+
+
+def test_scan_center_uses_live_usb_policy_as_authoritative_gate(tmp_path: Path) -> None:
+    selected = tmp_path / "live-usb"
+    selected.mkdir()
+    (selected / "sample.txt").write_text("inert", encoding="utf-8")
+    policy = UsbApprovalPolicy(pin_loader=lambda: "246810")
+    approval = policy.request(selected)
+    center = _center()
+
+    assert center.scan_path(selected).status == "rejected"
+    assert policy.verify(approval.approval_id, "246810").approved
+    assert center.scan_path(selected).status == "completed"
 
 
 def test_scan_honors_file_budget_and_cancellation(
@@ -320,6 +380,65 @@ def test_defender_execution_uses_strict_argv_and_discards_output(tmp_path: Path)
     assert "configured Defender threat actions" in result.summary
     assert "Users" not in rendered
     assert "192.0.2.1" not in rendered
+
+
+def test_defender_live_process_is_cancellable_and_reaped(tmp_path: Path) -> None:
+    root, executable = _defender_fixture(tmp_path)
+    token = ScanCancellationToken()
+    launched = []
+    updates = []
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.returncode = None
+            self.terminated = False
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self.returncode = -15
+
+        def wait(self, timeout):
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    process = FakeProcess()
+
+    def process_factory(argv, **kwargs):
+        launched.append((argv, kwargs))
+        return process
+
+    def progress(update) -> None:
+        updates.append(update)
+        if "is active" in update.detail:
+            token.cancel()
+
+    center = SecurityScanCenter(
+        platform_system="Windows",
+        trusted_defender_roots=(root,),
+        trusted_defender_executable=executable,
+        defender_process_factory=process_factory,
+    )
+    result = center.run_microsoft_defender_scan(
+        execute=True,
+        quick=True,
+        cancellation=token,
+        progress=progress,
+    )
+
+    assert result.status == "cancelled"
+    assert result.executed is True
+    assert result.metrics["child_stopped"] is True
+    assert result.metrics["live_cancellation"] is True
+    assert process.terminated is True
+    assert launched[0][1]["stdout"] is subprocess.DEVNULL
+    assert launched[0][1]["stderr"] is subprocess.DEVNULL
+    assert launched[0][1]["close_fds"] is True
+    assert any(update.total_limit == 0 for update in updates)
 
 
 def test_defender_refuses_untrusted_executable_and_cancelled_run(tmp_path: Path) -> None:

@@ -38,6 +38,7 @@ from angerona.core.url_policy import (
     read_bounded,
     safe_urlopen,
 )
+from angerona.core.ollama_lifecycle import effective_keep_alive
 
 # ── Prompt engineering ──────────────────────────────────────────────────────
 # Each system prompt fixes: persona, exact input shape, exact output shape
@@ -133,6 +134,9 @@ class FlightInstructor:
                 {"role": "user", "content": user},
             ],
             "stream": False,
+            "keep_alive": effective_keep_alive(
+                getattr(self.config, "ollama_keep_alive", "30m")
+            ),
         }).encode("utf-8")
         req = urllib.request.Request(local_service_url(self._host, "/api/chat"), data=payload,
                                      headers={"Content-Type": "application/json"})

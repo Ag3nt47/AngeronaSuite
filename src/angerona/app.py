@@ -19,9 +19,24 @@ from angerona.gui.main_window import MainWindow
 class AngeronaApp:
     """Owns the lifecycle of every long-lived service."""
 
-    def __init__(self, qt: QApplication) -> None:
+    def __init__(self, qt: QApplication, *, force_chill: bool = False) -> None:
         self.qt = qt
         self.config = Config.load()
+        # Native logon/launcher entry points pass --chill. This is a runtime
+        # safety profile, not a rewrite of the operator's saved manual-launch
+        # preference: a crash/restart during an unattended session therefore
+        # always comes back network-first and low-impact.
+        if force_chill:
+            self.config.eco_mode = True
+        # Publish Chill before any module can issue a background local-model
+        # request. The GUI controller later owns transitions and sequential wake.
+        import os
+        if getattr(self.config, "eco_mode", True):
+            os.environ["ANGERONA_CHILL_ACTIVE"] = "1"
+            setattr(self.config, "runtime_chill_active", True)
+        else:
+            os.environ.pop("ANGERONA_CHILL_ACTIVE", None)
+            setattr(self.config, "runtime_chill_active", False)
         self._startup_degradations: list[Event] = []
         self._startup_events_ready = False
         # Do not rewrite the highest-privilege Scheduled Task during ordinary
@@ -143,6 +158,31 @@ class AngeronaApp:
                     exc,
                 )
 
+        # Authenticated JARVIS control is deliberately separate from read-only
+        # MCP. It exposes only confirmation-gated, local defensive scans.
+        self._jarvis_control: object | None = None
+        if getattr(self.config, "jarvis_control_enabled", False):
+            try:
+                from angerona.engines.jarvis_control_server import (
+                    AngeronaJarvisControlServer,
+                )
+                self._jarvis_control = AngeronaJarvisControlServer(
+                    self.manager, self.config
+                )
+                # Publish the bounded adapter immediately.  This keeps the
+                # standalone Angerona GUI independent: it never launches or
+                # activates JARVIS, but JARVIS can connect later if the user
+                # has opened it separately.  Module counts fill in as normal
+                # background discovery completes.
+                self._jarvis_control.start()
+            except Exception as exc:
+                self._jarvis_control = None
+                self._record_startup_degradation(
+                    "JARVIS Control Adapter",
+                    "the optional authenticated defensive control channel could not start",
+                    exc,
+                )
+
         self.window = MainWindow(
             self.bus, self.storage, self.manager, self.config,
             evidence_store=self.evidence_store,
@@ -225,6 +265,11 @@ class AngeronaApp:
         # has composited the first frame; a short delay guarantees a clean, centered
         # first paint so the app *feels* up immediately.
         QTimer.singleShot(120, self._deferred_start)
+        # The saved startup choice is explicit operator consent. Repair a
+        # missing/stale native entry off the GUI thread so upgrades and moved
+        # source checkouts still start quietly at sign-in.
+        if getattr(self.config, "autostart_enabled", True):
+            QTimer.singleShot(1500, self._ensure_autostart_async)
         # The resilience supervisor owns Black Box when enabled. Launching it here
         # as well raced the supervisor and created two 150 MB Qt processes. Retain
         # the direct launcher only for deliberately resilience-free operation.
@@ -233,6 +278,25 @@ class AngeronaApp:
             "0", "false", "no", "off"
         ):
             QTimer.singleShot(800, self._launch_blackbox)
+
+    def _ensure_autostart_async(self) -> None:
+        import threading
+
+        def _repair() -> None:
+            try:
+                from angerona.core.autostart import enable_autostart, is_enabled
+                if is_enabled() is not True:
+                    enable_autostart()
+            except Exception:
+                # Settings exposes the detected state and manual retry. Startup
+                # registration failure must never take down protection.
+                pass
+
+        threading.Thread(
+            target=_repair,
+            name="AutostartReconciler",
+            daemon=True,
+        ).start()
 
     # ── Black Box diagnostic recorder (decoupled sidecar) ────────────────────
     def _launch_blackbox(self, force: bool = False) -> None:
@@ -400,7 +464,21 @@ class AngeronaApp:
                 from angerona.resilience.manager import start_resilience
                 from angerona.resilience import shutdown_token as _tok
                 _tok.clear_standdown()
-                self._resilience = start_resilience(self.bus)
+                # In Chill the real watchdog and scanner still run, but their
+                # two standalone Qt status windows are redundant: the orb and
+                # Console already expose the same live status on demand. Not
+                # spawning those idle windows saves two full Qt processes and
+                # hundreds of MB while preserving supervision and telemetry.
+                self._resilience = start_resilience(
+                    self.bus,
+                    with_ui=not bool(
+                        getattr(
+                            self.config,
+                            "runtime_chill_active",
+                            getattr(self.config, "eco_mode", True),
+                        )
+                    ),
+                )
             except Exception as exc:
                 self._resilience = None
                 self._record_startup_degradation(
@@ -411,13 +489,13 @@ class AngeronaApp:
                 )
 
         self.manager.discover()        # find built-in + drop-in modules
-        # In startup Eco Mode, do not start heavy scanners merely to stop them a
+        # In startup Chill Mode, do not start deep scanners merely to stop them a
         # moment later. Their first scans were racing at boot and starving Qt.
         deferred = set()
         if getattr(self.config, "eco_mode", True):
             deferred.update(getattr(self.window, "_ECO_HEAVY_MODULES", ()))
         self.manager.start_enabled(deferred_names=deferred)
-        # If the user's saved preference is Eco Mode, pause the heavy scanners now
+        # Establish the saved Chill policy now (sentinel cadence + model release)
         # (hops to the GUI thread via a queued signal — no widget access here).
         try:
             self.window.startup_eco_requested.emit()
@@ -704,6 +782,11 @@ class AngeronaApp:
         if self._mcp is not None:
             try:
                 self._mcp.stop()
+            except Exception:
+                pass
+        if getattr(self, "_jarvis_control", None) is not None:
+            try:
+                self._jarvis_control.stop()
             except Exception:
                 pass
         fleet_drained = True

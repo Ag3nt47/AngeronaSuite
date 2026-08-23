@@ -26,6 +26,7 @@ from angerona.core.url_policy import (
     safe_urlopen,
 )
 from angerona.engines import ai_guardrail as g
+from angerona.core.ollama_lifecycle import effective_keep_alive
 
 
 _GENERATION_PATHS = frozenset({"/api/generate", "/api/chat"})
@@ -133,6 +134,11 @@ def call(
     forwards with the session token, and redacts the response. Best-effort; returns
     an {'error': ...} dict rather than raising."""
     t0 = time.time()
+    # Chill keeps ARIA available on demand but never leaves the model pinned
+    # after the response. Apply this at the shared transport choke point so
+    # callers cannot accidentally defeat the all-day low-resource profile.
+    payload = dict(payload)
+    payload["keep_alive"] = effective_keep_alive(payload.get("keep_alive", "30m"))
     plen = g._prompt_len_of(payload)
     decision = guard_payload(payload)
     if not decision["allow"]:
@@ -183,6 +189,8 @@ def call_stream(payload: dict, on_token, path: str = "/api/generate",
     split across network chunks from flashing in the UI. Best-effort; returns an
     error object on failure."""
     t0 = time.time()
+    payload = dict(payload)
+    payload["keep_alive"] = effective_keep_alive(payload.get("keep_alive", "30m"))
     plen = g._prompt_len_of(payload)
     decision = guard_payload(payload)
     if not decision["allow"]:

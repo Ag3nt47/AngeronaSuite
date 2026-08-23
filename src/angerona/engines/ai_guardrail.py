@@ -34,6 +34,8 @@ import secrets
 import time
 from pathlib import Path
 
+from angerona.core.ollama_lifecycle import effective_keep_alive
+
 # ── configuration ────────────────────────────────────────────────────────────
 OLLAMA_UPSTREAM = "http://localhost:11434"
 PROXY_HOST = "127.0.0.1"
@@ -182,6 +184,10 @@ def process_request(payload: dict) -> dict:
     """Apply input guardrails to an Ollama request payload in place-ish.
     Returns {allow, status, verdict, payload}. Used by the proxy AND tests."""
     verdict = {"reasons": [], "risk": "Low"}
+    payload = dict(payload)
+    payload["keep_alive"] = effective_keep_alive(
+        payload.get("keep_alive", "30m")
+    )
     # Wrap/patch the system prompt (both /api/generate 'system' and /api/chat msgs).
     if "messages" in payload:
         msgs = payload.get("messages") or []

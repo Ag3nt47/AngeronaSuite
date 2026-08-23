@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
+
+from tools.release_artifact_tag import resolve_artifact_tag
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,15 +29,19 @@ def test_release_workflow_publishes_and_attests_setup_executable() -> None:
     parsed = yaml.safe_load(text)
 
     assert isinstance(parsed, dict)
-    setup = "Angerona-${{ github.ref_name }}-win64-setup.exe"
+    setup = "Angerona-${{ steps.artifact_name.outputs.tag }}-win64-setup.exe"
     assert "innosetup-6.7.1.exe" in text
     assert "Get-FileHash -Algorithm SHA256 $innoInstaller" in text
     assert "Join-Path $innoDir 'ISCC.exe'" in text
     assert "Get-Command ISCC.exe" not in text
-    assert text.count(setup) >= 4
+    assert text.count(setup) >= 2
     assert f"{setup}.sha256" in text
+    assert 'ANGERONA_ARTIFACT_TAG: ${{ steps.artifact_name.outputs.tag }}' in text
+    assert '$setup = "Angerona-$env:ANGERONA_ARTIFACT_TAG-win64-setup.exe"' in text
     assert "Attest release archive" in text
     assert "Attest software bill of materials" in text
+    assert text.count("id: artifact_name") == 2
+    assert "tools/release_artifact_tag.py" in text
 
 
 def test_release_workflow_builds_only_wheel_locked_posix_architectures() -> None:
@@ -50,8 +57,29 @@ def test_release_workflow_builds_only_wheel_locked_posix_architectures() -> None
     assert "macos-15-intel" not in text
     assert "macos-x86_64" not in text
     assert "tests/test_linux_platform_contract.py" not in text  # full suite is the gate
-    assert "Angerona-${{ github.ref_name }}-linux-x86_64.tar.gz" in text
-    assert "Angerona-${{ github.ref_name }}-macos-arm64.zip" in text
+    assert "Angerona-${{ steps.artifact_name.outputs.tag }}-${{ matrix.artifact }}.*" in text
+
+
+def test_manual_release_branch_names_are_safe_deterministic_components() -> None:
+    first = resolve_artifact_tag("feature/operator/ui", "workflow_dispatch")
+    second = resolve_artifact_tag("feature/operator/ui", "workflow_dispatch")
+    collision = resolve_artifact_tag("feature-operator-ui", "workflow_dispatch")
+
+    assert first == second
+    assert first != collision
+    assert "/" not in first and "\\" not in first
+    assert len(first) <= 80
+    assert resolve_artifact_tag("main", "workflow_dispatch") == "main"
+    # Tag-triggered releases preserve the published tag exactly.
+    assert resolve_artifact_tag("v1.10.0", "push") == "v1.10.0"
+    with pytest.raises(ValueError, match="unsupported release event"):
+        resolve_artifact_tag("feature/operator/ui", "pull_request")
+
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    build_jobs = workflow.split("  publish-release:", 1)[0]
+    assert "Angerona-${{ github.ref_name }}" not in build_jobs
 
 
 def test_posix_installer_is_local_user_scoped_and_has_safe_uninstall() -> None:

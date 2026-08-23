@@ -306,6 +306,23 @@ Post-remediation Windows/venv QA completed. Full evidence is in
 - Full evidence: `round3/performance_summary.md`. The active combined YARA
   runtime output was not touched.
 
+### 2026-08-22 Chill live-path addendum
+
+- **P12 APPLIED:** Evolution's EventBus-driven worker now parks on its stop token
+  instead of waking every five seconds to do no work (**17,280 idle wakeups/day
+  removed**).
+- **P13 APPLIED:** Active Deception retains its five-second canary cadence but
+  mtime/file-identity caches the attack feed, reducing an unchanged resident
+  feed from up to **17,280 opens/day to one plus actual changes**.
+- **P14 APPLIED:** quiet Chill applies reversible 6–8x floors only to AAR/patch
+  staging, in-memory health accounting, and storage hygiene. This removes about
+  **57,684 auxiliary cycle wakeups/day**. Network Monitor, C2 Beacon, WFP,
+  ETW/Sysmon, Defender/AMSI, USB, watchdog, and SOAR stay live and unthrottled.
+- Gates: compile and Ruff PASS; focused idle/Chill tests **10/10**; wider
+  lifecycle/Evolution/performance regressions **47/47**; edited module
+  self-tests PASS. Behavioral-learning transaction batching and a longer
+  connection snapshot TTL remain proposed because equivalence is not proven.
+
 ## Round 3 — Visionary
 
 Researched current MITRE, NIST, and OpenTelemetry primary/authoritative sources
@@ -1095,3 +1112,97 @@ boundaries, and primary-source citations are in
 - Updated authoritative evidence: **839 passed / 3 intentional platform skips /
   0 failed**; discovery **66 modules / 0 errors**; selfcheck **26/26**;
   compileall, Ruff, source-trust, workflow-policy, and diff checks pass.
+
+## Round 6 — Bug Test
+
+- Chill/threat/drill regression: **296/296 compiled**, **66 modules / 0 discovery errors**, module self-tests **51 pass / 16 expected skips / 0 unexpected failures**, selfcheck **26/26**, and full pytest **902 passed / 3 intentional skips**.
+- Fixed revision-safe active-threat wake-up, Chill Ollama leases, cancelled sequential-wake state recovery, strict Windows autostart XML validation, and active-only Daily Briefing posture semantics.
+- Headless Chill orchestration remains reported for a GUI-neutral controller. Full evidence: `analysis/loop/round6/bugtest_results.md`.
+
+## Round 7 — Bug Test
+
+- Release QA compiled **297/297** package files, imported **125/125** core
+  modules, discovered **66 modules / 0 errors / 0 duplicate codes**, passed core
+  self-tests **18/18**, module self-tests **51 pass / 16 expected skips / 0
+  unexpected failures**, and selfcheck **26/26**.
+- The final aggregate passed **1026 tests / 3 intentional platform skips / 0
+  failures**. The added launcher/repair/autostart regressions pass, and the
+  async lifecycle file passes **5/5** with its timing assertion robust to cold
+  Qt initialization. Ruff, Bandit Medium/High, dependency audit, PowerShell parsing,
+  privacy scan, launcher bootstrap, and repeated async Qt lifecycle gates pass.
+- Fixed four release regressions: an existing unsupported Python 3.14 venv could
+  bypass the reviewed 3.12 launch boundary; Full Setup omitted the deception
+  privacy switch; a transport source guard mistook a dictionary lookup for an
+  HTTP request; and the push helper could push after a failed commit. The new
+  confirmed source repair preserves the old venv and installs only the
+  Authenticode-verified 3.12/hash-locked environment.
+- At the Round 7 checkpoint, protected autostart still targeted the unrepaired
+  3.14 venv and was not trusted. The later Cycle 22 operational check completed
+  repair and live-reconciled it to CPython 3.12 `pythonw -m angerona --chill`.
+  Full Round 7 evidence:
+  `analysis/loop/round7/bugtest_results.md`.
+- Python 3.12 follow-up fixed an async-recorder overflow lock convoy. The
+  bounded C-backed queue preserves lossless synchronous fallback. Because a
+  fixed five-second cutoff still varied with the live host at 93% CPU, the
+  unchanged 40,000-event challenge now gates exact losslessness/bounds plus
+  at least 95% async routing and real batch aggregation instead of machine
+  speed. Loaded challenge passed **3/3**, async/priority suite **10/10**, and
+  Ruff passed.
+
+## Cycle 22 — Final convergence and documentation (2026-08-22)
+
+- The unattended runtime is now explicitly network-first: Chill/autostart parks
+  high-I/O and AI-heavy work, runs sparse maintenance sequentially, unloads the
+  local model while idle, and wakes the fuller path only for authenticated
+  active-threat evidence. Practice, exposure, and health events remain visible
+  but do not drive global Critical posture.
+- Live Chill profiling found presentation—not sensor polling—as the dominant
+  idle CPU source. Dashboard presentation now uses 5s active-Chill / 10s
+  inactive / 15s hidden cadences with elapsed-time-equivalent panel periods;
+  High/Critical evidence receives one coalesced immediate GUI wake. ARIA motion
+  fully stops in Chill/inactive/hidden, and minimized Watchdog/Scanner UI uses a
+  cached 10s refresh. Sensor and supervisor recovery cadence is unchanged.
+- Live Alerts, SOAR, Scan Center, and USB trust now form one bounded operator
+  workflow: direct queueing, authenticated review/execute controls, responsive
+  cancellable scans with honest Defender liveness, and protected PIN approval
+  bound to removable-volume identity.
+- Windows source state and default deception stay under canonical D:-drive data
+  helpers. Personal-folder deception is explicit opt-in. Migration and protected
+  stores reject link/junction, overlap, special-file, and unsafe-root cases.
+- Qt lifecycle guards and authenticated/replay-checked heartbeat v2 address the
+  observed close/reopen and watchdog authority failures. Process control still
+  requires verified process identity and existing restart budgets. FRZ now emits
+  the authenticated 32-byte v2 record instead of its legacy 16-byte raw map.
+- JARVIS remote-control authority is now SecureStore-only; inherited tokens are
+  scrubbed before elevation/runtime, and Setup provides masked enrollment and
+  regeneration. FRZ v2 uses a distinct binary identity and pinned Go module
+  graph. Go was unavailable, so native compilation remains external evidence.
+- Red-team closure is now exact and report-bound. A distinct Test Fix run must
+  prove positive detection, negative-control quiet, persisted detector evidence,
+  authenticated EventBus evidence, real SOAR response/cleanup, and signed
+  receipt; expiry or a later miss reopens the gap. No blanket 100% claim is made.
+- The enterprise comparison yielded a privacy-preserving case upgrade: typed
+  human-reviewed observables and bounded similar-case results use a derived-key
+  HMAC private index; sanitized exports contain only aggregates. Distributed
+  enterprise tenancy, HA, identity, and infrastructure remain external gates.
+- Release boundaries now reject an existing incompatible CPython 3.14
+  environment, provide a typed and rollback-preserving verified 3.12 repair, and
+  stop the Git push helper after staging/commit failures. Bootstrap pins the
+  reviewed pip 26.2.1 wheel by verified SHA-256 before dependencies and refuses
+  a version mismatch. Manual release branch names also map to deterministic,
+  path-safe artifact names without changing tag names. That repair completed on
+  this host, and protected
+  autostart was live-reconciled to the CPython 3.12 Chill entry. The validator
+  recognizes Task Scheduler's omitted `RunLevel` as the Limited default only for
+  the expected `InteractiveToken` principal; fresh-logon, clean-machine, and
+  sleep/resume acceptance remain external.
+- The F: backup helper now validates its fixed destination and repository root,
+  rejects reparses/junctions/path escapes, excludes secret/runtime/cache/model/
+  build state, and cleans stale private state before and after mirroring. Its
+  `--validate-only` mode is non-destructive; no real mirror ran during this gate.
+- Authoritative evidence: **1026 passed / 3 intentional platform skips / 0
+  failed**; **66 modules / 0 discovery errors / 0 duplicate codes**; selfcheck
+  **26/26**; core self-tests **18/18**; Ruff, Bandit Medium/High, and `pip-audit`
+  clean. The concise record is
+  `analysis/loop/cycle22/three_loop_summary.md`; canonical documentation is
+  README + both `llms.txt` copies + the consolidated Cycle 22 master manual.

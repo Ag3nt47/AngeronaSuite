@@ -39,6 +39,12 @@ SENSOR_PROC = 1
 
 SCHEMA = 1
 
+# Liveness is carried by the mmap heartbeat every scanner loop.  The JSON file
+# is human-facing diagnostics, so a slower heartbeat is sufficient; ping and
+# backpressure transitions still force an immediate update.
+STATUS_INTERVAL_S = 30.0
+PING_POLL_INTERVAL_S = 2.0
+
 
 _COMMAND_SECRET_PATTERNS = (
     re.compile(
@@ -111,45 +117,57 @@ class RawProcessSensor:
             import psutil
         except Exception:
             return []
-        current: dict[int, dict] = {}
-        processes: dict[int, object] = {}
-        for p in psutil.process_iter(["pid", "ppid", "name"], ad_value=None):
+        current: set[int] = set()
+        new_processes: dict[int, object] = {}
+        # Ask psutil for PID only on the recurring pass.  Parent/name/executable
+        # and command-line queries are necessary only for newly observed PIDs;
+        # fetching them for every long-lived process once per second was the
+        # scanner's dominant idle cost.
+        for p in psutil.process_iter(["pid"], ad_value=None):
             try:
-                current[p.info["pid"]] = p.info
-                processes[p.info["pid"]] = p
+                pid = int(p.info["pid"])
+                current.add(pid)
+                if self._seeded and pid not in self._known:
+                    new_processes[pid] = p
             except Exception:
                 continue
         frames: list[bytes] = []
         if self._seeded:
-            for pid in (set(current) - self._known):
-                info = current[pid]
-                parent = info.get("ppid")
-                parent_name = (
-                    (current.get(parent) or {}).get("name")
-                    if isinstance(parent, int)
-                    else ""
-                )
+            for pid, process in new_processes.items():
+                try:
+                    with process.oneshot():
+                        parent = process.ppid()
+                        name = process.name() or "unknown"
+                        parent_name = ""
+                        if isinstance(parent, int) and parent > 0:
+                            try:
+                                parent_name = psutil.Process(parent).name() or ""
+                            except Exception:
+                                pass
+                        evidence = _process_evidence(
+                            process,
+                            parent_name,
+                            psutil,
+                        )
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+                except Exception:
+                    continue
                 rec = {"type": "process_creation", "pid": pid,
                        "ppid": parent,
-                       "name": info.get("name") or "unknown",
+                       "name": name,
                        "ts": time.time()}
-                rec.update(
-                    _process_evidence(
-                        processes[pid],
-                        parent_name or "",
-                        psutil,
-                    )
-                )
+                rec.update(evidence)
                 frames.append(json.dumps(rec, separators=(",", ":")).encode("utf-8"))
         else:
             self._seeded = True     # first pass = baseline, don't flood
-        self._known = set(current)
+        self._known = current
         return frames
 
 
 class ScannerHost:
     def __init__(self, interval: float = 1.0, ring_name: str = "telemetry",
-                 token_raw: bytes = b""):
+                 token_raw: bytes | None = None):
         self.interval = interval
         self.ring = ipc_ring.RingWriter(ipc_ring.ring_path(ring_name))
         self.beat = hb.HeartbeatWriter(hb.COMPONENT_SCANNER if hasattr(hb, "COMPONENT_SCANNER")
@@ -159,8 +177,11 @@ class ScannerHost:
         self._dropped = 0
         self._stop = False
         self._last_status = 0.0
+        self._last_ping_poll = 0.0
+        self._last_ping = ""
+        self._last_backpressure = bool(self.ring.backpressure)
 
-    # ping: the core writes a nonce here; we echo it into status.json (pong).
+    # ping: the core writes a nonce here; we echo it into status_scanner.json.
     @staticmethod
     def _ping_path():
         return ipc_ring._data_dir() / "ipc" / "scanner.ping"
@@ -171,7 +192,9 @@ class ScannerHost:
         except Exception:
             return ""
 
-    def _write_status(self, ping: str = "") -> None:
+    def _write_status(self, ping: str | None = None) -> None:
+        if ping is None:
+            ping = self._last_ping
         diag.write_status("scanner", "running", {
             "events_forwarded": self._events, "dropped": self._dropped,
             "ring_backpressure": self.ring.backpressure,
@@ -182,8 +205,33 @@ class ScannerHost:
                         for s in self.sensors],
         })
 
+    def _maybe_write_status(self, now: float) -> bool:
+        """Write diagnostics periodically or immediately on meaningful change."""
+        ping_changed = False
+        if now - self._last_ping_poll >= PING_POLL_INTERVAL_S:
+            ping = self._read_ping()
+            self._last_ping_poll = now
+            if ping != self._last_ping:
+                self._last_ping = ping
+                ping_changed = True
+
+        backpressure = bool(self.ring.backpressure)
+        backpressure_changed = backpressure != self._last_backpressure
+        if backpressure_changed:
+            self._last_backpressure = backpressure
+
+        if (ping_changed or backpressure_changed
+                or now - self._last_status >= STATUS_INTERVAL_S):
+            self._write_status()
+            self._last_status = now
+            return True
+        return False
+
     def run(self) -> None:
+        self._last_ping = self._read_ping()
         self._write_status()
+        self._last_status = time.monotonic()
+        self._last_ping_poll = self._last_status
         while not self._stop:
             if tok.is_standdown_requested():
                 break                                   # graceful maintenance exit
@@ -198,10 +246,7 @@ class ScannerHost:
                     else:
                         self._dropped += 1
             self.beat.beat()
-            now = time.time()
-            if now - self._last_status >= 3.0:
-                self._write_status(self._read_ping())
-                self._last_status = now
+            self._maybe_write_status(time.monotonic())
             time.sleep(self.interval)                    # low, steady CPU
         self._shutdown()
 
@@ -224,9 +269,10 @@ def main(argv: list[str] | None = None) -> int:
     interval = float(os.environ.get("ANGERONA_SCANNER_INTERVAL", "1.0"))
     if argv and argv[0].replace(".", "", 1).isdigit():
         interval = float(argv[0])
-    token_hex = os.environ.get("ANGERONA_WATCHDOG_TOKEN", "")
-    token_raw = bytes.fromhex(token_hex) if token_hex else b""
-    host = ScannerHost(interval=interval, token_raw=token_raw)
+    # Internal component heartbeats use the ACL-protected per-install authority.
+    # ANGERONA_WATCHDOG_TOKEN belongs only to the compiled parent handshake and
+    # must not silently become a different supervisor trust root.
+    host = ScannerHost(interval=interval)
 
     # Themed window (matches Angerona's look) unless disabled or unavailable.
     # The sensor loop runs on a background thread so the window stays responsive
@@ -297,7 +343,7 @@ def self_test() -> tuple[bool, str]:
 
         reader = ipc_ring.RingReader(ipc_ring.ring_path("telemetry"))
         got = reader.read_batch()
-        status = json.loads((diag.diag_dir() / "status.json").read_text(encoding="utf-8"))
+        status = json.loads((diag.diag_dir() / "status_scanner.json").read_text(encoding="utf-8"))
 
         emitted_ok = len(frames) >= 2 and len(got) >= 2
         decode_ok = all(json.loads(g["payload"]).get("type") == "process_creation" for g in got[:2])

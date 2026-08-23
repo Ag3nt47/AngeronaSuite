@@ -38,6 +38,7 @@ from angerona.core.url_policy import (
     read_bounded,
     safe_urlopen,
 )
+from angerona.core.ollama_lifecycle import effective_keep_alive
 
 try:
     import psutil
@@ -286,7 +287,7 @@ def analyze(cve_rec: dict, timeout: float = 90.0) -> dict:
         ],
         "stream": False,
         "format": "json",
-        "keep_alive": "30m",
+        "keep_alive": effective_keep_alive("30m"),
         "options": {"temperature": 0},
     }).encode("utf-8")
     req = urllib.request.Request(local_service_url(_HOST, "/api/chat"), data=payload,

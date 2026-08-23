@@ -57,6 +57,13 @@ def _repo_root() -> Path:
     return data_dir()
 
 
+def _user_folder_deception_enabled() -> bool:
+    """Personal-folder and registry decoys require explicit informed opt-in."""
+    return os.environ.get("ANGERONA_USER_FOLDER_DECEPTION", "0").strip().casefold() in {
+        "1", "true", "yes", "on",
+    }
+
+
 class DeceptionModule(BaseModule):
     name = "Active Deception"
     description = "Plants canaries/honeytokens and DYNAMICALLY re-stages fresh traps when one is burned."
@@ -65,11 +72,17 @@ class DeceptionModule(BaseModule):
     def __init__(self) -> None:
         super().__init__()
         self._canaries: dict[str, float] = {}
-        self._base = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents"
+        self._user_scope = _user_folder_deception_enabled()
+        self._base = (
+            Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents"
+            if self._user_scope
+            else _repo_root() / "deception" / "static"
+        )
         self._shared = _repo_root() / "shared_logs"
         self._feed = self._shared / "attack_feed.log"
         self._soar = self._shared / "soar_events.json"
         self._feed_pos = 0
+        self._feed_identity: tuple[int, int, int, int, int] | None = None
         self._restage_count = 0
 
     def _plant(self) -> None:
@@ -117,14 +130,29 @@ class DeceptionModule(BaseModule):
         """Tail attack_feed.log; a discovery / lateral / credential-hunt entry means
         a trap is 'burned' → autonomously re-stage fresh traps mapped to the probe."""
         try:
-            if not self._feed.exists():
+            stat = self._feed.stat()
+            identity = (
+                int(getattr(stat, "st_dev", 0)),
+                int(getattr(stat, "st_ino", 0)),
+                int(stat.st_size),
+                int(stat.st_mtime_ns),
+                int(stat.st_ctime_ns),
+            )
+            # Keep the five-second canary/detection cadence, but do not reopen
+            # an unchanged file on every pass.  Size + high-resolution times +
+            # file identity also detect truncation and atomic replacement.
+            if identity == self._feed_identity:
                 return
-            if self._feed.stat().st_size < self._feed_pos:
+            if stat.st_size < self._feed_pos:
                 self._feed_pos = 0
             with open(self._feed, encoding="utf-8") as f:
                 f.seek(self._feed_pos)
                 lines = f.readlines()
                 self._feed_pos = f.tell()
+            # Record the pre-open identity only after a successful read.  If a
+            # writer appends concurrently, the next pass observes a new stamp
+            # and resumes from the exact text-stream cookie above.
+            self._feed_identity = identity
         except Exception:
             return
         for ln in lines:
@@ -154,7 +182,7 @@ class DeceptionModule(BaseModule):
     def _plant_fake_registry_cred(self, name: str) -> None:
         """Windows only: drop a fake credential under a decoy HKCU key. Any read of
         it (by the mutated shark_attack cred-hunt) is a definitive tripwire."""
-        if not sys.platform.startswith("win"):
+        if not self._user_scope or not sys.platform.startswith("win"):
             return
         try:
             subprocess.run(

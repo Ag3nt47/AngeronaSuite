@@ -87,7 +87,7 @@ if errorlevel 1 (
     call :log ERROR "Existing venv is not CPython 3.12 x64. Remove it or use the packaged Setup release."
     goto :fail
 )
-call :log INFO "Installing SHA-256-locked dependencies (this can take a minute) ..."
+call :log INFO "Installing the verified pip bootstrap and SHA-256-locked dependencies ..."
 if not exist "pyproject.toml" (
     call :log ERROR "pyproject.toml is missing; refusing an incomplete installation"
     goto :fail
@@ -96,6 +96,12 @@ if not exist "requirements-release-hashed.txt" (
     call :log ERROR "requirements-release-hashed.txt is missing; refusing an unhashed install"
     goto :fail
 )
+if not exist "requirements-bootstrap-pip.txt" (
+    call :log ERROR "requirements-bootstrap-pip.txt is missing; refusing an unverified pip bootstrap"
+    goto :fail
+)
+"venv\Scripts\python.exe" -m pip install --isolated --only-binary :all: --require-hashes --no-deps -r requirements-bootstrap-pip.txt
+if errorlevel 1 ( call :log ERROR "Verified pip bootstrap failed" & goto :fail )
 "venv\Scripts\python.exe" -m pip install --isolated --only-binary :all: --require-hashes --no-deps -r requirements-release-hashed.txt
 if errorlevel 1 ( call :log ERROR "Hash-locked dependency install failed" & goto :fail )
 "venv\Scripts\python.exe" -m pip install --isolated --no-build-isolation --no-deps -e .

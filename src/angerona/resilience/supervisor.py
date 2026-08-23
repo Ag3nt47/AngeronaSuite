@@ -50,6 +50,8 @@ _SAFE_MODE_COOLDOWN = 120.0
 _VALID_RESTART_TARGETS = {
     "core", "scanner", "blackbox", "watchdog", "watchdog_ui", "scanner_ui", "*",
 }
+_SPAWN_LOCK_ERRORS: dict[str, str] = {}
+_SPAWN_LOCK_ERRORS_GUARD = threading.Lock()
 
 
 def cached_cmdline_probe(*needles: str, psutil_module=None) -> Callable[[], bool]:
@@ -149,21 +151,51 @@ def try_claim_spawn(name: str, ttl: float = 15.0) -> bool:
     """Atomically claim the right to spawn `name`. Returns False if another
     supervisor already holds a fresh claim (so we don't double-spawn)."""
     p = _spawnlock_path(name)
+    with _SPAWN_LOCK_ERRORS_GUARD:
+        _SPAWN_LOCK_ERRORS.pop(name, None)
+    created = False
+    fd: int | None = None
     try:
-        fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        created = True
         os.write(fd, f"{os.getpid()} {time.time()}".encode())
         os.close(fd)
+        fd = None
         return True
     except FileExistsError:
         try:
             if time.time() - p.stat().st_mtime > ttl:   # stale lock → steal it
                 p.unlink()
                 return try_claim_spawn(name, ttl)
-        except Exception:
-            pass
+        except FileNotFoundError:
+            return try_claim_spawn(name, ttl)
+        except Exception as exc:
+            with _SPAWN_LOCK_ERRORS_GUARD:
+                _SPAWN_LOCK_ERRORS[name] = type(exc).__name__
         return False
-    except Exception:
-        return True   # fail-open: better to (rarely) risk a race than never spawn
+    except Exception as exc:
+        # A lock I/O failure cannot safely grant spawn authority: doing so lets
+        # both supervisors launch the same component. Record a bounded diagnostic
+        # and let the next supervisor tick retry.
+        with _SPAWN_LOCK_ERRORS_GUARD:
+            _SPAWN_LOCK_ERRORS[name] = type(exc).__name__
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if created:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        return False
+
+
+def spawn_lock_error(name: str) -> str:
+    """Return the latest bounded lock error name, if claiming failed on I/O."""
+    with _SPAWN_LOCK_ERRORS_GUARD:
+        return _SPAWN_LOCK_ERRORS.get(name, "")
 
 
 def release_spawn(name: str) -> None:
@@ -239,6 +271,7 @@ class Component:
     state_fault: bool = False
     restarts: int = 0
     adopted: bool = False
+    auth_notice: str = ""
 
 
 class ProcessSupervisor:
@@ -307,6 +340,41 @@ class ProcessSupervisor:
                                          component="supervisor")
 
     # ── liveness (stateless; a stale leftover heartbeat is NOT 'alive') ───────
+    @staticmethod
+    def _authenticated_record(c: Component) -> tuple[Optional[dict], str]:
+        if c.reader is None:
+            return None, "missing"
+        rec = c.reader.read()
+        if rec is None:
+            return None, "missing"
+        verifier = getattr(c.reader, "authentication_status", None)
+        if not callable(verifier):
+            # Test doubles and heartbeat-less compatibility probes do not cross
+            # this production boundary. Real HeartbeatReader always verifies.
+            return rec, "authenticated"
+        return rec, str(verifier(record=rec))
+
+    def _report_auth_state(self, c: Component, status: str) -> None:
+        if status == "authenticated":
+            c.auth_notice = ""
+            return
+        if status == c.auth_notice:
+            return
+        c.auth_notice = status
+        if status == "legacy":
+            message = (
+                f"{c.name} exposes a legacy unauthenticated heartbeat; it will "
+                "not be adopted, terminated, or treated as healthy. Upgrade the "
+                "peer for v2 authenticated heartbeat support."
+            )
+        else:
+            message = (
+                f"Rejected {c.name} heartbeat ({status}); full-field proof or "
+                "anti-replay validation failed. Automatic destructive recovery "
+                "is paused for this observation."
+            )
+        self._emit("HIGH", message, component=c.name, heartbeat_auth=status)
+
     def _is_running(self, c: Component) -> bool:
         if c.running_probe is not None:
             try:
@@ -315,12 +383,19 @@ class ProcessSupervisor:
                 return False
         if c.reader is None:
             return False
-        rec = c.reader.read()
+        rec, auth = self._authenticated_record(c)
+        if auth != "authenticated":
+            if auth != "missing":
+                self._report_auth_state(c, auth)
+            return False
+        self._report_auth_state(c, auth)
         if not rec or rec.get("flags") == 0:
             return False
         age = (time.time_ns() - rec["ts_ns"]) / 1e9
         # Fresh tick AND the writer's pid still alive ⇒ genuinely running.
-        return age <= max(c.stale_after_s, 2.0) and hb.pid_alive(rec.get("pid", 0))
+        return abs(age) <= max(c.stale_after_s, 2.0) and hb.pid_alive(
+            rec.get("pid", 0)
+        )
 
     # ── spawning (adopt-if-alive + cross-process lock) ───────────────────────
     def _spawn(self, c: Component) -> bool:
@@ -333,7 +408,21 @@ class ProcessSupervisor:
                            component=c.name)
             return True
         # Only one supervisor may spawn a given component at a time.
+        rec, auth = self._authenticated_record(c)
+        if rec and auth != "authenticated":
+            if hb.pid_alive(int(rec.get("pid", 0))):
+                self._report_auth_state(c, auth)
+                return False
         if not try_claim_spawn(c.name):
+            error = spawn_lock_error(c.name)
+            if error:
+                self._emit(
+                    "HIGH",
+                    f"{c.name}: spawn lock I/O failed closed; launch deferred "
+                    "and will retry on the next supervisor tick.",
+                    component=c.name,
+                    lock_error=error,
+                )
             return False
         try:
             if self._is_running(c):     # double-check under the lock
@@ -653,6 +742,13 @@ class ProcessSupervisor:
         # A returned proc.wait() (real process exit) is authoritative for death.
         if c._dead:
             return "dead"
+        rec, auth = self._authenticated_record(c)
+        if auth != "authenticated":
+            if auth == "missing":
+                return "dead"
+            self._report_auth_state(c, auth)
+            return "legacy_unverified" if auth == "legacy" else f"unauthenticated_{auth}"
+        self._report_auth_state(c, auth)
         hb_state = c.reader.classify(stale_after_s=c.stale_after_s) if c.reader else "unknown"
         if hb_state == "alive":
             self._decay(c)
@@ -696,7 +792,10 @@ class ProcessSupervisor:
         # otherwise the fresh heartbeat makes _spawn() re-adopt it and the
         # restart button appears to do nothing.
         try:
-            rec = c.reader.read() if c.reader else None
+            rec, auth = self._authenticated_record(c)
+            if auth != "authenticated":
+                self._report_auth_state(c, auth)
+                return False
             pid = int((rec or {}).get("pid") or 0)
             if not pid or not hb.pid_alive(pid):
                 return True

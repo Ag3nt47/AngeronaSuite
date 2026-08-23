@@ -20,6 +20,7 @@ from angerona.core.url_policy import (
     read_bounded,
     safe_urlopen,
 )
+from angerona.core.ollama_lifecycle import effective_keep_alive
 
 _INTENTS = [
     ("top_threats", re.compile(r"\b(top|biggest|worst|main)\b.*\b(threat|risk|entit|process)|what.?s (critical|dangerous|bad)|whats bad", re.I)),
@@ -148,7 +149,10 @@ def _ask_ollama(question: str, snap: dict) -> str | None:
     model = os.environ.get("ANGERONA_MODEL", "llama3")
     facts = json.dumps({"cortex_top": snap.get("top", [])[:5]})[:4000]
     payload = json.dumps({
-        "model": model, "stream": False, "keep_alive": "30m", "options": {"temperature": 0},
+        "model": model,
+        "stream": False,
+        "keep_alive": effective_keep_alive("30m"),
+        "options": {"temperature": 0},
         "messages": [
             {"role": "system", "content": "You are a SOC analyst assistant answering ONLY from the "
              "provided Angerona state. Be concise. If the data doesn't answer it, say so."},

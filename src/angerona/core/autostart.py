@@ -1,32 +1,34 @@
 """Platform-native per-user autostart for Angerona.
 
-Angerona always needs to run elevated (see core/privilege.py's ensure_admin(),
-which relaunches through a UAC prompt if it isn't). A plain Registry "Run"
-key launches UNelevated, so it would pop a fresh UAC prompt on every single
-boot — annoying, and exactly the kind of prompt a user reflexively dismisses,
-which would defeat the point of a security tool that's supposed to already be
-running. A Scheduled Task with runLevel="highest" and a logon trigger solves
-both problems: it launches already-elevated, silently, with no UAC prompt at
-boot, because Task Scheduler's own elevation is granted once — right here,
-when the task is created (which does need an admin token, but Angerona
-already has one by the time this ever runs).
+Windows deliberately registers a *limited* current-user Scheduled Task.  An
+editable checkout, virtual-environment interpreter, or unsigned per-user build
+must never become a silent highest-privilege persistence path.  Angerona's
+normal privilege gate can still request UAC when full sensors are needed, but
+that consent is explicit at each logon instead of being inherited by mutable
+code. A future signed, machine-protected service installer can provide silent
+elevated startup through a separately reviewed broker.
 
-Windows uses a highest-privilege Scheduled Task. Linux uses the freedesktop XDG
-autostart directory. macOS uses a current-user LaunchAgent with ``KeepAlive``
-disabled so an intentional quit is never mistaken for a crash.
+Linux uses the freedesktop XDG autostart directory. macOS uses a current-user
+LaunchAgent with ``KeepAlive`` disabled so an intentional quit is never
+mistaken for a crash.
 """
 from __future__ import annotations
 
+import ntpath
 import os
 import plistlib
 import secrets
+import shlex
 import subprocess
 import sys
+from defusedxml import ElementTree as ET
+from defusedxml.common import DefusedXmlException
 from pathlib import Path
 
 TASK_NAME = "AngeronaAutostart"
 LAUNCH_AGENT_LABEL = "org.angerona.security-suite"
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+_MAX_TASK_XML_CHARS = 1_000_000
 _SYSTEM_ROOT = Path(os.environ.get("SystemRoot", r"C:\Windows"))
 _SCHTASKS = _SYSTEM_ROOT / "System32" / "schtasks.exe"
 _POWERSHELL = (
@@ -43,7 +45,7 @@ $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:ANGERONA_AUTOSTART_USER
 $principal = New-ScheduledTaskPrincipal `
     -UserId $env:ANGERONA_AUTOSTART_USER `
     -LogonType Interactive `
-    -RunLevel Highest
+    -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
@@ -82,17 +84,17 @@ def _target_action() -> tuple[str, str, str]:
 
     working_directory = str(project_root())
     if getattr(sys, "frozen", False):
-        return sys.executable, "", working_directory
+        return sys.executable, "--chill", working_directory
 
     interpreter = Path(sys.executable)
     windowed = interpreter.with_name("pythonw.exe")
     executable = windowed if windowed.is_file() else interpreter
-    return str(executable), "-m angerona", working_directory
+    return str(executable), "-m angerona --chill", working_directory
 
 
 def _target_argv() -> list[str]:
     executable, arguments, _working_directory = _target_action()
-    return [executable, *(["-m", "angerona"] if arguments else [])]
+    return [executable, *(shlex.split(arguments) if arguments else [])]
 
 
 def _validated_entry_text(value: str) -> str:
@@ -163,8 +165,8 @@ def ui_copy() -> tuple[str, str, str, str]:
         return (
             "Windows startup",
             "Launch Angerona automatically at Windows logon",
-            "Uses a highest-privilege Windows Scheduled Task and starts silently at logon.",
-            "Windows Scheduled Task (AngeronaAutostart)",
+            "Uses a least-privilege Scheduled Task. Windows may request UAC when full sensors start.",
+            "least-privilege Windows Scheduled Task (AngeronaAutostart)",
         )
     if sys.platform == "darwin":
         return (
@@ -194,6 +196,112 @@ def _current_user() -> str:
     if domain and username:
         return f"{domain}\\{username}"
     return username
+
+
+def _xml_local_name(element: ET.Element) -> str:
+    """Return a Task Scheduler XML tag without its schema namespace."""
+    return str(element.tag).rsplit("}", 1)[-1]
+
+
+def _xml_direct_child(element: ET.Element, name: str) -> ET.Element | None:
+    return next(
+        (child for child in list(element) if _xml_local_name(child) == name),
+        None,
+    )
+
+
+def _xml_child_text(element: ET.Element, name: str) -> str:
+    child = _xml_direct_child(element, name)
+    return str(child.text or "").strip() if child is not None else ""
+
+
+def _xml_enabled(element: ET.Element, *, default: bool = True) -> bool:
+    value = _xml_child_text(element, "Enabled").casefold()
+    if not value:
+        return bool(default)
+    return value in {"true", "1"}
+
+
+def _normal_windows_path(value: str) -> str:
+    # Task Scheduler stores Execute/WorkingDirectory without shell quoting, but
+    # tolerate one harmless outer quote pair when validating hand-migrated XML.
+    clean = str(value or "").strip()
+    if len(clean) >= 2 and clean[0] == clean[-1] == '"':
+        clean = clean[1:-1]
+    return ntpath.normcase(ntpath.normpath(clean)) if clean else ""
+
+
+def _windows_task_xml_is_current(payload: str) -> bool:
+    """Validate the complete security-relevant autostart contract.
+
+    Merely finding a task with Angerona's name is insufficient: an older task
+    may still launch ``python.exe`` (blank console), point at a moved checkout,
+    be disabled, or retain the unsafe legacy elevated trigger. Returning ``False``
+    lets the startup reconciler rebuild that stale definition.
+    """
+    if not payload or len(payload) > _MAX_TASK_XML_CHARS:
+        return False
+    try:
+        root = ET.fromstring(payload.lstrip("\ufeff"))
+    except (ET.ParseError, DefusedXmlException, ValueError, TypeError):
+        return False
+    if _xml_local_name(root) != "Task":
+        return False
+
+    settings = next(
+        (node for node in root.iter() if _xml_local_name(node) == "Settings"),
+        None,
+    )
+    if settings is None or not _xml_enabled(settings):
+        return False
+
+    triggers = next(
+        (node for node in root.iter() if _xml_local_name(node) == "Triggers"),
+        None,
+    )
+    if triggers is None:
+        return False
+    enabled_triggers = [child for child in list(triggers) if _xml_enabled(child)]
+    if len(enabled_triggers) != 1 or _xml_local_name(enabled_triggers[0]) != "LogonTrigger":
+        return False
+
+    principals = [
+        node for node in root.iter() if _xml_local_name(node) == "Principal"
+    ]
+    if len(principals) != 1:
+        return False
+    principal = principals[0]
+    if _xml_child_text(principal, "LogonType").casefold() != "interactivetoken":
+        return False
+    run_level_node = _xml_direct_child(principal, "RunLevel")
+    if run_level_node is not None:
+        # Task Scheduler omits RunLevel when Register-ScheduledTask receives
+        # ``-RunLevel Limited`` because Limited is the schema default. Accept
+        # only that omission/default; any explicit elevated or unknown value
+        # remains stale and is rebuilt.
+        run_level = str(run_level_node.text or "").strip().casefold()
+        if run_level not in {"leastprivilege", "limited"}:
+            return False
+
+    actions = next(
+        (node for node in root.iter() if _xml_local_name(node) == "Actions"),
+        None,
+    )
+    if actions is None:
+        return False
+    action_nodes = list(actions)
+    if len(action_nodes) != 1 or _xml_local_name(action_nodes[0]) != "Exec":
+        return False
+    action = action_nodes[0]
+    expected_executable, expected_arguments, expected_cwd = _target_action()
+    return (
+        _normal_windows_path(_xml_child_text(action, "Command"))
+        == _normal_windows_path(expected_executable)
+        and _xml_child_text(action, "Arguments").strip()
+        == str(expected_arguments or "").strip()
+        and _normal_windows_path(_xml_child_text(action, "WorkingDirectory"))
+        == _normal_windows_path(expected_cwd)
+    )
 
 
 def is_enabled() -> bool:
@@ -231,19 +339,23 @@ def is_enabled() -> bool:
         return False
     try:
         result = subprocess.run(
-            [str(_SCHTASKS), "/query", "/tn", TASK_NAME],
+            [str(_SCHTASKS), "/query", "/tn", TASK_NAME, "/xml"],
             capture_output=True, text=True, timeout=10,
             creationflags=_CREATE_NO_WINDOW,
         )
-        return result.returncode == 0
+        return (
+            result.returncode == 0
+            and _windows_task_xml_is_current(str(result.stdout or ""))
+        )
     except Exception:
         return False
 
 
 def enable_autostart() -> bool:
-    """Create (or refresh) the logon scheduled task. Requires an elevated
-    token — safe to call any time Angerona is already running, since
-    ensure_admin() guarantees that by the time app code runs. Idempotent:
+    """Create (or refresh) the least-privilege logon scheduled task.
+
+    Registration may require an elevated token, but the resulting task never
+    grants silent administrator execution to the mutable source tree. Idempotent:
     safe to call every startup (/f overwrites any existing definition, so
     this also self-heals if the task was ever edited or removed outside
     the app). Returns True on apparent success."""

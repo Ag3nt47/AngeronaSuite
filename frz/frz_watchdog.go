@@ -2,17 +2,18 @@
 //
 // Build:
 //     cd AngeronaSuite/frz
-//     go build -ldflags="-s -w" -o ../frz_watchdog.exe frz_watchdog.go
+//     build.bat
 //
 // Usage (launched by frz_heartbeat.py):
-//     frz_watchdog.exe <target_pid> <mmap_path>
+//     frz_watchdog_v2.exe <target_pid> <mmap_path>
 //
 // Behaviour:
 //     Every POLL_MS milliseconds:
 //       1. Check that <target_pid> is still running.
 //          If not → exit cleanly (normal shutdown).
-//       2. Read the uint64 nanosecond timestamp at offset 0 of <mmap_path>.
-//          Also read the uint32 flag at offset 12: flag=0 means clean shutdown.
+//       2. Read and authenticate the fixed v2 heartbeat record using the
+//          protected shutdown.key beside <mmap_path>. Invalid/legacy records
+//          fail closed without authorizing a kill or clean-stop decision.
 //       3. If the timestamp has NOT advanced for FREEZE_THRESHOLD_S seconds AND
 //          the flag is 1 (running) → thread-suspension attack assumed → trigger:
 //             a. netsh emergency network isolation (blocks all but loopback).
@@ -30,14 +31,18 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"sync/atomic"
+	"strings"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -45,13 +50,17 @@ import (
 )
 
 const (
-	POLL_MS           = 250             // polling interval
-	FREEZE_THRESHOLD  = 2 * time.Second // clock-frozen window before action
-	MMAP_SIZE         = 16             // bytes: uint64 ts + uint32 pid + uint32 flag
-	TS_OFFSET         = 0
-	PID_OFFSET        = 8
-	FLAG_OFFSET       = 12
+	POLL_MS            = 250             // polling interval
+	FREEZE_THRESHOLD   = 2 * time.Second // clock-frozen window before action
+	MMAP_SIZE          = 32
+	MAGIC              = uint32(0x41574447) // "AWDG"
+	FLAG_RUNNING       = uint32(0x00000001)
+	FLAG_V2_AUTH       = uint32(0x80000000)
+	FLAG_KNOWN         = FLAG_RUNNING | FLAG_V2_AUTH
+	heartbeatComponent = "frz-core"
 )
+
+var authContext = []byte("angerona-resilience-heartbeat-v2\x00")
 
 // ── pid liveness (Windows API) ───────────────────────────────────────────────
 func pidAlive(pid uint32) bool {
@@ -96,12 +105,21 @@ func killTarget(pid uint32) {
 	_ = windows.TerminateProcess(handle, 1)
 }
 
+type heartbeatRecord struct {
+	magic   uint32
+	tsNs    uint64
+	pid     uint32
+	proof   uint64
+	counter uint32
+	flags   uint32
+}
+
 // ── mmap read ────────────────────────────────────────────────────────────────
 // We use Windows file mapping to read the shared region independently of Python.
-func readMmapTimestamp(path string) (tsNs uint64, flag uint32, err error) {
+func readMmapRecord(path string) (record heartbeatRecord, err error) {
 	pathw, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return 0, 0, err
+		return record, err
 	}
 	fh, err := windows.CreateFile(
 		pathw,
@@ -113,26 +131,77 @@ func readMmapTimestamp(path string) (tsNs uint64, flag uint32, err error) {
 		0,
 	)
 	if err != nil {
-		return 0, 0, err
+		return record, err
 	}
 	defer windows.CloseHandle(fh)
 
 	mh, err := windows.CreateFileMapping(fh, nil, windows.PAGE_READONLY, 0, MMAP_SIZE, nil)
 	if err != nil {
-		return 0, 0, err
+		return record, err
 	}
 	defer windows.CloseHandle(mh)
 
 	addr, err := windows.MapViewOfFile(mh, windows.FILE_MAP_READ, 0, 0, MMAP_SIZE)
 	if err != nil {
-		return 0, 0, err
+		return record, err
 	}
 	defer windows.UnmapViewOfFile(addr)
 
 	buf := (*[MMAP_SIZE]byte)(unsafe.Pointer(addr))[:]
-	tsNs = binary.LittleEndian.Uint64(buf[TS_OFFSET : TS_OFFSET+8])
-	flag = binary.LittleEndian.Uint32(buf[FLAG_OFFSET : FLAG_OFFSET+4])
-	return tsNs, flag, nil
+	record.magic = binary.LittleEndian.Uint32(buf[0:4])
+	record.tsNs = binary.LittleEndian.Uint64(buf[4:12])
+	record.pid = binary.LittleEndian.Uint32(buf[12:16])
+	record.proof = binary.LittleEndian.Uint64(buf[16:24])
+	record.counter = binary.LittleEndian.Uint32(buf[24:28])
+	record.flags = binary.LittleEndian.Uint32(buf[28:32])
+	return record, nil
+}
+
+func loadAuthority(mmapPath string) ([]byte, error) {
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(mmapPath), "shutdown.key"))
+	if err != nil {
+		return nil, err
+	}
+	key, err := hex.DecodeString(strings.TrimSpace(string(raw)))
+	if err != nil || len(key) != 32 {
+		return nil, fmt.Errorf("shutdown authority is malformed")
+	}
+	return key, nil
+}
+
+func componentKey(authority []byte) []byte {
+	mac := hmac.New(sha256.New, authority)
+	mac.Write(authContext)
+	mac.Write([]byte(heartbeatComponent))
+	return mac.Sum(nil)
+}
+
+func authenticateRecord(record heartbeatRecord, authority []byte, targetPID uint32) bool {
+	if record.magic != MAGIC || record.pid != targetPID || record.flags&FLAG_V2_AUTH == 0 {
+		return false
+	}
+	if record.flags & ^FLAG_KNOWN != 0 {
+		return false
+	}
+	component := []byte(heartbeatComponent)
+	payload := make([]byte, 2+len(component)+8+4+4+4)
+	binary.LittleEndian.PutUint16(payload[0:2], uint16(len(component)))
+	copy(payload[2:], component)
+	offset := 2 + len(component)
+	binary.LittleEndian.PutUint64(payload[offset:offset+8], record.tsNs)
+	offset += 8
+	binary.LittleEndian.PutUint32(payload[offset:offset+4], record.pid)
+	offset += 4
+	binary.LittleEndian.PutUint32(payload[offset:offset+4], record.counter)
+	offset += 4
+	binary.LittleEndian.PutUint32(payload[offset:offset+4], record.flags)
+
+	mac := hmac.New(sha256.New, componentKey(authority))
+	mac.Write(payload)
+	expected := mac.Sum(nil)[:8]
+	actual := make([]byte, 8)
+	binary.LittleEndian.PutUint64(actual, record.proof)
+	return hmac.Equal(actual, expected)
 }
 
 // ── alert file ───────────────────────────────────────────────────────────────
@@ -148,7 +217,7 @@ func main() {
 	runtime.LockOSThread()
 
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: frz_watchdog.exe <pid> <mmap_path>")
+		fmt.Fprintln(os.Stderr, "usage: frz_watchdog_v2.exe <pid> <mmap_path>")
 		os.Exit(1)
 	}
 	pidArg, err := strconv.ParseUint(os.Args[1], 10, 32)
@@ -158,8 +227,15 @@ func main() {
 	}
 	targetPID := uint32(pidArg)
 	mmapPath := os.Args[2]
+	authority, err := loadAuthority(mmapPath)
+	if err != nil {
+		writeAlert(mmapPath, targetPID, "authenticated v2 heartbeat unavailable: "+err.Error())
+		fmt.Fprintln(os.Stderr, "FRZ: refusing unauthenticated heartbeat:", err)
+		os.Exit(3)
+	}
 
-	var lastTS atomic.Uint64
+	var lastTS uint64
+	var lastCounter uint32
 	frozenSince := time.Time{}
 
 	ticker := time.NewTicker(POLL_MS * time.Millisecond)
@@ -171,18 +247,33 @@ func main() {
 			os.Exit(0)
 		}
 
-		tsNs, flag, err := readMmapTimestamp(mmapPath)
+		record, err := readMmapRecord(mmapPath)
 		if err != nil {
 			// mmap not ready yet — skip
 			continue
 		}
-		if flag == 0 {
+		if !authenticateRecord(record, authority, targetPID) {
+			writeAlert(mmapPath, targetPID,
+				"legacy, forged, or malformed heartbeat rejected; no control action authorized")
+			fmt.Fprintln(os.Stderr, "FRZ: rejected unauthenticated heartbeat")
+			os.Exit(3)
+		}
+		if record.flags&FLAG_RUNNING == 0 {
 			// Clean shutdown signal written by Python
 			os.Exit(0)
 		}
 
-		prev := lastTS.Swap(tsNs)
-		if tsNs != prev {
+		if lastTS != 0 && (record.tsNs < lastTS ||
+			(record.tsNs == lastTS && record.counter < lastCounter)) {
+			writeAlert(mmapPath, targetPID,
+				"authenticated heartbeat replay/regression rejected; no control action authorized")
+			fmt.Fprintln(os.Stderr, "FRZ: rejected replayed heartbeat")
+			os.Exit(3)
+		}
+		advanced := record.tsNs > lastTS || record.counter != lastCounter
+		lastTS = record.tsNs
+		lastCounter = record.counter
+		if advanced {
 			// Clock is advancing — reset frozen timer
 			frozenSince = time.Time{}
 			continue
@@ -195,7 +286,7 @@ func main() {
 		}
 		if time.Since(frozenSince) >= FREEZE_THRESHOLD {
 			reason := fmt.Sprintf("heartbeat frozen for %.1fs (last ts=%d)",
-				time.Since(frozenSince).Seconds(), tsNs)
+				time.Since(frozenSince).Seconds(), record.tsNs)
 			writeAlert(mmapPath, targetPID, reason)
 			isolateNetwork()
 			killTarget(targetPID)

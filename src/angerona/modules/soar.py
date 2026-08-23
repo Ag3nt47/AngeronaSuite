@@ -16,6 +16,7 @@ from typing import List
 
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.eventbus import is_remote_observe_only
+from angerona.core.threat import event_disposition
 from angerona.core.process_allowlist import (
     is_event_allowed as _process_event_allowed,
     policy_snapshot as _process_policy_snapshot,
@@ -65,6 +66,10 @@ class SOARModule(BaseModule):
     def __init__(self) -> None:
         super().__init__()
         self._last_ts = 0.0
+        self._seen_at_last_ts: set[str] = set()
+        self._priority_cursor = 0
+        self._priority_bus_id: int | None = None
+        self._priority_overflow_count = 0
         self._auto = os.environ.get("ANGERONA_SOAR_AUTOCONTAIN", "0") == "1"
         # Active defense: contain corroborated threats automatically WHEN under
         # attack. On by default (the whole point of an EDR); ANGERONA_ACTIVE_DEFENSE=0
@@ -89,26 +94,104 @@ class SOARModule(BaseModule):
         )
         while not self.stopping:
             self.sleep(5)
-            if self._bus is None:
-                continue
             # refresh the flags so the user can flip them without a restart
             self._auto = os.environ.get("ANGERONA_SOAR_AUTOCONTAIN", "0") == "1"
             self._active_defense = os.environ.get("ANGERONA_ACTIVE_DEFENSE", "1") != "0"
-            process_policy = _process_policy_snapshot()
-            for ev in self._bus.recent(25):
-                if ev.ts <= self._last_ts or ev.severity < Severity.HIGH:
+            self.process_pending_once()
+            self._purge_stale_pending()
+            self._write_stats()
+
+    @staticmethod
+    def _cursor_key(ev) -> str:
+        signature = str(getattr(ev, "hmac_sig", "") or "")
+        return signature or f"memory:{id(ev)}"
+
+    def _is_unseen(self, ev) -> bool:
+        if ev.ts < self._last_ts:
+            return False
+        return not (
+            ev.ts == self._last_ts
+            and self._cursor_key(ev) in self._seen_at_last_ts
+        )
+
+    def _advance_cursor(self, ev) -> None:
+        key = self._cursor_key(ev)
+        if ev.ts > self._last_ts:
+            self._last_ts = ev.ts
+            self._seen_at_last_ts = {key}
+        elif ev.ts == self._last_ts:
+            self._seen_at_last_ts.add(key)
+
+    @property
+    def priority_overflow_count(self) -> int:
+        return self._priority_overflow_count
+
+    def _pending_security_events(self) -> tuple[list, bool]:
+        """Fetch serious events from the dedicated bounded revision lane.
+
+        The boolean is true when the EventBus does not expose the priority API
+        and the legacy timestamp cursor must be used.  An overflow emits suite
+        health only: it never synthesizes evidence or authorizes containment.
+        """
+        bus = self._bus
+        priority_since = getattr(bus, "priority_since", None)
+        if bus is not None and callable(priority_since):
+            bus_id = id(bus)
+            if self._priority_bus_id != bus_id:
+                self._priority_bus_id = bus_id
+                self._priority_cursor = 0
+            current, newest_first, overflow = priority_since(
+                self._priority_cursor
+            )
+            self._priority_cursor = current
+            if overflow:
+                self._priority_overflow_count += 1
+                self.emit(
+                    "SOAR priority event lane overflowed; retained signed "
+                    "evidence will be reviewed, but overflow alone cannot "
+                    "authorize containment.",
+                    Severity.HIGH,
+                    disposition="health",
+                    event_type="security_lane_overflow",
+                    response_authorized=False,
+                )
+            return list(reversed(newest_first)), False
+        events = list(reversed(bus.recent(250))) if bus is not None else []
+        events.sort(key=lambda event: event.ts)
+        return events, True
+
+    def process_pending_once(self) -> int:
+        """Evaluate the bounded alert batch oldest-first without dropping bursts."""
+        if self._bus is None:
+            return 0
+        process_policy = _process_policy_snapshot()
+        events, legacy_cursor = self._pending_security_events()
+        handled = 0
+        for ev in events:
+            if legacy_cursor and not self._is_unseen(ev):
+                continue
+            try:
+                if ev.severity < Severity.HIGH:
                     continue
                 if ev.module in (self.name, "Console"):
                     continue
-                self._last_ts = max(self._last_ts, ev.ts)
                 if is_remote_observe_only(ev):
                     continue
                 if _process_event_allowed(ev, policy=process_policy):
                     continue
-                self._track_attack(ev)
+                disposition = event_disposition(ev)
+                if disposition not in {"active", "practice"}:
+                    continue
+                # Trusted inert practice still exercises the real playbook, but
+                # it must never arm the global UNDER ATTACK state.
+                if disposition == "active":
+                    self._track_attack(ev)
                 self._run_playbook(ev)
-            self._purge_stale_pending()
-            self._write_stats()
+                handled += 1
+            finally:
+                if legacy_cursor:
+                    self._advance_cursor(ev)
+        return handled
 
     # ── Playbooks ────────────────────────────────────────────────────────────
     def _event_integrity_ok(self, ev) -> bool:
@@ -250,7 +333,8 @@ class SOARModule(BaseModule):
                     f"Playbook[contain]: TERMINATED {name} (pid {pid}) — repeat corroborated "
                     f"threat from {ev.module}. Active defense.",
                     Severity.HIGH, pid=pid, action="terminate", mitre="T1562",
-                    trigger_ts=ev.ts, trigger_module=ev.module)
+                    trigger_ts=ev.ts, trigger_module=ev.module,
+                    action_succeeded=True)
             else:
                 p.suspend()
                 self._suspended_pids.add(pid)
@@ -260,11 +344,12 @@ class SOARModule(BaseModule):
                     f"Playbook[contain]: AUTO-SUSPENDED {name} (pid {pid}) — corroborated "
                     f"CRITICAL from {ev.module}. Investigate, then resume/kill.",
                     Severity.HIGH, pid=pid, action="suspend",
-                    trigger_ts=ev.ts, trigger_module=ev.module)
+                    trigger_ts=ev.ts, trigger_module=ev.module,
+                    action_succeeded=True)
         except Exception as exc:
             self.emit(
                 f"Playbook[contain]: could not act on pid {pid}: {exc}",
-                Severity.MEDIUM, pid=pid,
+                Severity.MEDIUM, pid=pid, action_succeeded=False,
             )
 
     # ── under-attack detection + active-defense state ────────────────────────

@@ -201,8 +201,10 @@ class RedTeamConsole(QDialog):
         self.cb_analogy = QCheckBox("Analogy coaching (Flight Instructor) — explain each step in "
                                     "plain English while it runs")
         self.cb_analogy.setChecked(True)
-        self.cb_remediate = QCheckBox("Auto-remediate after the run — SOAR contains the markers and "
-                                      "the After-Action Report addresses them")
+        self.cb_remediate = QCheckBox(
+            "Auto-contain detected markers during the run — missed detector gaps use "
+            "Apply Practice Fix → Test → signed verification afterward"
+        )
         self.cb_remediate.setChecked(True)
         ol.addWidget(self.cb_analogy); ol.addWidget(self.cb_remediate)
         lay.addWidget(opt)

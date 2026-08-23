@@ -37,6 +37,8 @@ class StatusReporter:
         self.interval = interval
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._last_material: dict | None = None
+        self._last_persisted_at = 0.0
 
         self._dirs: List[Path] = []
         try:
@@ -54,7 +56,13 @@ class StatusReporter:
 
     def stop(self) -> None:
         self._stop.set()
-        self._write()  # one final snapshot on shutdown
+        self._write(force=True)  # one final snapshot on shutdown
+
+    def _effective_interval(self) -> float:
+        """Chill diagnostics are a heartbeat, not a continuous disk workload."""
+        if bool(getattr(self.config, "runtime_chill_active", False)):
+            return max(60.0, float(self.interval))
+        return max(1.0, float(self.interval))
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -62,12 +70,13 @@ class StatusReporter:
                 self._write()
             except Exception:
                 pass
-            self._stop.wait(self.interval)
+            self._stop.wait(self._effective_interval())
 
     # ── Snapshot ─────────────────────────────────────────────────────────────
     def _snapshot(self) -> dict:
-        from angerona.core.threat import threat_level
+        from angerona.core.threat import active_threat_events, event_disposition, threat_level
         events = self.bus.recent(200)
+        active = active_threat_events(events)
         running = sum(1 for m in self.manager.modules.values() if m.status == "running")
         mods = []
         for name, m in sorted(self.manager.modules.items()):
@@ -111,16 +120,23 @@ class StatusReporter:
             )
             if callable(visibility_snapshot):
                 visibility = visibility_snapshot()
+        active_critical = sum(
+            1 for event in active if event.severity == Severity.CRITICAL
+        )
         return {
             "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
             "app_version": __version__,
             "admin": is_admin(),
             "threat_level": _THREAT[threat_level(events)],
+            "chill_mode": bool(getattr(self.config, "runtime_chill_active", False)),
             "counts": {
                 "modules_total": len(self.manager.modules),
                 "modules_running": running,
                 "alerts_24h": self.storage.count_since(time.time() - 86400),
-                "critical_24h": sum(1 for e in events if e.severity == Severity.CRITICAL),
+                # Backward-compatible key: unlike the old raw count, this now
+                # aliases the accurate ten-minute live-hostile count.
+                "critical_24h": active_critical,
+                "active_critical_10m": active_critical,
             },
             "ollama": {"host": self.config.ollama_host, "model": self.config.ollama_model},
             "telemetry_coverage": {
@@ -135,7 +151,8 @@ class StatusReporter:
             "modules": mods,
             "recent_events": [
                 {"time": e.time_str, "module": e.module,
-                 "severity": e.severity.label, "message": e.message}
+                 "severity": e.severity.label, "disposition": event_disposition(e),
+                 "message": e.message}
                 for e in events[:60]
             ],
         }
@@ -147,9 +164,11 @@ class StatusReporter:
             " ANGERONA — LIVE STATUS SNAPSHOT",
             "=" * 78,
             f" Generated : {s['generated']}     v{s['app_version']}     Admin: {s['admin']}",
-            f" Threat    : {s['threat_level']}",
+            f" Threat    : {s['threat_level']}"
+            f"     Chill: {'ON' if s.get('chill_mode') else 'OFF'}",
             f" Modules   : {c['modules_running']}/{c['modules_total']} running"
-            f"     Alerts(24h): {c['alerts_24h']}     Critical(24h): {c['critical_24h']}",
+            f"     Alerts(24h): {c['alerts_24h']}"
+            f"     ActiveCritical(10m): {c['active_critical_10m']}",
             f" Ollama    : {s['ollama']['host']}  (model: {s['ollama']['model']})",
             "",
             "-" * 78,
@@ -213,12 +232,27 @@ class StatusReporter:
         lines.append("")
         return "\n".join(lines)
 
-    def _write(self) -> None:
+    def _write(self, *, force: bool = False) -> None:
         snap = self._snapshot()
+        material = dict(snap)
+        material.pop("generated", None)
+        now = time.monotonic()
+        heartbeat = 60.0 if snap.get("chill_mode") else 30.0
+        if (
+            not force
+            and self._last_material == material
+            and now - self._last_persisted_at < heartbeat
+        ):
+            return
         text = self._render_text(snap)
+        wrote = False
         for d in self._dirs:
             try:
                 (d / "status.json").write_text(json.dumps(snap, indent=2), encoding="utf-8")
                 (d / "status.txt").write_text(text, encoding="utf-8")
+                wrote = True
             except Exception:
                 continue
+        if wrote:
+            self._last_material = material
+            self._last_persisted_at = now

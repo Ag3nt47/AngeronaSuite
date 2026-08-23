@@ -17,6 +17,34 @@ def test_eventbus_revision_changes_only_after_publish() -> None:
     assert bus.revision() == 2
 
 
+def test_eventbus_revision_delta_survives_large_info_burst() -> None:
+    bus = EventBus(ring_size=500)
+    cursor = bus.revision()
+    important = Event("Network Monitor", "active", Severity.CRITICAL)
+    bus.publish(important)
+    for index in range(250):
+        bus.publish(Event("Telemetry", f"info-{index}"))
+
+    current, events, overflow = bus.recent_since(cursor)
+
+    assert current == cursor + 251
+    assert important in events
+    assert not overflow
+
+
+def test_eventbus_revision_delta_reports_ring_overflow() -> None:
+    bus = EventBus(ring_size=3)
+    cursor = bus.revision()
+    for index in range(5):
+        bus.publish(Event("Telemetry", str(index)))
+
+    current, events, overflow = bus.recent_since(cursor)
+
+    assert current == 5
+    assert [event.message for event in events] == ["4", "3", "2"]
+    assert overflow
+
+
 def test_purple_guard_cycle_reads_policy_once(tmp_path, monkeypatch) -> None:
     calls = 0
 

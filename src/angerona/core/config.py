@@ -56,8 +56,11 @@ class Config:
     accent: str = ""                           # optional custom accent hex tint
     module_states: Dict[str, bool] = field(default_factory=dict)
     autostart_enabled: bool = True              # platform-native per-user logon startup
-    eco_mode: bool = True                        # start in Eco Mode (heavy scanners paused) for a fast, responsive launch
+    eco_mode: bool = True                        # start in network-first Chill Mode for all-day low-impact protection
     blackbox_enabled: bool = True                # auto-launch the decoupled Black Box diagnostic recorder at startup
+    # Decoys stay inside Angerona's D-drive data root unless the operator
+    # explicitly opts into personal-folder/registry placement.
+    deception_user_folders: bool = False
     # ── Mobile Response Bridge (Signal / signal-cli) — opt-in, default off ──
     mobile_enabled: bool = False
     mobile_signal_cli: str = ""                   # path to the signal-cli binary
@@ -72,6 +75,10 @@ class Config:
     # ── MCP server (local loopback — opt-in, default off) ──────────────────
     mcp_enabled: bool = False                   # start engines/mcp_server.py at boot
     mcp_port:    int  = 47923                   # loopback port for the MCP SSE endpoint
+    # Separate authenticated JARVIS adapter. MCP stays read-only; this channel
+    # accepts only a fixed catalog of confirmation-gated defensive scans.
+    jarvis_control_enabled: bool = False
+    jarvis_control_port: int = 47925
     # Local self-hosted fleet service. Loopback-only until an external mTLS
     # termination and deployment threat model are separately approved.
     fleet_service_enabled: bool = False
@@ -104,7 +111,7 @@ class Config:
     teams_bot_port: int = 3978                   # local Bot Framework messaging-endpoint port
     teams_bot_skip_auth: bool = False            # runtime-only dev switch; never persisted
     # ── ARIA model tuning ──
-    ollama_keep_alive: str = "30m"               # keep the local model warm for fast replies
+    ollama_keep_alive: str = "30m"               # Full mode lease; Chill overrides this to immediate release
 
     # ── UI scale (responsive buttons/text) ─────────────────────────────────
     # "auto"  = scale the whole UI with the window size (default; clamped to a
@@ -167,6 +174,8 @@ class Config:
                 cfg.eco_mode = _bool_setting(data, "eco_mode", cfg.eco_mode)
                 cfg.blackbox_enabled = _bool_setting(
                     data, "blackbox_enabled", cfg.blackbox_enabled)
+                cfg.deception_user_folders = _bool_setting(
+                    data, "deception_user_folders", cfg.deception_user_folders)
                 cfg.mobile_enabled = _bool_setting(
                     data, "mobile_enabled", cfg.mobile_enabled)
                 cfg.mobile_signal_cli = data.get("mobile_signal_cli", cfg.mobile_signal_cli)
@@ -178,6 +187,14 @@ class Config:
                 cfg.mcp_enabled = _bool_setting(
                     data, "mcp_enabled", cfg.mcp_enabled)
                 cfg.mcp_port    = int(data.get("mcp_port", cfg.mcp_port))
+                cfg.jarvis_control_enabled = _bool_setting(
+                    data, "jarvis_control_enabled", cfg.jarvis_control_enabled)
+                try:
+                    cfg.jarvis_control_port = int(
+                        data.get("jarvis_control_port", cfg.jarvis_control_port)
+                    )
+                except (TypeError, ValueError):
+                    pass
                 cfg.fleet_service_enabled = _bool_setting(
                     data, "fleet_service_enabled", cfg.fleet_service_enabled)
                 try:
@@ -288,6 +305,10 @@ class Config:
                 os.environ["ANGERONA_REQUIRE_SIGNED_AAR"] = "1"
             if cfg.entropy_pool_enabled:
                 os.environ["ANGERONA_ENTROPY_POOL"] = "1"
+            if cfg.deception_user_folders:
+                os.environ["ANGERONA_USER_FOLDER_DECEPTION"] = "1"
+            else:
+                os.environ.pop("ANGERONA_USER_FOLDER_DECEPTION", None)
         except Exception:
             pass
         return cfg
@@ -315,6 +336,7 @@ class Config:
                     "autostart_enabled": self.autostart_enabled,
                     "eco_mode":          self.eco_mode,
                     "blackbox_enabled":  self.blackbox_enabled,
+                    "deception_user_folders": self.deception_user_folders,
                     "mobile_enabled":     self.mobile_enabled,
                     "mobile_signal_cli":  self.mobile_signal_cli,
                     "mobile_host_number": self.mobile_host_number,
@@ -323,6 +345,8 @@ class Config:
                     "ai_provider_order":  self.ai_provider_order,
                     "mcp_enabled":       self.mcp_enabled,
                     "mcp_port":          self.mcp_port,
+                    "jarvis_control_enabled": self.jarvis_control_enabled,
+                    "jarvis_control_port": self.jarvis_control_port,
                     "fleet_service_enabled": self.fleet_service_enabled,
                     "fleet_service_port": self.fleet_service_port,
                     "fleet_tenant_id": self.fleet_tenant_id,

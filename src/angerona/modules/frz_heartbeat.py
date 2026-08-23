@@ -5,12 +5,12 @@ Purpose
     in the Angerona process can freeze all Python threads, preventing detection or
     response.  FRZ counters this by:
 
-    1. Python side (this module) — continuously writes a monotonic nanosecond
-       timestamp into a named ``mmap`` file (shared memory region) every
-       ``HEARTBEAT_MS`` milliseconds.  Any thread suspension that halts Python will
-       also freeze this clock.
+    1. Python side (this module) — continuously writes the authenticated fixed
+       v2 resilience heartbeat into a named ``mmap`` file every ``HEARTBEAT_MS``
+       milliseconds. Any thread suspension that halts Python freezes its signed
+       counter/timestamp pair.
 
-    2. External watchdog (``frz_watchdog.exe``, pre-compiled from
+    2. External watchdog (``frz_watchdog_v2.exe``, pre-compiled from
        ``AngeronaSuite/frz/frz_watchdog.go``) — launched as a subprocess that is
        *not* the Python process.  It reads the mmap timestamp independently.  If
        the Python PID is still alive but the timestamp hasn't advanced for
@@ -32,30 +32,35 @@ Safety
 """
 from __future__ import annotations
 
-import mmap
 import os
 import pathlib
-import struct
 import subprocess
 import sys
 import threading
-import time
 from functools import lru_cache
 
 from angerona.core.config import Config
 from angerona.core.jitter import jittered
 from angerona.core.module_base import BaseModule, Severity
+from angerona.resilience import heartbeat as hb
 
 # ── constants ────────────────────────────────────────────────────────────────
 HEARTBEAT_MS: int = 500          # write interval (ms)
-MMAP_SIZE: int = 16             # bytes: uint64 ts_ns (8) + uint32 pid (4) + uint32 flags (4)
-_STRUCT = struct.Struct("<QII")  # little-endian: uint64, uint32, uint32
+MMAP_SIZE: int = hb.RECORD_SIZE
+_HEARTBEAT_COMPONENT = "frz-core"
 
-_WATCHDOG_NAME = "frz_watchdog.exe"
+_WATCHDOG_NAME = "frz_watchdog_v2.exe"
+_LEGACY_WATCHDOG_NAME = "frz_watchdog.exe"
 
 
 def _watchdog_path() -> pathlib.Path:
-    """Look for the compiled watchdog next to the package root / app dir."""
+    """Find only the authenticated-v2 watchdog binary.
+
+    A signed legacy binary is still unsafe here: it interprets v2 magic bytes as
+    a timestamp and cannot authenticate flags, PID, or progress.  Giving it this
+    record could therefore cause a false emergency kill.  The distinct filename
+    is an explicit wire-compatibility boundary.
+    """
     from angerona.core.data_paths import project_root
     # Try: next to __main__ frozen exe, then repo frz/ subdir
     candidates = [
@@ -66,6 +71,14 @@ def _watchdog_path() -> pathlib.Path:
         if p.exists():
             return p
     return candidates[-1]  # return canonical path even if missing (self_test notes it)
+
+
+def _legacy_watchdog_present() -> bool:
+    from angerona.core.data_paths import project_root
+    return any(path.exists() for path in (
+        pathlib.Path(sys.executable).parent / _LEGACY_WATCHDOG_NAME,
+        project_root() / "frz" / _LEGACY_WATCHDOG_NAME,
+    ))
 
 
 @lru_cache(maxsize=1)
@@ -99,8 +112,7 @@ class FrzHeartbeatModule(BaseModule):
 
     def __init__(self) -> None:
         super().__init__()
-        self._mm: mmap.mmap | None = None
-        self._mm_file = None
+        self._heartbeat_writer: hb.HeartbeatWriter | None = None
         self._watchdog_proc: subprocess.Popen | None = None
         self._lock = threading.Lock()
         self._beats: int = 0
@@ -118,39 +130,32 @@ class FrzHeartbeatModule(BaseModule):
     def _open_mmap(self) -> None:
         path = _mmap_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._mm_file = open(path, "w+b")
-        self._mm_file.write(b"\x00" * MMAP_SIZE)
-        self._mm_file.flush()
-        self._mm = mmap.mmap(self._mm_file.fileno(), MMAP_SIZE)
+        self._heartbeat_writer = hb.HeartbeatWriter(
+            _HEARTBEAT_COMPONENT,
+            path=path,
+        )
 
     def _write_beat(self) -> None:
-        if self._mm is None:
+        writer = self._heartbeat_writer
+        if writer is None:
             return
-        ts_ns = time.monotonic_ns()
-        pid = os.getpid() & 0xFFFFFFFF
-        data = _STRUCT.pack(ts_ns, pid, 1)  # flag=1 → running
         with self._lock:
-            self._mm.seek(0)
-            self._mm.write(data)
-            self._mm.flush()
+            # HeartbeatWriter publishes the authenticated record in place and
+            # intentionally does not flush on each beat. File-backed mappings
+            # are coherent to the external reader without durable HDD writes.
+            writer.beat()
         self._beats += 1
 
     def _close_mmap(self) -> None:
-        if self._mm:
+        writer = self._heartbeat_writer
+        self._heartbeat_writer = None
+        if writer is not None:
             try:
-                # Write flag=0 (stopping) so watchdog doesn't fire during clean shutdown
-                ts_ns = time.monotonic_ns()
-                pid = os.getpid() & 0xFFFFFFFF
                 with self._lock:
-                    self._mm.seek(0)
-                    self._mm.write(_STRUCT.pack(ts_ns, pid, 0))
-                    self._mm.flush()
-                self._mm.close()
-            except Exception:
-                pass
-        if self._mm_file:
-            try:
-                self._mm_file.close()
+                    # close() publishes an authenticated stopped record before
+                    # releasing the mapping, so only a valid writer can suppress
+                    # the watchdog during clean shutdown.
+                    writer.close()
             except Exception:
                 pass
 
@@ -158,11 +163,18 @@ class FrzHeartbeatModule(BaseModule):
     def _launch_watchdog(self) -> None:
         exe = _trusted_watchdog_path()
         if exe is None:
+            legacy_present = _legacy_watchdog_present()
+            legacy = (
+                " A legacy unauthenticated watchdog was ignored."
+                if legacy_present else ""
+            )
             self.emit(
-                "A validly signed FRZ watchdog binary was not found. Heartbeat "
-                "remains active; external termination is disabled.",
+                "A validly signed authenticated-v2 FRZ watchdog binary was not "
+                "found. Heartbeat remains active; external termination is "
+                f"disabled.{legacy}",
                 Severity.LOW,
                 watchdog_path="",
+                legacy_incompatible=legacy_present,
             )
             return
         try:
@@ -246,41 +258,64 @@ class FrzHeartbeatModule(BaseModule):
                 pass
 
     def self_test(self) -> tuple[bool, str]:
-        """Write two beats to a temp mmap and verify the timestamp advances."""
+        """Verify independent authenticated-v2 reads see advancing beats."""
         import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".mmap", delete=False) as f:
-            tmp = pathlib.Path(f.name)
-            f.write(b"\x00" * MMAP_SIZE)
-        try:
-            with open(tmp, "r+b") as fh:
-                mm = mmap.mmap(fh.fileno(), MMAP_SIZE)
-                ts1 = time.monotonic_ns()
-                mm.seek(0)
-                mm.write(_STRUCT.pack(ts1, os.getpid(), 1))
-                mm.flush()
-                time.sleep(0.01)
-                ts2 = time.monotonic_ns()
-                mm.seek(0)
-                mm.write(_STRUCT.pack(ts2, os.getpid(), 1))
-                mm.flush()
-                mm.seek(0)
-                raw = mm.read(MMAP_SIZE)
-                ts_r, pid_r, flag_r = _STRUCT.unpack(raw)
-                mm.close()
-            tmp.unlink()
-            ok = (ts_r == ts2) and (pid_r == os.getpid()) and (flag_r == 1) and (ts2 > ts1)
-            watchdog_note = (
-                "signed watchdog binary present" if _trusted_watchdog_path() is not None
-                else "signed watchdog binary absent"
-            )
-            return (ok, f"mmap round-trip OK ({watchdog_note})" if ok
-                    else f"mmap read mismatch: ts={ts_r} pid={pid_r} flag={flag_r}")
-        except Exception as exc:
+        key = bytes(range(32))
+        with tempfile.TemporaryDirectory(prefix="frz_hb_selftest_") as directory:
+            tmp = pathlib.Path(directory) / "frz.mmap"
             try:
-                tmp.unlink()
-            except Exception:
-                pass
-            return (False, f"mmap self-test exception: {exc}")
+                writer = hb.HeartbeatWriter(
+                    _HEARTBEAT_COMPONENT,
+                    token_raw=key,
+                    path=tmp,
+                )
+                reader = hb.HeartbeatReader(
+                    _HEARTBEAT_COMPONENT,
+                    path=tmp,
+                    key_raw=key,
+                )
+                first = reader.read()
+                first_auth = reader.authentication_status(record=first)
+                writer.beat()
+                second = reader.read()
+                second_auth = reader.authentication_status(record=second)
+                wrong_key_rejected = (
+                    hb.HeartbeatReader(
+                        _HEARTBEAT_COMPONENT,
+                        path=tmp,
+                        key_raw=bytes(reversed(key)),
+                    ).authentication_status(record=second)
+                    == "invalid"
+                )
+                writer.close()
+                stopped = reader.read()
+                stopped_auth = reader.authentication_status(record=stopped)
+                ok = bool(
+                    first
+                    and second
+                    and stopped
+                    and first_auth == "authenticated"
+                    and second_auth == "authenticated"
+                    and int(second["counter"]) > int(first["counter"])
+                    and int(second["pid"]) == (os.getpid() & 0xFFFFFFFF)
+                    and int(second["flags"]) == 1
+                    and wrong_key_rejected
+                    and stopped_auth == "authenticated"
+                    and int(stopped["flags"]) == 0
+                )
+                watchdog_note = (
+                    "signed v2 watchdog present"
+                    if _trusted_watchdog_path() is not None
+                    else "signed v2 watchdog absent; authenticated Python heartbeat only"
+                )
+                return (
+                    ok,
+                    f"authenticated v2 mmap round-trip OK ({watchdog_note})"
+                    if ok else
+                    "authenticated v2 mmap verification failed",
+                )
+            except Exception as exc:
+                return (False, f"mmap self-test exception: {exc}")
 
 
 def register() -> FrzHeartbeatModule:

@@ -22,6 +22,7 @@ import threading
 import time
 
 from angerona.core.config import Config
+from angerona.core.chill_runtime import ChillRuntimeController
 from angerona.core.eventbus import EventBus
 from angerona.core.module_manager import ModuleManager
 from angerona.core.platforms import current_platform
@@ -56,9 +57,56 @@ def run_headless() -> int:
 
     manager = ModuleManager(bus, config)
     reporter = StatusReporter(bus, storage, manager, config)
+    chill = None
+    if getattr(config, "eco_mode", True):
+        chill = ChillRuntimeController(
+            manager,
+            bus,
+            config,
+            notify=lambda message: print(
+                f"[Angerona] [chill] {message}", flush=True
+            ),
+        )
+        # Publish before discovery/startup so every module and Ollama caller
+        # observes the correct runtime profile from its first instruction.
+        chill.prepare_runtime()
+    else:
+        setattr(config, "runtime_chill_active", False)
+        os.environ.pop("ANGERONA_CHILL_ACTIVE", None)
+
+    # The JARVIS adapter is independent from read-only MCP and works in
+    # headless mode so JARVIS can remain the single visible control surface.
+    # Start it before the expensive module-discovery pass; status truthfully
+    # reports 0/0 until discovery fills the manager, while the bounded scan
+    # catalog is already usable.
+    _jarvis_control = None
+    if getattr(config, "jarvis_control_enabled", False):
+        try:
+            from angerona.engines.jarvis_control_server import (
+                AngeronaJarvisControlServer,
+            )
+            _jarvis_control = AngeronaJarvisControlServer(manager, config)
+            _jarvis_control.start()
+            print(
+                "[Angerona] Authenticated JARVIS defensive control adapter started.",
+                flush=True,
+            )
+        except Exception as exc:
+            _jarvis_control = None
+            print(
+                "[Angerona] JARVIS control adapter unavailable: "
+                f"{type(exc).__name__}.",
+                flush=True,
+            )
 
     manager.discover()
-    manager.start_enabled()
+    if chill is not None:
+        deferred = chill.prepare_modules()
+        skipped = manager.start_enabled(deferred_names=deferred)
+        chill.start(skipped)
+    else:
+        # Preserve the historical Full-mode startup path exactly.
+        manager.start_enabled()
     reporter.start()
 
     # Opt-in decoupled resilience ecosystem (standalone scanner + supervisor +
@@ -76,7 +124,8 @@ def run_headless() -> int:
         except Exception as exc:
             print(f"[Angerona] Resilience ecosystem failed to start: {exc}", flush=True)
 
-    print(f"[Angerona] Headless mode — {len(manager.modules)} modules discovered, "
+    mode = "network-first Chill" if chill is not None else "Full"
+    print(f"[Angerona] Headless mode ({mode}) — {len(manager.modules)} modules discovered, "
           f"enabled ones running. DB: {config.db_path}. Ctrl+C to stop.", flush=True)
 
     stop = threading.Event()
@@ -96,6 +145,13 @@ def run_headless() -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        if chill is not None:
+            chill.stop()
+        if _jarvis_control is not None:
+            try:
+                _jarvis_control.stop()
+            except Exception:
+                pass
         if _resilience is not None:
             try:
                 _resilience.stop()

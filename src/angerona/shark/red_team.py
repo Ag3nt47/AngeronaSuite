@@ -32,6 +32,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional
 
+from angerona.core.practice_scope import (
+    register_artifact,
+    register_process,
+    register_run,
+    unregister_run,
+)
 from angerona.shark.run_manifest import (
     build_run_history,
     preflight_run,
@@ -112,6 +118,12 @@ class RedTeamEngine:
         self._thread: Optional[threading.Thread] = None
         self._running = threading.Event()
         self._cancel = threading.Event()
+        self._cleanup_lock = threading.RLock()
+        self._cleanup_timer: Optional[threading.Timer] = None
+        self._cleanup_generation = 0
+        self._evidence_lease = False
+        self._probe_processes: List[object] = []
+        self._owned_artifacts: List[Path] = []
         self.run_id = ""
         self.steps: List[RedTeamStep] = []
 
@@ -138,6 +150,10 @@ class RedTeamEngine:
         step = RedTeamStep(stage=stage, technique=technique, description=description,
                            ts_start=ts_start, ts_end=time.time(), **kw)
         self.steps.append(step)
+        for path in step.artifact_paths:
+            register_artifact(path, self.run_id, kind="red-team")
+        for token in step.correlation_tokens:
+            register_process(token, self.run_id, kind="red-team")
         return step
 
     def _marker(self, name: str, body: str) -> Path:
@@ -145,36 +161,174 @@ class RedTeamEngine:
             raise _DrillCancelled()
         self.documents_dir.mkdir(parents=True, exist_ok=True)
         p = self.documents_dir / name
+        # Register the exact destination before the write.  Real-time AV/FIM
+        # can observe a file immediately; provenance must win that race without
+        # ever trusting the suspicious-looking filename itself.
+        register_artifact(p, self.run_id, kind="red-team")
+        self._owned_artifacts.append(p)
         p.write_text(body, encoding="utf-8")
         _hide_file(p)
         return p
 
-    def _sweep_markers(self) -> int:
-        """Delete EVERY drill marker in the target dir — tracked artifacts plus
-        any orphaned `_redteam_*` files from earlier/crashed runs. Never raises."""
+    def _artifact_paths_snapshot(self) -> tuple[Path, ...]:
+        values = [Path(path) for path in tuple(self._owned_artifacts)]
+        values.extend(
+            Path(path)
+            for step in tuple(self.steps)
+            for path in tuple(step.artifact_paths)
+        )
+        return tuple(dict.fromkeys(values))
+
+    def _sweep_markers(
+        self,
+        *,
+        target_dir: Path | None = None,
+        artifact_paths: tuple[Path, ...] | None = None,
+        include_orphans: bool = True,
+    ) -> int:
+        """Delete only exact drill markers inside one captured target directory.
+
+        Delayed cleanup passes an immutable artifact snapshot and disables the
+        orphan glob.  That prevents an older run's timer from deleting a newer
+        run's markers when both runs use the same operator-selected directory.
+        """
         removed = 0
-        # 1) tracked per-step artifacts
-        for step in self.steps:
-            for p in step.artifact_paths:
-                try:
-                    if Path(p).exists():
-                        Path(p).unlink(missing_ok=True)
-                        removed += 1
-                except Exception:
-                    pass
-        # 2) belt-and-suspenders glob sweep for anything left behind
         try:
-            for p in self.documents_dir.glob(f"{_MARKER_PREFIX}*"):
-                try:
-                    p.unlink(missing_ok=True)
+            target = Path(target_dir or self.documents_dir).resolve(strict=False)
+        except (OSError, RuntimeError):
+            return 0
+        tracked = (
+            artifact_paths
+            if artifact_paths is not None
+            else self._artifact_paths_snapshot()
+        )
+        # 1) tracked per-step artifacts
+        seen: set[Path] = set()
+        for value in tracked:
+            try:
+                path = Path(value).resolve(strict=False)
+                if (
+                    path in seen
+                    or path.parent != target
+                    or not path.name.startswith(_MARKER_PREFIX)
+                ):
+                    continue
+                seen.add(path)
+                if path.exists():
+                    path.unlink(missing_ok=True)
                     removed += 1
-                except Exception:
-                    pass
-        except Exception:
-            pass
+            except Exception:
+                pass
+        # 2) belt-and-suspenders glob sweep for anything left behind
+        if include_orphans:
+            try:
+                for path in target.glob(f"{_MARKER_PREFIX}*"):
+                    try:
+                        resolved = path.resolve(strict=False)
+                        if resolved.parent != target or resolved in seen:
+                            continue
+                        resolved.unlink(missing_ok=True)
+                        removed += 1
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         if removed:
             self._narrate(f"🧹 Red Team cleanup — removed {removed} test marker/file(s).")
         return removed
+
+    def _cancel_pending_cleanup(self) -> None:
+        """Invalidate and cancel cleanup scheduled by a completed prior run."""
+        with self._cleanup_lock:
+            self._cleanup_generation += 1
+            timer = self._cleanup_timer
+            self._cleanup_timer = None
+            if timer is not None:
+                timer.cancel()
+
+    def hold_evidence_for_aar(self) -> None:
+        """Prevent successful-run cleanup until the owning AAR snapshots it."""
+        self._cancel_pending_cleanup()
+        with self._cleanup_lock:
+            self._evidence_lease = True
+
+    def evidence_cleanup_scope(self) -> dict:
+        """Capture immutable cleanup ownership for the currently completed run."""
+        return {
+            "run_id": str(self.run_id or ""),
+            "target_dir": Path(self.documents_dir).resolve(strict=False),
+            "artifact_paths": self._artifact_paths_snapshot(),
+        }
+
+    def release_evidence_after_aar(self, scope: dict | None = None) -> int:
+        """Clean only one captured run after its AAR finished (success or error)."""
+        captured = dict(scope or self.evidence_cleanup_scope())
+        run_id = str(captured.get("run_id") or "")
+        target = Path(captured.get("target_dir") or self.documents_dir)
+        artifacts = tuple(Path(p) for p in captured.get("artifact_paths") or ())
+        with self._cleanup_lock:
+            self._evidence_lease = False
+        removed = self._sweep_markers(
+            target_dir=target,
+            artifact_paths=artifacts,
+            include_orphans=False,
+        )
+        self._cleanup_probe_processes()
+        if run_id:
+            unregister_run(run_id)
+        return removed
+
+    def _cleanup_probe_processes(self) -> None:
+        """Bound cancellation cleanup to children spawned by this engine."""
+        processes, self._probe_processes = self._probe_processes, []
+        for process in processes:
+            try:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=1.0)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+
+    def _schedule_cleanup(
+        self,
+        delay: float,
+        target_dir: Path,
+        artifact_paths: tuple[Path, ...],
+    ) -> None:
+        """Schedule cleanup bound to one run's immutable target and paths."""
+        target = Path(target_dir).resolve(strict=False)
+        captured = tuple(Path(path).resolve(strict=False) for path in artifact_paths)
+        captured_run_id = str(self.run_id or "")
+        with self._cleanup_lock:
+            self._cleanup_generation += 1
+            generation = self._cleanup_generation
+            previous = self._cleanup_timer
+            if previous is not None:
+                previous.cancel()
+
+            def clean_originating_run() -> None:
+                # Holding this lock through deletion serializes cleanup with a
+                # new run's cancellation/pre-clean boundary. Once start() gets
+                # past cancellation, a stale callback cannot resume later.
+                with self._cleanup_lock:
+                    if generation != self._cleanup_generation:
+                        return
+                    self._cleanup_timer = None
+                    self._sweep_markers(
+                        target_dir=target,
+                        artifact_paths=captured,
+                        include_orphans=False,
+                    )
+                    if captured_run_id:
+                        unregister_run(captured_run_id)
+
+            timer = threading.Timer(max(0.0, float(delay)), clean_originating_run)
+            timer.daemon = True
+            self._cleanup_timer = timer
+            timer.start()
 
     # ── control ────────────────────────────────────────────────────────────
     def start(self, jitter_range=(2.0, 7.0), noise_chance=0.25,
@@ -223,6 +377,10 @@ class RedTeamEngine:
                 + "; ".join(preflight.violations)
             )
             return False
+        # A completed run may still own a delayed cleanup callback. Cancel it
+        # before changing shared run state or creating any marker for this run.
+        prior_run_id = str(self.run_id or "")
+        self._cancel_pending_cleanup()
         self.documents_dir = Path(candidate_target)
         self._run_contract = preflight
         self._complexity = preflight.cycles
@@ -239,10 +397,18 @@ class RedTeamEngine:
             if preflight.custom is not None else None
         )
         self.run_id = f"redteam-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+        register_run(self.run_id, kind="red-team")
         self.steps = []
+        self._owned_artifacts = []
         # Pre-clean: nuke any leftover markers from a prior run that never got
         # swept (e.g. the app was killed mid-drill) so they don't accumulate.
-        self._sweep_markers()
+        self._sweep_markers(
+            target_dir=self.documents_dir,
+            artifact_paths=(),
+            include_orphans=True,
+        )
+        if prior_run_id:
+            unregister_run(prior_run_id)
         self._running.set()
         self._thread = threading.Thread(
             target=self._run_playbook, args=(jitter_range, noise_chance),
@@ -251,12 +417,19 @@ class RedTeamEngine:
         return True
 
     def stop_and_clean(self) -> None:
+        self._cancel_pending_cleanup()
         self._cancel.set()
         self._running.clear()
         worker = self._thread
         if worker is not None and worker.is_alive() and worker is not threading.current_thread():
             worker.join(timeout=0.25)
-        self._sweep_markers()
+        self._sweep_markers(
+            target_dir=self.documents_dir,
+            artifact_paths=self._artifact_paths_snapshot(),
+            include_orphans=True,
+        )
+        self._cleanup_probe_processes()
+        unregister_run(self.run_id)
 
     # ── playbook ─────────────────────────────────────────────────────────────
     def _run_playbook(self, jitter_range, noise_chance) -> None:
@@ -332,17 +505,34 @@ class RedTeamEngine:
             if run_cancelled:
                 self._running.clear()
                 self._narrate(f"Red Team Attack cancelled - {ok}/{n} steps executed; cleaning markers.")
-                self._sweep_markers()
+                self._sweep_markers(
+                    target_dir=self.documents_dir,
+                    artifact_paths=self._artifact_paths_snapshot(),
+                    include_orphans=True,
+                )
+                self._cleanup_probe_processes()
+                unregister_run(self.run_id)
             else:
                 self._narrate(
                     f"\U0001F3C1 Red Team Attack complete — {ok}/{n} steps executed. "
                     "Generating the After-Action Report (brief settle window)…")
                 self._running.clear()
-                delay = getattr(self, "_cleanup_delay", 55.0)
-                try:
-                    threading.Timer(delay, self._sweep_markers).start()
-                except Exception:
-                    self._sweep_markers()
+                with self._cleanup_lock:
+                    evidence_held = self._evidence_lease
+                if not evidence_held:
+                    delay = getattr(self, "_cleanup_delay", 55.0)
+                    try:
+                        self._schedule_cleanup(
+                            delay,
+                            self.documents_dir,
+                            self._artifact_paths_snapshot(),
+                        )
+                    except Exception:
+                        self._sweep_markers(
+                            target_dir=self.documents_dir,
+                            artifact_paths=self._artifact_paths_snapshot(),
+                            include_orphans=False,
+                        )
 
     def _step_credential_access(self, jitter_range) -> None:
         self._jitter(*jitter_range, note="Credential Access — drop an inert cred-dump marker")
@@ -496,16 +686,15 @@ class RedTeamEngine:
         """Spawn a few BENIGN, short-lived, red-team-TAGGED processes so the
         process-creation sensors (PROC/ETW) and the SOAR active-defense path get
         exercised end-to-end. Nothing harmful runs — each process just carries the
-        tag on its command line and exits immediately."""
-        import os
+        tag on its command line and idles for at most 30 seconds."""
         import subprocess
         self._jitter(*jitter_range, note="Execution — benign tagged process spawns")
         ts = time.time()
         level = int(getattr(self, "_threat_level", getattr(self, "_complexity", 1)) or 1)
         mult = int(getattr(self, "_proc_mult", 1) or 1)
         n = min(2 + level * mult, 16)
-        self._narrate(f"▶ STAGE: Benign Execution [T1059-style] — spawning {n} short-lived, "
-                      "red-team-TAGGED processes (they exit immediately) so the process sensors "
+        self._narrate(f"▶ STAGE: Benign Execution [T1059-style] — spawning {n} bounded, "
+                      "red-team-TAGGED idle processes (maximum 30 seconds) so process sensors "
                       "and SOAR see realistic process-creation activity. Nothing harmful runs.")
         spawned = 0
         pids = []
@@ -515,19 +704,23 @@ class RedTeamEngine:
                 break
             tag = f"ANGERONA_REDTEAM_{uuid.uuid4().hex[:8]}"
             try:
-                if os.name == "nt":
-                    proc = subprocess.Popen(["cmd", "/c", "rem", tag])   # no-op, exits
-                else:
-                    proc = subprocess.Popen(["sh", "-c", ": " + tag])
+                register_process(tag, self.run_id, kind="red-team")
+                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                proc = subprocess.Popen(  # noqa: S603 - fixed interpreter, inert sleep
+                    [sys.executable, "-c", "import time; time.sleep(30)", tag],
+                    creationflags=flags,
+                )
+                self._probe_processes.append(proc)
                 spawned += 1
                 pids.append(int(proc.pid))
                 tokens.append(tag)
+                register_process(tag, self.run_id, pid=int(proc.pid), kind="red-team")
             except Exception:
                 pass
             if self._cancel.wait(0.2):
                 break
         self._record("Benign Execution (simulated)", "T1059 tagged spawns",
-                     f"Spawned {spawned} short-lived red-team-tagged process(es).", ts,
+                     f"Spawned {spawned} bounded red-team-tagged idle process(es).", ts,
                      pid=(pids[0] if pids else None), pids=pids,
                      correlation_tokens=tokens)
 

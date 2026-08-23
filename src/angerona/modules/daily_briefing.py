@@ -30,12 +30,17 @@ from angerona.core.url_policy import (
     read_bounded,
     safe_urlopen,
 )
+from angerona.core.ollama_lifecycle import effective_keep_alive
+from angerona.core.threat import is_active_threat
 
 _SYSTEM_PROMPT = (
     "You are a SOC analyst writing a short daily security briefing for a single "
     "Windows endpoint. Be concise, factual, and calm. 4-8 sentences. Lead with the "
     "overall posture (quiet / notable / under attack), then the most important "
-    "findings and what was done about them. No markdown headers."
+    "findings and what was done about them. Only active_by_severity represents a "
+    "live hostile threat; raw by_severity also includes practice, exposure, and "
+    "health evidence and must never by itself be called an active attack. No "
+    "markdown headers."
 )
 
 
@@ -47,6 +52,7 @@ def _shared_logs() -> Path:
 def _summarize_events(events) -> dict:
     """Turn raw bus events into a compact, countable summary (pure function)."""
     sev_counts: Counter = Counter()
+    active_sev_counts: Counter = Counter()
     tech_counts: Counter = Counter()
     modules: Counter = Counter()
     criticals: list[str] = []
@@ -63,13 +69,18 @@ def _summarize_events(events) -> dict:
                 if t.startswith("T"):
                     tech_counts[t] += 1
         try:
-            if getattr(ev, "severity", None) is not None and ev.severity >= Severity.CRITICAL:
+            active = is_active_threat(ev)
+            if active:
+                active_sev_counts[sev] += 1
+            if active and ev.severity >= Severity.CRITICAL:
                 criticals.append((getattr(ev, "message", "") or "")[:120])
         except Exception:
             pass
     return {
         "total": sum(sev_counts.values()),
+        "active_total": sum(active_sev_counts.values()),
         "by_severity": dict(sev_counts),
+        "active_by_severity": dict(active_sev_counts),
         "top_techniques": tech_counts.most_common(5),
         "top_modules": modules.most_common(5),
         "criticals": criticals[:5],
@@ -86,24 +97,32 @@ def _read_remediation() -> dict:
 def _heuristic_briefing(summary: dict, remediation: dict, incidents: list) -> str:
     """Deterministic briefing text — used when Ollama is unavailable."""
     total = summary.get("total", 0)
-    crit = summary.get("by_severity", {}).get("CRITICAL", 0)
-    high = summary.get("by_severity", {}).get("HIGH", 0)
+    evidence_crit = summary.get("by_severity", {}).get("CRITICAL", 0)
+    evidence_high = summary.get("by_severity", {}).get("HIGH", 0)
+    active_crit = summary.get("active_by_severity", {}).get("CRITICAL", 0)
+    active_high = summary.get("active_by_severity", {}).get("HIGH", 0)
     contained = remediation.get("contained", 0)
-    if crit or (incidents and incidents[0].get("severity") == "CRITICAL"):
+    if active_crit:
         posture = "UNDER ATTACK / serious activity"
-    elif high or total > 20:
-        posture = "notable activity"
+    elif active_high:
+        posture = "notable active threat activity"
+    elif evidence_crit or evidence_high or total > 20:
+        posture = "notable evidence, with no active attack classified"
     else:
         posture = "quiet"
     lines = [f"Daily security briefing — posture: {posture}.",
              f"{total} events in the review window "
-             f"({crit} critical, {high} high)."]
+             f"({evidence_crit} critical-evidence, {evidence_high} high-evidence); "
+             f"active threats: {active_crit} critical, {active_high} high."]
     if summary.get("top_techniques"):
         techs = ", ".join(f"{t} (x{n})" for t, n in summary["top_techniques"])
         lines.append(f"Most-seen techniques: {techs}.")
     if incidents:
         top = incidents[0]
-        lines.append(f"Top incident: {top.get('actor','?')} (pid {top.get('pid')}) reached "
+        prefix = "Top active incident" if (active_crit or active_high) else (
+            "Top correlated evidence cluster (not classified as an active threat)"
+        )
+        lines.append(f"{prefix}: {top.get('actor','?')} (pid {top.get('pid')}) reached "
                      f"{top.get('progress_pct')}% of the kill-chain — {top.get('chain','')}.")
     lines.append(f"Active defense contained {contained} process(es)."
                  if contained else "No automated containment was required.")
@@ -179,7 +198,7 @@ class DailyBriefingModule(BaseModule):
                 {"role": "user", "content": facts},
             ],
             "stream": False,
-            "keep_alive": "30m",
+            "keep_alive": effective_keep_alive("30m"),
         }).encode("utf-8")
         req = urllib.request.Request(
             local_service_url(self._host, "/api/chat"), data=payload,
@@ -209,7 +228,7 @@ class DailyBriefingModule(BaseModule):
         self._count += 1
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
         full = f"[{stamp}] Security Briefing ({source})\n\n{text}\n"
-        sev = (Severity.HIGH if summary.get("by_severity", {}).get("CRITICAL")
+        sev = (Severity.HIGH if summary.get("active_by_severity", {}).get("CRITICAL")
                else Severity.INFO)
         self.emit(f"📋 Daily briefing ready ({source}): {text[:180]}", sev,
                   briefing=text, source=source, events=summary.get("total", 0))

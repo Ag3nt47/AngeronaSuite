@@ -74,10 +74,50 @@ def _cmdline_probe(*needles: str):
     return cached_cmdline_probe(*needles)
 
 
+def _refresh_heartbeat(writer, token_raw: bytes | None = None):
+    """Recover once from an invalidated heartbeat mapping.
+
+    Sleep/resume, antivirus inspection, and another supervisor replacing the
+    backing file can invalidate an mmap without the watchdog process itself
+    being unhealthy. Reopening the tiny mapping avoids turning that transient
+    filesystem event into a full watchdog crash.
+    """
+    try:
+        writer.beat()
+        return writer
+    except Exception:
+        try:
+            writer.close()
+        except Exception:
+            pass
+        replacement = hb.HeartbeatWriter("watchdog", token_raw=token_raw)
+        replacement.beat()
+        return replacement
+
+
+def _standdown_requested() -> bool:
+    """Treat an unreadable command as invalid without killing supervision."""
+    try:
+        return tok.is_standdown_requested()
+    except Exception as exc:
+        diag.write_status(
+            "watchdog",
+            "degraded",
+            {"standdown_check_error": type(exc).__name__},
+        )
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     token_hex = os.environ.get("ANGERONA_WATCHDOG_TOKEN", "")
-    token_raw = bytes.fromhex(token_hex) if token_hex else b""
-    beat = hb.HeartbeatWriter("watchdog", token_raw=token_raw)
+    try:
+        token_raw = bytes.fromhex(token_hex) if token_hex else b""
+    except ValueError:
+        diag.write_status("watchdog", "refused", {"reason": "malformed launch token"})
+        return 2
+    # The external token authenticates the compiled-parent handshake only.
+    # Peer heartbeats share the ACL-protected per-install authority instead.
+    beat = hb.HeartbeatWriter("watchdog")
 
     pyw = os.environ.get("ANGERONA_PY") or _pythonw()
     sup = ProcessSupervisor(
@@ -138,8 +178,8 @@ def main(argv: list[str] | None = None) -> int:
     n = 0
     while not stop["v"]:
         n += 1
-        beat.beat()
-        if tok.is_standdown_requested():
+        beat = _refresh_heartbeat(beat)
+        if _standdown_requested():
             break
         if n % 6 == 0:   # ~ every 3s
             diag.write_status("watchdog", "running", {
@@ -167,8 +207,7 @@ if __name__ == "__main__":
     except BaseException:
         try:
             import traceback
-            from angerona.resilience import heartbeat as _hb
-            _dir = _hb._data_dir() / "diagnostics"
+            _dir = diag.diag_dir()
             _dir.mkdir(parents=True, exist_ok=True)
             with open(_dir / "resilience_watchdog_crash.log", "a", encoding="utf-8") as _f:
                 _f.write(f"\n[{time.strftime('%Y-%m-%dT%H:%M:%S')}] watchdog crashed:\n")

@@ -59,6 +59,7 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
         "teams_bot_enabled": False,
         "mobile_enabled": False,
         "mcp_enabled": False,
+        "jarvis_control_enabled": False,
         "fleet_service_enabled": False,
     },
     "Maximum local coverage": {
@@ -77,6 +78,7 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
         "teams_bot_enabled": False,
         "mobile_enabled": False,
         "mcp_enabled": False,
+        "jarvis_control_enabled": False,
         "fleet_service_enabled": False,
     },
     "Low-resource local": {
@@ -95,6 +97,7 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
         "teams_bot_enabled": False,
         "mobile_enabled": False,
         "mcp_enabled": False,
+        "jarvis_control_enabled": False,
         "fleet_service_enabled": False,
     },
 }
@@ -223,6 +226,34 @@ STEPS: tuple[Step, ...] = (
         (
             Field("check", "mcp_enabled", "Enable the read-only local MCP service"),
             Field("spin", "mcp_port", "MCP loopback port", minimum=1024, maximum=65535),
+            Field(
+                "check",
+                "jarvis_control_enabled",
+                "Enable authenticated local JARVIS defensive controls",
+            ),
+            Field(
+                "password_env",
+                "ANGERONA_JARVIS_CONTROL_TOKEN",
+                "JARVIS control token",
+                "Leave blank to keep the protected token",
+                note=(
+                    "At least 32 bytes. Stored only in the operating-system "
+                    "credential store and never accepted from the launch environment."
+                ),
+            ),
+            Field(
+                "action",
+                "regenerate_jarvis_token",
+                "Generate a new protected JARVIS token",
+                note="The generated token is masked and is saved only when setup finishes.",
+            ),
+            Field(
+                "spin",
+                "jarvis_control_port",
+                "JARVIS loopback port",
+                minimum=1024,
+                maximum=65535,
+            ),
             Field("check", "fleet_service_enabled", "Enable the authenticated local fleet service"),
             Field("spin", "fleet_service_port", "Fleet loopback port", minimum=1024, maximum=65535),
             Field("text", "fleet_tenant_id", "Fleet tenant identifier", "local"),
@@ -237,6 +268,15 @@ STEPS: tuple[Step, ...] = (
                   note="Do not run the desktop GUI as root; deploy the sensor separately."),
             Field("check", "process_baseline_enabled", "Learn normal signed processes for operator-reviewed trust suggestions"),
             Field("check", "require_signed_aar", "Require authenticated After-Action Reports"),
+            Field(
+                "check",
+                "deception_user_folders",
+                "Place inert deception markers in personal folders",
+                note=(
+                    "Advanced opt-in. Off keeps Angerona-created decoys under the configured "
+                    "data directory; existing files are never overwritten."
+                ),
+            ),
             Field("action", "reset_modules", "Restore supported module defaults"),
         ),
     ),
@@ -245,7 +285,7 @@ STEPS: tuple[Step, ...] = (
         "Choose the resource profile and sign-in behavior.",
         (
             Field("check", "autostart_enabled", "Start Angerona when I sign in"),
-            Field("check", "eco_mode", "Start in Eco Mode"),
+            Field("check", "eco_mode", "Start in network-first Chill Mode"),
             Field("check", "perf_governor_enabled", "Enable adaptive performance governance"),
             Field("check", "entropy_pool_enabled", "Use worker processes for entropy scanning"),
         ),
@@ -333,7 +373,8 @@ def validate_setup(values: dict[str, object]) -> list[str]:
         errors.append("AI priority contains an unknown provider or is empty.")
 
     for key, label in (
-        ("mcp_port", "MCP"), ("fleet_service_port", "Fleet"),
+        ("mcp_port", "MCP"), ("jarvis_control_port", "JARVIS"),
+        ("fleet_service_port", "Fleet"),
         ("teams_bot_port", "Teams"),
     ):
         try:
@@ -381,9 +422,11 @@ def validate_secret_requirements(
     values: dict[str, object],
     secret_updates: dict[str, str],
     environment: Mapping[str, str] = os.environ,
+    protected_secrets: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Require credentials for enabled connectors without exposing their values."""
     errors: list[str] = []
+    protected = protected_secrets or {}
     available = lambda key: bool(secret_updates.get(key) or environment.get(key))
     if values.get("aria_inbox_enabled") and not available("ARIA_IMAP_PASS"):
         errors.append("Mailbox triage requires a protected mailbox password.")
@@ -394,6 +437,19 @@ def validate_secret_requirements(
         or available("ANGERONA_MOBILE_PIN_DPAPI")
     ):
         errors.append("The Signal bridge requires a protected four-digit response PIN.")
+    if values.get("jarvis_control_enabled"):
+        # Do not consult ``environment`` for this authority: setup and runtime
+        # deliberately reject inherited elevation-environment control tokens.
+        token = str(
+            secret_updates.get("ANGERONA_JARVIS_CONTROL_TOKEN")
+            or protected.get("ANGERONA_JARVIS_CONTROL_TOKEN")
+            or ""
+        ).strip()
+        if len(token.encode("utf-8")) < 32:
+            errors.append(
+                "JARVIS controls require a protected token of at least 32 bytes. "
+                "Use Generate a new protected JARVIS token."
+            )
     return errors
 
 
@@ -652,6 +708,14 @@ if _HAVE_QT:
                 elif isinstance(widget, QLineEdit):
                     widget.setText(str(value))
 
+        def _set_secret_widget(self, key: str, value: str) -> bool:
+            for mapping in self._widgets:
+                widget = mapping.get(("ENV", key))
+                if isinstance(widget, QLineEdit):
+                    widget.setText(value)
+                    return True
+            return False
+
         def _do_action(self, action: str) -> None:
             if action == "apply_profile":
                 name = self._profile_combo.currentText()
@@ -670,6 +734,14 @@ if _HAVE_QT:
             elif action == "reset_modules":
                 self._reset_modules = True
                 self._progress.setText("Supported module defaults will be restored on Finish.")
+            elif action == "regenerate_jarvis_token":
+                import secrets
+
+                token = secrets.token_urlsafe(48)
+                if self._set_secret_widget("ANGERONA_JARVIS_CONTROL_TOKEN", token):
+                    self._progress.setText(
+                        "A new JARVIS token is staged. Finish setup to protect it."
+                    )
             elif action == "trust_running" and callable(self._trust_running):
                 if QMessageBox.question(
                     self,
@@ -698,7 +770,7 @@ if _HAVE_QT:
                 f"Platform: {platform_family()}\n"
                 f"Profile: {self._profile_combo.currentText()}\n"
                 f"Startup: {'enabled' if values.get('autostart_enabled') else 'disabled'}; "
-                f"Eco Mode: {'on' if values.get('eco_mode') else 'off'}\n"
+                f"Chill Mode: {'on' if values.get('eco_mode') else 'off'}\n"
                 f"Local AI: {values.get('ollama_model')} at {values.get('ollama_host')}\n"
                 f"Optional outbound features: {', '.join(enabled_cloud) if enabled_cloud else 'none'}\n"
                 f"Protected credentials being updated: {len(secrets) + len(providers)}\n"
@@ -729,7 +801,31 @@ if _HAVE_QT:
         def _finish(self) -> None:
             values, secret_updates, providers = self._staged()
             errors = validate_setup(values)
-            errors.extend(validate_secret_requirements(values, secret_updates))
+            protected_secrets: Mapping[str, str] = {}
+            if values.get("jarvis_control_enabled"):
+                try:
+                    from angerona.core.secure_store import read_secret_map
+
+                    protected_secrets = read_secret_map(
+                        self._cfg.data_dir,
+                        strict=True,
+                    )
+                except Exception as exc:
+                    QMessageBox.warning(
+                        self,
+                        "Protected credentials unavailable",
+                        "Angerona could not verify the operating-system credential "
+                        "store, so JARVIS controls remain unchanged.\n\n"
+                        f"{type(exc).__name__}",
+                    )
+                    return
+            errors.extend(
+                validate_secret_requirements(
+                    values,
+                    secret_updates,
+                    protected_secrets=protected_secrets,
+                )
+            )
             if errors:
                 QMessageBox.warning(self, "Setup needs attention", "\n\n".join(errors))
                 return

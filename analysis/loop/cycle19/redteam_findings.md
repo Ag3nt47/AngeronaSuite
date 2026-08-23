@@ -115,10 +115,10 @@ installer independently.
   IPC, and local document-render workspaces (`.gitignore:8-34,61-84,107-115`).
 - All tracked DOCX core metadata inspected in this pass has blank creator and
   last-modifier values; no user-home path was found in DOCX XML.
-- **Known residue, not refiled:** Git history still contains
-  `Ag3nt47 <lukelucas1901@gmail.com>`. Publishing the current tree does not remove
-  it; history rewrite or GitHub account-level email privacy remains necessary if
-  the owner considers that address private.
+- **Known residue, not refiled:** Git history still contains a historical
+  personal author address. Publishing the current tree does not remove it;
+  a separately reviewed history rewrite or GitHub account-level email privacy
+  remains necessary if the owner considers that address private.
 
 ### Pass 3 — Import and plugin trust boundary
 

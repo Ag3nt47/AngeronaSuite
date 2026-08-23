@@ -22,6 +22,28 @@ from PySide6.QtWidgets import (
 )
 
 from angerona.core.url_policy import LOCAL_SERVICE_POLICY, read_bounded, safe_urlopen
+from angerona.core.ollama_lifecycle import effective_keep_alive
+
+
+_TOP_TALKERS_POOL: QThreadPool | None = None
+
+
+def _top_talkers_pool() -> QThreadPool:
+    """Return the small pool reserved for interactive network-panel work.
+
+    The suite's global Qt pool also runs scanners and other periodic jobs.  On
+    a busy machine those jobs can occupy every global worker and leave an
+    operator's Refresh or Ask-AI click queued for an unbounded amount of time.
+    A module-lifetime pool keeps this panel responsive without tying worker
+    lifetime to a dialog that the operator may close while a request unwinds.
+    """
+    global _TOP_TALKERS_POOL
+    if _TOP_TALKERS_POOL is None:
+        pool = QThreadPool()
+        pool.setMaxThreadCount(4)
+        pool.setExpiryTimeout(10_000)
+        _TOP_TALKERS_POOL = pool
+    return _TOP_TALKERS_POOL
 
 try:
     import psutil
@@ -217,9 +239,9 @@ class TopTalkersDialog(QDialog):
         row.addWidget(close)
         root.addLayout(row)
 
-        # Running jobs belong to the application pool, so closing this dialog
+        # Running jobs belong to a module-lifetime pool, so closing this dialog
         # never waits on a slow OS connection walk or PTR lookup.
-        self._pool = QThreadPool.globalInstance()
+        self._pool = _top_talkers_pool()
         self._refresh_in_flight = False
         self._ai_in_flight = False
         self._ai_request_token = 0
@@ -397,7 +419,8 @@ class TopTalkersDialog(QDialog):
         worker = _AskAiWorker(token, self._ask_ai, name, pid, dest)
         worker.signals.finished.connect(self._handle_ai_result)
         try:
-            self._pool.start(worker)
+            # Interactive work runs ahead of periodic connection snapshots.
+            self._pool.start(worker, 10)
         except Exception as exc:
             self._ai_in_flight = False
             self._ai_context = None
@@ -475,8 +498,12 @@ class TopTalkersDialog(QDialog):
                   f"this looks benign or suspicious and recommend allow or block.")
         try:
             import json, urllib.request
-            body = json.dumps({"model": os.environ.get("ANGERONA_OLLAMA_MODEL", "llama3"),
-                               "prompt": prompt, "stream": False}).encode()
+            body = json.dumps({
+                "model": os.environ.get("ANGERONA_OLLAMA_MODEL", "llama3"),
+                "prompt": prompt,
+                "stream": False,
+                "keep_alive": effective_keep_alive("30m"),
+            }).encode()
             req = urllib.request.Request("http://127.0.0.1:11434/api/generate", data=body,
                                          headers={"Content-Type": "application/json"})
             with safe_urlopen(req, policy=LOCAL_SERVICE_POLICY, timeout=20) as r:

@@ -7,11 +7,13 @@ in a dialog from the header button.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import queue
 import threading
 import time
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSplitter,
@@ -21,6 +23,11 @@ from PySide6.QtWidgets import (
 from angerona.academy.security_academy import FlightInstructor
 from angerona.branding import icon_path
 from angerona.core.commands import CommandConsole
+from angerona.core.chill_mode import (
+    CHILL_PAUSED_MODULES,
+    CHILL_THROTTLE_FLOORS,
+    ChillPolicy,
+)
 from angerona.core.eco_wakeup import EcoWakeupWorker
 from angerona.core.eventbus import Severity
 from angerona.gui.animations import RunSpinner
@@ -46,15 +53,37 @@ from angerona.shark.shark_attack import SharkAttackEngine
 from angerona.shark.red_team import RedTeamEngine, REDTEAM_STAGE_CATEGORY
 from angerona.updater.github_updater import check_for_updates
 
-_META_MODULES = {"Self-Test", "Status", "Console"}
-
-
 class _NoAnim:
     """No-op stand-in for the removed shark/sword animations. Absorbs any
     start()/stop()/set_active()/setGeometry()/etc. call so existing call sites
     keep working while nothing renders."""
     def __getattr__(self, _name):
         return lambda *_args, **_kwargs: None
+
+
+def _dashboard_refresh_plan(
+    quiet_chill: bool,
+    *,
+    visible: bool,
+    active: bool,
+) -> tuple[int, int, int, int, int]:
+    """Return bounded dashboard timing for the current presentation state.
+
+    The tuple is ``(timer_ms, status_ticks, panel_ticks, posture_ticks,
+    flow_ticks)``.  Security events have their own event-driven wake path, so
+    these periods govern presentation work only.  Expressing the old cadences
+    in elapsed time (rather than assuming every tick is one second) avoids the
+    accidental five-minute flow delay that a naively slowed Qt timer creates.
+    """
+    if not visible:
+        return (15_000, 2, 4, 4, 4)       # 30 / 60 / 60 / 60 seconds
+    if quiet_chill and not active:
+        return (10_000, 1, 1, 2, 6)       # 10 / 10 / 20 / 60 seconds
+    if quiet_chill:
+        return (5_000, 2, 2, 4, 12)       # 10 / 10 / 20 / 60 seconds
+    if not active:
+        return (2_000, 1, 1, 2, 6)        # defer paint while another app is active
+    return (1_000, 1, 2, 4, 12)           # original full-mode cadence
 
 
 class MainWindow(QMainWindow):
@@ -68,6 +97,9 @@ class MainWindow(QMainWindow):
     _voice_live_requested = Signal()       # bring voice up live (GUI thread) after install
     _fi_coaching = Signal(str)             # Flight Instructor line → right pane
     startup_eco_requested = Signal()       # emitted from the loader thread once modules are up
+    chill_return_requested = Signal()      # AAR worker asks GUI thread to restore Chill
+    chill_maintenance_done = Signal(str, bool)
+    _security_event_wake = Signal()
 
     def __init__(
         self, bus, storage, manager, config, *,
@@ -159,19 +191,24 @@ class MainWindow(QMainWindow):
         sim_btn.clicked.connect(
             lambda _checked=False: self._run_header_action(
                 sim_btn, self._open_simulation, "#fb7185"))
-        # Eco Mode — one tap to shed heavy background scan load. Pauses the
-        # expensive pollers/scanners (process/mem/yara/net enumeration) while
-        # leaving the safety-critical response path (SOAR, deception, watchdog,
-        # heartbeat, IPC guard, AI triage) fully live. Instant relief when the
-        # host feels bogged down; tap again to resume full monitoring.
+        # Chill Mode — network-first, all-day monitoring. Event-driven endpoint
+        # safeguards and response remain live; deep file/memory/AI work sleeps
+        # until an operator action or genuine active threat wakes it.
         self._eco_on = False
         self._eco_paused: list[str] = []
+        self._chill_policy = ChillPolicy(
+            quiet_seconds=float(getattr(config, "chill_quiet_seconds", 600.0))
+        )
+        self._chill_auto_wake = False
+        self._eco_wake_epoch = 0
+        self._pending_chill_wake: bool | None = None
+        self._wake_retry_worker = None
         self.eco_btn = HeaderActionButton(
-            "ECO MODE",
+            "CHILL MODE",
             "eco",
-            "Eco Mode",
-            "Pauses heavy background scanners while keeping the safety-critical "
-            "response path live. Tap again to wake scanners one at a time.",
+            "Chill Mode",
+            "Network-first all-day protection. Deep scanners and background AI "
+            "sleep at idle, wake sequentially for a real threat, then return to Chill.",
         )
         # Eco is an immediate state toggle, not a destination window.
         self.eco_btn.clicked.connect(
@@ -439,6 +476,9 @@ class MainWindow(QMainWindow):
         body.setStretchFactor(1, 2)
         body.setSizes([500, 240])
         root.addWidget(body, 1)
+        self._body_splitter = body
+        self._pre_scan_center_sizes: list[int] | None = None
+        self._right_tabs.currentChanged.connect(self._on_right_tab_changed)
 
         # ── Reliable splitter drag ───────────────────────────────────────────
         # The panels hold heavy tables that re-layout on every pixel; with the
@@ -477,6 +517,29 @@ class MainWindow(QMainWindow):
         # user request — stubbed so existing start()/stop() calls are harmless.
         self.threat_overlay = _NoAnim()
         self._last_threat_ts = time.time()
+        try:
+            self._last_bus_revision: int | None = self.bus.revision()
+        except Exception:
+            self._last_bus_revision = None
+        # The presentation timer may sleep for 5-15 seconds in Chill/background
+        # operation, but genuine HIGH/CRITICAL evidence must still wake policy
+        # immediately.  Coalesce a burst into one queued GUI callback: the
+        # callback drains the bus's authoritative revision delta, so no event is
+        # lost and publisher threads never touch Qt widgets directly.
+        self._security_wake_pending = threading.Event()
+        self._security_event_wake.connect(
+            self._handle_security_event_wake,
+            Qt.QueuedConnection,
+        )
+        self._bus_wake_subscriber = self._queue_security_event_wake
+        try:
+            self.bus.subscribe(self._bus_wake_subscriber)
+        except Exception:
+            pass
+        # One fail-closed prompt per currently mounted removable volume.  The
+        # dialog map is bounded by the USB policy's mount bound and entries are
+        # removed as soon as each window finishes.
+        self._usb_approval_dialogs: dict[str, object] = {}
         self.shark_banner = _NoAnim()
 
         # Shark Attack Engine — the adversary-simulation test harness.
@@ -496,6 +559,13 @@ class MainWindow(QMainWindow):
         self._mic_level.connect(self._on_mic_level)
         self._voice_live_requested.connect(self._enable_voice_live)
         self.startup_eco_requested.connect(self.apply_startup_eco)
+        self.chill_return_requested.connect(self._return_to_chill_after_drill)
+        self.chill_maintenance_done.connect(
+            lambda name, ok: self.console._append(
+                f"[chill] Sparse maintenance: {name} "
+                f"{'completed one cycle' if ok else 'did not complete before its bound'}."
+            )
+        )
 
         # Cyber Security Academy — Flight Instructor Mode. Instantiation is
         # cheap (just resolves host/model, no network call), so it's created
@@ -529,6 +599,17 @@ class MainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._refresh)
         self.timer.start(1000)
+        self._sync_idle_presentation()
+        # One parked deep scanner gets one bounded cycle per hour. With the
+        # six-module rotation below, each deep surface is revisited only every
+        # several hours instead of walking disks continuously.
+        self._chill_maintenance_busy = threading.Event()
+        self._chill_maintenance_index = 0
+        self._chill_maintenance_timer = QTimer(self)
+        self._chill_maintenance_timer.timeout.connect(
+            self._run_sparse_chill_maintenance
+        )
+        self._chill_maintenance_timer.start(60 * 60 * 1000)
         # Do NOT call self._refresh() here — modules haven't loaded yet
         # (discover/start run on a background thread after first paint).
         # The first timer tick at t=1s will populate the panels with live data.
@@ -707,26 +788,84 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-    def _refresh_body(self) -> None:
-        full = (self._tick_count % 2 == 0)   # full refresh every other tick (2 s)
+    def _quiet_chill_active(self) -> bool:
+        return bool(
+            self._eco_on
+            and self._chill_policy.enabled
+            and not self._chill_policy.escalated
+        )
 
-        # StatusStrip and threat check: every tick (1 s) — cheap with change-detection
-        self.status_strip.refresh()
+    def _current_refresh_plan(self) -> tuple[int, int, int, int, int]:
+        visible = self.isVisible() and not self.isMinimized()
+        return _dashboard_refresh_plan(
+            self._quiet_chill_active(),
+            visible=visible,
+            active=bool(visible and self.isActiveWindow()),
+        )
+
+    def _sync_idle_presentation(self) -> None:
+        """Gate cosmetic UI work without weakening the incident wake path."""
+        timer = getattr(self, "timer", None)
+        plan = self._current_refresh_plan()
+        if timer is not None and timer.interval() != plan[0]:
+            timer.setInterval(plan[0])
+        hud = getattr(self, "aria_hud", None)
+        if hud is not None and hasattr(hud, "set_idle_mode"):
+            visible = self.isVisible() and not self.isMinimized()
+            hud.set_idle_mode(
+                self._quiet_chill_active()
+                or not visible
+                or not self.isActiveWindow()
+            )
+
+    def _queue_security_event_wake(self, event) -> None:
+        """Bridge serious EventBus publications to Qt, once per pending burst."""
+        try:
+            serious = event.severity >= Severity.HIGH
+        except Exception:
+            serious = False
+        if serious and not self._security_wake_pending.is_set():
+            self._security_wake_pending.set()
+            self._security_event_wake.emit()
+
+    def _handle_security_event_wake(self) -> None:
+        self._security_wake_pending.clear()
+        try:
+            self._check_threat_animation()
+        except Exception as exc:
+            try:
+                self._blackbox_feed(f"Security UI wake error (non-fatal): {exc}")
+            except Exception:
+                pass
+
+    def _refresh_body(self) -> None:
+        quiet_chill = self._quiet_chill_active()
+        timer_ms, status_period, panel_period, posture_period, flow_period = (
+            self._current_refresh_plan()
+        )
+        if self.timer.interval() != timer_ms:
+            self.timer.setInterval(timer_ms)
+
+        # The EventBus signal keeps serious threat decisions immediate; this
+        # timer now governs cosmetic tables and strips only.
+        if self._tick_count % status_period == 0:
+            self.status_strip.refresh()
         self.red_swords.set_active(self.shark_engine.is_running or self.red_team_engine.is_running)
         self._check_threat_animation()
 
         # Resource strip + posture are heavier (walk recent bus events / compute a
         # composite) — run them every 4th tick (~4 s), not every tick, so they
         # don't add steady overhead. This keeps the UI light even in Eco mode.
-        if self._tick_count % 4 == 0:
+        if self._tick_count % posture_period == 0:
             try:
                 self.resource_strip.refresh()
             except Exception:
                 pass
             self._refresh_posture()
 
-        if full:
-            # Heavier panels: every 2 s — each guarded so one bad panel can't
+        if self._tick_count % panel_period == 0:
+            # Heavier panels: every 2 s in Full, every 10 s in quiet Chill, and
+            # once per minute while minimized.
             # skip the others (or blow up the whole tick).
             for _fn in (self.cards.refresh, self.modules_panel.refresh,
                         self.alerts_panel.refresh, self.soar_panel.refresh):
@@ -734,9 +873,9 @@ class MainWindow(QMainWindow):
                     _fn()
                 except Exception:
                     pass
-            # Flow-canvas JSON feed only needs ~4 s (the in-app flow window reads
-            # metrics live in-process; this file is just for the external canvas).
-            if self._tick_count % 4 == 0:
+            # The external canvas feed is a diagnostic heartbeat, not a reason
+            # to dirty the disk continuously while the suite sits idle.
+            if self._tick_count % flow_period == 0:
                 try:
                     self._write_flow_metrics_async()
                 except Exception:
@@ -758,16 +897,56 @@ class MainWindow(QMainWindow):
         threading.Thread(target=_write, name="FlowMetricsWriter", daemon=True).start()
 
     def _check_threat_animation(self) -> None:
-        # Fire the shark/attack animation on a NEW genuine threat (HIGH+).
-        events = self.bus.recent(20)
-        if not events:
-            return
-        new_threats = [
-            e for e in events
-            if e.ts > self._last_threat_ts and e.severity >= Severity.HIGH
-            and e.module not in _META_MODULES
-        ]
-        self._last_threat_ts = max(self._last_threat_ts, max(e.ts for e in events))
+        # React only to NEW, unresolved active-hostile evidence. Practice,
+        # passive exposure, suite health and response summaries retain their
+        # evidence severity but cannot claim that the host is under attack.
+        # Ask the bounded EventBus for the exact revision delta. A fixed
+        # ``recent(N)`` window can miss the active event that preceded a burst
+        # of harmless process telemetry inside one UI tick.
+        events = []
+        candidates = []
+        if self._last_bus_revision is not None and hasattr(self.bus, "recent_since"):
+            try:
+                current, candidates, overflow = self.bus.recent_since(
+                    self._last_bus_revision
+                )
+                self._last_bus_revision = current
+                events = candidates
+                if overflow:
+                    self.console._append(
+                        "[telemetry] Event burst exceeded the live UI ring; "
+                        "retained security events were still evaluated."
+                    )
+            except Exception:
+                # Compatibility/fault fallback: a broken delta reader must not
+                # blind Chill auto-wake. Timestamp filtering is less exact
+                # during a very large burst, but still evaluates retained
+                # security evidence instead of silently evaluating nothing.
+                self._last_bus_revision = None
+                events = self.bus.recent(100)
+                candidates = [
+                    event for event in events
+                    if event.ts > self._last_threat_ts
+                ]
+        else:
+            events = self.bus.recent(100)
+            if events:
+                candidates = [e for e in events if e.ts > self._last_threat_ts]
+        new_threats = []
+        if events:
+            self._last_threat_ts = max(
+                self._last_threat_ts, max(e.ts for e in events)
+            )
+            if candidates:
+                try:
+                    from angerona.core.threat import active_threat_events
+                    new_threats = active_threat_events(candidates, window=60.0)
+                except Exception:
+                    new_threats = []
+        # Reconcile the authoritative pending set every UI cadence.  EventBus
+        # overflow can discard a notification, but it must never strand an
+        # attached drive without its PIN prompt.
+        self._handle_usb_approval_events(candidates)
         # Red-flash + emoji shark-sweep overlay removed per user request — the
         # full-width swimming SharkSwimBanner across the top now signals a drill,
         # and it doesn't strobe the whole screen red (which also cost repaints).
@@ -776,8 +955,137 @@ class MainWindow(QMainWindow):
         crits = [e for e in new_threats if e.severity >= Severity.CRITICAL]
         if crits:
             self._notify_critical(crits)
+        transition = self._chill_policy.observe_active(new_threats)
+        if transition is not None and transition.action == "escalate":
+            self.console._append(
+                f"[chill] Active threat evidence ({transition.active_count}) — "
+                "waking deep verification sensors sequentially."
+            )
+            self._wake_chill_modules(auto=True)
+
+        # A drill/AAR owns its explicit sensor lease. Real incident leases cool
+        # only after the wake worker has finished and ten quiet minutes elapsed.
+        drill_busy = (
+            self.shark_engine.is_running
+            or self.red_team_engine.is_running
+            or int(getattr(self, "_sim_aar_pending", 0)) > 0
+        )
+        worker = getattr(self, "_eco_worker", None)
+        worker_busy = False
+        try:
+            worker_busy = bool(worker is not None and worker.isRunning())
+        except (RuntimeError, AttributeError):
+            pass
+        if not drill_busy and not worker_busy:
+            cooldown = self._chill_policy.tick()
+            if cooldown is not None and cooldown.action == "cooldown" and self._eco_on:
+                self._enter_eco(auto_return=True)
         # Pulse the THREAT INTEL button when INTL has pending KEV alerts.
         self._update_threat_intel_pulse()
+
+    def _handle_usb_approval_events(self, events) -> None:
+        """Open one PIN gate for each exact USB approval event.
+
+        The EventBus payload is used only to locate a secret-free approval ID.
+        The dialog receives the live approval object from the USB module, so a
+        forged event cannot manufacture trust state or obtain a PIN prompt.
+        """
+        relevant = []
+        terminal_ids: set[str] = set()
+        removed_mounts: set[str] = set()
+        for event in events:
+            details = getattr(event, "details", None)
+            if not isinstance(details, dict):
+                continue
+            event_type = str(details.get("event_type") or "").strip().casefold()
+            if not event_type.startswith("usb_"):
+                continue
+            approval_id = str(details.get("approval_id") or "").strip()
+            mountpoint = str(details.get("mountpoint") or "").strip()
+            if event_type == "usb_approval_required" and approval_id:
+                relevant.append((approval_id, mountpoint))
+            elif event_type in {"usb_approval_decision", "usb_approval_rejected"}:
+                # Invalid attempts and temporary lockout intentionally keep the
+                # same prompt alive so the operator can use the remaining
+                # attempts. Only a real trust/deny terminal state closes it.
+                state = str(details.get("approval_state") or "").casefold()
+                if approval_id and state in {"trusted", "denied"}:
+                    terminal_ids.add(approval_id)
+            elif event_type == "usb_media_removed" and mountpoint:
+                removed_mounts.add(mountpoint.casefold())
+
+        # Close stale prompts first. A close never grants trust and never
+        # re-enables Windows AutoRun/AutoPlay.
+        for approval_id, dialog in tuple(self._usb_approval_dialogs.items()):
+            dialog_mount = str(
+                getattr(getattr(dialog, "_approval", None), "mountpoint", "")
+            ).casefold()
+            if approval_id in terminal_ids or dialog_mount in removed_mounts:
+                try:
+                    dialog.close()
+                except RuntimeError:
+                    pass
+                self._usb_approval_dialogs.pop(approval_id, None)
+
+        usb_module = self.manager.modules.get("Removable-Media / USB Monitor")
+        if usb_module is None:
+            usb_module = next(
+                (
+                    module for module in self.manager.modules.values()
+                    if getattr(module, "CODE", "") == "USBW"
+                ),
+                None,
+            )
+        if usb_module is None or not hasattr(usb_module, "pending_approvals"):
+            return
+        try:
+            pending = {
+                approval.approval_id: approval
+                for approval in usb_module.pending_approvals()
+            }
+        except Exception:
+            return
+
+        # Pending policy state is authoritative.  Include it even if its
+        # informational EventBus notification was evicted by an alert burst.
+        requested_ids = {approval_id for approval_id, _mountpoint in relevant}
+        requested_ids.update(pending)
+        if removed_mounts:
+            requested_ids = {
+                approval_id
+                for approval_id in requested_ids
+                if str(getattr(pending.get(approval_id), "mountpoint", "")).casefold()
+                not in removed_mounts
+            }
+
+        from angerona.gui.usb_approval_dialog import UsbApprovalDialog
+
+        for approval_id in requested_ids:
+            if approval_id in self._usb_approval_dialogs:
+                continue
+            approval = pending.get(approval_id)
+            if approval is None:
+                continue
+            dialog = UsbApprovalDialog(usb_module, approval, self)
+            dialog.setStyleSheet(self._qss())
+            dialog.finished.connect(
+                lambda _result, token=approval_id: self._usb_approval_dialogs.pop(
+                    token, None
+                )
+            )
+            self._usb_approval_dialogs[approval_id] = dialog
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+            try:
+                self.tray.showMessage(
+                    "Angerona — removable media blocked",
+                    "AutoRun is disabled. Enter the USB PIN to approve Angerona scanning.",
+                    QSystemTrayIcon.Warning,
+                    8000,
+                )
+            except Exception:
+                pass
 
     def _notify_critical(self, crits) -> None:
         now = time.time()
@@ -875,32 +1183,142 @@ class MainWindow(QMainWindow):
         self._threat_intel_dlg.raise_()
         self._threat_intel_dlg.activateWindow()
 
-    # ── Eco Mode (shed heavy background scan load) ───────────────────────────
-    # Heavy pollers/scanners that dominate idle CPU but are NOT part of the
-    # safety-critical response path — safe to pause for instant relief.
-    _ECO_HEAVY_MODULES = (
-        "Process Monitor", "Network Monitor", "Memory Time-Machine",
-        "Memory Injection Scanner", "YARA Scanner", "Packet Sniffer",
-        "Ransomware Heuristics",
-        "Upstream Threat Intel Sync", "API Patch / Anti-Blinding Detector",
-        "Persistence Sweep", "WLAN Monitor", "ARP Watchdog",
-        "Data Provenance Graph", "Hardware-Rooted Integrity",
+    # ── Chill Mode (network-first, all-day low-impact monitoring) ────────────
+    # Compatibility alias retained for the startup loader and older tests.
+    _ECO_HEAVY_MODULES = CHILL_PAUSED_MODULES
+    _CHILL_USER_ONLY_MODULES = {
+        "Speculative Triage Pre-Warm",
+        "Scheduled AI Security Briefing",
+        "Smart Deception",
+    }
+    _CHILL_MAINTENANCE_MODULES = (
+        "File Integrity Monitor",
+        "YARA Scanner",
+        "Memory Injection Scanner",
+        "Persistence Sweep",
+        "AI Model Integrity Guard",
+        "Shadow Shield",
     )
 
     def apply_startup_eco(self) -> None:
-        """Called shortly after boot: if the user's saved preference is Eco Mode,
-        pause the heavy scanners so the first-run experience is fast + responsive.
+        """Apply the saved all-day Chill preference after module discovery.
+
+        Startup already defers deep modules, so this establishes their policy
+        state, slows sentinel cadences, and releases any resident Ollama model.
         Safe to call once modules have been started by the manager."""
         if getattr(self.config, "eco_mode", True) and not self._eco_on:
             self._enter_eco(startup=True)
 
-    def _enter_eco(self, startup: bool = False) -> None:
+    def _set_chill_runtime(self, quiet: bool) -> None:
+        """Publish transient mode state without rewriting saved settings."""
+        import os
+        setattr(self.config, "runtime_chill_active", bool(quiet))
+        if quiet:
+            os.environ["ANGERONA_CHILL_ACTIVE"] = "1"
+        else:
+            os.environ.pop("ANGERONA_CHILL_ACTIVE", None)
+        try:
+            self.system_pulse.set_chill_mode(quiet)
+        except Exception:
+            pass
+        self._sync_idle_presentation()
+        if quiet:
+            host = getattr(self.config, "ollama_host", "http://localhost:11434")
+            model = getattr(self.config, "ollama_model", "llama3")
+
+            def _release_model() -> None:
+                try:
+                    from angerona.core.ollama_lifecycle import unload_angerona_models
+                    unload_angerona_models(host, model)
+                except Exception:
+                    pass
+
+            threading.Thread(
+                target=_release_model,
+                name="ChillOllamaRelease",
+                daemon=True,
+            ).start()
+
+    def _apply_chill_throttles(self, enabled: bool) -> None:
+        for name, floor in CHILL_THROTTLE_FLOORS.items():
+            mod = self.manager.modules.get(name)
+            if mod is None:
+                continue
+            try:
+                mod.set_throttle_floor(floor if enabled else 1.0)
+                mod.set_throttle(floor if enabled else 1.0)
+            except Exception:
+                pass
+
+    def _run_sparse_chill_maintenance(self) -> None:
+        if (
+            not self._eco_on
+            or not bool(getattr(self.config, "runtime_chill_active", False))
+            or self._chill_policy.escalated
+            or self._chill_maintenance_busy.is_set()
+            or self.shark_engine.is_running
+            or self.red_team_engine.is_running
+        ):
+            return
+        names = self._CHILL_MAINTENANCE_MODULES
+        if not names:
+            return
+        name = names[self._chill_maintenance_index % len(names)]
+        self._chill_maintenance_index += 1
+        mod = self.manager.modules.get(name)
+        try:
+            enabled = bool(self.manager.is_enabled(name))
+        except Exception:
+            enabled = False
+        if (
+            mod is None
+            or not getattr(mod, "_chill_paused", False)
+            or not enabled
+        ):
+            return
+        self._chill_maintenance_busy.set()
+
+        def _one_cycle() -> None:
+            ok = False
+            try:
+                setattr(mod, "_chill_paused", False)
+                mod.start()
+                ok = bool(mod.wait_for_first_cycle(timeout=5 * 60.0))
+            except Exception:
+                ok = False
+            finally:
+                still_quiet = (
+                    self._eco_on
+                    and bool(getattr(self.config, "runtime_chill_active", False))
+                    and not self._chill_policy.escalated
+                )
+                if still_quiet:
+                    try:
+                        mod.stop()
+                    except Exception:
+                        pass
+                    setattr(mod, "_chill_paused", True)
+                self._chill_maintenance_busy.clear()
+                self.chill_maintenance_done.emit(name, ok)
+
+        threading.Thread(
+            target=_one_cycle,
+            name=f"ChillMaintenance-{name}",
+            daemon=True,
+        ).start()
+
+    def _enter_eco(self, startup: bool = False, auto_return: bool = False) -> None:
         # Pause each running heavy module, remembering which we touched so resume
         # restores exactly that set.
         # If a sequential wake is still in flight, cancel it first. The worker's
         # control lock guarantees it cannot start another module after cancel()
         # returns, so ECO: ON cannot race with a late scanner wake-up.
         worker = getattr(self, "_eco_worker", None)
+        # A cancelled QThread still emits its queued completion signals. Make
+        # every callback from the old Full-mode transition stale before we park
+        # modules, and discard any pending retry from an earlier rapid toggle.
+        self._eco_wake_epoch += 1
+        self._pending_chill_wake = None
         if worker is not None:
             try:
                 if worker.isRunning():
@@ -908,78 +1326,175 @@ class MainWindow(QMainWindow):
             except (RuntimeError, AttributeError):
                 pass
         self._eco_paused = []
+        self._apply_chill_throttles(True)
         for name in self._ECO_HEAVY_MODULES:
             mod = self.manager.modules.get(name)
-            if mod is not None and getattr(mod, "status", "") == "running":
-                try:
-                    mod.stop()
-                    self._eco_paused.append(name)
-                except Exception:
-                    pass
-            elif startup and mod is not None:
-                # Startup Eco defers these modules before they create a worker
-                # thread. Remember enabled ones so ECO OFF can wake them later.
-                try:
-                    if self.manager.is_enabled(name):
-                        self._eco_paused.append(name)
-                except Exception:
-                    pass
+            if mod is None:
+                continue
+            try:
+                enabled = bool(self.manager.is_enabled(name))
+            except Exception:
+                enabled = False
+            # Do not relabel a genuine crashed/quarantined module as an expected
+            # Chill pause; operators still need to see that degradation.
+            if not enabled or getattr(mod, "status", "") == "error":
+                continue
+            # Re-establish the policy invariant for *every* enabled deep
+            # module, not only those whose transient status currently says
+            # ``running``.  A rapid Full -> Chill click can cancel the
+            # sequential wake worker while later modules are still stopped (or
+            # one is briefly ``restarting``); leaving those entries unmarked
+            # strands them offline on the next Full transition.  stop() is
+            # idempotent and also cancels a deferred restart safely.
+            try:
+                mod.stop()
+            except Exception:
+                pass
+            setattr(mod, "_chill_paused", True)
+            self._eco_paused.append(name)
         self._eco_on = True
-        self.eco_btn.set_full_label("ECO: ON")
+        if not self._chill_policy.enabled:
+            self._chill_policy.enable()
+        self._chill_auto_wake = False
+        self._set_chill_runtime(True)
+        self.eco_btn.set_full_label("CHILL: ON")
         self.eco_btn.setStyleSheet(
             "background:#166534; color:#dcfce7; font-weight:800; border:none;"
             "border-radius:6px; padding:7px 16px;")
-        prefix = "[eco] Startup in Eco Mode — " if startup else "[eco] "
+        prefix = "[chill] Startup in Chill Mode — " if startup else "[chill] "
+        if auto_return:
+            prefix = "[chill] Quiet window complete — "
         verb = "Deferred" if startup else "Paused"
         self.console._append(
-            f"{prefix}{verb} {len(self._eco_paused)} background scanner(s) — "
-            "core response path stays live. Tap ECO again to resume.")
+            f"{prefix}{verb} {len(self._eco_paused)} deep scanner/AI module(s); "
+            "network, Defender/AMSI, USB, ETW/Sysmon, watchdog and response stay live."
+        )
 
     def _toggle_eco_mode(self) -> None:
         if not self._eco_on:
             self._enter_eco(startup=False)
         else:
-            # Resume: wake paused modules SEQUENTIALLY on a background thread so
-            # heavy scanners don't all fire their first scan at once (the
-            # "memory stampede" that froze the UI). EcoWakeupWorker waits for a
-            # real work-cycle boundary before starting the next module.
-            mods = [self.manager.modules[n] for n in self._eco_paused
-                    if n in self.manager.modules]
-            self._eco_on = False
-            self.eco_btn.set_full_label("ECO MODE")
-            self.eco_btn.setStyleSheet("")
-            if not mods:
-                self._eco_paused = []
-                return
-            total = len(mods)
-            self.console._append(
-                f"[eco] Waking {total} scanner(s) one at a time — each finishes a "
-                "full work cycle before the next begins, so the machine stays smooth.")
-            # Live wake-up progress on the header wheel (red → amber → green).
-            self._eco_wake_total = total
-            self._eco_wake_done = 0
-            self.run_spinner.start("Waking scanners")
-            self._eco_worker = EcoWakeupWorker(mods)
-            self._eco_worker.module_waking.connect(
-                lambda name: self.console._append(f"[eco]   waking {name}…"))
-            self._eco_worker.module_ready.connect(self._on_eco_module_ready)
-            self._eco_worker.module_cycle_timeout.connect(
-                lambda name: self.console._append(
-                    f"[eco]   {name}: still finishing its first cycle — leaving it running."))
-            self._eco_worker.wakeup_complete.connect(self._on_eco_wakeup_complete)
-            self._eco_worker.finished.connect(self._eco_worker.deleteLater)
-            self._eco_paused = []
-            self._eco_worker.start()
+            self._chill_policy.disable()
+            self._wake_chill_modules(auto=False)
 
-    def _on_eco_module_ready(self, name: str, ok: bool) -> None:
+    def _wake_chill_modules(self, *, auto: bool) -> bool:
+        """Wake policy-paused modules sequentially; return True if queued."""
+        self._apply_chill_throttles(False)
+        self._set_chill_runtime(False)
+        self._chill_auto_wake = bool(auto)
+        if auto:
+            self.eco_btn.set_full_label("CHILL: ALERT")
+            self.eco_btn.setStyleSheet(
+                "background:#9a3412; color:#fff7ed; font-weight:800; border:none;"
+                "border-radius:6px; padding:7px 16px;"
+            )
+        else:
+            self._eco_on = False
+            self.eco_btn.set_full_label("CHILL MODE")
+            self.eco_btn.setStyleSheet("")
+
+        worker = getattr(self, "_eco_worker", None)
+        try:
+            if worker is not None and worker.isRunning():
+                if bool(getattr(worker, "_abort", False)):
+                    # The cancelled worker owns a QThread until its run method
+                    # returns. Queue one non-blocking retry so a fast
+                    # Chill -> Full click cannot strand the deep sensors.
+                    self._pending_chill_wake = bool(auto)
+                    if self._wake_retry_worker is not worker:
+                        self._wake_retry_worker = worker
+                        worker.finished.connect(self._resume_pending_chill_wake)
+                return True
+        except (RuntimeError, AttributeError):
+            pass
+
+        names = []
+        for name in self._ECO_HEAVY_MODULES:
+            if auto and name in self._CHILL_USER_ONLY_MODULES:
+                continue
+            mod = self.manager.modules.get(name)
+            if mod is None or not getattr(mod, "_chill_paused", False):
+                continue
+            try:
+                if self.manager.is_enabled(name):
+                    names.append(name)
+            except Exception:
+                pass
+        mods = [self.manager.modules[name] for name in names]
+        if not mods:
+            return False
+        total = len(mods)
+        reason = "active verification" if auto else "Full mode"
+        self.console._append(
+            f"[chill] {reason}: waking {total} module(s) one at a time; each "
+            "reaches a work-cycle boundary before the next starts."
+        )
+        self._eco_wake_total = total
+        self._eco_wake_done = 0
+        self._eco_wake_epoch += 1
+        epoch = self._eco_wake_epoch
+        self.run_spinner.start("Waking sensors")
+        self._eco_worker = EcoWakeupWorker(mods)
+        self._eco_worker.module_waking.connect(
+            lambda name: self.console._append(f"[chill]   waking {name}…")
+        )
+        self._eco_worker.module_ready.connect(
+            lambda name, ok, generation=epoch: self._on_eco_module_ready(
+                generation, name, ok
+            )
+        )
+        self._eco_worker.module_cycle_timeout.connect(
+            lambda name: self.console._append(
+                f"[chill]   {name}: first cycle still running; left online."
+            )
+        )
+        self._eco_worker.wakeup_complete.connect(
+            lambda ok, failed, generation=epoch: self._on_eco_wakeup_complete(
+                generation, ok, failed
+            )
+        )
+        self._eco_worker.finished.connect(self._eco_worker.deleteLater)
+        self._eco_worker.start()
+        return True
+
+    def _resume_pending_chill_wake(self) -> None:
+        self._wake_retry_worker = None
+        auto = self._pending_chill_wake
+        self._pending_chill_wake = None
+        if auto is not None:
+            QTimer.singleShot(0, lambda: self._wake_chill_modules(auto=auto))
+
+    def _on_eco_module_ready(self, generation: int, name: str, ok: bool) -> None:
+        if generation != self._eco_wake_epoch:
+            return
+        mod = self.manager.modules.get(name)
+        if mod is not None:
+            # A failed module is a real degradation, not a policy pause. Either
+            # way, it has left the queued Chill set and should be visible.
+            setattr(mod, "_chill_paused", False)
+        self._eco_paused = [item for item in self._eco_paused if item != name]
         self._eco_wake_done += 1
         self.run_spinner.set_progress(self._eco_wake_done, getattr(self, "_eco_wake_total", 1))
         self.console._append(
-            f"[eco]   {name}: {'back online' if ok else 'could not wake'}")
+            f"[chill]   {name}: {'back online' if ok else 'could not wake'}")
 
-    def _on_eco_wakeup_complete(self, ok: int, failed: int) -> None:
+    def _on_eco_wakeup_complete(
+        self, generation: int, ok: int, failed: int
+    ) -> None:
+        if generation != self._eco_wake_epoch:
+            return
         self.run_spinner.finish("Scanners online")
-        self.console._append(f"[eco] Wake-up complete — {ok} online, {failed} failed.")
+        self.console._append(
+            f"[chill] Wake-up complete — {ok} online, {failed} failed."
+        )
+        pending = getattr(self, "_pending_simulation_cfg", None)
+        if pending is not None:
+            self._pending_simulation_cfg = None
+            QTimer.singleShot(0, lambda cfg=pending: self._run_simulation(cfg))
+
+    def _return_to_chill_after_drill(self) -> None:
+        if self._eco_on and self._chill_policy.enabled:
+            self._enter_eco(auto_return=True)
 
     # ── Shark Attack Engine ──────────────────────────────────────────────────
     # ── Unified Red Team Simulation (Shark + APT scenarios, configurable) ────
@@ -1015,10 +1530,53 @@ class MainWindow(QMainWindow):
         self.activateWindow()
         self._right_tabs.setCurrentWidget(self.scan_center)
 
-    def _run_simulation(self, cfg) -> None:
-        if self.shark_engine.is_running or self.red_team_engine.is_running:
-            QMessageBox.information(self, "Red Team Simulation", "A drill is already running.")
+    def _on_right_tab_changed(self, index: int) -> None:
+        """Give the Scan Center working room, restoring the dashboard afterward."""
+        scan_index = self._right_tabs.indexOf(self.scan_center)
+        if index == scan_index:
+            if self._pre_scan_center_sizes is None:
+                sizes = self._body_splitter.sizes()
+                if sum(sizes) > 0:
+                    self._pre_scan_center_sizes = sizes
+            QTimer.singleShot(0, self._expand_scan_center)
             return
+        if self._pre_scan_center_sizes is not None:
+            previous = self._pre_scan_center_sizes
+            self._pre_scan_center_sizes = None
+            self._body_splitter.setSizes(previous)
+
+    def _expand_scan_center(self) -> None:
+        if self._right_tabs.currentWidget() is not self.scan_center:
+            return
+        sizes = self._body_splitter.sizes()
+        total = sum(sizes) or max(600, self._body_splitter.height())
+        bottom = max(90, min(150, total // 5))
+        self._body_splitter.setSizes([max(360, total - bottom), bottom])
+
+    def _run_simulation(self, cfg) -> None:
+        if (self.shark_engine.is_running or self.red_team_engine.is_running
+                or int(getattr(self, "_sim_aar_pending", 0)) > 0):
+            QMessageBox.information(
+                self,
+                "Red Team Simulation",
+                "A drill or its evidence-preserving report is already running.",
+            )
+            return
+        # A drill must test real detector/response paths, not sensors that Chill
+        # intentionally parked. Wake them first and launch only after the staged
+        # worker reaches its cycle barriers. This is a coverage lease, not a
+        # hostile-threat classification.
+        if self._eco_on and self._chill_policy.enabled:
+            self._chill_policy.force_escalate(
+                "operator-requested practice drill needs full detector coverage"
+            )
+            self._pending_simulation_cfg = dict(cfg)
+            if self._wake_chill_modules(auto=True):
+                self.console._append(
+                    "[chill] Preparing full detector coverage before the drill starts."
+                )
+                return
+            self._pending_simulation_cfg = None
         import os
         self._shark_prev_armed = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK")
         self._shark_prev_minsev = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY")
@@ -1069,7 +1627,13 @@ class MainWindow(QMainWindow):
                 register_runtime_watch(_target)
             except Exception:
                 pass
+            try:
+                from angerona.modules.purple_guard import register_runtime_target
+                register_runtime_target(_target)
+            except Exception:
+                pass
         if self._sim_ran_redteam:
+            self.red_team_engine.hold_evidence_for_aar()
             self.red_team_engine.start(intensity=cfg.get("intensity"),
                                        campaign=bool(cfg.get("campaign", False)),
                                        target_dir=_target, custom=_custom)
@@ -1098,6 +1662,9 @@ class MainWindow(QMainWindow):
         # operator's prior policy after evaluation completes.
         import threading
         if getattr(self, "_sim_ran_redteam", False):
+            self._sim_redteam_cleanup_scope = (
+                self.red_team_engine.evidence_cleanup_scope()
+            )
             threading.Thread(target=self._red_team_build_aar, daemon=True).start()
         if getattr(self, "_sim_ran_shark", False):
             threading.Thread(target=self._shark_build_aar, daemon=True).start()
@@ -1131,7 +1698,14 @@ class MainWindow(QMainWindow):
                 unregister_runtime_watch(getattr(self, "_sim_runtime_watch", None))
             except Exception:
                 pass
+            try:
+                from angerona.modules.purple_guard import unregister_runtime_target
+                unregister_runtime_target(getattr(self, "_sim_runtime_watch", None))
+            except Exception:
+                pass
             self._sim_runtime_watch = None
+            if self._eco_on and self._chill_policy.enabled:
+                self.chill_return_requested.emit()
 
     def _start_shark_attack(self) -> None:
         if self.shark_engine.is_running:
@@ -1199,6 +1773,7 @@ class MainWindow(QMainWindow):
         self.shark_monitor.activateWindow()
         self.shark_swim.start()
         self.shark_banner.start()
+        self.red_team_engine.hold_evidence_for_aar()
         self.red_team_engine.start()
         self._rt_poll = QTimer(self)
         self._rt_poll.timeout.connect(self._red_team_check_done)
@@ -1215,17 +1790,36 @@ class MainWindow(QMainWindow):
             os.environ.pop("ANGERONA_SOAR_KILL_AND_ROLLBACK", None)
         else:
             os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = self._shark_prev_armed
+        self._sim_redteam_cleanup_scope = (
+            self.red_team_engine.evidence_cleanup_scope()
+        )
         import threading
         threading.Thread(target=self._red_team_build_aar, daemon=True).start()
 
     def _red_team_build_aar(self) -> None:
         from angerona.shark.aar_report import generate_aar
+        scope = getattr(self, "_sim_redteam_cleanup_scope", None)
+        if scope is None:
+            scope = self.red_team_engine.evidence_cleanup_scope()
         try:
             text = generate_aar(self.config.data_dir, settle_seconds=45,
                                  history_name="redteam_history.json",
                                  stage_category=REDTEAM_STAGE_CATEGORY,
                                  title="RED TEAM ATTACK", report_basename="redteam_aar")
+        except Exception as exc:
+            text = (
+                "RED TEAM ATTACK — After-Action Report unavailable\n\n"
+                f"Report persistence/evaluation failed: {type(exc).__name__}: {exc}"
+            )
         finally:
+            try:
+                self.red_team_engine.release_evidence_after_aar(scope)
+            except Exception as cleanup_exc:
+                self._shark_narration.emit(
+                    f"Red Team evidence cleanup needs review: {cleanup_exc}"
+                )
+            finally:
+                self._sim_redteam_cleanup_scope = None
             self._simulation_aar_finished()
         try:
             print(text)
@@ -1334,28 +1928,78 @@ class MainWindow(QMainWindow):
         is_redteam = "RED TEAM ATTACK" in text.upper()
         report_path = self.config.data_dir / ("redteam_aar.json" if is_redteam
                                               else "shark_aar.json")
+        report_binding = {"run_id": "", "sha256": "", "error": ""}
+        try:
+            raw_report = report_path.read_bytes()
+            payload = json.loads(raw_report.decode("utf-8"))
+            report_binding.update({
+                "run_id": str(payload.get("run_id") or ""),
+                "sha256": hashlib.sha256(raw_report).hexdigest(),
+            })
+        except (OSError, UnicodeDecodeError, ValueError, TypeError) as exc:
+            report_binding["error"] = str(exc)
 
-        def _attempt_fix() -> str:
+        def _attempt_fix(progress=None) -> str:
             if pm is None:
                 return "[Attempt Fix] Posture Hardening module not available."
             if is_redteam:
-                cleaned = _clean_markers()
+                if report_binding.get("error"):
+                    return (
+                        "[Drill resolution] The displayed report could not be bound to its "
+                        "signed JSON. Re-run the report and review it before applying a fix."
+                    )
+                cleaned = 0
                 result = pm.resolve_redteam_report(
                     report_path,
                     cleanup_count=cleaned,
+                    expected_run_id=report_binding.get("run_id", ""),
+                    expected_report_sha256=report_binding.get("sha256", ""),
                 )
                 if not result.get("ok"):
                     return f"[Drill resolution] {result.get('error', 'failed')}"
                 count = int(result.get("candidates", 0))
                 unsupported = result.get("unsupported") or []
-                extra = (f" {len(unsupported)} unsupported technique(s) still need a detector."
-                         if unsupported else "")
-                return (f"[Purple remediation] Installed {count} reviewed detector "
-                        f"candidate(s) under authenticated action contracts for run "
-                        f"{result.get('run_id') or 'unknown'} and cleaned {cleaned} inert "
-                        f"marker/file(s). Applied is not closed: a fresh drill must prove "
-                        f"marker → detector → recorder end to end.{extra} Run the simulation "
-                        "again to produce a verified closure receipt.")
+                if count <= 0:
+                    return (
+                        "[Practice fix] No missed detector candidates required. "
+                        + (f"Unsupported: {', '.join(unsupported)}" if unsupported else "")
+                    )
+                verification = pm.verify_redteam_practice(result, progress=progress)
+                verified = int(verification.get("verified", 0))
+                total = int(verification.get("total", count))
+                lines = [
+                    "[PRACTICE TEST — no Windows vulnerability was exploited or patched]",
+                    f"Applied {count} reviewed Purple Guard candidate(s) under signed "
+                    f"contracts; cleaned {cleaned} inert prior-run marker(s).",
+                ]
+                for row in verification.get("results", []):
+                    if row.get("status") == "PRACTICE_FIX_VERIFIED":
+                        lines.append(
+                            f"✓ {row.get('mitre')}: PRACTICE FIX VERIFIED — positive control "
+                            "detected, benign negative control quiet, signed evidence persisted, "
+                            f"SOAR response succeeded, postcondition passed; receipt "
+                            f"{row.get('receipt_id') or '?'}"
+                        )
+                    else:
+                        lines.append(
+                            f"✗ {row.get('mitre')}: APPLIED, NOT VERIFIED — "
+                            f"{row.get('error') or 'retest failed'}"
+                        )
+                if unsupported:
+                    lines.append(
+                        f"{len(unsupported)} unsupported technique(s) remain OPEN: "
+                        + ", ".join(unsupported)
+                    )
+                if verified == total and total:
+                    lines.append(
+                        f"[PRACTICE FIX VERIFIED] {verified}/{total} detector/response "
+                        "contract(s) passed all controls."
+                    )
+                else:
+                    lines.append(
+                        f"[PRACTICE FIX PARTIAL] {verified}/{total} passed; failures remain OPEN."
+                    )
+                return "\n".join(lines)
             vuln = pm.weaknesses("VULNERABLE")
             if not vuln:
                 return "[Attempt Fix] No open weaknesses — posture is clean."
@@ -1403,7 +2047,8 @@ class MainWindow(QMainWindow):
 
         dlg = AARDialog(self.config.data_dir, self,
                         on_attempt_fix=_attempt_fix, on_apply=_apply,
-                        on_clean=_clean_markers, redteam=is_redteam)
+                        on_clean=_clean_markers, redteam=is_redteam,
+                        report_binding=report_binding)
         dlg.setStyleSheet(self._qss())
         dlg.set_text(text)
         dlg.exec()
@@ -2158,7 +2803,8 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         try:
-            evs = [e for e in self.bus.recent(200) if e.severity >= Severity.HIGH]
+            from angerona.core.threat import active_threat_events
+            evs = active_threat_events(self.bus.recent(200))
             if evs:
                 lines.append(f"Recent HIGH/CRITICAL ({len(evs)} in window), newest first:")
                 for e in sorted(evs, key=lambda e: e.ts, reverse=True)[:6]:
@@ -2281,7 +2927,10 @@ class MainWindow(QMainWindow):
                 # Proactive: announce a NEW critical posture once (voice + channel).
                 # Both are no-ops unless their Settings toggle is on. Re-arms only
                 # after posture recovers above the critical threshold.
-                if s < 50 and not self._aria_crit_announced:
+                active_level = str(
+                    (p.get("factors") or {}).get("active_threat_level", "")
+                ).casefold()
+                if active_level == "critical" and not self._aria_crit_announced:
                     self._aria_crit_announced = True
                     msg = f"Angerona posture critical — score {s} ({p.get('label', '')})."
                     v, pu = getattr(self, "aria_voice", None), getattr(self, "aria_push", None)
@@ -2299,7 +2948,7 @@ class MainWindow(QMainWindow):
                                     pass
                         threading.Thread(target=_announce, name="AriaAnnounce",
                                          daemon=True).start()
-                elif s >= 50:
+                elif active_level != "critical":
                     self._aria_crit_announced = False
         except Exception:
             pass
@@ -2833,9 +3482,19 @@ class MainWindow(QMainWindow):
         # default offset that can hang off a screen edge (esp. multi-monitor).
         # Only centered ONCE — reopening from the tray keeps wherever you moved it.
         super().showEvent(event)
+        QTimer.singleShot(0, self._sync_idle_presentation)
         if not getattr(self, "_did_center", False):
             self._did_center = True
             self._center_on_screen()
+
+    def hideEvent(self, event) -> None:  # noqa: N802 (Qt signature)
+        super().hideEvent(event)
+        QTimer.singleShot(0, self._sync_idle_presentation)
+
+    def changeEvent(self, event) -> None:  # noqa: N802 (Qt signature)
+        super().changeEvent(event)
+        if event.type() in (QEvent.WindowStateChange, QEvent.ActivationChange):
+            QTimer.singleShot(0, self._sync_idle_presentation)
 
     def _center_on_screen(self) -> None:
         """Center on the monitor under the cursor (falls back to primary), clamped

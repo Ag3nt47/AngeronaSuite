@@ -18,21 +18,25 @@ from pathlib import Path
 from typing import Optional
 
 from angerona.core.eventbus import Severity
+from angerona.core.threat import active_threat_events, threat_level
 
 _META_MODULES = {"Self-Test", "Status", "Console"}
 
 
-def _band(score: int):
-    """(label, hex colour) for a score."""
+def _band(score: int, active_level: Severity = Severity.INFO):
+    """Return a posture band without confusing exposure with active attack."""
+    if active_level >= Severity.CRITICAL:
+        return "Critical", "#ef4444"
+    if active_level >= Severity.HIGH:
+        return "High", "#f97316"
     if score >= 85:
         return "Secure", "#22c55e"
     if score >= 70:
         return "Guarded", "#84cc16"
-    if score >= 50:
-        return "Elevated", "#f59e0b"
-    if score >= 30:
-        return "High", "#f97316"
-    return "Critical", "#ef4444"
+    # A poor configuration/exposure score is important, but it is not proof of
+    # a live adversary. The dedicated vulnerability control can flash red while
+    # the global state remains accurately labelled Elevated.
+    return "Elevated", "#f59e0b"
 
 
 def _threat_penalty(bus, window: float = 600.0) -> tuple[int, int]:
@@ -41,10 +45,7 @@ def _threat_penalty(bus, window: float = 600.0) -> tuple[int, int]:
         events = bus.recent(200)
     except Exception:
         return 0, 0
-    now = time.time()
-    threats = [e for e in events
-               if (now - e.ts) <= window and e.severity >= Severity.HIGH
-               and e.module not in _META_MODULES]
+    threats = active_threat_events(events, window)
     if not threats:
         return 0, 0
     crit = sum(1 for e in threats if e.severity == Severity.CRITICAL)
@@ -71,6 +72,10 @@ def _health_penalty(manager) -> tuple[int, int]:
         enabled += 1
         status = getattr(mod, "status", "")
         health = getattr(mod, "health", 100)
+        # Policy-paused deep sensors are expected in Chill. Their reduced
+        # coverage is shown by the mode itself; it is not a crash/degradation.
+        if bool(getattr(mod, "_chill_paused", False)):
+            continue
         if status == "error" or (status != "running") or health < 50:
             degraded += 1
     if enabled == 0:
@@ -138,13 +143,18 @@ def posture(bus, manager, config=None) -> dict:
     kp, kev = _kev_penalty()
     ap = _attack_penalty()
     score = max(0, min(100, 100 - tp - hp - kp - ap))
-    label, color = _band(score)
+    try:
+        active_level = threat_level(bus.recent(200))
+    except Exception:
+        active_level = Severity.INFO
+    label, color = _band(score, active_level)
     return {
         "score": score,
         "label": label,
         "color": color,
         "factors": {
             "active_threats": threats,
+            "active_threat_level": active_level.label,
             "degraded_modules": degraded,
             "kev_exposure": kev,
             "attack_heat": ap,

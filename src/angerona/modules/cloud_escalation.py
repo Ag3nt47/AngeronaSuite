@@ -18,6 +18,7 @@ from typing import Optional
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.privacy import redact_text
 from angerona.core.provider_credentials import credential_values
+from angerona.core.threat import is_active_threat
 
 _SYSTEM = (
     "You are a Tier-3 SOC analyst. Review this security event triaged by a local "
@@ -118,6 +119,8 @@ class CloudEscalationModule(BaseModule):
                 if ev.module in (self.name, "AI Triage (Ollama)"):
                     continue
                 self._last_ts = max(self._last_ts, ev.ts)
+                if not is_active_threat(ev):
+                    continue
                 now = time.time()
                 _calls[:] = [t for t in _calls if now - t < _WINDOW]
                 if len(_calls) >= _CAP:

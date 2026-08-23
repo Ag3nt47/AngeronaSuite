@@ -33,9 +33,70 @@ def test_launchers_pin_cmd_owned_windows_root_before_redirect_or_elevation():
         'set "OPENAI_API_KEY="',
     ):
         assert canonical.index(fragment) < elevation
+
+    assert 'set "ANGERONA_JARVIS_CONTROL_TOKEN="' in canonical
+    assert canonical.index('set "ANGERONA_JARVIS_CONTROL_TOKEN="') < elevation
     assert '"%SystemRoot%\\System32' not in canonical
     assert '"%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive' in canonical
     assert 'call "%~dp0start-angerona.bat" --bootstrap-selftest' in guarded
+
+
+def test_canonical_launcher_refuses_an_unreviewed_existing_venv_before_launch():
+    canonical = (ROOT / "start-angerona.bat").read_text(encoding="utf-8")
+
+    abi_gate = canonical.index(
+        "sys.version_info[:2] == (3, 12) and "
+        "sysconfig.get_platform() == 'win-amd64'"
+    )
+    pip_gate = canonical.index("m.version('pip') == '26.2.1'")
+    dependency_preflight = canonical.index('"tools\\source_trust_preflight.py"')
+    launch = canonical.index("Start-Process -FilePath $env:ANGERONA_PYTHON")
+
+    assert abi_gate < pip_gate < dependency_preflight < launch
+    assert "Angerona did not modify or delete it." in canonical
+    assert "Repair-Angerona-Python.bat" in canonical
+    assert "Install-Angerona-Release.bat" in canonical
+
+
+def test_source_python_repair_is_confirmed_bounded_and_hash_locked():
+    wrapper = (ROOT / "Repair-Angerona-Python.bat").read_text(encoding="utf-8")
+    repair = (ROOT / "Repair-Angerona-Python.ps1").read_text(encoding="utf-8")
+    ignored = (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+    assert "Type REPAIR to continue" in repair
+    assert "[IO.Path]::GetFullPath((Join-Path $root 'venv'))" in repair
+    assert "DriveType -ne [IO.DriveType]::Fixed" in repair
+    assert "FileAttributes]::ReparsePoint" in repair
+    assert "Python Software Foundation" in repair
+    assert "Microsoft" in repair and "Find-TrustedWinget" in repair
+    assert "Python.Python.3.12" in repair
+    assert "--require-hashes --no-deps" in repair
+    assert "requirements-bootstrap-pip.txt" in repair
+    assert repair.rindex("requirements-bootstrap-pip.txt") < repair.rindex(
+        "requirements-release-hashed.txt"
+    )
+    assert "m.version('pip') == '26.2.1'" in repair
+    assert "venv.incompatible.$stamp" in repair
+    assert "Remove-Item -LiteralPath $venv -Recurse -Force" in repair
+    assert "Move-Item -LiteralPath $backup -Destination $venv" in repair
+    assert "Set-Acl" not in repair and "icacls" not in repair.casefold()
+    assert "ANGERONA_DATA" not in repair and "Config" not in repair
+    assert "Repair-Angerona-Python.ps1" in wrapper
+    assert "/venv.incompatible.*/" in ignored
+    assert "/.tmp/repair-wheels/" in ignored
+
+
+def test_push_helper_does_not_execute_commit_text_or_push_after_commit_failure():
+    helper = (ROOT / "push-to-github.bat").read_text(encoding="utf-8")
+
+    assert 'git commit -m "%MSG%"' not in helper
+    assert "$env:MSG" in helper
+    assert 'git commit -F "%MSGFILE%"' in helper
+    commit = helper.index('git commit -F "%MSGFILE%"')
+    commit_failure = helper.index("if not \"%COMMIT_RC%\"==\"0\"")
+    push = helper.index("git push", commit_failure)
+    assert commit < commit_failure < push
+    assert "Commit failed. Nothing was pushed." in helper
 
 
 @pytest.mark.skipif(os.name != "nt", reason="cmd.exe regression")
@@ -56,6 +117,7 @@ def test_launcher_selftest_rejects_hostile_inherited_environment(launcher):
         "ANGERONA_CORE_CMD": r"C:\Users\Public\fake-core.exe",
         "ANGERONA_EXTERNAL_WATCHDOG": "1",
         "ANGERONA_FLEET_SERVICE_KEY": "attacker-fleet-key",
+        "ANGERONA_JARVIS_CONTROL_TOKEN": "attacker-control-token",
         "OPENAI_API_KEY": "attacker-provider-key",
     })
 

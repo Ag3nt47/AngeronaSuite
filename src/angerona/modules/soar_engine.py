@@ -39,6 +39,7 @@ from pathlib import Path
 from angerona.core.archive_safety import read_bounded_member, validate_zip_members
 from angerona.core.eventbus import is_remote_observe_only
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.threat import event_disposition
 from angerona.core.process_allowlist import (
     is_event_allowed as _process_event_allowed,
     policy_snapshot as _process_policy_snapshot,
@@ -59,6 +60,11 @@ class ActiveResponseSOAR(BaseModule):
     def __init__(self) -> None:
         super().__init__()
         self._last_ts = 0.0
+        self._seen_at_last_ts: set[str] = set()
+        self._priority_cursor = 0
+        self._priority_bus_id: int | None = None
+        self._priority_overflow_count = 0
+        self._general_cursor = 0
 
     @staticmethod
     def _armed() -> bool:
@@ -87,26 +93,115 @@ class ActiveResponseSOAR(BaseModule):
                   "ANGERONA_SOAR_KILL_AND_ROLLBACK).", Severity.INFO)
         while not self.stopping:
             self.sleep(2)
-            if self._bus is None or not self._armed():
+            self.process_pending_once()
+
+    @staticmethod
+    def _cursor_key(ev) -> str:
+        """Stable identity for events sharing a timestamp in the bounded ring."""
+        signature = str(getattr(ev, "hmac_sig", "") or "")
+        return signature or f"memory:{id(ev)}"
+
+    def _is_unseen(self, ev) -> bool:
+        if ev.ts < self._last_ts:
+            return False
+        return not (
+            ev.ts == self._last_ts
+            and self._cursor_key(ev) in self._seen_at_last_ts
+        )
+
+    def _advance_cursor(self, ev) -> None:
+        key = self._cursor_key(ev)
+        if ev.ts > self._last_ts:
+            self._last_ts = ev.ts
+            self._seen_at_last_ts = {key}
+        elif ev.ts == self._last_ts:
+            self._seen_at_last_ts.add(key)
+
+    @property
+    def priority_overflow_count(self) -> int:
+        return self._priority_overflow_count
+
+    def _pending_security_events(self) -> tuple[list, bool]:
+        """Fetch response evidence without exposing HIGH+ to INFO eviction.
+
+        Priority-lane overflow is reported as health degradation only.  It
+        never creates a synthetic response event and therefore cannot grant
+        kill/rollback authority. The general lane remains the data source so
+        the operator's opt-in MEDIUM threshold continues to work.
+        """
+        bus = self._bus
+        priority_since = getattr(bus, "priority_since", None)
+        recent_since = getattr(bus, "recent_since", None)
+        if bus is not None and callable(priority_since) and callable(recent_since):
+            bus_id = id(bus)
+            if self._priority_bus_id != bus_id:
+                self._priority_bus_id = bus_id
+                self._priority_cursor = 0
+                self._general_cursor = 0
+            # Active Response supports an explicit MEDIUM threshold. Consume
+            # the general revision delta so that option keeps its historical
+            # behavior; EventBus.recent_since transparently merges retained
+            # HIGH/CRITICAL priority evidence after an INFO-ring overflow.
+            general_current, newest_first, _general_overflow = recent_since(
+                self._general_cursor
+            )
+            self._general_cursor = general_current
+            priority_current, _priority_events, overflow = priority_since(
+                self._priority_cursor
+            )
+            self._priority_cursor = priority_current
+            if overflow:
+                self._priority_overflow_count += 1
+                self.emit(
+                    "Active-response priority event lane overflowed; retained "
+                    "signed evidence will be reviewed, but overflow alone "
+                    "cannot authorize kill/rollback.",
+                    Severity.HIGH,
+                    disposition="health",
+                    event_type="security_lane_overflow",
+                    response_authorized=False,
+                )
+            return list(reversed(newest_first)), False
+        events = list(reversed(bus.recent(250))) if bus is not None else []
+        events.sort(key=lambda event: event.ts)
+        return events, True
+
+    def process_pending_once(self) -> int:
+        """Evaluate one response batch in publication order.
+
+        ``EventBus.recent`` is newest-first.  Advancing a timestamp watermark
+        while iterating that order discarded every older alert in the same
+        scanner burst.  Work oldest-first and advance only after each event has
+        been evaluated, so an unrelated newest event cannot suppress the rest.
+        """
+        if self._bus is None or not self._armed():
+            return 0
+        floor = self._min_severity()
+        process_policy = _process_policy_snapshot()
+        events, legacy_cursor = self._pending_security_events()
+        actions = 0
+        for ev in events:
+            if legacy_cursor and not self._is_unseen(ev):
                 continue
-            floor = self._min_severity()
-            process_policy = _process_policy_snapshot()
-            # Drills can emit 50+ marker detections in one FIM cycle. This path
-            # is reached only while explicitly armed, so retain enough history
-            # to remediate the whole batch rather than only the newest 25.
-            for ev in self._bus.recent(250):
-                if ev.ts <= self._last_ts or ev.severity < floor:
+            try:
+                if ev.severity < floor:
                     continue
                 if ev.module in (self.name, "Console", "SOAR Automation"):
                     continue
-                self._last_ts = max(self._last_ts, ev.ts)
                 if is_remote_observe_only(ev):
                     continue
                 if _process_event_allowed(ev, policy=process_policy):
                     continue
+                if event_disposition(ev) not in {"active", "practice"}:
+                    continue
                 if not self._event_in_response_scope(ev):
                     continue
                 self._kill_and_rollback(ev)
+                actions += 1
+            finally:
+                if legacy_cursor:
+                    self._advance_cursor(ev)
+        return actions
 
     # ── Response playbook ────────────────────────────────────────────────
     @staticmethod
@@ -234,6 +329,7 @@ class ActiveResponseSOAR(BaseModule):
             pid = None
         killed_name = None
         killed_ok = False
+        already_exited = False
 
         if isinstance(pid, int) and psutil is not None:
             try:
@@ -243,7 +339,8 @@ class ActiveResponseSOAR(BaseModule):
                 p.wait(timeout=3)
                 killed_ok = True
             except psutil.NoSuchProcess:
-                killed_ok = True  # already gone — fine
+                # A naturally exited no-op process is not a response action.
+                already_exited = True
             except Exception as exc:
                 self.emit(f"Kill failed for pid {pid}: {exc}", Severity.MEDIUM, pid=pid)
 
@@ -267,5 +364,6 @@ class ActiveResponseSOAR(BaseModule):
             f"{len(rolled_back)} artifact(s) removed, {elapsed}s.",
             Severity.HIGH,
             pid=pid, path=path, mitigated=killed_ok or bool(rolled_back),
+            already_exited=already_exited,
             mitigation_seconds=elapsed, trigger_module=ev.module, trigger_ts=ev.ts,
         )

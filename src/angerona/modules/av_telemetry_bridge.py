@@ -28,6 +28,7 @@ Fallback:
 from __future__ import annotations
 
 import json
+import ntpath
 import subprocess
 import time
 from typing import Optional
@@ -54,6 +55,62 @@ _EID_MAP = {
 _NS = "http://schemas.microsoft.com/win/2004/08/events/event"
 
 
+def _local_artifact_paths(value: object) -> tuple[str, ...]:
+    """Return unambiguous local Windows file resources from Defender.
+
+    Defender commonly prefixes paths with ``file:_`` and PowerShell exposes
+    ``Resources`` as either one string or a list.  Unsupported resource kinds,
+    mixed lists, UNC/device paths, controls and relative paths fail closed to an
+    empty tuple.  Callers retain the raw value for evidence/display.
+    """
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        return ()
+    if not items or len(items) > 64:
+        return ()
+    normalized: list[str] = []
+    for item in items:
+        if not isinstance(item, str):
+            return ()
+        text = item.strip()
+        if not text or len(text) > 4096 or any(ord(ch) < 32 for ch in text):
+            return ()
+        if text.casefold().startswith("file:_"):
+            text = text[6:]
+        elif ":_" in text[:32]:
+            # A different Defender resource scheme (containerfile, process,
+            # webfile, ...). Never reinterpret it as a local artifact.
+            return ()
+        windows = text.replace("/", "\\")
+        if windows.startswith(("\\\\", "\\\\?\\", "\\\\.\\")):
+            return ()
+        drive, tail = ntpath.splitdrive(windows)
+        if (
+            len(drive) != 2
+            or drive[1:] != ":"
+            or not drive[0].isalpha()
+            or not tail.startswith("\\")
+        ):
+            return ()
+        candidate = ntpath.normpath(windows)
+        if any(part == ".." for part in candidate.split("\\")):
+            return ()
+        normalized.append(candidate)
+    return tuple(dict.fromkeys(normalized))
+
+
+def _with_artifact_paths(details: dict, value: object) -> dict:
+    paths = _local_artifact_paths(value)
+    if paths:
+        details["artifact_paths"] = list(paths)
+        if len(paths) == 1:
+            details["artifact_path"] = paths[0]
+    return details
+
+
 def _extract(root: ET.Element, name: str) -> str:
     for node in root.iter(f"{{{_NS}}}Data"):
         if node.get("Name") == name:
@@ -71,14 +128,14 @@ def _parse_1116(root: ET.Element) -> tuple[str, dict]:
         f"Defender detected {threat!r} at {path!r} "
         f"(severity={severity}, action={action}, process={proc})"
     )
-    details = {
+    details = _with_artifact_paths({
         "threat_name":    threat,
         "path":           path,
         "av_severity":    severity,
         "action":         action,
         "process":        proc,
         "mitre_tags":     ["T1204", "T1059"],
-    }
+    }, path)
     return msg, details
 
 
@@ -88,13 +145,13 @@ def _parse_1117(root: ET.Element) -> tuple[str, dict]:
     action  = _extract(root, "Action Name")
     result  = _extract(root, "Action Status")
     msg = f"Defender remediated {threat!r} — {action} on {path!r} ({result})"
-    details = {
+    details = _with_artifact_paths({
         "threat_name":    threat,
         "path":           path,
         "action":         action,
         "result":         result,
         "mitre_tags":     ["T1204"],
-    }
+    }, path)
     return msg, details
 
 
@@ -261,14 +318,20 @@ class AVTelemetryBridgeModule(BaseModule):
                     name     = t.get("ThreatName", "unknown")
                     path     = t.get("Resources", "unknown")
                     severity = Severity.HIGH
+                    details = _with_artifact_paths(
+                        {
+                            "threat_name": name,
+                            "path": str(path),
+                            "detection_id": tid,
+                            "fallback": True,
+                            "mitre_tags": ["T1204"],
+                        },
+                        path,
+                    )
                     self.emit(
                         f"Defender [PS fallback] detected {name!r} at {path!r}",
                         severity,
-                        threat_name=name,
-                        path=str(path),
-                        detection_id=tid,
-                        fallback=True,
-                        mitre_tags=["T1204"],
+                        **details,
                     )
             except Exception:
                 pass

@@ -118,7 +118,7 @@ class ResolveCenter(QDialog):
     _SCAN_CAP = 5000  # bounded history; pagination makes rendering independent of this
 
     def _events(self) -> list:
-        from angerona.gui.pages import NOISE_MODULES
+        from angerona.core.threat import active_threat_events
         now = time.time()
         try:
             evs = self.storage.try_recent_in_window(
@@ -127,22 +127,14 @@ class ResolveCenter(QDialog):
                 evs = self.bus.recent(self._SCAN_CAP)
         except Exception:
             evs = self.bus.recent(self._SCAN_CAP)
-        # Cheap filters + sort FIRST, then cap, THEN the expensive per-event ack
-        # signature check — so a critical storm (thousands of HIGH+ events) can't
-        # make this O(all events) in sha1 on every 2 s tick.
+        # The shared classifier excludes practice, passive exposure, health,
+        # allowlisted and resolved evidence without changing the source record.
         out = [e for e in evs
                if now - self.window_s <= getattr(e, "ts", 0) <= now
-               and getattr(e, "severity", Severity.INFO) >= Severity.HIGH
-               and getattr(e, "module", "") not in NOISE_MODULES]
+               and getattr(e, "severity", Severity.INFO) >= Severity.HIGH]
         out.sort(key=lambda e: getattr(e, "ts", 0), reverse=True)
         out = out[:self._SCAN_CAP]
-        process_policy = process_allowlist.policy_snapshot()
-        resolutions = drill_resolution.resolution_snapshot()
-        return [e for e in out
-                if not alert_ack.is_acked(e)
-                and not process_allowlist.is_event_allowed(e, policy=process_policy)
-                and not drill_resolution.is_resolved_event(
-                    e, resolutions=resolutions)]
+        return active_threat_events(out, window=self.window_s)
 
     def _refresh(self, *_args) -> None:
         # Change-detection: skip the whole (expensive) rebuild when nothing new has

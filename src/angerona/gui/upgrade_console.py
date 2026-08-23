@@ -34,6 +34,24 @@ from PySide6.QtWidgets import (
 from angerona.core.url_policy import LOCAL_SERVICE_POLICY, read_bounded, safe_urlopen
 
 _DEFAULT_OLLAMA_MODELS = ["llama3:8b", "mistral:7b", "phi3:latest"]
+_UPGRADE_UI_POOL: QThreadPool | None = None
+
+
+def _upgrade_ui_pool() -> QThreadPool:
+    """Return a pool reserved for bounded, operator-facing console requests.
+
+    Scanner and telemetry work uses Qt's global pool elsewhere in the suite.
+    Keeping the two console request slots separate prevents a busy global pool
+    from delaying model discovery or a model check indefinitely.  The pool has
+    module lifetime so deleting a console never waits for its request.
+    """
+    global _UPGRADE_UI_POOL
+    if _UPGRADE_UI_POOL is None:
+        pool = QThreadPool()
+        pool.setMaxThreadCount(2)
+        pool.setExpiryTimeout(10_000)
+        _UPGRADE_UI_POOL = pool
+    return _UPGRADE_UI_POOL
 
 
 class _UpgradeWorkerBridge(QObject):
@@ -126,7 +144,7 @@ class AngeronaUpgradeConsole(QMainWindow):
         self.manager = manager
         self.config = config
         self.bus = bus
-        self._async_pool = QThreadPool.globalInstance()
+        self._async_pool = _upgrade_ui_pool()
         self._async_bridge = _UpgradeWorkerBridge(QApplication.instance())
         self._async_bridge.result_ready.connect(self._handle_async_result)
         self._accept_async_results = True
@@ -565,7 +583,13 @@ class AngeronaUpgradeConsole(QMainWindow):
         ll.addWidget(self.wd_logs); layout.addWidget(lg)
 
         self.tabs.addTab(tab, "Watchdog Hub")
-        self._refresh_watchdog()
+        # The first status read imports the resilience stack and touches its
+        # diagnostic files.  Defer that cold work until after construction so
+        # opening this operator window never waits on storage or AV scanning.
+        self._wd_initial_timer = QTimer(self)
+        self._wd_initial_timer.setSingleShot(True)
+        self._wd_initial_timer.timeout.connect(self._refresh_watchdog)
+        self._wd_initial_timer.start(0)
         self._wd_timer = QTimer(self); self._wd_timer.timeout.connect(self._refresh_watchdog)
         self._wd_timer.start(3000)
 

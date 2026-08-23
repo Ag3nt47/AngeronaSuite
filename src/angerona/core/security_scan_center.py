@@ -28,6 +28,7 @@ MAX_SCAN_FILES = 10_000
 MAX_SCAN_BYTES = 512 * 1024 * 1024
 MAX_FILE_BYTES = 64 * 1024 * 1024
 MAX_SCAN_SECONDS = 120.0
+MAX_DEFENDER_SCAN_SECONDS = 30.0 * 60.0
 MAX_FINDINGS = 256
 MAX_ERRORS = 32
 MAX_CONNECTIONS = 2_048
@@ -59,6 +60,7 @@ _SAFE_PROCESS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,79}$")
 
 
 ProgressCallback = Callable[["ScanProgress"], None]
+UsbAuthorizationCallback = Callable[[Path], tuple[bool | None, str]]
 
 
 @dataclass(frozen=True)
@@ -200,12 +202,15 @@ class SecurityScanCenter:
         max_total_bytes: int = MAX_SCAN_BYTES,
         max_file_bytes: int = MAX_FILE_BYTES,
         max_duration_seconds: float = MAX_SCAN_SECONDS,
+        defender_timeout_seconds: float = MAX_DEFENDER_SCAN_SECONDS,
         psutil_module: Any | None = None,
         yara_module: Any | None = None,
         defender_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+        defender_process_factory: Callable[..., Any] | None = None,
         trusted_defender_executable: Path | None = None,
         trusted_defender_roots: Sequence[Path] | None = None,
         platform_system: str | None = None,
+        usb_authorizer: UsbAuthorizationCallback | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
     ) -> None:
@@ -215,16 +220,30 @@ class SecurityScanCenter:
         duration = float(max_duration_seconds)
         if not 0 < duration <= MAX_SCAN_SECONDS:
             raise ValueError("max_duration_seconds is outside its allowed range")
+        defender_duration = float(defender_timeout_seconds)
+        if not 0 < defender_duration <= MAX_DEFENDER_SCAN_SECONDS:
+            raise ValueError("defender_timeout_seconds is outside its allowed range")
         self.max_duration_seconds = duration
+        self.defender_timeout_seconds = defender_duration
         self._psutil = psutil_module
         self._yara = yara_module
-        self._runner = defender_runner or subprocess.run
+        # ``defender_runner`` remains an injectable compatibility seam for unit
+        # tests. Production uses Popen so the exact child can be polled,
+        # cancelled, and reaped instead of becoming an orphan after the GUI
+        # closes or a scan exceeds its time budget.
+        self._runner = defender_runner
+        self._process_factory = defender_process_factory or subprocess.Popen
         self._trusted_defender_executable = trusted_defender_executable
         self._trusted_defender_roots = (
             tuple(Path(item) for item in trusted_defender_roots)
             if trusted_defender_roots is not None else None
         )
         self._platform = platform_system or platform.system()
+        if usb_authorizer is None:
+            from angerona.core.usb_policy import active_usb_scan_authorization
+
+            usb_authorizer = active_usb_scan_authorization
+        self._usb_authorizer = usb_authorizer
         self._monotonic = monotonic
         self._wall_clock = wall_clock
 
@@ -241,6 +260,67 @@ class SecurityScanCenter:
     @staticmethod
     def _cancelled(token: ScanCancellationToken | None) -> bool:
         return bool(token and token.cancelled)
+
+    @staticmethod
+    def _stop_defender_process(process: Any) -> bool:
+        """Stop and reap only the Defender child launched by this scan."""
+        try:
+            if process.poll() is not None:
+                return True
+            process.terminate()
+            try:
+                process.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2.0)
+            return process.poll() is not None
+        except Exception:
+            return False
+
+    def _supervise_defender_process(
+        self,
+        argv: list[str],
+        *,
+        executable: Path,
+        creationflags: int,
+        cancellation: ScanCancellationToken | None,
+        progress: ProgressCallback | None,
+    ) -> tuple[str, int | None, float, bool]:
+        """Run Defender with liveness updates and bounded child cleanup."""
+        process = self._process_factory(
+            argv,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+            cwd=str(executable.parent),
+            close_fds=True,
+        )
+        began = self._monotonic()
+        last_second = -1
+        while True:
+            elapsed = max(0.0, self._monotonic() - began)
+            return_code = process.poll()
+            if return_code is not None:
+                return "completed", int(return_code), elapsed, True
+            if self._cancelled(cancellation):
+                stopped = self._stop_defender_process(process)
+                return "cancelled", None, elapsed, stopped
+            if elapsed >= self.defender_timeout_seconds:
+                stopped = self._stop_defender_process(process)
+                return "timeout", None, elapsed, stopped
+            current_second = int(elapsed)
+            if current_second != last_second:
+                last_second = current_second
+                self._notify(
+                    progress,
+                    ScanProgress(
+                        "defender_active",
+                        current_second,
+                        0,
+                        f"Microsoft Defender is active · {current_second}s elapsed",
+                    ),
+                )
+            time.sleep(0.2)
 
     def _result(
         self,
@@ -307,11 +387,65 @@ class SecurityScanCenter:
             and (best[1] in _REMOTE_FILESYSTEMS or best[2].startswith(("//", "\\\\")))
         )
 
+    def _path_is_reported_removable(self, target: Path) -> bool:
+        """Best-effort metadata-only removable-volume classification."""
+        psutil = self._psutil_module()
+        if psutil is not None:
+            try:
+                mounts = psutil.disk_partitions(all=True)
+            except Exception:
+                mounts = ()
+            best: tuple[int, str] | None = None
+            for mount in mounts[:256]:
+                try:
+                    point = Path(str(mount.mountpoint)).resolve(strict=True)
+                    if _is_within(target, point):
+                        marker = " ".join(
+                            (
+                                str(getattr(mount, "opts", "")),
+                                str(getattr(mount, "fstype", "")),
+                            )
+                        ).casefold()
+                        candidate = (len(point.parts), marker)
+                        if best is None or candidate[0] > best[0]:
+                            best = candidate
+                except (OSError, RuntimeError):
+                    continue
+            if best is not None and any(
+                token in best[1] for token in ("removable", "cdrom")
+            ):
+                return True
+        rendered = str(target).replace("\\", "/").casefold()
+        return rendered.startswith(("/media/", "/run/media/"))
+
+    def _enforce_usb_authorization(self, target: Path) -> None:
+        """Fail closed before an Angerona workflow reads removable media."""
+        try:
+            authorized, state = self._usb_authorizer(target)
+        except Exception as exc:
+            if self._path_is_reported_removable(target):
+                raise ValueError(
+                    "removable-media authorization is unavailable; reconnect and approve it"
+                ) from exc
+            return
+        if authorized is False:
+            raise ValueError(
+                "removable media is not approved for Angerona scanning "
+                f"(state: {state})"
+            )
+        if authorized is None and self._path_is_reported_removable(target):
+            raise ValueError(
+                "removable media must be approved with the USB PIN before scanning"
+            )
+
     def _validated_local_target(self, value: str | os.PathLike[str]) -> Path:
         raw = os.fspath(value)
         if not raw or "\x00" in raw or raw.startswith(("\\\\", "//")):
             raise ValueError("a local filesystem path is required")
         candidate = Path(raw).expanduser()
+        # Consult the live gate before link resolution/stat so unapproved media
+        # content is not opened merely to validate a Scan Center selection.
+        self._enforce_usb_authorization(candidate)
         if _is_reparse_or_link(candidate):
             raise ValueError("symlink and reparse-point scan roots are not allowed")
         try:
@@ -326,6 +460,9 @@ class SecurityScanCenter:
             raise ValueError("only a regular file or local directory can be scanned")
         if self._remote_mount(target):
             raise ValueError("remote and network-mounted scan paths are not allowed")
+        # Re-check the canonical path to prevent an internal-path alias from
+        # crossing onto removable media after resolution.
+        self._enforce_usb_authorization(target)
         return target
 
     @staticmethod
@@ -885,7 +1022,9 @@ class SecurityScanCenter:
             "remediation_disabled": remediation_disabled,
             "configured_threat_actions_possible": not remediation_disabled,
             "preview_argv": preview,
-            "timeout_seconds": self.max_duration_seconds,
+            "timeout_seconds": self.defender_timeout_seconds,
+            "process_supervision": self._runner is None,
+            "live_cancellation": self._runner is None,
         }
         if not execute:
             return self._result(
@@ -905,27 +1044,78 @@ class SecurityScanCenter:
                 operation, started, status="cancelled", supported=True, executed=False,
                 summary="Microsoft Defender scan was cancelled before launch.", metrics=metrics,
             )
-        self._notify(progress, ScanProgress("defender", 0, 1, "Microsoft Defender scan running"))
+        self._notify(
+            progress,
+            ScanProgress("defender_active", 0, 0, "Starting Microsoft Defender scan…"),
+        )
         creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
         try:
-            completed = self._runner(
-                argv,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=self.max_duration_seconds,
-                check=False,
-                creationflags=creationflags,
-            )
+            outcome = "completed"
+            stopped = True
+            elapsed = 0.0
+            if self._runner is not None:
+                completed = self._runner(
+                    argv,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=self.defender_timeout_seconds,
+                    check=False,
+                    creationflags=creationflags,
+                )
+                return_code = int(completed.returncode)
+            else:
+                outcome, return_code, elapsed, stopped = self._supervise_defender_process(
+                    argv,
+                    executable=executable,
+                    creationflags=creationflags,
+                    cancellation=cancellation,
+                    progress=progress,
+                )
             metrics.update({
-                "exit_code": int(completed.returncode),
+                "exit_code": return_code,
+                "duration_seconds": round(elapsed, 2),
+                "child_stopped": stopped,
                 "output_capture": "disabled",
             })
-            success = completed.returncode == 0
+            if outcome == "cancelled":
+                return self._result(
+                    operation,
+                    started,
+                    status="cancelled",
+                    supported=True,
+                    executed=True,
+                    summary=(
+                        "Microsoft Defender scan was cancelled and its scan process was stopped."
+                        if stopped else
+                        "Cancellation was requested, but the Defender process could not be "
+                        "confirmed stopped. Review Windows Security."
+                    ),
+                    metrics=metrics,
+                    errors=() if stopped else ("defender-cancel-cleanup-unconfirmed",),
+                )
+            if outcome == "timeout":
+                return self._result(
+                    operation,
+                    started,
+                    status="limited",
+                    supported=True,
+                    executed=True,
+                    summary=(
+                        "Microsoft Defender exceeded the Scan Center time limit; its scan "
+                        "process was stopped."
+                        if stopped else
+                        "Microsoft Defender exceeded the Scan Center time limit and could not "
+                        "be confirmed stopped. Review Windows Security."
+                    ),
+                    metrics=metrics,
+                    errors=("defender-timeout",),
+                )
+            success = return_code == 0
             findings = () if success else (
                 ScanFinding(
                     "defender.scan-failed", "medium", "Microsoft Defender",
                     "Microsoft Defender did not complete the requested scan",
-                    (f"Exit code: {int(completed.returncode)}",),
+                    (f"Exit code: {int(return_code or 0)}",),
                     (
                         "Open Windows Security and review Protection history and service health.",
                         "Update Defender signatures, then retry the scan.",
@@ -954,7 +1144,11 @@ class SecurityScanCenter:
         except subprocess.TimeoutExpired:
             return self._result(
                 operation, started, status="limited", supported=True, executed=True,
-                summary="Microsoft Defender exceeded the Scan Center time limit.", metrics=metrics,
+                summary=(
+                    "Microsoft Defender exceeded the Scan Center time limit; the compatibility "
+                    "runner stopped its process."
+                ),
+                metrics=metrics,
                 errors=("defender-timeout",),
             )
         except Exception as exc:

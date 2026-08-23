@@ -273,6 +273,20 @@ class ModuleManager:
         "Active Response SOAR",
         "Zero-Trust Local IPC Guard",
         "SOAR Automation",
+        # Network-first Chill must not spend minutes waiting behind unrelated
+        # module first-cycle gates before its live edge sensors exist. These
+        # modules are event-driven/lightweight at startup and form the minimum
+        # always-on detection plane requested for unattended monitoring.
+        "Network Monitor",
+        "C2 Beacon Detector",
+        "WFP Controller",
+        "ARP Watchdog",
+        "WLAN Monitor",
+        "ETW Core Listener",
+        "ETW Real-Time Process Sensor",
+        "AMSI Bridge",
+        "AV Telemetry Bridge",
+        "Removable-Media / USB Monitor",
     }
 
     def start_enabled(

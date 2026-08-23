@@ -117,6 +117,10 @@ class RunSpinner(QWidget):
         self._pct = max(0, min(100, int(round(pct))))
         self._render()
 
+    def set_text(self, text: str) -> None:
+        self._text = str(text or "")
+        self._render()
+
     def set_progress(self, done: int, total: int) -> None:
         self.set_pct(0 if total <= 0 else done / total * 100.0)
 
@@ -138,6 +142,20 @@ class RunSpinner(QWidget):
             self._text = text
         self.set_pct(100)
         self._done_timer.start(1500)   # linger on green, then fade out
+
+    def succeed(self, text: str = "Fixed and verified") -> None:
+        """Become a persistent green checkmark until the next start/stop."""
+        self._est_timer.stop()
+        self._done_timer.stop()
+        self._ring.stop()
+        self._ring.hide()
+        self._pct = 100
+        self._text = text
+        self._label.setText(f"✓  {text}  100%")
+        self._label.setStyleSheet(
+            "color:rgb(47,227,138); font-weight:800; letter-spacing:0.4px;"
+        )
+        self.show()
 
     def stop(self) -> None:
         self._est_timer.stop()

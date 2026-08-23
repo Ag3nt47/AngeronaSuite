@@ -145,6 +145,20 @@ class EvidenceLattice:
         # creating duplicate alerts for an already-HIGH detection.
         if event.module == EvidenceLatticeModule.name or event.severity != Severity.MEDIUM:
             return None
+        # Never promote three practice, passive-exposure, or suite-health
+        # observations into a fabricated HIGH incident merely because they
+        # mention the same entity. Ordinary MEDIUM detector evidence remains
+        # eligible for correlation (its disposition is "informational" until
+        # independent corroboration crosses this lattice's threshold).
+        try:
+            from angerona.core.threat import event_disposition
+
+            if event_disposition(event) in {"practice", "exposure", "health"}:
+                return None
+        except Exception:
+            # Classification failure is security-sensitive: fail closed for
+            # elevation, while the original event remains fully visible.
+            return None
         entity = _entity(event.details or {})
         if entity is None:
             return None

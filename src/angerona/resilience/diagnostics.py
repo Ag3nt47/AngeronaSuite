@@ -6,7 +6,8 @@ periodically dumps its own state here so the BlackBox can surface it without eve
 touching or blocking the live process.
 
 Files (under the repo ``diagnostics/`` directory the BlackBox already watches):
-    status.json            per-component liveness + resource snapshot
+    status_<component>.json per-component liveness + resource snapshot
+    status.json             dashboard aggregate (owned by core.status_report)
     thread_dump.json       current thread stacks (deadlock forensics)
     tracemalloc.json       top memory allocations (if tracemalloc is enabled)
     selftest_failures.json appended record of any self-test failure
@@ -138,7 +139,13 @@ def write_recovery_snapshot(
 
 
 def write_status(component: str, state: str = "running", extra: Optional[dict] = None) -> bool:
-    """Snapshot this process's liveness + resource footprint."""
+    """Snapshot one process's liveness + resource footprint.
+
+    Component processes deliberately write only their namespaced file.  The
+    dashboard's ``status.json`` has a different aggregate schema and a single
+    owner (``core.status_report``); overwriting it here caused schema races and
+    doubled every component status write.
+    """
     snap = {"component": component, "state": state, "pid": os.getpid(),
             "ts": time.time(), "ts_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     try:
@@ -152,7 +159,7 @@ def write_status(component: str, state: str = "running", extra: Optional[dict] =
         snap["num_threads"] = threading.active_count()
     if extra:
         snap.update(extra)
-    return _atomic_write_json(f"status_{component}.json", snap) and _atomic_write_json("status.json", snap)
+    return _atomic_write_json(f"status_{component}.json", snap)
 
 
 def write_thread_dump(component: str = "core") -> bool:
@@ -228,7 +235,7 @@ def _self_test_body() -> tuple[bool, str]:
     tm = write_tracemalloc(comp)
     fail = record_selftest_failure("dummy_check", "intentional test record", comp)
     try:
-        status = json.loads((diag_dir() / "status.json").read_text(encoding="utf-8"))
+        status = json.loads((diag_dir() / f"status_{comp}.json").read_text(encoding="utf-8"))
         dump = json.loads((diag_dir() / "thread_dump.json").read_text(encoding="utf-8"))
         fails = json.loads((diag_dir() / "selftest_failures.json").read_text(encoding="utf-8"))
         shape_ok = (status.get("component") == comp and "pid" in status

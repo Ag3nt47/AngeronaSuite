@@ -6,7 +6,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPoint, QRect, Qt
-from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication, QMainWindow
 
 from angerona.gui.holographic_orb import (
@@ -176,14 +176,22 @@ def test_animated_collapse_and_restore_complete_without_stranding_window(
 
     controller.collapse_window(window)
     assert controller._trails
-    QTest.qWait(500)
+    collapse_completed = QSignalSpy(controller._trails[-1].completed)
+    assert collapse_completed.wait(2_000)
     app.processEvents()
     assert controller.orb.isVisible()
     assert controller.is_collapsed(window)
 
     controller.restore_main()
     assert controller._trails
-    QTest.qWait(500)
+    restore_trail = controller._trails[-1]
+    restore_completed = QSignalSpy(restore_trail.completed)
+    # Simulate a display/animation interruption.  The independent completion
+    # guard must still restore the real window rather than strand it hidden.
+    restore_trail._animation.stop()
+    restore_trail._completion_guard.setInterval(40)
+    restore_trail._completion_guard.start()
+    assert restore_completed.wait(2_000)
     app.processEvents()
     assert window.isVisible()
     assert not controller.is_collapsed(window)

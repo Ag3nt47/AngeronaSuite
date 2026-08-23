@@ -171,16 +171,32 @@ class SystemPulseCard(QFrame):
         )
         self._sample_worker.start()
         self.sample_ready.connect(self._apply_sample)
+        self._normal_interval_ms = max(1000, int(interval_ms))
+        self._chill_interval_ms = max(10_000, self._normal_interval_ms)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.request_sample)
-        self._timer.start(max(1000, int(interval_ms)))
+        self._timer.start(self._normal_interval_ms)
         QTimer.singleShot(120, self.request_sample)
 
     def request_sample(self) -> None:
-        if self._closed.is_set() or self._busy.is_set() or not self.isVisible():
+        window = self.window()
+        if (
+            self._closed.is_set()
+            or self._busy.is_set()
+            or not self.isVisible()
+            or (window is not None and window.isMinimized())
+        ):
             return
         self._busy.set()
         self._sample_requested.set()
+
+    def set_chill_mode(self, enabled: bool) -> None:
+        """Reduce cosmetic host sampling while quiet Chill is active."""
+        if self._closed.is_set():
+            return
+        interval = self._chill_interval_ms if enabled else self._normal_interval_ms
+        if self._timer.interval() != interval:
+            self._timer.start(interval)
 
     def _sample_loop(self) -> None:
         """Service coalesced sample requests without per-pulse thread churn."""

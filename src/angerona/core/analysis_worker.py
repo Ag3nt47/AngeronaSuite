@@ -40,6 +40,7 @@ from angerona.core.url_policy import (
     read_bounded,
     safe_urlopen,
 )
+from angerona.core.ollama_lifecycle import effective_keep_alive
 
 
 # ── Tuning ────────────────────────────────────────────────────────────────────
@@ -268,7 +269,7 @@ class AnalysisWorker(QThread):
             ],
             "stream": False,
             "format": "json",       # ask Ollama to constrain output to JSON
-            "keep_alive": "30m",
+            "keep_alive": effective_keep_alive("30m"),
         }).encode("utf-8")
         req = urllib.request.Request(
             local_service_url(OLLAMA_HOST, "/api/chat"), data=payload,

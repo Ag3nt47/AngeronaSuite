@@ -53,6 +53,7 @@ lxml==6.1.1
 packageurl-python==0.17.6
 packaging==26.2
 pefile==2024.8.26
+pip==26.2.1
 pip-requirements-parser==32.0.1
 pluggy==1.6.0
 py-serializable==2.1.0

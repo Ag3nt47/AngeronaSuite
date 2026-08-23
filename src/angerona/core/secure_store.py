@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -34,10 +35,66 @@ _LINUX_REFERENCE_FILENAME = "secrets.secret-service-reference"
 _LINUX_SECRET_SERVICE = "org.angerona.security-suite"
 _LINUX_SECRET_ACCOUNT = "runtime-secrets-v1"
 _INTERNAL_SECRET_PREFIX = "ANGERONA_INTERNAL_"
+_NON_ENVIRONMENT_SECRETS = frozenset({
+    "ANGERONA_USB_PIN",
+    # This token authorizes a loopback control plane in an elevated process.
+    # Consumers must read it directly from the OS-protected store so a launcher,
+    # parent process, or stale shell can never inject control authority.
+    "ANGERONA_JARVIS_CONTROL_TOKEN",
+})
+_MAX_LEGACY_ENV_BYTES = 1024 * 1024
 
 
 def _publishable_secret(key: str) -> bool:
-    return not key.startswith(_INTERNAL_SECRET_PREFIX)
+    return (
+        not key.startswith(_INTERNAL_SECRET_PREFIX)
+        and key not in _NON_ENVIRONMENT_SECRETS
+    )
+
+
+def _is_link_or_reparse(path: Path) -> bool:
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    attributes = getattr(info, "st_file_attributes", 0)
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISLNK(info.st_mode) or bool(attributes & reparse)
+
+
+def _path_traverses_reparse(path: Path) -> bool:
+    """Inspect every existing component without resolving through it."""
+    current = Path(os.path.abspath(path))
+    while True:
+        if os.path.lexists(current) and _is_link_or_reparse(current):
+            return True
+        parent = current.parent
+        if parent == current:
+            return False
+        current = parent
+
+
+def _legacy_source_identity(path: Path) -> tuple[int, int, int, int, int] | None:
+    """Return a stable identity only for a small, ordinary plaintext file."""
+    if _path_traverses_reparse(path):
+        return None
+    try:
+        info = path.lstat()
+    except OSError:
+        return None
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_size > _MAX_LEGACY_ENV_BYTES
+        or getattr(info, "st_nlink", 1) != 1
+    ):
+        return None
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
 
 
 def secure_store_path(data_root: Path | None = None) -> Path:
@@ -167,6 +224,10 @@ def read_secret_map(
 
 
 def write_secret_map(updates: Mapping[str, object], data_root: Path | None = None) -> Path:
+    # Clear an inherited plaintext PIN even when this particular update does
+    # not contain the PIN. It must only ever be read from protected storage.
+    for key in _NON_ENVIRONMENT_SECRETS:
+        os.environ.pop(key, None)
     path = secure_store_path(data_root)
     values = (
         _read_macos_secret_map(strict=True)
@@ -226,7 +287,17 @@ def write_secret_map(updates: Mapping[str, object], data_root: Path | None = Non
     # problem must never destroy the only readable credential copy.
     if _unprotect_bytes(blob) != payload:
         raise RuntimeError("DPAPI verification failed; credentials were not written")
+    if _path_traverses_reparse(path.parent) or (
+        os.path.lexists(path) and _is_link_or_reparse(path)
+    ):
+        raise RuntimeError(
+            "Protected credential path traverses a link or reparse point; refusing to write"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
+    if _path_traverses_reparse(path.parent):
+        raise RuntimeError(
+            "Protected credential directory became unsafe; refusing to write"
+        )
     descriptor: int | None = None
     tmp: Path | None = None
     try:
@@ -298,6 +369,11 @@ def parse_env(path: Path) -> dict[str, str]:
 
 
 def load_into_environment(data_root: Path | None = None) -> None:
+    # High-authority local secrets are consumed directly from the OS-protected
+    # store. Remove inherited plaintext copies as well as refusing to publish
+    # protected values into the process environment.
+    for key in _NON_ENVIRONMENT_SECRETS:
+        os.environ.pop(key, None)
     for key, value in read_secret_map(data_root).items():
         if _publishable_secret(key):
             # A verified protected value is authoritative over an inherited
@@ -315,20 +391,22 @@ def migrate_legacy_env(paths: list[Path], data_root: Path | None = None) -> list
     win, preventing a stale legacy file from replacing a credential silently.
     """
     merged: dict[str, str] = {}
-    sources: list[Path] = []
+    sources: list[tuple[Path, tuple[int, int, int, int, int]]] = []
     seen: set[str] = set()
     for candidate in paths:
-        try:
-            canonical = str(candidate.resolve())
-        except OSError:
-            canonical = str(candidate)
-        if canonical in seen or not candidate.exists():
+        identity = _legacy_source_identity(candidate)
+        if identity is None:
+            continue
+        canonical = os.path.normcase(os.path.abspath(candidate))
+        if canonical in seen:
             continue
         seen.add(canonical)
         values = parse_env(candidate)
-        if values:
+        # Reject a file that changed while it was being parsed. No protected
+        # update or plaintext deletion is attempted for an unstable source.
+        if values and _legacy_source_identity(candidate) == identity:
             merged.update(values)
-            sources.append(candidate)
+            sources.append((candidate, identity))
     if not merged:
         return []
     existing = read_secret_map(data_root)
@@ -339,7 +417,12 @@ def migrate_legacy_env(paths: list[Path], data_root: Path | None = None) -> list
     if any(stored.get(key) != value for key, value in expected.items()):
         raise RuntimeError("legacy credential migration did not verify")
     removed: list[Path] = []
-    for source in sources:
+    for source, identity in sources:
+        # Never delete a path that was swapped, linked, or changed after the
+        # protected write/read verification. Leaving plaintext behind is safer
+        # than deleting an object we did not inspect.
+        if _legacy_source_identity(source) != identity:
+            continue
         try:
             source.unlink()
             removed.append(source)

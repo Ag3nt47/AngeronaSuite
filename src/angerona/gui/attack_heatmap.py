@@ -533,6 +533,7 @@ class AttackHeatmapWindow(QDialog):
 
     def _ollama_posture(self, snap: dict) -> str | None:
         import os, urllib.request
+        from angerona.core.ollama_lifecycle import effective_keep_alive
         host = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
         model = os.environ.get("ANGERONA_MODEL", "llama3")
         matrix = snap.get("matrix", {})
@@ -542,7 +543,9 @@ class AttackHeatmapWindow(QDialog):
             {"tid": t, "name": _TID_TO_META.get(t, (t, "", ""))[0],
              "hits": r.get("count"), "heat": round(r.get("heat", 0), 3)} for t, r in active]})
         payload = json.dumps({
-            "model": model, "stream": False, "keep_alive": "30m",
+            "model": model,
+            "stream": False,
+            "keep_alive": effective_keep_alive("30m"),
             "options": {"temperature": 0},
             "messages": [
                 {"role": "system", "content": "You are a SOC analyst. In 3-5 calm sentences, "

@@ -3044,6 +3044,122 @@ CYCLE 21 IMPLEMENTATION RECORD - 2026-08-21
     key custody, and platform-native privileged sensors remain separate work.
 
 
+CYCLE 22 IMPLEMENTATION RECORD - 2026-08-22
+--------------------------------------------
+
+[DONE/P0] ENT-CHILL-NETFIRST-022  All-day network-first unattended mode.
+  - Autostart enters Chill; desktop and headless runtimes use the same
+    EventBus-revision controller, sequential wake/cooldown, retry/backoff, and
+    sparse maintenance contract.
+  - Network/C2/WFP/ETW-Sysmon/AV/SOAR/USB/resilience sentinels remain available
+    while disk-heavy and AI-heavy scanners are parked or slowed. Ollama is
+    unloaded while idle and is reacquired only for an allowed lease.
+  - Live profiling moved dashboard presentation to 5s active-Chill / 10s
+    inactive / 15s hidden cadences with elapsed-time-equivalent panel periods;
+    High/Critical evidence receives one coalesced immediate GUI wake.
+  - ARIA animations fully stop in Chill/inactive/hidden; minimized Watchdog and
+    Scanner UI uses a cached 10s refresh. Sensor/supervisor recovery cadence is
+    unchanged.
+  - Active-threat revisions wake the fuller path; practice, exposure, and health
+    signals do not. This is low-I/O local monitoring, not continuous full scan.
+
+[DONE/P0] ENT-POSTURE-ACTIVE-022  Active-threat-only global posture.
+  - Severity and disposition are distinct. Exact in-memory practice provenance
+    replaces marker-name guessing.
+  - Drill evidence, vulnerability exposure, detector/telemetry health, Defender
+    state, and ordinary USB insertion stay visible without asserting Critical.
+  - High/Critical requires active threat/attack evidence; configuration weakness
+    stays Elevated. Resolve Center and Daily Briefing follow the same rule.
+
+[DONE/P0] ENT-SOAR-USB-SCAN-022  Direct response, honest scans, and media trust.
+  - Live Alerts queues an authenticated bounded response directly; SOAR exposes
+    approve, dismiss, and execute with exact digest/HMAC revalidation.
+  - Scan Center is responsive and cancellable, reports actual Defender activity
+    rather than synthetic percent, and keeps custom scans no-remediation.
+  - USB PIN enrollment/lockout/reset is protected; trust binds volume identity,
+    reset revokes approval, same-letter device swaps re-prompt, and selected
+    media scans revalidate the live authorized target before reading.
+
+[DONE/P0] ENT-STORAGE-DECEPTION-022  Canonical D:-drive source boundary.
+  - The Windows source launcher overwrites inherited storage settings with its
+    sibling D:-drive AngeronaData root. Product databases, reports, diagnostics,
+    scanner evidence, temp work, and sidecars use canonical path helpers.
+  - Static/smart deception defaults inside that data root. Personal Desktop,
+    Documents, Downloads, and AppData canaries/sampling are explicit opt-in.
+  - Migration rejects links/junctions, special files, overlapping roots, and
+    untrusted protected-store paths.
+
+[DONE/P0] ENT-QT-RESILIENCE-022  Lifecycle-safe UI and authenticated watchdog.
+  - Async Qt surfaces reject late queued signals and defer deletion until worker
+    completion; close/reopen lifecycle stress passes.
+  - Heartbeat v2 is fixed-size, derived-key HMAC authenticated, component-bound,
+    fresh, and replay checked. Invalid/legacy/replayed state is not authority for
+    process control. FRZ now produces the authenticated 32-byte v2 record rather
+    than its legacy 16-byte raw map. Spawn-lock I/O uncertainty fails closed and
+    retries.
+  - JARVIS authority is SecureStore-only; inherited token variables are scrubbed
+    before elevation/runtime, with masked enrollment/regeneration in Setup.
+  - FRZ v2 uses the distinct `frz_watchdog_v2.exe` identity and a pinned Go
+    module graph. Go was unavailable locally, so native compilation remains an
+    external evidence gate.
+
+[DONE/P0] ENT-PURPLE-PROOF-022  Exact report-bound remediation verification.
+  - Candidate application binds the exact report, detector/action contract, and
+    atomic report digest. A source drill cannot certify its own closure.
+  - Test Fix uses inert positive and negative controls and requires production
+    Purple Guard detection, authenticated EventBus evidence, persisted detector
+    evidence, real Active Response SOAR receipt, cleanup, and a signed receipt.
+  - Only a distinct later run may reach verified closure; expiry or later miss
+    reopens. The implementation proves one fixed gap, not automatic 100% drills.
+
+[DONE/P1] ENT-CASE-PRIVATE-022  Human-reviewed private observable correlation.
+  - Typed bounded observables are suggested/approved/rejected and idempotent per
+    case/type/value. Related-case results, retention, purge, and migration are
+    bounded.
+  - Only approved, non-excluded observables enter a derived-key HMAC private
+    index. Tampered rows are refused; sanitized export contains counts only.
+  - Similarity is analyst context with no posture or automated-response authority.
+
+[DONE/P0] ENT-LAUNCH-REPAIR-022  Windows ABI, repair, and publication boundary.
+  - Existing unsupported CPython 3.14 environments no longer bypass the exact
+    CPython 3.12 x64 launcher gate.
+  - Repair-Angerona-Python requires typed consent, preserves the old environment,
+    verifies the Python publisher, installs only hash-locked wheels, and rolls
+    back on failure. Reparse/unsafe roots fail closed.
+  - Bootstrap pins reviewed pip 26.2.1 by verified SHA-256, installs it before
+    dependencies, and refuses an unexpected pip version.
+  - The push helper stops after add/commit failure and uses `git commit -F` with
+    an environment-backed UTF-8 message file to avoid shell interpolation.
+  - Manual release branch names map to deterministic path-safe artifacts without
+    changing tag names.
+
+[DONE/P0] ENT-BACKUP-SAFETY-022  Fail-closed F: mirror boundary.
+  - The helper validates the fixed destination and repository root, rejecting
+    reparse/junction and path-escape cases before Robocopy.
+  - Secret, runtime, cache, model, and build state are excluded; stale private
+    state is removed before and after mirroring.
+  - `--validate-only` is non-destructive and Robocopy success codes 0–7 remain
+    accepted. Verification did not perform a real mirror.
+
+[DONE/P0] ENT-QA-C22-022  Cycle 22 convergence evidence.
+  - Full repository suite: 1026 passed, 3 intentional platform skips, 0 failures.
+  - Discovery: 66 modules, 0 errors, 0 duplicate codes; selfcheck 26/26; core
+    self-tests 18/18; package compile 297/297; core imports 125/125.
+  - Ruff, Bandit Medium/High, pip-audit, PowerShell parsing, privacy scanning,
+    launcher bootstrap, and repeated async-Qt lifecycle gates are clean.
+
+[PARTIAL/P0] ENT-HOST-EVIDENCE-022  Operational and independent assurance.
+  - DONE on this host: Python repair completed and protected autostart was
+    live-reconciled to CPython 3.12 `pythonw -m angerona --chill`.
+  - The validator accepts omitted Task Scheduler RunLevel as the serialized
+    Limited default only for the expected InteractiveToken principal.
+  - Fresh-logon/clean-machine registration, physical sleep/resume,
+    8-hour/24-hour/7-day elevated soaks, clean-machine
+    install, native release signing/notarization, publisher custody, production
+    Defender/ETW/AMSI/WFP validation, independent penetration/DR exercises, and
+    distributed HA/mTLS/OIDC remain external evidence gates.
+
+
 REMAINING EXTERNAL / DEPLOYMENT GATES
 -------------------------------------
 

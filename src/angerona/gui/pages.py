@@ -18,11 +18,12 @@ import re
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QRegularExpression, Qt, QTimer, Signal
 from PySide6.QtGui import (QAction, QColor, QFont, QGuiApplication, QKeySequence,
-                           QShortcut, QTextCursor)
+                           QRegularExpressionValidator, QShortcut, QTextCursor)
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFileDialog, QGridLayout, QFrame, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -69,7 +70,7 @@ SECURITY NOTES
 
 from angerona import __version__
 from angerona.core.eventbus import Severity
-from angerona.core.threat import threat_label
+from angerona.core.threat import active_threat_events, threat_label
 from angerona.gui.dashboard_details import (
     ConsoleDetailDialog,
     FuturisticDetailDialog,
@@ -167,6 +168,25 @@ def _sev_item(sev: Severity) -> QTableWidgetItem:
 _OPEN_DIALOGS: list = []
 
 
+def _emit_if_accepting(owner, signal_name: str, *args) -> bool:
+    """Best-effort delivery from a Python worker to a live Qt owner.
+
+    Shiboken raises ``RuntimeError`` when a daemon worker reaches a bound signal
+    after the widget's C++ object has been deleted.  That exception used to
+    escape ``threading.Thread`` workers (and, on an error path, trigger a second
+    failing emit).  Treat a closed/deleted view exactly like a cancelled result.
+    Slots also check the flag because an already-queued signal can arrive after
+    ``closeEvent`` but before deferred deletion.
+    """
+    try:
+        if not bool(getattr(owner, "_accept_async_results", False)):
+            return False
+        getattr(owner, signal_name).emit(*args)
+        return True
+    except RuntimeError:
+        return False
+
+
 def _show_nonmodal(dlg):
     """Show a dialog NON-modally (user can click out and return later)."""
     try:
@@ -238,27 +258,267 @@ def _soar_queue_path():
     return d / "soar_queue.json"
 
 
+def _soar_queue_state_path():
+    return _soar_queue_path().with_name("soar_queue_state.json")
+
+
 _SOAR_QUEUE_CACHE_LOCK = threading.RLock()
-_SOAR_QUEUE_CACHE_KEY: tuple[str, int, int, int] | None = None
+_SOAR_QUEUE_CACHE_KEY: tuple | None = None
 _SOAR_QUEUE_CACHE_VALUE: tuple[dict, ...] = ()
+_SOAR_STATE_LIMIT = 5_000
+_SOAR_STATE_MAX_BYTES = 4 * 1024 * 1024
+
+_SOAR_PENDING = "PENDING REVIEW"
+_SOAR_APPROVED = "APPROVED — execution required"
+_SOAR_DISMISSED = "DISMISSED — no host action taken"
+_SOAR_EXECUTED = "EXECUTED — process suspended"
+
+
+def _invalidate_soar_queue_cache() -> None:
+    global _SOAR_QUEUE_CACHE_KEY, _SOAR_QUEUE_CACHE_VALUE
+    _SOAR_QUEUE_CACHE_KEY = None
+    _SOAR_QUEUE_CACHE_VALUE = ()
+
+
+def _soar_record_id(record: dict) -> str:
+    """Return a stable identity for new and legacy queue records."""
+    value = str(record.get("request_id", "")).strip().casefold()
+    if re.fullmatch(r"[0-9a-f]{32}", value):
+        return value
+    legacy = {
+        "ts": record.get("ts", 0),
+        "origin_module": record.get("origin_module", ""),
+        "severity": record.get("severity", ""),
+        "message": record.get("message", ""),
+    }
+    return hashlib.sha256(
+        json.dumps(legacy, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:32]
+
+
+def _soar_authorization_digest(record: dict) -> str:
+    """Bind a live-session approval to every response-authorizing field."""
+    authority = {
+        "request_id": _soar_record_id(record),
+        "ts": record.get("ts"),
+        "origin_module": record.get("origin_module"),
+        "origin_ts": record.get("origin_ts"),
+        "origin_hmac": record.get("origin_hmac"),
+        "origin_severity": record.get("origin_severity"),
+        "origin_message_sha256": record.get("origin_message_sha256"),
+        "severity": record.get("severity"),
+        "message": record.get("message"),
+        "details": record.get("details"),
+        "action": record.get("action"),
+    }
+    canonical = json.dumps(
+        authority,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _event_process_snapshot(event) -> dict:
+    """Bind a proposed process action to the process instance seen now.
+
+    A PID alone is unsafe because Windows can reuse it between review and
+    execution.  ``create_time`` makes later execution fail closed if that
+    process has exited and the PID now belongs to something else.
+    """
+    details = getattr(event, "details", {}) or {}
+    pid = details.get("pid") if isinstance(details, dict) else None
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return {"kind": "review_only", "reason": "alert has no process target"}
+    snapshot = {
+        "kind": "suspend_process",
+        "pid": pid,
+        "name": str(details.get("name") or details.get("process_name") or ""),
+        "exe": str(
+            details.get("exe")
+            or details.get("image")
+            or details.get("process_path")
+            or ""
+        ),
+    }
+    try:
+        import psutil
+
+        process = psutil.Process(pid)
+        with process.oneshot():
+            snapshot["create_time"] = float(process.create_time())
+            snapshot["name"] = str(process.name() or snapshot["name"])
+            try:
+                snapshot["exe"] = str(process.exe() or snapshot["exe"])
+            except Exception:
+                pass
+    except Exception as exc:
+        # Keep the item reviewable, but do not later execute without a process
+        # instance identity captured at the operator's Block click.
+        snapshot["kind"] = "review_only"
+        snapshot["reason"] = f"process target unavailable: {exc}"
+    return snapshot
+
+
+def _new_soar_queue_record(event) -> dict:
+    """Build a detached, process-identity-bound containment request."""
+    details = getattr(event, "details", {}) or {}
+    # Round-trip to detach the queue record from the Event's legacy mutable
+    # details mapping. The record is evidence only; execution later binds back
+    # to the original live EventBus object and verifies its HMAC.
+    try:
+        details = json.loads(json.dumps(details, default=str))
+    except Exception:
+        details = {"unavailable": "event details could not be serialized"}
+    message = str(getattr(event, "message", ""))
+    return {
+        "request_id": uuid.uuid4().hex,
+        "ts": time.time(),
+        "origin_module": getattr(event, "module", ""),
+        "origin_ts": float(getattr(event, "ts", 0.0)),
+        "origin_hmac": str(getattr(event, "hmac_sig", "") or ""),
+        "origin_severity": int(getattr(event, "severity", Severity.INFO)),
+        "origin_message_sha256": hashlib.sha256(
+            message.encode("utf-8", errors="replace")
+        ).hexdigest(),
+        "severity": getattr(getattr(event, "severity", None), "label", ""),
+        "message": message[:400],
+        "details": details,
+        "action": _event_process_snapshot(event),
+        "status": _SOAR_PENDING,
+    }
+
+
+def _append_soar_queue_record(record: dict) -> bool:
+    try:
+        with _SOAR_QUEUE_CACHE_LOCK:
+            with open(_soar_queue_path(), "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, default=str) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            _invalidate_soar_queue_cache()
+        return True
+    except Exception:
+        return False
 
 
 def _persist_soar_queue(event) -> bool:
-    """Append a Block→SOAR request to a persisted JSON-lines file (scrollback).
-
-    Returns True on success so callers can report an honest status instead of
-    claiming the item was queued when the write actually failed."""
+    """Append a Block→SOAR request to persisted review history."""
     try:
-        rec = {
-            "ts": time.time(),
-            "origin_module": getattr(event, "module", ""),
-            "severity": getattr(getattr(event, "severity", None), "label", ""),
-            "message": getattr(event, "message", "")[:400],
-            "details": getattr(event, "details", {}),
-            "status": "QUEUED — review required",
-        }
-        with open(_soar_queue_path(), "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, default=str) + "\n")
+        return _append_soar_queue_record(_new_soar_queue_record(event))
+    except Exception:
+        return False
+
+
+def _tail_json_records(path: Path, limit: int) -> list[dict]:
+    """Read only the newest bounded JSONL suffix, even when history is huge."""
+    wanted = max(0, min(int(limit), _SOAR_STATE_LIMIT))
+    if wanted == 0:
+        return []
+    block = 64 * 1024
+    chunks: list[bytes] = []
+    newline_count = 0
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        position = handle.tell()
+        while position > 0 and newline_count <= wanted:
+            take = min(block, position)
+            position -= take
+            handle.seek(position)
+            data = handle.read(take)
+            chunks.append(data)
+            newline_count += data.count(b"\n")
+    raw_lines = b"".join(reversed(chunks)).splitlines()[-wanted:]
+    records: list[dict] = []
+    for raw in raw_lines:
+        if not raw.strip() or len(raw) > 1024 * 1024:
+            continue
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, ValueError, TypeError):
+            continue
+        if isinstance(value, dict):
+            records.append(value)
+    return records
+
+
+def _read_soar_queue_state() -> dict[str, dict]:
+    path = _soar_queue_state_path()
+    try:
+        if not path.exists() or path.stat().st_size > _SOAR_STATE_MAX_BYTES:
+            return {}
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return {}
+    if not isinstance(value, dict) or len(value) > _SOAR_STATE_LIMIT:
+        return {}
+    allowed = {
+        "status", "reviewed_at", "approved_at", "dismissed_at",
+        "executed_at", "execution_result", "execution_error",
+    }
+    out: dict[str, dict] = {}
+    for request_id, updates in value.items():
+        key = str(request_id).strip().casefold()
+        if not re.fullmatch(r"[0-9a-f]{32}", key) or not isinstance(updates, dict):
+            continue
+        clean = {name: item for name, item in updates.items() if name in allowed}
+        if clean:
+            out[key] = clean
+    return out
+
+
+def _write_soar_queue_state(state: dict[str, dict]) -> None:
+    path = _soar_queue_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(
+        state, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str
+    )
+    if len(payload.encode("utf-8")) > _SOAR_STATE_MAX_BYTES:
+        raise ValueError("SOAR state exceeds its bounded storage budget")
+    temp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temp.open("x", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    finally:
+        try:
+            temp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _update_soar_queue_record(request_id: str, **updates) -> bool:
+    """Atomically update one persisted review record.
+
+    Persisted approval is presentation/audit state only. ``SoarPanel`` also
+    requires a same-session in-memory approval before execution, so editing the
+    JSONL file cannot manufacture response authority.
+    """
+    allowed = {
+        "status", "reviewed_at", "approved_at", "dismissed_at",
+        "executed_at", "execution_result", "execution_error",
+    }
+    if not updates or not set(updates) <= allowed:
+        return False
+    request_id = str(request_id).strip().casefold()
+    try:
+        path = _soar_queue_path()
+        with _SOAR_QUEUE_CACHE_LOCK:
+            records = _tail_json_records(path, _SOAR_STATE_LIMIT) if path.exists() else []
+            active_ids = [_soar_record_id(record) for record in records]
+            if request_id not in active_ids:
+                return False
+            state = _read_soar_queue_state()
+            state = {key: state[key] for key in active_ids if key in state}
+            current = dict(state.get(request_id, {}))
+            current.update(updates)
+            state[request_id] = current
+            _write_soar_queue_state(state)
+            _invalidate_soar_queue_cache()
         return True
     except Exception:
         return False
@@ -279,23 +539,194 @@ def _read_soar_queue(limit: int = 500) -> list:
         if not p.exists():
             return out
         st = p.stat()
-        key = (str(p), st.st_mtime_ns, st.st_size, int(limit))
+        state_path = _soar_queue_state_path()
+        try:
+            state_stat = state_path.stat()
+            state_key = (state_stat.st_mtime_ns, state_stat.st_size)
+        except OSError:
+            state_key = (0, 0)
+        key = (str(p), st.st_mtime_ns, st.st_size, state_key, int(limit))
         with _SOAR_QUEUE_CACHE_LOCK:
             if key == _SOAR_QUEUE_CACHE_KEY:
                 return list(_SOAR_QUEUE_CACHE_VALUE)
-        for line in p.read_text(encoding="utf-8").splitlines()[-limit:]:
-            line = line.strip()
-            if line:
-                try:
-                    out.append(json.loads(line))
-                except Exception:
-                    pass
+        state = _read_soar_queue_state()
+        for record in _tail_json_records(p, limit):
+            updates = state.get(_soar_record_id(record))
+            if updates:
+                record.update(updates)
+            out.append(record)
         with _SOAR_QUEUE_CACHE_LOCK:
             _SOAR_QUEUE_CACHE_KEY = key
             _SOAR_QUEUE_CACHE_VALUE = tuple(out)
     except Exception:
         pass
     return list(out)
+
+
+def _soar_origin_event(record: dict, bus):
+    """Resolve a queue artifact back to its authoritative live bus event."""
+    if bus is None:
+        raise PermissionError("the live EventBus is unavailable")
+    origin_hmac = str(record.get("origin_hmac", "") or "")
+    if getattr(bus, "integrity_enabled", False) and not re.fullmatch(
+        r"[0-9a-f]{64}", origin_hmac.casefold()
+    ):
+        raise PermissionError(
+            "authenticated EventBus evidence requires a bound origin HMAC"
+        )
+    origin_module = str(record.get("origin_module", ""))
+    origin_digest = str(record.get("origin_message_sha256", ""))
+    try:
+        origin_ts = float(record.get("origin_ts", -1.0))
+        origin_severity = int(record.get("origin_severity", -1))
+    except (TypeError, ValueError) as exc:
+        raise PermissionError("the queue record has invalid origin evidence") from exc
+    for event in bus.recent(500):
+        signature = str(getattr(event, "hmac_sig", "") or "")
+        message = str(getattr(event, "message", ""))
+        metadata_matches = (
+            getattr(event, "module", "") == origin_module
+            and float(getattr(event, "ts", -2.0)) == origin_ts
+            and int(getattr(event, "severity", -2)) == origin_severity
+            and hashlib.sha256(
+                message.encode("utf-8", errors="replace")
+            ).hexdigest() == origin_digest
+        )
+        if origin_hmac:
+            matches = signature == origin_hmac and metadata_matches
+        else:
+            matches = metadata_matches
+        if not matches:
+            continue
+        if getattr(bus, "integrity_enabled", False) and not bus.verify(event):
+            raise PermissionError("origin event integrity verification failed")
+        return event
+    raise PermissionError(
+        "the signed origin event is no longer in the live evidence ring; "
+        "review remains available, but execution is refused"
+    )
+
+
+def _soar_process_preflight(record: dict, bus, manager):
+    """Return the still-identical process or fail closed before containment."""
+    from angerona.core.eventbus import is_remote_observe_only
+    from angerona.core.process_allowlist import is_event_allowed
+    from angerona.core.threat import event_disposition
+
+    request_id = _soar_record_id(record)
+    for receipt_event in bus.recent(500) if bus is not None else ():
+        receipt_details = getattr(receipt_event, "details", {}) or {}
+        if (
+            isinstance(receipt_details, dict)
+            and receipt_details.get("queue_request_id") == request_id
+            and receipt_details.get("action_succeeded") is True
+        ):
+            raise PermissionError("this containment request was already executed")
+
+    event = _soar_origin_event(record, bus)
+    if is_remote_observe_only(event):
+        raise PermissionError(
+            "remote observe-only evidence cannot authorize a local response"
+        )
+    if event_disposition(event) not in {"active", "practice"}:
+        raise PermissionError(
+            "this is exposure/health evidence, not an active or practice threat"
+        )
+    if is_event_allowed(event):
+        raise PermissionError("the target is trusted by the process allowlist")
+
+    action = record.get("action", {})
+    if not isinstance(action, dict) or action.get("kind") != "suspend_process":
+        reason = action.get("reason", "no supported process action") \
+            if isinstance(action, dict) else "no supported process action"
+        raise PermissionError(f"review-only item: {reason}")
+    pid = action.get("pid")
+    captured_at = action.get("create_time")
+    if (
+        isinstance(pid, bool)
+        or not isinstance(pid, int)
+        or pid <= 0
+        or isinstance(captured_at, bool)
+        or not isinstance(captured_at, (int, float))
+    ):
+        raise PermissionError("the process target has no safe instance identity")
+    event_details = getattr(event, "details", {}) or {}
+    if not isinstance(event_details, dict) or event_details.get("pid") != pid:
+        raise PermissionError(
+            "the queued target does not match the signed origin event"
+        )
+    if pid in {os.getpid(), os.getppid()}:
+        raise PermissionError("Angerona refuses to suspend itself or its parent")
+
+    soar = getattr(manager, "modules", {}).get("SOAR Automation") \
+        if manager is not None else None
+    if soar is None or getattr(soar, "status", "") != "running":
+        raise PermissionError("SOAR Automation is not running")
+    protected = getattr(soar, "_is_protected_process", None)
+    if not callable(protected) or protected(pid):
+        raise PermissionError("the target is a protected system process")
+
+    import psutil
+
+    process = psutil.Process(pid)
+    with process.oneshot():
+        if abs(float(process.create_time()) - float(captured_at)) > 0.01:
+            raise PermissionError("PID reuse detected; the original process has exited")
+        expected_name = str(action.get("name", "")).strip().casefold()
+        current_name = str(process.name() or "").strip().casefold()
+        if expected_name and current_name != expected_name:
+            raise PermissionError("process identity changed after review was staged")
+        expected_exe = str(action.get("exe", "")).strip()
+        if expected_exe:
+            try:
+                current_exe = str(process.exe() or "").strip()
+            except Exception as exc:
+                raise PermissionError(
+                    "the process executable can no longer be verified"
+                ) from exc
+            if os.path.normcase(os.path.abspath(current_exe)) != os.path.normcase(
+                os.path.abspath(expected_exe)
+            ):
+                raise PermissionError("process executable changed after staging")
+    return process, event
+
+
+def _execute_approved_soar_record(record: dict, bus, manager) -> str:
+    """Suspend one verified process and publish an auditable response event."""
+    from angerona.core.eventbus import Event as BusEvent
+
+    process, origin = _soar_process_preflight(record, bus, manager)
+    pid = int(process.pid)
+    name = str(process.name() or "process")
+    process.suspend()
+    try:
+        bus.publish(BusEvent(
+            module="SOAR Automation",
+            severity=Severity.HIGH,
+            message=(
+                f"Manual containment: suspended {name} (pid {pid}) after "
+                "explicit operator approval."
+            ),
+            details={
+                "pid": pid,
+                "action": "suspend",
+                "action_succeeded": True,
+                "operator_approved": True,
+                "queue_request_id": _soar_record_id(record),
+                "trigger_module": getattr(origin, "module", ""),
+                "trigger_ts": getattr(origin, "ts", 0.0),
+                "disposition": "response_audit",
+            },
+        ))
+    except Exception as exc:
+        # A response without its audit event is not an acceptable success. Undo
+        # the reversible suspension before reporting failure.
+        try:
+            process.resume()
+        except Exception:
+            pass
+        raise RuntimeError("containment audit failed; suspension was rolled back") from exc
+    return f"Suspended {name} (pid {pid}); use Console 'resume {pid}' to roll back."
 
 
 def _section(text: str) -> QLabel:
@@ -388,12 +819,14 @@ class DashboardCards(QWidget):
     def __init__(self, bus, storage, manager) -> None:
         super().__init__()
         self.bus, self.storage, self.manager = bus, storage, manager
+        self._accept_async_results = True
+        self._count_worker: threading.Thread | None = None
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(14)
         self.c_modules = StatCard("Modules running")
         self.c_alerts = StatCard("Alerts (24h)")
-        self.c_crit = StatCard("Critical (24h)")
+        self.c_crit = StatCard("Active critical (10m)")
         self.c_threat = StatCard("Threat level")
         for c in (self.c_modules, self.c_alerts, self.c_crit, self.c_threat):
             lay.addWidget(c)
@@ -419,30 +852,39 @@ class DashboardCards(QWidget):
             def _load_count(_revision=revision) -> None:
                 try:
                     count = self.storage.try_count_since(time.time() - 86400)
-                    self.count_loaded.emit(_revision, count)
+                    _emit_if_accepting(self, "count_loaded", _revision, count)
                 except Exception:
-                    self.count_loaded.emit(_revision, None)
+                    _emit_if_accepting(self, "count_loaded", _revision, None)
 
-            threading.Thread(
+            self._count_worker = threading.Thread(
                 target=_load_count, name="DashboardCountReader", daemon=True
-            ).start()
+            )
+            self._count_worker.start()
         self.c_alerts.set(str(self._cached_count))
 
         events = self.bus.recent(200)
-        crit = sum(1 for e in events if e.severity == Severity.CRITICAL
-                   and e.module not in NOISE_MODULES)
+        crit = sum(
+            1 for e in active_threat_events(events)
+            if e.severity == Severity.CRITICAL
+        )
         self.c_crit.set(str(crit), "#ef4444" if crit else "#ffffff")
 
         label, color = threat_label(events)
         self.c_threat.set(label, color)
 
     def _apply_count(self, revision, count) -> None:
+        if not self._accept_async_results:
+            return
         self._count_load_busy = False
         if count is None:
             return
         self._cached_count = int(count)
         self._last_storage_revision = int(revision)
         self.c_alerts.set(str(self._cached_count))
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        self._accept_async_results = False
+        super().closeEvent(event)
 
     # ── Drill-down windows ───────────────────────────────────────────────────
     def _open_modules(self) -> None:
@@ -469,10 +911,12 @@ class DashboardCards(QWidget):
         _show_nonmodal_from(
             self.c_crit,
             lambda: EventsWindow(
-                "Critical alerts — last 24 hours",
+                "Active critical threats — last 10 minutes",
                 self.bus,
                 self.storage,
                 min_sev=Severity.CRITICAL,
+                window_s=600,
+                active_only=True,
                 parent=self.window(),
             ),
             "#ef4444",
@@ -515,10 +959,11 @@ class EventsWindow(QDialog):
     MAX_ROWS = 500
 
     def __init__(self, title, bus, storage, min_sev=Severity.LOW,
-                 window_s=86400, parent=None) -> None:
+                 window_s=86400, active_only=False, parent=None) -> None:
         super().__init__(parent)
         self.bus, self.storage = bus, storage
         self.min_sev, self.window_s = min_sev, window_s
+        self.active_only = bool(active_only)
         self.setWindowTitle(title)
         self.setMinimumSize(760, 520)
         if parent:
@@ -592,6 +1037,9 @@ class EventsWindow(QDialog):
                and getattr(e, "severity", Severity.INFO) >= self.min_sev
                and getattr(e, "module", "") not in NOISE_MODULES]
         out.sort(key=lambda e: getattr(e, "ts", 0), reverse=True)
+        if self.active_only:
+            out = active_threat_events(out, window=self.window_s)
+            out.sort(key=lambda e: getattr(e, "ts", 0), reverse=True)
         return out
 
     def _refresh(self) -> None:
@@ -712,6 +1160,8 @@ class ThreatWindow(QDialog):
     def __init__(self, bus, storage, manager, parent=None) -> None:
         super().__init__(parent)
         self.bus, self.storage, self.manager = bus, storage, manager
+        self._accept_async_results = True
+        self._action_worker: threading.Thread | None = None
         self.setWindowTitle("Threat level — triggering threats")
         self.setMinimumSize(820, 640)
         if parent:
@@ -776,9 +1226,7 @@ class ThreatWindow(QDialog):
 
     # ── data ─────────────────────────────────────────────────────────────────
     def _threats(self) -> list:
-        evs = [e for e in self.bus.recent(300)
-               if getattr(e, "severity", Severity.INFO) >= Severity.HIGH
-               and getattr(e, "module", "") not in NOISE_MODULES]
+        evs = active_threat_events(self.bus.recent(300))
         evs.sort(key=lambda e: getattr(e, "ts", 0), reverse=True)
         return evs
 
@@ -845,15 +1293,24 @@ class ThreatWindow(QDialog):
                 msg = fn()
             except Exception as exc:               # never let a worker crash the app
                 msg = f"[!] Action failed: {exc}"
-            self._action_done.emit(msg)
+            _emit_if_accepting(self, "_action_done", msg)
 
-        threading.Thread(target=work, daemon=True).start()
+        self._action_worker = threading.Thread(
+            target=work, name="ThreatActionWorker", daemon=True
+        )
+        self._action_worker.start()
 
     def _on_action_done(self, msg: str) -> None:
+        if not self._accept_async_results:
+            return
         self._busy = False
         self.fix_btn.setEnabled(True)
         self.harden_btn.setEnabled(True)
         self.status_lbl.setText(msg)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        self._accept_async_results = False
+        super().closeEvent(event)
 
     def _attempt_fix(self) -> None:
         if not self._guard():
@@ -1545,6 +2002,8 @@ class ModuleInspector(QDialog):
     def __init__(self, manager, bus, module, parent=None) -> None:
         super().__init__(parent)
         self.manager, self.bus, self.module = manager, bus, module
+        self._accept_async_results = True
+        self._test_worker: threading.Thread | None = None
         self.setWindowTitle(f"Module — {module.name}")
         self.setMinimumSize(660, 560)
         if parent:
@@ -1567,7 +2026,7 @@ class ModuleInspector(QDialog):
             tabs.addTab(self._api_keys_tab(), "API Keys")
             tabs.addTab(self._help_tab(), "Help")
         root.addWidget(tabs)
-        self._test_done.connect(self.test_lbl.setText)
+        self._test_done.connect(self._apply_test_result)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
@@ -1876,16 +2335,38 @@ class ModuleInspector(QDialog):
 
     def _selftest(self) -> None:
         self.test_lbl.setText("Testing…")
-        threading.Thread(target=self._run_test, daemon=True).start()
+        self._test_worker = threading.Thread(
+            target=self._run_test,
+            name=f"ModuleSelfTest-{self.module.name}",
+            daemon=True,
+        )
+        self._test_worker.start()
 
     def _run_test(self) -> None:
         try:
             ok, detail = self.module.self_test()
             color = "#22c55e" if ok else "#ef4444"
-            self._test_done.emit(f"<span style='color:{color}'>"
-                                 f"{'PASS' if ok else 'FAIL'} — {detail}</span>")
+            _emit_if_accepting(
+                self,
+                "_test_done",
+                f"<span style='color:{color}'>"
+                f"{'PASS' if ok else 'FAIL'} — {detail}</span>",
+            )
         except Exception as exc:
-            self._test_done.emit(f"<span style='color:#ef4444'>FAIL — {exc}</span>")
+            _emit_if_accepting(
+                self,
+                "_test_done",
+                f"<span style='color:#ef4444'>FAIL — {exc}</span>",
+            )
+
+    def _apply_test_result(self, message: str) -> None:
+        if self._accept_async_results:
+            self.test_lbl.setText(message)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        self._accept_async_results = False
+        self._timer.stop()
+        super().closeEvent(event)
 
     def _refresh(self) -> None:
         color = HEALTH_COLOR.get(self.module.health_state, "#e5e7eb")
@@ -2174,8 +2655,9 @@ class AlertDetailDialog(QDialog):
             # made blocks look successful while nothing reached the SOAR tab.
             ok = self._panel._block_event(self._event)
             self._action_status.setText(
-                "Queued SOAR containment for review." if ok
-                else "Not queued (cancelled or write failed) — see SOAR tab.")
+                "Direct containment completed; the exact process was suspended "
+                "and recorded in SOAR history." if ok
+                else "No containment action completed (cancelled or safely refused).")
             return
         # Standalone (opened from a module view): persist the review-gated request
         # first (the SOAR tab reads the file), then best-effort bus notify.
@@ -2185,16 +2667,18 @@ class AlertDetailDialog(QDialog):
             from angerona.core.eventbus import Event as BusEvent, Severity as BusSev
             bus = getattr(self, "bus", None) or getattr(getattr(self, "_panel", None), "bus", None)
             if bus is not None:
-                bus.publish(BusEvent(module="OPERATOR", severity=BusSev.CRITICAL,
+                bus.publish(BusEvent(module="OPERATOR", severity=BusSev.INFO,
                             ts=time.time(),
                             message=(f"[SOAR-QUEUE] Operator requested containment of source "
                                      f"'{e.module}' — alert: {e.message[:120]}"),
                             details={"origin_module": e.module, "origin_ts": e.ts,
-                                     "soar_action": "containment_review"}))
+                                     "soar_action": "containment_review",
+                                     "disposition": "response_audit"}))
         except Exception:
             pass
         self._action_status.setText(
-            f"✓ Containment request queued for '{e.module}'." if persisted
+            f"✓ Containment staged for '{e.module}'; approval is still required."
+            if persisted
             else "⚠ Could not write to the SOAR queue — check disk/permissions.")
 
     def _act_analyze(self) -> None:
@@ -2271,6 +2755,8 @@ class AlertsPanel(QFrame):
         self.setObjectName("Panel")
         self.storage = storage
         self.bus = bus
+        self._accept_async_results = True
+        self._events_worker: threading.Thread | None = None
         self._allow_cloud = allow_cloud is True
         self._events: list = []
         self._newest_ts: float = 0.0
@@ -2287,7 +2773,7 @@ class AlertsPanel(QFrame):
         self._title = _ClickableSection(
             "Live Alerts  —  click a header to sort · click a row for detail  "
             "· Allow = suppress future events from this module  "
-            "· Block = queue SOAR containment for review  "
+            "· Block = confirm + directly suspend a verified process target  "
             "· Analyze = local AI triage (sanitized cloud fallback only if enabled)",
             "Open a full-size newest-first alert evidence window.",
         )
@@ -2504,58 +2990,81 @@ class AlertsPanel(QFrame):
         self.refresh()
 
     def _block_event(self, event) -> bool:
-        """Queue a SOAR containment action for operator review (never auto-executes).
+        """Directly contain a safely-bound process after one confirmation.
 
-        Returns True if the item was persisted to the SOAR queue (what the SOAR
-        Queue tab reads), False if the operator cancelled or the write failed."""
+        The action is deliberately reversible suspension, never an implicit
+        kill or file deletion. It is also persisted in SOAR history, but this
+        path neither navigates to SOAR nor asks for a second approval there.
+        """
+        try:
+            record = _new_soar_queue_record(event)
+            process, _origin = _soar_process_preflight(
+                record, self.bus, getattr(self.window(), "manager", None)
+            )
+            pid = int(process.pid)
+            process_name = str(process.name() or "process")
+        except Exception as exc:
+            reason = str(exc)
+            self._status.setText(f"⚠ Direct containment refused: {reason}")
+            QMessageBox.warning(
+                self.window(),
+                "Direct Containment Refused",
+                "Angerona did not change the host.\n\n"
+                f"Reason: {reason}\n\n"
+                "Only a live, signed, non-trusted process instance can be "
+                "contained from this button.",
+            )
+            return False
+
         ts_str = time.strftime("%H:%M:%S", time.localtime(event.ts))
         details = (f"Module: {event.module}\n"
                    f"Severity: {event.severity.label}\n"
                    f"Time: {ts_str}\n\n"
                    f"Message: {event.message}\n\n"
-                   f"Confirming will stage a SOAR containment request for this source.\n"
-                   f"No action will be taken automatically — you must review and\n"
-                   f"approve in the SOAR / Posture Hardening panel.")
+                   f"Target: {process_name} (pid {pid})\n\n"
+                   f"Confirming will SUSPEND this exact process instance now.\n"
+                   f"This is reversible with Console: resume {pid}.\n"
+                   f"No process is killed and no file is deleted.")
         dlg = QMessageBox(self.window())
-        dlg.setWindowTitle("Queue SOAR Containment?")
-        dlg.setText(f"Block source from module '{event.module}'?")
+        dlg.setWindowTitle("Confirm Direct Containment")
+        dlg.setText(f"Suspend {process_name} (pid {pid})?")
         dlg.setInformativeText(details)
         dlg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
         dlg.setDefaultButton(QMessageBox.Cancel)
         dlg.setIcon(QMessageBox.Warning)
         if dlg.exec() != QMessageBox.Ok:
             return False
-        # Persist FIRST — the SOAR Queue tab reads this file, so it must be written
-        # regardless of the (optional) bus notification below. The old code built
-        # the bus event first with a non-existent module-level publish() and an
-        # invalid mitre_tags= kwarg; that always threw, so persistence never ran
-        # and the queue stayed permanently empty despite the "queued" message.
-        persisted = _persist_soar_queue(event)
-        # Best-effort bus notification (audit trail). AlertsPanel has no bus, so
-        # this is skipped cleanly; it must never prevent the queue write above.
+
+        # Refuse an unaudited host mutation: history must be durable before the
+        # process action. Execution then performs its own second identity/HMAC
+        # check to close the confirmation-time race.
+        if not _append_soar_queue_record(record):
+            self._status.setText(
+                "⚠ Containment refused because the SOAR audit record could not be written."
+            )
+            return False
         try:
-            from angerona.core.eventbus import Event as BusEvent, Severity as BusSeverity
-            bus = getattr(self, "bus", None)
-            if bus is not None:
-                bus.publish(BusEvent(
-                    module="OPERATOR",
-                    message=(f"[SOAR-QUEUE] Operator requested containment of source "
-                             f"'{event.module}' — alert: {event.message[:120]}"),
-                    severity=BusSeverity.CRITICAL,
-                    ts=time.time(),
-                    details={"origin_module": event.module, "origin_ts": event.ts,
-                             "origin_message": event.message,
-                             "soar_action": "containment_review"},
-                ))
-        except Exception:
-            pass
-        self._status.setText(
-            f"✓ Containment request queued for '{event.module}' — "
-            "review in the SOAR tab before any action is applied."
-            if persisted else
-            "⚠ Could not write to the SOAR queue — check disk/permissions."
+            result = _execute_approved_soar_record(
+                record, self.bus, getattr(self.window(), "manager", None)
+            )
+        except Exception as exc:
+            reason = str(exc)
+            _update_soar_queue_record(
+                _soar_record_id(record),
+                status="FAILED — no host action taken",
+                execution_error=reason[:1000],
+            )
+            self._status.setText(f"⚠ Containment failed safely: {reason}")
+            return False
+        updated = _update_soar_queue_record(
+            _soar_record_id(record),
+            status=_SOAR_EXECUTED,
+            executed_at=time.time(),
+            execution_result=result,
         )
-        return persisted
+        suffix = "" if updated else " (SOAR history status update failed)"
+        self._status.setText(f"✓ {result}{suffix}")
+        return True
 
     def _insert_row(self, pos: int, e) -> None:
         if e.module in self._suppressed:
@@ -2610,6 +3119,10 @@ class AlertsPanel(QFrame):
             self._free_row_widgets(r)
             self.table.removeRow(r)
 
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        self._accept_async_results = False
+        super().closeEvent(event)
+
     def refresh(self) -> None:
         # The pre-check is an in-memory committed revision. If a writer is busy,
         # keep the current table and retry on the next two-second refresh.
@@ -2621,15 +3134,18 @@ class AlertsPanel(QFrame):
         def _load_events(_revision=revision) -> None:
             try:
                 events = self.storage.try_recent(120)
-                self.events_loaded.emit(_revision, events)
+                _emit_if_accepting(self, "events_loaded", _revision, events)
             except Exception:
-                self.events_loaded.emit(_revision, None)
+                _emit_if_accepting(self, "events_loaded", _revision, None)
 
-        threading.Thread(
+        self._events_worker = threading.Thread(
             target=_load_events, name="DashboardAlertReader", daemon=True
-        ).start()
+        )
+        self._events_worker.start()
 
     def _apply_loaded_events(self, revision, events) -> None:
+        if not self._accept_async_results:
+            return
         self._events_load_busy = False
         if events is None:
             return
@@ -2717,11 +3233,15 @@ class SoarPanel(QFrame):
         self.setObjectName("Panel")
         self.bus = bus
         self.manager = manager
-        self._count = 0
+        self._queue_fingerprint: tuple | None = None
+        # Approval must be acquired in this live UI session. Persisted JSONL is
+        # history, not an authorization boundary, so editing it cannot enable
+        # Execute after a restart.
+        self._approved_requests: dict[str, str] = {}
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 12, 14, 14)
         self._title = _ClickableSection(
-            "SOAR Queue  —  operator-blocked sources awaiting review (persisted history)",
+            "SOAR Queue  —  Review → Approve → Execute, or Dismiss",
             "Open the expanded containment-review queue and evidence summary.",
         )
         self._title.clicked.connect(self._open_overview)
@@ -2734,12 +3254,53 @@ class SoarPanel(QFrame):
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
         self.table.setAlternatingRowColors(True)
-        self.table.cellClicked.connect(self._open_record)
+        self.table.cellDoubleClicked.connect(self._open_record)
+        self.table.itemSelectionChanged.connect(self._sync_action_buttons)
         # Right-click → per-alert AI analysis
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._row_context_menu)
         lay.addWidget(self.table)
+
+        actions = QHBoxLayout()
+        self._btn_review = QPushButton("Review details")
+        self._btn_review.setObjectName("soarReviewButton")
+        self._btn_review.setToolTip(
+            "Inspect persisted evidence and the exact proposed target. No host action."
+        )
+        self._btn_review.clicked.connect(self._review_selected)
+        actions.addWidget(self._btn_review)
+        self._btn_approve = QPushButton("Approve")
+        self._btn_approve.setObjectName("soarApproveButton")
+        self._btn_approve.setToolTip(
+            "Approve this request for this UI session. Approval alone changes no host state."
+        )
+        self._btn_approve.setStyleSheet(
+            "background:#14532d;color:#bbf7d0;font-weight:700;"
+        )
+        self._btn_approve.clicked.connect(self._approve_selected)
+        actions.addWidget(self._btn_approve)
+        self._btn_dismiss = QPushButton("Reject / Dismiss")
+        self._btn_dismiss.setObjectName("soarDismissButton")
+        self._btn_dismiss.setToolTip(
+            "Close this request without changing the host. The history record remains."
+        )
+        self._btn_dismiss.clicked.connect(self._dismiss_selected)
+        actions.addWidget(self._btn_dismiss)
+        actions.addStretch(1)
+        self._btn_execute = QPushButton("Execute approved containment")
+        self._btn_execute.setObjectName("soarExecuteButton")
+        self._btn_execute.setToolTip(
+            "After approval, revalidate the signed event and exact process identity, "
+            "then suspend it. A final confirmation is always required."
+        )
+        self._btn_execute.setStyleSheet(
+            "background:#7f1d1d;color:#fecaca;font-weight:800;"
+        )
+        self._btn_execute.clicked.connect(self._execute_selected)
+        actions.addWidget(self._btn_execute)
+        lay.addLayout(actions)
 
         row = QHBoxLayout()
         self._status = QLabel("")
@@ -2762,32 +3323,303 @@ class SoarPanel(QFrame):
         clear.clicked.connect(self._clear)
         row.addWidget(clear)
         lay.addLayout(row)
+        self._sync_action_buttons()
 
     def refresh(self) -> None:
         items = _read_soar_queue()
-        if len(items) == self._count:
+        fingerprint = tuple(
+            (
+                _soar_record_id(record),
+                str(record.get("status", "")),
+                record.get("reviewed_at"),
+                record.get("approved_at"),
+                record.get("dismissed_at"),
+                record.get("executed_at"),
+            )
+            for record in items
+        )
+        if fingerprint == self._queue_fingerprint:
+            self._sync_action_buttons()
             return
-        self._count = len(items)
+        selected = self._selected_request_id()
+        self._queue_fingerprint = fingerprint
         self.table.setRowCount(0)
         for rec in reversed(items):     # newest first
             r = self.table.rowCount()
             self.table.insertRow(r)
             ts = time.strftime("%m-%d %H:%M:%S", time.localtime(rec.get("ts", 0)))
-            self.table.setItem(r, 0, QTableWidgetItem(ts))
+            ts_item = QTableWidgetItem(ts)
+            request_id = _soar_record_id(rec)
+            ts_item.setData(Qt.UserRole, request_id)
+            self.table.setItem(r, 0, ts_item)
             self.table.setItem(r, 1, QTableWidgetItem(str(rec.get("origin_module", ""))))
             self.table.setItem(r, 2, QTableWidgetItem(str(rec.get("severity", ""))))
             self.table.setItem(r, 3, QTableWidgetItem(str(rec.get("message", ""))))
             st = QTableWidgetItem(str(rec.get("status", "")))
-            st.setForeground(QColor("#f59e0b"))
+            status = str(rec.get("status", "")).upper()
+            color = (
+                "#22c55e" if status.startswith("EXECUTED")
+                else "#ef4444" if status.startswith(("FAILED", "DISMISSED"))
+                else "#38bdf8" if status.startswith("APPROVED")
+                else "#f59e0b"
+            )
+            st.setForeground(QColor(color))
             self.table.setItem(r, 4, st)
-        self._status.setText(f"{len(items)} item(s) in the SOAR queue.")
+            if selected == request_id:
+                self.table.selectRow(r)
+        pending = sum(
+            1 for record in items
+            if str(record.get("status", "")).upper().startswith("PENDING")
+        )
+        approved = sum(
+            1 for record in items
+            if str(record.get("status", "")).upper().startswith("APPROVED")
+        )
+        self._status.setText(
+            f"{len(items)} history item(s) · {pending} pending · {approved} approved. "
+            "Approval does not execute; Execute always confirms and revalidates."
+        )
+        self._sync_action_buttons()
+
+    def _selected_request_id(self) -> str:
+        row = self.table.currentRow()
+        item = self.table.item(row, 0) if row >= 0 else None
+        return str(item.data(Qt.UserRole) or "") if item is not None else ""
 
     def _record_for_row(self, row: int) -> dict | None:
+        item = self.table.item(int(row), 0)
+        request_id = str(item.data(Qt.UserRole) or "") if item is not None else ""
         items = _read_soar_queue()
-        index = len(items) - 1 - int(row)
-        if 0 <= index < len(items):
-            return items[index]
-        return None
+        return next(
+            (record for record in items if _soar_record_id(record) == request_id),
+            None,
+        )
+
+    def _selected_record(self) -> dict | None:
+        row = self.table.currentRow()
+        return self._record_for_row(row) if row >= 0 else None
+
+    @staticmethod
+    def _terminal_record(record: dict) -> bool:
+        status = str(record.get("status", "")).upper()
+        return status.startswith(("EXECUTED", "DISMISSED", "FAILED"))
+
+    def _sync_action_buttons(self) -> None:
+        record = self._selected_record()
+        selected = record is not None
+        terminal = self._terminal_record(record) if record is not None else True
+        request_id = _soar_record_id(record) if record is not None else ""
+        approved = bool(
+            request_id in self._approved_requests
+            and self._approved_requests[request_id]
+            == _soar_authorization_digest(record)
+            and not terminal
+        )
+        executable = bool(
+            approved
+            and isinstance(record.get("action"), dict)
+            and record["action"].get("kind") == "suspend_process"
+        ) if record is not None else False
+        self._btn_review.setEnabled(selected)
+        self._btn_approve.setEnabled(selected and not terminal and not approved)
+        self._btn_dismiss.setEnabled(selected and not terminal)
+        self._btn_execute.setEnabled(executable)
+        if approved and not executable:
+            self._btn_execute.setToolTip(
+                "This item is review-only and has no safely-bound process target."
+            )
+        else:
+            self._btn_execute.setToolTip(
+                "After approval, revalidate the signed event and exact process "
+                "identity, then suspend it. A final confirmation is always required."
+            )
+
+    def _force_queue_refresh(self) -> None:
+        self._queue_fingerprint = None
+        self.refresh()
+
+    def _review_selected(self) -> None:
+        row = self.table.currentRow()
+        record = self._record_for_row(row) if row >= 0 else None
+        if record is None:
+            self._status.setText("Select a SOAR item to review.")
+            return
+        _update_soar_queue_record(
+            _soar_record_id(record), reviewed_at=time.time()
+        )
+        self._open_record(row, 0)
+
+    def _approve_selected(self) -> None:
+        record = self._selected_record()
+        if record is None:
+            self._status.setText("Select a SOAR item to approve.")
+            return
+        if self._terminal_record(record):
+            self._status.setText("That request is already closed and cannot be approved.")
+            return
+        try:
+            _soar_origin_event(record, self.bus)
+        except Exception as exc:
+            self._status.setText(
+                f"Approval refused: authoritative origin evidence is unavailable ({exc})."
+            )
+            return
+        action = record.get("action", {})
+        action_text = (
+            f"Suspend pid {action.get('pid')} (reversible)"
+            if isinstance(action, dict) and action.get("kind") == "suspend_process"
+            else "Review-only item; no executable target is available"
+        )
+        answer = QMessageBox.question(
+            self.window(),
+            "Approve SOAR Request",
+            f"Approve this request for the current Angerona session?\n\n"
+            f"Source: {record.get('origin_module', '')}\n"
+            f"Proposed action: {action_text}\n\n"
+            "Approval alone does not change the host. Execute remains a separate, "
+            "confirmed action.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        request_id = _soar_record_id(record)
+        if not _update_soar_queue_record(
+            request_id, status=_SOAR_APPROVED, approved_at=time.time()
+        ):
+            self._status.setText("Approval was not saved; no response was authorized.")
+            return
+        self._approved_requests[request_id] = _soar_authorization_digest(record)
+        self._force_queue_refresh()
+        if isinstance(action, dict) and action.get("kind") == "suspend_process":
+            self._status.setText(
+                "Approved for this session. Select Execute to revalidate and contain."
+            )
+        else:
+            self._status.setText(
+                "Reviewed and approved as evidence only; no executable target exists."
+            )
+
+    def _dismiss_selected(self) -> None:
+        record = self._selected_record()
+        if record is None:
+            self._status.setText("Select a SOAR item to dismiss.")
+            return
+        if self._terminal_record(record):
+            self._status.setText("That request is already closed.")
+            return
+        if QMessageBox.question(
+            self.window(),
+            "Reject / Dismiss SOAR Request",
+            "Dismiss this request without changing the host? The audit history "
+            "will remain available.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        request_id = _soar_record_id(record)
+        if _update_soar_queue_record(
+            request_id, status=_SOAR_DISMISSED, dismissed_at=time.time()
+        ):
+            self._approved_requests.pop(request_id, None)
+            self._force_queue_refresh()
+            self._status.setText("Request dismissed; no host action was taken.")
+        else:
+            self._status.setText("Could not persist the dismissal; request remains open.")
+
+    def _execute_selected(self) -> None:
+        record = self._selected_record()
+        if record is None:
+            self._status.setText("Select an approved SOAR item to execute.")
+            return
+        request_id = _soar_record_id(record)
+        approved_digest = (
+            self._approved_requests[request_id]
+            if request_id in self._approved_requests
+            else None
+        )
+        if (
+            approved_digest is None
+            or approved_digest != _soar_authorization_digest(record)
+        ):
+            self._approved_requests.pop(request_id, None)
+            self._status.setText(
+                "Execute refused: the request changed or lacks current-session approval; "
+                "review and approve it again."
+            )
+            return
+        try:
+            process, _origin = _soar_process_preflight(record, self.bus, self.manager)
+            pid = int(process.pid)
+            name = str(process.name() or "process")
+        except Exception as exc:
+            reason = str(exc)
+            _update_soar_queue_record(
+                request_id,
+                status="FAILED — no host action taken",
+                execution_error=reason[:1000],
+            )
+            self._approved_requests.discard(request_id)
+            self._force_queue_refresh()
+            self._status.setText(f"Execution refused safely: {reason}")
+            return
+        if QMessageBox.question(
+            self.window(),
+            "Execute Approved Containment",
+            f"Suspend {name} (pid {pid}) now?\n\n"
+            "Angerona will revalidate the signed alert, allowlist, protected-process "
+            "rules, PID creation time, name, and executable again. This action does "
+            f"not kill the process and can be reversed with: resume {pid}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        # The confirmation dialog gives another local process time to replace a
+        # mutable queue line. Re-read and compare the exact authorization digest
+        # immediately before the response sink.
+        fresh = next(
+            (
+                candidate
+                for candidate in _read_soar_queue()
+                if _soar_record_id(candidate) == request_id
+            ),
+            None,
+        )
+        if (
+            fresh is None
+            or approved_digest != _soar_authorization_digest(fresh)
+        ):
+            self._approved_requests.pop(request_id, None)
+            self._force_queue_refresh()
+            self._status.setText(
+                "Execution refused: the approved request changed during confirmation."
+            )
+            return
+        record = fresh
+        try:
+            result = _execute_approved_soar_record(record, self.bus, self.manager)
+        except Exception as exc:
+            reason = str(exc)
+            _update_soar_queue_record(
+                request_id,
+                status="FAILED — no host action taken",
+                execution_error=reason[:1000],
+            )
+            self._approved_requests.pop(request_id, None)
+            self._force_queue_refresh()
+            self._status.setText(f"Execution failed safely: {reason}")
+            return
+        updated = _update_soar_queue_record(
+            request_id,
+            status=_SOAR_EXECUTED,
+            executed_at=time.time(),
+            execution_result=result,
+        )
+        self._approved_requests.pop(request_id, None)
+        self._force_queue_refresh()
+        self._status.setText(
+            result if updated else f"{result} Queue status update failed; bus audit retained."
+        )
 
     def _open_record(self, row: int, _column: int) -> None:
         record = self._record_for_row(row)
@@ -2883,10 +3715,17 @@ class SoarPanel(QFrame):
 
     def _clear(self) -> None:
         try:
-            _soar_queue_path().write_text("", encoding="utf-8")
+            with _SOAR_QUEUE_CACHE_LOCK:
+                _soar_queue_path().write_text("", encoding="utf-8")
+                try:
+                    _soar_queue_state_path().unlink()
+                except FileNotFoundError:
+                    pass
+                _invalidate_soar_queue_cache()
         except Exception:
             pass
-        self._count = -1
+        self._approved_requests.clear()
+        self._queue_fingerprint = None
         self.refresh()
 
     # ── System context ────────────────────────────────────────────────────────
@@ -3018,13 +3857,37 @@ class SoarPanel(QFrame):
         row = self.table.rowAt(pos.y())
         if row < 0:
             return
+        self.table.setCurrentCell(row, 0)
         menu = QMenu(self)
+        act_review = QAction("Review details", self)
+        act_approve = QAction("Approve", self)
+        act_execute = QAction("Execute approved containment", self)
+        act_dismiss = QAction("Reject / Dismiss", self)
         act_ai   = QAction("🤖 Ask AI about this alert", self)
         act_copy = QAction("📋 Copy message", self)
+        record = self._record_for_row(row)
+        request_id = _soar_record_id(record) if record is not None else ""
+        terminal = self._terminal_record(record) if record is not None else True
+        act_approve.setEnabled(record is not None and not terminal)
+        act_execute.setEnabled(request_id in self._approved_requests and not terminal)
+        act_dismiss.setEnabled(record is not None and not terminal)
+        menu.addAction(act_review)
+        menu.addAction(act_approve)
+        menu.addAction(act_execute)
+        menu.addAction(act_dismiss)
+        menu.addSeparator()
         menu.addAction(act_ai)
         menu.addAction(act_copy)
         chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
-        if chosen == act_ai:
+        if chosen == act_review:
+            self._review_selected()
+        elif chosen == act_approve:
+            self._approve_selected()
+        elif chosen == act_execute:
+            self._execute_selected()
+        elif chosen == act_dismiss:
+            self._dismiss_selected()
+        elif chosen == act_ai:
             self._consult_ai_single(row)
         elif chosen == act_copy:
             item = self.table.item(row, 3)
@@ -3590,22 +4453,25 @@ class AARDialog(QDialog):
     """Read-only review window for a completed Shark Attack drill. Shows the
     same formatted report that's printed to the terminal (see
     angerona.shark.aar_report), with a button to re-run the comparison —
-    useful since slower-polling modules (YARA's 5-minute scan interval, for
-    instance) may catch something a few minutes after the drill ends."""
+    A refresh re-renders already-recorded evidence; a fresh drill is required
+    to test detector coverage after the originating evidence was cleaned."""
 
     _fix_done = Signal(str)
     _apply_done = Signal(str)
+    _fix_progress = Signal(int, str)
 
     def __init__(self, data_dir, parent=None, on_attempt_fix=None, on_apply=None,
-                 on_clean=None, redteam=False) -> None:
+                 on_clean=None, redteam=False, report_binding=None) -> None:
         super().__init__(parent)
         self.data_dir = data_dir
         self._on_attempt_fix = on_attempt_fix
         self._on_apply = on_apply
         self._on_clean = on_clean
         self._redteam = bool(redteam)
+        self._report_binding = report_binding
         self._fix_done.connect(self._show_fix_result)
         self._apply_done.connect(lambda t: self.body.appendPlainText("\n" + t))
+        self._fix_progress.connect(self._on_fix_progress)
         self.setWindowTitle("Shark Attack — After-Action Report")
         self.setMinimumSize(760, 600)
         if parent:
@@ -3629,7 +4495,7 @@ class AARDialog(QDialog):
         row.addWidget(refresh)
         row.addStretch(1)
         self._fix_btn = QPushButton("\U0001F6E0  " +
-                                    ("Apply Fix Candidates" if self._redteam else "Attempt Fix"))
+                                    ("Apply Practice Fix" if self._redteam else "Attempt Fix"))
         self._fix_btn.setObjectName("Primary")
         self._fix_btn.setToolTip(
             "Install reviewed detector candidates and clean inert markers. Findings stay open "
@@ -3638,6 +4504,25 @@ class AARDialog(QDialog):
             "optionally apply it (with your confirmation).")
         self._fix_btn.clicked.connect(self._attempt_fix)
         row.addWidget(self._fix_btn)
+        from angerona.gui.animations import RunSpinner
+        self._fix_spinner = RunSpinner()
+        row.addWidget(self._fix_spinner)
+        self._test_fix_btn = QPushButton("✓  Test Fix Again")
+        self._test_fix_btn.setToolTip(
+            "Replay the exact inert positive and benign negative controls through the "
+            "installed detector, recorder, SOAR response, and cleanup checks."
+        )
+        self._test_fix_btn.clicked.connect(self._attempt_fix)
+        self._test_fix_btn.hide()
+        row.addWidget(self._test_fix_btn)
+        self._source_btn = QPushButton("</>  Open Fix Source")
+        self._source_btn.setToolTip(
+            "Open the exact Purple Remediation Guard implementation in Angerona's "
+            "syntax-checked Live-Fire Sandbox."
+        )
+        self._source_btn.clicked.connect(self._open_fix_source)
+        self._source_btn.hide()
+        row.addWidget(self._source_btn)
         row.addStretch(1)
         close = QPushButton("\U0001F9F9  Clean & Close")
         close.setToolTip("Erase every benign drill marker / persistence-marker file used during "
@@ -3670,19 +4555,57 @@ class AARDialog(QDialog):
             self.body.appendPlainText("\n[Attempt Fix] Posture Hardening module not available.")
             return
         self._fix_btn.setEnabled(False)
+        self._test_fix_btn.setEnabled(False)
         if self._redteam:
+            # A prior receipt does not authorize controls during a new retest.
+            # Hide them until this run produces its own green verification.
+            self._test_fix_btn.hide()
+            self._source_btn.hide()
             self.body.appendPlainText("\n[Purple remediation] Building reviewed detector "
-                                      "candidates and cleaning inert markers…")
+                                      "candidates, then running positive/negative controls…")
+            self._fix_spinner.begin_estimated(8.0, "Practice fix")
         else:
             self.body.appendPlainText("\n[Attempt Fix] Asking the local AI for a remediation "
                                       "(temperature 0) — this may take a few seconds…")
         import threading
-        threading.Thread(target=lambda: self._fix_done.emit(self._safe(self._on_attempt_fix)),
-                         daemon=True).start()
+        def work():
+            if self._redteam:
+                result = self._safe(
+                    lambda: self._on_attempt_fix(self._fix_progress.emit)
+                )
+            else:
+                result = self._safe(self._on_attempt_fix)
+            self._fix_done.emit(result)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_fix_progress(self, percent: int, text: str) -> None:
+        self._fix_spinner.set_text(text)
+        self._fix_spinner.set_pct(percent)
 
     def _show_fix_result(self, text: str) -> None:
-        self.body.appendPlainText("\n" + text)
         self._fix_btn.setEnabled(True)
+        self._test_fix_btn.setEnabled(True)
+        verified = "[PRACTICE FIX VERIFIED]" in text
+        if self._redteam:
+            if verified:
+                # The practice receipt updates the lifecycle state, so re-render
+                # immediately instead of leaving the operator staring at the
+                # pre-fix 0% score.  Append the proof summary after the refreshed
+                # report so neither result is lost.
+                self.refresh()
+                self.body.appendPlainText("\n\n" + text)
+                self._fix_spinner.succeed("Practice fix verified")
+                # Only reveal retest/source inspection after signed green proof.
+                self._test_fix_btn.show()
+                self._source_btn.show()
+            else:
+                self.body.appendPlainText("\n" + text)
+                self._fix_spinner.stop()
+                self._test_fix_btn.hide()
+                self._source_btn.hide()
+        else:
+            self.body.appendPlainText("\n" + text)
         # Only offer to apply when a remediation was actually generated. If the
         # posture is clean (no open weaknesses), there is nothing to run.
         if not self._on_apply or "staged" not in text.lower():
@@ -3697,6 +4620,21 @@ class AARDialog(QDialog):
             import threading
             threading.Thread(target=lambda: self._apply_done.emit(self._safe(self._on_apply)),
                              daemon=True).start()
+
+    def _open_fix_source(self) -> None:
+        """Open the exact detector source, not a copied report or generated script."""
+        try:
+            parent = self.parent()
+            from angerona.gui.sandbox_editor import launch_sandbox_editor
+
+            self._sandbox = launch_sandbox_editor(
+                parent.manager,
+                parent.bus,
+                parent=parent,
+                preselect="Purple Remediation Guard",
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Sandbox", f"Could not open fix source: {exc}")
 
     def set_text(self, text: str) -> None:
         self.body.setPlainText(text)
@@ -3716,6 +4654,20 @@ class AARDialog(QDialog):
         except Exception as exc:
             text = f"Could not generate report: {exc}"
         self.body.setPlainText(text)
+        if self._report_binding is not None and not text.startswith("Could not"):
+            path = Path(self.data_dir) / (
+                "redteam_aar.json" if self._redteam else "shark_aar.json"
+            )
+            try:
+                raw = path.read_bytes()
+                payload = json.loads(raw.decode("utf-8"))
+                self._report_binding.update({
+                    "run_id": str(payload.get("run_id") or ""),
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                    "error": "",
+                })
+            except (OSError, UnicodeDecodeError, ValueError, TypeError) as exc:
+                self._report_binding["error"] = str(exc)
 
 
 
@@ -4209,16 +5161,80 @@ class SettingsDialog(QDialog):
         lay.addWidget(mcp_note)
 
         lay.addWidget(self._section("Performance"))
-        self._eco_chk = QCheckBox("Start in Eco Mode (heavy scanners paused) for a fast, responsive launch")
+        self._eco_chk = QCheckBox(
+            "Start in Chill Mode (network-first, low-resource all-day monitoring)"
+        )
         self._eco_chk.setChecked(getattr(self._cfg, "eco_mode", True))
         lay.addWidget(self._eco_chk)
         eco_note = QLabel(
-            "Recommended. The safety-critical response path (SOAR, deception, watchdog, "
-            "heartbeat, IPC guard, AI triage) stays live; heavy pollers wake sequentially "
-            "when you tap ECO off, so the UI never stampedes on startup."
+            "Recommended. Network, Defender/AMSI, USB, ETW/Sysmon, watchdog and "
+            "response stay live. Deep file/memory scanners and background AI sleep; "
+            "a genuine active threat wakes verification modules sequentially, then "
+            "Angerona returns to Chill after a quiet window."
         )
         eco_note.setWordWrap(True); eco_note.setStyleSheet("color: #94a3b8; font-size: 11px;")
         lay.addWidget(eco_note)
+
+        lay.addWidget(self._section("Removable media (USB)"))
+        usb_grid = QGridLayout()
+        usb_grid.setColumnStretch(1, 1)
+        usb_grid.addWidget(QLabel("New approval PIN (4–12 digits):"), 0, 0)
+        self._usb_pin = QLineEdit()
+        self._usb_pin.setEchoMode(QLineEdit.Password)
+        self._usb_pin.setMaxLength(12)
+        self._usb_pin.setPlaceholderText("Create a new protected PIN")
+        self._usb_pin.setValidator(
+            QRegularExpressionValidator(
+                QRegularExpression(r"[0-9]{0,12}"), self._usb_pin
+            )
+        )
+        usb_grid.addWidget(self._usb_pin, 0, 1)
+        usb_grid.addWidget(QLabel("Confirm new PIN:"), 1, 0)
+        self._usb_pin_confirm = QLineEdit()
+        self._usb_pin_confirm.setEchoMode(QLineEdit.Password)
+        self._usb_pin_confirm.setMaxLength(12)
+        self._usb_pin_confirm.setPlaceholderText("Re-enter the new PIN")
+        self._usb_pin_confirm.setValidator(
+            QRegularExpressionValidator(
+                QRegularExpression(r"[0-9]{0,12}"), self._usb_pin_confirm
+            )
+        )
+        usb_grid.addWidget(self._usb_pin_confirm, 1, 1)
+        self._usb_pin_reset = QPushButton("Confirm & reset USB PIN")
+        self._usb_pin_reset.setToolTip(
+            "Writes a new PIN to protected storage, clears the session lock, and "
+            "revokes every current Angerona removable-media approval."
+        )
+        self._usb_pin_reset.clicked.connect(self._reset_usb_pin)
+        usb_grid.addWidget(self._usb_pin_reset, 2, 1)
+        lay.addLayout(usb_grid)
+        try:
+            from angerona.core.usb_policy import usb_pin_configured
+            _usb_ready = usb_pin_configured()
+        except Exception:
+            _usb_ready = False
+        self._usb_pin_status = QLabel(
+            "Protected PIN configured" if _usb_ready else "No protected PIN configured"
+        )
+        self._usb_pin_status.setStyleSheet(
+            "color: #22c55e; font-size: 11px;"
+            if _usb_ready else "color: #f59e0b; font-size: 11px;"
+        )
+        lay.addWidget(self._usb_pin_status)
+        usb_note = QLabel(
+            "New removable media stays untrusted until a protected PIN is enrolled "
+            "and then entered separately in the approval window. One incorrect PIN "
+            "locks USB approval until this confirmed reset workflow creates a new "
+            "PIN. Resetting revokes trust and never approves an attached device. "
+            "Approval grants only Angerona permission to inspect "
+            "that currently inserted media; it does not block or change raw operating-"
+            "system access. Windows AutoRun and AutoPlay remain disabled before and "
+            "after approval. The PIN is stored only in your "
+            "operating-system protected credential store, never in settings.json."
+        )
+        usb_note.setWordWrap(True)
+        usb_note.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        lay.addWidget(usb_note)
 
         lay.addWidget(self._section("Black Box (out-of-band diagnostic recorder)"))
         self._blackbox_chk = QCheckBox("Launch the Black Box recorder automatically with Angerona")
@@ -4237,6 +5253,26 @@ class SettingsDialog(QDialog):
         )
         bb_note.setWordWrap(True); bb_note.setStyleSheet("color: #94a3b8; font-size: 11px;")
         lay.addWidget(bb_note)
+
+        lay.addWidget(self._section("Deception data boundary"))
+        self._deception_user_folders_chk = QCheckBox(
+            "Place hidden honeytokens in my Desktop/Documents/AppData (advanced opt-in)"
+        )
+        self._deception_user_folders_chk.setChecked(
+            bool(getattr(self._cfg, "deception_user_folders", False))
+        )
+        self._deception_user_folders_chk.setToolTip(
+            "Off keeps every Angerona-created decoy under the configured D-drive data root."
+        )
+        lay.addWidget(self._deception_user_folders_chk)
+        deception_note = QLabel(
+            "Default: D-drive only. Enabling this deliberately writes and later removes "
+            "hidden inert canary files in personal folders for broader ransomware coverage; "
+            "existing real files are never overwritten. A restart applies the change."
+        )
+        deception_note.setWordWrap(True)
+        deception_note.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        lay.addWidget(deception_note)
 
         lay.addWidget(self._section("Linux kernel telemetry (optional supplement)"))
         self._ebpf_chk = QCheckBox("Enable native eBPF kernel telemetry (Linux + BCC + root only)")
@@ -5401,6 +6437,69 @@ class SettingsDialog(QDialog):
                 f"Could not save the PIN to the protected credential store: {exc}",
             )
 
+    def _reset_usb_pin(self) -> bool:
+        """Explicitly confirm a protected reset; never approve attached media."""
+        pin = self._usb_pin.text().strip()
+        confirmation = self._usb_pin_confirm.text().strip()
+        if not re.fullmatch(r"\d{4,12}", pin):
+            self._select_tab("System")
+            QMessageBox.warning(
+                self,
+                "USB PIN not reset",
+                "The removable-media approval PIN must contain 4–12 digits.",
+            )
+            return False
+        if pin != confirmation:
+            self._select_tab("System")
+            QMessageBox.warning(
+                self,
+                "USB PIN not reset",
+                "The new PIN and confirmation do not match.",
+            )
+            return False
+        answer = QMessageBox.question(
+            self,
+            "Reset USB approval PIN",
+            "Create this new protected USB PIN and revoke every current Angerona "
+            "removable-media approval?\n\nAttached devices will remain untrusted "
+            "until separately approved. This user-mode gate does not prevent raw "
+            "operating-system file access.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return False
+        try:
+            from angerona.core.usb_policy import configure_usb_pin
+
+            result = configure_usb_pin(pin, confirmation)
+            if not result.updated:
+                raise RuntimeError(result.reason)
+            self._usb_pin.clear()
+            self._usb_pin_confirm.clear()
+            self._usb_pin_status.setText("Protected PIN configured; approvals revoked")
+            self._usb_pin_status.setStyleSheet("color: #22c55e; font-size: 11px;")
+            QMessageBox.information(
+                self,
+                "USB PIN reset",
+                "The new PIN is protected and all current Angerona USB approvals "
+                "were revoked. Resetting did not approve any attached device.",
+            )
+            return True
+        except Exception as exc:
+            self._select_tab("System")
+            QMessageBox.warning(
+                self,
+                "USB PIN not reset",
+                "Could not save the removable-media PIN to the protected "
+                f"credential store: {exc}",
+            )
+            return False
+
+    def _save_usb_pin(self) -> bool:
+        """Compatibility alias for the explicit, confirmed reset workflow."""
+        return self._reset_usb_pin()
+
     def _save(self) -> None:
         from angerona.core.autostart import enable_autostart as _autostart_enable, \
             disable_autostart as _autostart_disable
@@ -5451,7 +6550,6 @@ class SettingsDialog(QDialog):
         # remain editable even when an external credential backend is offline.
         if self._api_keys_dirty and not self._save_api_keys(notify=False):
             return
-
         self._cfg.ollama_host  = self._ollama_host.text().strip()
         self._cfg.ollama_model = self._ollama_model.text().strip()
         self._cfg.github_repo  = self._github_repo.text().strip()
@@ -5508,6 +6606,11 @@ class SettingsDialog(QDialog):
 
         self._cfg.eco_mode         = self._eco_chk.isChecked()
         self._cfg.blackbox_enabled = self._blackbox_chk.isChecked()
+        self._cfg.deception_user_folders = self._deception_user_folders_chk.isChecked()
+        if self._cfg.deception_user_folders:
+            _os.environ["ANGERONA_USER_FOLDER_DECEPTION"] = "1"
+        else:
+            _os.environ.pop("ANGERONA_USER_FOLDER_DECEPTION", None)
         self._cfg.mcp_enabled      = self._mcp_chk.isChecked()
         try:
             self._cfg.mcp_port = int(self._mcp_port.text().strip() or "47923")

@@ -299,13 +299,14 @@ class ThreatIntelDashboard(QDialog):
         elif active == 0:
             self._footer.setText(
                 f"✅  {len(matches)} applicable CVE(s), all {ignored_n} IGNORED — "
-                "none are affecting the threat level.")
+                "none affect the exposure score.")
             self._footer.setStyleSheet("color:#22c55e; font-size:11px;")
         else:
             rans_note = f"  |  {rans_hits} ransomware-linked" if rans_hits else ""
-            ign_note = f"  |  {ignored_n} ignored (excluded from threat level)" if ignored_n else ""
+            ign_note = f"  |  {ignored_n} ignored (excluded from exposure score)" if ignored_n else ""
             self._footer.setText(
-                f"⚠  {active} active CVE(s) affecting threat level{ign_note}{rans_note}. "
+                f"⚠  {active} applicable CVE exposure(s){ign_note}{rans_note}. "
+                "These are patch priorities, not proof of an active attack. "
                 "Double-click a row for detail, AI fix, ignore/revert & history.")
             self._footer.setStyleSheet("color:#f59e0b; font-size:11px;")
 

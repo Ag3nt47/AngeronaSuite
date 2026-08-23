@@ -17,6 +17,10 @@ from tools.verify_wheelhouse import verify_wheelhouse
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PIP_BOOTSTRAP_VERSION = "26.2.1"
+PIP_BOOTSTRAP_SHA256 = (
+    "71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e"
+)
 
 
 def _wheel(path: Path, name: str, version: str, payload: bytes = b"wheel") -> Path:
@@ -67,6 +71,59 @@ def test_release_workflow_requires_committed_hash_lock() -> None:
     assert "--require-hashes --no-deps" in workflow
     assert "-r requirements-release-hashed.txt" in workflow
     assert "--no-build-isolation --no-deps ." in workflow
+
+
+def test_windows_pip_bootstrap_is_exact_hash_locked_and_ordered() -> None:
+    bootstrap = (ROOT / "requirements-bootstrap-pip.txt").read_text(
+        encoding="utf-8"
+    )
+    main_lock = (ROOT / "requirements-release-hashed.txt").read_text(
+        encoding="utf-8"
+    )
+    constraints = (ROOT / "constraints-release.txt").read_text(encoding="utf-8")
+    pin = f"pip=={PIP_BOOTSTRAP_VERSION}"
+    digest = f"--hash=sha256:{PIP_BOOTSTRAP_SHA256}"
+
+    assert "--only-binary=:all:" in bootstrap
+    assert bootstrap.count(pin) == 1
+    assert bootstrap.count(digest) == 1
+    assert bootstrap.count("--hash=sha256:") == 1
+    assert f"{pin} \\" in main_lock
+    assert digest in main_lock
+    assert f"{pin}\n" in constraints
+
+    batch_launchers = (
+        (ROOT / "start-angerona.bat").read_text(encoding="utf-8"),
+        (ROOT / "Install-Angerona.bat").read_text(encoding="utf-8"),
+    )
+    for launcher in batch_launchers:
+        bootstrap_install = launcher.index(
+            "--require-hashes --no-deps -r requirements-bootstrap-pip.txt"
+        )
+        dependency_install = launcher.index(
+            "--require-hashes --no-deps -r requirements-release-hashed.txt"
+        )
+        assert bootstrap_install < dependency_install
+        assert "pip install --upgrade" not in launcher.casefold()
+
+    repair = (ROOT / "Repair-Angerona-Python.ps1").read_text(encoding="utf-8")
+    bootstrap_install = repair.rindex(
+        "(Join-Path $root 'requirements-bootstrap-pip.txt')"
+    )
+    dependency_install = repair.rindex(
+        "(Join-Path $root 'requirements-release-hashed.txt')"
+    )
+    assert bootstrap_install < dependency_install
+    assert "--require-hashes --no-deps" in repair
+    assert f"m.version('pip') == '{PIP_BOOTSTRAP_VERSION}'" in repair
+
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    assert workflow.index("-r requirements-bootstrap-pip.txt") < workflow.index(
+        "-r requirements-release-hashed.txt"
+    )
+    assert "--require-hashes --no-deps" in workflow
 
 
 def test_release_workflow_pins_and_hash_verifies_inno_compiler() -> None:

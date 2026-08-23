@@ -1042,6 +1042,47 @@ class AsyncRecorderMetrics:
     running: bool
 
 
+class _BoundedSimpleQueue:
+    """C-backed queue with an exact non-blocking capacity gate.
+
+    ``queue.Queue`` uses a Python ``Condition`` around every put/get. Under a
+    multi-publisher telemetry burst that lock convoy dominated the callback
+    even though the overflow consumer was keeping up. ``SimpleQueue`` supplies
+    the thread-safe C fast path while a bounded semaphore retains the same hard
+    memory limit and ``queue.Full`` fallback contract.
+    """
+
+    def __init__(self, maxsize: int) -> None:
+        self.maxsize = int(maxsize)
+        self._slots = threading.BoundedSemaphore(self.maxsize)
+        self._queue: queue.SimpleQueue[Event] = queue.SimpleQueue()
+
+    def put_nowait(self, event: Event) -> None:
+        if not self._slots.acquire(blocking=False):
+            raise queue.Full
+        self._queue.put(event)
+
+    def get(self, timeout: float | None = None) -> Event:
+        event = self._queue.get(timeout=timeout)
+        self._slots.release()
+        return event
+
+    def get_nowait(self) -> Event:
+        return self.get(timeout=0.0)
+
+    def empty(self) -> bool:
+        return self._queue.empty()
+
+    def qsize(self) -> int:
+        return self._queue.qsize()
+
+    @staticmethod
+    def task_done() -> None:
+        # AsyncFlightRecorder owns drain completion through worker joins and
+        # never calls Queue.join(); retain the narrow queue surface it uses.
+        return None
+
+
 class AsyncFlightRecorder:
     """Bounded worker-owned persistence adapter for EventBus subscribers.
 
@@ -1074,9 +1115,7 @@ class AsyncFlightRecorder:
             raise ValueError("dlq_batch_size must be positive")
         self._recorder = recorder
         self._queue: queue.Queue[Event] = queue.Queue(maxsize=queue_capacity)
-        self._overflow_queue: queue.Queue[Event] = queue.Queue(
-            maxsize=overflow_queue_capacity
-        )
+        self._overflow_queue = _BoundedSimpleQueue(overflow_queue_capacity)
         self._batch_size = min(int(batch_size), int(queue_capacity))
         self._dlq_batch_size = min(
             int(dlq_batch_size), int(overflow_queue_capacity)
@@ -1085,6 +1124,10 @@ class AsyncFlightRecorder:
         self._state_lock = threading.Lock()
         self._metrics_lock = threading.Lock()
         self._stop = threading.Event()
+        # Avoid raising ``queue.Full`` for every publisher while the primary
+        # writer is known to be saturated. The recorder worker clears this as
+        # soon as it consumes an item; overflow remains bounded and durable.
+        self._primary_saturated = threading.Event()
         self._dlq_done = threading.Event()
         self._dlq_busy = threading.Event()
         self._thread: threading.Thread | None = None
@@ -1109,6 +1152,7 @@ class AsyncFlightRecorder:
             if self._thread is not None and self._thread.is_alive():
                 return False
             self._stop.clear()
+            self._primary_saturated.clear()
             self._dlq_done.clear()
             self._dlq_busy.clear()
             self._dlq_thread = threading.Thread(
@@ -1131,19 +1175,26 @@ class AsyncFlightRecorder:
             event = dataclasses.replace(
                 event, hmac_sig=self._recorder.authority.sign(event)
             )
-        with self._state_lock:
-            running = self._thread is not None and self._thread.is_alive()
-            dlq_running = (
-                self._dlq_thread is not None and self._dlq_thread.is_alive()
-            )
-        if running and not self._stop.is_set():
+        # Lifecycle publishes these references while holding ``_state_lock``
+        # and sets ``_stop`` before joining either worker. A snapshot avoids a
+        # global lifecycle-lock convoy across independent EventBus publishers;
+        # any concurrent stop falls through to the durable synchronous lane.
+        thread = self._thread
+        dlq_thread = self._dlq_thread
+        running = thread is not None and thread.is_alive()
+        dlq_running = dlq_thread is not None and dlq_thread.is_alive()
+        if (
+            running
+            and not self._stop.is_set()
+            and not self._primary_saturated.is_set()
+        ):
             try:
                 self._queue.put_nowait(event)
                 with self._metrics_lock:
                     self._accepted += 1
                 return
             except queue.Full:
-                pass
+                self._primary_saturated.set()
         if dlq_running and not self._stop.is_set():
             try:
                 self._overflow_queue.put_nowait(event)
@@ -1242,6 +1293,7 @@ class AsyncFlightRecorder:
             batch: list[Event] = []
             try:
                 batch.append(self._queue.get(timeout=self._flush_interval))
+                self._primary_saturated.clear()
             except queue.Empty:
                 self._maybe_replay()
                 continue

@@ -447,15 +447,27 @@ def record_findings(
                 },
             )
             issue["name"] = finding["name"]
-            changed |= _record_occurrence(
+            occurrence_added = _record_occurrence(
                 issue,
                 run_id=str(run_id or ""),
                 observed_at=at,
                 caught=False,
             )
+            changed |= occurrence_added
             contract = data["contracts"].get(issue.get("active_contract_id"), {})
             effective = _effective_state(contract, at)
-            if effective in {VERIFIED_STATE, "EXPIRED"}:
+            try:
+                verified_at = float(contract.get("verified_at") or 0.0)
+            except (TypeError, ValueError):
+                verified_at = 0.0
+            fresh_post_verification_miss = (
+                occurrence_added
+                and at > verified_at
+                and str(run_id or "")
+                != str(issue.get("verified_by_run_id") or "")
+            )
+            if (effective in {VERIFIED_STATE, "EXPIRED"}
+                    and fresh_post_verification_miss):
                 contract["state"] = "REOPENED"
                 contract["reopened_at"] = at
                 contract["reopened_by_run_id"] = str(run_id or "")
@@ -590,12 +602,19 @@ def verify_detector_evidence(
     verified_at: float | None = None,
     expected_contract_id: str | None = None,
     expected_contract_digest: str | None = None,
+    verification_mode: str = "full-drill",
+    verification_checks: Mapping[str, object] | None = None,
 ) -> dict:
     """Close one action contract only with fresh, exactly-bound detector proof."""
     technique = _mitre(mitre)
     at = float(verified_at or time.time())
     if not technique:
         return {"ok": False, "error": "invalid technique"}
+    mode = str(verification_mode or "").strip().casefold()
+    if mode not in {"full-drill", "practice-probe"}:
+        return {"ok": False, "error": "unsupported verification mode"}
+    details = dict(event_details or {})
+    checks = dict(verification_checks or {})
     with _LOCK:
         data = _load_for_write(data_dir)
         issue = data["issues"].get(technique.casefold())
@@ -623,11 +642,39 @@ def verify_detector_evidence(
         expected_detector = str(contract.get("verifier", {}).get("detector") or "")
         if detector != expected_detector:
             return {"ok": False, "error": "verification detector is not contract-authorized"}
-        evidence_mitre = _mitre(
-            event_details.get("mitre") or event_details.get("technique")
-        )
+        evidence_mitre = _mitre(details.get("mitre") or details.get("technique"))
         if evidence_mitre != technique:
             return {"ok": False, "error": "verification evidence technique does not match"}
+        if details.get("detector_policy") != "reviewed-redteam-candidate":
+            return {"ok": False, "error": "verification evidence is not from reviewed policy"}
+        if not (
+            details.get("artifact_path")
+            or details.get("path")
+            or details.get("correlation_token")
+        ):
+            return {
+                "ok": False,
+                "error": "verification evidence lacks artifact/token binding",
+            }
+        if mode == "practice-probe":
+            required = {
+                "positive_control_detected",
+                "negative_control_quiet",
+                "recorder_persisted",
+                "response_succeeded",
+                "postcondition_satisfied",
+            }
+            missing = sorted(key for key in required if checks.get(key) is not True)
+            if missing:
+                return {
+                    "ok": False,
+                    "error": "practice verification checks failed: " + ", ".join(missing),
+                }
+            if not details.get("practice_verification_id"):
+                return {
+                    "ok": False,
+                    "error": "practice evidence lacks verification ID",
+                }
         try:
             observed_ts = float(event_ts)
             applied_at = float(contract.get("applied_at") or 0.0)
@@ -643,19 +690,24 @@ def verify_detector_evidence(
             "event_ts": observed_ts,
             "contract_id": contract["contract_id"],
             "contract_digest": contract["contract_digest"],
+            "verification_mode": mode,
+            "verification_checks": checks,
             "event_fingerprint": _digest(
                 {
                     "run_id": verification_run,
                     "technique": technique,
                     "detector": detector,
                     "event_ts": observed_ts,
-                    "step_id": event_details.get("step_id")
-                    or event_details.get("drill_step_id")
+                    "step_id": details.get("step_id")
+                    or details.get("drill_step_id")
                     or "",
-                    "artifact": event_details.get("artifact_path")
-                    or event_details.get("path")
+                    "artifact": details.get("artifact_path")
+                    or details.get("path")
                     or "",
-                    "correlation_token": event_details.get("correlation_token") or "",
+                    "correlation_token": details.get("correlation_token") or "",
+                    "practice_verification_id": details.get(
+                        "practice_verification_id"
+                    ) or "",
                 }
             ),
         }
@@ -683,6 +735,7 @@ def verify_detector_evidence(
         if key is None:
             raise StateIntegrityError("cannot authenticate verification receipt")
         contract["verification_receipt"] = _attest_receipt(receipt, key)
+        contract["verification_mode"] = mode
         issue["status"] = VERIFIED_STATE
         issue["verified_at"] = at
         issue["verified_by_run_id"] = verification_run
@@ -803,6 +856,8 @@ def resolution_snapshot(data_dir=None) -> ResolutionSnapshot:
         contract = data.get("contracts", {}).get(issue.get("active_contract_id"), {})
         rec = dict(issue)
         if isinstance(contract, dict):
+            receipt = contract.get("verification_receipt", {})
+            evidence = receipt.get("evidence", {}) if isinstance(receipt, dict) else {}
             rec.update(
                 {
                     "run_id": contract.get("source_run_id", ""),
@@ -818,6 +873,9 @@ def resolution_snapshot(data_dir=None) -> ResolutionSnapshot:
                     "verification_expires_at": contract.get(
                         "verification_expires_at"
                     ),
+                    "verification_mode": evidence.get("verification_mode", ""),
+                    "verification_run_id": evidence.get("run_id", ""),
+                    "verification_receipt_id": receipt.get("receipt_id"),
                 }
             )
         rows[str(key)] = rec
@@ -911,29 +969,34 @@ def reconcile_verdicts(
     if grouped and integrity in {"missing", "legacy", "ok"}:
         misses = []
         for mitre, rows in grouped.items():
-            purple = next(
-                (
-                    row
-                    for row in rows
-                    if getattr(row, "catch", None) is not None
-                    and getattr(row.catch, "module", "")
-                    == "Purple Remediation Guard"
-                ),
-                None,
-            )
-            if purple is not None:
+            purple_rows = [
+                row for row in rows
+                if getattr(row, "verification_catch", None) is not None
+            ]
+            missed_rows = [
+                row for row in rows if getattr(row, "catch", None) is None
+            ]
+            # Repeated technique occurrences are one finding class, but every
+            # occurrence in the verification run must pass. One Purple hit may
+            # not conceal a sibling miss.
+            if purple_rows and len(purple_rows) == len(rows) and not missed_rows:
+                purple = purple_rows[0]
                 try:
-                    verify_detector_evidence(
+                    result = verify_detector_evidence(
                         mitre,
                         run_id,
                         detector="Purple Remediation Guard",
-                        event_ts=float(purple.catch.ts),
-                        event_details=purple.catch.details or {},
+                        event_ts=float(purple.verification_catch.ts),
+                        event_details=purple.verification_catch.details or {},
                         data_dir=data_dir,
                     )
-                except StateIntegrityError:
-                    pass
-            elif not any(getattr(row, "catch", None) is not None for row in rows):
+                    if not result.get("ok"):
+                        for row in rows:
+                            row.verification_error = str(result.get("error") or "rejected")
+                except StateIntegrityError as exc:
+                    for row in rows:
+                        row.verification_error = str(exc)
+            if missed_rows:
                 misses.append(
                     {
                         "mitre": mitre,
@@ -964,6 +1027,13 @@ def reconcile_verdicts(
             verdict.finding_resolved = contract_verified
             verdict.verification_expires_at = record.get(
                 "verification_expires_at"
+            )
+            verdict.verification_mode = str(record.get("verification_mode") or "")
+            verdict.verification_run_id = str(
+                record.get("verification_run_id") or ""
+            )
+            verdict.verification_receipt_id = record.get(
+                "verification_receipt_id"
             )
     return {
         "actionable_classes": len(grouped),

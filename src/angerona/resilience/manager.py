@@ -34,6 +34,7 @@ from angerona.resilience import shutdown_token as tok
 from angerona.resilience.supervisor import ProcessSupervisor, cached_cmdline_probe
 
 _SENSOR_LABELS = {1: "process_creation"}
+_WATCHDOG_STALE_AFTER_SECONDS = 10.0
 
 
 def _repo_root() -> Path:
@@ -126,7 +127,13 @@ class ResilienceManager:
         pyw = _pythonw()
         # The watchdog (Go or Python) inherits how to relaunch Angerona.
         os.environ.setdefault("ANGERONA_PY", pyw)
-        os.environ.setdefault("ANGERONA_CORE_CMD", f'"{pyw}" -m angerona')
+        core_args = "-m angerona --chill" if os.environ.get(
+            "ANGERONA_CHILL_ACTIVE"
+        ) == "1" else "-m angerona"
+        # Rebuild this from the trusted current interpreter every generation.
+        # An older watchdog may legitimately hand us a stale pre-Chill command;
+        # carrying it forward would make the next crash restart in Full mode.
+        os.environ["ANGERONA_CORE_CMD"] = f'"{pyw}" {core_args}'
         # Run the hidden scanner HEADLESS. It was spawning a full QApplication +
         # Qt window per (detached, no-console) scanner process — heavy RAM and a
         # frequent startup failure that pushed the scanner into SAFE_MODE. Headless
@@ -145,7 +152,7 @@ class ResilienceManager:
                           "internal watchdog to avoid double-supervision.", "INFO")
         elif self.start_watchdog:
             self._sup.add("watchdog", [pyw, "-m", "angerona.resilience.watchdog"],
-                          stale_after_s=2.0, window="hidden")
+                          stale_after_s=_WATCHDOG_STALE_AFTER_SECONDS, window="hidden")
             if _watchdog_binary() is None:
                 self._publish("Resilience Manager",
                               "Using the Python peer watchdog. Build + code-sign the Go binary "

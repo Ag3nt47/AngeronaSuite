@@ -112,6 +112,29 @@ def test_setup_requires_protected_credentials_for_enabled_connectors() -> None:
     }, {}) == []
 
 
+def test_jarvis_authority_requires_protected_enrollment_not_environment() -> None:
+    key = "ANGERONA_JARVIS_CONTROL_TOKEN"
+    values = _default_values()
+    values["jarvis_control_enabled"] = True
+    inherited = {key: "untrusted-inherited-token-" + "x" * 40}
+
+    errors = validate_secret_requirements(values, {}, inherited, {})
+    assert any("JARVIS controls require a protected token" in error for error in errors)
+
+    protected = {key: "protected-enrolled-token-" + "p" * 40}
+    assert validate_secret_requirements(values, {}, inherited, protected) == []
+
+    integration = next(step for step in STEPS if step.title == "Local integrations")
+    token_field = next(field for field in integration.fields if field.key == key)
+    regenerate = next(
+        field
+        for field in integration.fields
+        if field.key == "regenerate_jarvis_token"
+    )
+    assert token_field.kind == "password_env"
+    assert regenerate.kind == "action"
+
+
 def test_setup_normalizes_provider_priority_and_excludes_secrets() -> None:
     normalized = normalize_setup_values({
         "ai_provider_order": " OLLAMA, openai ",
@@ -155,7 +178,7 @@ def test_release_installer_and_runtime_expose_dedicated_full_setup() -> None:
     assert 'Angerona Full Setup' in installer
     assert 'Parameters: "--setup"' in installer
     assert '"--setup" in sys.argv' in entrypoint
-    assert 'arg != "--setup"' in entrypoint
+    assert 'arg not in {"--setup", "--chill"}' in entrypoint
 
 
 @pytest.mark.skipif(os.environ.get("CI_NO_QT") == "1", reason="Qt disabled by runner")

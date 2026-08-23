@@ -184,7 +184,17 @@ class YaraScannerModule(BaseModule):
                 if self._seen_matches.get(key) == stat.st_mtime_ns:
                     continue
                 self._seen_matches[key] = stat.st_mtime_ns
-                self.emit(f"YARA match: {rule} {path}", self._severity_for(rule))
+                # Structured evidence lets the threat layer match this exact
+                # path against short-lived in-memory drill provenance.  Never
+                # infer practice status from the attacker-controlled filename,
+                # rule name, or display message.
+                self.emit(
+                    f"YARA match: {rule} {path}",
+                    self._severity_for(rule),
+                    path=str(path),
+                    artifact_path=str(path),
+                    rule=rule,
+                )
         except Exception as exc:
             # Unreadable/transient files are expected in Downloads; a rule timeout
             # is recorded for diagnostics but does not collapse scanner health.

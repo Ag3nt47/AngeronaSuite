@@ -27,6 +27,7 @@ from angerona.core.url_policy import (
     read_bounded,
     safe_urlopen,
 )
+from angerona.core.ollama_lifecycle import effective_keep_alive
 
 SYSTEM_PROMPT = (
     "You are a local SOC analyst. Given a security event, respond with a single "
@@ -89,7 +90,7 @@ class AITriageModule(BaseModule):
                 {"role": "user", "content": user_content},
             ],
             "stream": False,
-            "keep_alive": "30m",   # keep llama3 resident — avoid per-incident cold starts
+            "keep_alive": effective_keep_alive("30m"),
             # Bound worst-case latency. With stream=False no bytes arrive until
             # generation finishes, so an unbounded reply that runs past the 90s
             # socket timeout ALWAYS trips the breaker. A triage verdict is a few
@@ -125,28 +126,19 @@ class AITriageModule(BaseModule):
             return None
 
     def _ping_ollama(self) -> bool:
-        """Direct health-check that bypasses the circuit breaker.
-
-        Used by the recovery pinger to test if Ollama has come back online.
-        Returns True if the model responds to a simple prompt.
-        """
-        payload = json.dumps({
-            "model": self._model,
-            "messages": [{"role": "user", "content": "Reply 'ready'."}],
-            "stream": False,
-            "keep_alive": "30m",          # keep the model resident between checks
-            "options": {"num_predict": 8},  # tiny reply → fast once loaded
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            local_service_url(self._host, "/api/chat"), data=payload,
-            headers={"Content-Type": "application/json"},
-        )
+        """Check daemon/model availability without loading the model into RAM."""
+        req = urllib.request.Request(local_service_url(self._host, "/api/tags"))
         try:
             with safe_urlopen(
-                req, policy=LOCAL_SERVICE_POLICY, timeout=self._CB_TIMEOUT_S,
+                req, policy=LOCAL_SERVICE_POLICY, timeout=3.0,
             ) as resp:
                 data = json.loads(read_bounded(resp).decode("utf-8"))
-            return bool((data.get("message", {}) or {}).get("content", "").strip())
+            wanted = self._model.split(":", 1)[0].casefold()
+            for item in data.get("models", []):
+                name = str(item.get("name") or item.get("model") or "")
+                if name.split(":", 1)[0].casefold() == wanted:
+                    return True
+            return False
         except Exception:
             return False
 
@@ -230,6 +222,14 @@ class AITriageModule(BaseModule):
                 if ev.module == self.name:
                     continue   # never triage our own output (no feedback loop)
                 self._last_ts = max(self._last_ts, ev.ts)
+                # Practice, passive exposure and suite-health events keep their
+                # evidentiary severity but do not need a heavyweight model call.
+                try:
+                    from angerona.core.threat import is_active_threat
+                    if not is_active_threat(ev):
+                        continue
+                except Exception:
+                    pass
                 # TUNE safe-path: skip Ollama for behaviour matching the learned
                 # known-good baseline. Fail-open — a tuner error never hides a threat.
                 try:

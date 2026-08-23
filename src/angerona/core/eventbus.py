@@ -207,15 +207,31 @@ class BusAuthority:
 class EventBus:
     # G3-E: bounded recent-history ring; oldest entries roll off automatically.
 
-    def __init__(self, ring_size: int = 500) -> None:
+    def __init__(
+        self,
+        ring_size: int = 500,
+        *,
+        priority_ring_size: int | None = None,
+    ) -> None:
         self._subs:      List[Subscriber]          = []
         self._ring:      Deque[Event]              = deque(maxlen=ring_size)
+        # Security consumers must not lose a HIGH/CRITICAL event merely because
+        # a chatty INFO producer filled the general presentation ring between
+        # polls.  Keep a separately revisioned, still-bounded priority lane.
+        # Entries also retain their global revision so ``recent_since`` can
+        # recover priority evidence from a general-ring overflow transparently.
+        if priority_ring_size is None:
+            priority_ring_size = max(64, int(ring_size))
+        self._priority_ring: Deque[tuple[int, int, Event]] = deque(
+            maxlen=max(1, int(priority_ring_size))
+        )
         self._lock:      threading.RLock           = threading.RLock()
         self._authority: Optional[BusAuthority]    = None   # G3-A
         # Monotonic in-process change token for polling consumers. Reading an
         # integer is much cheaper than repeatedly copying and scanning the ring
         # merely to discover that no event arrived since the previous cycle.
         self._revision: int = 0
+        self._priority_revision: int = 0
 
     # G3-A: wire in the signing authority
     def arm(self, authority: BusAuthority) -> None:
@@ -253,6 +269,11 @@ class EventBus:
         with self._lock:
             self._ring.append(event)
             self._revision += 1
+            if event.severity >= Severity.HIGH:
+                self._priority_revision += 1
+                self._priority_ring.append(
+                    (self._revision, self._priority_revision, event)
+                )
             subs = list(self._subs)
 
         # Notify outside the lock so a slow subscriber can't block publishers.
@@ -283,3 +304,100 @@ class EventBus:
         """
         with self._lock:
             return self._revision
+
+    def priority_revision(self) -> int:
+        """Return the HIGH/CRITICAL lane's monotonic change token.
+
+        INFO/LOW/MEDIUM publications intentionally do not advance this token,
+        allowing incident consumers to sleep through telemetry noise without
+        weakening their view of serious evidence.
+        """
+        with self._lock:
+            return self._priority_revision
+
+    def priority_since(self, revision: int) -> tuple[int, List[Event], bool]:
+        """Atomically return HIGH/CRITICAL events after a priority revision.
+
+        Results are newest-first. ``overflow`` means the requested priority
+        delta exceeded this lane's own bounded capacity.  An overflow is a
+        health/verification signal only; callers must never infer permission
+        for a destructive response without a retained, verified event.
+        """
+        try:
+            previous = int(revision)
+        except (TypeError, ValueError):
+            previous = -1
+        with self._lock:
+            current = self._priority_revision
+            if previous == current:
+                return current, [], False
+            if previous < 0 or previous > current:
+                return (
+                    current,
+                    [entry[2] for entry in reversed(self._priority_ring)],
+                    True,
+                )
+            delta = current - previous
+            retained = len(self._priority_ring)
+            count = min(delta, retained)
+            events = [
+                entry[2]
+                for entry in islice(reversed(self._priority_ring), count)
+            ]
+            return current, events, delta > retained
+
+    def recent_since(self, revision: int) -> tuple[int, List[Event], bool]:
+        """Atomically return events published after ``revision``.
+
+        Results follow :meth:`recent` ordering (newest first). ``overflow`` is
+        true when the requested delta exceeded the bounded ring, which tells a
+        polling consumer that only the still-retained suffix is available.
+        This prevents bursty INFO telemetry from hiding a security event simply
+        because a UI poller guessed too small a fixed recent-event limit.
+        """
+        try:
+            previous = int(revision)
+        except (TypeError, ValueError):
+            previous = -1
+        with self._lock:
+            current = self._revision
+            if previous == current:
+                return current, [], False
+            if previous < 0 or previous > current:
+                events_by_revision = {
+                    current - offset: event
+                    for offset, event in enumerate(reversed(self._ring))
+                }
+                for global_revision, _priority_revision, event in self._priority_ring:
+                    events_by_revision.setdefault(global_revision, event)
+                events = [
+                    events_by_revision[key]
+                    for key in sorted(events_by_revision, reverse=True)
+                ]
+                return current, events, True
+            delta = current - previous
+            retained = len(self._ring)
+            count = min(delta, retained)
+            events = list(islice(reversed(self._ring), count))
+            overflow = delta > retained
+            if not overflow:
+                return current, events, False
+
+            # Recover any still-retained priority evidence that was evicted
+            # from the general ring by an INFO flood.  The dedicated priority
+            # cursor remains the authoritative way to detect overflow of this
+            # lane itself; this merge preserves compatibility for general-ring
+            # consumers such as the GUI.
+            events_by_revision = {
+                current - offset: event
+                for offset, event in enumerate(reversed(self._ring))
+                if current - offset > previous
+            }
+            for global_revision, _priority_revision, event in self._priority_ring:
+                if global_revision > previous:
+                    events_by_revision.setdefault(global_revision, event)
+            events = [
+                events_by_revision[key]
+                for key in sorted(events_by_revision, reverse=True)
+            ]
+            return current, events, True

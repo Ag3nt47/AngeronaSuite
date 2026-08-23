@@ -95,6 +95,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from angerona.core.archive_safety import read_bounded_member, validate_zip_members
+from angerona.core.practice_scope import register_artifact, register_run
 from angerona.shark.run_manifest import (
     build_run_history,
     preflight_run,
@@ -276,6 +277,7 @@ class SharkAttackEngine:
             if preflight.custom is not None else None
         )
         self.run_id = f"shark-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+        register_run(self.run_id, kind="shark")
         self.steps = []
         self._running.set()
         self._thread = threading.Thread(
@@ -467,7 +469,14 @@ class SharkAttackEngine:
         step = SharkStep(stage=stage, technique=technique, description=description,
                           ts_start=ts_start, ts_end=time.time(), **kw)
         self.steps.append(step)
+        for path in step.artifact_paths:
+            register_artifact(path, self.run_id, kind="shark")
         return step
+
+    def _practice_artifact(self, path: Path) -> Path:
+        """Register an exact drill output before a real-time sensor can see it."""
+        register_artifact(path, self.run_id, kind="shark")
+        return path
 
     # 1) Initial Access — drop a known-inert test file where the YARA
     #    scanner already looks (Downloads). VARIETY ENGINE axis 1: four
@@ -485,7 +494,9 @@ class SharkAttackEngine:
             self.downloads_dir.mkdir(parents=True, exist_ok=True)
             hexid = uuid.uuid4().hex[:8]
             if variant == "plain_text":
-                path = self.downloads_dir / f"invoice_{hexid}.txt"
+                path = self._practice_artifact(
+                    self.downloads_dir / f"invoice_{hexid}.txt"
+                )
                 self._narrate("▶ STAGE: Initial Access [plain text lure] — dropping an inert "
                               f"EICAR-marker test file into {self.downloads_dir} (mimics opening "
                               "a malicious email attachment).")
@@ -493,7 +504,9 @@ class SharkAttackEngine:
                                encoding="ascii")
                 technique = "T1204-style file drop (plain text)"
             elif variant == "double_extension":
-                path = self.downloads_dir / f"resume_{hexid}.pdf.txt"
+                path = self._practice_artifact(
+                    self.downloads_dir / f"resume_{hexid}.pdf.txt"
+                )
                 self._narrate("▶ STAGE: Initial Access [double-extension lure] — dropping a "
                               f"file disguised to look like a PDF into {self.downloads_dir} "
                               "(a classic real-world phishing filename trick).")
@@ -501,7 +514,9 @@ class SharkAttackEngine:
                                "(double-extension lure)\n", encoding="ascii")
                 technique = "T1204-style file drop (double extension)"
             elif variant == "zipped":
-                path = self.downloads_dir / f"shipping_label_{hexid}.zip"
+                path = self._practice_artifact(
+                    self.downloads_dir / f"shipping_label_{hexid}.zip"
+                )
                 self._narrate("▶ STAGE: Initial Access [zipped lure] — dropping an EICAR-marker "
                               f"test file inside a real .zip archive into {self.downloads_dir} "
                               "(tests whether signature scanning looks inside archives).")
@@ -510,7 +525,9 @@ class SharkAttackEngine:
                                f"{EICAR_MARKER} :: Angerona Shark Attack drill sample (zipped)\n")
                 technique = "T1204-style file drop (zipped)"
             else:  # html_lure
-                path = self.downloads_dir / f"urgent_invoice_{hexid}.html"
+                path = self._practice_artifact(
+                    self.downloads_dir / f"urgent_invoice_{hexid}.html"
+                )
                 self._narrate("▶ STAGE: Initial Access [HTML lure] — dropping a static "
                               f"'view invoice' page containing the EICAR marker into "
                               f"{self.downloads_dir} (no scripts, purely static text).")
@@ -582,7 +599,9 @@ class SharkAttackEngine:
                 self._narrate("▶ STAGE: Persistence (SIMULATED) [single marker] — dropping one "
                               f"marker file in {self.documents_dir}. The registry, Startup "
                               "folder, and Task Scheduler are never touched.")
-                p = self.documents_dir / f"_shark_persistence_marker_{uuid.uuid4().hex[:8]}.txt"
+                p = self._practice_artifact(
+                    self.documents_dir / f"_shark_persistence_marker_{uuid.uuid4().hex[:8]}.txt"
+                )
                 p.write_text(body, encoding="ascii")
                 paths.append(p)
                 technique = "T1547-style marker only (single)"
@@ -592,7 +611,9 @@ class SharkAttackEngine:
                               "dropper leaves multiple artifacts). The registry, Startup folder, "
                               "and Task Scheduler are never touched.")
                 for _ in range(2):
-                    p = self.documents_dir / f"_shark_persistence_marker_{uuid.uuid4().hex[:8]}.txt"
+                    p = self._practice_artifact(
+                        self.documents_dir / f"_shark_persistence_marker_{uuid.uuid4().hex[:8]}.txt"
+                    )
                     p.write_text(body, encoding="ascii")
                     paths.append(p)
                 technique = "T1547-style marker only (double)"
@@ -602,7 +623,9 @@ class SharkAttackEngine:
                               "dropping a marker file named like a plausible startup helper in "
                               f"{self.documents_dir}. The registry, Startup folder, and Task "
                               "Scheduler are never touched.")
-                p = self.documents_dir / f"_shark_{name}_{uuid.uuid4().hex[:8]}.txt"
+                p = self._practice_artifact(
+                    self.documents_dir / f"_shark_{name}_{uuid.uuid4().hex[:8]}.txt"
+                )
                 p.write_text(body, encoding="ascii")
                 paths.append(p)
                 technique = "T1547-style marker only (startup-suggestive name)"
@@ -633,7 +656,7 @@ class SharkAttackEngine:
                 f"driver ({BYOVD_DRILL_DRIVER}) into {self.documents_dir}, mimicking a vulnerable-"
                 "driver drop + 'sc.exe create' registration. No real .sys is created, loaded, or "
                 "registered — this only tests whether the Ring 1 Driver-Intel Shield intercepts it.")
-            p = self.documents_dir / BYOVD_DRILL_DRIVER
+            p = self._practice_artifact(self.documents_dir / BYOVD_DRILL_DRIVER)
             p.write_text(f"{BYOVD_DRILL_MARKER} :: simulated BYOVD driver drop "
                          "(benign -- NOT a real driver, never loaded)\n", encoding="utf-8")
             self._narrate(f"   done — wrote {p} (simulated driver-registration telemetry)")
@@ -664,7 +687,9 @@ class SharkAttackEngine:
             self._narrate(f"▶ STAGE: Custom [user-defined: {name}] — writing the text you supplied "
                           f"as an INERT marker into {self.documents_dir}. It is written verbatim and "
                           "never executed — this tests content detection only.")
-            p = self.documents_dir / f"_shark_custom_{safe}_{hexid}.txt"
+            p = self._practice_artifact(
+                self.documents_dir / f"_shark_custom_{safe}_{hexid}.txt"
+            )
             p.write_text(f"ANGERONA custom drill marker — INERT, never executed.\n"
                          f"Technique: {name}\n---\n{payload}\n", encoding="utf-8")
             self._record("Custom (simulated)", f"user-defined: {name}",
@@ -685,7 +710,9 @@ class SharkAttackEngine:
         variant = random.choice(["io_heavy", "cpu_heavy", "many_small_files"])
         try:
             if variant == "io_heavy":
-                tmp = self.data_dir / f"_shark_noise_{uuid.uuid4().hex[:8]}.zip"
+                tmp = self._practice_artifact(
+                    self.data_dir / f"_shark_noise_{uuid.uuid4().hex[:8]}.zip"
+                )
                 self._narrate(f"▶ STAGE: Noise Injection [I/O-heavy] — hashing + zipping 8MB of "
                               f"throwaway in-memory data to {tmp}.")
                 blob = os.urandom(8_000_000)

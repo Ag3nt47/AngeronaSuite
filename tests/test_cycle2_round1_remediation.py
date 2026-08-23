@@ -47,7 +47,8 @@ class AARCorrelationTests(unittest.TestCase):
         wrong_remediation = Event("Active Response SOAR", "other", Severity.HIGH,
                                   ts=103.0, details={"trigger_ts": 999.0})
         remediation = Event("Active Response SOAR", "rolled back", Severity.HIGH,
-                            ts=104.0, details={"trigger_ts": 102.0})
+                            ts=104.0, details={"trigger_ts": 102.0,
+                                               "mitigated": True})
         verdicts = evaluate(history, [catch, unrelated, wrong_remediation, remediation],
                             {"one": "detection", "two": "detection"})
         self.assertIs(verdicts[0].catch, catch)

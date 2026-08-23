@@ -16,7 +16,7 @@ STATUS_RE = re.compile(
 )
 FINAL_RE = re.compile(
     r"Final Cycle \d+ verification\.\*\*.*?"
-    r"passes \*\*(\d+) tests with\s+(\d+) intentional platform skips\*\*",
+    r"passes\s+\*\*(\d+) tests with\s+(\d+) intentional platform skips\*\*",
     re.DOTALL,
 )
 

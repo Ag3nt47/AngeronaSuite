@@ -126,9 +126,13 @@ if _HAVE_QT:
             self.setToolTip("Open ARIA's expanded local-intelligence detail view.")
             self._state = orb_state(100)
             self._phase = 0.0
+            self._idle_mode = False
             self._timer = QTimer(self)
             self._timer.timeout.connect(self._tick)
-            self._timer.start(100)  # 10 fps is smooth without competing with alert paint
+            # Start only once the widget is visible in an active window.  The
+            # previous unconditional 10-FPS timer repainted forever while the
+            # dashboard was minimized or sitting in all-day Chill mode.
+            self._timer.setInterval(100)
 
         def set_state(self, state: OrbState) -> None:
             self._state = state
@@ -138,6 +142,37 @@ if _HAVE_QT:
             # advance phase using the state's pulse period
             self._phase = (self._phase + 100.0 / max(1, self._state.pulse_ms)) % 1.0
             self.update()
+
+        def set_idle_mode(self, enabled: bool) -> None:
+            self._idle_mode = bool(enabled)
+            self._sync_animation_timer()
+
+        def _animation_allowed(self) -> bool:
+            if self._idle_mode or not self.isVisible():
+                return False
+            window = self.window()
+            return bool(
+                window is not None
+                and window.isVisible()
+                and not window.isMinimized()
+                and window.isActiveWindow()
+            )
+
+        def _sync_animation_timer(self) -> None:
+            if self._animation_allowed():
+                if not self._timer.isActive():
+                    self._timer.start()
+            else:
+                self._timer.stop()
+                self.update()  # one stable frame; no continuous repaint
+
+        def showEvent(self, event) -> None:  # noqa: N802 (Qt signature)
+            super().showEvent(event)
+            QTimer.singleShot(0, self._sync_animation_timer)
+
+        def hideEvent(self, event) -> None:  # noqa: N802 (Qt signature)
+            super().hideEvent(event)
+            self._sync_animation_timer()
 
         def paintEvent(self, _evt) -> None:  # noqa: N802 (Qt signature)
             import math
@@ -284,6 +319,13 @@ if _HAVE_QT:
                 self.mic_button.setText("🎙  VOICE ON · SETTINGS")
             else:
                 self.mic_button.setText("🎙  VOICE OFF · SET UP")
+
+        def set_idle_mode(self, enabled: bool) -> None:
+            """Freeze cosmetic orb motion while keeping score/chat fully live."""
+            self._orb.set_idle_mode(enabled)
+
+        def sync_animation(self) -> None:
+            self._orb._sync_animation_timer()
 
         def refresh(self) -> None:
             """Pull live values and repaint. Safe to call every slow tick."""

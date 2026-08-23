@@ -18,6 +18,14 @@ def _finding() -> list[dict]:
     return [{"mitre": "T1003", "name": "Credential Access (simulated)"}]
 
 
+def _evidence(mitre: str = "T1003") -> dict:
+    return {
+        "mitre": mitre,
+        "artifact_path": f"_redteam_{mitre.lower()}_probe.txt",
+        "detector_policy": "reviewed-redteam-candidate",
+    }
+
+
 def _apply(data_dir, *, run_id: str = "run-source", applied_at: float | None = None):
     return drill_resolution.apply_contracts(
         _finding(),
@@ -50,7 +58,7 @@ def test_applied_action_is_not_closed_until_fresh_exact_proof(tmp_path):
         "run-source",
         detector="Purple Remediation Guard",
         event_ts=time.time() + 1,
-        event_details={"mitre": "T1003"},
+        event_details=_evidence(),
         data_dir=tmp_path,
     )
     assert not same_run["ok"]
@@ -70,7 +78,7 @@ def test_verification_rejects_wrong_detector_technique_and_contract_digest(tmp_p
     }
     wrong_detector = drill_resolution.verify_detector_evidence(
         detector="Telemetry Scanner",
-        event_details={"mitre": "T1003"},
+        event_details=_evidence(),
         **common,
     )
     assert not wrong_detector["ok"]
@@ -78,7 +86,7 @@ def test_verification_rejects_wrong_detector_technique_and_contract_digest(tmp_p
 
     wrong_technique = drill_resolution.verify_detector_evidence(
         detector="Purple Remediation Guard",
-        event_details={"mitre": "T1059"},
+        event_details=_evidence("T1059"),
         **common,
     )
     assert not wrong_technique["ok"]
@@ -107,6 +115,7 @@ def test_fresh_proof_closes_idempotently_and_rerun_miss_reopens(tmp_path):
         "event_details": {
             "mitre": "T1003",
             "artifact_path": "_redteam_lsass_dump_probe.txt",
+            "detector_policy": "reviewed-redteam-candidate",
         },
         "data_dir": tmp_path,
         "expected_contract_id": applied["contract_id"],
@@ -140,7 +149,7 @@ def test_expired_verification_loses_closure_credit(tmp_path):
         "run-old-proof",
         detector="Purple Remediation Guard",
         event_ts=old + 10,
-        event_details={"mitre": "T1003"},
+        event_details=_evidence(),
         data_dir=tmp_path,
         verified_at=old + 20,
     )
@@ -151,7 +160,7 @@ def test_expired_verification_loses_closure_credit(tmp_path):
         "run-fresh-proof",
         detector="Purple Remediation Guard",
         event_ts=time.time() + 1,
-        event_details={"mitre": "T1003"},
+        event_details=_evidence(),
         data_dir=tmp_path,
     )
     assert refreshed["ok"]
@@ -317,7 +326,11 @@ def test_reconcile_run_turns_real_purple_echo_into_nonzero_closure(tmp_path):
         "exact candidate detected",
         Severity.HIGH,
         ts=started + 0.2,
-        details={"path": str(path), "mitre": "T1003"},
+        details={
+            "path": str(path),
+            "mitre": "T1003",
+            "detector_policy": "reviewed-redteam-candidate",
+        },
     )
     verdicts = evaluate(
         history,

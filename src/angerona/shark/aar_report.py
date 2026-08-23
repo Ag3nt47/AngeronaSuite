@@ -20,11 +20,13 @@ import json
 import os
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
 from angerona.core.config import Config
+from angerona.core.atomic_io import replace_with_retry
 from angerona.core.eventbus import Event
 from angerona.core.storage import FlightRecorder
 from angerona.shark.run_manifest import (
@@ -93,6 +95,11 @@ class StepVerdict:
     category: str = "detection"
     catch: Optional[Event] = None
     catch_latency: Optional[float] = None
+    # Earliest detector evidence remains ``catch`` for latency. Purple Guard
+    # proof is tracked independently so a faster FIM/telemetry event cannot
+    # hide the reviewed detector candidate that arrived a moment later.
+    verification_catch: Optional[Event] = None
+    verification_latency: Optional[float] = None
     remediation: Optional[Event] = None
     remediation_latency: Optional[float] = None
     finding_resolved: bool = False
@@ -102,6 +109,10 @@ class StepVerdict:
     contract_digest: Optional[str] = None
     action_applied: bool = False
     verification_expires_at: Optional[float] = None
+    verification_mode: str = ""
+    verification_run_id: str = ""
+    verification_receipt_id: Optional[str] = None
+    verification_error: str = ""
 
 
 def _load_history(path: Path) -> dict:
@@ -154,12 +165,13 @@ def _matches_remediation(step: dict, catch: Event, ev: Event) -> bool:
 def _is_remediation(ev: Event) -> bool:
     details = ev.details or {}
     if ev.module == "Active Response SOAR":
-        # New response events report an explicit success flag. Historical
-        # events predate that field, so absence remains compatible; an explicit
-        # False is never allowed to inflate the response score.
-        return details.get("mitigated", True) is True
+        # Absence is UNKNOWN, never success. Legacy recommendation/action rows
+        # must not inflate a modern response score.
+        return details.get("mitigated") is True
     if ev.module == "SOAR Automation":
-        return str(details.get("action") or "").casefold() in {
+        return details.get("action_succeeded") is True and str(
+            details.get("action") or ""
+        ).casefold() in {
             "suspend", "terminate", "isolate", "block",
         }
     return False
@@ -176,6 +188,7 @@ def evaluate(history: dict, events: List[Event],
     chrono = sorted(events, key=lambda e: e.ts)
     steps = list(history.get("steps", []))
     used_catches: set[int] = set()
+    used_verifications: set[int] = set()
     used_remediations: set[int] = set()
     verdicts: List[StepVerdict] = []
     for step_index, original_step in enumerate(steps):
@@ -193,24 +206,61 @@ def evaluate(history: dict, events: List[Event],
                         ok=step.get("ok", True),
                         category=cats.get(step["stage"], "detection"))
         catch_index: Optional[int] = None
+        verification_index: Optional[int] = None
+        # Resolve detector evidence before response evidence.  Windows' wall
+        # clock can assign the exact same ``time.time()`` value to a detector
+        # publication and the immediately-following SOAR receipt.  Callers
+        # commonly provide newest-first EventBus history, so a stable sort on
+        # that timestamp alone can otherwise leave the receipt ahead of its
+        # trigger and silently drop valid remediation proof.  The second pass
+        # still requires a successful action, exact step/trigger correlation,
+        # an unused receipt, and a non-negative response timestamp.
         for event_index, ev in enumerate(chrono):
             if ev.ts < step["ts_start"] - 2 or ev.ts > catch_deadline or ev.module == "Console":
                 continue
             if _is_remediation(ev):
-                if (v.catch is not None and v.remediation is None
-                        and event_index not in used_remediations
-                        and ev.ts >= v.catch.ts
-                        and _matches_remediation(step, v.catch, ev)):
-                    v.remediation = ev
-                    v.remediation_latency = round(ev.ts - v.catch.ts, 3)
-                    used_remediations.add(event_index)
                 continue
-            if v.catch is None and event_index not in used_catches and _matches(step, ev):
+            matches = _matches(step, ev)
+            if not matches:
+                continue
+            if v.catch is None and event_index not in used_catches:
                 v.catch = ev
                 catch_index = event_index
                 v.catch_latency = round(ev.ts - step["ts_start"], 3)
+            if (ev.module == "Purple Remediation Guard"
+                    and v.verification_catch is None
+                    and event_index not in used_verifications):
+                v.verification_catch = ev
+                verification_index = event_index
+                v.verification_latency = round(ev.ts - step["ts_start"], 3)
+
+        triggers = [item for item in (v.catch, v.verification_catch) if item]
+        if triggers:
+            for event_index, ev in enumerate(chrono):
+                if (ev.ts < step["ts_start"] - 2
+                        or ev.ts > catch_deadline
+                        or event_index in used_remediations
+                        or not _is_remediation(ev)):
+                    continue
+                trigger = next(
+                    (
+                        item
+                        for item in triggers
+                        if ev.ts >= item.ts
+                        and _matches_remediation(step, item, ev)
+                    ),
+                    None,
+                )
+                if trigger is None:
+                    continue
+                v.remediation = ev
+                v.remediation_latency = round(ev.ts - trigger.ts, 3)
+                used_remediations.add(event_index)
+                break
         if catch_index is not None:
             used_catches.add(catch_index)
+        if verification_index is not None:
+            used_verifications.add(verification_index)
         verdicts.append(v)
     return verdicts
 
@@ -263,7 +313,7 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
     det_caught = sum(1 for v in detection if v.catch)
     det_remediated = sum(1 for v in detection if v.remediation)
     verified_upgrades = sum(
-        1 for v in detection if v.catch and v.catch.module == "Purple Remediation Guard")
+        1 for v in detection if v.finding_resolved and v.verification_catch)
     lines.append(f" Steps run  : {n}     Raw catches: {caught}/{n}     "
                  f"Correlated SOAR actions: {remediated}/{caught}")
     lines.append(f" (\"Raw catches\" includes every step regardless of what a pass looks like for "
@@ -301,10 +351,16 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
         elif v.catch:
             lines.append(f"           detected by {v.catch.module} in "
                          f"{v.catch_latency:.2f}s — \"{v.catch.message}\"")
+            if v.verification_catch and v.verification_catch is not v.catch:
+                lines.append(
+                    "           reviewed detector candidate also fired in "
+                    f"{v.verification_latency:.2f}s — \"{v.verification_catch.message}\""
+                )
             if v.finding_resolved:
-                lines.append("           VERIFIED CLOSURE: this fresh detector echo is bound "
-                             f"to action contract {v.contract_id}; application and rerun "
-                             "evidence both passed.")
+                mode = ("PRACTICE FIX" if v.verification_mode == "practice-probe"
+                        else "FULL-DRILL FIX")
+                lines.append(f"           {mode} VERIFIED: fresh signed detector + response "
+                             f"evidence is bound to action contract {v.contract_id}.")
             if v.remediation:
                 lines.append(f"           remediated by {v.remediation.module} in "
                              f"{v.remediation_latency:.2f}s — \"{v.remediation.message}\"")
@@ -313,9 +369,12 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
                              "detection did not produce a correlated, successful SOAR action "
                              "inside this run's evidence window.")
         elif v.finding_resolved:
-            lines.append("           verified closure evidence exists, but this run produced no "
-                         "catch; lifecycle reconciliation reopens the gap rather than counting "
-                         "an unproven closure.")
+            mode = ("PRACTICE FIX" if v.verification_mode == "practice-probe"
+                    else "LATER FULL-DRILL FIX")
+            lines.append(f"           original run missed this marker; {mode} was subsequently "
+                         f"verified by run {v.verification_run_id or '?'} under signed action "
+                         f"contract {v.contract_id}. The original miss remains visible while "
+                         "the detector/response gap is now closed.")
         elif v.action_applied:
             lines.append("           deterministic detector/cleanup action is APPLIED, not closed; "
                          "a fresh Purple Guard detector echo from a later run is still required.")
@@ -331,9 +390,13 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
                          "minutes, or set ANGERONA_SHARK_EXFIL_HOST to a custom target, for a "
                          "guaranteed-fresh test.")
         else:
-            lines.append("           not yet detected — some modules poll on an interval (FIM "
-                         "~30s, YARA scans Downloads every 5 min); re-run this report "
-                         "(`aar` in the console) later for the fullest picture.")
+            lines.append("           not detected inside this report's bounded evidence window. "
+                         "Slower scheduled scanners are not credited unless their exact "
+                         "artifact-bound event was recorded before evidence cleanup; run a "
+                         "fresh drill to test those scanners rather than treating a later "
+                         "report refresh as new evidence.")
+        if v.verification_error:
+            lines.append(f"           verification pending/failed: {v.verification_error}")
         lines.append("")
     lines.append(_bar("-"))
     lines.append(" SCORECARD")
@@ -352,7 +415,7 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
                  f"({(verified / actionable * 100 if actionable else 0):.0f}%)")
     if verified_upgrades:
         lines.append(f"   Detector fixes proven by rerun: {verified_upgrades}  "
-                     "(Purple Guard evidence; not same-run self-certification)")
+                     "(signed Purple Guard evidence + contract verification)")
     if findings_resolved:
         lines.append(f"   Drill findings closed: {findings_resolved}  "
                      "(authenticated action + fresh rerun proof; expiry/future misses reopen)")
@@ -406,6 +469,23 @@ def _prune_report_history(hist_dir: Path, basename: str) -> None:
         pass
 
 
+def _atomic_write_text(path: Path, value: str) -> None:
+    """Durably replace one report file without exposing a partial document."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    tmp = destination.with_name(
+        f".{destination.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
+    try:
+        with tmp.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        replace_with_retry(tmp, destination)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], text: str,
                   basename: str = "shark_aar") -> None:
     """Persist both a human-readable .txt (identical to what's printed/shown
@@ -422,7 +502,7 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
     det_caught = sum(1 for v in detection if v.catch)
     det_remediated = sum(1 for v in detection if v.remediation)
     verified_upgrades = sum(
-        1 for v in detection if v.catch and v.catch.module == "Purple Remediation Guard")
+        1 for v in detection if v.finding_resolved and v.verification_catch)
     payload = {
         "run_id": history.get("run_id"),
         "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -454,6 +534,10 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
                 "detected_by": v.catch.module if v.catch else None,
                 "detect_latency_s": v.catch_latency,
                 "detect_message": v.catch.message if v.catch else None,
+                "verification_detected_by": (
+                    v.verification_catch.module if v.verification_catch else None
+                ),
+                "verification_detect_latency_s": v.verification_latency,
                 "remediated": v.remediation is not None,
                 "remediated_by": v.remediation.module if v.remediation else None,
                 "remediate_latency_s": v.remediation_latency,
@@ -465,6 +549,10 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
                 "action_contract_id": v.contract_id,
                 "action_contract_digest": v.contract_digest,
                 "verification_expires_at": v.verification_expires_at,
+                "verification_mode": v.verification_mode,
+                "verification_run_id": v.verification_run_id,
+                "verification_receipt_id": v.verification_receipt_id,
+                "verification_error": v.verification_error,
             }
             for v in verdicts
         ],
@@ -480,13 +568,14 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
     except Exception:
         signed_payload = payload
 
+    encoded_payload = json.dumps(signed_payload, indent=2)
     for d in _report_dirs(data_dir):
-        try:
-            d.mkdir(parents=True, exist_ok=True)
-            (d / f"{basename}.txt").write_text(text, encoding="utf-8")
-            (d / f"{basename}.json").write_text(json.dumps(signed_payload, indent=2), encoding="utf-8")
-        except Exception:
-            continue  # best-effort — a write failure here should never break the report itself
+        d.mkdir(parents=True, exist_ok=True)
+        # These fixed files drive review and remediation authorization.  A
+        # failed write must be visible to the caller; silently keeping a stale
+        # prior run creates a dangerous display/action mismatch.
+        _atomic_write_text(d / f"{basename}.txt", text)
+        _atomic_write_text(d / f"{basename}.json", encoded_payload)
 
     # Keep a TIMESTAMPED archive so the Red Team console's History tab can list
     # previous reports (the fixed files above are overwritten every run).
@@ -494,9 +583,8 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
         hist_dir = Path(data_dir) / "aar_history"
         hist_dir.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S")
-        (hist_dir / f"{basename}_{stamp}.txt").write_text(text, encoding="utf-8")
-        (hist_dir / f"{basename}_{stamp}.json").write_text(
-            json.dumps(signed_payload, indent=2), encoding="utf-8")
+        _atomic_write_text(hist_dir / f"{basename}_{stamp}.txt", text)
+        _atomic_write_text(hist_dir / f"{basename}_{stamp}.json", encoded_payload)
         _prune_report_history(hist_dir, basename)
     except Exception:
         pass
@@ -511,10 +599,10 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
 
     Call with ``settle_seconds`` > 0 right after a run completes to give
     fast-polling modules (e.g. File Integrity Monitor, 30s) one more cycle
-    before judging a step a miss. Note YARA scans configured hot folders every
-    5 minutes by default, so a fresh report may legitimately show a file-drop
-    step as "not yet detected" — re-running the report later will pick that
-    up without needing another drill.
+    before judging a step a miss.  Only exact events already present in the
+    bounded ledger window are credited.  A later refresh does not manufacture
+    coverage after the originating run's artifacts have been cleaned; use a
+    fresh drill when testing a slower scheduled detector.
     """
     if settle_seconds > 0:
         time.sleep(settle_seconds)
@@ -555,10 +643,14 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
             str(history.get("run_id") or ""),
             data_dir,
         )
-    except Exception:
+    except Exception as exc:
         # The report stays available when lifecycle state is unavailable or
         # tampered, but no closure credit is granted.
-        pass
+        for verdict in verdicts:
+            if verdict.category == "detection":
+                verdict.verification_error = (
+                    f"{type(exc).__name__}: lifecycle reconciliation unavailable"
+                )
     text = render(history, verdicts, title)
     _write_report(data_dir, history, verdicts, text, report_basename)
     return text

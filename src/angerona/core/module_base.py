@@ -68,6 +68,7 @@ class BaseModule:
         self.health_note: str = ""    # why it's degraded, if it is
         self._initial_delay: float = 0.0   # first-poll stagger (set by the manager at boot)
         self._throttle: float = 1.0   # loop-cadence multiplier (Adaptive Resource Governor)
+        self._throttle_floor: float = 1.0  # persistent Chill Mode cadence floor
         # Readiness barrier used by staged Eco Mode wake-up. A module's first
         # cadence boundary proves it has actually run, rather than merely
         # having a live thread and stale pre-Eco health.
@@ -254,9 +255,23 @@ class BaseModule:
         """Set the loop-cadence multiplier (1.0 = normal, higher = slower/lighter).
         Clamped to [1.0, 8.0]. Called by the Adaptive Resource Governor."""
         try:
-            self._throttle = max(1.0, min(8.0, float(multiplier)))
+            requested = max(1.0, min(8.0, float(multiplier)))
+            self._throttle = max(self._throttle_floor, requested)
         except (TypeError, ValueError):
-            self._throttle = 1.0
+            self._throttle = self._throttle_floor
+
+    def set_throttle_floor(self, multiplier: float) -> None:
+        """Set a persistent minimum cadence multiplier for Chill Mode.
+
+        The adaptive governor may ask for a faster cadence when CPU load falls;
+        it must not undo an operator-selected all-day low-I/O profile.
+        """
+        try:
+            floor = max(1.0, min(8.0, float(multiplier)))
+        except (TypeError, ValueError):
+            floor = 1.0
+        self._throttle_floor = floor
+        self._throttle = max(floor, self._throttle)
 
     def emit(self, message: str, severity: Severity = Severity.INFO, **details) -> None:
         if self._bus is not None:

@@ -7,10 +7,63 @@ from types import SimpleNamespace
 
 
 def test_watchdog_allows_busy_core_heartbeat_jitter() -> None:
-    from angerona.resilience import watchdog
+    from angerona.resilience import manager, watchdog
 
     assert watchdog._CORE_STALE_AFTER_SECONDS >= 10.0
     assert watchdog._SCANNER_STALE_AFTER_SECONDS >= 8.0
+    assert manager._WATCHDOG_STALE_AFTER_SECONDS >= 8.0
+
+
+def test_watchdog_recovers_an_invalidated_heartbeat(monkeypatch) -> None:
+    from angerona.resilience import watchdog
+
+    calls = []
+
+    class BrokenWriter:
+        def beat(self):
+            calls.append("broken-beat")
+            raise ValueError("mapping closed")
+
+        def close(self):
+            calls.append("broken-close")
+
+    class ReplacementWriter:
+        def __init__(self, name, token_raw=b""):
+            calls.append((name, token_raw))
+
+        def beat(self):
+            calls.append("replacement-beat")
+
+    monkeypatch.setattr(watchdog.hb, "HeartbeatWriter", ReplacementWriter)
+
+    replacement = watchdog._refresh_heartbeat(BrokenWriter(), b"token")
+
+    assert isinstance(replacement, ReplacementWriter)
+    assert calls == [
+        "broken-beat",
+        "broken-close",
+        ("watchdog", b"token"),
+        "replacement-beat",
+    ]
+
+
+def test_watchdog_ignores_unverifiable_standdown_without_crashing(monkeypatch) -> None:
+    from angerona.resilience import watchdog
+
+    statuses = []
+    monkeypatch.setattr(
+        watchdog.tok,
+        "is_standdown_requested",
+        lambda: (_ for _ in ()).throw(RuntimeError("unreadable authority")),
+    )
+    monkeypatch.setattr(
+        watchdog.diag,
+        "write_status",
+        lambda *args: statuses.append(args) or True,
+    )
+
+    assert watchdog._standdown_requested() is False
+    assert statuses[0][1] == "degraded"
 
 
 def test_dead_heartbeat_pid_bypasses_live_process_grace(

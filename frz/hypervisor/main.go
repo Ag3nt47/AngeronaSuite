@@ -43,15 +43,19 @@ import (
 )
 
 const (
-	awdgMagic  = uint32(0x41574447) // "AWDG"
-	hbSize     = 32
-	staleAfter = 3 * time.Second
-	loopEvery  = 500 * time.Millisecond
-	maxFail    = 3
-	failWindow = 60 * time.Second
-	standMaxS  = 3600.0
-	spawnTTL   = 15 * time.Second
+	awdgMagic   = uint32(0x41574447) // "AWDG"
+	hbSize      = 32
+	staleAfter  = 3 * time.Second
+	loopEvery   = 500 * time.Millisecond
+	maxFail     = 3
+	failWindow  = 60 * time.Second
+	standMaxS   = 3600.0
+	spawnTTL    = 15 * time.Second
+	v2AuthFlag  = uint32(0x80000000)
+	runningFlag = uint32(0x00000001)
 )
+
+var heartbeatContext = []byte("angerona-resilience-heartbeat-v2\x00")
 
 func dataDir() string {
 	if d := os.Getenv("ANGERONA_DATA"); d != "" {
@@ -70,14 +74,40 @@ func lockPath(name string) string { return filepath.Join(ipcDir(), name+".spawnl
 
 // ── heartbeat I/O ────────────────────────────────────────────────────────────
 type beat struct {
-	tsNs    uint64
-	pid     uint32
-	counter uint32
-	flags   uint32
-	ok      bool
+	tsNs      uint64
+	pid       uint32
+	counter   uint32
+	flags     uint32
+	ok        bool
+	untrusted bool
 }
 
-func readBeat(path string) beat {
+func componentKey(root []byte, name string) []byte {
+	mac := hmac.New(sha256.New, root)
+	mac.Write(heartbeatContext)
+	mac.Write([]byte(name))
+	return mac.Sum(nil)
+}
+
+func v2Proof(root []byte, name string, tsNs uint64, pid, counter, flags uint32) uint64 {
+	if len(root) != 32 || len(name) > 0xffff {
+		return 0
+	}
+	nameBytes := []byte(name)
+	payload := make([]byte, 2+len(nameBytes)+8+4+4+4)
+	binary.LittleEndian.PutUint16(payload[0:2], uint16(len(nameBytes)))
+	copy(payload[2:], nameBytes)
+	offset := 2 + len(nameBytes)
+	binary.LittleEndian.PutUint64(payload[offset:offset+8], tsNs)
+	binary.LittleEndian.PutUint32(payload[offset+8:offset+12], pid)
+	binary.LittleEndian.PutUint32(payload[offset+12:offset+16], counter)
+	binary.LittleEndian.PutUint32(payload[offset+16:offset+20], flags)
+	mac := hmac.New(sha256.New, componentKey(root, name))
+	mac.Write(payload)
+	return binary.LittleEndian.Uint64(mac.Sum(nil)[:8])
+}
+
+func readBeat(name, path string, root []byte) beat {
 	b, err := os.ReadFile(path)
 	if err != nil || len(b) < hbSize {
 		return beat{}
@@ -85,34 +115,41 @@ func readBeat(path string) beat {
 	if binary.LittleEndian.Uint32(b[0:4]) != awdgMagic {
 		return beat{}
 	}
-	return beat{
+	result := beat{
 		tsNs:    binary.LittleEndian.Uint64(b[4:12]),
 		pid:     binary.LittleEndian.Uint32(b[12:16]),
 		counter: binary.LittleEndian.Uint32(b[24:28]),
 		flags:   binary.LittleEndian.Uint32(b[28:32]),
-		ok:      true,
 	}
+	proof := binary.LittleEndian.Uint64(b[16:24])
+	if len(root) != 32 || result.flags&v2AuthFlag == 0 || result.flags & ^(v2AuthFlag|runningFlag) != 0 {
+		result.untrusted = true
+		return result
+	}
+	expected := v2Proof(root, name, result.tsNs, result.pid, result.counter, result.flags)
+	var proofBytes, expectedBytes [8]byte
+	binary.LittleEndian.PutUint64(proofBytes[:], proof)
+	binary.LittleEndian.PutUint64(expectedBytes[:], expected)
+	result.ok = hmac.Equal(proofBytes[:], expectedBytes[:])
+	result.untrusted = !result.ok
+	return result
 }
 
-func tokenProof(token []byte, counter uint32) uint64 {
-	if len(token) == 0 {
-		return 0
+func writeOurBeat(name, path string, root []byte, counter uint32) {
+	if len(root) != 32 {
+		return
 	}
-	var c [4]byte
-	binary.LittleEndian.PutUint32(c[:], counter)
-	sum := sha256.Sum256(append(append([]byte{}, token...), c[:]...))
-	return binary.LittleEndian.Uint64(sum[:8])
-}
-
-func writeOurBeat(path string, token []byte, counter uint32) {
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
 	var buf [hbSize]byte
+	tsNs := uint64(time.Now().UnixNano())
+	pid := uint32(os.Getpid())
+	flags := v2AuthFlag | runningFlag
 	binary.LittleEndian.PutUint32(buf[0:4], awdgMagic)
-	binary.LittleEndian.PutUint64(buf[4:12], uint64(time.Now().UnixNano()))
-	binary.LittleEndian.PutUint32(buf[12:16], uint32(os.Getpid()))
-	binary.LittleEndian.PutUint64(buf[16:24], tokenProof(token, counter))
+	binary.LittleEndian.PutUint64(buf[4:12], tsNs)
+	binary.LittleEndian.PutUint32(buf[12:16], pid)
+	binary.LittleEndian.PutUint64(buf[16:24], v2Proof(root, name, tsNs, pid, counter, flags))
 	binary.LittleEndian.PutUint32(buf[24:28], counter)
-	binary.LittleEndian.PutUint32(buf[28:32], 1)
+	binary.LittleEndian.PutUint32(buf[28:32], flags)
 	_ = os.WriteFile(path, buf[:], 0o644)
 }
 
@@ -133,13 +170,20 @@ func pidAlive(pid uint32) bool {
 }
 
 // isAlive: fresh tick AND live pid (a stale leftover .hb is NOT alive).
-func isAlive(name string, stale time.Duration) bool {
-	b := readBeat(hbPath(name))
-	if !b.ok || b.flags == 0 {
-		return false
+func isAlive(name string, stale time.Duration, root []byte) (bool, bool) {
+	b := readBeat(name, hbPath(name), root)
+	if b.untrusted {
+		return false, true
 	}
-	age := time.Duration(uint64(time.Now().UnixNano()) - b.tsNs)
-	return age <= stale && pidAlive(b.pid)
+	if !b.ok || b.flags&runningFlag == 0 {
+		return false, false
+	}
+	now := time.Now().UnixNano()
+	if b.tsNs > uint64(now+int64(stale)) {
+		return false, true
+	}
+	age := time.Duration(now - int64(b.tsNs))
+	return age <= stale && pidAlive(b.pid), false
 }
 
 // ── cross-process spawn lock (shared with the Python supervisor) ─────────────
@@ -162,8 +206,8 @@ func claimSpawn(name string) bool {
 func releaseSpawn(name string) { _ = os.Remove(lockPath(name)) }
 
 // ── stand-down token (matches shutdown_token.py) ─────────────────────────────
-func busKey() []byte {
-	b, err := os.ReadFile(filepath.Join(dataDir(), "bus.key"))
+func installKey() []byte {
+	b, err := os.ReadFile(filepath.Join(dataDir(), "shutdown.key"))
 	if err != nil {
 		return nil
 	}
@@ -191,7 +235,7 @@ func standdownActive() bool {
 	if time.Now().Unix()-int64(cmd.Ts) > int64(standMaxS) {
 		return false
 	}
-	key := busKey()
+	key := installKey()
 	if key == nil {
 		return false
 	}
@@ -203,10 +247,41 @@ func standdownActive() bool {
 
 // ── component supervision ─────────────────────────────────────────────────────
 type comp struct {
-	name     string
-	relaunch func() error
-	fails    []time.Time
-	safeMode bool
+	name        string
+	relaunch    func() error
+	fails       []time.Time
+	safeMode    bool
+	authWarned  bool
+	lastTsNs    uint64
+	lastCounter uint32
+	lastPID     uint32
+}
+
+func (c *comp) observeAlive(stale time.Duration, root []byte) (bool, bool) {
+	b := readBeat(c.name, hbPath(c.name), root)
+	if b.untrusted {
+		return false, true
+	}
+	if !b.ok || b.flags&runningFlag == 0 {
+		return false, false
+	}
+	now := time.Now().UnixNano()
+	if b.tsNs > uint64(now+int64(stale)) {
+		return false, true
+	}
+	if c.lastTsNs != 0 {
+		counterRegressed := b.pid == c.lastPID && b.counter < c.lastCounter &&
+			!(c.lastCounter > 0xffff0000 && b.counter < 0x0000ffff)
+		if b.tsNs < c.lastTsNs ||
+			(b.tsNs == c.lastTsNs && (b.counter != c.lastCounter || b.pid != c.lastPID)) ||
+			counterRegressed {
+			return false, true
+		}
+	}
+	c.lastTsNs = b.tsNs
+	c.lastCounter = b.counter
+	c.lastPID = b.pid
+	return time.Duration(now-int64(b.tsNs)) <= stale && pidAlive(b.pid), false
 }
 
 func (c *comp) registerFailure() bool {
@@ -242,7 +317,7 @@ func logLine(f *os.File, format string, a ...interface{}) {
 }
 
 func main() {
-	token, _ := hex.DecodeString(os.Getenv("ANGERONA_WATCHDOG_TOKEN"))
+	key := installKey()
 
 	py := os.Getenv("ANGERONA_PY")
 	if py == "" {
@@ -265,17 +340,33 @@ func main() {
 	}
 
 	logLine(lf, "hypervisor online — supervising core + scanner (data=%s)", dataDir())
+	if len(key) != 32 {
+		logLine(lf, "CRITICAL heartbeat authority unavailable — supervision fails closed")
+	}
 	var counter uint32
 	for {
 		counter++
-		writeOurBeat(hbPath("watchdog"), token, counter)
+		writeOurBeat("watchdog", hbPath("watchdog"), key, counter)
+		if len(key) != 32 {
+			time.Sleep(5 * time.Second)
+			continue
+		}
 
 		stand := standdownActive()
 		for _, c := range comps {
 			if stand || c.relaunch == nil {
 				continue // maintenance mode, or monitor-only component
 			}
-			if isAlive(c.name, staleAfter) {
+			alive, untrusted := c.observeAlive(staleAfter, key)
+			if untrusted {
+				if !c.authWarned {
+					logLine(lf, "HIGH rejected legacy/forged %s heartbeat — destructive recovery paused", c.name)
+					c.authWarned = true
+				}
+				continue
+			}
+			c.authWarned = false
+			if alive {
 				continue // already running (adopt) — never a duplicate
 			}
 			// Dead/suspended. Claim the shared spawn lock so we don't race the
@@ -283,7 +374,13 @@ func main() {
 			if !claimSpawn(c.name) {
 				continue
 			}
-			if isAlive(c.name, staleAfter) { // double-check under the lock
+			alive, untrusted = c.observeAlive(staleAfter, key)
+			if untrusted {
+				logLine(lf, "HIGH %s heartbeat became untrusted under spawn lock — launch refused", c.name)
+				releaseSpawn(c.name)
+				continue
+			}
+			if alive { // double-check under the lock
 				releaseSpawn(c.name)
 				continue
 			}
@@ -306,7 +403,7 @@ func main() {
 			go func(name string) {
 				deadline := time.Now().Add(5 * time.Second)
 				for time.Now().Before(deadline) {
-					if isAlive(name, staleAfter) {
+					if alive, _ := isAlive(name, staleAfter, key); alive {
 						break
 					}
 					time.Sleep(200 * time.Millisecond)
@@ -316,7 +413,8 @@ func main() {
 		}
 		// Healthy components decay their failure window so they can leave SAFE_MODE.
 		for _, c := range comps {
-			if c.safeMode && isAlive(c.name, staleAfter) && len(c.fails) == 0 {
+			alive, untrusted := c.observeAlive(staleAfter, key)
+			if c.safeMode && alive && !untrusted && len(c.fails) == 0 {
 				c.safeMode = false
 				logLine(lf, "%s left SAFE_MODE (healthy)", c.name)
 			}

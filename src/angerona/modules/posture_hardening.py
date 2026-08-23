@@ -157,7 +157,12 @@ class PostureHardening(BaseModule):
         self._seen: set[tuple] = set()
         self._ctx: dict = {}          # mitre_id -> round context, for on-demand fixes
         self._certified: set = set()  # technique_ids whose mitigation the gate has certified
+        self._manager = None
         self._init_db()
+
+    def bind_manager(self, manager) -> None:
+        """Receive sibling-module access for bounded practice verification."""
+        self._manager = manager
 
     # ── 1. DB SCHEMA & STATE ─────────────────────────────────────────────────
     def _init_db(self) -> None:
@@ -358,7 +363,9 @@ class PostureHardening(BaseModule):
             self.record_weakness(mitre, name, sev, rpath, source="shark")
             new.append({"mitre": mitre, "name": name})
             self.emit(f"NEW WEAKNESS: {name} ({mitre}) exploited — staged remediation for review",
-                      Severity.HIGH, mitre=mitre, remediation=rpath)
+                      Severity.HIGH, mitre=mitre, remediation=rpath,
+                      source="shark", finding_kind="practice_gap",
+                      practice_run_id=str(session.get("run_id") or ""))
         if new:
             self._recompute_health()
             # Opt-in active patching: after a drill records weaknesses, apply the
@@ -405,26 +412,64 @@ class PostureHardening(BaseModule):
                 continue
             tech = str(v.get("technique", "")).strip()
             mitre = tech.split()[0] if tech[:1].upper() == "T" else ("RT-" + str(v.get("stage", "?")))
-            if v.get("caught"):
+            closure = lifecycle.get(mitre.casefold(), {})
+            contract_proof = (
+                v.get("finding_resolved") is True
+                and closure.get("state") == drill_resolution.VERIFIED_STATE
+                and closure.get("contract_id") == v.get("action_contract_id")
+                and closure.get("contract_digest") == v.get("action_contract_digest")
+                and closure.get("verification_receipt_id")
+                == v.get("verification_receipt_id")
+            )
+            if contract_proof:
+                with closing(sqlite3.connect(self.db_path)) as c, c:
+                    changed = c.execute(
+                        "UPDATE system_weaknesses SET status='PATCHED', last_tested_epoch=? "
+                        "WHERE mitre_technique_id=? AND source='redteam'",
+                        (int(time.time()), mitre),
+                    ).rowcount
+                if changed:
+                    verified += int(changed)
+                    self._log_attempt(
+                        "drill_fix_verified",
+                        mitre,
+                        run_id=v.get("verification_run_id") or run_id,
+                        detected_by=v.get("verification_detected_by"),
+                        mode=v.get("verification_mode"),
+                    )
+                continue
+            # A successful detector echo is only half of the control.  A
+            # caught marker with an explicit failed/missing response is still
+            # actionable: install the exact Purple Guard candidate so a later
+            # inert replay can prove detector -> recorder -> SOAR -> cleanup.
+            # Older reports did not carry ``remediated``; do not reinterpret
+            # those legacy caught rows as new response failures.
+            response_gap = (
+                v.get("caught") is True
+                and v.get("remediated") is False
+            )
+            if v.get("caught") and not response_gap:
                 # Proof must come from the exact installed candidate in a fresh
                 # run. Re-rendering the candidate's source AAR must never
                 # self-certify a fix, nor may an unrelated detector close it.
                 candidate = purple_policies.get(mitre)
                 candidate_run = (str(candidate.get("candidate_from_run") or "")
                                  if isinstance(candidate, dict) else "")
+                verification_detector = (
+                    v.get("verification_detected_by") or v.get("detected_by")
+                )
                 fresh_candidate_proof = (
                     bool(run_id and candidate_run and run_id != candidate_run)
-                    and v.get("detected_by") == "Purple Remediation Guard"
+                    and verification_detector == "Purple Remediation Guard"
                 )
-                closure = lifecycle.get(mitre.casefold(), {})
-                contract_proof = (
+                caught_contract_proof = (
                     closure.get("state") == drill_resolution.VERIFIED_STATE
                     and closure.get("verified_by_run_id") == run_id
                     and closure.get("contract_id") == v.get("action_contract_id")
                     and closure.get("contract_digest")
                     == v.get("action_contract_digest")
                 )
-                if not fresh_candidate_proof or not contract_proof:
+                if not fresh_candidate_proof or not caught_contract_proof:
                     continue
                 with closing(sqlite3.connect(self.db_path)) as c, c:
                     changed = c.execute(
@@ -434,8 +479,9 @@ class PostureHardening(BaseModule):
                 if changed:
                     verified += int(changed)
                     self._log_attempt("drill_fix_verified", mitre, run_id=run_id,
-                                      detected_by=v.get("detected_by"),
-                                      latency=v.get("detect_latency_s"))
+                                      detected_by=verification_detector,
+                                      latency=(v.get("verification_detect_latency_s")
+                                               or v.get("detect_latency_s")))
                 continue
             key = ("redteam", mitre, v.get("ts_start"))
             if key in self._seen:
@@ -457,11 +503,18 @@ class PostureHardening(BaseModule):
                 drill_resolution.StateIntegrityError,
             ):
                 pass
+            gap_kind = "response" if response_gap else "detection"
             new.append({"mitre": mitre, "name": name})
-            self.emit(f"NEW WEAKNESS (Red Team): {name} ({mitre}) slipped past detection — "
-                      f"a reviewed detector candidate can be installed and verified by rerun",
+            gap_text = (
+                "was detected but had no correlated successful response"
+                if response_gap else "slipped past detection"
+            )
+            self.emit(f"NEW WEAKNESS (Red Team): {name} ({mitre}) {gap_text} — "
+                      f"a reviewed detector/response candidate can be installed and verified",
                       Severity.HIGH, mitre=mitre, run_id=run_id,
-                      remediation="purple-guard-candidate")
+                      remediation="purple-guard-candidate", source="redteam",
+                      finding_kind="practice_gap", practice_run_id=run_id,
+                      gap_kind=gap_kind)
         if new or verified:
             self._recompute_health()
         if new:
@@ -476,7 +529,14 @@ class PostureHardening(BaseModule):
                 pass
         return new
 
-    def resolve_redteam_report(self, path=None, cleanup_count: int = 0) -> dict:
+    def resolve_redteam_report(
+        self,
+        path=None,
+        cleanup_count: int = 0,
+        *,
+        expected_run_id: str = "",
+        expected_report_sha256: str = "",
+    ) -> dict:
         """Install exact detector candidates for misses; never self-certify.
 
         The current run's duplicate alerts are acknowledged, but its database
@@ -485,9 +545,30 @@ class PostureHardening(BaseModule):
         """
         report_path = Path(path or self.redteam_aar_path)
         try:
-            report = json.loads(report_path.read_text(encoding="utf-8"))
+            raw_report = report_path.read_bytes()
+            actual_digest = hashlib.sha256(raw_report).hexdigest()
+            report = json.loads(raw_report.decode("utf-8"))
         except Exception as exc:
             return {"ok": False, "error": f"could not read drill report: {exc}"}
+        # Bind the authorization click to the exact signed report shown to the
+        # operator.  The fixed redteam_aar.json is intentionally overwritten;
+        # without both checks a newer run could replace it between review and
+        # action (a classic display/action TOCTOU).
+        if expected_report_sha256 and actual_digest != expected_report_sha256:
+            return {
+                "ok": False,
+                "error": "drill report changed after it was displayed; refresh and review it again",
+                "binding_failed": True,
+                "fail_closed": True,
+            }
+        report_run_id = str(report.get("run_id") or "")
+        if expected_run_id and report_run_id != str(expected_run_id):
+            return {
+                "ok": False,
+                "error": "drill report run ID no longer matches the displayed run",
+                "binding_failed": True,
+                "fail_closed": True,
+            }
         # Manual resolution installs detector policy and acknowledges findings,
         # so it is an authorization path, not a display-only report read. Apply
         # the same HMAC/strict-mode gate as automatic ingestion before any write.
@@ -500,20 +581,33 @@ class PostureHardening(BaseModule):
             }
         findings = []
         for verdict in report.get("verdicts", []):
-            if verdict.get("category") != "detection" or verdict.get("caught"):
+            if verdict.get("category") != "detection":
+                continue
+            response_gap = (
+                verdict.get("caught") is True
+                and verdict.get("remediated") is False
+            )
+            if verdict.get("caught") and not response_gap:
                 continue
             tech = str(verdict.get("technique", "")).strip()
             mitre = tech.split()[0] if tech[:1].upper() == "T" else (
                 "RT-" + str(verdict.get("stage", "?")))
-            findings.append({"mitre": mitre,
-                             "name": verdict.get("stage") or tech or "Red Team finding"})
+            findings.append({
+                "mitre": mitre,
+                "name": verdict.get("stage") or tech or "Red Team finding",
+                "gap_kind": "response" if response_gap else "detection",
+            })
         if not findings:
             return {"ok": True, "candidates": 0, "findings": [],
-                    "message": "No missed detection findings need a candidate."}
+                    "message": "No open detection or response gaps need a candidate."}
 
         from angerona.core import drill_resolution
-        from angerona.modules.purple_guard import install_policies
-        run_id = str(report.get("run_id") or "")
+        from angerona.modules.purple_guard import (
+            _read_policy,
+            install_policies,
+            remove_policies,
+        )
+        run_id = report_run_id
         try:
             # Persist the open issue first. If authenticated lifecycle state is
             # unavailable/tampered, fail closed before changing detector policy.
@@ -525,6 +619,9 @@ class PostureHardening(BaseModule):
                 "fail_closed": True,
                 "candidates": 0,
             }
+        previous_policy = _read_policy(self.data_dir).get("techniques", {})
+        if not isinstance(previous_policy, dict):
+            previous_policy = {}
         installed = install_policies(findings, run_id, self.data_dir)
         ids = list(installed.get("installed", []))
         try:
@@ -539,12 +636,28 @@ class PostureHardening(BaseModule):
                 cleanup_count=cleanup_count,
             )
         except drill_resolution.StateIntegrityError as exc:
+            # Candidate activation and its signed action contract are one
+            # logical transaction. Remove newly written entries, then restore
+            # any candidate versions that predated this attempt.
+            remove_policies(ids, self.data_dir)
+            restore = [
+                {"mitre": mitre}
+                for mitre in ids
+                if mitre in previous_policy
+            ]
+            if restore:
+                prior_run = str(
+                    previous_policy[restore[0]["mitre"]].get("candidate_from_run")
+                    or "restored"
+                )
+                install_policies(restore, prior_run, self.data_dir)
             return {
                 "ok": False,
                 "error": str(exc),
                 "fail_closed": True,
                 "candidates": 0,
-                "policy_changed": bool(ids),
+                "policy_changed": False,
+                "policy_rolled_back": bool(ids),
             }
         self._recompute_health()
         self._log_attempt("install_drill_detector_candidates", "-", run_id=run_id,
@@ -556,7 +669,60 @@ class PostureHardening(BaseModule):
         return {"ok": True, "candidates": len(ids), "findings": findings,
                 "contracts": acknowledged,
                 "unsupported": installed.get("unsupported", []), "run_id": run_id,
+                "report_sha256": actual_digest,
                 "verification_required": True}
+
+    def verify_redteam_practice(self, resolution: dict,
+                                progress=None) -> dict:
+        """Prove applied simulation fixes with inert positive/negative controls.
+
+        This never claims to patch Windows. It validates the reviewed detector,
+        signed recorder path, real Active Response playbook, and cleanup
+        postcondition, then issues the authenticated closure receipt.
+        """
+        manager = self._manager
+        if manager is None:
+            return {"ok": False, "error": "module manager unavailable", "results": []}
+        techniques = [
+            str(row.get("mitre") or "")
+            for row in resolution.get("contracts", [])
+            if row.get("mitre")
+        ]
+        if not techniques:
+            return {"ok": True, "verified": 0, "total": 0, "results": []}
+        from angerona.core.config import Config
+        from angerona.core.practice_verification import verify_practice_fixes
+
+        result = verify_practice_fixes(
+            techniques,
+            source_run_id=str(resolution.get("run_id") or ""),
+            data_dir=self.data_dir,
+            db_path=Path(Config.load().db_path),
+            bus=self._bus,
+            purple_guard=manager.modules.get("Purple Remediation Guard"),
+            active_response=manager.modules.get("Active Response SOAR"),
+            progress=progress,
+        )
+        verified_ids = [
+            row["mitre"] for row in result.get("results", [])
+            if row.get("status") == "PRACTICE_FIX_VERIFIED"
+        ]
+        if verified_ids:
+            with closing(sqlite3.connect(self.db_path)) as c, c:
+                c.executemany(
+                    "UPDATE system_weaknesses SET status='PATCHED', last_tested_epoch=? "
+                    "WHERE source='redteam' AND mitre_technique_id=?",
+                    [(int(time.time()), mitre) for mitre in verified_ids],
+                )
+            self._log_attempt(
+                "practice_fix_verified",
+                "-",
+                source_run_id=resolution.get("run_id"),
+                techniques=verified_ids,
+                practice_only=True,
+            )
+        self._recompute_health()
+        return result
 
     def _recompute_health(self) -> None:
         vuln = len(self.weaknesses("VULNERABLE"))

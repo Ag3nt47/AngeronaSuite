@@ -116,3 +116,86 @@ behavior-preserving cache work. `rules/_active_combined.yar` was not touched.
 | Reuse shared connection cache in detectors | BEAC/CAGT | PROPOSED | Up to one full scan per overlapping tick |
 | Bound MCP request workers | MCP server | PROPOSED | Bounded thread resources under local floods |
 | Reverse/index Evolution feed lookup | Evolution Engine | PROPOSED | Avoid O(file size) rare-trigger reads |
+
+## 2026-08-22 addendum — network-first Chill live-path audit
+
+This bounded second pass audited the modules that deliberately remain online in
+Chill. Network Monitor, C2 Beacon Detector, WFP, ETW/Sysmon, Defender/AMSI, USB,
+watchdog/resilience, SIEM/mobile bridges, and both SOAR tiers remain started and
+unthrottled. Existing ARP/WLAN/deep-decoder fallback floors were not increased.
+
+### P12 — Park Evolution's event-driven idle thread
+
+- **Component:** `modules/evolution_engine.py`.
+- **Problem:** every activation already arrives through the EventBus callback,
+  but the module's otherwise empty `run()` loop still woke every five seconds.
+- **Change:** publish the normal first-cycle readiness boundary once, then wait
+  interruptibly on the lifecycle stop token. EventBus activation and stop/start
+  behavior are unchanged.
+- **Expected/measured improvement:** deterministic cadence inspection changed
+  the idle wait sequence from repeated five-second waits to one interruptible
+  indefinite wait: **17,280 no-op wakeups/day removed**.
+- **Gate:** module `self_test()` PASS; lifecycle/cycle gate PASS; focused
+  Evolution/remote-evidence regressions PASS.
+- **Status:** APPLIED.
+
+### P13 — Avoid reopening an unchanged deception feed
+
+- **Component:** `modules/deception.py`.
+- **Problem:** Active Deception opened and read `attack_feed.log` every five
+  seconds even when no writer had changed it.
+- **Change:** cache a bounded file identity (device/inode/size/mtime/ctime) and
+  reopen only after change, truncation, or replacement. Canary stat checks keep
+  their original five-second detection cadence. Failed reads are not cached,
+  and a concurrent append is caught on the next pass from the exact stream
+  cursor.
+- **Expected/measured improvement:** the regression gate proves two unchanged
+  polls perform one open and an append performs the next open with no missed
+  marker. For a continuously present, idle feed this reduces up to **17,280
+  opens/day to the initial open plus actual changes**.
+- **Gate:** `py_compile`, Ruff, focused regression, and a sandboxed running
+  module `self_test()` PASS.
+- **Status:** APPLIED.
+
+### P14 — Slow auxiliary bookkeeping only while Chill is quiet
+
+- **Component:** `core/chill_mode.py`.
+- **Problem:** several non-detection helpers retained full periodic cadence even
+  though their security work is event-driven or operator/drill initiated.
+- **Change:** add reversible Chill floors for Posture Hardening (2s to 16s),
+  HEAL crash-patch staging (10s to 60s), Flight Cache health accounting (10s
+  to 80s), Evidence Lattice health accounting (15s to 120s), and Storage
+  Hygiene (15m to 2h). Flight Cache ingestion and Evidence Lattice fusion remain
+  immediate callbacks. Watchdog restart remains immediate; HEAL only stages an
+  optional patch afterward. Explicit drills and active hostile evidence remove
+  every floor before full coverage resumes.
+- **Expected improvement:** about **57,684 auxiliary cycle wakeups/day removed**
+  during a continuously quiet Chill session. Combined with P12, that is about
+  **74,964 idle wakeups/day removed**, without changing the live network,
+  telemetry, USB, or response cadence.
+- **Gate:** exact-name protection invariant, throttle-floor lifecycle, policy
+  transitions, compile, Ruff, and focused regressions PASS.
+- **Status:** APPLIED.
+
+### Reviewed but not applied
+
+- **Behavioral Tuner transaction coalescing — PROPOSED.** It commits each learned
+  behavior separately and can create avoidable WAL traffic during a process
+  burst. Batching changes crash-durability and learning semantics; it needs a
+  journaled, replay-safe design before application.
+- **Longer shared connection-cache TTL — PROPOSED.** It would reduce the remaining
+  `net_connections()` calls, but could miss short connections or delay a live
+  network detector. Freshness was left unchanged.
+- **Authenticode-result metadata caching — REJECTED.** It would save PowerShell
+  signature checks but could trust bytes changed with preserved metadata. The
+  integrity assessment remains cryptographic and unchanged.
+
+### Addendum gates
+
+- Changed Python files `py_compile`: PASS.
+- Ruff on changed Python/tests: PASS.
+- Focused Chill/idle-I/O tests: **10/10 PASS**.
+- Wider lifecycle, Evolution, remote-evidence, and performance set:
+  **47/47 PASS**.
+- Edited module self-tests: Evolution PASS; Active Deception PASS in an isolated
+  temporary profile; no real user canaries or host state were touched.

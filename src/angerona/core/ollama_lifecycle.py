@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from urllib import request
 
 from angerona.core.url_policy import (
@@ -9,6 +10,22 @@ from angerona.core.url_policy import (
     read_bounded,
     safe_urlopen,
 )
+
+
+def chill_active() -> bool:
+    """Return whether Angerona is in its quiet, low-resource profile."""
+    return os.environ.get("ANGERONA_CHILL_ACTIVE", "").strip().casefold() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def effective_keep_alive(configured: str | int | float = "30m") -> str | int | float:
+    """Do not pin a local model in memory while quiet Chill is active.
+
+    Ollama accepts ``0`` as an immediate-unload lease. Interactive ARIA calls
+    still work normally; the model is simply released after the answer.
+    """
+    return 0 if chill_active() else configured
 
 
 def _json_request(url: str, payload: dict | None, timeout: float) -> dict:
