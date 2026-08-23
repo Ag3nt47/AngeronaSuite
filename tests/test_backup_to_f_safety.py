@@ -36,7 +36,13 @@ def test_backup_batch_has_fail_closed_mirror_boundary() -> None:
     assert source.count("call :validate_boundary") >= 2
     assert source.count("call :scrub_private_state") >= 2
     assert "/xj" in source and "/sl" in source
-    assert "if %rc% geq 8" in source
+    assert "if %robocopy_rc% geq 8" in source
+    assert 'set "robocopy_rc=%errorlevel%"' in source
+    assert 'echo [done] backup complete. robocopy status %robocopy_rc% is successful.' in source
+    assert source.rindex('set "rc=0"') > source.index(
+        "call :scrub_private_state", source.index(" /mir ")
+    )
+    assert "/nc /ns >nul 2>&1" in source
     assert "echo   source" not in source
     assert "echo   target" not in source
 
@@ -68,6 +74,11 @@ def test_backup_batch_excludes_private_runtime_and_large_state() -> None:
         "dist",
     }
     assert not required.difference(source.split())
+    assert '"%src%\\.tmp"' in source
+    assert '"%src%\\venv"' in source
+    assert '"%src%\\venv.incompatible.*"' in source
+    assert '"%src%\\runtime-data"' in source
+    assert '"%src%\\shared_logs"' in source
 
 
 def test_safety_helper_uses_literal_allowlisted_deletion() -> None:
