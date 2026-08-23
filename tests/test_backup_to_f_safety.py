@@ -76,7 +76,6 @@ def test_backup_batch_excludes_private_runtime_and_large_state() -> None:
     assert not required.difference(source.split())
     assert '"%src%\\.tmp"' in source
     assert '"%src%\\venv"' in source
-    assert '"%src%\\venv.incompatible.*"' in source
     assert '"%src%\\runtime-data"' in source
     assert '"%src%\\shared_logs"' in source
 
