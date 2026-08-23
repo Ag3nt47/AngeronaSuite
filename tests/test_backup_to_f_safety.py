@@ -39,9 +39,11 @@ def test_backup_batch_has_fail_closed_mirror_boundary() -> None:
     assert "if %robocopy_rc% geq 8" in source
     assert 'set "robocopy_rc=%errorlevel%"' in source
     assert 'echo [done] backup complete. robocopy status %robocopy_rc% is successful.' in source
-    assert source.rindex('set "rc=0"') > source.index(
-        "call :scrub_private_state", source.index(" /mir ")
-    )
+    post_scrub = source.index("call :scrub_private_state", source.index(" /mir "))
+    public_template = source.index("call :sync_public_env_example")
+    assert public_template > post_scrub
+    assert source.rindex('set "rc=0"') > public_template
+    assert 'copy /b /y "%src%\\.env.example" "%dst%\\.env.example" >nul 2>&1' in source
     assert "/nc /ns >nul 2>&1" in source
     assert "echo   source" not in source
     assert "echo   target" not in source

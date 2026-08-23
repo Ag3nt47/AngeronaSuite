@@ -102,6 +102,15 @@ if errorlevel 1 (
   goto finish
 )
 
+REM The broad .env.* exclusion also matches the tracked public template. Sync
+REM only this exact file after private state is gone; never relax the wildcard.
+call :sync_public_env_example
+if errorlevel 1 (
+  echo [ERROR] The public environment template could not be synchronized.
+  set "RC=19"
+  goto finish
+)
+
 echo [DONE] Backup complete. Robocopy status %ROBOCOPY_RC% is successful.
 set "RC=0"
 goto finish
@@ -113,6 +122,15 @@ exit /b %ERRORLEVEL%
 :scrub_private_state
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SAFETY%" -Mode Scrub -Source "%SRC%" -Destination "%DST_VALIDATION%" -LauncherPath "%LAUNCHER%" >nul 2>&1
 exit /b %ERRORLEVEL%
+
+:sync_public_env_example
+if exist "%SRC%\.env.example" (
+  copy /B /Y "%SRC%\.env.example" "%DST%\.env.example" >nul 2>&1
+  exit /b %ERRORLEVEL%
+)
+if exist "%DST%\.env.example" del /F /Q "%DST%\.env.example" >nul 2>&1
+if exist "%DST%\.env.example" exit /b 1
+exit /b 0
 
 :finish
 echo(
