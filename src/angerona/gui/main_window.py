@@ -93,6 +93,7 @@ class MainWindow(QMainWindow):
     _shark_narration = Signal(str)
     _selftest_done = Signal(str, object)   # report text, failures list
     _selftest_progress = Signal(int, int)  # (done, total) → live progress wheel
+    _selftest_repair_done = Signal(object, object)  # restarted names, errors
     _mic_level = Signal(float)             # live mic input level (0..1) → HUD meter
     _voice_live_requested = Signal()       # bring voice up live (GUI thread) after install
     _fi_coaching = Signal(str)             # Flight Instructor line → right pane
@@ -556,6 +557,7 @@ class MainWindow(QMainWindow):
         self._fi_coaching.connect(self.shark_monitor.append_instructor)
         self._selftest_done.connect(self._on_selftest_done)
         self._selftest_progress.connect(self.run_spinner.set_progress)
+        self._selftest_repair_done.connect(self._on_selftest_repair_done)
         self._mic_level.connect(self._on_mic_level)
         self._voice_live_requested.connect(self._enable_voice_live)
         self.startup_eco_requested.connect(self.apply_startup_eco)
@@ -3380,28 +3382,105 @@ class MainWindow(QMainWindow):
             self._prompt_selftest_fix(failures)
 
     def _prompt_selftest_fix(self, failures) -> None:
-        lst = "\n".join(f"  • {f.get('module')} — {f.get('detail')}" for f in failures)
+        repairable = [
+            f for f in failures
+            if bool(f.get("repairable", True))
+            and f.get("module") in self.manager.modules
+        ]
+        manual = [f for f in failures if f not in repairable]
+        if not repairable:
+            lst = "\n".join(
+                f"  • {f.get('module')} — {f.get('detail')}" for f in manual
+            )
+            QMessageBox.information(
+                self,
+                "Self-test needs operator attention",
+                f"Self-test reported {len(manual)} item(s) that cannot be "
+                f"repaired by restarting an Angerona module:\n\n{lst}\n\n"
+                "No automatic change was made. Review the listed dependency "
+                "or configuration, then re-run the self-test.",
+            )
+            return
+        lst = "\n".join(
+            f"  • {f.get('module')} — {f.get('detail')}" for f in repairable
+        )
+        manual_note = ""
+        if manual:
+            manual_note = (
+                f"\n\n{len(manual)} additional item(s) require manual attention "
+                "and will not be changed automatically."
+            )
         if QMessageBox.question(
                 self, "Self-test found issues — fix now?",
-                f"Self-test reported {len(failures)} issue(s):\n\n{lst}\n\n"
-                "Attempt automatic fixes? Angerona will enable and (re)start each "
-                "affected module. Full details were saved to "
+                f"Self-test reported {len(repairable)} restartable issue(s):\n\n"
+                f"{lst}{manual_note}\n\n"
+                "Attempt automatic recovery? Angerona will request a clean restart "
+                "of each listed module. Full details were saved to "
                 "diagnostics/selftest_failures.json.",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
-        fixed = []
+        self._selftest_active.set()
+        self._selftest_btn.setEnabled(False)
+        self.run_spinner.start("Restarting modules")
+        try:
+            threading.Thread(
+                target=self._selftest_repair_worker,
+                args=(repairable,),
+                name="AngeronaSelfTestRepair",
+                daemon=True,
+            ).start()
+        except Exception:
+            self._selftest_active.clear()
+            self._selftest_btn.setEnabled(True)
+            self.run_spinner.finish("Recovery could not start")
+            raise
+
+    def _selftest_repair_worker(self, failures) -> None:
+        try:
+            restarted, errors = self._attempt_selftest_repairs(failures)
+        except Exception as exc:
+            # Never strand the GUI in its "repair active" state if an
+            # unexpected module implementation escapes the per-module guard.
+            restarted, errors = [], [f"recovery worker failed safely: {exc}"]
+        self._selftest_repair_done.emit(restarted, errors)
+
+    def _on_selftest_repair_done(self, restarted, errors) -> None:
+        self._selftest_active.clear()
+        self._selftest_btn.setEnabled(True)
+        self.run_spinner.finish("Recovery requested")
+        self.console._append(
+            f"[auto-fix] restart requested for {len(restarted)} module(s): "
+            + (", ".join(restarted) if restarted else "none")
+            + ". Re-run 'test all' after startup settles to verify recovery.")
+        if errors:
+            self.console._append(
+                "[auto-fix] manual attention required: " + "; ".join(errors)
+            )
+
+    def _attempt_selftest_repairs(self, failures) -> tuple[list[str], list[str]]:
+        """Sequentially restart audited failures without touching Qt/config."""
+        restarted: list[str] = []
+        errors: list[str] = []
         for f in failures:
             nm = f.get("module")
-            if nm in self.manager.modules:
-                try:
-                    self.manager.set_enabled(nm, True)
-                    fixed.append(nm)
-                except Exception:
-                    pass
-        self.console._append(
-            f"[auto-fix] (re)started {len(fixed)} module(s): "
-            + (", ".join(fixed) if fixed else "none")
-            + ". Re-run 'test all' to confirm.")
+            mod = self.manager.modules.get(nm)
+            if (
+                mod is None
+                or not bool(f.get("repairable", True))
+            ):
+                continue
+            try:
+                if getattr(mod, "status", "") in {"running", "restarting"}:
+                    mod.stop()
+                mod.start()
+                restarted.append(str(nm))
+                waiter = getattr(mod, "wait_for_first_cycle", None)
+                if callable(waiter):
+                    waiter(timeout=2.0)
+            except Exception as exc:
+                errors.append(f"{nm}: {exc}")
+                continue
+        return restarted, errors
 
     # ── Forensics: dashboard-level entry to the incident views ───────────────
     def _open_collision(self) -> None:

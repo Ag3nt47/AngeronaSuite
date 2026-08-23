@@ -120,16 +120,11 @@ def _():
     # In a headless, non-elevated harness some self-tests can't pass for reasons
     # that are NOT defects: a module we never started reports 'stopped'; AI Triage
     # needs a live Ollama; SOAR is idle-by-design; the Go watchdog binary is a
-    # separate build. Treat those as SKIP so only a GENUINE regression fails us.
+    # separate build. Treat those as expected so only a GENUINE regression fails.
+    # The runner itself now emits structured [SKIP] rows for non-native,
+    # disabled, and Chill-paused modules; never mask those as expected failures.
     expected = ["status=stopped", "idle", "ollama", "timed out",
                 "watchdog binary absent", "set angerona_soar"]
-    # Cross-platform modules remain discoverable so packaging and registration
-    # are testable everywhere. Their explicit platform-only result is a skip,
-    # not a product failure, when this harness runs on another OS.
-    if sys.platform != "darwin":
-        expected.append("macos observe is available only on macos")
-    if not sys.platform.startswith("linux"):
-        expected.append("linux observe is available only on linux")
     real_fails = []
     for ln in report.splitlines():
         if "[FAIL]" in ln and not any(e in ln.lower() for e in expected):

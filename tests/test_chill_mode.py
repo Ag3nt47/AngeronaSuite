@@ -57,6 +57,7 @@ def test_chill_policy_is_network_first_and_names_are_exact() -> None:
     assert "Shadow Shield" in CHILL_PAUSED_MODULES
     assert "Kernel-Boundary Posture Ledger" in CHILL_PAUSED_MODULES
     assert "Compliance Mapper" in CHILL_PAUSED_MODULES
+    assert "AI Triage (Ollama)" in CHILL_PAUSED_MODULES
     assert "Kernel Posture Ledger" not in CHILL_PAUSED_MODULES
     assert "Self-Integrity Monitor" in CHILL_THROTTLE_FLOORS
     # Event-driven/live protection remains fully awake and unthrottled.  Chill
@@ -116,10 +117,49 @@ def test_policy_paused_modules_do_not_count_as_crashed() -> None:
 
 
 def test_chill_forces_ollama_immediate_release(monkeypatch) -> None:
+    from angerona.modules.ai_triage import AITriageModule
+
     monkeypatch.setenv("ANGERONA_CHILL_ACTIVE", "1")
     assert effective_keep_alive("30m") == 0
+
+    module = AITriageModule()
+    monkeypatch.setenv("ANGERONA_MODEL", "environment-model:latest")
+    module.bind_manager(SimpleNamespace(config=SimpleNamespace(
+        ollama_host="http://127.0.0.1:11434/",
+        ollama_model="operator-model:latest",
+    )))
+    assert module._host == "http://127.0.0.1:11434"
+    assert module._model == "environment-model:latest"
+    assert module._model_is_installed("llama3", ["llama3:8b"])
+    assert module._model_is_installed("llama3:8b", ["llama3:8b"])
+    assert not module._model_is_installed("llama3:70b", ["llama3:8b"])
+    module._ask = lambda _prompt: (_ for _ in ()).throw(
+        AssertionError("self-test must never run inference")
+    )
+    module._ping_ollama = lambda: (_ for _ in ()).throw(
+        AssertionError("Chill self-test must not wake or probe local AI")
+    )
+    ok, detail = module.self_test()
+    assert ok and "intentionally asleep" in detail
+
     monkeypatch.delenv("ANGERONA_CHILL_ACTIVE")
+    monkeypatch.delenv("ANGERONA_MODEL")
+    module._sync_config()
+    assert module._model == "operator-model:latest"
     assert effective_keep_alive("30m") == "30m"
+    module._ping_ollama = lambda: True
+    ok, detail = module.self_test()
+    assert ok and "operator-model:latest" in detail and "not loaded" in detail
+    module._ping_ollama = lambda: False
+    ok, detail = module.self_test()
+    assert not ok and "not installed" in detail
+    assert module.selftest_auto_repair is False
+
+    # Preserve the legacy deployment variable when the Angerona-specific
+    # override is absent, including before a manager/config is bound.
+    monkeypatch.setenv("OLLAMA_MODEL", "deployment-model:latest")
+    fresh_module = AITriageModule()
+    assert fresh_module._model == "deployment-model:latest"
 
 
 def test_reentering_chill_reclaims_stopped_and_restarting_wake_queue() -> None:

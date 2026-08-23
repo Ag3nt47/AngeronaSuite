@@ -149,6 +149,7 @@ def test_voice_start_is_single_flight_across_concurrent_callers():
 def test_self_test_claim_is_single_flight_until_completion():
     class Harness:
         _claim_self_test = MainWindow._claim_self_test
+        _attempt_selftest_repairs = MainWindow._attempt_selftest_repairs
 
         def __init__(self) -> None:
             self._selftest_active = threading.Event()
@@ -158,6 +159,39 @@ def test_self_test_claim_is_single_flight_until_completion():
     assert not harness._claim_self_test()
     harness._selftest_active.clear()
     assert harness._claim_self_test()
+
+    class Module:
+        selftest_auto_repair = True
+        status = "running"
+
+        def __init__(self) -> None:
+            self.stops = 0
+            self.starts = 0
+            self.waits = 0
+
+        def stop(self) -> None:
+            self.stops += 1
+
+        def start(self) -> None:
+            self.starts += 1
+
+        def wait_for_first_cycle(self, timeout: float) -> bool:
+            assert timeout == 2.0
+            self.waits += 1
+            return True
+
+    module = Module()
+
+    harness.manager = type("Manager", (), {"modules": {"repairable": module}})()
+    restarted, errors = harness._attempt_selftest_repairs([
+        {"module": "repairable", "repairable": True},
+        {"module": "Event pipeline", "repairable": False},
+    ])
+    assert restarted == ["repairable"]
+    assert errors == []
+    assert module.stops == 1
+    assert module.starts == 1
+    assert module.waits == 1
 
 
 def test_canary_echo_saturation_keeps_newest_records_without_blocking():

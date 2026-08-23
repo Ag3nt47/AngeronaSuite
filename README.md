@@ -56,6 +56,10 @@ existing BCC/eBPF sensor is an explicit privileged supplement.
 > Secrets, settings, telemetry, diagnostics, and runtime state are excluded by
 > `.gitignore`; review staged files and Git history before publishing a fork.
 
+> **Full documentation:** [Master Manual v1.10.0](analysis/Angerona_Master_Manual_v1.10.0_Cycle22.docx)
+> (Cycle 22), or use [llms.txt](llms.txt) for the machine-readable project
+> reference.
+
 ## ✨ Capabilities
 
 - **Native desktop GUI** (PySide6/Qt) — dashboard, live alerts, module control, settings.
@@ -94,6 +98,12 @@ existing BCC/eBPF sensor is an explicit privileged supplement.
   platforms, availability, requirements, and `observe` / `detect` / `protect` /
   `respond` mode. Legacy modules fail closed as Windows-only; an unavailable
   sensor cannot start or inflate the protection score.
+- **Resource-aware self-test and recovery** — a bounded worker pool checks only
+  native, enabled capabilities during a full run. Modules for another operating
+  system, operator-disabled modules, and deep sensors parked by Chill Mode are
+  reported as expected skips rather than failures. Chill checks do not wake
+  Ollama, and automatic recovery is offered only for audited lifecycle faults;
+  dependency, provisioning, and timeout failures remain manual decisions.
 - **Platform-neutral sensor events** — Windows, macOS, Linux, and future native
   collectors normalize process, file, network, authentication, and security
   observations into one bounded, versioned schema before EventBus publication.
@@ -1724,6 +1734,12 @@ email scanning, channel push, research) — each has a one-click test button.
   reports **66 modules, 0 errors, and 0 duplicate codes**; selfcheck passes
   **26/26** and core self-tests pass **18/18**. Ruff, Bandit Medium/High, and
   `pip-audit` are clean.
+- **Resource-aware self-test correction.** Cross-platform Observe sensors now
+  appear as expected skips on a non-native host instead of repairable failures.
+  Full-suite checks use bounded concurrency, respect operator-disabled and
+  Chill-paused modules, and never load an Ollama model merely to test readiness.
+  Only audited lifecycle faults can offer a background restart; dependency,
+  provisioning, and timeout failures remain visible for manual action.
 - **Remaining boundary.** Physical sleep/resume and long elevated-host soaks,
   clean-machine installer qualification, native macOS/Linux release signing,
   publisher custody, production Defender/ETW/AMSI/WFP integration evidence,

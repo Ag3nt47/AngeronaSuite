@@ -92,7 +92,7 @@ other — they communicate only through the **EventBus**.
 | Threat calc | `core/threat.py` | Calibrated threat level (no false highs) |
 | Status export | `core/status_report.py` | Live `diagnostics/status.txt` + `.json` |
 | Console backend | `core/commands.py` | Commands + AI + SQL hunting |
-| Self-test | `core/selftest.py` | Per-module drills + pipeline check |
+| Self-test | `core/selftest.py` | Bounded per-module/pipeline checks; native/enabled/Chill-aware skips; audited lifecycle recovery only |
 | Hidden exec | `core/win.py` | Run child processes with no popup windows |
 | Telemetry | `telemetry/sensors.py` | Process/connection sampling; `KernelSensor` seam |
 | GUI | `gui/` | Window, panels, dialogs, theme engine |

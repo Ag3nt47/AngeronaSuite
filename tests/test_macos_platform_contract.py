@@ -42,7 +42,9 @@ def test_platform_names_and_legacy_modules_fail_closed(tmp_path: Path) -> None:
     )
 
 
-def test_module_manager_never_starts_an_unavailable_capability() -> None:
+def test_module_manager_never_starts_an_unavailable_capability(
+    monkeypatch, tmp_path: Path,
+) -> None:
     starts: list[str] = []
 
     class WindowsOnly(BaseModule):
@@ -50,6 +52,9 @@ def test_module_manager_never_starts_an_unavailable_capability() -> None:
 
         def start(self, initial_delay: float = 0.0) -> None:
             starts.append(self.name)
+
+        def self_test(self) -> tuple[bool, str]:
+            raise AssertionError("an unavailable capability must not be exercised")
 
         def run(self) -> None:
             return
@@ -80,6 +85,85 @@ def test_module_manager_never_starts_an_unavailable_capability() -> None:
     assert rows["Windows only"]["available"] is False
     assert rows["Mac observe"]["available"] is True
     assert rows["Mac observe"]["capability_mode"] == "observe"
+
+    class MacDisabled(MacObserve):
+        name = "Mac disabled"
+
+        def self_test(self) -> tuple[bool, str]:
+            raise AssertionError("an operator-disabled capability must not run")
+
+    class MacChillPaused(MacObserve):
+        name = "Mac Chill paused"
+
+        def self_test(self) -> tuple[bool, str]:
+            raise AssertionError("a Chill-paused capability must not run")
+
+    disabled = MacDisabled()
+    chill_paused = MacChillPaused()
+    for module in (disabled, chill_paused):
+        module.bind(manager.bus)
+    chill_paused._chill_paused = True
+    manager.modules.update({
+        disabled.name: disabled,
+        chill_paused.name: chill_paused,
+    })
+    manager.config.module_states = {disabled.name: False}
+
+    # The dashboard self-test must preserve the same availability contract:
+    # non-native capabilities are expected skips, never Critical failures or
+    # candidates for the GUI's automatic repair action.
+    from angerona.core.selftest import SelfTestRunner
+
+    import angerona.core.selftest as selftest_module
+    runner = SelfTestRunner(manager, manager.bus)
+    report_path = tmp_path / "selftest_failures.json"
+    monkeypatch.setattr(selftest_module, "_failure_log_path", lambda: report_path)
+    progress: list[tuple[int, int]] = []
+    report = runner.run(
+        timeout=0.1,
+        progress_cb=lambda done, total: progress.append((done, total)),
+    )
+    assert "[SKIP] Windows only" in report
+    assert "[SKIP] Mac disabled — disabled by operator configuration" in report
+    assert "[SKIP] Mac Chill paused — paused by Chill Mode" in report
+    assert "Result: 1 passed, 1 failed, 3 skipped." in report
+    assert {row["module"] for row in runner.last_skips} == {
+        "Windows only", "Mac disabled", "Mac Chill paused",
+    }
+    assert runner.last_failures == [{
+        "module": "Mac observe",
+        "detail": "status=stopped, health=100%",
+        "repairable": False,
+    }]
+    assert progress == sorted(progress)
+    assert progress[-1] == (5, 5)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["skipped"] == 3
+    assert payload["skips"] == runner.last_skips
+    assert payload["failures"] == runner.last_failures
+    assert not any(
+        event.module == "Self-Test" and "Windows only" in event.message
+        for event in manager.bus.recent(20)
+    )
+
+    class SafeMac(BaseModule):
+        name = "Safe Mac lifecycle"
+        supported_platforms = ("macos",)
+
+        def run(self) -> None:
+            return
+
+    safe = SafeMac()
+    assert runner._is_repairable(safe, "status=stopped, health=100%")
+    assert not runner._is_repairable(safe, "test timed out after 1s")
+
+    # An explicit targeted diagnostic still runs for an operator-disabled
+    # native module; only the all-module dashboard sweep treats it as a skip.
+    targeted = SelfTestRunner(manager, manager.bus)
+    targeted_report = targeted.run(names=[disabled.name], timeout=0.1)
+    assert "[FAIL] Mac disabled" in targeted_report
+    assert "[SKIP] Mac disabled" not in targeted_report
+    assert targeted.last_failures[0]["repairable"] is False
 
 
 def test_normalized_sensor_event_round_trip_and_bounds() -> None:

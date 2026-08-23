@@ -27,7 +27,7 @@ from angerona.core.url_policy import (
     read_bounded,
     safe_urlopen,
 )
-from angerona.core.ollama_lifecycle import effective_keep_alive
+from angerona.core.ollama_lifecycle import chill_active, effective_keep_alive
 
 SYSTEM_PROMPT = (
     "You are a local SOC analyst. Given a security event, respond with a single "
@@ -42,6 +42,9 @@ class AITriageModule(BaseModule):
     category = "AI"
     supported_platforms = SUPPORTED_PLATFORMS
     capability_mode = "detect"
+    # Restarting this worker cannot install a model or start the external
+    # Ollama service. Keep such failures out of the GUI's automatic restart.
+    selftest_auto_repair = False
 
     # ── Circuit breaker constants ────────────────────────────────────────────
     # If Ollama doesn't respond within _CB_TIMEOUT_S seconds the circuit trips.
@@ -56,7 +59,12 @@ class AITriageModule(BaseModule):
     def __init__(self) -> None:
         super().__init__()
         self._host = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
-        self._model = os.environ.get("ANGERONA_MODEL", "llama3")
+        self._model = (
+            os.environ.get("ANGERONA_MODEL")
+            or os.environ.get("OLLAMA_MODEL")
+            or "llama3"
+        )
+        self._config = None
         self._last_ts = 0.0
         # Circuit breaker — "closed" = normal, "open" = Ollama hung/dead
         self._cb_state = "closed"             # type: str
@@ -64,12 +72,37 @@ class AITriageModule(BaseModule):
         self._recovery_lock = threading.Lock()
         self._recovery_thread: Optional[threading.Thread] = None
 
+    def bind_manager(self, manager) -> None:
+        """Use the operator's current local-AI settings for readiness checks."""
+        self._config = getattr(manager, "config", None)
+        self._sync_config()
+
+    def _sync_config(self) -> None:
+        """Apply live Settings values without requiring a suite restart."""
+        config = self._config
+        if config is None:
+            return
+        host = str(getattr(config, "ollama_host", self._host) or "").strip()
+        # Preserve the deployment override read during __init__; Settings is
+        # the fallback when no environment override is present.
+        model = str(
+            os.environ.get("ANGERONA_MODEL")
+            or os.environ.get("OLLAMA_MODEL")
+            or getattr(config, "ollama_model", self._model)
+            or ""
+        ).strip()
+        if host:
+            self._host = host.rstrip("/")
+        if model:
+            self._model = model
+
     def _ask(self, prompt: str) -> Optional[str]:
         """Send a prompt to Ollama, respecting the circuit breaker.
 
         Returns the model's response, or None if the circuit is open / request
         fails.  A failure while the circuit is CLOSED trips it and emits HIGH.
         """
+        self._sync_config()
         # Fast-fail — never block on a known-bad Ollama
         with self._cb_lock:
             if self._cb_state == "open":
@@ -127,20 +160,38 @@ class AITriageModule(BaseModule):
 
     def _ping_ollama(self) -> bool:
         """Check daemon/model availability without loading the model into RAM."""
+        self._sync_config()
         req = urllib.request.Request(local_service_url(self._host, "/api/tags"))
         try:
             with safe_urlopen(
                 req, policy=LOCAL_SERVICE_POLICY, timeout=3.0,
             ) as resp:
                 data = json.loads(read_bounded(resp).decode("utf-8"))
-            wanted = self._model.split(":", 1)[0].casefold()
-            for item in data.get("models", []):
-                name = str(item.get("name") or item.get("model") or "")
-                if name.split(":", 1)[0].casefold() == wanted:
-                    return True
-            return False
+            installed = [
+                str(item.get("name") or item.get("model") or "")
+                for item in data.get("models", [])
+                if isinstance(item, dict)
+            ]
+            return self._model_is_installed(self._model, installed)
         except Exception:
             return False
+
+    @staticmethod
+    def _model_is_installed(configured_model: str, installed_models) -> bool:
+        """Match explicit tags exactly; allow family matching only when untagged."""
+        configured = str(configured_model or "").strip().casefold()
+        if not configured:
+            return False
+        exact_tag = ":" in configured
+        wanted_family = configured.split(":", 1)[0]
+        for installed_model in installed_models:
+            name = str(installed_model or "").strip().casefold()
+            if (
+                (exact_tag and name == configured)
+                or (not exact_tag and name.split(":", 1)[0] == wanted_family)
+            ):
+                return True
+        return False
 
     def _start_recovery_pinger(
         self,
@@ -274,7 +325,16 @@ class AITriageModule(BaseModule):
                 self.emit(f"AI triage online ({self._model}).", Severity.INFO)
 
     def self_test(self) -> tuple[bool, str]:
-        verdict = self._ask("Reply 'ok'.")
-        if verdict is None:
-            return False, f"Ollama unreachable or model '{self._model}' missing ({self.last_error})"
-        return True, f"Ollama responded (model {self._model})"
+        # A health check must never load a multi-gigabyte model. In Chill the
+        # worker is intentionally dormant, so even probing the daemon would be
+        # needless background activity. Full Mode uses /api/tags, which checks
+        # daemon + configured-model readiness without running inference.
+        self._sync_config()
+        if chill_active() or bool(getattr(self, "_chill_paused", False)):
+            return True, "local AI intentionally asleep in Chill Mode (wakes on demand)"
+        if not self._ping_ollama():
+            return False, (
+                f"Ollama daemon unreachable or configured model "
+                f"'{self._model}' is not installed"
+            )
+        return True, f"Ollama ready; model {self._model} installed (not loaded)"
