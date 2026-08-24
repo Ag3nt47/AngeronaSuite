@@ -9,8 +9,8 @@ Highlights:
     level and process bursts in one move.
   • Campaign mode — chain techniques in kill-chain order instead of shuffling.
   • Prominent marker-location picker (presets + Browse).
-  • Analogy coaching (Flight Instructor) ON by default; auto-remediate ON by default.
-  • Live kill-chain strip that lights each stage as the drill narrates it.
+  • Auto-remediate ON by default; analogy coaching is reserved for a later UI.
+  • Live kill-chain panel that tracks the current and completed drill stages.
   • Embedded editor tab to view/adjust shark/red_team.py behind an AST syntax gate,
     with Save + Revert.
 
@@ -31,22 +31,35 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
     QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSlider,
-    QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+    QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout,
+    QWidget,
 )
 
 from angerona.core.data_paths import data_dir
 from angerona.gui.animations import RunSpinner
 
-# Canonical kill-chain stages → (match-substring in narration, short chip label)
+# Canonical kill-chain stages → (stable key, readable label, narration aliases).
+# Both simulation engines use the same panel but narrate a few equivalent stages
+# differently (for example "Exfil Staging" and "Exfiltration").
 _STAGES = [
-    ("Initial Access", "Initial Access"), ("Discovery", "Discovery"),
-    ("Credential Access", "Cred Access"), ("Privilege Escalation", "Priv Esc"),
-    ("Defense Evasion", "Defense Evasion"), ("Registry Run Key", "Run Key"),
-    ("Scheduled Task", "Sched Task"), ("WMI Persistence", "WMI Persist"),
-    ("Lateral Movement", "Lateral"), ("Command & Control", "C2"),
-    ("Exfil Staging", "Exfil"), ("Ransomware", "Ransomware"),
-    ("Data Destruction", "Wiper"), ("Benign Execution", "Processes"),
+    ("initial_access", "Initial Access", ("initial access",)),
+    ("discovery", "Discovery", ("discovery",)),
+    ("credential_access", "Credential Access", ("credential access",)),
+    ("privilege_escalation", "Privilege Escalation", ("privilege escalation",)),
+    ("defense_evasion", "Defense Evasion", ("defense evasion", "byovd")),
+    ("persistence", "Persistence", ("persistence (simulated)",)),
+    ("registry_run_key", "Registry Run Key", ("registry run key",)),
+    ("scheduled_task", "Scheduled Task", ("scheduled task",)),
+    ("wmi_persistence", "WMI Persistence", ("wmi persistence",)),
+    ("lateral_movement", "Lateral Movement", ("lateral movement",)),
+    ("command_control", "Command & Control", ("command & control",)),
+    ("exfiltration", "Exfiltration", ("exfil staging", "exfiltration")),
+    ("ransomware", "Ransomware Impact", ("ransomware impact",)),
+    ("data_destruction", "Data Destruction", ("data destruction",)),
+    ("benign_execution", "Benign Execution", ("benign execution",)),
+    ("custom_noise", "Custom / Noise", ("noise injection", "custom")),
 ]
+_STAGE_LABELS = {key: label for key, label, _aliases in _STAGES}
 _INTENSITY = ["Low", "Medium", "High", "Extreme"]
 _INTENSITY_DESC = {
     "Low": "1 phase · gentle timing · minimal noise — a quiet probe.",
@@ -108,13 +121,20 @@ class RedTeamConsole(QDialog):
         self._tabs.currentChanged.connect(self._on_tab_changed)
         root.addWidget(self._tabs, 1)
 
-        # subscribe to live narration + analogy coaching from the parent (the
-        # legacy Live Offense Monitor is gone, so both flow into this console).
-        for sig_name in ("_shark_narration", "_fi_coaching"):
+        # Engine callbacks originate on worker threads. A queued connection is
+        # explicit here so the log and stage cards are always updated by Qt's UI
+        # thread. Flight-Instructor coaching remains available elsewhere but is
+        # intentionally hidden from this focused run view for now.
+        self._narration_connected = False
+        if parent is not None:
             try:
-                getattr(parent, sig_name).connect(self._on_narration)
-            except Exception:
-                pass
+                parent._shark_narration.connect(
+                    self._on_narration,
+                    Qt.ConnectionType.QueuedConnection,
+                )
+                self._narration_connected = True
+            except (AttributeError, RuntimeError, TypeError):
+                self.live_status.setText("Live event feed unavailable for this window.")
 
     # ── Run tab ──────────────────────────────────────────────────────────────
     def _build_run_tab(self, default_target: str | None) -> QWidget:
@@ -126,9 +146,9 @@ class RedTeamConsole(QDialog):
         scroll.setObjectName("RedTeamRunScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setMinimumHeight(130)
         body = QWidget()
-        body.setMinimumWidth(650)
         lay = QVBoxLayout(body)
         lay.setContentsMargins(4, 4, 8, 4)
         lay.setSpacing(10)
@@ -137,10 +157,14 @@ class RedTeamConsole(QDialog):
         types = QFrame(); types.setObjectName("Card")
         tl = QVBoxLayout(types)
         tl.addWidget(self._h("Attack profile"))
-        self.cb_shark = QCheckBox("Shark — noisy commodity-malware chain (lure → discovery → "
-                                  "persistence → exfil markers)")
-        self.cb_apt = QCheckBox("APT Red-Team — quiet credential-access / fileless-persistence "
-                                "campaign (distinct scenario)")
+        self.cb_shark = QCheckBox("Shark — noisy commodity-malware chain")
+        self.cb_shark.setToolTip(
+            "Lure → discovery → persistence → exfiltration markers"
+        )
+        self.cb_apt = QCheckBox("APT Red Team — quiet adversary campaign")
+        self.cb_apt.setToolTip(
+            "Credential access and fileless-persistence simulation"
+        )
         self.cb_apt.setChecked(True)
         tl.addWidget(self.cb_shark); tl.addWidget(self.cb_apt)
         lay.addWidget(types)
@@ -159,8 +183,10 @@ class RedTeamConsole(QDialog):
         self.inten_desc = QLabel(); self.inten_desc.setWordWrap(True)
         self.inten_desc.setStyleSheet("color:#9fb3c8;")
         il.addWidget(self.inten_desc)
-        self.cb_campaign = QCheckBox("Campaign mode — chain techniques in kill-chain order "
-                                     "(recon → access → persist → C2 → exfil → impact)")
+        self.cb_campaign = QCheckBox("Campaign mode — follow kill-chain order")
+        self.cb_campaign.setToolTip(
+            "Recon → access → persistence → C2 → exfiltration → impact"
+        )
         self.cb_campaign.setChecked(True)
         il.addWidget(self.cb_campaign)
         lay.addWidget(inten)
@@ -169,9 +195,13 @@ class RedTeamConsole(QDialog):
         # marker location picker
         loc = QFrame(); loc.setObjectName("Card"); ll = QVBoxLayout(loc)
         ll.addWidget(self._h("Marker discovery location"))
-        ll.addWidget(QLabel("Where the benign marker files are written (a File-Integrity-Monitor-"
-                            "watched folder makes detections fire faster)."))
-        prow = QHBoxLayout()
+        loc_help = QLabel(
+            "Choose where benign marker files are written. A watched folder makes "
+            "detections appear faster."
+        )
+        loc_help.setWordWrap(True)
+        ll.addWidget(loc_help)
+        prow = QGridLayout()
         self.loc_preset = QComboBox()
         home = Path(os.environ.get("USERPROFILE", str(Path.home())))
         sandbox = Path(default_target) if default_target else data_dir() / "drill-sandbox"
@@ -186,54 +216,98 @@ class RedTeamConsole(QDialog):
         self.loc_preset.currentTextChanged.connect(self._on_preset)
         self.loc_edit = QLineEdit(str(sandbox))
         browse = QPushButton("Browse…"); browse.clicked.connect(self._browse)
-        prow.addWidget(self.loc_preset); prow.addWidget(self.loc_edit, 1); prow.addWidget(browse)
+        prow.addWidget(self.loc_preset, 0, 0, 1, 2)
+        prow.addWidget(self.loc_edit, 1, 0)
+        prow.addWidget(browse, 1, 1)
+        prow.setColumnStretch(0, 1)
         ll.addLayout(prow)
         lay.addWidget(loc)
 
         # custom technique + toggles
         opt = QFrame(); opt.setObjectName("Card"); ol = QVBoxLayout(opt)
         ol.addWidget(self._h("Options"))
+        ol.addWidget(QLabel("Custom technique name (optional)"))
         self.custom_name = QLineEdit(); self.custom_name.setPlaceholderText(
-            "Optional custom technique name (e.g. 'my-detection-test')")
+            "Example: my-detection-test")
+        ol.addWidget(self.custom_name)
+        ol.addWidget(QLabel("Custom inert marker text (optional)"))
         self.custom_payload = QLineEdit(); self.custom_payload.setPlaceholderText(
-            "Optional custom marker text — written verbatim to an INERT file, NEVER executed")
-        ol.addWidget(self.custom_name); ol.addWidget(self.custom_payload)
+            "Written verbatim to a marker file; never executed")
+        ol.addWidget(self.custom_payload)
+        # Keep the control available for backward-compatible configuration, but
+        # reserve the unfinished coaching experience for a later feature.
         self.cb_analogy = QCheckBox("Analogy coaching (Flight Instructor) — explain each step in "
                                     "plain English while it runs")
-        self.cb_analogy.setChecked(True)
-        self.cb_remediate = QCheckBox(
-            "Auto-contain detected markers during the run — missed detector gaps use "
-            "Apply Practice Fix → Test → signed verification afterward"
-        )
+        self.cb_analogy.setChecked(False)
+        self.cb_analogy.setVisible(False)
+        self.cb_remediate = QCheckBox("Auto-contain detected markers during the run")
         self.cb_remediate.setChecked(True)
-        ol.addWidget(self.cb_analogy); ol.addWidget(self.cb_remediate)
+        self.cb_remediate.setToolTip(
+            "Missed detector gaps can use Apply Practice Fix → Test → signed verification."
+        )
+        ol.addWidget(self.cb_remediate)
+        remediation_help = QLabel(
+            "Missed detector gaps can use Apply Practice Fix → Test → signed "
+            "verification after the run."
+        )
+        remediation_help.setWordWrap(True)
+        remediation_help.setStyleSheet("color:#9fb3c8; margin-left:24px;")
+        ol.addWidget(remediation_help)
         lay.addWidget(opt)
 
-        # live kill-chain strip
-        lay.addWidget(self._h("Live kill-chain"))
+        lay.addStretch(1)
+        scroll.setWidget(body)
+
+        # The live panel is not inside the configuration scroller. It remains
+        # readable while settings above it grow, and operators can resize the
+        # split to favor setup or telemetry.
+        live = QFrame(); live.setObjectName("Card")
+        live.setMinimumHeight(190)
+        live_lay = QVBoxLayout(live)
+        live_lay.setContentsMargins(10, 8, 10, 10)
+        live_lay.setSpacing(6)
+        live_lay.addWidget(self._h("Live kill-chain"))
+        self.live_status = QLabel("Waiting to launch…")
+        self.live_status.setWordWrap(True)
+        self.live_status.setStyleSheet("color:#9fb3c8; font-size:11px;")
+        live_lay.addWidget(self.live_status)
         self._chip_wrap = QWidget(); self._chips: dict[str, QLabel] = {}
+        self._active_stage: str | None = None
         cl = QGridLayout(self._chip_wrap)
         cl.setContentsMargins(0, 0, 0, 0)
-        cl.setHorizontalSpacing(4)
-        cl.setVerticalSpacing(4)
-        for index, (key, label) in enumerate(_STAGES):
+        cl.setHorizontalSpacing(6)
+        cl.setVerticalSpacing(6)
+        for column in range(4):
+            cl.setColumnStretch(column, 1)
+        for index, (key, label, _aliases) in enumerate(_STAGES):
             chip = QLabel(label); chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            chip.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            chip.setStyleSheet(self._chip_css(False))
+            chip.setMinimumHeight(30)
+            chip.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            chip.setToolTip(label)
             self._chips[key] = chip
-            cl.addWidget(chip, index // 7, index % 7)
-        lay.addWidget(self._chip_wrap)
+            self._set_chip_state(key, "idle")
+            cl.addWidget(chip, index // 4, index % 4)
+        live_lay.addWidget(self._chip_wrap)
 
         # live log
         self.log = QTextEdit(); self.log.setReadOnly(True)
         self.log.document().setMaximumBlockCount(4000)
         self.log.setStyleSheet("font-family:'Fira Code',monospace; font-size:11px; "
                                "background:#0b1220; border:1px solid #23324a; border-radius:6px;")
-        self.log.setMinimumHeight(150)
-        lay.addWidget(self.log, 1)
+        self.log.setMinimumHeight(90)
+        self.log.setPlaceholderText("Simulation events will appear here as they happen.")
+        live_lay.addWidget(self.log, 1)
 
-        scroll.setWidget(body)
-        outer.addWidget(scroll, 1)
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setObjectName("RedTeamRunSplitter")
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(7)
+        splitter.addWidget(scroll)
+        splitter.addWidget(live)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([360, 280])
+        outer.addWidget(splitter, 1)
 
         # Sticky actions live outside the scrolling configuration body, keeping
         # Launch and Stop & clean reachable at every supported window size.
@@ -250,10 +324,16 @@ class RedTeamConsole(QDialog):
         act.addStretch(); act.addWidget(self.stop_btn); act.addWidget(self.launch_btn)
         outer.addLayout(act)
         self._run_scroll = scroll
+        self._run_splitter = splitter
+        self._live_panel = live
         return w
 
     def finish_run(self) -> None:
         """Called by the parent when both engines have finished — completes the wheel."""
+        if self._active_stage is not None:
+            self._set_chip_state(self._active_stage, "complete")
+            self._active_stage = None
+        self.live_status.setText("Simulation complete — all received stages are shown in green.")
         try:
             self.run_spinner.finish("Simulation complete")
         except Exception:
@@ -778,12 +858,40 @@ class RedTeamConsole(QDialog):
         return lbl
 
     @staticmethod
-    def _chip_css(active: bool) -> str:
-        if active:
-            return ("background:#7f1d1d; color:#fee2e2; border:1px solid #ef4444;"
-                    "border-radius:10px; padding:3px 8px; font-size:10px; font-weight:700;")
-        return ("background:#111c2e; color:#64748b; border:1px solid #23324a;"
-                "border-radius:10px; padding:3px 8px; font-size:10px;")
+    def _chip_css(state: str) -> str:
+        base = (
+            "border-radius:8px; padding:6px 8px; font-size:11px; "
+            "font-weight:650;"
+        )
+        if state == "current":
+            return (
+                "background:#7f1d1d; color:#fff1f2; border:2px solid #fb7185;" + base
+            )
+        if state == "complete":
+            return (
+                "background:#064e3b; color:#d1fae5; border:1px solid #34d399;" + base
+            )
+        return (
+            "background:#111c2e; color:#9fb3c8; border:1px solid #334155;" + base
+        )
+
+    @staticmethod
+    def _stage_from_narration(text: str) -> str | None:
+        """Return the stable stage key for an engine STAGE narration line."""
+        lowered = str(text).lower()
+        if "stage:" not in lowered:
+            return None
+        for key, _label, aliases in _STAGES:
+            if any(alias in lowered for alias in aliases):
+                return key
+        return None
+
+    def _set_chip_state(self, key: str, state: str) -> None:
+        chip = self._chips.get(key)
+        if chip is None:
+            return
+        chip.setProperty("stageState", state)
+        chip.setStyleSheet(self._chip_css(state))
 
     def _on_intensity(self, val: int) -> None:
         name = _INTENSITY[val]
@@ -800,14 +908,22 @@ class RedTeamConsole(QDialog):
             self.loc_edit.setText(d)
 
     def _on_narration(self, text: str) -> None:
-        self.log.append(text)
-        for key, chip in self._chips.items():
-            if key.lower() in text.lower():
-                chip.setStyleSheet(self._chip_css(True))
+        message = str(text)
+        self.log.append(message)
+        stage = self._stage_from_narration(message)
+        if stage is None:
+            return
+        if self._active_stage is not None and self._active_stage != stage:
+            self._set_chip_state(self._active_stage, "complete")
+        self._active_stage = stage
+        self._set_chip_state(stage, "current")
+        self.live_status.setText(f"Current stage: {_STAGE_LABELS[stage]}")
 
     def _reset_chips(self) -> None:
-        for chip in self._chips.values():
-            chip.setStyleSheet(self._chip_css(False))
+        self._active_stage = None
+        for key in self._chips:
+            self._set_chip_state(key, "idle")
+        self.live_status.setText("Starting simulation…")
 
     # ── launch / stop ────────────────────────────────────────────────────────
     def _launch(self) -> None:
@@ -827,7 +943,8 @@ class RedTeamConsole(QDialog):
                        if self.custom_name.text().strip() and self.custom_payload.text().strip()
                        else None),
             "auto_remediate": self.cb_remediate.isChecked(),
-            "analogy": self.cb_analogy.isChecked(),
+            # Coaching is intentionally reserved for a later Red Team UI.
+            "analogy": False,
             # legacy: map intensity → phase count for back-compat consumers
             "complexity": self.sld.value() + 1,
         }
@@ -851,6 +968,7 @@ class RedTeamConsole(QDialog):
             self.run_spinner.stop()
         except Exception:
             pass
+        self.live_status.setText("Stop requested — cleaning simulation markers…")
         self.log.append("■ Stop requested — engines cleaning up their markers.")
 
     # ── editor ───────────────────────────────────────────────────────────────

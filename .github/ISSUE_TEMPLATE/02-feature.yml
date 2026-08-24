@@ -1,0 +1,51 @@
+name: Feature request
+description: Propose a defensive, bounded improvement to Angerona.
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Operator problem
+      description: What job is difficult today, and for whom?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe success without prescribing an implementation.
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Primary platform
+      options:
+        - Cross-platform
+        - Windows Protect
+        - macOS Observe
+        - Linux Observe + Detect
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Security, privacy, and performance boundaries
+      description: Note egress, privilege, retention, response, or resource implications.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+  - type: checkboxes
+    id: authorization
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: This request is defensive and does not require unauthorized access, credential theft, destructive persistence, or a real offensive payload.
+          required: true
+

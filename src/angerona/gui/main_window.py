@@ -101,6 +101,7 @@ class MainWindow(QMainWindow):
     chill_return_requested = Signal()      # AAR worker asks GUI thread to restore Chill
     chill_maintenance_done = Signal(str, bool)
     _security_event_wake = Signal()
+    _ir_bundle_done = Signal(object, object)  # Path | None, error | None
 
     def __init__(
         self, bus, storage, manager, config, *,
@@ -117,6 +118,8 @@ class MainWindow(QMainWindow):
         self._voice_loop_lock = threading.Lock()
         self._voice_loop_thread: threading.Thread | None = None
         self._selftest_active = threading.Event()
+        self._ir_bundle_in_flight = False
+        self._ir_bundle_done.connect(self._on_ir_bundle_done)
 
         self.setWindowTitle("Angerona — Security Suite")
         # Custom shield icon (assets/icons/angerona.ico) — falls back to the
@@ -421,6 +424,7 @@ class MainWindow(QMainWindow):
         top_split.setStretchFactor(0, 4)
         top_split.setStretchFactor(1, 6)
         top_split.setSizes([460, 700])
+        self._top_splitter = top_split
 
         self.console = CommandConsolePanel(CommandConsole(
             manager, bus, config,
@@ -473,9 +477,12 @@ class MainWindow(QMainWindow):
         body = QSplitter(Qt.Vertical)
         body.addWidget(top_split)
         body.addWidget(bottom)
-        body.setStretchFactor(0, 3)
-        body.setStretchFactor(1, 2)
-        body.setSizes([500, 240])
+        # Give both rows an equal claim on newly available height. The old 3:2
+        # weighting made the Console / System Pulse row the first thing squeezed
+        # on shorter windows even though every panel is independently resizable.
+        body.setStretchFactor(0, 1)
+        body.setStretchFactor(1, 1)
+        body.setSizes([360, 320])
         root.addWidget(body, 1)
         self._body_splitter = body
         self._pre_scan_center_sizes: list[int] | None = None
@@ -1552,8 +1559,11 @@ class MainWindow(QMainWindow):
             return
         sizes = self._body_splitter.sizes()
         total = sum(sizes) or max(600, self._body_splitter.height())
-        bottom = max(90, min(150, total // 5))
-        self._body_splitter.setSizes([max(360, total - bottom), bottom])
+        # Keep both dashboard rows proportional to the actual window. A prior
+        # fixed 90–150 px console allocation made the lower information row look
+        # crushed whenever Scan Center opened, especially on tall displays.
+        bottom = max(1, round(total * 0.42))
+        self._body_splitter.setSizes([max(1, total - bottom), bottom])
 
     def _run_simulation(self, cfg) -> None:
         if (self.shark_engine.is_running or self.red_team_engine.is_running
@@ -1598,8 +1608,9 @@ class MainWindow(QMainWindow):
             os.environ["ANGERONA_SOAR_RESPONSE_SCOPE"] = os.pathsep.join(
                 dict.fromkeys(scope_roots)
             )
-        # Analogy coaching (Flight Instructor) — ON by default for the drill.
-        self._fi_enabled = bool(cfg.get("analogy", True))
+        # Analogy coaching is retained behind the configuration key for a later
+        # Red Team UI, but the current focused run view keeps it disabled.
+        self._fi_enabled = bool(cfg.get("analogy", False))
         try:
             self.shark_monitor.fi_check.setChecked(self._fi_enabled)
         except Exception:
@@ -1609,10 +1620,9 @@ class MainWindow(QMainWindow):
         self._sim_aar_pending = int(self._sim_ran_shark) + int(self._sim_ran_redteam)
         import threading
         self._sim_aar_lock = threading.Lock()
-        # The new Red Team console (which launched this) shows the live events and
-        # analogy coaching itself, so the legacy Live Offense Monitor is no longer
-        # popped up. It's still reset + fed silently (narration flows via the
-        # _shark_narration / _fi_coaching signals to the console too).
+        # The Red Team console shows engine narration itself, so the legacy Live
+        # Offense Monitor is no longer popped up. It is still reset and fed
+        # silently for backward compatibility.
         self.shark_monitor.reset()
         self.shark_monitor.append(
             f"Launching Red Team Simulation — intensity={cfg.get('intensity', cfg.get('complexity'))}, "
@@ -2975,7 +2985,10 @@ class MainWindow(QMainWindow):
         try:
             from angerona.gui.top_talkers import TopTalkersDialog
             self._top_talkers = TopTalkersDialog(self)
+            self._top_talkers.setProperty("_angerona_no_reveal", True)
             self._top_talkers.show()
+            self._top_talkers.raise_()
+            self._top_talkers.activateWindow()
         except Exception as exc:
             QMessageBox.warning(self, "Top Talkers", f"Could not open Top Talkers: {exc}")
 
@@ -3012,7 +3025,14 @@ class MainWindow(QMainWindow):
     def _open_sandbox(self) -> None:
         try:
             self._sandbox = launch_sandbox_editor(
-                self.manager, self.bus, self._set_threat_override, self)
+                self.manager,
+                self.bus,
+                self._set_threat_override,
+                self,
+                reveal=False,
+            )
+            self._sandbox.raise_()
+            self._sandbox.activateWindow()
         except Exception as exc:
             QMessageBox.warning(self, "Sandbox", f"Could not open the sandbox: {exc}")
 
@@ -3142,17 +3162,50 @@ class MainWindow(QMainWindow):
                 pass
 
     def _open_forensics_hub(self) -> None:
-        """Forensics hub — each tool in its own highlighted, hover-lit card."""
-        from PySide6.QtWidgets import QDialog, QVBoxLayout, QGroupBox, QLabel, QPushButton
-        dlg = QDialog(self); dlg.setWindowTitle("Forensics"); dlg.resize(540, 540)
+        """Open the non-modal Forensics hub without nesting Qt event loops."""
+        existing = getattr(self, "_forensics_hub", None)
+        if existing is not None:
+            try:
+                existing.show()
+                existing.raise_()
+                existing.activateWindow()
+                return existing
+            except RuntimeError:
+                self._forensics_hub = None
+
+        from PySide6.QtWidgets import (
+            QDialog, QFrame, QGroupBox, QLabel, QPushButton, QScrollArea,
+            QVBoxLayout,
+        )
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Forensics")
+        dlg.setMinimumSize(500, 440)
+        dlg.resize(620, 720)
+        # This launcher immediately opens other top-level forensic windows.
+        # Excluding it from the global reveal mask avoids competing transitions
+        # and the stuck transparent slice that looked like an application freeze.
+        dlg.setProperty("_angerona_no_reveal", True)
         try:
             dlg.setStyleSheet(self._qss())
         except Exception:
             pass
         lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(14, 14, 14, 14)
+        lay.setSpacing(8)
         title = QLabel("Incident Forensics"); title.setObjectName("PageTitle")
         lay.addWidget(title)
-        lay.addWidget(QLabel("Pick a forensic view — each opens in its own window."))
+        intro = QLabel("Pick a forensic view — each opens in its own responsive window.")
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+
+        scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(0, 4, 6, 4)
+        body_lay.setSpacing(8)
 
         options = [
             ("🦈  Shark vs Shield — collision view",
@@ -3180,11 +3233,18 @@ class MainWindow(QMainWindow):
 
         def _make(cb):
             def _run():
-                dlg.accept()
-                try:
-                    cb()
-                except Exception as exc:
-                    QMessageBox.warning(self, "Forensics", f"Could not open: {exc}")
+                # Return to the normal application event loop before building a
+                # child view. Nested exec() loops plus the reveal-mask animation
+                # could leave the whole interface apparently frozen.
+                dlg.hide()
+
+                def _open_child():
+                    try:
+                        cb()
+                    except Exception as exc:
+                        QMessageBox.warning(self, "Forensics", f"Could not open: {exc}")
+
+                QTimer.singleShot(0, _open_child)
             return _run
 
         for name, desc, cb in options:
@@ -3201,23 +3261,39 @@ class MainWindow(QMainWindow):
             openb = QPushButton("Open")
             openb.clicked.connect(_make(cb))
             bl.addWidget(openb)
-            lay.addWidget(box)
+            body_lay.addWidget(box)
 
-        lay.addStretch()
+        body_lay.addStretch()
+        scroll.setWidget(body)
+        lay.addWidget(scroll, 1)
         close = QPushButton("Close"); close.clicked.connect(dlg.close)
         lay.addWidget(close)
-        dlg.exec()
+        self._forensics_hub = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return dlg
 
     def _open_incident_timeline(self) -> None:
         from angerona.gui.incident_timeline_page import IncidentTimelineDialog
         bus = getattr(self, "bus", None) or getattr(self, "_bus", None)
-        IncidentTimelineDialog(bus, self).exec()
+        self._incident_timeline = IncidentTimelineDialog(bus, self)
+        self._incident_timeline.setProperty("_angerona_no_reveal", True)
+        self._incident_timeline.show()
+        self._incident_timeline.raise_()
+        self._incident_timeline.activateWindow()
+        return self._incident_timeline
 
     def _open_ir_bundle(self) -> None:
-        """Collect a forensic triage ZIP and offer to open its folder."""
-        import os
-        import subprocess
+        """Collect a forensic triage ZIP without blocking Qt's UI thread."""
         from angerona.core.ir_bundle import collect_triage_bundle
+        if self._ir_bundle_in_flight:
+            QMessageBox.information(
+                self,
+                "IR Triage Bundle",
+                "A privacy-sanitized triage bundle is already being collected.",
+            )
+            return
         answer = QMessageBox.warning(
             self, "Create privacy-sanitized IR bundle?",
             "Angerona will create a bounded diagnostic ZIP for incident response.\n\n"
@@ -3227,28 +3303,83 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if answer != QMessageBox.Yes:
             return
+        self._ir_bundle_in_flight = True
+        progress = QMessageBox(self)
+        progress.setProperty("_angerona_no_reveal", True)
+        progress.setWindowTitle("IR Triage Bundle")
+        progress.setText(
+            "Collecting and privacy-sanitizing bounded diagnostic data…\n\n"
+            "You can continue using Angerona while this finishes."
+        )
+        progress.setStandardButtons(QMessageBox.StandardButton.NoButton)
+        progress.show()
+        self._ir_bundle_progress = progress
+
+        bus = getattr(self, "bus", None)
+
+        def _collect():
+            try:
+                path = collect_triage_bundle(bus=bus, consent=True)
+                self._ir_bundle_done.emit(path, None)
+            except Exception as exc:
+                self._ir_bundle_done.emit(None, str(exc))
+
         try:
-            path = collect_triage_bundle(bus=getattr(self, "bus", None), consent=True)
+            threading.Thread(
+                target=_collect,
+                name="AngeronaIRBundle",
+                daemon=True,
+            ).start()
         except Exception as exc:
-            QMessageBox.warning(self, "IR Triage Bundle",
-                                f"Could not collect bundle: {exc}")
+            self._ir_bundle_in_flight = False
+            progress.close()
+            QMessageBox.warning(self, "IR Triage Bundle", f"Could not start collection: {exc}")
+
+    def _on_ir_bundle_done(self, path, error) -> None:
+        """Present the background IR result on the Qt thread."""
+        import os
+        import subprocess
+
+        self._ir_bundle_in_flight = False
+        progress = getattr(self, "_ir_bundle_progress", None)
+        if progress is not None:
+            try:
+                progress.close()
+            except RuntimeError:
+                pass
+        if error or path is None:
+            QMessageBox.warning(
+                self,
+                "IR Triage Bundle",
+                f"Could not collect bundle: {error or 'unknown error'}",
+            )
             return
+
         box = QMessageBox(self)
+        box.setProperty("_angerona_no_reveal", True)
         box.setWindowTitle("IR Triage Bundle")
         box.setText(f"Triage bundle collected:\n{path}")
         open_btn = box.addButton("Open Folder", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("Close", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        if box.clickedButton() is open_btn:
+
+        def _finished(_result):
+            if box.clickedButton() is not open_btn:
+                return
             try:
                 if os.name == "nt":
-                    explorer = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
-                                            "explorer.exe")
+                    explorer = os.path.join(
+                        os.environ.get("SystemRoot", r"C:\Windows"),
+                        "explorer.exe",
+                    )
                     subprocess.Popen([explorer, "/select,", str(path)])
                 else:
                     subprocess.Popen(["xdg-open", str(path.parent)])
             except Exception:
                 pass
+
+        box.finished.connect(_finished)
+        self._ir_bundle_result = box
+        box.open()
 
     # ── Settings ─────────────────────────────────────────────────────────────
     def _open_settings(self) -> None:
@@ -3485,26 +3616,58 @@ class MainWindow(QMainWindow):
     # ── Forensics: dashboard-level entry to the incident views ───────────────
     def _open_collision(self) -> None:
         from angerona.gui.pages import CollisionView
-        dlg = CollisionView(self)
-        dlg.setStyleSheet(self._qss())
-        dlg.exec()
+        self._collision_view = CollisionView(self)
+        self._collision_view.setProperty("_angerona_no_reveal", True)
+        self._collision_view.setStyleSheet(self._qss())
+        self._collision_view.show()
+        self._collision_view.raise_()
+        self._collision_view.activateWindow()
+        return self._collision_view
 
     def _open_blast_prompt(self) -> None:
+        import os
         from PySide6.QtWidgets import QInputDialog
-        from angerona.gui.pages import BlastRadiusDialog
         prov = next((m for m in self.manager.modules.values()
                      if hasattr(m, "ancestry") and hasattr(m, "subtree")), None)
         if prov is None:
             QMessageBox.information(self, "Blast radius",
                                     "Provenance Graph module is not available.")
             return
-        pid, ok = QInputDialog.getInt(self, "Blast radius",
-                                      "Process ID (PID) to map:", 0, 0)
-        if not ok:
-            return
-        dlg = BlastRadiusDialog(prov, int(pid), self)
-        dlg.setStyleSheet(self._qss())
-        dlg.exec()
+        # Use the asynchronous open() API. The former static getInt() created a
+        # nested modal event loop inside the Forensics launcher's own modal loop.
+        prompt = QInputDialog(self)
+        prompt.setProperty("_angerona_no_reveal", True)
+        prompt.setWindowTitle("Process family tree")
+        prompt.setLabelText("Process ID (PID) to map:")
+        prompt.setInputMode(QInputDialog.InputMode.IntInput)
+        prompt.setIntRange(1, 2_147_483_647)
+        prompt.setIntValue(max(1, os.getpid()))
+
+        def _selected(pid: int) -> None:
+            self._show_blast_radius(prov, pid)
+
+        prompt.intValueSelected.connect(_selected)
+        self._blast_pid_prompt = prompt
+        prompt.open()
+        return prompt
+
+    def _show_blast_radius(self, prov, pid: int) -> None:
+        from angerona.gui.pages import BlastRadiusDialog
+        try:
+            self._blast_radius = BlastRadiusDialog(prov, int(pid), self)
+            self._blast_radius.setProperty("_angerona_no_reveal", True)
+            self._blast_radius.setStyleSheet(self._qss())
+            self._blast_radius.show()
+            self._blast_radius.raise_()
+            self._blast_radius.activateWindow()
+            return self._blast_radius
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Process family tree",
+                "The process family tree could not be displayed, but Angerona "
+                f"will keep running.\n\n{str(exc)[:800]}",
+            )
 
     def _open_worldview(self) -> None:
         # World View is now the live system-architecture flowchart (native Qt).

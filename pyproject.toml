@@ -10,6 +10,33 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Angerona contributors" }]
+keywords = [
+    "endpoint-security",
+    "edr",
+    "ndr",
+    "soar",
+    "dfir",
+    "threat-hunting",
+    "incident-response",
+    "mitre-attack",
+    "purple-team",
+    "local-ai",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
 dependencies = [
     "PySide6>=6.6",
     "psutil>=5.9",
@@ -19,6 +46,13 @@ dependencies = [
     "PyYAML>=6.0.2",
     "defusedxml>=0.7.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Ag3nt47/AngeronaSuite"
+Repository = "https://github.com/Ag3nt47/AngeronaSuite.git"
+Documentation = "https://github.com/Ag3nt47/AngeronaSuite#readme"
+Issues = "https://github.com/Ag3nt47/AngeronaSuite/issues"
+Releases = "https://github.com/Ag3nt47/AngeronaSuite/releases"
 
 [project.optional-dependencies]
 windows = [

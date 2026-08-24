@@ -5,10 +5,12 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication, QMainWindow
 
+import angerona.gui.holographic_orb as orb_module
 from angerona.gui.holographic_orb import (
     CollapseTrail,
     HolographicOrb,
@@ -103,6 +105,77 @@ def test_orb_service_node_emits_destination(monkeypatch) -> None:
     assert selected == ["watchdog"]
     assert orb.menuProgress == 0.0
     orb.hide_token()
+    orb.deleteLater()
+
+
+def test_orb_restores_saved_position_on_monitor_left_of_primary() -> None:
+    _app()
+    config = _config()
+    config.holographic_orb_x = -720
+    config.holographic_orb_y = 420
+    orb = HolographicOrb(config)
+
+    assert orb._saved_anchor() == QPoint(-720, 420)
+    orb.deleteLater()
+
+
+def test_orb_crosses_monitor_gap_using_nearest_destination_screen(monkeypatch) -> None:
+    _app()
+
+    class _Screen:
+        def __init__(self, rect: QRect) -> None:
+            self._rect = rect
+
+        def availableGeometry(self) -> QRect:
+            return QRect(self._rect)
+
+    first = _Screen(QRect(0, 0, 800, 600))
+    second = _Screen(QRect(1000, 0, 800, 600))
+
+    class _Screens:
+        @staticmethod
+        def screenAt(point: QPoint):
+            for screen in (first, second):
+                if screen.availableGeometry().contains(point):
+                    return screen
+            return None
+
+        @staticmethod
+        def screens():
+            return [first, second]
+
+        @staticmethod
+        def primaryScreen():
+            return first
+
+    orb = HolographicOrb(_config())
+    monkeypatch.setattr(orb_module, "QGuiApplication", _Screens)
+    orb.set_anchor(QPoint(700, 300))
+    press = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        QPointF(58, 58),
+        QPointF(700, 300),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    orb.mousePressEvent(press)
+
+    # Use many small pointer updates through the empty space between screens.
+    # Incremental anchor+delta tracking used to clamp every update back onto the
+    # first screen; total mouse-down displacement must carry it across.
+    for x in range(720, 1_101, 20):
+        move = QMouseEvent(
+            QEvent.Type.MouseMove,
+            QPointF(58 + x - 700, 58),
+            QPointF(x, 300),
+            Qt.MouseButton.NoButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        orb.mouseMoveEvent(move)
+    assert orb.anchor.x() > 1000
+    assert orb._screen() is second
     orb.deleteLater()
 
 

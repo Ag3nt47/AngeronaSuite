@@ -1,20 +1,28 @@
 # 🛡️ Angerona — Cyber Security Suite
 
-**Local-first Endpoint Detection and Response (EDR), Network Detection and
-Response (NDR), and Security Orchestration, Automation, and Response (SOAR):
-Windows Protect plus privacy-minimized macOS and Linux Observe editions. Cloud
-integrations are optional and off by default. No unsigned kernel driver.**
+**A local-first, AI-assisted cyber-defense workbench combining Endpoint
+Detection and Response (EDR), Network Detection and Response (NDR), Security
+Orchestration, Automation, and Response (SOAR), digital forensics and incident
+response, threat hunting, detection engineering, and safe MITRE ATT&CK
+purple-team validation in one native desktop experience.** Windows ships a
+Protect path; macOS and Linux provide privacy-minimized Observe/Detect editions.
+Cloud integrations are optional and off by default. No unsigned kernel driver
+ships.
 
-Key terms used below: Graphical User Interface (GUI), Artificial Intelligence
-(AI), Large Language Model (LLM), Security Information and Event Management
-(SIEM), Security Orchestration, Automation, and Response (SOAR), Extended
-Berkeley Packet Filter (eBPF), Berkeley Packet Filter Compiler Collection (BCC),
-Role-Based Access Control (RBAC), Continuous Integration (CI), Software Bill of
-Materials (SBOM), Supply-chain Levels for Software Artifacts (SLSA), and
-Hash-based Message Authentication Code (HMAC), Application Programming
-Interface (API), JavaScript Object Notation (JSON), Mutual Transport Layer
-Security (mTLS), Single Sign-On (SSO), and OpenID Connect (OIDC).
+Security terms used below include Hash-based Message Authentication Code
+(HMAC) and Role-Based Access Control (RBAC).
 
+[Download the latest release](https://github.com/Ag3nt47/AngeronaSuite/releases/latest)
+· [Install](#-one-click-windows-install-from-github-recommended)
+· [See the use cases](#-use-cases--who-its-for)
+· [Architecture](docs/architecture.md)
+· [Security](SECURITY.md)
+· [Contribute](CONTRIBUTING.md)
+
+[![CI](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/ci.yml/badge.svg)](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/ci.yml)
+[![Security](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml/badge.svg)](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml)
+[![Latest release](https://img.shields.io/github/v/release/Ag3nt47/AngeronaSuite?display_name=tag)](https://github.com/Ag3nt47/AngeronaSuite/releases/latest)
+[![GitHub stars](https://img.shields.io/github/stars/Ag3nt47/AngeronaSuite?style=flat)](https://github.com/Ag3nt47/AngeronaSuite/stargazers)
 ![Windows](https://img.shields.io/badge/Windows-Protect-0078D6)
 ![macOS](https://img.shields.io/badge/macOS-Observe-555555)
 ![Linux](https://img.shields.io/badge/Linux-Observe%20%2B%20optional%20eBPF-FCC624)
@@ -23,7 +31,7 @@ Security (mTLS), Single Sign-On (SSO), and OpenID Connect (OIDC).
 ![EDR·NDR·SOAR](https://img.shields.io/badge/EDR·NDR·SOAR-endpoint%20defense-1f6feb)
 ![MITRE ATT&CK](https://img.shields.io/badge/MITRE-ATT%26CK-red)
 ![Local AI](https://img.shields.io/badge/AI-local%20Ollama-000000)
-![License](https://img.shields.io/badge/license-MIT-green)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 A modular, local-first endpoint security suite with a clean native desktop GUI.
 The production Windows edition runs elevated in user mode and pulls
@@ -59,6 +67,21 @@ existing BCC/eBPF sensor is an explicit privileged supplement.
 > **Full documentation:** [Master Manual v1.10.0](analysis/Angerona_Master_Manual_v1.10.0_Cycle22.docx)
 > (Cycle 22), or use [llms.txt](llms.txt) for the machine-readable project
 > reference.
+
+## Why Angerona stands out
+
+| What visitors are looking for | What Angerona delivers |
+| --- | --- |
+| **Private AI security operations** | Local Ollama-backed alert triage and ARIA guidance; optional cloud paths are explicit, bounded, and off by default |
+| **One integrated blue-team cockpit** | Endpoint and network telemetry, ATT&CK mapping, cases, threat hunting, DFIR, SOAR, and evidence-aware response in a native Qt GUI |
+| **Detection validation, not offensive payloads** | Reversible marker-based purple-team campaigns, a live kill chain, After-Action Reports, and rerun-based proof that a gap is actually closed |
+| **Explainable, safety-gated automation** | Corroborated response, protected-process guards, authenticated action contracts, auditable remediation, and fail-closed trust boundaries |
+| **A serious security-engineering project** | Cross-platform capability contracts, signed detection packages, CI across Python 3.10–3.13, platform smoke tests, dependency auditing, and reproducible release controls |
+
+Angerona is built for defenders, learners, home labs, privacy-conscious
+operators, and contributors who want a visible end-to-end security pipeline.
+It is not marketed as a drop-in replacement for a distributed enterprise SOC;
+the exact platform and scale boundaries remain documented below.
 
 ## ✨ Capabilities
 
@@ -154,8 +177,8 @@ existing BCC/eBPF sensor is an explicit privileged supplement.
   - Removable-media / USB monitor (with autorun.inf flagging)
   - Active deception (canary files & honeytokens)
   - Flight-recorder persistence (tamper-evident SQLite ledger)
-- **Red Team Simulation console** — an unannounced, non-destructive adversary simulation with an Intensity slider (Low→Extreme), Campaign (chained kill-chain) mode, a live ATT&CK kill-chain view, an embedded sandbox editor, a History tab of past reports, and plain-English "analogy" coaching (Flight Instructor). Every technique is a benign, reversible marker.
-- **Shark Attack drill** — the classic commodity-malware chain (lure → discovery → persistence → exfil markers) with an animated swimming-shark indicator; exercises detect-and-respond end to end.
+- **Red Team Simulation console** — an unannounced, non-destructive adversary simulation with an Intensity slider (Low→Extreme), Campaign (chained kill-chain) mode, a live current/completed ATT&CK stage view, an embedded sandbox editor, and a History tab of past reports. Every technique is a benign, reversible marker.
+- **Shark Attack drill** — the classic commodity-malware chain (lure → discovery → persistence → exfiltration markers), exercising detection and response end to end without a real payload.
 - **After-Action Report** — every drill produces a report. Simulated gaps use **Apply Fix Candidates** to install exact Purple Guard candidates under authenticated action contracts; application and cleanup are scored separately from verified closure. Only a fresh, technique-bound rerun can close a gap, and expiry or a later miss reopens it. Genuine host weaknesses retain the reviewed **Attempt Fix** workflow. **🧹 Clean & Close** erases drill markers.
 - **Resolve Center** — the Threat-level box lists the CRITICAL/HIGH alerts driving it, each with Allow / Block / Analyze / Research / Apply and **Ignore** (acknowledge → excluded from the threat level), so false positives clear back to Secure.
 - **Trusted Processes** — Settings includes exact-path trust plus supervised discovery of currently running executables. Path-rich telemetry requires an exact canonical path; basename entries are a pathless-telemetry fallback and cannot suppress memory scanning. Resolve Center's **Allow** action is process-aware.
@@ -495,27 +518,31 @@ Windows DPAPI binds them to the current user and machine.
 
 ## 🔎 Keywords & GitHub Topics
 
-Angerona is a Windows **EDR / NDR / SOAR** platform for **endpoint detection and response**,
-**network detection**, **threat hunting**, and **incident response** — with **MITRE ATT&CK**
-mapping, **YARA** scanning, **ETW / AMSI / WFP / Sysmon** telemetry, **ransomware** and
-**LSASS credential-dumping** detection, **C2 beacon** detection, and **local-LLM (Ollama)**
-alert triage. Built in **Python** with a **PySide6** desktop GUI.
+Angerona is a cross-platform, local-first **EDR / NDR / SOAR** and **DFIR**
+workbench for **endpoint security**, **network detection**, **threat hunting**,
+**incident response**, **detection engineering**, and safe **purple teaming**.
+It combines **MITRE ATT&CK**, **YARA**, **Sigma**, Windows **ETW / AMSI / WFP /
+Sysmon** telemetry, Linux observation and optional eBPF, ransomware/C2/credential-
+access detections, and **local-LLM (Ollama)** triage in a **Python + PySide6** GUI.
 
 **Copy these into the repo's _About ▸ Topics_ field** (Settings not required — it's the gear next to *About*):
 
 ```
-edr ndr soar endpoint-security blue-team threat-hunting incident-response
-mitre-attack yara etw amsi sysmon ransomware-detection c2-detection
-malware-detection windows-security siem ollama local-llm python pyside6 security-tools
+endpoint-security edr ndr soar xdr blue-team dfir threat-hunting incident-response
+mitre-attack purple-team yara sigma windows-security linux-security local-ai
+ollama security-automation python pyside6
 ```
 
-> Topics are the #1 on-platform discovery lever — a search for `edr` or `mitre-attack` can
-> only surface Angerona if these are set. Also fill in the one-line **About** description with
-> the tagline at the top of this README.
+> GitHub uses topics to help people discover projects by purpose and subject.
+> Add all 20 above in **About**, along with the concise description in
+> [the launch checklist](docs/GITHUB_LAUNCH_CHECKLIST.md).
 
 ## 📄 License
 
 MIT — see [LICENSE](LICENSE).
+
+<details>
+<summary><strong>Development and release history (expand)</strong></summary>
 
 ## Development and release history
 
@@ -1730,7 +1757,7 @@ email scanning, channel push, research) — each has a one-click test button.
   private state before and after mirroring. A non-destructive validation mode is
   available, and Robocopy success codes 0–7 remain successful. Verification did
   not execute a real mirror.
-- **Final Cycle 22 verification.** The authoritative repository suite passes **1026 tests with 3 intentional platform skips** and 0 failures. Discovery
+- **Final Cycle 22 verification.** The authoritative repository suite passes **1038 tests with 3 intentional platform skips** and 0 failures. Discovery
   reports **66 modules, 0 errors, and 0 duplicate codes**; selfcheck passes
   **26/26** and core self-tests pass **18/18**. Ruff, Bandit Medium/High, and
   `pip-audit` are clean.
@@ -1751,4 +1778,6 @@ email scanning, channel push, research) — each has a one-click test button.
   `pythonw -m angerona --chill`. Fresh-logon and clean-machine registration,
   physical sleep/resume, and long elevated-host soaks remain acceptance gates.
 
-<!-- ANGERONA_DOC_STATUS tests=1026 skips=3 modules=66 -->
+</details>
+
+<!-- ANGERONA_DOC_STATUS tests=1038 skips=3 modules=66 -->

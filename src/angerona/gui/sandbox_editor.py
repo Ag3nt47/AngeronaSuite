@@ -584,11 +584,13 @@ def _write_temp_backup(name: str, source: str) -> None:
 
 
 def launch_sandbox_editor(manager, bus, threat_callback=None, parent=None,
-                          preselect=None) -> SandboxEditor:
+                          preselect=None, *, reveal: bool = True) -> SandboxEditor:
     """Embed entry point: build + show the sandbox over an existing app.
     `preselect` = a module name to auto-open its file immediately."""
     win = SandboxEditor(manager, bus, threat_callback=threat_callback, parent=parent,
                         preselect=preselect)
+    if not reveal:
+        win.setProperty("_angerona_no_reveal", True)
     win.show()
     return win
 

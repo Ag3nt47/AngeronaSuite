@@ -293,6 +293,7 @@ class HolographicOrb(QWidget):
         self._hover_key = ""
         self._press_global = QPoint()
         self._press_local = QPoint()
+        self._drag_anchor_start = QPoint()
         self._dragging = False
         self._tick = QTimer(self)
         self._tick.setInterval(50)  # 20 FPS: smooth enough, negligible idle work.
@@ -314,15 +315,36 @@ class HolographicOrb(QWidget):
     def _motion_enabled(self) -> bool:
         return motion_allowed(self._config)
 
+    @staticmethod
+    def _distance_to_screen(point: QPoint, screen) -> int:
+        """Squared distance from a global point to a screen's usable rectangle."""
+        available = screen.availableGeometry()
+        nearest_x = max(available.left(), min(point.x(), available.right()))
+        nearest_y = max(available.top(), min(point.y(), available.bottom()))
+        return (point.x() - nearest_x) ** 2 + (point.y() - nearest_y) ** 2
+
+    def _screen_for_point(self, point: QPoint):
+        """Return the containing or nearest screen for any global coordinate.
+
+        Monitor layouts can contain gaps and can extend left/up into negative
+        coordinates. Falling back to the orb's previous screen while the mouse
+        crossed such a gap trapped the orb on that display.
+        """
+        direct = QGuiApplication.screenAt(point)
+        if direct is not None:
+            return direct
+        screens = list(QGuiApplication.screens())
+        if screens:
+            return min(screens, key=lambda item: self._distance_to_screen(point, item))
+        return QGuiApplication.primaryScreen()
+
     def _screen(self):
-        return (
-            QGuiApplication.screenAt(self._anchor)
-            or QGuiApplication.screenAt(QCursor.pos())
-            or QGuiApplication.primaryScreen()
-        )
+        if self._anchor == QPoint(-1, -1):
+            return self._screen_for_point(QCursor.pos())
+        return self._screen_for_point(self._anchor)
 
     def _default_anchor(self) -> QPoint:
-        screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        screen = self._screen_for_point(QCursor.pos())
         if screen is None:
             return QPoint(1840, 960)
         available = screen.availableGeometry()
@@ -332,14 +354,16 @@ class HolographicOrb(QWidget):
         try:
             x = int(getattr(self._config, "holographic_orb_x", -1))
             y = int(getattr(self._config, "holographic_orb_y", -1))
-            if x >= 0 and y >= 0:
+            # (-1, -1) is the legacy "not positioned" sentinel. Other negative
+            # coordinates are valid on monitors placed left of or above primary.
+            if (x, y) != (-1, -1):
                 return QPoint(x, y)
         except (TypeError, ValueError):
             pass
         return self._default_anchor()
 
     def _clamp_anchor(self, point: QPoint) -> QPoint:
-        screen = QGuiApplication.screenAt(point) or self._screen()
+        screen = self._screen_for_point(point)
         if screen is None:
             return QPoint(point)
         available = screen.availableGeometry()
@@ -350,7 +374,7 @@ class HolographicOrb(QWidget):
         )
 
     def show_token(self) -> None:
-        if self._anchor.x() < 0 or self._anchor.y() < 0:
+        if self._anchor == QPoint(-1, -1):
             self._anchor = self._clamp_anchor(self._saved_anchor())
         self._apply_geometry(expanded=self._menu_expanded)
         self.show()
@@ -747,6 +771,7 @@ class HolographicOrb(QWidget):
         if event.button() == Qt.LeftButton:
             self._press_global = event.globalPosition().toPoint()
             self._press_local = event.position().toPoint()
+            self._drag_anchor_start = QPoint(self._anchor)
             self._dragging = False
             event.accept()
             return
@@ -773,8 +798,11 @@ class HolographicOrb(QWidget):
             distance = current - self._press_global
             if self._dragging or distance.manhattanLength() >= 5:
                 self._dragging = True
-                self.set_anchor(self._anchor + distance)
-                self._press_global = current
+                # Track the total pointer displacement from mouse-down. If the
+                # anchor were incremented and clamped on every small move, it
+                # would remain pinned to the old screen edge while the pointer
+                # crossed a monitor gap.
+                self.set_anchor(self._drag_anchor_start + distance)
                 event.accept()
                 return
         key = self._service_at(event.position())
@@ -942,7 +970,7 @@ class HolographicOrbController(QObject):
         ]
 
     def _orb_destination(self) -> QPoint:
-        if self.orb.anchor.x() < 0:
+        if self.orb.anchor == QPoint(-1, -1):
             self.orb.set_anchor(self.orb._saved_anchor())
         return self.orb.anchor
 

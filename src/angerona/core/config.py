@@ -123,7 +123,9 @@ class Config:
     ui_motion_enabled: bool = True                # polished panel reveals; OS reduced-motion still wins
     dashboard_mode: str = "classic"              # "classic" | "flow" (Local SOC workspace)
     holographic_orb_enabled: bool = True          # minimized-window token + radial service controls
-    holographic_orb_x: int = -1                   # global center; -1 selects the active screen corner
+    # Global center; the pair (-1, -1) selects the active-screen corner. A
+    # single negative coordinate is valid for monitors left/above primary.
+    holographic_orb_x: int = -1
     holographic_orb_y: int = -1
     # Offline normal-process learning is opt-in and suggestion-only. It never
     # changes threat posture until the operator approves a mature candidate.

@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFileDialog, QGridLayout, QFrame, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
-    QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
 HELP_TEXT_SHORT = (
@@ -936,6 +936,71 @@ class DashboardCards(QWidget):
 
 
 # ── Shared helper: fill a table with events ───────────────────────────────────
+_EVENT_PATH_KEYS = (
+    "artifact_paths",
+    "artifact_path",
+    "file_path",
+    "filepath",
+    "path",
+    "file",
+    "target_path",
+    "source_path",
+    "destination_path",
+    "quarantine_path",
+    "old_path",
+    "new_path",
+    "process_path",
+    "exe",
+    "image",
+    "location",
+    "registry_path",
+)
+
+
+def _event_artifact_paths(event, limit: int = 8) -> list[str]:
+    """Return bounded, de-duplicated paths supplied by an alert's sensor.
+
+    This stays read-only: looking up an executable from the current PID could
+    show a later process after PID reuse instead of the alert's real evidence.
+    """
+    details = getattr(event, "details", None)
+    if not isinstance(details, dict):
+        return []
+    bounded_limit = max(1, min(32, int(limit)))
+    paths: list[str] = []
+    seen: set[str] = set()
+    for key in _EVENT_PATH_KEYS:
+        raw = details.get(key)
+        if raw in (None, ""):
+            continue
+        values = raw if isinstance(raw, (list, tuple, set)) else (raw,)
+        for value in values:
+            if not isinstance(value, (str, os.PathLike)):
+                continue
+            text = os.fspath(value).strip()
+            if not text:
+                continue
+            text = text[:4096]
+            identity = os.path.normcase(text)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            paths.append(text)
+            if len(paths) >= bounded_limit:
+                return paths
+    return paths
+
+
+def _event_path_display(event) -> tuple[str, str]:
+    paths = _event_artifact_paths(event)
+    if not paths:
+        return "Not provided", "This sensor did not provide a file or artifact path."
+    visible = "  ·  ".join(paths[:3])
+    if len(paths) > 3:
+        visible += f"  (+{len(paths) - 3} more)"
+    return visible, "\n".join(paths)
+
+
 def _fill_event_table(table: QTableWidget, events: list) -> None:
     table.setRowCount(0)
     for ev in events:
@@ -949,6 +1014,11 @@ def _fill_event_table(table: QTableWidget, events: list) -> None:
         table.setItem(r, 1, sev_item)
         table.setItem(r, 2, QTableWidgetItem(getattr(ev, "module", "")))
         table.setItem(r, 3, QTableWidgetItem(getattr(ev, "message", "")))
+        if table.columnCount() >= 5:
+            path_text, path_tooltip = _event_path_display(ev)
+            path_item = QTableWidgetItem(path_text)
+            path_item.setToolTip(path_tooltip)
+            table.setItem(r, 4, path_item)
         table.item(r, 0).setData(Qt.UserRole, ev)
 
 
@@ -982,9 +1052,12 @@ class EventsWindow(QDialog):
         self.count_lbl.setStyleSheet("color:#9aa4b2;")
         root.addWidget(self.count_lbl)
 
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Time", "Severity", "Module", "Message"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(
+            ["Time", "Severity", "Module", "Message", "File / artifact path"]
+        )
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -1422,12 +1495,62 @@ class ThreatWindow(QDialog):
 
 
 # ── Blast-radius provenance tree ─────────────────────────────────────────────
+_MAX_VISIBLE_FAMILY_NODES = 500
+
+
+def _bounded_provenance_nodes(value, limit: int) -> tuple[list[dict], bool]:
+    """Snapshot an arbitrary provenance result without flooding Qt with rows."""
+    if value is None:
+        return [], False
+    if isinstance(value, dict):
+        values = iter((value,))
+    else:
+        try:
+            values = iter(value)
+        except TypeError:
+            values = iter((value,))
+
+    nodes: list[dict] = []
+    truncated = False
+    for raw in values:
+        if len(nodes) >= limit:
+            truncated = True
+            break
+        if isinstance(raw, dict):
+            # Detach from the live graph so a concurrent retention pass cannot
+            # mutate a row while Qt is rendering it.
+            node = dict(raw)
+            meta = node.get("meta")
+            if isinstance(meta, dict):
+                node["meta"] = dict(meta)
+        else:
+            node = {"id": str(raw), "kind": "unknown", "label": str(raw), "meta": {}}
+        nodes.append(node)
+    return nodes, truncated
+
+
 def build_blast_tree(prov, target_pid: int) -> dict:
     """Core data logic for a PID blast radius (blueprint contract):
     {'origin': <ancestry, root-cause chain>, 'blast_radius': <subtree spawned>}.
-    Both are lists of provenance node dicts ({id, kind, label, ts, meta})."""
-    return {"origin": prov.ancestry(target_pid),
-            "blast_radius": prov.subtree(target_pid)}
+    Both are lists of provenance node dicts ({id, kind, label, ts, meta}).
+    The GUI snapshot is bounded because constructing thousands of native tree
+    items synchronously can exhaust or crash the Windows Qt paint path.
+    """
+    pid = int(target_pid)
+    if pid <= 0:
+        raise ValueError("PID must be greater than zero")
+    origin, origin_truncated = _bounded_provenance_nodes(
+        prov.ancestry(pid), _MAX_VISIBLE_FAMILY_NODES
+    )
+    blast, blast_truncated = _bounded_provenance_nodes(
+        prov.subtree(pid), _MAX_VISIBLE_FAMILY_NODES
+    )
+    return {
+        "origin": origin,
+        "blast_radius": blast,
+        "origin_truncated": origin_truncated,
+        "blast_radius_truncated": blast_truncated,
+    }
 
 
 class BlastRadiusDialog(QDialog):
@@ -1455,6 +1578,7 @@ class BlastRadiusDialog(QDialog):
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Node", "Kind", "Detail"])
         self.tree.setColumnWidth(0, 300)
+        self.tree.setUniformRowHeights(True)
         root.addWidget(self.tree)
 
         row = QHBoxLayout()
@@ -1472,17 +1596,31 @@ class BlastRadiusDialog(QDialog):
         label = node.get("label", node.get("id", "?"))
         kind = node.get("kind", "")
         meta = node.get("meta") or {}
-        detail = ", ".join(f"{k}={v}" for k, v in meta.items()) if meta else node.get("id", "")
+        if isinstance(meta, dict):
+            detail = ", ".join(f"{k}={v}" for k, v in meta.items())
+        else:
+            detail = str(meta)
+        if not detail:
+            detail = node.get("id", "")
+        detail = str(detail)[:4096]
         it = self._QTreeWidgetItem([str(label), str(kind), str(detail)])
         colour = {"file": "#f59e0b", "net": "#38bdf8"}.get(str(kind).lower(), "#e5e7eb")
         it.setForeground(0, QColor(colour))
         return it
 
     def _refresh(self) -> None:
-        tree = build_blast_tree(self.prov, self.pid)
-        origin, blast = tree["origin"], tree["blast_radius"]
         self.tree.clear()
         Item = self._QTreeWidgetItem
+        try:
+            tree = build_blast_tree(self.prov, self.pid)
+            origin, blast = tree["origin"], tree["blast_radius"]
+        except Exception as exc:
+            message = f"Process family tree unavailable: {str(exc)[:500]}"
+            self.tree.addTopLevelItem(
+                Item([message, "Error", "No application crash occurred."])
+            )
+            self.summary.setText(message)
+            return
         origin_root = Item([f"Origin — how PID {self.pid} came to exist", "", f"{len(origin)} node(s)"])
         for n in origin:
             origin_root.addChild(self._node_item(n))
@@ -1494,8 +1632,22 @@ class BlastRadiusDialog(QDialog):
         self.tree.addTopLevelItem(blast_root)
         origin_root.setExpanded(True)
         blast_root.setExpanded(True)
-        self.summary.setText(f"{len(origin)} ancestor node(s) upstream, "
-                             f"{len(blast)} node(s) in the downstream blast radius.")
+        clipped = []
+        if tree.get("origin_truncated"):
+            clipped.append(f"origin limited to {_MAX_VISIBLE_FAMILY_NODES}")
+        if tree.get("blast_radius_truncated"):
+            clipped.append(f"descendants limited to {_MAX_VISIBLE_FAMILY_NODES}")
+        suffix = f" Display bounded: {', '.join(clipped)}." if clipped else ""
+        if not origin and not blast:
+            self.summary.setText(
+                f"No recorded parents, children, files, or connections for PID {self.pid}."
+                + suffix
+            )
+        else:
+            self.summary.setText(
+                f"{len(origin)} ancestor node(s) upstream, "
+                f"{len(blast)} node(s) in the downstream blast radius." + suffix
+            )
 
 
 # ── Shark-vs-Shield collision view ───────────────────────────────────────────
@@ -2487,20 +2639,8 @@ def _event_evidence_context(event) -> dict[str, str]:
     else:
         subject = str(getattr(event, "message", "") or "No subject supplied")
 
-    location = ""
-    for key in (
-        "exe",
-        "path",
-        "file_path",
-        "artifact_path",
-        "target_path",
-        "location",
-        "registry_path",
-    ):
-        candidate = details.get(key)
-        if isinstance(candidate, str) and candidate.strip():
-            location = candidate.strip()
-            break
+    paths = _event_artifact_paths(event)
+    location = "  ·  ".join(paths)
     location_status = str(details.get("location_status") or "unavailable")
     if not location:
         location = f"Unavailable ({location_status.replace('_', ' ')})"
@@ -2573,7 +2713,6 @@ class AlertDetailDialog(QDialog):
         # Keep the signed JSON as the source of truth, while surfacing the
         # affected artifact and process lineage as first-class operator evidence.
         evidence = _event_evidence_context(event)
-        lay.addWidget(_section("Observed evidence"))
         evidence_panel = QFrame()
         evidence_panel.setObjectName("Panel")
         evidence_grid = QGridLayout(evidence_panel)
@@ -2583,7 +2722,7 @@ class AlertDetailDialog(QDialog):
         evidence_fields = (
             ("Event", "event", "alertEvidenceEvent"),
             ("Subject", "subject", "alertEvidenceSubject"),
-            ("Location", "location", "alertEvidenceLocation"),
+            ("File path(s)", "location", "alertEvidenceLocation"),
             ("Parent", "parent", "alertEvidenceParent"),
             ("Command line", "command_line", "alertEvidenceCommandLine"),
             ("Source", "source", "alertEvidenceSource"),
@@ -2599,20 +2738,55 @@ class AlertDetailDialog(QDialog):
             evidence_grid.addWidget(caption, row, 0)
             evidence_grid.addWidget(value, row, 1)
         evidence_grid.setColumnStretch(1, 1)
-        lay.addWidget(evidence_panel)
 
+        try:
+            details_json = json.dumps(event.details, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            details_json = json.dumps(event.details, default=str)
         canon = (f"{event.ts}|{event.module}|{int(event.severity)}|{event.message}|"
-                 f"{json.dumps(event.details, sort_keys=True)}")
+                 f"{details_json}")
         digest = hashlib.sha256(canon.encode("utf-8")).hexdigest()
         lay.addWidget(_section("Cryptographic fingerprint (SHA-256)"))
         hbox = QLineEdit(digest); hbox.setReadOnly(True); lay.addWidget(hbox)
 
-        lay.addWidget(_section("Full event record"))
+        # Evidence and the full record share all remaining height through a
+        # draggable splitter. The evidence side scrolls at small window sizes,
+        # preventing the lower record box from being squeezed to a sliver.
+        details_splitter = QSplitter(Qt.Vertical)
+        details_splitter.setObjectName("alertDetailSplitter")
+        details_splitter.setChildrenCollapsible(False)
+        details_splitter.setOpaqueResize(False)
+        details_splitter.setHandleWidth(7)
+
+        evidence_box = QWidget()
+        evidence_layout = QVBoxLayout(evidence_box)
+        evidence_layout.setContentsMargins(0, 0, 0, 0)
+        evidence_layout.addWidget(_section("Observed evidence"))
+        evidence_scroll = QScrollArea()
+        evidence_scroll.setWidgetResizable(True)
+        evidence_scroll.setMinimumHeight(96)
+        evidence_scroll.setWidget(evidence_panel)
+        evidence_layout.addWidget(evidence_scroll, 1)
+        details_splitter.addWidget(evidence_box)
+
+        record_box = QWidget()
+        record_layout = QVBoxLayout(record_box)
+        record_layout.setContentsMargins(0, 0, 0, 0)
+        record_layout.addWidget(_section("Full event record"))
         body = QPlainTextEdit(); body.setReadOnly(True)
+        body.setMinimumHeight(96)
         record = {"time": ts, "module": event.module, "severity": event.severity.label,
                   "message": event.message, "details": event.details, "sha256": digest}
-        body.setPlainText(json.dumps(record, indent=2))
-        lay.addWidget(body)
+        body.setPlainText(json.dumps(record, indent=2, default=str))
+        record_layout.addWidget(body, 1)
+        details_splitter.addWidget(record_box)
+        details_splitter.setStretchFactor(0, 1)
+        details_splitter.setStretchFactor(1, 1)
+        details_splitter.setSizes([240, 260])
+        lay.addWidget(details_splitter, 1)
+        self._details_splitter = details_splitter
+        self._evidence_scroll = evidence_scroll
+        self._record_body = body
 
         # ── Action bar: Allow · Block · Analyze · Research ────────────────────
         lay.addWidget(_section("Actions"))
@@ -2790,20 +2964,26 @@ class AlertsPanel(QFrame):
         )
         title_row.addWidget(scan_button)
         lay.addLayout(title_row)
-        self.table = QTableWidget(0, 7)
+        self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
-            ["Time", "Module", "Severity", "Message", "Allow", "Block", "Analyze"]
+            [
+                "Time", "Module", "Severity", "Message", "File / artifact path",
+                "Allow", "Block", "Analyze",
+            ]
         )
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(1, QHeaderView.Interactive)
         hdr.setSectionResizeMode(3, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(4, QHeaderView.Fixed)
+        hdr.setSectionResizeMode(4, QHeaderView.Stretch)
         hdr.setSectionResizeMode(5, QHeaderView.Fixed)
         hdr.setSectionResizeMode(6, QHeaderView.Fixed)
+        hdr.setSectionResizeMode(7, QHeaderView.Fixed)
+        self.table.setColumnWidth(0, 72)
         self.table.setColumnWidth(1, 140)
-        self.table.setColumnWidth(4, 68)
+        self.table.setColumnWidth(2, 82)
         self.table.setColumnWidth(5, 68)
-        self.table.setColumnWidth(6, 78)
+        self.table.setColumnWidth(6, 68)
+        self.table.setColumnWidth(7, 78)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -2837,11 +3017,11 @@ class AlertsPanel(QFrame):
         event = item.data(Qt.UserRole)
         if event is None:
             return
-        if col == 4:
+        if col == 5:
             self._allow_event(event)
-        elif col == 5:
-            self._block_event(event)
         elif col == 6:
+            self._block_event(event)
+        elif col == 7:
             self._analyze_event(event, None)
         else:
             _show_nonmodal_from(
@@ -3075,21 +3255,26 @@ class AlertsPanel(QFrame):
         self.table.setItem(pos, 0, ts_item)
         # node_origin: alerts forwarded by a remote sensor node (Remote Bridge)
         # are tagged so the operator can tell them apart from local telemetry.
-        origin = (e.details or {}).get("node_origin")
+        details = e.details if isinstance(getattr(e, "details", None), dict) else {}
+        origin = details.get("node_origin")
         mod_item = QTableWidgetItem(f"{e.module}  ⇠{origin}" if origin else e.module)
         if origin:
             mod_item.setToolTip(f"Forwarded from remote node: {origin}")
         self.table.setItem(pos, 1, mod_item)
         self.table.setItem(pos, 2, _SeverityItem(e.severity))
         self.table.setItem(pos, 3, QTableWidgetItem(e.message))
+        path_text, path_tooltip = _event_path_display(e)
+        path_item = QTableWidgetItem(path_text)
+        path_item.setToolTip(path_tooltip)
+        self.table.setItem(pos, 4, path_item)
         # Action buttons — must use setCellWidget, not setItem
         # Lightweight clickable items replace three QWidget buttons per row.
         # At 120 rows this avoids creating/reparenting 360 controls during an
         # alert burst, the exact GUI-thread stall recorded in diagnostics.
         for col, text, bg, fg in (
-                (4, "Allow", "#14532d", "#86efac"),
-                (5, "Block", "#7f1d1d", "#fca5a5"),
-                (6, "Analyze", "#1e3a5f", "#7dd3fc")):
+                (5, "Allow", "#14532d", "#86efac"),
+                (6, "Block", "#7f1d1d", "#fca5a5"),
+                (7, "Analyze", "#1e3a5f", "#7dd3fc")):
             action = QTableWidgetItem(text)
             action.setTextAlignment(Qt.AlignCenter)
             action.setBackground(QColor(bg))
@@ -3107,7 +3292,7 @@ class AlertsPanel(QFrame):
         In a busy EDR the feed refreshes every couple of seconds, so without this
         the suite accumulates hundreds of thousands of dead QPushButtons over a
         session (the "slower the longer it runs" symptom). Free them here."""
-        for c in (4, 5, 6):
+        for c in (5, 6, 7):
             w = self.table.cellWidget(r, c)
             if w is not None:
                 self.table.removeCellWidget(r, c)
