@@ -75,6 +75,10 @@ voice = [
     "tqdm>=4.68",
     "websockets>=16",
 ]
+hand-controls = [
+    "opencv-python>=4.10",
+    "mediapipe>=0.10.20",
+]
 cloud = ["google-genai", "groq", "openai"]
 dev = [
     "hypothesis==6.163.0",

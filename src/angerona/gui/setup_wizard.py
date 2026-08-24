@@ -45,8 +45,12 @@ class Step:
 SETUP_PROFILES: dict[str, dict[str, object]] = {
     "Recommended local protection": {
         "eco_mode": True,
-        "aria_enabled": True,
-        "perf_governor_enabled": True,
+        "aria_enabled": False,
+        "perf_governor_enabled": False,
+        "aria_voice_enabled": False,
+        "aria_conversation_awareness": False,
+        "aria_always_listen": False,
+        "aria_hand_controls": False,
         "process_baseline_enabled": True,
         "require_signed_aar": True,
         "entropy_pool_enabled": False,
@@ -64,8 +68,12 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
     },
     "Maximum local coverage": {
         "eco_mode": False,
-        "aria_enabled": True,
-        "perf_governor_enabled": True,
+        "aria_enabled": False,
+        "perf_governor_enabled": False,
+        "aria_voice_enabled": False,
+        "aria_conversation_awareness": False,
+        "aria_always_listen": False,
+        "aria_hand_controls": False,
         "process_baseline_enabled": True,
         "require_signed_aar": True,
         "entropy_pool_enabled": True,
@@ -83,8 +91,12 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
     },
     "Low-resource local": {
         "eco_mode": True,
-        "aria_enabled": True,
+        "aria_enabled": False,
         "perf_governor_enabled": False,
+        "aria_voice_enabled": False,
+        "aria_conversation_awareness": False,
+        "aria_always_listen": False,
+        "aria_hand_controls": False,
         "process_baseline_enabled": False,
         "require_signed_aar": True,
         "entropy_pool_enabled": False,
@@ -135,9 +147,13 @@ STEPS: tuple[Step, ...] = (
     ),
     Step(
         "Local AI and ARIA",
-        "Configure the local Ollama service. Local AI is the recommended default.",
+        "Configure the local Ollama service. ARIA is optional and remains off until "
+        "you enable it here or later in Settings > ARIA.",
         (
             Field("check", "aria_enabled", "Enable the ARIA local security assistant"),
+            Field("combo", "aria_persona", "Presentation profile",
+                  options=("aria", "friday", "ultron"),
+                  note="Tone only. Friday and Ultron never change tools, permissions, or confirmation gates."),
             Field("text", "ollama_host", "Ollama address", "http://127.0.0.1:11434"),
             Field("text", "ollama_model", "Local model", "llama3"),
             Field("text", "ollama_keep_alive", "Model keep-alive", "30m"),
@@ -160,12 +176,50 @@ STEPS: tuple[Step, ...] = (
     ),
     Step(
         "Voice and microphone",
-        "Configure local speech and the microphone used for push-to-talk.",
+        "Configure optional local speech and the microphone used for voice control. "
+        "The microphone remains closed while voice is off.",
         (
             Field("check", "aria_voice_enabled", "Enable local spoken replies"),
             Field("mic", "aria_mic_device", "Microphone"),
             Field("check", "aria_voice_cloud_tts", "Allow cloud text-to-speech",
                   note="Opt-in network egress; local speech remains available without it."),
+        ),
+    ),
+    Step(
+        "ARIA conversation and hand controls",
+        "These local sensors and hands-free modes are separate opt-ins and are all "
+        "off by default. Camera frames and room context stay transient and local.",
+        (
+            Field(
+                "check", "aria_conversation_awareness",
+                "Enable transient conversational awareness and no-wake follow-ups",
+                note=(
+                    "Keeps a redacted rolling discussion window in memory only; it is "
+                    "discarded when ARIA stops and is never written as a room transcript."
+                ),
+            ),
+            Field(
+                "check", "aria_always_listen",
+                "Accept every multi-word utterance without saying ARIA",
+                note=(
+                    "High-privacy opt-in. Requires voice and conversational awareness. "
+                    "Wake-word mode remains the safer default."
+                ),
+            ),
+            Field(
+                "spin", "aria_follow_up_seconds", "Follow-up window (seconds)",
+                minimum=0, maximum=60,
+            ),
+            Field(
+                "check", "aria_hand_controls",
+                "Enable local camera hand-gesture navigation",
+                note=(
+                    "Open palm focuses ARIA; swipes change evidence tabs; victory opens "
+                    "Help; fist interrupts speech and cancels a staged ARIA action. "
+                    "Gestures never confirm a write."
+                ),
+            ),
+            Field("spin", "aria_camera_index", "Camera index", minimum=0, maximum=16),
         ),
     ),
     Step(
@@ -308,7 +362,10 @@ STEPS: tuple[Step, ...] = (
         "Review and apply",
         "Review the summary below. Finish validates every enabled integration, writes "
         "ordinary settings to the protected data directory, writes credentials to the "
-        "OS store, and applies platform-native startup registration.",
+        "OS store, and applies platform-native startup registration. After launch, use "
+        "Settings search terms 'ARIA', 'conversation', 'hand controls', or 'camera' to "
+        "return directly to these controls; Help > Local AI and ARIA shows the gesture "
+        "map, privacy boundary, verification steps, and interactive tour.",
         (Field("review", "_review", "Pending configuration summary"),),
     ),
 )
@@ -394,6 +451,17 @@ def validate_setup(values: dict[str, object]) -> list[str]:
     if values.get("aria_push_enabled") and not str(values.get("aria_push_url", "")).strip():
         if not os.environ.get("ANGERONA_ARIA_PUSH_URL"):
             errors.append("Critical-alert push requires a destination URL.")
+    if values.get("aria_always_listen") and not values.get("aria_conversation_awareness"):
+        errors.append("Always-listen requires ARIA conversational awareness.")
+    if values.get("aria_always_listen") and not values.get("aria_voice_enabled"):
+        errors.append("Always-listen requires ARIA voice input.")
+    if any(values.get(key) for key in (
+        "perf_governor_enabled", "aria_voice_enabled", "aria_voice_cloud_tts",
+        "aria_conversation_awareness", "aria_always_listen", "aria_hand_controls",
+        "aria_cloud_fallback", "aria_push_enabled", "aria_inbox_enabled",
+        "aria_research_egress", "teams_bot_enabled",
+    )) and not values.get("aria_enabled"):
+        errors.append("ARIA controls require the ARIA assistant master switch.")
     if values.get("aria_inbox_enabled") and not (
         str(values.get("aria_imap_host", "")).strip()
         and str(values.get("aria_imap_user", "")).strip()

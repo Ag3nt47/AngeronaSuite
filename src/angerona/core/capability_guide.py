@@ -96,11 +96,21 @@ _BASE_GUIDES = (
     CapabilityGuide(
         "local-ai", "Local AI and ARIA", "Assistant",
         "A local conversational security assistant that explains evidence and "
-        "recommends defensive actions without granting the model host authority.",
-        ("Install Ollama.", "Select a local model.", "Enable ARIA.",
-         "Use the microphone button to select and test an input device."),
-        "Ask ARIA for the current posture and confirm the answer cites live evidence.",
-        "Local by default; cloud fallback is a separate opt-in.",
+        "recommends defensive actions without granting the model host authority. "
+        "Optional transient conversation and camera gesture controls add natural "
+        "follow-ups and navigation without changing that authority boundary.",
+        ("Open Settings > ARIA (or Full Setup > Local AI and ARIA).",
+         "Install Ollama and select a local model.",
+         "Explicitly enable the ARIA master switch.",
+         "Optionally choose ARIA, Friday, or Ultron presentation tone; tone never changes authority.",
+         "Optionally enable Voice, then conversational awareness; keep always-listen off unless needed.",
+         "Optionally install and enable Hand Controls, select the camera index, and restart.",
+         "Use open palm to focus ARIA, swipes for evidence tabs, victory for Help, and fist to stop/cancel."),
+        "Ask ARIA for the current posture, ask one no-wake follow-up, and confirm "
+        "that a gesture cannot approve a staged action.",
+        "Every ARIA surface, microphone mode, rolling discussion window, camera, "
+        "and cloud path is off by default. Conversation context is bounded and "
+        "in-memory; camera frames stay local and are not retained.",
         "ARIA",
     ),
     CapabilityGuide(
@@ -485,9 +495,12 @@ class _CapabilityMetadata:
 _METADATA: dict[str, _CapabilityMetadata] = {
     "local-ai": _CapabilityMetadata(
         CapabilityMaturity.OPERATIONAL,
-        ("tests/test_ollama_transport.py", "tests/test_ai_security_broker.py"),
-        ("Answer quality depends on the installed local model; ARIA has no direct host authority.",),
-        ("aria", "voice", "microphone", "local assistant"),
+        ("tests/test_ollama_transport.py", "tests/test_ai_security_broker.py",
+         "tests/test_aria_optional_controls.py"),
+        ("Answer quality depends on the installed local model; ARIA has no direct host authority.",
+         "Hand controls require a supported local camera plus optional OpenCV/MediaPipe packages."),
+        ("aria", "voice", "microphone", "local assistant", "friday", "ultron",
+         "gesture", "hand controls", "conversation awareness", "always listen"),
     ),
     "trusted-processes": _CapabilityMetadata(
         CapabilityMaturity.OPERATIONAL,

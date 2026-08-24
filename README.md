@@ -68,6 +68,35 @@ existing BCC/eBPF sensor is an explicit privileged supplement.
 > (Cycle 22), or use [llms.txt](llms.txt) for the machine-readable project
 > reference.
 
+## LATEST (2026-08-24 — optional ARIA conversation and hand controls)
+
+- **ARIA is genuinely opt-in.** The ARIA master switch, HUD, performance
+  governor, voice, conversational awareness, always-listen mode, and camera hand
+  controls are all **off on a fresh install and in every Setup profile**. Turning
+  ARIA off also disables its subordinate controls when Settings is saved.
+- **Natural local conversation controls.** When separately enabled, ARIA keeps a
+  bounded, redacted, in-memory discussion window so you can say its name anywhere
+  in a sentence, ask a short follow-up without repeating the wake word, and say
+  `stop`, `wait`, or `quiet` while a reply is playing. Likely speaker echo is
+  suppressed. Always-listen is a further high-privacy opt-in; no ambient room
+  transcript is persisted.
+- **Local camera hand navigation.** Optional OpenCV/MediaPipe processing recognizes
+  deliberate, held gestures with cooldowns: open palm focuses ARIA; swipe
+  left/right changes evidence tabs; victory opens Help; fist stops speech and
+  cancels the pending ARIA action. Pinch, point, and thumbs-up are non-authorizing
+  navigation/acknowledgement gestures. Frames and landmarks are not saved or
+  uploaded, and **no gesture can confirm a WRITE action**.
+- **ARIA, Friday, and Ultron presentation profiles.** Friday is warmer and
+  pragmatic; Ultron is terse and risk-ranked for incident review. These are tone
+  profiles only—neither changes tools, host permissions, defensive scope, or the
+  immutable confirm-then-execute boundary.
+- **Setup and navigation aids.** Full Setup now has a dedicated ARIA conversation
+  and hand-controls page. Settings search routes `conversation`, `camera`,
+  `gesture`, `Friday`, or `Ultron` to **Settings > ARIA**; **Help > Local AI and
+  ARIA** and the interactive tour include the gesture map, privacy boundaries,
+  verification steps, and canonical setup route. Run `python run_aria_selftests.py`
+  for the expanded **15-check** ARIA gate.
+
 ## Why Angerona stands out
 
 | What visitors are looking for | What Angerona delivers |
@@ -112,7 +141,7 @@ the exact platform and scale boundaries remain documented below.
   names/versions without collecting a hostname, username, home path, command
   line, or network identity.
 - **Full Setup program** — a dedicated Windows Start-menu entry, Linux launcher,
-  macOS first-run path, and in-app **SETUP** button open the same 16-step,
+  macOS first-run path, and in-app **SETUP** button open the same 17-step,
   platform-aware configuration experience. It covers every supported end-user
   option, offers local-only presets, validates integrations before applying,
   shows a final review, keeps credentials in the operating-system store, and
@@ -164,7 +193,12 @@ the exact platform and scale boundaries remain documented below.
   runs responsive local checks and honest Microsoft Defender orchestration; USB
   trust uses a protected PIN plus volume identity and revokes approval when the
   device behind a mount point changes.
-- **ARIA — conversational security copilot (v1.8.0)** — a talk-to-it HUD with a local-LLM chat (grounded in your runbooks + live posture), spoken threat narration, live read-only email/phishing scanning, on-command indicator research, and adaptive UI performance tuning. Local, gated, defensive-only, and off by default — enable and live-test each piece in **Settings ▸ ARIA**. See "What's new in v1.8.0" below.
+- **ARIA — optional conversational security copilot** — a local-LLM HUD grounded
+  in runbooks and live posture, with separately gated voice, transient discussion
+  awareness, interrupt/follow-up controls, local camera gesture navigation,
+  ARIA/Friday/Ultron tone profiles, read-only email/phishing scanning,
+  indicator research, and adaptive UI tuning. Every surface and sensor is off by
+  default; enable only the pieces you want in **Settings > ARIA**.
 - **Core protections, ported from the original Angerona engines:**
   - File Integrity Monitoring (FIM)
   - Process / parent-lineage monitoring
@@ -639,15 +673,16 @@ additive, **off by default**, and each shipped with a `self_test()`. Every actio
 stays **confirm-then-execute**; nothing touches detection, correlation, or response.
 
 Run every ARIA self-test from the repo root: `python run_aria_selftests.py`
-(currently **13/13 PASS** — the modules plus the research→browser bridge and the
-email watcher).
+(currently **15 checks** — including transient conversation awareness and the
+offline hand-gesture classifier, plus the research→browser bridge and email watcher).
 
-**Using it:** ARIA appears as an **ARIA tab** next to Live Alerts (a pulsing orb
-tied to your live Angerona Score, a posture sparkline, and a chat box). The chat is
+**Using it:** after the master opt-in, ARIA appears beside the always-visible
+Console as a pulsing orb tied to your live Angerona Score and posture sparkline. The chat is
 **conversational** — off-runbook questions are answered by your local model
 (Ollama) through the guarded client, grounded with your runbook excerpts and live
-posture. Configure and **live-test** every feature in **Settings ▸ ARIA** (voice,
-email scanning, channel push, research) — each has a one-click test button.
+posture. Configure every feature in **Settings > ARIA** (profile, voice,
+conversation, hand controls, email scanning, channel push, research); optional
+connectors keep their one-click tests.
 
 - **ARIA Overdrive** — `core/perf_governor.py`. An adaptive governor for the
   *cosmetic/UI* path (GUI refresh, alert row cap, display batch) that scales to
@@ -679,6 +714,17 @@ email scanning, channel push, research) — each has a one-click test button.
   automatically: pyttsx3 → **Windows SAPI via System.Speech (zero-install)** →
   win32com. The dashboard's **VOICE & MIC** button opens device, offline-model,
   and privacy settings directly. Opt-in; cloud TTS is explicit.
+- **Transient conversational awareness** — `core/conversation_awareness.py`.
+  Wake-word-anywhere extraction, bounded no-wake follow-ups, optional
+  always-listen, interrupt phrases, echo suppression, and a redacted in-memory
+  discussion window. Nothing persists a room transcript or invokes a tool.
+- **Local hand controls** — `connectors/hand_controls.py`. Optional
+  OpenCV/MediaPipe camera processing classifies six held gestures plus swipes into
+  a bounded GUI event queue. The GUI exposes only navigation, focus,
+  acknowledgement, speech interruption, and cancellation—never confirmation.
+- **Presentation profiles** — ARIA, Friday, and Ultron alter response tone only.
+  The local prompt repeats the unchanged defensive and operator-authority
+  boundaries for every profile.
 - **Email scanning (live)** — `connectors/inbox_watcher.py` runs a background,
   **read-only IMAP** poller that scores each message with local phishing
   heuristics (`inbox_triage.py`: SPF/DKIM/DMARC, Reply-To mismatch, lookalike

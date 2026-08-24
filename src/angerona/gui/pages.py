@@ -4384,10 +4384,14 @@ class CommandConsolePanel(QFrame):
         self.setObjectName("Panel")
         self.backend = backend
         self._stream_ask = None          # optional fn(text, on_token)->str (ARIA)
+        aria_enabled = bool(getattr(getattr(backend, "config", None), "aria_enabled", False))
+        self._prompt_label = "ARIA#" if aria_enabled else "IR#"
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 12, 14, 12)
         self._title = _ClickableSection(
-            "ARIA Console  —  ask ARIA in plain language, or type 'help' for commands",
+            ("ARIA Console  —  ask ARIA in plain language, or type 'help' for commands"
+             if aria_enabled else
+             "Incident Response Console  —  ARIA is optional and currently off"),
             "Open the expanded ARIA and guarded-command operations deck.",
         )
         self._title.clicked.connect(self._open_detail)
@@ -4407,11 +4411,15 @@ class CommandConsolePanel(QFrame):
         self.spin.setStyleSheet("color:#1f9cff; font-weight:800; font-size:14px; "
                                 "letter-spacing:1px;")
         row.addWidget(self.spin)
-        prompt = QLabel("ARIA#")
+        prompt = QLabel(self._prompt_label)
         prompt.setStyleSheet("color:#22c55e; font-weight:700; font-family:Consolas;")
         row.addWidget(prompt)
         self.inp = QLineEdit()
-        self.inp.setPlaceholderText("what's my posture?   ·   ps   ·   kill 1234   ·   trust my running apps")
+        self.inp.setPlaceholderText(
+            "what's my posture?   ·   ps   ·   kill 1234   ·   trust my running apps"
+            if aria_enabled else
+            "help   ·   ps   ·   modules   ·   threat   ·   enable ARIA in Settings > ARIA"
+        )
         self.inp.setStyleSheet("font-family:Consolas;")
         self.inp.returnPressed.connect(self._submit)
         row.addWidget(self.inp)
@@ -4426,7 +4434,12 @@ class CommandConsolePanel(QFrame):
 
         self._result.connect(self._on_result)
         self._token.connect(self._on_token)
-        self._append("ARIA console ready — ask me anything, or type 'help' for commands.")
+        self._append(
+            "ARIA console ready — ask me anything, or type 'help' for commands."
+            if aria_enabled else
+            "Incident-response console ready. ARIA, voice, awareness, and hand controls "
+            "are off; enable them explicitly in Settings > ARIA."
+        )
 
     def set_stream_ask(self, fn) -> None:
         """Wire ARIA's streaming brain. fn(text, on_token)->str; free-form input
@@ -4441,13 +4454,13 @@ class CommandConsolePanel(QFrame):
         if text.lower() == "clear":
             self.out.clear()
             return
-        self._append(f"ARIA# {text}")
+        self._append(f"{self._prompt_label} {text}")
         self._start_busy()
         threading.Thread(target=self._work, args=(text,), daemon=True).start()
 
     def run_command(self, text: str) -> None:
         """Run a command programmatically (e.g. from a toolbar button)."""
-        self._append(f"ARIA# {text}")
+        self._append(f"{self._prompt_label} {text}")
         self._start_busy()
         threading.Thread(target=self._work, args=(text,), daemon=True).start()
 
@@ -4978,7 +4991,8 @@ class SettingsDialog(QDialog):
         for name in ("_aria_voice_cloud_chk", "_aria_cloud_fallback_chk",
                      "_alert_analysis_cloud_chk",
                      "_aria_push_chk", "_aria_inbox_chk", "_aria_egress_chk",
-                     "_teams_chk", "_teams_skip_chk", "_mob_chk"):
+                     "_aria_awareness_chk", "_aria_always_listen_chk",
+                     "_aria_hands_chk", "_teams_chk", "_teams_skip_chk", "_mob_chk"):
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.setChecked(False)
@@ -5704,7 +5718,7 @@ class SettingsDialog(QDialog):
 
     def _tab_aria(self) -> QWidget:
         """ARIA assistant layer — HUD, Overdrive, voice, auto-brief, inbox, research.
-        Everything here is local-first and off by default (except the HUD itself)."""
+        Everything here is local-first, independently optional, and off by default."""
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setSpacing(10)
@@ -5716,11 +5730,22 @@ class SettingsDialog(QDialog):
             lay.addWidget(n)
 
         lay.addWidget(self._section("ARIA assistant"))
-        self._aria_chk = QCheckBox("Show the ARIA HUD (orb + posture trend + chat)")
-        self._aria_chk.setChecked(getattr(self._cfg, "aria_enabled", True))
+        self._aria_chk = QCheckBox("Enable ARIA (HUD + local assistant)")
+        self._aria_chk.setChecked(getattr(self._cfg, "aria_enabled", False))
         lay.addWidget(self._aria_chk)
-        _note("Local, defensive-only. Reads run live; any action stays confirm-then-execute. "
-              "Restart to apply a change.")
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(QLabel("Presentation profile:"))
+        self._aria_persona_combo = QComboBox()
+        self._aria_persona_combo.addItems(["aria", "friday", "ultron"])
+        _persona = str(getattr(self._cfg, "aria_persona", "aria") or "aria").lower()
+        _pi = self._aria_persona_combo.findText(_persona)
+        self._aria_persona_combo.setCurrentIndex(_pi if _pi >= 0 else 0)
+        profile_row.addWidget(self._aria_persona_combo)
+        profile_row.addStretch()
+        lay.addLayout(profile_row)
+        _note("Local, defensive-only, and disabled on a fresh install. Friday changes warmth; "
+              "Ultron makes incident analysis terse and risk-ranked. Profiles never change "
+              "tools, authority, or confirm-then-execute. Restart to apply the ARIA master switch.")
 
         lay.addWidget(self._section("ARIA Overdrive — adaptive performance governor"))
         self._aria_perf_chk = QCheckBox(
@@ -5787,6 +5812,55 @@ class SettingsDialog(QDialog):
               "here if you have one. A live level bar next to ARIA shows when it can hear you. "
               "Needs a local TTS/STT backend (pyttsx3/SAPI, vosk/whisper) — install via ARIA "
               "('install voice'). Degrades silently if absent; the mic stays off unless enabled.")
+
+        lay.addWidget(self._section("Conversational awareness (local, transient, opt-in)"))
+        self._aria_awareness_chk = QCheckBox(
+            "Remember a short room discussion and allow no-wake follow-up questions")
+        self._aria_awareness_chk.setChecked(
+            getattr(self._cfg, "aria_conversation_awareness", False))
+        lay.addWidget(self._aria_awareness_chk)
+        self._aria_always_listen_chk = QCheckBox(
+            "Always-listen: accept every multi-word utterance without saying ARIA")
+        self._aria_always_listen_chk.setChecked(
+            getattr(self._cfg, "aria_always_listen", False))
+        lay.addWidget(self._aria_always_listen_chk)
+        follow_row = QHBoxLayout()
+        follow_row.addWidget(QLabel("No-wake follow-up window (seconds):"))
+        self._aria_follow_up = QLineEdit(str(
+            getattr(self._cfg, "aria_follow_up_seconds", 12)))
+        self._aria_follow_up.setFixedWidth(60)
+        follow_row.addWidget(self._aria_follow_up)
+        follow_row.addStretch()
+        lay.addLayout(follow_row)
+        _note("Awareness keeps only a bounded, redacted in-memory window and discards it when "
+              "ARIA stops. It suppresses likely speaker echo and accepts 'stop', 'wait', or "
+              "'quiet' while ARIA is speaking. Always-listen requires voice + awareness and "
+              "has a larger privacy footprint; wake-word mode is the safer choice.")
+
+        lay.addWidget(self._section("Hand controls (local camera, opt-in)"))
+        self._aria_hands_chk = QCheckBox("Enable camera hand-gesture navigation")
+        self._aria_hands_chk.setChecked(getattr(self._cfg, "aria_hand_controls", False))
+        lay.addWidget(self._aria_hands_chk)
+        camera_row = QHBoxLayout()
+        camera_row.addWidget(QLabel("Camera index:"))
+        self._aria_camera_index = QLineEdit(str(
+            getattr(self._cfg, "aria_camera_index", 0)))
+        self._aria_camera_index.setFixedWidth(60)
+        camera_row.addWidget(self._aria_camera_index)
+        try:
+            from angerona.connectors.hand_controls import HandControls
+            _hand_status = HandControls(enabled=True).status()
+        except Exception:
+            _hand_status = "hand controls unavailable"
+        self._aria_hand_status = QLabel(_hand_status)
+        self._aria_hand_status.setWordWrap(True)
+        camera_row.addWidget(self._aria_hand_status, 1)
+        lay.addLayout(camera_row)
+        _note("Open palm focuses the ARIA prompt; swipe left/right changes evidence tabs; "
+              "victory opens Help; fist interrupts speech and cancels a pending ARIA action. "
+              "Pinch/point/thumbs-up only focus or acknowledge navigation. Gestures never "
+              "confirm a write. Frames are processed locally and are never saved or uploaded. "
+              "Install the optional 'hand-controls' capability if OpenCV/MediaPipe are missing.")
 
         lay.addWidget(self._section("Auto-brief a channel (outbound, opt-in)"))
         self._aria_push_chk = QCheckBox("Push CRITICAL posture to a channel")
@@ -6840,18 +6914,45 @@ class SettingsDialog(QDialog):
 
         # ── ARIA toggles ──
         self._cfg.aria_enabled          = self._aria_chk.isChecked()
-        self._cfg.perf_governor_enabled = self._aria_perf_chk.isChecked()
-        self._cfg.aria_voice_enabled    = self._aria_voice_chk.isChecked()
-        self._cfg.aria_voice_cloud_tts  = self._aria_voice_cloud_chk.isChecked()
-        self._cfg.aria_cloud_fallback   = self._aria_cloud_fallback_chk.isChecked()
+        self._cfg.perf_governor_enabled = (
+            self._cfg.aria_enabled and self._aria_perf_chk.isChecked())
+        self._cfg.aria_persona          = self._aria_persona_combo.currentText()
+        self._cfg.aria_voice_enabled    = (
+            self._cfg.aria_enabled and self._aria_voice_chk.isChecked())
+        self._cfg.aria_conversation_awareness = (
+            self._cfg.aria_enabled and self._aria_awareness_chk.isChecked())
+        self._cfg.aria_always_listen = (
+            self._cfg.aria_enabled
+            and self._cfg.aria_voice_enabled
+            and self._cfg.aria_conversation_awareness
+            and self._aria_always_listen_chk.isChecked()
+        )
+        try:
+            self._cfg.aria_follow_up_seconds = max(
+                0, min(60, int(self._aria_follow_up.text().strip() or "12")))
+        except ValueError:
+            self._cfg.aria_follow_up_seconds = 12
+        self._cfg.aria_hand_controls = (
+            self._cfg.aria_enabled and self._aria_hands_chk.isChecked())
+        try:
+            self._cfg.aria_camera_index = max(
+                0, min(16, int(self._aria_camera_index.text().strip() or "0")))
+        except ValueError:
+            self._cfg.aria_camera_index = 0
+        self._cfg.aria_voice_cloud_tts  = (
+            self._cfg.aria_voice_enabled and self._aria_voice_cloud_chk.isChecked())
+        self._cfg.aria_cloud_fallback   = (
+            self._cfg.aria_enabled and self._aria_cloud_fallback_chk.isChecked())
         self._cfg.alert_analysis_cloud_fallback = (
             self._alert_analysis_cloud_chk.isChecked()
         )
         self._cfg.aria_mic_device       = str(self._aria_mic_combo.currentData() or "")
-        self._cfg.aria_push_enabled     = self._aria_push_chk.isChecked()
+        self._cfg.aria_push_enabled     = (
+            self._cfg.aria_enabled and self._aria_push_chk.isChecked())
         self._cfg.aria_push_kind        = self._aria_push_kind.currentText()
         self._cfg.aria_push_url         = self._aria_push_url.text().strip()
-        self._cfg.aria_inbox_enabled    = self._aria_inbox_chk.isChecked()
+        self._cfg.aria_inbox_enabled    = (
+            self._cfg.aria_enabled and self._aria_inbox_chk.isChecked())
         self._cfg.aria_imap_host        = self._aria_imap_host.text().strip()
         self._cfg.aria_imap_user        = self._aria_imap_user.text().strip()
         try:
@@ -6865,10 +6966,12 @@ class SettingsDialog(QDialog):
             write_env_keys({"ARIA_IMAP_PASS": _imap_pw})
         except Exception:
             pass
-        self._cfg.aria_research_egress  = self._aria_egress_chk.isChecked()
+        self._cfg.aria_research_egress  = (
+            self._cfg.aria_enabled and self._aria_egress_chk.isChecked())
 
         # ── Teams bot ──
-        self._cfg.teams_bot_enabled   = self._teams_chk.isChecked()
+        self._cfg.teams_bot_enabled   = (
+            self._cfg.aria_enabled and self._teams_chk.isChecked())
         self._cfg.teams_app_id        = self._teams_app_id.text().strip()
         self._cfg.teams_allowed_users = self._teams_users.text().strip()
         self._cfg.teams_bot_skip_auth = False

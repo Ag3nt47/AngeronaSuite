@@ -37,6 +37,10 @@ CAPABILITIES: dict[str, dict] = {
         "desc": "Two-way Microsoft Teams bot (chat with ARIA from Teams)",
         "reqs": [("jwt", "PyJWT"), ("requests", "requests")],
     },
+    "hand-controls": {
+        "desc": "Local camera hand-gesture navigation (frames are not retained)",
+        "reqs": [("cv2", "opencv-python"), ("mediapipe", "mediapipe")],
+    },
     "realtime-etw": {
         "desc": "Real-time ETW process sensor (event-driven, closes the polling gap)",
         "reqs": [("etw", "pywintrace")],
@@ -91,7 +95,10 @@ def summary() -> str:
     for cap, st in capability_status().items():
         mark = "✓ ready" if st["ready"] else "✗ missing: " + ", ".join(st["missing"])
         lines.append(f"  • {cap:<15} {mark}  — {st['desc']}")
-    lines.append("\nAsk ARIA to \"install voice\" (or teams / all) and I'll add them myself.")
+    lines.append(
+        "\nAsk ARIA to \"install voice\", \"install hand controls\", "
+        "\"install teams\", or \"install all\"."
+    )
     return "\n".join(lines)
 
 

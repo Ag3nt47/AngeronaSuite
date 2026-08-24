@@ -86,9 +86,15 @@ class Config:
     fleet_tenant_id: str = "local"
 
     # ── ARIA assistant layer (v1.8.0) — local, gated, defensive-only ───────
-    aria_enabled: bool = True                   # show the ARIA HUD tab + local assistant
+    aria_enabled: bool = False                  # master opt-in: HUD + local assistant
     perf_governor_enabled: bool = False         # ARIA Overdrive adaptive UI-path governor
+    aria_persona: str = "aria"                 # aria | friday | ultron (presentation only)
     aria_voice_enabled: bool = False            # spoken threat narration (local TTS)
+    aria_conversation_awareness: bool = False   # transient rolling room/follow-up context
+    aria_always_listen: bool = False             # accept speech without a wake word
+    aria_follow_up_seconds: int = 12             # no-wake follow-up window after a reply
+    aria_hand_controls: bool = False             # local camera gesture navigation
+    aria_camera_index: int = 0                   # explicit camera used by hand controls
     aria_voice_cloud_tts: bool = False          # allow ElevenLabs cloud TTS (opt-in egress)
     aria_cloud_fallback: bool = False           # send a sanitized question to a configured cloud AI if local AI is offline
     alert_analysis_cloud_fallback: bool = False # send privacy-sanitized alert evidence only after a separate explicit opt-in
@@ -212,8 +218,43 @@ class Config:
                     data, "aria_enabled", cfg.aria_enabled)
                 cfg.perf_governor_enabled = _bool_setting(
                     data, "perf_governor_enabled", cfg.perf_governor_enabled)
+                requested_persona = str(
+                    data.get("aria_persona", cfg.aria_persona)
+                ).strip().lower()
+                cfg.aria_persona = (
+                    requested_persona
+                    if requested_persona in {"aria", "friday", "ultron"}
+                    else "aria"
+                )
                 cfg.aria_voice_enabled = _bool_setting(
                     data, "aria_voice_enabled", cfg.aria_voice_enabled)
+                cfg.aria_conversation_awareness = _bool_setting(
+                    data,
+                    "aria_conversation_awareness",
+                    cfg.aria_conversation_awareness,
+                )
+                cfg.aria_always_listen = _bool_setting(
+                    data, "aria_always_listen", cfg.aria_always_listen)
+                try:
+                    cfg.aria_follow_up_seconds = max(
+                        0,
+                        min(60, int(data.get(
+                            "aria_follow_up_seconds", cfg.aria_follow_up_seconds
+                        ))),
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    pass
+                cfg.aria_hand_controls = _bool_setting(
+                    data, "aria_hand_controls", cfg.aria_hand_controls)
+                try:
+                    cfg.aria_camera_index = max(
+                        0,
+                        min(16, int(data.get(
+                            "aria_camera_index", cfg.aria_camera_index
+                        ))),
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    pass
                 cfg.aria_voice_cloud_tts = _bool_setting(
                     data, "aria_voice_cloud_tts", cfg.aria_voice_cloud_tts)
                 cfg.aria_cloud_fallback = _bool_setting(
@@ -313,6 +354,21 @@ class Config:
                 os.environ.pop("ANGERONA_USER_FOLDER_DECEPTION", None)
         except Exception:
             pass
+        # The ARIA master switch is a real authority/sensor boundary. Legacy or
+        # hand-edited settings cannot leave subordinate listeners/connectors
+        # active while the master is off.
+        if not cfg.aria_enabled:
+            cfg.perf_governor_enabled = False
+            cfg.aria_voice_enabled = False
+            cfg.aria_voice_cloud_tts = False
+            cfg.aria_conversation_awareness = False
+            cfg.aria_always_listen = False
+            cfg.aria_hand_controls = False
+            cfg.aria_cloud_fallback = False
+            cfg.aria_push_enabled = False
+            cfg.aria_inbox_enabled = False
+            cfg.aria_research_egress = False
+            cfg.teams_bot_enabled = False
         return cfg
 
     def save(self) -> None:
@@ -354,7 +410,13 @@ class Config:
                     "fleet_tenant_id": self.fleet_tenant_id,
                     "aria_enabled":          self.aria_enabled,
                     "perf_governor_enabled": self.perf_governor_enabled,
+                    "aria_persona":          self.aria_persona,
                     "aria_voice_enabled":    self.aria_voice_enabled,
+                    "aria_conversation_awareness": self.aria_conversation_awareness,
+                    "aria_always_listen":    self.aria_always_listen,
+                    "aria_follow_up_seconds": self.aria_follow_up_seconds,
+                    "aria_hand_controls":    self.aria_hand_controls,
+                    "aria_camera_index":     self.aria_camera_index,
                     "aria_voice_cloud_tts":  self.aria_voice_cloud_tts,
                     "aria_cloud_fallback":   self.aria_cloud_fallback,
                     "alert_analysis_cloud_fallback": self.alert_analysis_cloud_fallback,

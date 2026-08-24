@@ -231,10 +231,11 @@ def build_default_steps(mw) -> "list[TourStep]":
                  "now lives in the console below, these stay visible while you chat.",
                  g("_right_tabs")),
         TourStep("ARIA — your assistant & the mic meter",
-                 "This is ARIA. The glowing orb tracks your posture score; under it, the 🎤 bar "
-                 "shows your live microphone level once voice is on — when it moves as you speak, "
-                 "ARIA can hear you. Ask ARIA anything, or tell her to act (\"suspend pid 1234\", "
-                 "\"trust my running apps\", \"install voice\"). Every change is confirm-then-execute.",
+                 "ARIA is optional and off on a fresh install. Enable it in Setup or Settings > "
+                 "ARIA. Voice, transient discussion awareness, always-listen, and camera hand "
+                 "controls are separate switches. Open palm focuses the prompt; swipes change "
+                 "evidence tabs; victory opens Help; fist stops speech and cancels. No gesture or "
+                 "Friday/Ultron tone can confirm a change — every write remains confirm-then-execute.",
                  g("aria_hud")),
         TourStep("The ARIA Console",
                  "One prompt bar for everything. Type an incident-response command (ps, kill 1234, "
@@ -276,13 +277,15 @@ def build_default_steps(mw) -> "list[TourStep]":
                  "given PID, and the collision/evidence timeline — for after-the-fact investigation.",
                  g("_forensics_btn")),
         TourStep("SETUP & HELP",
-                 "SETUP runs the one-swoop wizard (appearance, local AI, voice + microphone, Signal, Teams, "
-                 "trusted apps, startup). HELP has a tab for every feature plus a 'Take the tour' button to "
-                 "replay this walkthrough any time.",
+                 "SETUP runs the one-swoop wizard (appearance, optional ARIA, persona, conversation + hand "
+                 "controls, voice + microphone, Signal, Teams, trusted apps, startup). HELP > Local AI and "
+                 "ARIA has the gesture map, privacy boundary, setup route, and verification steps, plus a "
+                 "'Take the tour' button to replay this walkthrough any time.",
                  g("_setup_btn")),
         TourStep("SETTINGS",
-                 "Fine-grained control of everything: modules, AI keys, ARIA, voice + which microphone to "
-                 "use, connectors, and appearance. The panels scroll, so nothing is hidden.",
+                 "Fine-grained control of everything: modules, AI keys, optional ARIA, Friday/Ultron tone, "
+                 "conversation awareness, hand gestures, voice + microphone, connectors, and appearance. "
+                 "Search 'ARIA', 'camera', or 'hand controls' to jump to the owner tab.",
                  g("_settings_btn")),
         TourStep("STOP — and you're set",
                  "STOP shuts every module down and closes Angerona cleanly (closing the window only hides "

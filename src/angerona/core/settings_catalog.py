@@ -39,11 +39,13 @@ AREAS = (
     ),
     SettingsArea(
         "aria", "ARIA",
-        "Assistant, microphone, voice, mailbox, Teams and optional egress.",
+        "Optional assistant, persona, conversation, hand, microphone, mailbox, Teams and egress controls.",
         ("aria", "microphone", "mic", "voice", "voice model", "speech",
+         "friday", "ultron", "persona", "conversation", "awareness",
+         "always listen", "follow up", "camera", "gesture", "hand controls",
          "privacy", "privacy defaults", "cloud", "mail", "teams",
          "research", "webhook", "notification"),
-        "Optional egress; off by default", False,
+        "Assistant, sensors, listeners, and optional egress are off by default", False,
     ),
     SettingsArea(
         "trusted", "Trusted Processes",
