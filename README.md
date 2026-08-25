@@ -22,6 +22,20 @@ Current version: **v1.10.2**
 [Security](SECURITY.md) ·
 [Contributing](CONTRIBUTING.md)
 
+## 🚀 One-click Windows install
+
+For a tagged release, download `Angerona-<version>-win64-setup.exe` and its
+adjacent SHA-256 file from [Releases](../../releases). Verify the digest and
+GitHub build attestation, then open the Setup executable and approve the Windows
+UAC prompt. It installs the bundled application, shortcuts, uninstaller, and
+guided setup. **No Python or terminal is required.**
+
+The release ZIP remains the portable/manual-verification fallback. Extract it
+and run `Install-Angerona-Release.bat`; that path verifies its embedded
+executables against `release-files.sha256` before installation. Releases are not
+currently Authenticode publisher-signed, so Windows may show **Unknown
+Publisher** even when the checksum and GitHub attestation are valid.
+
 ## What is current in v1.10.2
 
 - **Governed Adversary Combat:** unattended local defensive response can block a
