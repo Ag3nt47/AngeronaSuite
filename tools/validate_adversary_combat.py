@@ -77,15 +77,14 @@ def _wait_ready(modules: list[object], timeout: float = 60.0) -> None:
             raise RuntimeError(f"{module.name} failed: {module.last_error}")
 
 
-def _run_round(root: Path, round_number: int) -> tuple[bool, str, dict]:
-    from angerona.core import drill_resolution
+def _run_round(root: Path) -> tuple[bool, str, dict]:
     from angerona.core.config import Config
     from angerona.core.eventbus import EventBus
     from angerona.core.storage import FlightRecorder
     from angerona.modules.adversary_combat import AdversaryCombat
     from angerona.modules.file_integrity import FileIntegrityModule
     from angerona.modules.process_monitor import ProcessMonitorModule
-    from angerona.modules.purple_guard import PurpleGuard, install_policies
+    from angerona.modules.purple_guard import PurpleGuard, ensure_redteam_validation_pack
     from angerona.shark.aar_report import generate_aar
     from angerona.shark.red_team import REDTEAM_STAGE_CATEGORY, RedTeamEngine
 
@@ -111,14 +110,10 @@ def _run_round(root: Path, round_number: int) -> tuple[bool, str, dict]:
     bus.subscribe(recorder.record_bus)
 
     findings = [{"mitre": mitre, "name": name} for mitre, name in _TECHNIQUES]
-    installed = [mitre for mitre, _name in _TECHNIQUES]
-    install_policies(findings, f"validation-seed-{round_number}", root)
-    drill_resolution.apply_contracts(
-        findings,
-        f"validation-seed-{round_number}",
-        root,
-        installed=installed,
-    )
+    validation_pack = ensure_redteam_validation_pack(root)
+    expected = {finding["mitre"] for finding in findings}
+    if set(validation_pack.get("active", [])) != expected:
+        raise RuntimeError("complete Red Team validation detector pack did not arm")
 
     combat = AdversaryCombat(root)
     fim = FileIntegrityModule()
@@ -217,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
         round_root = session
         print(f"\n=== EXTREME ADVERSARY COMBAT VALIDATION ROUND {round_number} ===")
         try:
-            complete, report, score = _run_round(round_root, round_number)
+            complete, report, score = _run_round(round_root)
         except Exception as exc:
             print(f"ROUND {round_number} ERROR: {type(exc).__name__}: {exc}")
             complete, report, score = False, "", {}

@@ -159,7 +159,7 @@ synthetic.
 
 The frozen v1.10.2 tree produced the following local evidence on Windows:
 
-- 1,258 pytest cases collected across 197 files: **1,255 passed, 3 intentional
+- 1,260 pytest cases collected across 197 files: **1,257 passed, 3 intentional
   skips, 0 failed**.
 - **308/308** Python files compiled; Ruff, imports, module discovery, duplicate
   checks, direct selfcheck, and batch selfcheck passed.
@@ -167,10 +167,15 @@ The frozen v1.10.2 tree produced the following local evidence on Windows:
   inactive results and 8 platform/operator skips. Core/Shark: **20/20**. ARIA:
   **15/15**. Dependency audit: **no known vulnerabilities**.
 - Deterministic Combat negative controls: **128/128**.
+- Auto-contain Red Team launches arm all **13/13** simulation-only detector
+  contracts before the first marker and fail closed if activation cannot be
+  persisted.
 - Live maximum campaign: winning round **52/52 detections, 52/52 responses,
   13/13 contracts, 13/13 verified closures**, with resilience PASS. Cleanup left
-  zero active reversible actions, zero `Angerona-Combat-*` firewall rules, zero
-  tagged probe processes, and an intact journal.
+  zero active reversible actions, zero recovery requirements, zero marker files,
+  zero tagged probe processes, and an intact journal. The preceding round reached
+  100% detection but failed response/closure gates, so the harness rejected it
+  and continued automatically.
 
 These results are strong project evidence, not an independent certification or
 a claim of complete attack coverage.
@@ -208,6 +213,6 @@ a claim of complete attack coverage.
 MIT licensed. See [LICENSE](LICENSE), [SECURITY.md](SECURITY.md), and
 [SUPPORT.md](SUPPORT.md).
 
-**Final Cycle 7 verification.** Frozen v1.10.2 passes **1255 tests with 3 intentional platform skips**; static discovery reports **67 modules**.
+**Final Cycle 8 verification.** Frozen v1.10.2 passes **1257 tests with 3 intentional platform skips**; static discovery reports **67 modules**.
 
-<!-- ANGERONA_DOC_STATUS tests=1255 skips=3 modules=67 -->
+<!-- ANGERONA_DOC_STATUS tests=1257 skips=3 modules=67 -->

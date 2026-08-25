@@ -220,6 +220,15 @@ def _is_remediation(ev: Event) -> bool:
     return False
 
 
+def _is_verified_combat_remediation(ev: Event) -> bool:
+    details = ev.details or {}
+    return bool(
+        ev.module == "Adversary Combat"
+        and details.get("mitigated") is True
+        and details.get("postcondition_verified") is True
+    )
+
+
 def evaluate(history: dict, events: List[Event],
              stage_category: Optional[dict] = None) -> List[StepVerdict]:
     """Walk events in chronological order and, for each step, find the first
@@ -279,6 +288,7 @@ def evaluate(history: dict, events: List[Event],
 
         triggers = [item for item in (v.catch, v.verification_catch) if item]
         if triggers:
+            remediation_candidates: list[tuple[int, Event]] = []
             for event_index, ev in enumerate(chrono):
                 if (ev.ts < step["ts_start"] - 2
                         or ev.ts > catch_deadline
@@ -296,10 +306,30 @@ def evaluate(history: dict, events: List[Event],
                 )
                 if trigger is None:
                     continue
+                remediation_candidates.append((event_index, ev))
+            if remediation_candidates:
+                # Active Response can publish a successful delegation wrapper
+                # just before the exact Combat receipt becomes visible. Prefer
+                # the receipt that proves the host postcondition, then fall back
+                # to the earliest other successful response.
+                event_index, ev = min(
+                    remediation_candidates,
+                    key=lambda item: (
+                        0 if _is_verified_combat_remediation(item[1]) else 1,
+                        item[1].ts,
+                        item[0],
+                    ),
+                )
+                trigger = min(
+                    (
+                        item for item in triggers
+                        if ev.ts >= item.ts and _matches_remediation(step, item, ev)
+                    ),
+                    key=lambda item: item.ts,
+                )
                 v.remediation = ev
                 v.remediation_latency = round(ev.ts - trigger.ts, 3)
                 used_remediations.add(event_index)
-                break
         if catch_index is not None:
             used_catches.add(catch_index)
         if verification_index is not None:
@@ -330,15 +360,14 @@ def _closure_metrics(verdicts: List[StepVerdict]) -> dict:
         technique = verdict.technique_id or _technique_id(verdict.technique)
         if technique:
             classes.setdefault(technique, []).append(verdict)
-    applied = sum(
-        1 for rows in classes.values() if any(row.action_applied for row in rows)
-    )
     def response_verified(row: StepVerdict) -> bool:
-        return bool(
-            row.remediation is not None
-            and row.remediation.module == "Adversary Combat"
-            and (row.remediation.details or {}).get("postcondition_verified") is True
-        )
+        return bool(row.remediation and _is_verified_combat_remediation(row.remediation))
+
+    applied = sum(
+        1
+        for rows in classes.values()
+        if any(row.action_applied or response_verified(row) for row in rows)
+    )
 
     verified = sum(
         1

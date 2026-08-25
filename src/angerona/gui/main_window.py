@@ -1757,6 +1757,25 @@ class MainWindow(QMainWindow):
                 register_runtime_target(_target)
             except Exception:
                 pass
+        if self._sim_ran_redteam and self._sim_auto_remediate:
+            try:
+                from angerona.modules.purple_guard import ensure_redteam_validation_pack
+
+                validation = ensure_redteam_validation_pack(self.config.data_dir)
+                self.console._append(
+                    "[red-team] Complete simulation detector pack armed: "
+                    f"{len(validation.get('active', []))}/13 technique contracts."
+                )
+            except Exception as exc:
+                self.console._append(
+                    "[red-team] Detector-pack activation failed closed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                # No engine has started yet, so collapse the pending count and
+                # restore every temporary response/coverage lease immediately.
+                self._sim_aar_pending = 1
+                self._simulation_aar_finished()
+                return
         if self._sim_ran_redteam:
             self.red_team_engine.hold_evidence_for_aar()
             self.red_team_engine.start(intensity=cfg.get("intensity"),
@@ -1898,6 +1917,22 @@ class MainWindow(QMainWindow):
         self.shark_monitor.activateWindow()
         self.shark_swim.start()
         self.shark_banner.start()
+        try:
+            from angerona.modules.purple_guard import ensure_redteam_validation_pack
+
+            ensure_redteam_validation_pack(self.config.data_dir)
+        except Exception as exc:
+            self.shark_monitor.append(
+                "Red Team detector-pack activation failed closed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            if self._shark_prev_armed is None:
+                os.environ.pop("ANGERONA_SOAR_KILL_AND_ROLLBACK", None)
+            else:
+                os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = self._shark_prev_armed
+            self.shark_swim.stop()
+            self.shark_banner.stop()
+            return
         self.red_team_engine.hold_evidence_for_aar()
         self.red_team_engine.start()
         self._rt_poll = QTimer(self)

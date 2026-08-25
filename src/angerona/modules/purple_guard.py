@@ -176,6 +176,40 @@ def install_policies(findings: list[dict], run_id: str,
     return {"installed": installed, "unsupported": unsupported, "path": str(path)}
 
 
+def ensure_redteam_validation_pack(data_root: Path | None = None) -> dict:
+    """Activate every fixed, simulation-only Purple Guard signature.
+
+    The Red Team console's Auto-contain option promises an end-to-end validation
+    run, not a first-run learning exercise.  These signatures match only inert
+    ``_redteam_*`` artifacts (or the nonce-tagged idle process) in explicitly
+    registered drill targets.  Existing candidate metadata is preserved so an
+    automatic validation run cannot overwrite prior signed remediation lineage.
+    """
+    root = Path(data_root or canonical_data_dir())
+    current = _read_policy(root).get("techniques", {})
+    enabled = current if isinstance(current, dict) else {}
+    techniques = tuple(
+        dict.fromkeys([mitre for _token, mitre, _label in _PATTERNS]
+                      + [_PROCESS_TECHNIQUE])
+    )
+    missing = [mitre for mitre in techniques if mitre not in enabled]
+    result = (
+        install_policies(
+            [{"mitre": mitre} for mitre in missing],
+            "builtin-redteam-validation-v1",
+            root,
+        )
+        if missing
+        else {"installed": [], "unsupported": [], "path": str(policy_path(root))}
+    )
+    return {
+        **result,
+        "active": list(techniques),
+        "already_active": [mitre for mitre in techniques if mitre in enabled],
+        "simulation_only": True,
+    }
+
+
 def remove_policies(
     techniques: list[str],
     data_root: Path | None = None,

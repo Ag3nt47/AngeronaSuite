@@ -95,16 +95,19 @@ local AI, and validation into one native desktop application.
 
 ## Proven status
 
-- Full pytest: **1,255 passed / 3 intentional skips / 0 failed** from 1,258
+- Full pytest: **1,257 passed / 3 intentional skips / 0 failed** from 1,260
   collected tests in 197 files.
 - Compile: **308/308**. Ruff/import/discovery/duplicate gates: pass.
 - Self-tests: **46 module + 20 core/Shark + 15 ARIA passed**, with zero genuine
   failures; direct and batch selfcheck: **26/26** each.
 - Dependency audit: **no known vulnerabilities**.
 - Combat negative controls: **128/128**.
+- Auto-contain Red Team runs pre-arm the complete **13/13** simulation-only
+  validation detector pack and fail closed if it cannot be persisted.
 - Live maximum campaign winning round: **52/52 detection, 52/52 response,
   13/13 contracts, 13/13 verified closure**, resilience PASS, clean post-run
-  state, and valid signed journal.
+  state, and valid signed journal. A preceding imperfect response round was
+  rejected and automatically rerun.
 
 ## Best-fit use cases
 

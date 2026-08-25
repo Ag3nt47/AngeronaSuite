@@ -182,7 +182,8 @@ def test_response_only_gap_candidate_closes_on_fresh_inert_full_drill(
     assert verdicts[0].catch is not None
     assert verdicts[0].catch.module == "Purple Remediation Guard"
     assert verdicts[0].remediation is not None
-    assert verdicts[0].remediation.module == "Active Response SOAR"
+    assert verdicts[0].remediation.module == "Adversary Combat"
+    assert verdicts[0].remediation.details["postcondition_verified"] is True
     assert metrics["verified_closures"] == 1
     assert not marker.exists()
 

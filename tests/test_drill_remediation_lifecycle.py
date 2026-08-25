@@ -303,6 +303,32 @@ def test_duplicate_occurrences_and_scorecard_use_unique_finding_classes(tmp_path
     assert "Verified closure   : 1/1" in report
 
 
+def test_verified_live_combat_receipt_counts_as_applied_and_closed_contract():
+    receipt = Event(
+        "Adversary Combat",
+        "exact quarantine completed",
+        Severity.HIGH,
+        ts=2.0,
+        details={"mitigated": True, "postcondition_verified": True},
+    )
+    rows = [
+        StepVerdict(
+            "Credential Access",
+            "T1003 marker",
+            "inert marker",
+            1.0,
+            True,
+            remediation=receipt,
+        )
+    ]
+
+    assert _closure_metrics(rows) == {
+        "actionable_classes": 1,
+        "actions_applied": 1,
+        "verified_closures": 1,
+    }
+
+
 def test_reconcile_run_turns_real_purple_echo_into_nonzero_closure(tmp_path):
     _key(tmp_path)
     _apply(tmp_path)

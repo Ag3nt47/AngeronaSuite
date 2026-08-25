@@ -37,11 +37,11 @@
     "release": "v1.10.2 frozen release candidate",
     "release_blockers": 0,
     "defense_in_depth_open": "R6-03 Medium, non-blocking",
-    "pytest": "1,255 passed / 3 intentional skips / 0 failed from 1,258 cases across 197 files",
+    "pytest": "1,257 passed / 3 intentional skips / 0 failed from 1,260 cases across 197 files",
     "compile": "308/308",
     "selfcheck": "26/26 direct and batch PASS",
     "combat_negative_controls": "128/128 PASS",
-    "live_campaign": "round 5: 52/52 detection, 52/52 response, 13/13 contracts, 13/13 verified closure, resilience PASS",
+    "live_campaign": "automatic validation correction round 2: 52/52 detection, 52/52 response, 13/13 contracts, 13/13 verified closure, resilience PASS; round 1 was rejected at 98% response / 92% closure",
     "documentation_version": "1.10.2",
     "documentation_qa": "22-page master, 17-page security, 13-page vulnerability; all final pages visually inspected"
   },

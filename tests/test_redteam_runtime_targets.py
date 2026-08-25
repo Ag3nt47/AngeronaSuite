@@ -10,6 +10,27 @@ from angerona.modules import purple_guard
 from angerona.shark.red_team import RedTeamEngine, RedTeamStep
 
 
+def test_complete_validation_pack_arms_all_techniques_without_rewriting_lineage(
+    tmp_path: Path,
+) -> None:
+    purple_guard.install_policies([{"mitre": "T1003"}], "signed-prior-run", tmp_path)
+    before = purple_guard._read_policy(tmp_path)["techniques"]["T1003"]
+
+    result = purple_guard.ensure_redteam_validation_pack(tmp_path)
+    policy = purple_guard._read_policy(tmp_path)["techniques"]
+
+    assert result["simulation_only"] is True
+    assert len(result["active"]) == 13
+    assert set(result["active"]) == set(policy)
+    assert result["unsupported"] == []
+    assert policy["T1003"] == before
+    assert policy["T1059"]["candidate_from_run"] == "builtin-redteam-validation-v1"
+
+    second = purple_guard.ensure_redteam_validation_pack(tmp_path)
+    assert second["installed"] == []
+    assert len(second["already_active"]) == 13
+
+
 def test_t1059_drill_uses_bounded_inert_python_sleeper(monkeypatch, tmp_path: Path) -> None:
     engine = RedTeamEngine(tmp_path / "data", documents_dir=tmp_path / "target")
     engine.run_id = "redteam-process-probe"
