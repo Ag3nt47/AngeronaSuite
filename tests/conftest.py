@@ -9,6 +9,7 @@ That became visible once the launcher correctly protected the real tree.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import os
 import secrets
 from pathlib import Path
@@ -29,7 +30,6 @@ _BOOTSTRAP_ROOT.mkdir(parents=True, exist_ok=True)
 # Apply a D-drive boundary before pytest imports test modules. Individual tests
 # receive a separate child below, but collection-time imports are isolated too.
 os.environ["ANGERONA_DATA"] = str(_BOOTSTRAP_ROOT)
-os.environ["ANGERONA_PYTEST_SESSION_ROOT"] = str(_SESSION_ROOT)
 os.environ["ANGERONA_DIAG_DIR"] = str(_BOOTSTRAP_ROOT / "diagnostics")
 os.environ["TEMP"] = str(_BOOTSTRAP_ROOT / "tmp")
 os.environ["TMP"] = str(_BOOTSTRAP_ROOT / "tmp")
@@ -37,6 +37,12 @@ os.environ["TMP"] = str(_BOOTSTRAP_ROOT / "tmp")
 # operator's live Black Box and terminate it during fixture cleanup.
 os.environ["ANGERONA_BLACKBOX_ENABLED"] = "0"
 Path(os.environ["TEMP"]).mkdir(parents=True, exist_ok=True)
+
+# Hosted Windows runners use an administrator token. Tests still need their
+# disposable per-case roots, while the dedicated custody tests below explicitly
+# monkeypatch elevated mode back on when exercising that production boundary.
+_data_paths = importlib.import_module("angerona.core.data_paths")
+_data_paths._elevated_source_runtime = lambda: False
 
 
 def _clear_data_path_caches() -> None:
@@ -57,7 +63,6 @@ def isolate_angerona_runtime(request: pytest.FixtureRequest, monkeypatch):
     temp = root / "tmp"
     temp.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("ANGERONA_DATA", str(root))
-    monkeypatch.setenv("ANGERONA_PYTEST_SESSION_ROOT", str(_SESSION_ROOT))
     monkeypatch.setenv("ANGERONA_DIAG_DIR", str(root / "diagnostics"))
     monkeypatch.setenv("TEMP", str(temp))
     monkeypatch.setenv("TMP", str(temp))

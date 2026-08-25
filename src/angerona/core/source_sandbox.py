@@ -453,6 +453,7 @@ def _windows_atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> No
         if not flush_file(temp_handle):
             raise OSError(ctypes.get_last_error(), "sandbox flush failed")
 
+        expected_identity = file_identity(temp_handle)
         filename = os.fspath(path)
         filename_type = wintypes.WCHAR * len(filename)
 
@@ -472,12 +473,19 @@ def _windows_atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> No
         if not set_info(temp_handle, 3, ctypes.byref(rename), ctypes.sizeof(rename)):
             raise OSError(ctypes.get_last_error(), "secure sandbox replace failed")
         delete_temp = False
+        # Some Windows filesystem drivers keep a handle-based rename pending
+        # until the source handle closes. Preserve its unforgeable identity,
+        # commit visibility, then re-open the exact destination under the still-
+        # pinned parent boundary and demand the same volume/file ID.
+        if not close_handle(temp_handle):
+            raise OSError(ctypes.get_last_error(), "sandbox rename commit failed")
+        temp_handle = None
         target_handle = open_handle(
             path, read_attributes, share_read_write, open_existing,
             normal_attributes | open_reparse,
         )
         try:
-            if file_identity(target_handle) != file_identity(temp_handle):
+            if file_identity(target_handle) != expected_identity:
                 raise ValueError(
                     "sandbox replacement did not preserve verified file identity"
                 )

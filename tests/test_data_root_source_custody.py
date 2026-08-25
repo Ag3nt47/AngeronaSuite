@@ -24,18 +24,6 @@ def _mock_secure_create(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_elevated_source_data_root_requires_protected_acl(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert data_paths._pytest_isolated_runtime()
-    monkeypatch.setattr(data_paths, "_elevated_source_runtime", lambda: True)
-    monkeypatch.setattr(
-        data_paths,
-        "_admin_acl_valid",
-        lambda _path: (_ for _ in ()).throw(
-            AssertionError("bounded pytest root must not require production ACL")
-        ),
-    )
-    data_paths._verify_protected_source_data_root(
-        Path(data_paths.os.environ["ANGERONA_DATA"])
-    )
     root = tmp_path / "runtime"
     monkeypatch.setattr(data_paths.sys, "platform", "win32")
     monkeypatch.setenv("ANGERONA_DATA", str(root))
@@ -44,7 +32,6 @@ def test_elevated_source_data_root_requires_protected_acl(
     monkeypatch.setattr(data_paths, "_admin_acl_valid", lambda _path: False)
     _mock_secure_create(monkeypatch)
     _reset_caches()
-    assert not data_paths._pytest_isolated_runtime()
 
     with pytest.raises(PermissionError, match="guarded launcher"):
         data_paths.data_dir()

@@ -333,37 +333,6 @@ def _canonical_source_data_root() -> Path:
     return Path(__file__).resolve().parents[3].parent / "AngeronaData"
 
 
-def _pytest_isolated_runtime() -> bool:
-    """Recognize only pytest's repository-bounded disposable state tree.
-
-    Elevated Windows CI runners are real administrator processes, but tests
-    must not share the operator-style key/journal root.  This exception cannot
-    redirect a normal Angerona process: it requires pytest's loaded entry point,
-    an existing session marker below this checkout's fixed test-runtime root,
-    and an ``ANGERONA_DATA`` child of that exact marker.
-    """
-    if getattr(sys, "frozen", False) or "pytest" not in sys.modules:
-        return False
-    if not sys.argv or "pytest" not in os.path.normcase(os.fspath(sys.argv[0])):
-        return False
-    marker_value = os.environ.get("ANGERONA_PYTEST_SESSION_ROOT", "").strip()
-    configured_value = os.environ.get("ANGERONA_DATA", "").strip()
-    if not marker_value or not configured_value:
-        return False
-    try:
-        allowed_base = (project_root() / ".tmp" / "pytest-runtime").resolve()
-        marker = Path(marker_value).resolve(strict=True)
-        configured = Path(configured_value).resolve()
-        return (
-            os.path.commonpath((os.fspath(marker), os.fspath(allowed_base)))
-            == os.fspath(allowed_base)
-            and os.path.commonpath((os.fspath(configured), os.fspath(marker)))
-            == os.fspath(marker)
-        )
-    except (OSError, ValueError):
-        return False
-
-
 def _verify_protected_source_data_root(path: Path) -> None:
     """Enforce post-elevation custody for an elevated source install.
 
@@ -374,8 +343,6 @@ def _verify_protected_source_data_root(path: Path) -> None:
     ACL.
     """
     if not sys.platform.startswith("win"):
-        return
-    if _pytest_isolated_runtime():
         return
     if not _elevated_source_runtime():
         return
@@ -453,7 +420,7 @@ def data_dir(create: bool = True) -> Path:
     explicit override on every platform.
     """
     frozen = getattr(sys, "frozen", False)
-    elevated_source = _elevated_source_runtime() and not _pytest_isolated_runtime()
+    elevated_source = _elevated_source_runtime()
     # An elevated source process derives its key-custody root from the loaded
     # package location.  Neither ANGERONA_DATA nor ANGERONA_HOME may redirect
     # the privileged journal/signing-key root after bootstrap sanitization.
