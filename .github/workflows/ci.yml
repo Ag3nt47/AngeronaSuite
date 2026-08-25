@@ -34,6 +34,11 @@ jobs:
           python -m pip install -e . "pytest==9.1.1" "hypothesis==6.163.0"
       - name: Compile
         run: python -m compileall -q src tests tools
+      - name: Establish protected source data custody
+        shell: powershell
+        run: |
+          $dataRoot = Join-Path (Split-Path -Parent $env:GITHUB_WORKSPACE) "AngeronaData"
+          & "$env:GITHUB_WORKSPACE\tools\protect-key-custody.ps1" -DataRoot $dataRoot
       - name: Test
         run: python -m pytest -q
 

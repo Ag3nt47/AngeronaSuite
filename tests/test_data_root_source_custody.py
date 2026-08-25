@@ -13,6 +13,14 @@ def _reset_caches() -> None:
     data_paths._hardened_roots.clear()
 
 
+def _mock_secure_create(monkeypatch: pytest.MonkeyPatch) -> None:
+    def create(path: Path) -> bool:
+        path.mkdir()
+        return True
+
+    monkeypatch.setattr(data_paths, "_create_admin_directory_atomic", create)
+
+
 def test_elevated_source_data_root_requires_protected_acl(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -22,6 +30,7 @@ def test_elevated_source_data_root_requires_protected_acl(
     monkeypatch.setattr(data_paths, "_elevated_source_runtime", lambda: True)
     monkeypatch.setattr(data_paths, "_canonical_source_data_root", lambda: root)
     monkeypatch.setattr(data_paths, "_admin_acl_valid", lambda _path: False)
+    _mock_secure_create(monkeypatch)
     _reset_caches()
 
     with pytest.raises(PermissionError, match="guarded launcher"):
@@ -37,6 +46,7 @@ def test_elevated_source_data_root_accepts_launcher_custody(
     monkeypatch.setattr(data_paths, "_elevated_source_runtime", lambda: True)
     monkeypatch.setattr(data_paths, "_canonical_source_data_root", lambda: root)
     monkeypatch.setattr(data_paths, "_admin_acl_valid", lambda _path: True)
+    _mock_secure_create(monkeypatch)
     _reset_caches()
 
     assert data_paths.data_dir() == root.resolve()
@@ -81,6 +91,8 @@ def test_sanitized_elevated_bootstrap_derives_and_verifies_canonical_root(
     monkeypatch.setattr(
         data_paths, "_canonical_source_data_root", lambda: canonical_root
     )
+    canonical_root.parent.mkdir(parents=True)
+    _mock_secure_create(monkeypatch)
     monkeypatch.setattr(
         data_paths,
         "_admin_acl_valid",
