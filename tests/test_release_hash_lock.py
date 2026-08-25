@@ -67,7 +67,27 @@ def test_release_workflow_requires_committed_hash_lock() -> None:
     )
 
     assert locked == constraints
-    assert lock.count("--hash=sha256:") == len(constraints)
+    requirement_blocks = []
+    for block in lock.split("\n\n"):
+        pins = [
+            line
+            for line in block.splitlines()
+            if "==" in line and not line.lstrip().startswith("#")
+        ]
+        if not pins:
+            continue
+        assert len(pins) == 1
+        hashes = [
+            line.strip().removeprefix("--hash=sha256:").removesuffix(" \\")
+            for line in block.splitlines()
+            if line.strip().startswith("--hash=sha256:")
+        ]
+        assert hashes
+        assert all(len(digest) == 64 for digest in hashes)
+        assert all(set(digest) <= set("0123456789abcdef") for digest in hashes)
+        requirement_blocks.append(block)
+    assert len(requirement_blocks) == len(constraints)
+    assert lock.count("--hash=sha256:") >= len(constraints)
     assert "--require-hashes --no-deps" in workflow
     assert "-r requirements-release-hashed.txt" in workflow
     assert "--no-build-isolation --no-deps ." in workflow
