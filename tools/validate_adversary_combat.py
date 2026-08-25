@@ -1,9 +1,11 @@
 """Run Extreme Red Team campaigns until every actionable step is closed.
 
-This is a local defensive validation harness. It starts the real detector,
-recorder, Adversary Combat, and Red Team components, runs an Extreme chained
-campaign, evaluates the normal AAR, and loops until all four scorecard rates
-are 100%. Reversible combat changes are undone after each report is secured.
+This is a local defensive validation harness. The companion batch file first
+runs deterministic response-safety negative controls, then this script starts
+the real detector, recorder, Adversary Combat, and Red Team components, runs an
+Extreme chained campaign, evaluates the normal AAR, and loops until all four
+effectiveness scorecard rates are 100%. Reversible combat changes are undone
+after each report is secured. Safety and effectiveness remain separate gates.
 """
 from __future__ import annotations
 
@@ -159,16 +161,30 @@ def _run_round(root: Path, round_number: int) -> tuple[bool, str, dict]:
         score = _score(report)
         return _complete(score), report, score
     finally:
+        # Freeze every producer and the Combat consumer before rollback. If FIM
+        # remains live while quarantined drill files are restored, it can see
+        # those restorations as fresh changes and create a second generation of
+        # actions after undo_all took its snapshot.
+        for module in reversed(modules):
+            module.stop()
+        undo_result = combat.undo_all()
+        still_applied = [
+            item for item in combat.list_actions(limit=5000)
+            if item.get("reversible") is True and not item.get("undone")
+        ]
         try:
             engine.release_evidence_after_aar(engine.evidence_cleanup_scope())
         except Exception:
             engine.stop_and_clean()
-        # Preserve the proof receipts, but restore every reversible firewall,
-        # suspension, quarantine, and isolation change made by this validation.
-        combat.undo_all()
-        for module in reversed(modules):
-            module.stop()
         recorder.close()
+        # Preserve proof receipts, but never report a passing campaign while a
+        # reversible firewall, suspension, quarantine, isolation, or honeypot
+        # mutation remains applied.
+        if not undo_result.get("ok") or still_applied:
+            raise RuntimeError(
+                "validation cleanup left reversible Combat state applied: "
+                f"undo={undo_result}, active={len(still_applied)}"
+            )
 
 
 def main(argv: list[str] | None = None) -> int:

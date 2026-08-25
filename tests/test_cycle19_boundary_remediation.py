@@ -233,6 +233,28 @@ def test_acl_verifier_uses_trusted_powershell_and_clean_environment(
     assert "OPENAI_API_KEY" not in captured["environment"]
 
 
+def test_hidden_process_helpers_never_inherit_protected_credentials(monkeypatch):
+    from angerona.core import win
+
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["environment"] = kwargs["env"]
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(win.subprocess, "run", fake_run)
+    monkeypatch.setenv("OPENAI_API_KEY", "protected-provider-secret")
+    monkeypatch.setenv("ARIA_IMAP_PASS", "protected-mail-secret")
+
+    win.run_hidden(["fixed-tool"], env_allowlist={"LANG": "C"})
+
+    assert captured["argv"] == ["fixed-tool"]
+    assert captured["environment"]["LANG"] == "C"
+    assert "OPENAI_API_KEY" not in captured["environment"]
+    assert "ARIA_IMAP_PASS" not in captured["environment"]
+
+
 def test_supervisor_sidecar_receives_runtime_coordinates_not_credentials(
     tmp_path, monkeypatch
 ):

@@ -12,7 +12,7 @@ def test_interop_queue_minimizes_signs_and_retries(tmp_path):
         maximum_class=DataClass.INTERNAL, allow_external=True,
     )
     envelope = queue.enqueue(
-        "envelope-001", "ocsf-1.3",
+        "envelope-001", "ocsf-1.8",
         {"event_id": "event-1", "username": "alice", "password": "secret"},
         purpose="siem export", destination="local-relay",
         policy=policy, external=True, now=100,

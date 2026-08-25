@@ -19,7 +19,7 @@ import time
 import urllib.request
 
 from angerona.core.url_policy import (
-    LOCAL_SERVICE_POLICY,
+    OLLAMA_SERVICE_POLICY,
     UrlPolicyError,
     local_json_request,
     local_service_url,
@@ -167,6 +167,7 @@ def call(
             headers={g.TOKEN_HEADER: g.SESSION_TOKEN},
             timeout=timeout,
             request_maximum=_MAX_REQUEST_BYTES,
+            policy=OLLAMA_SERVICE_POLICY,
         )
     except Exception as exc:
         return _upstream_error(exc, path=str(path), started=t0, plen=plen)
@@ -225,7 +226,7 @@ def call_stream(payload: dict, on_token, path: str = "/api/generate",
         total = 0
         with safe_urlopen(
             request,
-            policy=LOCAL_SERVICE_POLICY,
+            policy=OLLAMA_SERVICE_POLICY,
             timeout=float(timeout),
         ) as response:
             while True:

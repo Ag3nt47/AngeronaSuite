@@ -172,6 +172,53 @@ def _harden_frozen_data_root(path: Path, existed: bool) -> None:
     _hardened_roots.add(key)
 
 
+def _elevated_source_runtime() -> bool:
+    """Return whether this is an elevated, non-frozen Windows source runtime.
+
+    This decision is made after elevation from the effective process token.  A
+    launcher-supplied environment flag is not authority: the privileged
+    bootstrap intentionally deletes every such inherited flag.
+    """
+    if not sys.platform.startswith("win") or getattr(sys, "frozen", False):
+        return False
+    try:
+        from angerona.core.privilege import is_admin
+
+        return bool(is_admin())
+    except (ImportError, OSError):
+        return False
+
+
+def _canonical_source_data_root() -> Path:
+    """Derive the source runtime root from this installed module, never env."""
+    return Path(__file__).resolve().parents[3].parent / "AngeronaData"
+
+
+def _verify_protected_source_data_root(path: Path) -> None:
+    """Enforce post-elevation custody for an elevated source install.
+
+    The source launcher protects ``AngeronaData`` before Python starts.  Keep
+    that boundary fail-closed in the application too: bypassing the launcher
+    while requesting elevated key custody must not silently downgrade the
+    journal, cursor, and signing-key directory to an inherited user-writable
+    ACL.
+    """
+    if not sys.platform.startswith("win"):
+        return
+    if not _elevated_source_runtime():
+        return
+    key = str(path).casefold()
+    if key in _hardened_roots:
+        return
+    if _is_reparse_point(path) or not _admin_acl_valid(path):
+        raise PermissionError(
+            "Elevated source runtime storage is not protected by an "
+            f"Administrators/SYSTEM-only ACL: {path}. Start Angerona through "
+            "the guarded launcher so key custody can be established first."
+        )
+    _hardened_roots.add(key)
+
+
 def project_root() -> Path:
     override = os.environ.get("ANGERONA_HOME", "").strip()
     if override:
@@ -234,7 +281,15 @@ def data_dir(create: bool = True) -> Path:
     explicit override on every platform.
     """
     frozen = getattr(sys, "frozen", False)
-    configured = os.environ.get("ANGERONA_DATA", "").strip()
+    elevated_source = _elevated_source_runtime()
+    # An elevated source process derives its key-custody root from the loaded
+    # package location.  Neither ANGERONA_DATA nor ANGERONA_HOME may redirect
+    # the privileged journal/signing-key root after bootstrap sanitization.
+    configured = (
+        str(_canonical_source_data_root())
+        if elevated_source
+        else os.environ.get("ANGERONA_DATA", "").strip()
+    )
     path = _canonical_data_path(
         configured,
         frozen,
@@ -279,7 +334,10 @@ def data_dir(create: bool = True) -> Path:
             path = path.resolve(strict=True)
     else:
         existed = False
-    os.environ.setdefault("ANGERONA_DATA", str(path))
+    if elevated_source:
+        os.environ["ANGERONA_DATA"] = str(path)
+    else:
+        os.environ.setdefault("ANGERONA_DATA", str(path))
     if create:
         if not frozen:
             key = str(path).casefold()
@@ -287,7 +345,10 @@ def data_dir(create: bool = True) -> Path:
                 with _data_path_lock:
                     if key not in _ready_source_roots:
                         path.mkdir(parents=True, exist_ok=True)
-                        _harden_posix_data_root(path)
+                        if sys.platform.startswith("win"):
+                            _verify_protected_source_data_root(path)
+                        else:
+                            _harden_posix_data_root(path)
                         _ready_source_roots.add(key)
         else:
             if sys.platform.startswith("win"):

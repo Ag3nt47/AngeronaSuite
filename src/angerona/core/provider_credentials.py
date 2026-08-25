@@ -1,10 +1,9 @@
 """Canonical metadata and access helpers for optional AI provider credentials.
 
 Angerona keeps provider secrets in its operating-system protected credential
-store.  Runtime consumers should use this module instead of inventing provider
-environment-variable names.  The environment remains the in-process delivery
-mechanism used by :mod:`angerona.core.secure_store`; it is never treated as a
-plaintext persistence layer here.
+store. Runtime consumers use this module for scoped retrieval; credentials are
+never republished into the process environment where unrelated child processes
+could inherit them.
 
 Legacy Gemini names are read for compatibility.  The next explicit Settings
 save migrates them to ``GEMINI_API_KEYS`` and removes the aliases from protected
@@ -12,7 +11,6 @@ storage and the live environment.
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Mapping
@@ -79,7 +77,12 @@ def credential_values(
     """
 
     spec = provider_credential(provider_id)
-    values = os.environ if source is None else source
+    if source is None:
+        from angerona.core.secure_store import read_secret_values
+
+        values = read_secret_values((spec.environment_key, *spec.legacy_aliases))
+    else:
+        values = source
     raw = _bounded_value(values.get(spec.environment_key, ""))
     if not raw:
         for alias in spec.legacy_aliases:

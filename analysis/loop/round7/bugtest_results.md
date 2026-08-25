@@ -1,5 +1,9 @@
 # Round 7 — Bug Test / Release QA Results
 
+> **Final status (2026-08-25):** the frozen v1.10.2 revalidation appended below
+> is authoritative: 1,255 passed, 3 intentional skips, 0 failed. Earlier totals
+> in this file are preserved as interim evidence only.
+
 Date: 2026-08-22. Runner: Angerona bug-testing / QA agent. Environment:
 Windows, `venv\Scripts\python.exe`, `PYTHONPATH=src`, Qt offscreen. The shared
 dirty tree was treated as authoritative and concurrent work was not reverted.
@@ -145,3 +149,150 @@ deadline remains only as a deadlock/liveness bound, not a speed score.
 Post-fix gates under the live 93%-CPU load: the structural 40,000-event test
 passed **3/3**; the complete async-recorder/priority suite passed **10/10** in
 7.32 seconds; Ruff and compilation passed. The aggregate fix count is **5**.
+
+---
+
+# Frozen v1.10.2 final release-candidate revalidation
+
+Date: 2026-08-25. This is the authoritative final-tree revalidation and
+supersedes the interim totals above. It ran on Windows with CPython 3.12.10,
+`PYTHONPATH=src`, Qt offscreen, and the shared v1.10.2 source tree frozen.
+
+## Outcome
+
+**PASS — no reproducible release-blocking defect remains.** Every collected
+pytest case resolved successfully or as an intentional skip; the package
+compiled and imported cleanly; Ruff, both selfcheck entry points, all callable
+core/Shark self-tests, the ARIA self-test runner, and the dependency audit
+passed.
+
+## Compile, lint, imports, and discovery
+
+- `tools/compile_check.py`: **308/308** files parsed; **0 failed**. The complete
+  `src/angerona` `py_compile` gate found no syntax error or mount-read artifact.
+- `python -m ruff check src tests tools`: **PASS**.
+- `git diff --check`: **PASS**. Git emitted only line-ending conversion notices,
+  not whitespace errors.
+- Recursive package import inventory: **69/69 module files imported**, **0
+  failures**.
+- `ModuleManager` discovery: **67 modules**, **0 discovery errors**, **0
+  duplicate names**, and **0 duplicate non-empty codes**.
+- Twelve class-bearing module files intentionally have no optional module-level
+  `register()` factory (`ai_triage`, `cloud_escalation`, `deception`,
+  `file_integrity`, `forensics`, `macos_observe`, `network_monitor`,
+  `persistence_sweep`, `process_monitor`, `soar`, `soar_engine`, and
+  `yara_scanner`). All twelve were found through the documented `BaseModule`
+  subclass discovery path, so none is a missing-module defect.
+
+## Complete pytest gate
+
+- Collection: **1,258 tests in 197 files**.
+- Authoritative run: the 197 files were executed in 14 sequential shards to
+  avoid known aggregate Windows I/O/plugin contention.
+- Result: **1,255 passed, 3 intentionally skipped, 0 failed**. Every shard
+  exited zero.
+- Current response-surface spot gates also passed: SOAR queue reconciliation
+  **12/12**; Posture/Red Team/Top Talkers/Combat Undo **19/19**; current Combat,
+  lifecycle, finalize/deploy, and shutdown boundary set **18/18**. The complete
+  aggregate independently included all Combat, Ollama, ARIA, SOAR, GUI/menu,
+  and host-action tests.
+
+An earlier non-authoritative sweep set `--basetemp` to
+`.tmp/final-pytest/shard-N` inside the checkout. That created exactly two
+expected boundary refusals: Source Sandbox rejected a workspace-contained
+parent identity, and deploy safety rejected a destination nested inside its
+stage tree before reaching the marker assertion. Those were test-environment
+configuration artifacts, not product failures. Repeating the complete sweep
+with pytest's normal external Windows temp location produced the authoritative
+zero-failure result above.
+
+## Self-tests and harnesses
+
+- Module `SelfTestRunner`: **46 genuine module passes**, **0 genuine failures**.
+  It additionally reported **13 expected inactive-environment results** (for
+  stopped sensors, idle/unarmed SOAR, stopped Combat, and unavailable optional
+  Ollama) plus **8 disabled/platform skips**. Its displayed `47 passed` includes
+  the separate Event Pipeline row.
+- Callable core and Shark module-level self-tests: **20/20 passed**.
+- `run_aria_selftests.py`: **15/15 passed** (`ALL PASS`).
+- `python tools/selfcheck.py`: **26/26 application/GUI phases passed**, exit 0.
+- `cmd.exe /d /c run-selfcheck.bat`: **26/26 application/GUI phases passed**,
+  exit 0, with its report written successfully.
+
+## Dependency gate
+
+`python -m pip_audit --local` returned **no known vulnerabilities**. It skipped
+only the two local, non-PyPI distributions (`angerona` and the local
+`srt 0.0.0+angerona.1`). Source metadata and runtime import both report
+**1.10.2**. The current editable environment's installed distribution metadata
+still says 1.10.0; that is stale local venv metadata, not a source or runtime
+version defect.
+
+## Defects found and disposition
+
+### R7-FINAL-BT-01 — stale exact-contract regression fixture — FIXED
+
+`tests/test_cycle4_round1_regressions.py` still treated a filename/command token
+as response authority without the required signed v1 Combat contract. The
+fixture now supplies the exact contract and includes a negative uncontracted
+case. Gate: focused Combat/ARIA/Ollama/SOAR set **110/110**, then the complete
+pytest gate passed.
+
+### R7-FINAL-BT-02 — Combat Undo empty-state controls — FIXED
+
+The Combat history refresh returned early for a missing module or empty action
+set without disabling `Undo selected` and `Undo all`. The handlers were safe,
+but the visible state was wrong. Both early-return paths now disable the
+selector and buttons; a regression covers a history containing only unverified
+reversible-looking records. Gate: focused GUI/settings set **9/9**, then the
+complete pytest gate passed.
+
+### R7-FINAL-BT-03 — generated Posture advisory path not persisted — FIXED
+
+The new inert Posture advisory could return `no staged remediation` before its
+advisory-only fields because generation did not persist the generated path in
+the weakness record. The remediation stores that path while retaining the
+unconditional non-executable policy. Gate: Posture/Red Team/Top Talkers/Undo
+set **19/19**, then the complete pytest gate passed.
+
+### R7-FINAL-BT-04 — Red Team rapid-rerun cleanup ordering — FIXED
+
+`start()` reset `self.steps` before taking the prior-artifact snapshot, so an
+exact run-owned marker could survive a rapid rerun. The immutable prior-artifact
+snapshot is now captured before reset. Gate: the focused **19/19** set and the
+complete pytest gate passed.
+
+### R7-FINAL-BT-05 — stale SOAR direct-suspend tests and missing receipt reconciliation coverage — FIXED
+
+The SOAR queue tests still expected a direct `psutil` suspend after product code
+moved manual action behind Combat's signed response contract. They now assert
+zero direct suspend calls, the exact `suspend_process` PID/birth-time contract,
+the exact queue request ID, terminal/non-resubmittable `SUBMITTED` state, and
+verified signed success/failure/timeout reconciliation. An unsigned lookalike
+cannot close the queue. Gate: `tests/test_soar_queue_controls.py` **12/12**,
+then the complete pytest gate passed.
+
+### R7-FINAL-BT-06 — selfcheck expected execution of inert model advice — FIXED
+
+Two selfcheck phases retained the old expectation that tampered AI-authored
+Posture output would enter the execution path. The harness now proves the hash
+tamper independently, then asserts the stronger current contract:
+`ok=False`, `advisory_only=True`, and `executable=False`. No product policy or
+test guarantee was weakened. Gate: direct and batch selfcheck **26/26**; Ruff
+and compilation passed.
+
+### R7-FINAL-QA-ENV-01 — workspace-local pytest temp root — ENVIRONMENT ARTIFACT
+
+The two initial failures caused by the deliberately workspace-contained
+`--basetemp` were not reproducible with the standard external pytest temp root.
+They demonstrate that the source/deployment guards correctly reject unsafe
+containment relationships. No product change was warranted.
+
+## Final frozen-tree summary
+
+- Files compiled: **308/308**.
+- Self-tests: **81 passed / 0 genuine failed** (46 module, 20 core/Shark, 15
+  ARIA), with 13 expected inactive and 8 platform/operator skips.
+- Selfcheck: **26/26 direct and 26/26 batch**, both exit 0.
+- Full pytest: **1,255 passed / 3 skipped / 0 failed**.
+- Bugs fixed: **6**. Release-blocking bugs reported: **0**.

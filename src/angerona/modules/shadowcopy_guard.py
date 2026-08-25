@@ -14,6 +14,7 @@ module-level register().
 """
 from __future__ import annotations
 
+import os
 import threading
 
 try:
@@ -22,6 +23,7 @@ except Exception:  # pragma: no cover
     psutil = None
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.response_contract import process_response
 
 # Destructive recovery-tampering command signatures (all parts must appear).
 _TAMPER_SIGNATURES = (
@@ -50,6 +52,91 @@ def _looks_like_recovery_tamper(cmdline: str) -> str | None:
         if all(part in cl for part in sig):
             return "recovery-tamper pattern: " + " ".join(sig)
     return None
+
+
+def _argv(raw_cmdline: object) -> tuple[str, ...]:
+    if not isinstance(raw_cmdline, (list, tuple)):
+        return ()
+    return tuple(
+        str(value).strip().strip('"').casefold()
+        for value in raw_cmdline
+        if str(value).strip()
+    )
+
+
+def _trusted_system_utility(
+    process_name: object,
+    executable: object,
+) -> str | None:
+    if os.name != "nt":
+        return None
+    try:
+        from angerona.core.privilege import (
+            _authenticode_valid,
+            trusted_powershell_path,
+            trusted_windows_directories,
+        )
+
+        raw = str(executable or "")
+        if not raw or not os.path.isabs(raw):
+            return None
+        name = os.path.basename(raw).casefold()
+        if name != os.path.basename(str(process_name or "")).casefold():
+            return None
+        _windows, system32 = trusted_windows_directories()
+        allowed = {
+            utility: system32 / utility
+            for utility in ("vssadmin.exe", "wmic.exe", "wbadmin.exe", "bcdedit.exe")
+        }
+        allowed["powershell.exe"] = trusted_powershell_path()
+        expected = allowed.get(name)
+        if expected is None:
+            return None
+        if os.path.normcase(os.path.realpath(raw)) != os.path.normcase(
+            os.path.realpath(str(expected))
+        ):
+            return None
+        return name if _authenticode_valid(expected) else None
+    except Exception:
+        return None
+
+
+def _recovery_argv_is_destructive(name: str, raw_cmdline: object) -> bool:
+    args = _argv(raw_cmdline)
+    if not args:
+        return False
+    command_args = args[1:] if os.path.basename(args[0]).casefold() == name else args
+
+    def starts(*expected: str) -> bool:
+        return command_args[:len(expected)] == expected
+
+    if name == "vssadmin.exe":
+        return starts("delete", "shadows") or starts("resize", "shadowstorage")
+    if name == "wmic.exe":
+        return starts("shadowcopy", "delete")
+    if name == "wbadmin.exe":
+        return starts("delete", "catalog") or starts("delete", "systemstatebackup")
+    if name == "bcdedit.exe":
+        if len(command_args) != 4 or command_args[0] != "/set":
+            return False
+        boot_entry = command_args[1]
+        if (
+            len(boot_entry) < 3
+            or not boot_entry.startswith("{")
+            or not boot_entry.endswith("}")
+            or not all(
+                value.isalnum() or value == "-" for value in boot_entry[1:-1]
+            )
+        ):
+            return False
+        return command_args[2:] in (
+            ("recoveryenabled", "no"),
+            ("bootstatuspolicy", "ignoreallfailures"),
+        )
+    # PowerShell's -Command grammar permits arbitrary expressions and nested
+    # scripts. A token match is useful telemetry but is not host-outage
+    # authority without script-block correlation from a stronger detector.
+    return False
 
 
 class ShadowCopyGuardModule(BaseModule):
@@ -88,7 +175,9 @@ class ShadowCopyGuardModule(BaseModule):
         while not self.stopping:
             try:
                 live = set()
-                for p in psutil.process_iter(["pid", "name", "cmdline"]):
+                for p in psutil.process_iter([
+                    "pid", "name", "exe", "cmdline", "create_time"
+                ]):
                     live.add(p.info["pid"])
                     try:
                         cmd = " ".join(p.info.get("cmdline") or [])
@@ -105,12 +194,31 @@ class ShadowCopyGuardModule(BaseModule):
                             ppid = psutil.Process(p.info["pid"]).ppid()
                         except Exception:
                             pass
+                        created = p.info.get("create_time")
+                        response = {}
+                        trusted_name = _trusted_system_utility(
+                            p.info.get("name"), p.info.get("exe")
+                        )
+                        if trusted_name and _recovery_argv_is_destructive(
+                            trusted_name, p.info.get("cmdline")
+                        ):
+                            response = process_response(
+                                p.info["pid"], created, escalate_host=True
+                            )
                         self.emit(
                             f"⚠ RANSOMWARE PRECURSOR — {p.info.get('name','?')} "
                             f"(pid {p.info['pid']}, parent {ppid}) is {reason}. This inhibits "
                             "recovery before encryption. Contain immediately.",
                             Severity.CRITICAL, pid=p.info["pid"], ppid=ppid,
-                            name=p.info.get("name"), mitre="T1490", cmdline=cmd[:200])
+                            name=p.info.get("name"), exe=p.info.get("exe"),
+                            process_create_time=created,
+                            mitre="T1490", cmdline=cmd[:200], active_attack=True,
+                            detector_policy=(
+                                "exact-recovery-tool-command"
+                                if response
+                                else "semantic-indicator-alert-only"
+                            ),
+                            **response)
                 self._alerted &= live
                 self.set_health(100, f"{self._detections} recovery-tamper attempt(s) seen")
             except Exception as exc:

@@ -6,12 +6,14 @@ that name the *same structured entity* (PID, file hash/path, or remote address)
 and promotes them only when three distinct modules spanning at least two sensor
 domains agree inside a short window.
 
-The engine is deliberately local, deterministic, bounded, and response-free.
-It never polls the host, calls a model, sends data, or performs containment.
+The engine is deliberately local, deterministic, and bounded.  A corroborated
+PID or literal remote IP receives an exact-target response contract; path/hash
+findings remain alert-only when the lattice cannot safely bind a live object.
 """
 from __future__ import annotations
 
 import ipaddress
+import math
 import os
 import threading
 import time
@@ -20,6 +22,7 @@ from dataclasses import dataclass
 
 from angerona.core.eventbus import Event, Severity
 from angerona.core.module_base import BaseModule
+from angerona.core.response_contract import authorize_response, process_response
 
 
 _PID_KEYS = ("pid", "process_id", "target_pid", "child_pid")
@@ -45,6 +48,7 @@ class EvidenceFinding:
     domains: tuple[str, ...]
     confidence: int
     signal_count: int
+    process_create_time: float | None = None
 
 
 @dataclass(frozen=True)
@@ -52,6 +56,7 @@ class _Signal:
     seen_at: float
     module: str
     domain: str
+    process_create_time: float | None = None
 
 
 def _first(details: dict, keys: tuple[str, ...]):
@@ -117,6 +122,21 @@ def _domain(module: str, details: dict) -> str:
     return "other"
 
 
+def _process_clock(details: dict) -> float | None:
+    for key in (
+        "process_create_time", "pid_create_time", "create_time",
+        "process_start_time",
+    ):
+        value = details.get(key)
+        if value in (None, ""):
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        clock = float(value)
+        return clock if math.isfinite(clock) and clock > 0.0 else None
+    return None
+
+
 class EvidenceLattice:
     """Bounded, thread-safe entity correlation engine."""
 
@@ -163,7 +183,13 @@ class EvidenceLattice:
         if entity is None:
             return None
         current = time.time() if now is None else float(now)
-        signal = _Signal(current, str(event.module), _domain(event.module, event.details or {}))
+        details = event.details or {}
+        signal = _Signal(
+            current,
+            str(event.module),
+            _domain(event.module, details),
+            _process_clock(details) if entity[0] == "pid" else None,
+        )
 
         with self._lock:
             expiry = self._dedup_until.get(entity, 0.0)
@@ -192,6 +218,12 @@ class EvidenceLattice:
             if len(modules) < self.min_modules or len(domains) < self.min_domains:
                 return None
 
+            process_create_time = None
+            if entity[0] == "pid":
+                clocks = {item.process_create_time for item in bucket}
+                if len(clocks) == 1 and None not in clocks:
+                    process_create_time = next(iter(clocks))
+
             finding = EvidenceFinding(
                 entity_type=entity[0],
                 entity=entity[1],
@@ -199,6 +231,7 @@ class EvidenceLattice:
                 domains=tuple(domains),
                 confidence=min(95, 45 + len(modules) * 10 + len(domains) * 8),
                 signal_count=len(bucket),
+                process_create_time=process_create_time,
             )
             self._buckets.pop(entity, None)
             self._dedup_until[entity] = current + self.dedup_s
@@ -219,7 +252,7 @@ class EvidenceLatticeModule(BaseModule):
     description = (
         "Fuses MEDIUM signals about the same PID, path/hash, or IP across three "
         "independent modules and two sensor domains; emits an explainable HIGH "
-        "finding without polling, cloud access, or automatic response."
+        "finding and exact-target containment authority for live PIDs/IPs."
     )
     category = "Detection"
     version = "1.0.0"
@@ -247,6 +280,19 @@ class EvidenceLatticeModule(BaseModule):
             return
         self._findings += 1
         modules = ", ".join(finding.modules)
+        response_details: dict[str, object] = {}
+        entity_details: dict[str, object] = {}
+        if finding.entity_type == "pid":
+            pid = int(finding.entity)
+            entity_details["pid"] = pid
+            created = finding.process_create_time
+            entity_details["process_create_time"] = created
+            response_details = process_response(pid, created)
+        elif finding.entity_type == "ip":
+            entity_details["remote_ip"] = finding.entity
+            response_details = authorize_response(
+                ("block_remote_ip",), remote_ips=(finding.entity,)
+            )
         self.emit(
             f"Evidence lattice: {finding.entity_type} {finding.entity} has "
             f"{finding.signal_count} MEDIUM signals from {len(finding.modules)} "
@@ -260,6 +306,10 @@ class EvidenceLatticeModule(BaseModule):
             confidence=finding.confidence,
             signal_count=finding.signal_count,
             correlation="entity_lattice",
+            active_attack=True,
+            detector_policy="multi-sensor-corroborated",
+            **entity_details,
+            **response_details,
         )
 
     def run(self) -> None:
