@@ -265,7 +265,10 @@ def test_posix_source_installer_is_independently_hash_locked() -> None:
 
 
 def test_local_build_backend_is_exact_pinned() -> None:
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10 test lane
+        import tomli as tomllib
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert project["build-system"]["requires"] == [

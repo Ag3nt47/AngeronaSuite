@@ -7,8 +7,8 @@ Angerona's look (same ``gui/theme.build_qss`` stylesheet). It is a pure PRESENTE
 
 Two tabs:
   * Status        — live heartbeat / state / PID / memory / counters + recent log.
-  * Info & Control — what the component does, the modules it controls, and
-                     buttons (Sandbox code editor, open diagnostics, restart).
+  * Info          — what the component does, the modules it controls, related
+                    source paths, isolated code copies, diagnostics, and restart.
 
 Usage:
     python -m angerona.resilience.status_ui <component> [--title "..."] [--show]
@@ -86,8 +86,6 @@ def build_status_widget(component: str, title: str | None = None):
                                    QGroupBox, QLabel, QTextEdit, QTabWidget,
                                    QListWidget, QPushButton, QMessageBox)
 
-    pyw = os.environ.get("ANGERONA_PY") or sys.executable
-
     class MonitorWidget(QWidget):
         def __init__(self):
             super().__init__()
@@ -100,7 +98,7 @@ def build_status_widget(component: str, title: str | None = None):
             tabs = QTabWidget()
             root.addWidget(tabs)
             tabs.addTab(self._status_tab(), "Status")
-            tabs.addTab(self._info_tab(), "Info & Control")
+            tabs.addTab(self._info_tab(), "Info")
 
             self._timer = QTimer(self)
             self._timer.timeout.connect(self.refresh)
@@ -163,14 +161,52 @@ def build_status_widget(component: str, title: str | None = None):
             mgl.addWidget(self._modules)
             lay.addWidget(mg)
 
+            from angerona.core.source_sandbox import SourceSandboxWorkspace
+
+            component_paths = {
+                "scanner": (
+                    "src/angerona/resilience/status_ui.py",
+                    "src/angerona/resilience/scanner.py",
+                ),
+                "watchdog": (
+                    "src/angerona/resilience/status_ui.py",
+                    "src/angerona/resilience/watchdog.py",
+                    "src/angerona/resilience/supervisor.py",
+                ),
+                "core": (
+                    "src/angerona/resilience/status_ui.py",
+                    "src/angerona/app.py",
+                    "src/angerona/gui/main_window.py",
+                ),
+            }
+            self._source_workspace = SourceSandboxWorkspace(
+                f"resilience-{self.component}",
+                component_paths.get(
+                    self.component,
+                    ("src/angerona/resilience/status_ui.py",),
+                ),
+            )
+            locations = QLabel(
+                "Related source files\n" + "\n".join(
+                    f"  {item.source_path}" for item in self._source_workspace.files
+                ) + f"\nSandbox location\n  {self._source_workspace.root}"
+            )
+            locations.setWordWrap(True)
+            locations.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            locations.setStyleSheet("color:#94a3b8;font-family:monospace;")
+            lay.addWidget(locations)
+
             btns = QHBoxLayout()
-            b_sandbox = QPushButton("Sandbox Code Editor")
+            b_sandbox = QPushButton("Open Code Sandbox")
             b_sandbox.clicked.connect(self._open_sandbox)
+            b_reset = QPushButton("Reset Sandbox Changes")
+            b_reset.clicked.connect(self._reset_sandbox)
             b_diag = QPushButton("Open Diagnostics Folder")
             b_diag.clicked.connect(self._open_diag)
             b_restart = QPushButton(f"Restart {self.component.capitalize()}")
             b_restart.clicked.connect(self._restart)
-            btns.addWidget(b_sandbox); btns.addWidget(b_diag); btns.addWidget(b_restart)
+            btns.addWidget(b_sandbox); btns.addWidget(b_reset)
+            btns.addWidget(b_diag); btns.addWidget(b_restart)
             if self.component == "watchdog":
                 b_core = QPushButton("Restart Angerona Core")
                 b_core.setObjectName("Danger")
@@ -186,9 +222,35 @@ def build_status_widget(component: str, title: str | None = None):
         # ── actions ──────────────────────────────────────────────────────────
         def _open_sandbox(self):
             try:
-                subprocess.Popen([pyw, "-m", "angerona.gui.sandbox_editor"])
+                from angerona.gui.context_info import SourceSandboxDialog
+
+                self._source_sandbox_dialog = SourceSandboxDialog(
+                    self._source_workspace, self
+                )
+                self._source_sandbox_dialog.show()
+                self._source_sandbox_dialog.raise_()
+                self._source_sandbox_dialog.activateWindow()
             except Exception as exc:
                 QMessageBox.warning(self, "Sandbox", f"Could not launch the sandbox editor:\n{exc}")
+
+        def _reset_sandbox(self):
+            changed = self._source_workspace.changed_paths()
+            if not changed:
+                QMessageBox.information(
+                    self, "Sandbox", "Sandbox copies already match installed source."
+                )
+                return
+            if QMessageBox.question(
+                self,
+                "Reset sandbox changes",
+                f"Discard changes in {len(changed)} isolated working copy file(s)? "
+                "Installed code will not be changed.",
+            ) != QMessageBox.Yes:
+                return
+            self._source_workspace.reset()
+            QMessageBox.information(
+                self, "Sandbox", "Sandbox copies reset; installed code was not changed."
+            )
 
         def _open_diag(self):
             try:

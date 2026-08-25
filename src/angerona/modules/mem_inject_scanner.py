@@ -335,7 +335,8 @@ class MemInjectScannerModule(BaseModule):
                 ctx["username"]  = p.username()
                 ctx["status"]    = p.status()
                 ctx["threads"]   = p.num_threads()
-                age_s = time.time() - p.create_time()
+                ctx["process_create_time"] = float(p.create_time())
+                age_s = time.time() - ctx["process_create_time"]
                 ctx["age_s"]     = int(age_s)
                 ctx["age_human"] = (f"{int(age_s // 3600)}h{int(age_s % 3600 // 60)}m"
                                     if age_s >= 3600
@@ -470,6 +471,9 @@ class MemInjectScannerModule(BaseModule):
             rss_kb=ctx.get("rss_kb"),
             predicted_technique=prediction,
             mitre_tags=["T1055", "T1055.001", "T1055.003", "T1055.012"],
+            process_create_time=ctx.get("process_create_time"),
+            active_attack=True,
+            detector_policy="rwx-memory-indicator-alert-only",
         )
 
     def _evict_stale_dedup(self):

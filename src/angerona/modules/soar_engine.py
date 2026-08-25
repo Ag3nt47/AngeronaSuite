@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import time
 import zipfile
 from pathlib import Path
@@ -65,6 +66,10 @@ class ActiveResponseSOAR(BaseModule):
         self._priority_bus_id: int | None = None
         self._priority_overflow_count = 0
         self._general_cursor = 0
+        self._manager = None
+
+    def bind_manager(self, manager) -> None:
+        self._manager = manager
 
     @staticmethod
     def _armed() -> bool:
@@ -275,10 +280,24 @@ class ActiveResponseSOAR(BaseModule):
         )
 
     def _event_in_response_scope(self, ev) -> bool:
-        """Constrain temporary drill arming to proven drill evidence."""
+        """Require Combat's exact contract and constrain temporary drill arming."""
+        try:
+            from angerona.modules.adversary_combat import AdversaryCombat
+
+            if AdversaryCombat._response_actions(ev) is None:
+                return False
+        except Exception:
+            return False
         roots = self._scope_roots()
         if not roots:
-            return True
+            # Permanent response is allowed only through an already-running
+            # Combat consumer.  With no protected drill root there is no local
+            # fallback and therefore no legacy kill/unlink capability.
+            try:
+                combat = getattr(self._manager, "modules", {}).get("Adversary Combat")
+            except Exception:
+                combat = None
+            return combat is not None and getattr(combat, "status", "stopped") == "running"
         details = getattr(ev, "details", {}) or {}
         command = str(details.get("cmdline") or details.get("command_line") or "")
         if re.search(r"\bANGERONA_REDTEAM_[0-9a-f]{8}\b", command, re.I):
@@ -321,49 +340,147 @@ class ActiveResponseSOAR(BaseModule):
         t0 = time.time()
         pid = ev.details.get("pid")
         path = self._event_path(ev) or None
-        # SAFETY: never terminate Angerona's own process (or its parent) even if a
-        # detection/drill event happens to carry our PID — that would be suicide.
-        if isinstance(pid, int) and pid in (os.getpid(), os.getppid()):
-            self.emit(f"Refusing to kill Angerona's own process (pid {pid}); "
-                      "rolling back artifact only.", Severity.LOW, pid=pid)
-            pid = None
-        killed_name = None
-        killed_ok = False
-        already_exited = False
+        if not self._exact_process_binding_ok(ev):
+            self.emit(
+                "Refusing kill/rollback: process contract is not bound to the "
+                "live PID/create-time/executable instance.",
+                Severity.HIGH,
+                pid=pid if isinstance(pid, int) else None,
+            )
+            return
 
-        if isinstance(pid, int) and psutil is not None:
-            try:
-                p = psutil.Process(pid)
-                killed_name = p.name()
-                p.kill()
-                p.wait(timeout=3)
-                killed_ok = True
-            except psutil.NoSuchProcess:
-                # A naturally exited no-op process is not a response action.
-                already_exited = True
-            except Exception as exc:
-                self.emit(f"Kill failed for pid {pid}: {exc}", Severity.MEDIUM, pid=pid)
+        combat, synchronous = self._combat_consumer(ev)
+        if combat is None:
+            self.emit(
+                "Refusing kill/rollback: hardened Adversary Combat consumer is unavailable.",
+                Severity.HIGH,
+                pid=pid if isinstance(pid, int) else None,
+                path=path,
+            )
+            return
 
-        rolled_back = []
-        # Only ever touches the exact path the triggering alert itself
-        # named — never a directory walk, never a guess.
-        if path:
-            try:
-                p = Path(path)
-                if p.exists() and p.is_file():
-                    p.unlink()
-                    rolled_back.append(str(p))
-            except Exception as exc:
-                self.emit(f"Rollback failed for {path}: {exc}", Severity.MEDIUM, path=path)
+        before = self._matching_combat_receipts(combat, ev)
+        try:
+            if synchronous:
+                combat._handle(ev)
+            else:
+                combat._submit(ev)
+        except Exception as exc:
+            self.emit(
+                f"Combat delegation failed safely: {exc}",
+                Severity.HIGH,
+                pid=pid if isinstance(pid, int) else None,
+                path=path,
+            )
+            return
+        receipts = self._matching_combat_receipts(combat, ev)
+        if not synchronous and len(receipts) <= len(before):
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                time.sleep(0.05)
+                receipts = self._matching_combat_receipts(combat, ev)
+                if len(receipts) > len(before):
+                    break
+        applied = receipts[len(before):] if len(receipts) > len(before) else receipts
+        mitigated = bool(applied)
 
         elapsed = round(time.time() - t0, 3)
-        target = f"{killed_name} (pid {pid})" if killed_name else (f"pid {pid}" if pid else "no process target")
         self.emit(
-            f"Kill+rollback on {ev.module} {ev.severity.label} alert ({target}): "
-            f"{'killed' if killed_ok else 'no process acted on'}, "
-            f"{len(rolled_back)} artifact(s) removed, {elapsed}s.",
-            Severity.HIGH,
-            pid=pid, path=path, mitigated=killed_ok or bool(rolled_back),
-            already_exited=already_exited,
+            f"Exact response for {ev.module} {ev.severity.label} was delegated "
+            f"to Combat: {len(applied)} signed action receipt(s), {elapsed}s.",
+            Severity.HIGH if mitigated else Severity.MEDIUM,
+            pid=pid,
+            response_target_path=path,
+            mitigated=mitigated,
+            combat_action_ids=[str(row.get("action_id") or "") for row in applied],
             mitigation_seconds=elapsed, trigger_module=ev.module, trigger_ts=ev.ts,
         )
+
+    @staticmethod
+    def _exact_process_binding_ok(ev) -> bool:
+        """Bind any process action to PID, creation time, and executable."""
+        try:
+            from angerona.modules.adversary_combat import AdversaryCombat
+
+            actions = AdversaryCombat._response_actions(ev)
+        except Exception:
+            return False
+        if not actions:
+            return False
+        process_actions = actions.intersection(
+            {"isolate_program", "suspend_process", "terminate_process"}
+        )
+        if not process_actions:
+            return True
+        details = ev.details if isinstance(ev.details, dict) else {}
+        pid = details.get("pid")
+        raw_exe = details.get("exe") or details.get("process_path") or details.get("image")
+        if (
+            not raw_exe
+            and os.environ.get("ANGERONA_SOAR_RESPONSE_SCOPE", "").strip()
+        ):
+            command = str(details.get("cmdline") or details.get("command_line") or "")
+            if (
+                re.search(r"\bANGERONA_REDTEAM_[0-9a-f]{8}\b", command, re.I)
+                and command.startswith(f"{sys.executable} ")
+            ):
+                raw_exe = sys.executable
+        if not isinstance(pid, int) or pid <= 0 or not isinstance(raw_exe, str) or not raw_exe:
+            return False
+        if pid in {os.getpid(), os.getppid()} or psutil is None:
+            return False
+        try:
+            expected_created = float(details.get("process_create_time"))
+            process = psutil.Process(pid)
+            actual_created = float(process.create_time())
+            actual_exe = os.path.normcase(str(Path(process.exe()).resolve(strict=False)))
+            expected_exe = os.path.normcase(str(Path(raw_exe).resolve(strict=False)))
+        except (OSError, RuntimeError, TypeError, ValueError, OverflowError):
+            return False
+        return abs(actual_created - expected_created) <= 0.001 and actual_exe == expected_exe
+
+    def _combat_consumer(self, ev):
+        """Return the shared Combat sink, or an isolated practice-only sink."""
+        try:
+            combat = getattr(self._manager, "modules", {}).get("Adversary Combat")
+        except Exception:
+            combat = None
+        if combat is not None and getattr(combat, "status", "stopped") == "running":
+            return combat, False
+
+        roots = self._scope_roots()
+        # This fallback exists only while the explicit protected drill scope is
+        # active. ``_event_in_response_scope`` has already proven the exact
+        # marker or registered command token; no unscoped permanent mutation is
+        # available through this legacy module.
+        if len(roots) != 1:
+            return None, False
+        try:
+            from angerona.modules.adversary_combat import AdversaryCombat
+
+            combat = AdversaryCombat(roots[0].parent)
+            combat.bind(self._bus)
+            return combat, True
+        except Exception:
+            return None, False
+
+    @staticmethod
+    def _matching_combat_receipts(combat, ev) -> list[dict]:
+        try:
+            rows = combat.list_actions(limit=250)
+        except Exception:
+            return []
+        matched = []
+        for row in rows:
+            try:
+                same_ts = abs(float(row.get("trigger_ts")) - float(ev.ts)) < 0.000001
+            except (TypeError, ValueError, OverflowError):
+                same_ts = False
+            if (
+                same_ts
+                and row.get("trigger_module") == ev.module
+                and row.get("integrity_status") == "verified"
+                and row.get("status") == "applied"
+            ):
+                matched.append(row)
+        return matched

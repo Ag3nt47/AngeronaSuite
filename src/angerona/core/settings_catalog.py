@@ -31,6 +31,13 @@ AREAS = (
         "Local configuration", True,
     ),
     SettingsArea(
+        "combat", "Adversary Combat",
+        "Unattended blocking, containment, quarantine, host isolation, honeypots and undo.",
+        ("adversary combat", "autonomous response", "standing authority",
+         "maximum response", "lockdown", "quarantine", "honeypot", "undo action"),
+        "Local automatic host mutation; availability risk accepted", False,
+    ),
+    SettingsArea(
         "enterprise", "Enterprise",
         "Readiness evidence, signed content, fleet and policy controls.",
         ("enterprise", "fleet", "policy", "rbac", "manifest", "signature",
@@ -39,11 +46,13 @@ AREAS = (
     ),
     SettingsArea(
         "aria", "ARIA",
-        "Assistant, microphone, voice, mailbox, Teams and optional egress.",
+        "Optional assistant, persona, conversation, hand, microphone, mailbox, Teams and egress controls.",
         ("aria", "microphone", "mic", "voice", "voice model", "speech",
+         "friday", "ultron", "persona", "conversation", "awareness",
+         "always listen", "follow up", "camera", "gesture", "hand controls",
          "privacy", "privacy defaults", "cloud", "mail", "teams",
          "research", "webhook", "notification"),
-        "Optional egress; off by default", False,
+        "Assistant, sensors, listeners, and optional egress are off by default", False,
     ),
     SettingsArea(
         "trusted", "Trusted Processes",

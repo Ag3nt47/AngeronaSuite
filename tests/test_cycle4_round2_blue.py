@@ -43,6 +43,12 @@ def test_top_talkers_collection_includes_process_interface_and_ptr(monkeypatch) 
         def name(self) -> str:
             return "browser.exe"
 
+        def create_time(self) -> float:
+            return 1234.5
+
+        def exe(self) -> str:
+            return r"C:\Apps\browser.exe"
+
     fake_psutil = SimpleNamespace(
         CONN_ESTABLISHED="ESTABLISHED",
         net_connections=lambda kind: [established],
@@ -67,8 +73,73 @@ def test_top_talkers_collection_includes_process_interface_and_ptr(monkeypatch) 
         "conns": 1,
         "ext": 1,
         "top": "203.0.113.8:443  (example.test)",
+        "remote_ip": "203.0.113.8",
         "iface": "Physical",
+        "create_time": 1234.5,
+        "exe": r"C:\Apps\browser.exe",
     }]
+
+
+def test_top_talker_combat_submission_revalidates_exact_identity(monkeypatch) -> None:
+    established = SimpleNamespace(
+        status="ESTABLISHED",
+        pid=42,
+        raddr=SimpleNamespace(ip="203.0.113.8", port=443),
+    )
+
+    class FakeProcess:
+        def __init__(self, pid: int) -> None:
+            assert pid == 42
+
+        @staticmethod
+        def create_time() -> float:
+            return 1234.5
+
+        @staticmethod
+        def exe() -> str:
+            return r"C:\Apps\browser.exe"
+
+    fake_psutil = SimpleNamespace(
+        CONN_ESTABLISHED="ESTABLISHED",
+        Process=FakeProcess,
+        net_connections=lambda kind: [established],
+    )
+    published = []
+    combat = SimpleNamespace(
+        status="running",
+        _bus=SimpleNamespace(publish=published.append),
+        policy=lambda: SimpleNamespace(enabled=True),
+    )
+    harness = SimpleNamespace(_combat_module=lambda: combat)
+    monkeypatch.setattr(top_talkers, "psutil", fake_psutil)
+    snapshot = {
+        "pid": 42,
+        "name": "browser.exe",
+        "create_time": 1234.5,
+        "exe": r"C:\Apps\browser.exe",
+        "remote_ip": "203.0.113.8",
+    }
+
+    submitted, _message = top_talkers.TopTalkersDialog._submit_combat_containment(
+        harness, snapshot
+    )
+    assert submitted is True
+    contract = published[-1].details["response_contract"]
+    assert contract["targets"] == {
+        "pid": 42,
+        "process_create_time": 1234.5,
+        "remote_ips": ["203.0.113.8"],
+        "deception": "Smart Deception",
+    }
+    assert "isolate_program" in contract["actions"]
+
+    snapshot["create_time"] = 1000.0
+    submitted, message = top_talkers.TopTalkersDialog._submit_combat_containment(
+        harness, snapshot
+    )
+    assert submitted is False
+    assert "different process" in message
+    assert len(published) == 1
 
 
 def test_top_talkers_refresh_drops_overlapping_worker(monkeypatch) -> None:

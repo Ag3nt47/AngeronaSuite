@@ -3,7 +3,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from angerona.core import ollama_lifecycle
 from angerona.engines import ollama_client
+
+
+@pytest.fixture(autouse=True)
+def _trusted_ollama_process(monkeypatch):
+    monkeypatch.setattr(
+        ollama_lifecycle,
+        "attest_ollama_service",
+        lambda _host: object(),
+    )
 
 
 def test_guarded_call_uses_local_bounded_transport_and_records_metrics(monkeypatch) -> None:

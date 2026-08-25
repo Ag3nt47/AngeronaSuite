@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "packs": [
+    {
+      "id": "aria-defense-llama3",
+      "version": "2026.08.25",
+      "title": "ARIA Llama 3 Defensive Operations",
+      "description": "A governed local Llama 3 model alias plus data-only incident-response runbooks.",
+      "model": {
+        "source": "llama3",
+        "manifest_digest": "sha256:365c0bd3c000a25d28ddbf732fe1c6add414de7275464c4e4d1c3b5fcb5d8ad1",
+        "managed_name": "angerona-defense-llama3:2026.08",
+        "model_bytes": 4661224191
+      },
+      "requirements": {
+        "ram_bytes": 8589934592,
+        "vram_bytes": 0,
+        "disk_bytes": 5905580032
+      },
+      "runbooks_sha256": "sha256:4c18829da1cc07bb38c6c50892331c360c56acb5cdc5f9785468f98a71fc0063",
+      "runbooks": [
+        {
+          "id": "containment-triage",
+          "title": "Containment triage",
+          "content": "Validate detector provenance and event authenticity. Correlate process, network, identity, and file evidence. Prefer exact-target containment with a recorded undo path. Confirm that any host-isolation trigger represents an active security threat rather than a health, authorization, or availability event. Preserve evidence before cleanup and verify the result after action."
+        },
+        {
+          "id": "ransomware-response",
+          "title": "Ransomware response",
+          "content": "Prioritize confirmed destructive file behavior, canary interaction, shadow-copy tampering, and correlated process lineage. Isolate the exact process and affected network path first, preserve volatile evidence, quarantine only verified artifacts, and escalate to host isolation when independent evidence shows continuing impact. Record every action and its rollback state."
+        },
+        {
+          "id": "credential-abuse-response",
+          "title": "Credential abuse response",
+          "content": "Correlate authentication anomalies with endpoint process and network evidence. Treat account lockouts, bridge authorization failures, and sensor health events as operational signals, not proof of host compromise. Contain verified sessions or processes, protect evidence, and route identity revocation through its governed control plane."
+        }
+      ]
+    }
+  ]
+}

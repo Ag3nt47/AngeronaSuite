@@ -111,3 +111,59 @@ all the default `status=stopped` readiness check (not real). Starting the module
   started-mode module self_test failures (Ollama/Defender/scapy/YARA/driver/kernel32
   absent, and Windows-only `psutil` constant + `\`-path basename on Linux); selfcheck.py
   needing PySide6.
+
+---
+
+# 2026-08-25 Expansion Loop — Round 1 QA Addendum
+
+Environment: Windows, CPython 3.12.10 from `venv`, `PYTHONPATH=src`, Qt offscreen.
+
+## Gates run
+
+- Package compile: **305/305 passed**, 0 syntax errors and 0 mount artifacts.
+- Module audit: **69/69 module files imported**, **67 module classes discovered**,
+  **55/55 compatibility `register()` hooks constructed**, 0 import failures, and 0
+  duplicate module names. Twelve classes intentionally rely on the documented
+  `BaseModule` subclass discovery contract rather than a compatibility hook.
+- Module self-tests: **47 passed / 13 expected inactive-environment results / 8
+  platform or operator-disabled skips**. The expected results are stopped workers,
+  idle unarmed SOAR, or unavailable local Ollama; none is an actionable defect in the
+  deliberately non-starting harness.
+- Core module-level self-tests: **19/19 passed**.
+- `tools/selfcheck.py`: **26/26 phases passed** after the fix below.
+- `run-selfcheck.bat`: **exit 0**, report records **26 passed / 0 failed**.
+- Focused Adversary Combat, ARIA controls, Ollama transport, AI broker, setup,
+  upgrade-console, menu/catalog/help, and GitHub toolkit set: **47/47 passed**.
+- Full suite with `CI=true`: **1085 passed / 3 intentional platform skips / 0
+  failed** in 105.34 seconds.
+- Ruff correctness gate over `src/angerona` and `tests`: **passed**.
+
+## Bug fixed
+
+### B-R1-20260825-01 — Adversary Combat stopped-state self-test claimed it was armed
+
+- Component: `src/angerona/modules/adversary_combat.py`.
+- Symptom: the normal non-starting selfcheck harness returned `[FAIL] Adversary
+  Combat — MAXIMUM armed...`; because the detail omitted `status=stopped`, the harness
+  classified the expected stopped worker as an unexpected product failure.
+- Root cause: `self_test()` rendered `armed` solely from configured policy even when
+  the module lifecycle was stopped, while its boolean result correctly returned false.
+- **FIXED:** it now renders `armed` only when running and enabled; otherwise it reports
+  the actual lifecycle state (`status=stopped`, etc.).
+- Regression gate: added `test_self_test_does_not_claim_a_stopped_worker_is_armed`.
+  Focused module tests **6/6 passed**, selfcheck **26/26 passed**, full suite **1085
+  passed / 3 skipped**, and compile/Ruff gates passed.
+
+## Reported / external gates
+
+- No additional code defect was found.
+- The standalone maximum-mode adversary validator was not invoked from this parallel
+  QA lane because it deliberately installs temporary host-wide firewall isolation
+  rules and would disrupt other agents' network-dependent research. Its action,
+  receipt, undo, AAR correlation, and live inert 30-step red-team paths were covered by
+  the focused tests and selfcheck. A dedicated single-owner elevated acceptance run
+  remains the appropriate gate for real host firewall mutation and rollback.
+
+Totals: **305 files compiled; module self-tests 47 passed / 13 expected inactive / 8
+skipped; core self-tests 19 passed / 0 failed; selfcheck 26 passed / 0 failed; bugs 1
+fixed / 0 code defects reported (1 external acceptance gate).**

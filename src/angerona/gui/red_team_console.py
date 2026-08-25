@@ -11,8 +11,8 @@ Highlights:
   • Prominent marker-location picker (presets + Browse).
   • Auto-remediate ON by default; analogy coaching is reserved for a later UI.
   • Live kill-chain panel that tracks the current and completed drill stages.
-  • Embedded editor tab to view/adjust shark/red_team.py behind an AST syntax gate,
-    with Save + Revert.
+  • Embedded editor tab for a syntax-checked working copy of shark/red_team.py.
+    Save/reload/rollback never rewrite or execute the installed engine.
 
 Integration: the console reads the running engines off its parent (MainWindow),
 subscribes to the parent's `_shark_narration` signal for live updates, and calls
@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 from angerona.core.data_paths import data_dir
+from angerona.core.source_sandbox import SourceSandboxWorkspace
 from angerona.gui.animations import RunSpinner
 
 # Canonical kill-chain stages → (stable key, readable label, narration aliases).
@@ -69,9 +70,7 @@ _INTENSITY_DESC = {
 }
 
 
-def _red_team_path() -> Path:
-    # …/gui/red_team_console.py → …/shark/red_team.py
-    return Path(__file__).resolve().parent.parent / "shark" / "red_team.py"
+_RED_TEAM_SOURCE = "src/angerona/shark/red_team.py"
 
 
 class RedTeamConsole(QDialog):
@@ -119,6 +118,8 @@ class RedTeamConsole(QDialog):
         self._tabs.addTab(self._build_device_lab_tab(), "🛰  Device Security Lab")
         self._tabs.addTab(self._build_editor_tab(), "🧪  Sandbox Editor")
         self._tabs.currentChanged.connect(self._on_tab_changed)
+        from angerona.gui.context_info import attach_context_info
+        self._context_info = attach_context_info(self._tabs, "red-team")
         root.addWidget(self._tabs, 1)
 
         # Engine callbacks originate on worker threads. A queued connection is
@@ -833,18 +834,31 @@ class RedTeamConsole(QDialog):
 
     def _build_editor_tab(self) -> QWidget:
         w = QWidget(); lay = QVBoxLayout(w)
-        lay.addWidget(self._h("Sandbox editor — shark/red_team.py"))
-        lay.addWidget(QLabel("Adjust techniques, jitter, process spawns, or add your own stage. "
-                             "Save is gated by a Python syntax check; Revert restores the on-disk "
-                             "version. Changes take effect the next time the app imports the engine."))
+        lay.addWidget(self._h("Sandbox editor — isolated red-team working copy"))
+        help_text = QLabel(
+            "Experiment with techniques, jitter, process spawns, or a new stage. "
+            "Save writes only to Angerona's runtime code-sandbox after a Python "
+            "syntax check. Reload discards unsaved editor text; Roll back restores "
+            "the working copy from the installed engine. Sandbox code is never "
+            "executed or copied over the live application."
+        )
+        help_text.setWordWrap(True)
+        lay.addWidget(help_text)
+        self._editor_workspace = SourceSandboxWorkspace(
+            "red-team-console", (_RED_TEAM_SOURCE,)
+        )
         self.editor = QPlainTextEdit()
         self.editor.setStyleSheet("font-family:'Fira Code',monospace; font-size:11px;")
         lay.addWidget(self.editor, 1)
         row = QHBoxLayout()
-        save = QPushButton("💾  Save (syntax-checked)"); save.clicked.connect(self._save_editor)
-        revert = QPushButton("↩  Revert"); revert.clicked.connect(self._load_editor)
+        save = QPushButton("💾  Save working copy"); save.clicked.connect(self._save_editor)
+        reload_copy = QPushButton("↻  Reload saved copy")
+        reload_copy.clicked.connect(self._reload_editor)
+        rollback = QPushButton("↩  Roll back copy")
+        rollback.clicked.connect(self._rollback_editor)
         self.edit_status = QLabel(""); self.edit_status.setStyleSheet("color:#9fb3c8;")
-        row.addWidget(save); row.addWidget(revert); row.addWidget(self.edit_status, 1)
+        row.addWidget(save); row.addWidget(reload_copy); row.addWidget(rollback)
+        row.addWidget(self.edit_status, 1)
         lay.addLayout(row)
         # Load AFTER edit_status exists — _load_editor() writes to it, so calling
         # it earlier raised 'RedTeamConsole has no attribute edit_status'.
@@ -974,22 +988,53 @@ class RedTeamConsole(QDialog):
     # ── editor ───────────────────────────────────────────────────────────────
     def _load_editor(self) -> None:
         try:
-            self.editor.setPlainText(_red_team_path().read_text(encoding="utf-8"))
-            self.edit_status.setText(f"Loaded {_red_team_path().name}")
+            source = self._editor_workspace.reload(_RED_TEAM_SOURCE)
+            self.editor.setPlainText(source)
+            suffix = " (modified)" if self._editor_workspace.changed(
+                _RED_TEAM_SOURCE
+            ) else ""
+            self.edit_status.setText(f"Loaded isolated working copy{suffix}")
         except Exception as exc:
-            self.editor.setPlainText(f"# could not load red_team.py: {exc}")
+            self.editor.setPlainText(f"# could not load sandbox working copy: {exc}")
+            self.edit_status.setText("❌ sandbox working copy unavailable")
+
+    def _reload_editor(self) -> None:
+        """Discard unsaved buffer text and reload the saved sandbox copy."""
+        self._load_editor()
 
     def _save_editor(self) -> None:
         src = self.editor.toPlainText()
         try:
-            compile(src, str(_red_team_path()), "exec")   # AST/syntax gate
+            self._editor_workspace.save(_RED_TEAM_SOURCE, src)
         except SyntaxError as exc:
             QMessageBox.warning(self, "Syntax error — not saved",
                                 f"Line {exc.lineno}: {exc.msg}")
             self.edit_status.setText(f"❌ syntax error line {exc.lineno} — not saved")
             return
-        try:
-            _red_team_path().write_text(src, encoding="utf-8")
-            self.edit_status.setText("✅ saved — restart or re-import to take effect")
         except Exception as exc:
             QMessageBox.warning(self, "Save failed", str(exc))
+            self.edit_status.setText("❌ working copy was not saved")
+            return
+        self.edit_status.setText("✅ isolated working copy saved (live engine unchanged)")
+
+    def _rollback_editor(self) -> None:
+        """Restore only the runtime working copy from immutable installed source."""
+        answer = QMessageBox.question(
+            self,
+            "Roll back sandbox working copy?",
+            "Discard every saved experiment in this editor and restore the "
+            "installed red-team source into the isolated working copy? The live "
+            "application will not be changed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self.edit_status.setText("Rollback cancelled")
+            return
+        try:
+            self._editor_workspace.rollback((_RED_TEAM_SOURCE,))
+            self._load_editor()
+            self.edit_status.setText("✅ working copy rolled back; live engine unchanged")
+        except Exception as exc:
+            QMessageBox.warning(self, "Rollback failed", str(exc))
+            self.edit_status.setText("❌ working copy rollback failed")

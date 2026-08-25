@@ -1,8 +1,9 @@
-"""sandbox_editor.py — Live-Fire Sandbox & Editor (CODE: SBOX).
+"""sandbox_editor.py — Isolated Source Sandbox (CODE: SBOX).
 
-A standalone diagnostic + hot-swap code editor for Project Angerona's security
-modules. It lets an operator isolate, inspect, test, and edit the raw ``.py`` of
-any ``BaseModule`` and reload it live — behind hard safety guardrails.
+A standalone diagnostic editor for working copies of Angerona security modules.
+Installed product source is immutable from this surface. Candidate source is
+saved only below Angerona's bounded data sandbox and is never loaded into the
+elevated production interpreter.
 
 Safety model
 ------------
@@ -10,9 +11,9 @@ Safety model
    replace the process-global ``EventBus`` publisher. A self-test runs in a
    disposable Python process with a sanitized environment, temporary data root,
    and a hard deadline.
-2. AST gate — code is never written to disk unless ``ast.parse()`` succeeds.
-3. Backups + history — every applied change is backed up (in-memory + temp file)
-   and logged to a timestamped ledger so any edit can be reverted or audited.
+2. AST gate — candidate code is not saved unless ``ast.parse()`` succeeds.
+3. Working-copy history — each saved candidate can be reverted in the sandbox.
+4. Review boundary — promotion into installed source is intentionally absent.
 
 Run standalone:  ``python -m angerona.gui.sandbox_editor``
 Embed in the app: ``launch_sandbox_editor(manager, bus, threat_callback=...)``.
@@ -20,7 +21,6 @@ Embed in the app: ``launch_sandbox_editor(manager, bus, threat_callback=...)``.
 from __future__ import annotations
 
 import ast
-import importlib
 import inspect
 import sys
 import time
@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 
 from angerona.core.module_base import BaseModule
 from angerona.core.sandbox_runner import run_isolated_self_test
+from angerona.core.source_sandbox import SourceSandboxWorkspace
 
 
 # ── Syntax highlighting ───────────────────────────────────────────────────────
@@ -96,20 +97,39 @@ class PythonHighlighter(QSyntaxHighlighter):
 
 # ── Isolated self_test runner ─────────────────────────────────────────────────
 class IsolatedTestWorker(QThread):
-    """Waits for the bounded subprocess without blocking the GUI thread."""
+    """Validate a candidate and test the installed baseline out of process.
+
+    Candidate source is parsed as data and is deliberately not imported or
+    executed. The baseline ``self_test`` remains useful proof that the installed
+    module is healthy while an operator drafts a separately reviewed change.
+    """
 
     done = Signal(bool, str)   # (passed, captured_output)
 
-    def __init__(self, module: BaseModule, parent=None) -> None:
+    def __init__(
+        self,
+        module: BaseModule,
+        workspace: SourceSandboxWorkspace,
+        relative_path: str,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self._module_name = type(module).__module__
         self._class_name = type(module).__name__
         self._expected_name = str(getattr(module, "name", ""))
+        self._workspace = workspace
+        self._relative_path = relative_path
 
     def run(self) -> None:
         try:
+            candidate = self._workspace.reload(self._relative_path)
+            ast.parse(candidate, filename=self._relative_path)
             passed, output = run_isolated_self_test(
                 self._module_name, self._class_name, self._expected_name,
+            )
+            output = (
+                "Sandbox candidate passed syntax validation and was not executed.\n"
+                "Installed baseline self_test result:\n" + output
             )
         except Exception:
             passed = False
@@ -143,7 +163,7 @@ class HistoryDialog(QDialog):
 
 # ── Main sandbox window ───────────────────────────────────────────────────────
 class SandboxEditor(QMainWindow):
-    """Live-Fire Sandbox & Editor window."""
+    """Editor for isolated, non-executable source working copies."""
 
     def __init__(
         self,
@@ -159,11 +179,13 @@ class SandboxEditor(QMainWindow):
         self.bus = bus
         self._threat_cb = threat_callback
 
-        self.setWindowTitle("Angerona — Live-Fire Sandbox & Editor")
+        self.setWindowTitle("Angerona — Isolated Source Sandbox")
         self.resize(1180, 720)
 
         self._backups: Dict[str, List[str]] = {}   # name -> stack of prior sources
         self._history: Dict[str, List[dict]] = {}   # name -> ledger entries
+        self._workspaces: Dict[str, SourceSandboxWorkspace] = {}
+        self._workspace_paths: Dict[str, str] = {}
         self._current: Optional[str] = None
         self._test_worker: Optional[IsolatedTestWorker] = None
         self._close_confirmed = False
@@ -190,7 +212,10 @@ class SandboxEditor(QMainWindow):
         root = QVBoxLayout(central)
         root.setContentsMargins(8, 8, 8, 8)
 
-        banner = QLabel("🧪  ISOLATED TESTING — live sensors and the production EventBus remain active")
+        banner = QLabel(
+            "🧪  ISOLATED WORKING COPY — installed code is read-only and candidates "
+            "are never loaded live"
+        )
         banner.setStyleSheet(
             "background:#0c4a6e; color:#e0f2fe; font-weight:800; padding:8px 12px;"
             "border-radius:6px;")
@@ -256,18 +281,18 @@ class SandboxEditor(QMainWindow):
         btn_row = QHBoxLayout()
         for label, slot in (
             ("Open Module", self._open_selected),
-            ("Run Isolated Test", self._run_test),
+            ("Validate Sandbox Copy", self._run_test),
             ("🤖 Ask AI", self._ask_ai),
             ("🔎 Find", self._show_find),
-            ("Apply Changes", self._apply_changes),
-            ("Revert to Previous", self._revert),
+            ("Save Sandbox Copy", self._apply_changes),
+            ("Revert Sandbox Copy", self._revert),
             ("View History", self._view_history),
         ):
             b = QPushButton(label)
             b.clicked.connect(slot)
             btn_row.addWidget(b)
         btn_row.addStretch()
-        close_btn = QPushButton("Exit Sandbox (restore sensors)")
+        close_btn = QPushButton("Exit Sandbox")
         close_btn.setStyleSheet("background:#166534; color:#dcfce7; font-weight:700;")
         close_btn.clicked.connect(self.close)
         btn_row.addWidget(close_btn)
@@ -326,18 +351,18 @@ class SandboxEditor(QMainWindow):
             self._log("[!] select a module first.")
             return
         mod = self.manager.modules.get(name)
-        src = _module_source_file(mod)
-        if not src or not src.exists():
-            self._log(f"[!] could not resolve source file for {name}.")
-            return
         try:
-            self.editor.setPlainText(src.read_text(encoding="utf-8"))
+            workspace, relative = self._workspace_for_module(name, mod)
+            self.editor.setPlainText(workspace.reload(relative))
         except Exception as exc:
-            self._log(f"[!] read failed: {exc}")
+            self._log(f"[!] sandbox open failed: {exc}")
             return
         self._current = name
-        self.path_lbl.setText(str(src))
-        self._log(f"Opened {name}: {src}")
+        item = workspace.file(relative)
+        self.path_lbl.setText(
+            f"Sandbox: {item.working_path}  ·  Read-only source: {item.source_path}"
+        )
+        self._log(f"Opened isolated working copy for {name}: {item.working_path}")
 
     def _run_test(self) -> None:
         name = self._selected_name() or self._current
@@ -351,8 +376,21 @@ class SandboxEditor(QMainWindow):
         if self._test_worker is not None and self._test_worker.isRunning():
             self._log("[!] an isolated self-test is already running.")
             return
-        self._log(f"── Running isolated self_test() for {name} …")
-        self._test_worker = IsolatedTestWorker(mod, self)
+        try:
+            workspace, relative = self._workspace_for_module(name, mod)
+            workspace.save(relative, self.editor.toPlainText())
+        except SyntaxError as exc:
+            self._log(f"[BLOCKED] Syntax error line {exc.lineno}: {exc.msg} — not saved.")
+            self._highlight_error(exc.lineno)
+            return
+        except Exception as exc:
+            self._log(f"[!] sandbox validation failed: {exc}")
+            return
+        self._log(
+            f"── Validating sandbox syntax and running installed baseline "
+            f"self_test() for {name} …"
+        )
+        self._test_worker = IsolatedTestWorker(mod, workspace, relative, self)
         self._test_worker.done.connect(self._on_test_done)
         self._test_worker.finished.connect(self._test_worker.deleteLater)
         self._test_worker.start()
@@ -365,47 +403,26 @@ class SandboxEditor(QMainWindow):
         if not self._current:
             self._log("[!] open a module before applying changes.")
             return
-        if QMessageBox.warning(
-            self, "Apply live code change",
-            "CRITICAL: Modifying live sensor logic can impair system security or "
-            "cause fatal deadlocks. Verify syntax before proceeding.\n\n"
-            f"Write changes to {self._current} and hot-reload it now?",
-            QMessageBox.Ok | QMessageBox.Cancel, QMessageBox.Cancel,
-        ) != QMessageBox.Ok:
-            return
-
         new_src = self.editor.toPlainText()
-        # AST gate — never write code that won't parse.
         try:
-            ast.parse(new_src)
+            mod = self.manager.modules.get(self._current)
+            workspace, relative = self._workspace_for_module(self._current, mod)
+            prior = workspace.reload(relative)
+            workspace.save(relative, new_src)
         except SyntaxError as exc:
             self._log(f"[BLOCKED] Syntax error line {exc.lineno}: {exc.msg} — not saved.")
             self._highlight_error(exc.lineno)
             return
-
-        mod = self.manager.modules.get(self._current)
-        src = _module_source_file(mod)
-        if not src:
-            self._log("[!] cannot resolve target file — aborting.")
-            return
-
-        # Back up the current on-disk source for revert.
-        try:
-            prior = src.read_text(encoding="utf-8")
-        except Exception:
-            prior = ""
-        self._backups.setdefault(self._current, []).append(prior)
-        _write_temp_backup(self._current, prior)
-
-        try:
-            src.write_text(new_src, encoding="utf-8")
         except Exception as exc:
-            self._log(f"[!] write failed: {exc}")
+            self._log(f"[!] sandbox save failed: {exc}")
             return
+        self._backups.setdefault(self._current, []).append(prior)
         self._record_history(self._current, "apply", len(new_src.encode()),
-                             f"wrote {src}")
-        self._log(f"Saved {src}. Hot-reloading module…")
-        self._reload_module(self._current)
+                             f"saved isolated copy {workspace.file(relative).working_path}")
+        self._log(
+            "Saved sandbox copy. Installed source and running module were not changed."
+        )
+        self._reload_sandbox(self._current)
 
     def _revert(self) -> None:
         if not self._current:
@@ -417,17 +434,19 @@ class SandboxEditor(QMainWindow):
             return
         prior = stack.pop()
         mod = self.manager.modules.get(self._current)
-        src = _module_source_file(mod)
         try:
-            src.write_text(prior, encoding="utf-8")
+            workspace, relative = self._workspace_for_module(self._current, mod)
+            workspace.save(relative, prior)
             self.editor.setPlainText(prior)
         except Exception as exc:
-            self._log(f"[!] revert write failed: {exc}")
+            self._log(f"[!] sandbox revert failed: {exc}")
             return
         self._record_history(self._current, "revert", len(prior.encode()),
-                             "restored previous version")
-        self._log(f"Reverted {self._current} to previous version. Reloading…")
-        self._reload_module(self._current)
+                             "restored previous sandbox version")
+        self._log(
+            f"Reverted {self._current}'s sandbox copy. Installed source is unchanged."
+        )
+        self._reload_sandbox(self._current)
 
     def _view_history(self) -> None:
         name = self._current or self._selected_name()
@@ -475,69 +494,45 @@ class SandboxEditor(QMainWindow):
         code = self.editor.toPlainText()
         prompt = (
             f"I'm editing the '{name}' module of a Python/PySide6 EDR security suite "
-            "(Project Angerona) in a live-fire sandbox. Review the code and answer my "
+            "(Project Angerona) in an isolated working-copy sandbox. Review the code and "
+            "answer my "
             "questions / propose fixes. Keep changes minimal and preserve the BaseModule "
             "contract.\n\n--- current file ---\n" + code[:12000])
         AIConsultDialog(f"Sandbox Ask AI — {name}", prompt,
                         default_filename=f"{name}_ai_notes.md", parent=self).show()
 
-    # ── Reload ────────────────────────────────────────────────────────────────
-    def _reload_module(self, name: str) -> None:
-        mod = self.manager.modules.get(name)
+    # ── Working-copy operations ───────────────────────────────────────────────
+    def _workspace_for_module(
+        self, name: str, mod: BaseModule | None
+    ) -> tuple[SourceSandboxWorkspace, str]:
+        cached = self._workspaces.get(name)
+        if cached is not None:
+            return cached, self._workspace_paths[name]
         if mod is None:
-            self._log(f"[!] {name} vanished from manager.")
-            return
-        try:
-            mod.stop()
-        except Exception:
-            pass
-        pymod_name = type(mod).__module__
-        pymod = sys.modules.get(pymod_name)
-        try:
-            if pymod is not None:
-                importlib.reload(pymod)
-        except Exception as exc:
-            self._log(f"[!] reload FAILED: {exc}\n{traceback.format_exc()}")
-            self._emit_module_alert(name, f"hot-reload failed: {exc}")
-            return
+            raise ValueError(f"module is unavailable: {name}")
+        source_root, relative = _module_source_layout(mod)
+        workspace = SourceSandboxWorkspace(
+            f"module-{type(mod).__module__}-{name}",
+            (relative,),
+            source_root=source_root,
+        )
+        if not workspace.available:
+            raise ValueError(f"could not resolve an immutable source file for {name}")
+        workspace.ensure()
+        self._workspaces[name] = workspace
+        self._workspace_paths[name] = relative
+        return workspace, relative
 
-        # Rebind a fresh instance of the same-named BaseModule subclass.
-        new_cls = None
-        for _, obj in inspect.getmembers(pymod, inspect.isclass):
-            if (issubclass(obj, BaseModule) and obj is not BaseModule
-                    and obj.__module__ == pymod.__name__
-                    and getattr(obj, "name", None) == name):
-                new_cls = obj
-                break
-        if new_cls is None:
-            self._log(f"[!] reloaded module but couldn't find class named '{name}'. "
-                      "Left stopped.")
-            self._emit_module_alert(name, "reloaded but class not found; module stopped")
-            return
+    def _reload_sandbox(self, name: str) -> None:
+        """Reload editor text from the working copy; never reload Python code."""
+        mod = self.manager.modules.get(name)
         try:
-            inst = new_cls()
-            inst.bind(self.bus)
-            if hasattr(inst, "bind_manager"):
-                inst.bind_manager(self.manager)
-            self.manager.modules[name] = inst
-            inst.start()
-            self._log(f"✓ {name} hot-reloaded and restarted.")
+            workspace, relative = self._workspace_for_module(name, mod)
+            self.editor.setPlainText(workspace.reload(relative))
         except Exception as exc:
-            self._log(f"[!] restart FAILED: {exc}\n{traceback.format_exc()}")
-            self._emit_module_alert(name, f"restart failed after edit: {exc}")
-        self._populate_modules()
-
-    def _emit_module_alert(self, name: str, detail: str) -> None:
-        """Surface a reload/restart failure onto the live alert feed (via the real
-        publish, temporarily) so it lands in the user's module alert history."""
-        if self.bus is None or not hasattr(self.bus, "publish"):
+            self._log(f"[!] sandbox reload failed: {exc}")
             return
-        try:
-            from angerona.core.eventbus import Event, Severity
-            self.bus.publish(Event(name, f"SANDBOX: {detail}", Severity.HIGH,
-                                   time.time(), {"sandbox": True}))
-        except Exception:
-            pass
+        self._log("Reloaded sandbox copy only; production interpreter is unchanged.")
 
     # ── Helpers ───────────────────────────────────────────────────────────────
     def _record_history(self, name: str, action: str, nbytes: int, note: str) -> None:
@@ -572,15 +567,22 @@ def _module_source_file(mod) -> Optional[Path]:
         return None
 
 
-def _write_temp_backup(name: str, source: str) -> None:
-    try:
-        import tempfile
-        d = Path(tempfile.gettempdir()) / "angerona_sandbox_backups"
-        d.mkdir(parents=True, exist_ok=True)
-        safe = "".join(c if c.isalnum() else "_" for c in name)
-        (d / f"{safe}_{int(time.time())}.py.bak").write_text(source, encoding="utf-8")
-    except Exception:
-        pass
+def _module_source_layout(mod: BaseModule) -> tuple[Path, str]:
+    """Return an import-root and relative module path without resolving links."""
+    source = _module_source_file(mod)
+    if source is None:
+        raise ValueError("module source file is unavailable")
+    source = Path(source).absolute()
+    if source.suffix.casefold() == ".pyc":
+        source = source.with_suffix(".py")
+    module_parts = type(mod).__module__.split(".")
+    expected = Path(*module_parts).with_suffix(".py")
+    expected_parts = tuple(part.casefold() for part in expected.parts)
+    source_parts = tuple(part.casefold() for part in source.parts)
+    if len(source_parts) >= len(expected_parts) and source_parts[-len(expected_parts):] == expected_parts:
+        root = source.parents[len(expected.parts) - 1]
+        return root, expected.as_posix()
+    return source.parent, source.name
 
 
 def launch_sandbox_editor(manager, bus, threat_callback=None, parent=None,

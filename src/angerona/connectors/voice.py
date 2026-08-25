@@ -20,7 +20,10 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import os
+import re
 import shutil
+import subprocess
+import threading
 import urllib.parse
 import urllib.request
 import zipfile
@@ -230,6 +233,11 @@ class Voice:
         self._stt_fn = stt_fn
         self._spoken: deque[str] = deque(maxlen=50)   # narration history
         self.last_error: str = ""
+        self._speech_lock = threading.RLock()
+        self._speech_generation = 0
+        self._speech_thread: Optional[threading.Thread] = None
+        self._speech_process: Optional[subprocess.Popen] = None
+        self._tts_engine = None
         # Microphone input device. None / "" = the OS default (computer) mic;
         # otherwise a sounddevice input-device index for an added/external mic.
         self.mic_device: Optional[int] = None
@@ -356,6 +364,71 @@ class Voice:
             self.last_error = f"TTS failed: {exc}"
             return False
 
+    @property
+    def speaking(self) -> bool:
+        """Whether an asynchronous reply is still playing."""
+        with self._speech_lock:
+            thread = self._speech_thread
+            process = self._speech_process
+            return bool(
+                (thread is not None and thread.is_alive())
+                or (process is not None and process.poll() is None)
+            )
+
+    def speak_async(self, text: str) -> bool:
+        """Speak on one replaceable worker so the listener can hear interrupts.
+
+        Starting a new reply interrupts the prior one.  This is presentation
+        control only and never touches ARIA's tool/confirmation state.
+        """
+        if not self.enabled or not str(text or "").strip():
+            return False
+        self.interrupt()
+        with self._speech_lock:
+            self._speech_generation += 1
+            generation = self._speech_generation
+
+            def _run() -> None:
+                try:
+                    with self._speech_lock:
+                        if generation != self._speech_generation:
+                            return
+                    self.speak(str(text))
+                finally:
+                    current = threading.current_thread()
+                    with self._speech_lock:
+                        if self._speech_thread is current:
+                            self._speech_thread = None
+
+            worker = threading.Thread(target=_run, name="AriaSpeech", daemon=True)
+            self._speech_thread = worker
+            try:
+                worker.start()
+            except Exception as exc:
+                self._speech_thread = None
+                self.last_error = f"TTS worker failed to start: {exc}"
+                return False
+        return True
+
+    def interrupt(self) -> bool:
+        """Best-effort stop for a currently playing reply."""
+        with self._speech_lock:
+            was_active = self.speaking
+            self._speech_generation += 1
+            process = self._speech_process
+            engine = self._tts_engine
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+        if engine is not None:
+            try:
+                engine.stop()
+            except Exception:
+                pass
+        return was_active
+
     def _resolve_tts(self) -> Optional[Callable[[str], None]]:
         """Pick a local TTS backend, cheapest-to-most-robust. Cached once built.
 
@@ -371,6 +444,7 @@ class Voice:
             try:
                 import pyttsx3  # type: ignore
                 engine = pyttsx3.init()
+                self._tts_engine = engine
                 self._tts_fn = lambda t: (engine.say(t), engine.runAndWait())
                 return self._tts_fn
             except Exception as exc:  # pragma: no cover
@@ -398,19 +472,31 @@ class Voice:
                 self.last_error = f"SAPI init failed: {exc}"
         return None
 
-    @staticmethod
-    def _powershell_speak(text: str) -> None:  # pragma: no cover - Windows only
+    def _powershell_speak(self, text: str) -> None:  # pragma: no cover - Windows only
         """Speak via the built-in .NET SpeechSynthesizer. Text is piped over
         stdin so there's nothing to escape, and the window is suppressed."""
-        import subprocess
         ps = ("Add-Type -AssemblyName System.Speech; "
               "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
               "$s.Speak([Console]::In.ReadToEnd())")
-        subprocess.run(
+        process = subprocess.Popen(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            input=text, text=True, timeout=60,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
             creationflags=0x08000000,   # CREATE_NO_WINDOW
         )
+        with self._speech_lock:
+            self._speech_process = process
+        try:
+            process.communicate(input=text, timeout=60)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            process.wait(timeout=3)
+        finally:
+            with self._speech_lock:
+                if self._speech_process is process:
+                    self._speech_process = None
 
     def narration_history(self, n: int = 10) -> list[str]:
         return list(self._spoken)[-n:]
@@ -503,12 +589,14 @@ class Voice:
         return any(low.startswith(w) or f" {w} " in f" {low} " for w in self.WAKE_WORDS)
 
     def strip_wake(self, text: str) -> str:
-        """Remove the wake word, leaving the command for the assistant."""
-        low = text.strip().lower()
+        """Remove a wake word anywhere, leaving the command for the assistant."""
+        original = text.strip()
         for w in sorted(self.WAKE_WORDS, key=len, reverse=True):
-            if low.startswith(w):
-                return text.strip()[len(w):].lstrip(" ,:-").strip()
-        return text.strip()
+            match = re.search(rf"(?<!\w){re.escape(w)}(?!\w)", original, re.I)
+            if match is not None:
+                cleaned = original[:match.start()] + " " + original[match.end():]
+                return re.sub(r"\s+", " ", cleaned).strip(" ,:-?!.")
+        return original
 
     # ── Self-test ─────────────────────────────────────────────────────────────
     def self_test(self) -> tuple[bool, str]:
@@ -540,9 +628,24 @@ class Voice:
             assert heard == "hey aria run the loop", "injected STT used"
             assert v.is_wake(heard) is True, "wake word detected"
             assert v.strip_wake(heard) == "run the loop", "wake word stripped to command"
+            assert v.strip_wake("what do you think, aria?") == "what do you think", \
+                "wake word can appear naturally at the end"
             assert v.is_wake("what's the score") is False, "no false wake"
 
-            # 5 ── capabilities never raises and reports injected backends
+            # 5 ── async speech can be interrupted without blocking listening.
+            release = threading.Event()
+            started = threading.Event()
+
+            def _slow_speak(_text: str) -> None:
+                started.set()
+                release.wait(1.0)
+
+            async_voice = Voice(enabled=True, tts_fn=_slow_speak)
+            assert async_voice.speak_async("long reply") and started.wait(0.5)
+            assert async_voice.speaking and async_voice.interrupt()
+            release.set()
+
+            # 6 ── capabilities never raises and reports injected backends
             caps = v.capabilities()
             assert caps.tts_local and caps.stt_local, "injected backends reported as available"
             assert "ON" in v.status(), "enabled status"
@@ -550,7 +653,8 @@ class Voice:
             return True, ("OK — disabled is a silent no-op (history still kept); "
                           "enabled-without-backend degrades cleanly with a reason; "
                           "injected TTS/STT are used; wake word 'hey aria' detected and "
-                          "stripped to 'run the loop'; no false wake; capabilities safe.")
+                          "stripped wherever it occurs; async interruption works; no false "
+                          "wake; capabilities safe.")
         except AssertionError as exc:
             return False, f"FAIL — {exc}"
         except Exception as exc:  # pragma: no cover

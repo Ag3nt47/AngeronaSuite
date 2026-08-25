@@ -30,6 +30,16 @@ SEVERITY_HINTS = {
 }
 
 
+def _scan_interval() -> float:
+    enabled = os.environ.get("ANGERONA_ADVERSARY_COMBAT_ENABLED", "0").strip().lower()
+    mode = os.environ.get("ANGERONA_ADVERSARY_COMBAT_MODE", "").strip().lower()
+    if enabled in {"1", "true", "yes", "on"} and mode == "maximum":
+        return 2.0
+    if enabled in {"1", "true", "yes", "on"}:
+        return 15.0
+    return 300.0
+
+
 class YaraScannerModule(BaseModule):
     name = "YARA Scanner"
     description = "Scans Downloads and the isolated drill sandbox with in-process YARA."
@@ -252,4 +262,4 @@ class YaraScannerModule(BaseModule):
                     self._scan_file(scanner, path)
             if len(self._seen_matches) > 4096:
                 self._seen_matches.clear()
-            self.sleep(300)
+            self.sleep(_scan_interval())

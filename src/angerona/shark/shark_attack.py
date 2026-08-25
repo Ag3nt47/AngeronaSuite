@@ -191,6 +191,8 @@ class SharkStep:
     ts_end: float = 0.0
     artifact_paths: List[str] = field(default_factory=list)
     pid: Optional[int] = None
+    remote_ips: List[str] = field(default_factory=list)
+    remote_ports: List[int] = field(default_factory=list)
     detail: str = ""
     ok: bool = True
 
@@ -792,6 +794,7 @@ class SharkAttackEngine:
         ts = time.time()
         host = _pick_exfil_host()
         variant = random.choice(["held_443", "held_80", "burst"])
+        remote_ips: List[str] = []
         try:
             if variant == "burst":
                 port = EXFIL_TEST_PORT
@@ -802,6 +805,9 @@ class SharkAttackEngine:
                     if self._cancel.is_set():
                         raise _DrillCancelled()
                     with socket.create_connection((host, port), timeout=5) as s:
+                        peer_ip = str(s.getpeername()[0])
+                        if peer_ip not in remote_ips:
+                            remote_ips.append(peer_ip)
                         if self._cancel.is_set():
                             raise _DrillCancelled()
                         try:
@@ -825,6 +831,9 @@ class SharkAttackEngine:
                               "test/documentation domain) and sending a fixed dummy marker. No "
                               "real data of any kind is ever read or transmitted.")
                 with socket.create_connection((host, port), timeout=5) as s:
+                    peer_ip = str(s.getpeername()[0])
+                    if peer_ip not in remote_ips:
+                        remote_ips.append(peer_ip)
                     if self._cancel.is_set():
                         raise _DrillCancelled()
                     try:
@@ -840,7 +849,10 @@ class SharkAttackEngine:
                 technique = f"T1041-style outbound test (held, port {port})"
                 desc = (f"Opened a real outbound connection to {host}:{port} and sent a fixed "
                        "dummy marker — no real data of any kind.")
-            self._record("Exfiltration", technique, desc, ts, pid=os.getpid())
+            self._record(
+                "Exfiltration", technique, desc, ts,
+                pid=os.getpid(), remote_ips=remote_ips, remote_ports=[port],
+            )
         except Exception as exc:
             self._narrate(f"   failed: {exc}")
             self._record("Exfiltration", "T1041-style outbound test", f"failed: {exc}", ts, ok=False)
