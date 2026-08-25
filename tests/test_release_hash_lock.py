@@ -291,7 +291,23 @@ def test_local_build_backend_is_exact_pinned() -> None:
         import tomli as tomllib
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert project["build-system"]["requires"] == [
-        "setuptools==83.0.0",
-        "wheel==0.47.0",
+    backend_pins = project["build-system"]["requires"]
+    assert [pin.split("==", 1)[0] for pin in backend_pins] == [
+        "setuptools",
+        "wheel",
     ]
+    assert all(pin.count("==") == 1 for pin in backend_pins)
+    assert all(not any(marker in pin for marker in (">", "<", "~=", "!=", ","))
+               for pin in backend_pins)
+    for source in (
+        "constraints-release.txt",
+        "constraints-posix-release.txt",
+        "requirements-posix-release.in",
+    ):
+        lines = (ROOT / source).read_text(encoding="utf-8").splitlines()
+        source_pins = [
+            line.strip()
+            for line in lines
+            if line.strip().split("==", 1)[0] in {"setuptools", "wheel"}
+        ]
+        assert source_pins == backend_pins
