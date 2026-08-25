@@ -320,13 +320,32 @@ def _windows_atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> No
         wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
     )
     set_info.restype = wintypes.BOOL
+    get_file_info = kernel32.GetFileInformationByHandle
+
+    class BY_HANDLE_FILE_INFORMATION(ctypes.Structure):
+        _fields_ = (
+            ("dwFileAttributes", wintypes.DWORD),
+            ("ftCreationTime", wintypes.FILETIME),
+            ("ftLastAccessTime", wintypes.FILETIME),
+            ("ftLastWriteTime", wintypes.FILETIME),
+            ("dwVolumeSerialNumber", wintypes.DWORD),
+            ("nFileSizeHigh", wintypes.DWORD),
+            ("nFileSizeLow", wintypes.DWORD),
+            ("nNumberOfLinks", wintypes.DWORD),
+            ("nFileIndexHigh", wintypes.DWORD),
+            ("nFileIndexLow", wintypes.DWORD),
+        )
+
+    get_file_info.argtypes = (
+        wintypes.HANDLE, ctypes.POINTER(BY_HANDLE_FILE_INFORMATION),
+    )
+    get_file_info.restype = wintypes.BOOL
 
     invalid = wintypes.HANDLE(-1).value
     read_attributes = 0x00000080
     generic_write = 0x40000000
     delete_access = 0x00010000
     share_read_write = 0x00000001 | 0x00000002
-    share_read_write_delete = share_read_write | 0x00000004
     open_existing = 3
     create_new = 1
     backup_semantics = 0x02000000
@@ -355,6 +374,18 @@ def _windows_atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> No
         elif value.startswith("\\\\?\\"):
             value = value[4:]
         return _absolute(Path(value))
+
+    def file_identity(handle) -> tuple[int, int, int]:
+        info = BY_HANDLE_FILE_INFORMATION()
+        if not get_file_info(handle, ctypes.byref(info)):
+            raise OSError(ctypes.get_last_error(), "could not identify sandbox file")
+        if info.dwFileAttributes & 0x00000400:  # FILE_ATTRIBUTE_REPARSE_POINT
+            raise ValueError("sandbox file handle resolved to a reparse point")
+        return (
+            int(info.dwVolumeSerialNumber),
+            int(info.nFileIndexHigh),
+            int(info.nFileIndexLow),
+        )
 
     root_handle = parent_handle = temp_handle = None
     delete_temp = False
@@ -392,7 +423,7 @@ def _windows_atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> No
                 temp_handle = open_handle(
                     temp_path,
                     generic_write | delete_access,
-                    share_read_write_delete,
+                    share_read_write,
                     create_new,
                     normal_attributes | open_reparse,
                 )
@@ -441,11 +472,17 @@ def _windows_atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> No
         if not set_info(temp_handle, 3, ctypes.byref(rename), ctypes.sizeof(rename)):
             raise OSError(ctypes.get_last_error(), "secure sandbox replace failed")
         delete_temp = False
-        expected = _absolute(actual_parent / path.name)
-        if os.path.normcase(os.fspath(actual_path(temp_handle))) != os.path.normcase(
-            os.fspath(expected)
-        ):
-            raise ValueError("sandbox replacement landed outside its verified parent")
+        target_handle = open_handle(
+            path, read_attributes, share_read_write, open_existing,
+            normal_attributes | open_reparse,
+        )
+        try:
+            if file_identity(target_handle) != file_identity(temp_handle):
+                raise ValueError(
+                    "sandbox replacement did not preserve verified file identity"
+                )
+        finally:
+            close_handle(target_handle)
     finally:
         if temp_handle is not None:
             if delete_temp:

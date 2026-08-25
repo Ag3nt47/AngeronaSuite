@@ -29,6 +29,7 @@ _BOOTSTRAP_ROOT.mkdir(parents=True, exist_ok=True)
 # Apply a D-drive boundary before pytest imports test modules. Individual tests
 # receive a separate child below, but collection-time imports are isolated too.
 os.environ["ANGERONA_DATA"] = str(_BOOTSTRAP_ROOT)
+os.environ["ANGERONA_PYTEST_SESSION_ROOT"] = str(_SESSION_ROOT)
 os.environ["ANGERONA_DIAG_DIR"] = str(_BOOTSTRAP_ROOT / "diagnostics")
 os.environ["TEMP"] = str(_BOOTSTRAP_ROOT / "tmp")
 os.environ["TMP"] = str(_BOOTSTRAP_ROOT / "tmp")
@@ -56,6 +57,7 @@ def isolate_angerona_runtime(request: pytest.FixtureRequest, monkeypatch):
     temp = root / "tmp"
     temp.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("ANGERONA_DATA", str(root))
+    monkeypatch.setenv("ANGERONA_PYTEST_SESSION_ROOT", str(_SESSION_ROOT))
     monkeypatch.setenv("ANGERONA_DIAG_DIR", str(root / "diagnostics"))
     monkeypatch.setenv("TEMP", str(temp))
     monkeypatch.setenv("TMP", str(temp))
