@@ -429,9 +429,25 @@ def sanitize_privileged_bootstrap_environment() -> None:
         for name in _WATCHDOG_CONTEXT_KEYS
         if (value := _environment_value(os.environ, name))
     }
+    # The source launcher owns one non-secret readiness coordinate. Preserve it
+    # only when it is the exact source-install runtime marker; never copy it to
+    # generic sidecars or accept another elevated write location.
+    startup_ready = _environment_value(os.environ, "ANGERONA_STARTUP_READY")
+    if startup_ready:
+        try:
+            expected = (
+                Path(__file__).resolve().parents[3].parent
+                / "AngeronaData" / "logs" / "dashboard-ready.signal"
+            ).resolve()
+            if Path(startup_ready).resolve() != expected:
+                startup_ready = ""
+        except (OSError, ValueError):
+            startup_ready = ""
     environment = _minimal_environment(os.environ)
     os.environ.clear()
     os.environ.update(environment)
+    if startup_ready:
+        os.environ["ANGERONA_STARTUP_READY"] = startup_ready
     # The signed external watchdog's per-launch token is the sole credential
     # retained. It is restored only when the heartbeat proves the token, names
     # this process's real parent PID, comes from the expected binary path, and

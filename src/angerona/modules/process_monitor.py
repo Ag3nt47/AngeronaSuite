@@ -17,6 +17,17 @@ OFFICE_PARENTS = {"winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe"}
 RISKY_PATH_TOKENS = ("\\temp\\", "\\downloads\\", "\\appdata\\local\\temp\\")
 
 
+def _combat_enabled() -> bool:
+    return os.environ.get(
+        "ANGERONA_ADVERSARY_COMBAT_ENABLED", "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _snapshot_max_age() -> float | None:
+    """Make the shared process cache fresher than Combat's one-second loop."""
+    return 0.5 if _combat_enabled() else None
+
+
 class ProcessMonitorModule(BaseModule):
     name = "Process Monitor"
     description = "Flags suspicious process spawns and execution from risky locations."
@@ -37,8 +48,14 @@ class ProcessMonitorModule(BaseModule):
         self.emit("Process monitor active.", Severity.INFO)
 
         while not self.stopping:
-            self.sleep(3)
-            procs = list_processes()
+            combat = _combat_enabled()
+            self.sleep(1.0 if combat else 3.0)
+            max_age = _snapshot_max_age()
+            procs = (
+                list_processes(max_age=max_age)
+                if max_age is not None
+                else list_processes()
+            )
             live: Set[int] = set()
             names: Dict[int, str] = {}
             for p in procs:
@@ -52,6 +69,25 @@ class ProcessMonitorModule(BaseModule):
                 pid = p.get("pid")
                 if pid is None or pid in self._seen:
                     continue
+                # Publish complete process-creation telemetry for correlation.
+                # INFO is not a malicious verdict; reviewed detectors such as
+                # Purple Guard can promote exact tagged evidence independently.
+                raw_command = p.get("cmdline") or []
+                command = (
+                    " ".join(str(part) for part in raw_command)
+                    if isinstance(raw_command, (list, tuple))
+                    else str(raw_command)
+                )
+                self.emit(
+                    f"Process created: {p.get('name') or '?'} (pid {pid})",
+                    Severity.INFO,
+                    event_type="process_creation",
+                    pid=pid,
+                    ppid=p.get("ppid"),
+                    exe=p.get("exe"),
+                    cmdline=command,
+                    process_create_time=p.get("create_time"),
+                )
                 self._evaluate(p, names)
 
             self._seen = live
@@ -64,8 +100,16 @@ class ProcessMonitorModule(BaseModule):
         parent = self._names.get(ppid, names.get(ppid, "")).lower()
 
         if name in SUSPICIOUS_CHILDREN and parent in OFFICE_PARENTS:
-            self.emit(f"Office app '{parent}' spawned '{name}' (pid {p.get('pid')}) — possible macro abuse.",
-                      Severity.CRITICAL, pid=p.get("pid"), parent=parent)
+            pid = p.get("pid")
+            created = p.get("create_time")
+            self.emit(
+                f"Office app '{parent}' spawned '{name}' (pid {pid}) — possible macro abuse.",
+                Severity.CRITICAL,
+                pid=pid,
+                parent=parent,
+                exe=p.get("exe"),
+                process_create_time=created,
+            )
             return
         if exe and any(tok in exe for tok in RISKY_PATH_TOKENS):
             self.emit(f"Process running from a risky path: {p.get('exe')} (pid {p.get('pid')})",

@@ -7,7 +7,58 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton
 
+from angerona.core.model_pack_manager import (
+    AdmissionPlan,
+    BUILTIN_CATALOG_SHA256,
+    ResourceSnapshot,
+    load_catalog,
+)
 from angerona.gui import top_talkers, upgrade_console
+
+
+PACK_ID = "aria-defense-llama3"
+
+
+class _FakePackManager:
+    def __init__(self) -> None:
+        self.catalog = load_catalog(
+            "assets/aria_model_packs.json",
+            expected_sha256=BUILTIN_CATALOG_SHA256,
+        )
+        self.installed = False
+        self.state_threads: list[threading.Thread] = []
+        self.install_threads: list[threading.Thread] = []
+
+    def state(self) -> dict:
+        self.state_threads.append(threading.current_thread())
+        return {
+            "active_pack": None,
+            "installed": {PACK_ID: {}} if self.installed else {},
+            "activation_history": [],
+        }
+
+    def admission_plan(self, pack_id: str) -> AdmissionPlan:
+        pack = self.catalog[pack_id]
+        available = ResourceSnapshot(2**40, 2**40, 2**40)
+        return AdmissionPlan(pack_id, True, pack.requirements, available, ())
+
+    def install(self, pack_id: str) -> dict:
+        self.install_threads.append(threading.current_thread())
+        self.installed = True
+        return {"action": "install", "pack_id": pack_id}
+
+    def activate(self, pack_id: str) -> dict:
+        return {"action": "activate", "pack_id": pack_id}
+
+    def rollback(self) -> dict:
+        return {"action": "rollback"}
+
+    def remove(self, pack_id: str) -> dict:
+        self.installed = False
+        return {"action": "remove", "pack_id": pack_id}
+
+    def runbook_roots(self) -> tuple:
+        return ()
 
 
 def _app() -> QApplication:
@@ -153,15 +204,13 @@ def test_top_talkers_ignores_ai_result_after_close(monkeypatch) -> None:
         app.processEvents()
 
 
-def test_upgrade_console_lists_models_without_blocking_construction(monkeypatch) -> None:
+def test_upgrade_console_loads_curated_pack_status_without_blocking_construction(
+    monkeypatch,
+) -> None:
     app = _app()
     pool = _HoldingPool()
-    request_threads = []
     main_thread = threading.current_thread()
-
-    def list_models(_self) -> list[str]:
-        request_threads.append(threading.current_thread())
-        return ["unit-model:latest"]
+    manager = _FakePackManager()
 
     monkeypatch.setattr(upgrade_console, "_upgrade_ui_pool", lambda: pool)
     monkeypatch.setattr(
@@ -169,36 +218,61 @@ def test_upgrade_console_lists_models_without_blocking_construction(monkeypatch)
         "_refresh_watchdog",
         lambda _self: None,
     )
-    monkeypatch.setattr(
-        upgrade_console.AngeronaUpgradeConsole,
-        "_list_ollama_models",
-        list_models,
-    )
-
-    window = upgrade_console.AngeronaUpgradeConsole()
+    window = upgrade_console.AngeronaUpgradeConsole(model_pack_manager=manager)
     try:
         # Construction only submits the bounded request.  This structural
         # assertion remains valid even on a heavily loaded CI/desktop host.
-        assert request_threads == []
+        assert manager.state_threads == []
         assert len(pool.jobs) == 1
-        assert window._model_status.text() == "Loading local Ollama models…"
-        assert window.model_box.isEnabled() is False
+        assert "Loading curated pack" in window._model_status.text()
+        assert window.model_box.isEditable() is False
+        assert window.model_box.currentData() == PACK_ID
 
         worker_thread = _run_off_qt(pool.take())
         _process_queued_signals()
-        assert window._model_list_in_flight is False
-        assert request_threads[0] is not main_thread
-        assert request_threads[0] is worker_thread
-        assert window.model_box.currentText() == "unit-model:latest"
-        assert window.model_box.isEnabled() is True
-        assert window._model_check_btn.isEnabled() is True
-        assert window._model_status.text() == "Loaded 1 local model(s)."
+        assert window._pack_status_in_flight is False
+        assert manager.state_threads[0] is not main_thread
+        assert manager.state_threads[0] is worker_thread
+        assert "resource admission admitted" in window._model_status.text()
+        assert window._pack_install_btn.isEnabled() is True
     finally:
         window.close()
         app.processEvents()
 
 
-def test_upgrade_model_check_is_single_flight_and_updates_on_qt(monkeypatch) -> None:
+def test_upgrade_console_ignores_stale_pack_status_token(monkeypatch) -> None:
+    app = _app()
+    pool = _HoldingPool()
+    manager = _FakePackManager()
+    monkeypatch.setattr(upgrade_console, "_upgrade_ui_pool", lambda: pool)
+    monkeypatch.setattr(
+        upgrade_console.AngeronaUpgradeConsole,
+        "_refresh_watchdog",
+        lambda _self: None,
+    )
+    window = upgrade_console.AngeronaUpgradeConsole(model_pack_manager=manager)
+    try:
+        current = window._pack_status_token
+        before = window._model_status.text()
+        window._handle_async_result(
+            "pack_status",
+            current + 100,
+            {"active_pack": "forged", "can_rollback": True, "packs": {}},
+        )
+        assert window._pack_status_in_flight is True
+        assert window._pack_snapshot == {}
+        assert window._model_status.text() == before
+
+        _run_off_qt(pool.take())
+        _process_queued_signals()
+        assert window._pack_status_in_flight is False
+        assert PACK_ID in window._pack_snapshot["packs"]
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_upgrade_pack_install_is_single_flight_and_updates_on_qt(monkeypatch) -> None:
     app = _app()
     pool = _HoldingPool()
     monkeypatch.setattr(upgrade_console, "_upgrade_ui_pool", lambda: pool)
@@ -207,62 +281,40 @@ def test_upgrade_model_check_is_single_flight_and_updates_on_qt(monkeypatch) -> 
         "_refresh_watchdog",
         lambda _self: None,
     )
-    monkeypatch.setattr(
-        upgrade_console.AngeronaUpgradeConsole,
-        "_list_ollama_models",
-        lambda _self: ["unit-model:latest"],
-    )
-    window = upgrade_console.AngeronaUpgradeConsole()
+    manager = _FakePackManager()
+    window = upgrade_console.AngeronaUpgradeConsole(model_pack_manager=manager)
     _run_off_qt(pool.take())
     _process_queued_signals()
-    assert window._model_list_in_flight is False
-
-    request_threads = []
-    dialogs = []
     main_thread = threading.current_thread()
-
-    def check(_model: str) -> bool:
-        request_threads.append(threading.current_thread())
-        return True
-
-    monkeypatch.setattr(window, "_model_is_available", check)
-    monkeypatch.setattr(
-        window,
-        "_copy_dialog",
-        lambda title, body, command=None: dialogs.append(
-            (threading.current_thread(), title, body, command)
-        ),
-    )
+    monkeypatch.setattr(window, "_rebuild_pack_runbooks", lambda: 0)
 
     try:
-        window._check_model()
-        assert request_threads == []
+        assert window._start_pack_operation("install", PACK_ID)
+        assert manager.install_threads == []
         assert len(pool.jobs) == 1
-        assert window._model_check_btn.isEnabled() is False
-        assert window._model_status.text() == "Checking unit-model:latest…"
+        assert window._pack_install_btn.isEnabled() is False
+        assert window._model_status.text() == "Install in progress…"
 
-        window._check_model()
-        assert request_threads == []
+        assert not window._start_pack_operation("install", PACK_ID)
         assert len(pool.jobs) == 1
         assert "already running" in window._model_status.text()
 
         worker_thread = _run_off_qt(pool.take())
         _process_queued_signals()
-        assert window._model_check_in_flight is False
-        assert request_threads[0] is not main_thread
-        assert request_threads[0] is worker_thread
-        assert len(dialogs) == 1
-        assert dialogs[0][0] is main_thread
-        assert dialogs[0][1] == "Model Status"
-        assert "installed locally" in dialogs[0][2]
-        assert dialogs[0][3] == "ollama pull unit-model:latest"
-        assert window._model_check_btn.isEnabled() is True
+        assert window._pack_operation_in_flight is False
+        assert manager.install_threads[0] is not main_thread
+        assert manager.install_threads[0] is worker_thread
+        assert "authenticated receipt" in window._model_status.text()
+        assert len(pool.jobs) == 1  # asynchronous post-mutation status refresh
+        _run_off_qt(pool.take())
+        _process_queued_signals()
+        assert window._pack_activate_btn.isEnabled() is True
     finally:
         window.close()
         app.processEvents()
 
 
-def test_upgrade_console_ignores_model_check_after_close(monkeypatch) -> None:
+def test_upgrade_console_ignores_pack_result_after_close(monkeypatch) -> None:
     app = _app()
     pool = _HoldingPool()
     monkeypatch.setattr(upgrade_console, "_upgrade_ui_pool", lambda: pool)
@@ -271,27 +323,17 @@ def test_upgrade_console_ignores_model_check_after_close(monkeypatch) -> None:
         "_refresh_watchdog",
         lambda _self: None,
     )
-    monkeypatch.setattr(
-        upgrade_console.AngeronaUpgradeConsole,
-        "_list_ollama_models",
-        lambda _self: ["unit-model:latest"],
-    )
-    window = upgrade_console.AngeronaUpgradeConsole()
+    manager = _FakePackManager()
+    window = upgrade_console.AngeronaUpgradeConsole(model_pack_manager=manager)
     window.show()
     _run_off_qt(pool.take())
     _process_queued_signals()
-    assert window._model_list_in_flight is False
-
-    dialogs = []
-
-    def check(_model: str) -> bool:
-        return True
-
-    monkeypatch.setattr(window, "_model_is_available", check)
-    monkeypatch.setattr(window, "_copy_dialog", lambda *_args, **_kwargs: dialogs.append("shown"))
+    assert window._pack_status_in_flight is False
+    rebuilt: list[str] = []
+    monkeypatch.setattr(window, "_rebuild_pack_runbooks", lambda: rebuilt.append("yes") or 0)
 
     try:
-        window._check_model()
+        assert window._start_pack_operation("install", PACK_ID)
         assert len(pool.jobs) == 1
         window.close()
         app.processEvents()
@@ -299,8 +341,9 @@ def test_upgrade_console_ignores_model_check_after_close(monkeypatch) -> None:
 
         _run_off_qt(pool.take())
         _process_queued_signals()
-        assert window._model_check_in_flight is False
-        assert dialogs == []
+        assert window._pack_operation_in_flight is False
+        assert rebuilt == ["yes"]
+        assert len(pool.jobs) == 0
     finally:
         window.close()
         app.processEvents()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import os
 import struct
 from pathlib import Path
@@ -107,6 +108,10 @@ def test_uac_relaunch_scrubs_hostile_inputs_and_preserves_setup(
     monkeypatch.setattr(privilege.sys, "argv", ["angerona", "--setup"])
     monkeypatch.setattr(privilege.sys, "frozen", False, raising=False)
     original = dict(os.environ)
+    startup_ready = (
+        Path(privilege.__file__).resolve().parents[3].parent
+        / "AngeronaData" / "logs" / "dashboard-ready.signal"
+    ).resolve()
     try:
         os.environ.update({
             "SystemRoot": str(tmp_path / "hostile-root"),
@@ -116,6 +121,7 @@ def test_uac_relaunch_scrubs_hostile_inputs_and_preserves_setup(
             "ANGERONA_CORE_CMD": str(tmp_path / "hostile-core.exe"),
             "ANGERONA_FLEET_SERVICE_KEY": "attacker-authority",
             "OPENAI_API_KEY": "provider-secret",
+            "ANGERONA_STARTUP_READY": str(startup_ready),
         })
         with pytest.raises(SystemExit):
             privilege.ensure_admin()
@@ -127,6 +133,7 @@ def test_uac_relaunch_scrubs_hostile_inputs_and_preserves_setup(
     assert captured["params"] == "-m angerona --setup"
     assert Path(captured["workdir"]).name == "src"
     elevated = captured["environment"]
+    assert elevated["ANGERONA_STARTUP_READY"] == str(startup_ready)
     assert next(
         value for key, value in elevated.items()
         if key.casefold() == "systemroot"
@@ -139,6 +146,22 @@ def test_uac_relaunch_scrubs_hostile_inputs_and_preserves_setup(
         "OPENAI_API_KEY",
     ):
         assert key not in elevated
+
+
+def test_uac_scrub_rejects_noncanonical_startup_ready_path(
+    tmp_path, monkeypatch,
+):
+    _patch_windows_paths(monkeypatch, tmp_path)
+    original = dict(os.environ)
+    try:
+        os.environ["ANGERONA_STARTUP_READY"] = str(
+            tmp_path / "attacker" / "dashboard-ready.signal"
+        )
+        privilege.sanitize_privileged_bootstrap_environment()
+        assert "ANGERONA_STARTUP_READY" not in os.environ
+    finally:
+        os.environ.clear()
+        os.environ.update(original)
 
 
 def test_signed_parent_watchdog_context_is_narrowly_preserved(
@@ -186,13 +209,17 @@ def test_signed_parent_watchdog_context_is_narrowly_preserved(
         os.environ.update(original)
 
 
-def test_acl_verifier_uses_trusted_powershell_and_clean_environment(
-    tmp_path, monkeypatch
-):
-    _windows, _system = _patch_windows_paths(monkeypatch, tmp_path)
-    powershell = tmp_path / "trusted-powershell.exe"
-    powershell.write_bytes(b"fixture")
-    monkeypatch.setattr(privilege, "trusted_powershell_path", lambda: powershell)
+def test_acl_verifier_uses_native_windows_security_api():
+    source = inspect.getsource(data_paths._admin_acl_valid)
+    assert "GetNamedSecurityInfoW" in source
+    assert "GetSecurityDescriptorControl" in source
+    assert "EqualSid" in source
+    assert "subprocess" not in source
+
+
+def test_hidden_process_helpers_never_inherit_protected_credentials(monkeypatch):
+    from angerona.core import win
+
     captured = {}
 
     def fake_run(argv, **kwargs):
@@ -200,15 +227,16 @@ def test_acl_verifier_uses_trusted_powershell_and_clean_environment(
         captured["environment"] = kwargs["env"]
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(data_paths.subprocess, "run", fake_run)
-    monkeypatch.setenv("SystemRoot", str(tmp_path / "hostile-root"))
-    monkeypatch.setenv("OPENAI_API_KEY", "provider-secret")
+    monkeypatch.setattr(win.subprocess, "run", fake_run)
+    monkeypatch.setenv("OPENAI_API_KEY", "protected-provider-secret")
+    monkeypatch.setenv("ARIA_IMAP_PASS", "protected-mail-secret")
 
-    target = tmp_path / "runtime"
-    assert data_paths._admin_acl_valid(target)
-    assert captured["argv"][0] == str(powershell)
-    assert captured["environment"]["ANGERONA_ACL_PATH"] == str(target)
+    win.run_hidden(["fixed-tool"], env_allowlist={"LANG": "C"})
+
+    assert captured["argv"] == ["fixed-tool"]
+    assert captured["environment"]["LANG"] == "C"
     assert "OPENAI_API_KEY" not in captured["environment"]
+    assert "ARIA_IMAP_PASS" not in captured["environment"]
 
 
 def test_supervisor_sidecar_receives_runtime_coordinates_not_credentials(

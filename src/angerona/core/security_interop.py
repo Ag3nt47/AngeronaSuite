@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from angerona.core.community_id import community_id_v1
 from angerona.core.evidence_store import EvidenceEnvelope, EvidenceStore
 from angerona.core.privacy import redact_text
 
@@ -355,9 +356,23 @@ def _zeek(record: Mapping[str, Any]) -> EvidenceEnvelope:
             attributes[key] = record[key]
     origin = record.get("id.orig_h")
     response = record.get("id.resp_h")
+    community_id = community_id_v1(
+        origin,
+        response,
+        record.get("id.orig_p"),
+        record.get("id.resp_p"),
+        record.get("proto"),
+    )
+    if community_id:
+        attributes["community_id"] = community_id
     subject = {
         "kind": "network_flow",
-        "id": _text(record.get("uid") or f"{origin or 'unknown'}->{response or 'unknown'}", 256),
+        "id": _text(
+            community_id
+            or record.get("uid")
+            or f"{origin or 'unknown'}->{response or 'unknown'}",
+            256,
+        ),
     }
     if origin is not None:
         subject["src_ip"] = _text(origin, 128)

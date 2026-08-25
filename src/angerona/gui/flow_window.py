@@ -28,6 +28,8 @@ try:
 except Exception:
     _WorldViewEngine = None  # type: ignore
 
+from angerona.gui.animations import begin_loading, finish_loading
+
 
 class _OllamaWorker(QThread):
     """Runs ollama_diagnostics() off the GUI thread and emits the result."""
@@ -539,8 +541,12 @@ class FlowWindow(QDialog):
             return
         if self._ollama_worker is not None and self._ollama_worker.isRunning():
             return                          # still fetching — skip this cycle
+        loading_token = begin_loading("Retrieving local AI diagnostics…")
         self._ollama_worker = _OllamaWorker(self._wv_engine)
         self._ollama_worker.result.connect(self._on_ollama_result)
+        self._ollama_worker.finished.connect(
+            lambda token=loading_token: finish_loading(token)
+        )
         self._ollama_worker.start()
 
     def _on_ollama_result(self, data: dict) -> None:

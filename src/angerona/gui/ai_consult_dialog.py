@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from angerona.engines.ai_consult import consult_ai, DEFAULT_SYSTEM
+from angerona.gui.animations import begin_loading, finish_loading
 
 
 class AIConsultWorker(QThread):
@@ -70,6 +71,7 @@ class AIConsultDialog(QDialog):
         self._default_filename = default_filename
         self._worker: Optional[AIConsultWorker] = None
         self._fu_worker: Optional[AIConsultWorker] = None
+        self._loading_token: str | None = None
 
         lay = QVBoxLayout(self)
         self._status = QLabel("Consulting AI (Claude first, then fallbacks)…")
@@ -135,6 +137,7 @@ class AIConsultDialog(QDialog):
     def _start(self) -> None:
         self._set_running(True)
         self._status.setText("Consulting AI (Claude first, then fallbacks)…")
+        self._loading_token = begin_loading("Retrieving AI analysis…")
         self._worker = AIConsultWorker(self._prompt, self._system,
                                        self._allow_local, self)
         self._worker.done.connect(self._on_done)
@@ -142,6 +145,8 @@ class AIConsultDialog(QDialog):
         self._worker.start()
 
     def _on_done(self, res: dict) -> None:
+        finish_loading(self._loading_token)
+        self._loading_token = None
         self._set_running(False)
         if res.get("text"):
             prov = res.get("provider", "?")
@@ -170,6 +175,7 @@ class AIConsultDialog(QDialog):
         self._output.appendPlainText(f"\n\n──────────\n🗨  You: {q}\n")
         self._status.setText("Asking AI…")
         self._set_running(True)
+        self._loading_token = begin_loading("Retrieving AI follow-up…")
         # Carry prior turns as context so the AI answers coherently.
         base = self._thread_text or f"User: {self._prompt}"
         followup_prompt = base + f"\n\nUser: {q}\nAssistant:"
@@ -180,6 +186,8 @@ class AIConsultDialog(QDialog):
         self._fu_worker.start()
 
     def _on_followup_done(self, res: dict, question: str) -> None:
+        finish_loading(self._loading_token)
+        self._loading_token = None
         self._set_running(False)
         text = res.get("text") or f"(no answer — {res.get('error')})"
         prov = res.get("provider", "?")

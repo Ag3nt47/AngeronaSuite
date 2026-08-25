@@ -46,7 +46,7 @@ from typing import Optional
 
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.url_policy import (
-    LOCAL_SERVICE_POLICY,
+    OLLAMA_SERVICE_POLICY,
     local_service_url,
     read_bounded,
     safe_urlopen,
@@ -253,7 +253,7 @@ class SelfHealer(BaseModule):
         )
         try:
             with safe_urlopen(
-                req, policy=LOCAL_SERVICE_POLICY, timeout=_HEAL_TIMEOUT_S,
+                req, policy=OLLAMA_SERVICE_POLICY, timeout=_HEAL_TIMEOUT_S,
             ) as resp:
                 data = json.loads(read_bounded(resp).decode("utf-8"))
             content = (data.get("message", {}) or {}).get("content", "")

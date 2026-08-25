@@ -56,6 +56,12 @@ def test_full_setup_maps_every_supported_end_user_config_option() -> None:
 
 def test_setup_profiles_never_enable_egress_or_local_listeners() -> None:
     forbidden = {
+        "aria_enabled",
+        "perf_governor_enabled",
+        "aria_voice_enabled",
+        "aria_conversation_awareness",
+        "aria_always_listen",
+        "aria_hand_controls",
         "aria_cloud_fallback",
         "alert_analysis_cloud_fallback",
         "aria_voice_cloud_tts",

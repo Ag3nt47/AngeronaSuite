@@ -159,6 +159,8 @@ $cases = @(
   @{{ Name='sibling'; P=[pscustomobject]@{{ ExecutablePath='{sibling_python}'; CommandLine='"{sibling_python}" -m angerona'; ProcessId=12 }} }},
   @{{ Name='reader'; P=[pscustomobject]@{{ ExecutablePath='C:\\Python\\python.exe'; CommandLine='python.exe "C:\\work\\notebook.py" "{repo_readme}"'; ProcessId=13 }} }},
   @{{ Name='mixed'; P=[pscustomobject]@{{ ExecutablePath='{suite_python.upper()}'; CommandLine='python.exe'; ProcessId=14 }} }},
+  @{{ Name='pytest'; P=[pscustomobject]@{{ ExecutablePath='{suite_python}'; CommandLine='"{suite_python}" -m pytest'; ProcessId=15 }} }},
+  @{{ Name='jupyter'; P=[pscustomobject]@{{ ExecutablePath='{suite_python}'; CommandLine='"{suite_python}" -m jupyter'; ProcessId=16 }} }},
   @{{ Name='reused'; P=[pscustomobject]@{{ ExecutablePath='C:\\Windows\\System32\\notepad.exe'; CommandLine='notepad.exe'; ProcessId=10 }} }}
 )
 $cases | ForEach-Object {{ [pscustomobject]@{{ Name=$_.Name; Owned=(Test-AngeronaProcessOwnership -Process $_.P -Root $root) }} }} | ConvertTo-Json -Compress
@@ -170,7 +172,8 @@ $cases | ForEach-Object {{ [pscustomobject]@{{ Name=$_.Name; Owned=(Test-Angeron
     results = {item["Name"]: item["Owned"] for item in json.loads(proc.stdout)}
     assert results == {
         "suite": True, "script": True, "sibling": False,
-        "reader": False, "mixed": True, "reused": False,
+        "reader": False, "mixed": False, "pytest": False,
+        "jupyter": False, "reused": False,
     }
 
 

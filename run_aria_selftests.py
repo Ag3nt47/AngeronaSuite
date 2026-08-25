@@ -35,8 +35,10 @@ def main() -> int:
     from angerona.core.assistant import Assistant
     from angerona.core.aria_routines import Routines
     from angerona.core.aria_dispatch import Dispatch
+    from angerona.core.conversation_awareness import ConversationAwareness
     from angerona.gui import aria_hud
     from angerona.connectors.voice import Voice
+    from angerona.connectors.hand_controls import HandControls
     from angerona.connectors.channel_push import ChannelPush
     from angerona.connectors.inbox_triage import InboxTriage
     from angerona.connectors.research import Research
@@ -46,12 +48,14 @@ def main() -> int:
     checks = [
         ("perf_governor  (ARIA Overdrive)", PerfGovernor().self_test),
         ("assistant      (agentic engine)", Assistant().self_test),
+        ("conversation   (transient awareness)", ConversationAwareness().self_test),
         ("runbook_rag", RunbookRAG().self_test),
         ("posture_history", PostureHistory().self_test),
         ("aria_routines  (scheduled)", Routines().self_test),
         ("aria_dispatch  (6-agent loop)", Dispatch(lambda a, t: f"{a}:ok").self_test),
         ("aria_hud       (orb/status core)", aria_hud.self_test),
         ("voice          (opt-in I/O)", Voice().self_test),
+        ("hand_controls  (opt-in camera)", HandControls().self_test),
         ("channel_push   (auto-brief)", ChannelPush().self_test),
         ("inbox_triage   (phishing)", InboxTriage().self_test),
         ("research       (on-command)", Research().self_test),

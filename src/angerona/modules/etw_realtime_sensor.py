@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import OrderedDict
 from typing import Callable, Optional
 
 from angerona.core.module_base import BaseModule, Severity
@@ -80,9 +81,13 @@ def _is_elevated() -> bool:
 # ETW process-start gives us the child image and the parent pid. To supply
 # parent_name (which most downstream consumers key on) we keep a small pid→name
 # map, seeded from psutil and kept fresh by every process-start event we see.
+_PID_NAME_CACHE_LIMIT = 4096
+
+
 class _PidNameCache:
-    def __init__(self) -> None:
-        self._map: dict[int, str] = {}
+    def __init__(self, max_entries: int = _PID_NAME_CACHE_LIMIT) -> None:
+        self._max_entries = max(1, int(max_entries))
+        self._map: OrderedDict[int, str] = OrderedDict()
         self._lock = threading.Lock()
         self._seed()
 
@@ -91,7 +96,7 @@ class _PidNameCache:
             import psutil
             for p in psutil.process_iter(["pid", "name"]):
                 try:
-                    self._map[p.info["pid"]] = p.info["name"]
+                    self.set(p.info["pid"], p.info["name"])
                 except Exception:
                     continue
         except Exception:
@@ -101,12 +106,19 @@ class _PidNameCache:
         if pid and name:
             with self._lock:
                 self._map[pid] = name
+                self._map.move_to_end(pid)
+                while len(self._map) > self._max_entries:
+                    self._map.popitem(last=False)
 
     def get(self, pid: Optional[int]) -> Optional[str]:
         if not pid:
             return None
         with self._lock:
             name = self._map.get(pid)
+            if name:
+                # Active parents stay resident while one-shot/dead children age
+                # out. An evicted live parent still resolves through psutil below.
+                self._map.move_to_end(pid)
         if name:
             return name
         # Fall back to a live lookup (parent may predate our cache).

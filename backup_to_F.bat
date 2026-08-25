@@ -50,20 +50,22 @@ if defined PAUSE_ON_EXIT (
   if errorlevel 1 (
     echo [WARNING] Windows reports that F: needs repair.
     echo           Backing up to an unhealthy filesystem can damage the backup.
+    echo           Recommended: choose N, close apps using F:, then run:
+    echo             chkdsk F: /f
     "%SystemRoot%\System32\choice.exe" /C YN /N /M "Continue anyway? [Y/N] "
     if errorlevel 2 goto finish
   )
 )
 
-if not exist "F:\Angerona-Backups" mkdir "F:\Angerona-Backups" >nul 2>&1
+REM CHOICE returns errorlevel 1 for Y. Do not treat that stale value as a
+REM directory-creation failure: verify the requested directory itself instead.
+call :ensure_directory "F:\Angerona-Backups" "protected backup root"
 if errorlevel 1 (
-  echo [ERROR] Could not create the protected backup root. Nothing was copied.
   set "RC=17"
   goto finish
 )
-if not exist "%DST%" mkdir "%DST%" >nul 2>&1
+call :ensure_directory "%DST%" "backup folder"
 if errorlevel 1 (
-  echo [ERROR] Could not create the backup folder. Nothing was copied.
   set "RC=17"
   goto finish
 )
@@ -114,6 +116,16 @@ if errorlevel 1 (
 echo [DONE] Backup complete. Robocopy status %ROBOCOPY_RC% is successful.
 set "RC=0"
 goto finish
+
+:ensure_directory
+if exist "%~1\" exit /b 0
+REM Keep stderr visible so a genuine read-only/corrupt/permission failure is
+REM actionable instead of collapsing into a generic message.
+mkdir "%~1" >nul
+if exist "%~1\" exit /b 0
+echo [ERROR] Could not create the %~2. Nothing was copied.
+echo         Review the Windows error above and the health of F:.
+exit /b 1
 
 :validate_boundary
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SAFETY%" -Mode Validate -Source "%SRC%" -Destination "%DST_VALIDATION%" -LauncherPath "%LAUNCHER%" >nul 2>&1

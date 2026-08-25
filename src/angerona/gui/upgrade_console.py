@@ -19,7 +19,6 @@ window also runs standalone for layout work.
 """
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 from typing import Callable
@@ -27,13 +26,12 @@ from typing import Callable
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
+    QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
     QSlider, QTextEdit, QVBoxLayout, QWidget,
 )
 
-from angerona.core.url_policy import LOCAL_SERVICE_POLICY, read_bounded, safe_urlopen
+from angerona.gui.animations import begin_loading, finish_loading
 
-_DEFAULT_OLLAMA_MODELS = ["llama3:8b", "mistral:7b", "phi3:latest"]
 _UPGRADE_UI_POOL: QThreadPool | None = None
 
 
@@ -139,7 +137,16 @@ class _UpgradeWorker(QRunnable):
 
 
 class AngeronaUpgradeConsole(QMainWindow):
-    def __init__(self, manager=None, config=None, bus=None, parent=None):
+    def __init__(
+        self,
+        manager=None,
+        config=None,
+        bus=None,
+        parent=None,
+        *,
+        model_pack_manager=None,
+        pack_change_callback: Callable[[], object] | None = None,
+    ):
         super().__init__(parent)
         self.manager = manager
         self.config = config
@@ -149,11 +156,21 @@ class AngeronaUpgradeConsole(QMainWindow):
         self._async_bridge.result_ready.connect(self._handle_async_result)
         self._accept_async_results = True
         self._async_token = 0
-        self._model_list_in_flight = False
-        self._model_list_token = 0
-        self._model_check_in_flight = False
-        self._model_check_token = 0
-        self._model_check_name = ""
+        self._pack_change_callback = pack_change_callback
+        self.model_pack_manager = (
+            model_pack_manager or self._build_model_pack_manager()
+        )
+        self._pack_status_in_flight = False
+        self._pack_status_token = 0
+        self._pack_operation_in_flight = False
+        self._pack_operation_token = 0
+        self._pack_operation_name = ""
+        self._watchdog_refresh_in_flight = False
+        self._watchdog_refresh_token = 0
+        self._telemetry_refresh_in_flight = False
+        self._telemetry_refresh_token = 0
+        self._pack_snapshot: dict = {}
+        self._loading_tokens: dict[tuple[str, int], str] = {}
         self.setWindowTitle("Project Angerona — Advanced Management Console")
         self.resize(860, 620)
 
@@ -165,6 +182,10 @@ class AngeronaUpgradeConsole(QMainWindow):
         self._init_ai_sandbox_tab()
         self._init_watchdog_tab()
         self._init_telemetry_tab()
+        from angerona.gui.context_info import attach_context_info
+        self._context_info = attach_context_info(
+            self.tabs, "advanced-console"
+        )
 
     # ── helpers ──────────────────────────────────────────────────────────────
     def _data_dir(self) -> Path:
@@ -174,6 +195,26 @@ class AngeronaUpgradeConsole(QMainWindow):
         except Exception:
             from angerona.core.data_paths import data_dir
             return data_dir()
+
+    def _build_model_pack_manager(self):
+        from angerona.core.model_pack_manager import ModelPackManager
+
+        def update_model(model: str) -> None:
+            if self.config is None:
+                raise RuntimeError("configuration is unavailable")
+            self.config.ollama_model = model
+            self.config.save()
+
+        return ModelPackManager(
+            data_dir=self._data_dir(),
+            ollama_host=str(
+                getattr(self.config, "ollama_host", "http://localhost:11434")
+            ),
+            config_current=lambda: str(
+                getattr(self.config, "ollama_model", "llama3")
+            ),
+            config_update=update_model,
+        )
 
     # ── 1. Mobile Integration ────────────────────────────────────────────────
     def _init_mobile_tab(self):
@@ -299,20 +340,53 @@ class AngeronaUpgradeConsole(QMainWindow):
         kl.addWidget(open_keys)
         layout.addWidget(keyg)
 
-        modg = QGroupBox("Local LLM Control (Ollama)"); ml = QHBoxLayout(modg)
-        self.model_box = QComboBox(); self.model_box.setEditable(True)
-        self.model_box.addItem("Loading local models…")
-        self.model_box.setEnabled(False)
-        self._model_check_btn = QPushButton("Check for Updates")
-        self._model_check_btn.setEnabled(False)
-        self._model_check_btn.clicked.connect(self._check_model)
-        ml.addWidget(QLabel("Model:"))
-        ml.addWidget(self.model_box)
-        ml.addWidget(self._model_check_btn)
-        layout.addWidget(modg)
-        self._model_status = QLabel("Loading local Ollama models…")
+        modg = QGroupBox("Governed ARIA Model & Runbook Packs")
+        pack_layout = QVBoxLayout(modg)
+        pack_help = QLabel(
+            "Only bundled, digest-pinned, data-only defensive packs are shown. "
+            "Angerona verifies resource admission and the Ollama manifest; this "
+            "console accepts no custom model name, URL, Modelfile, or command."
+        )
+        pack_help.setWordWrap(True)
+        pack_layout.addWidget(pack_help)
+        choose = QHBoxLayout()
+        self.model_box = QComboBox()
+        self.model_box.setEditable(False)
+        for pack_id, pack in sorted(self.model_pack_manager.catalog.items()):
+            self.model_box.addItem(f"{pack.title} ({pack.version})", pack_id)
+        self.model_box.currentIndexChanged.connect(self._refresh_pack_selection)
+        choose.addWidget(QLabel("Curated pack:"))
+        choose.addWidget(self.model_box, 1)
+        pack_layout.addLayout(choose)
+        self._model_status = QLabel("Loading curated pack admission and status…")
+        self._model_status.setWordWrap(True)
         self._model_status.setStyleSheet("color:#93c5fd;")
-        layout.addWidget(self._model_status)
+        pack_layout.addWidget(self._model_status)
+        self._pack_plan = QTextEdit()
+        self._pack_plan.setReadOnly(True)
+        self._pack_plan.setMaximumHeight(132)
+        self._pack_plan.setPlaceholderText("Admission details will appear here.")
+        pack_layout.addWidget(self._pack_plan)
+        actions = QHBoxLayout()
+        self._pack_install_btn = QPushButton("Install")
+        self._pack_activate_btn = QPushButton("Activate")
+        self._pack_rollback_btn = QPushButton("Roll Back")
+        self._pack_remove_btn = QPushButton("Remove")
+        for button, action in (
+            (self._pack_install_btn, "install"),
+            (self._pack_activate_btn, "activate"),
+            (self._pack_rollback_btn, "rollback"),
+            (self._pack_remove_btn, "remove"),
+        ):
+            button.setEnabled(False)
+            button.clicked.connect(
+                lambda _checked=False, selected=action: self._confirm_pack_operation(
+                    selected
+                )
+            )
+            actions.addWidget(button)
+        pack_layout.addLayout(actions)
+        layout.addWidget(modg)
 
         sbg = QGroupBox("AI Sandbox — Implement Code"); sl = QVBoxLayout(sbg)
         self.ai_proposed_code = QTextEdit()
@@ -324,7 +398,7 @@ class AngeronaUpgradeConsole(QMainWindow):
         layout.addWidget(sbg)
 
         self.tabs.addTab(tab, "AI Sandbox & Models")
-        self._start_model_listing()
+        self._start_pack_status()
 
     def _open_settings_tab(self, tab: str) -> None:
         owner = self.parentWidget()
@@ -344,33 +418,61 @@ class AngeronaUpgradeConsole(QMainWindow):
     def _open_api_key_settings(self) -> None:
         self._open_settings_tab("API Keys")
 
-    def _list_ollama_models(self) -> list:
-        try:
-            import json, urllib.request
-            with safe_urlopen(
-                "http://127.0.0.1:11434/api/tags",
-                policy=LOCAL_SERVICE_POLICY,
-                timeout=2,
-            ) as r:
-                data = json.loads(read_bounded(r).decode("utf-8", "ignore"))
-            names = [m.get("name") for m in data.get("models", []) if m.get("name")]
-            if names:
-                return names
-            return []
-        except Exception as exc:
-            raise RuntimeError("could not query local Ollama models") from exc
+    def _model_pack_snapshot(self) -> dict:
+        """Read signed state and resource admission off the Qt thread."""
+        from dataclasses import asdict
 
-    def _start_model_listing(self) -> None:
-        """Populate the model box asynchronously during window construction."""
-        if not self._accept_async_results or self._model_list_in_flight:
+        manager = self.model_pack_manager
+        state = manager.state()
+        installed = state.get("installed", {})
+        batch_plans = getattr(manager, "admission_plans", None)
+        plans = (
+            batch_plans()
+            if callable(batch_plans)
+            else {
+                pack_id: manager.admission_plan(pack_id)
+                for pack_id in manager.catalog
+            }
+        )
+        packs = {}
+        for pack_id, pack in sorted(manager.catalog.items()):
+            plan = plans[pack_id]
+            packs[pack_id] = {
+                "id": pack.id,
+                "title": pack.title,
+                "version": pack.version,
+                "description": pack.description,
+                "managed_model": pack.model.managed_name,
+                "manifest_digest": pack.model.manifest_digest,
+                "runbooks": [runbook.title for runbook in pack.runbooks],
+                "installed": pack.id in installed,
+                "active": state.get("active_pack") == pack.id,
+                "admission": asdict(plan),
+            }
+        return {
+            "active_pack": state.get("active_pack"),
+            "can_rollback": bool(state.get("activation_history")),
+            "packs": packs,
+        }
+
+    def _start_pack_status(self) -> None:
+        if (
+            not self._accept_async_results
+            or self._pack_status_in_flight
+            or self._pack_operation_in_flight
+        ):
             return
         token = self._new_async_token()
-        self._model_list_token = token
-        self._model_list_in_flight = True
+        self._pack_status_token = token
+        self._pack_status_in_flight = True
+        self._set_pack_buttons_enabled(False)
+        self._loading_tokens[("pack_status", token)] = begin_loading(
+            "Checking governed model-pack admission…"
+        )
         worker = _UpgradeWorker(
-            "list_models",
+            "pack_status",
             token,
-            self._list_ollama_models,
+            self._model_pack_snapshot,
             self._async_bridge,
         )
         self._async_bridge.track_submission()
@@ -378,58 +480,155 @@ class AngeronaUpgradeConsole(QMainWindow):
             self._async_pool.start(worker)
         except Exception as exc:
             self._async_bridge.submission_failed(
-                "list_models",
-                token,
-                {"error": str(exc)},
+                "pack_status", token, {"error": str(exc)}
             )
 
-    def _check_model(self):
-        model = self.model_box.currentText().strip()
-        if not self._accept_async_results:
-            return
-        if self._model_list_in_flight:
-            self._model_status.setText("Wait for the local model list to finish loading.")
-            return
-        if not model:
-            self._model_status.setText("Enter a model name to check.")
-            return
-        if self._model_check_in_flight:
-            self._model_status.setText("A model availability check is already running.")
-            return
+    def _selected_pack_id(self) -> str:
+        value = self.model_box.currentData()
+        return str(value) if isinstance(value, str) else ""
 
+    def _set_pack_buttons_enabled(self, enabled: bool) -> None:
+        for button in (
+            self._pack_install_btn,
+            self._pack_activate_btn,
+            self._pack_rollback_btn,
+            self._pack_remove_btn,
+        ):
+            button.setEnabled(enabled)
+
+    def _refresh_pack_selection(self, _index: int | None = None) -> None:
+        row = (self._pack_snapshot.get("packs", {}) or {}).get(
+            self._selected_pack_id()
+        )
+        if not isinstance(row, dict):
+            self._set_pack_buttons_enabled(False)
+            return
+        admission = row.get("admission", {})
+        deficits = admission.get("deficits", []) if isinstance(admission, dict) else []
+        admitted = bool(admission.get("admitted")) if isinstance(admission, dict) else False
+        installed = bool(row.get("installed"))
+        active = bool(row.get("active"))
+        state = "active" if active else "installed" if installed else "not installed"
+        admission_text = "admitted" if admitted else "denied"
+        self._model_status.setText(
+            f"{row.get('id')} — {state}; resource admission {admission_text}."
+        )
+        requirements = admission.get("requirements", {}) if isinstance(admission, dict) else {}
+        available = admission.get("available", {}) if isinstance(admission, dict) else {}
+        runbooks = ", ".join(row.get("runbooks", [])) or "none"
+        detail = [
+            str(row.get("description", "")),
+            f"Managed model: {row.get('managed_model', '')}",
+            f"Manifest: {row.get('manifest_digest', '')}",
+            f"Required bytes: RAM {requirements.get('ram_bytes', '?')}; "
+            f"VRAM {requirements.get('vram_bytes', '?')}; "
+            f"disk {requirements.get('disk_bytes', '?')}",
+            f"Available bytes: RAM {available.get('ram_bytes', '?')}; "
+            f"VRAM {available.get('vram_bytes', '?')}; "
+            f"disk {available.get('disk_bytes', '?')}",
+            f"Runbooks: {runbooks}",
+        ]
+        if deficits:
+            detail.append("Admission deficits: " + "; ".join(map(str, deficits)))
+        self._pack_plan.setPlainText("\n".join(detail))
+        idle = not self._pack_operation_in_flight and not self._pack_status_in_flight
+        self._pack_install_btn.setEnabled(idle and admitted and not installed)
+        self._pack_activate_btn.setEnabled(idle and installed and not active)
+        self._pack_rollback_btn.setEnabled(
+            idle and bool(self._pack_snapshot.get("can_rollback"))
+        )
+        self._pack_remove_btn.setEnabled(idle and installed and not active)
+
+    def _confirm_pack_operation(self, action: str) -> None:
+        pack_id = self._selected_pack_id()
+        subject = "the previous governed model" if action == "rollback" else pack_id
+        if not subject:
+            return
+        answer = QMessageBox.question(
+            self,
+            f"{action.title()} governed pack?",
+            f"{action.title()} {subject}? This uses only the bundled curated "
+            "catalog and records an authenticated receipt.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._start_pack_operation(action, pack_id)
+
+    def _start_pack_operation(self, action: str, pack_id: str = "") -> bool:
+        if not self._accept_async_results or self._pack_operation_in_flight:
+            self._model_status.setText("A governed model-pack operation is already running.")
+            return False
+        if action not in {"install", "activate", "rollback", "remove"}:
+            self._model_status.setText("Unknown governed model-pack operation refused.")
+            return False
+        if action != "rollback" and pack_id not in self.model_pack_manager.catalog:
+            self._model_status.setText("Pack ID is not in the trusted bundled catalog.")
+            return False
         token = self._new_async_token()
-        self._model_check_token = token
-        self._model_check_name = model
-        self._model_check_in_flight = True
-        self._model_check_btn.setEnabled(False)
-        self._model_status.setText(f"Checking {model}…")
+        operation = f"pack_{action}"
+        self._pack_operation_token = token
+        self._pack_operation_name = operation
+        self._pack_operation_in_flight = True
+        self._set_pack_buttons_enabled(False)
+        self._model_status.setText(f"{action.title()} in progress…")
+        self._loading_tokens[(operation, token)] = begin_loading(
+            f"{action.title()} governed ARIA model pack…"
+        )
         worker = _UpgradeWorker(
-            "check_model",
+            operation,
             token,
-            self._model_is_available,
+            self._run_pack_operation,
             self._async_bridge,
-            model,
+            action,
+            pack_id,
         )
         self._async_bridge.track_submission()
         try:
             self._async_pool.start(worker)
         except Exception as exc:
             self._async_bridge.submission_failed(
-                "check_model",
-                token,
-                {"error": str(exc)},
+                operation, token, {"error": str(exc)}
             )
-
-    def _model_is_available(self, model: str) -> bool:
-        import json, urllib.request
-        req = urllib.request.Request(
-            "http://127.0.0.1:11434/api/show",
-            data=json.dumps({"name": model}).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        with safe_urlopen(req, policy=LOCAL_SERVICE_POLICY, timeout=3) as response:
-            read_bounded(response)
         return True
+
+    def _run_pack_operation(self, action: str, pack_id: str) -> dict:
+        manager = self.model_pack_manager
+        operations = {
+            "install": manager.install,
+            "activate": manager.activate,
+            "rollback": manager.rollback,
+            "remove": manager.remove,
+        }
+        operation = operations[action]
+        receipt = operation() if action == "rollback" else operation(pack_id)
+        self._rebuild_pack_runbooks()
+        return receipt
+
+    def _rebuild_pack_runbooks(self) -> int:
+        """Rebuild data-only runbook search after a successful lifecycle change."""
+        # When embedded in the main window, the callback rebuilds and swaps the
+        # authoritative ARIA index.  Building a second console-only index first
+        # doubled all Markdown reads/parsing and the duplicate was never queried.
+        # Standalone consoles still build their own local index below.
+        if callable(self._pack_change_callback):
+            result = self._pack_change_callback()
+            return int(result) if isinstance(result, int) else 0
+
+        from angerona.core.data_paths import project_root
+        from angerona.core.runbook_rag import RunbookRAG
+
+        root = project_root()
+        roots = [
+            str(root / "docs"),
+            str(root / "playbooks"),
+            str(self._data_dir() / "runbooks"),
+            *(str(path) for path in self.model_pack_manager.runbook_roots()),
+        ]
+        replacement = RunbookRAG(roots)
+        count = replacement.build()
+        self._pack_rag = replacement
+        return count
 
     def _new_async_token(self) -> int:
         self._async_token += 1
@@ -438,100 +637,69 @@ class AngeronaUpgradeConsole(QMainWindow):
     @Slot(str, int, object)
     def _handle_async_result(self, operation: str, token: int, result: object) -> None:
         """Apply worker results on the owning Qt thread only."""
-        if operation == "list_models":
-            if token != self._model_list_token:
+        finish_loading(self._loading_tokens.pop((operation, token), None))
+        if operation == "watchdog_status":
+            if token != self._watchdog_refresh_token:
                 return
-            self._model_list_in_flight = False
+            self._watchdog_refresh_in_flight = False
+            if self._accept_async_results:
+                self._apply_watchdog_snapshot(
+                    result if isinstance(result, dict) else {}
+                )
+            return
+        if operation == "telemetry_status":
+            if token != self._telemetry_refresh_token:
+                return
+            self._telemetry_refresh_in_flight = False
+            if self._accept_async_results:
+                self._apply_telemetry_snapshot(
+                    result if isinstance(result, dict) else {}
+                )
+            return
+        if operation == "pack_status":
+            if token != self._pack_status_token:
+                return
+            self._pack_status_in_flight = False
             if not self._accept_async_results:
                 return
-            failed = isinstance(result, dict) and "error" in result
-            has_models = isinstance(result, list) and bool(result)
-            models = result if has_models else list(_DEFAULT_OLLAMA_MODELS)
-            self.model_box.clear()
-            self.model_box.addItems([str(model) for model in models])
-            self.model_box.setEnabled(True)
-            self._model_check_btn.setEnabled(True)
-            if failed or not has_models:
+            if isinstance(result, dict) and "error" in result:
                 self._model_status.setText(
-                    "Ollama unavailable or no local models found; showing common model names."
+                    f"Governed pack status unavailable: {result['error']}"
                 )
-            else:
-                self._model_status.setText(f"Loaded {len(models)} local model(s).")
+                self._set_pack_buttons_enabled(False)
+                return
+            self._pack_snapshot = result if isinstance(result, dict) else {}
+            self._refresh_pack_selection()
             return
-
-        if operation != "check_model" or token != self._model_check_token:
+        if not operation.startswith("pack_") or token != self._pack_operation_token:
             return
-        self._model_check_in_flight = False
+        if operation != self._pack_operation_name:
+            return
+        self._pack_operation_in_flight = False
         if not self._accept_async_results:
             return
-        self._model_check_btn.setEnabled(True)
-        model = self._model_check_name
-        installed = result is True
+        if isinstance(result, dict) and "error" in result:
+            self._model_status.setText(f"Operation refused or failed: {result['error']}")
+            self._refresh_pack_selection()
+            return
+        action = operation.removeprefix("pack_")
         self._model_status.setText(
-            f"{model} is installed locally."
-            if installed else
-            f"{model} is not reachable or not installed."
+            f"{action.title()} completed with an authenticated receipt. Refreshing status…"
         )
-        cmd = f"ollama pull {model}"
-        body = (f"Model:  {model}\n"
-                f"Status: {'installed locally' if installed else 'NOT reachable / not installed'}\n\n"
-                f"To install or update this model, run this command in PowerShell:\n\n"
-                f"    {cmd}\n\n"
-                f"Tip: click 'Copy command', then 'Open PowerShell', paste (Ctrl+V) and press Enter.")
-        self._copy_dialog("Model Status", body, cmd)
+        self._start_pack_status()
 
     def closeEvent(self, event) -> None:
         """Ignore late worker results and stop periodic refreshes after close."""
         self._accept_async_results = False
-        for name in ("_wd_timer", "_t_timer"):
+        for loading_token in self._loading_tokens.values():
+            finish_loading(loading_token)
+        self._loading_tokens.clear()
+        for name in ("_wd_initial_timer", "_wd_timer", "_t_timer"):
             timer = getattr(self, name, None)
             if timer is not None:
                 timer.stop()
         self._async_bridge.console_closed()
         super().closeEvent(event)
-
-    def _copy_dialog(self, title: str, body: str, command: str | None = None):
-        """Info dialog whose text is selectable/copyable, with optional
-        'Copy command' + 'Open PowerShell' buttons."""
-        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
-                                       QTextEdit, QPushButton, QApplication)
-        dlg = QDialog(self); dlg.setWindowTitle(title); dlg.resize(580, 340)
-        lay = QVBoxLayout(dlg)
-        txt = QTextEdit(); txt.setReadOnly(True); txt.setPlainText(body)
-        lay.addWidget(txt)
-        row = QHBoxLayout()
-        if command:
-            b_copy = QPushButton("Copy command")
-            b_copy.clicked.connect(lambda: QApplication.clipboard().setText(command))
-            row.addWidget(b_copy)
-            b_ps = QPushButton("Open PowerShell")
-            def _open_ps():
-                import subprocess
-                try:
-                    from angerona.core.privilege import (
-                        sanitized_child_environment,
-                        trusted_powershell_path,
-                    )
-                    # Explicit console flag → bypasses the global hidden-launch default.
-                    flags = 0x00000010 if os.name == "nt" else 0   # CREATE_NEW_CONSOLE
-                    executable = (
-                        str(trusted_powershell_path())
-                        if os.name == "nt" else "powershell"
-                    )
-                    subprocess.Popen(
-                        [executable, "-NoExit"],
-                        creationflags=flags,
-                        close_fds=True,
-                        env=sanitized_child_environment(),
-                    )
-                except Exception:
-                    pass
-            b_ps.clicked.connect(_open_ps)
-            row.addWidget(b_ps)
-        b_close = QPushButton("Close"); b_close.clicked.connect(dlg.close)
-        row.addWidget(b_close)
-        lay.addLayout(row)
-        dlg.exec()
 
     def _implement_code(self):
         import ast
@@ -611,11 +779,41 @@ class AngeronaUpgradeConsole(QMainWindow):
         except Exception:
             return "unknown"
 
+    def _watchdog_snapshot(self) -> dict:
+        """Read watchdog diagnostics off the Qt thread."""
+        return {
+            "watchdog": self._eco_status("watchdog"),
+            "heartbeat": self._eco_hb("watchdog"),
+            "core": self._eco_status("core"),
+        }
+
     def _refresh_watchdog(self):
+        """Schedule one watchdog snapshot without queueing timer backlog."""
+        if not self._accept_async_results or self._watchdog_refresh_in_flight:
+            return
+        token = self._new_async_token()
+        self._watchdog_refresh_token = token
+        self._watchdog_refresh_in_flight = True
+        worker = _UpgradeWorker(
+            "watchdog_status",
+            token,
+            self._watchdog_snapshot,
+            self._async_bridge,
+        )
+        self._async_bridge.track_submission()
+        try:
+            self._async_pool.start(worker)
+        except Exception as exc:
+            self._async_bridge.submission_failed(
+                "watchdog_status", token, {"error": str(exc)}
+            )
+
+    def _apply_watchdog_snapshot(self, snapshot: dict) -> None:
+        """Render a completed watchdog snapshot on the owning Qt thread."""
         # Prefer the standalone ecosystem: heartbeat + status diagnostic.
-        st = self._eco_status("watchdog")
-        hbst = self._eco_hb("watchdog")
-        core_st = self._eco_status("core")
+        st = snapshot.get("watchdog")
+        hbst = snapshot.get("heartbeat", "unknown")
+        core_st = snapshot.get("core")
         if st or hbst not in ("unknown", "dead") or core_st:
             wd_line = (f"heartbeat={hbst}, pid={(st or {}).get('pid','?')}, "
                        f"rss={(st or {}).get('rss_mb','?')}MB, state={(st or {}).get('state','?')}"
@@ -682,9 +880,35 @@ class AngeronaUpgradeConsole(QMainWindow):
         self._t_timer = QTimer(self); self._t_timer.timeout.connect(self._refresh_telemetry)
         self._t_timer.start(1500)
 
+    def _telemetry_snapshot(self) -> dict:
+        """Read scanner diagnostics off the Qt thread."""
+        return {"scanner": self._eco_status("scanner")}
+
     def _refresh_telemetry(self):
+        """Schedule one scanner snapshot without queueing timer backlog."""
+        if not self._accept_async_results or self._telemetry_refresh_in_flight:
+            return
+        token = self._new_async_token()
+        self._telemetry_refresh_token = token
+        self._telemetry_refresh_in_flight = True
+        worker = _UpgradeWorker(
+            "telemetry_status",
+            token,
+            self._telemetry_snapshot,
+            self._async_bridge,
+        )
+        self._async_bridge.track_submission()
+        try:
+            self._async_pool.start(worker)
+        except Exception as exc:
+            self._async_bridge.submission_failed(
+                "telemetry_status", token, {"error": str(exc)}
+            )
+
+    def _apply_telemetry_snapshot(self, snapshot: dict) -> None:
+        """Render a completed scanner snapshot on the owning Qt thread."""
         # Live standalone scanner status takes priority if the ecosystem is up.
-        sc = self._eco_status("scanner") if hasattr(self, "_eco_status") else None
+        sc = snapshot.get("scanner")
         if sc:
             self._t_running.setText(f"scanner {sc.get('state','?')} "
                                     f"(pid {sc.get('pid','?')}, {sc.get('rss_mb','?')}MB)")
@@ -713,10 +937,25 @@ class AngeronaUpgradeConsole(QMainWindow):
             self._t_events.setText("n/a (no bus)")
 
 
-def launch_upgrade_console(manager=None, config=None, bus=None, parent=None) -> AngeronaUpgradeConsole:
+def launch_upgrade_console(
+    manager=None,
+    config=None,
+    bus=None,
+    parent=None,
+    *,
+    model_pack_manager=None,
+    pack_change_callback: Callable[[], object] | None = None,
+) -> AngeronaUpgradeConsole:
     """Embed entry point: build + show the console over an existing app.
     Mirrors ``launch_sandbox_editor``. Tolerates None manager/config/bus."""
-    win = AngeronaUpgradeConsole(manager=manager, config=config, bus=bus, parent=parent)
+    win = AngeronaUpgradeConsole(
+        manager=manager,
+        config=config,
+        bus=bus,
+        parent=parent,
+        model_pack_manager=model_pack_manager,
+        pack_change_callback=pack_change_callback,
+    )
     win.show()
     return win
 

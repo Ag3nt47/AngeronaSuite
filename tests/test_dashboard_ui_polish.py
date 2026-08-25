@@ -4,6 +4,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import angerona.gui.header_controls as header_controls
 from angerona.gui.dashboard_details import (
     ConsoleDetailDialog,
     FuturisticDetailDialog,
@@ -36,6 +38,17 @@ from angerona.gui.red_team_console import RedTeamConsole
 
 def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def _enable_os_motion_for_animation_contracts(monkeypatch) -> None:
+    """Make animation contracts independent of the CI runner's OS preference."""
+    monkeypatch.delenv("ANGERONA_REDUCE_MOTION", raising=False)
+    monkeypatch.setattr(
+        header_controls,
+        "_windows_client_animations_enabled",
+        lambda: True,
+    )
 
 
 def test_header_actions_have_distinct_vector_icons_and_definitions() -> None:
@@ -397,6 +410,21 @@ def test_reduced_motion_environment_is_a_hard_override(monkeypatch) -> None:
     app.processEvents()
     assert not target.isVisible()
     assert overlay._mode == "idle"
+    parent.close()
+
+
+def test_reveal_overlay_ignores_events_after_animation_teardown() -> None:
+    _app()
+    parent = QWidget()
+    overlay = PanelRevealOverlay(parent)
+
+    class DeletedAnimation:
+        @staticmethod
+        def state():
+            raise RuntimeError("Internal C++ object already deleted")
+
+    overlay._animation = DeletedAnimation()
+    assert overlay._animation_busy() is True
     parent.close()
 
 

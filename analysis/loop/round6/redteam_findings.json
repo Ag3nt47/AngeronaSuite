@@ -1,0 +1,90 @@
+[
+  {
+    "id": "R6-01",
+    "title": "Spoofable LSASS/VSS semantic gates retain whole-host outage authority",
+    "severity": "HIGH",
+    "component": "src/angerona/core/response_contract.py; src/angerona/modules/lsass_guard.py; src/angerona/modules/shadowcopy_guard.py",
+    "status": "RESOLVED",
+    "recommendation": "Retain role-aware argv negatives and fail-closed path/signature checks; keep ambiguous script semantics alert-only."
+  },
+  {
+    "id": "R6-02",
+    "title": "Ransomware isolation correlates unrelated entropy and rename evidence",
+    "severity": "HIGH",
+    "component": "src/angerona/modules/ransomware_heuristics.py; src/angerona/core/response_contract.py",
+    "status": "RESOLVED",
+    "recommendation": "Retain directory-bound correlation and the cross-directory negative test."
+  },
+  {
+    "id": "R6-03",
+    "title": "Process contracts do not retain OS-handle/program-file identity",
+    "severity": "MEDIUM",
+    "component": "src/angerona/core/response_contract.py:123-150; src/angerona/modules/adversary_combat.py:1632-1739,2027-2072",
+    "status": "OPEN",
+    "recommendation": "Act through a retained verified OS process handle and bind path-wide firewall rules to canonical executable file identity with a bounded lease."
+  },
+  {
+    "id": "R6-04",
+    "title": "Secure quarantine cannot move watched user files across volumes",
+    "severity": "MEDIUM",
+    "component": "src/angerona/modules/adversary_combat.py:603-698,1576-1629,2233-2290",
+    "status": "RESOLVED",
+    "recommendation": "Retain forced cross-volume success/mismatch tests and add a physical two-volume Windows acceptance gate."
+  },
+  {
+    "id": "R6-05",
+    "title": "Failed journal commit could leave a live orphan outside normal Undo",
+    "severity": "MEDIUM",
+    "component": "src/angerona/modules/adversary_combat.py:1223-1305,1542-1638,1957-2057,2095-2120,2282-2325,2528-2590",
+    "status": "RESOLVED",
+    "recommendation": "Retain commit-failure, failed-compensation, circuit-breaker, exact orphan Undo, and irreversible-commit-failure regressions."
+  },
+  {
+    "id": "R6-06",
+    "title": "Local-AI posture advice could execute as elevated PowerShell",
+    "severity": "HIGH",
+    "component": "src/angerona/modules/posture_hardening.py:723-850,906-930; src/angerona/gui/main_window.py:2076-2105; src/angerona/gui/pages.py:1389-1445,4829-4844",
+    "status": "RESOLVED",
+    "recommendation": "Keep model output inert; any active remediation must be a registered typed operation with authorization, postcondition, receipt, and rollback."
+  },
+  {
+    "id": "R6-07",
+    "title": "Red Team cleanup deletes user files by filename prefix",
+    "severity": "MEDIUM",
+    "component": "src/angerona/shark/red_team.py:182-223,363-415,483-516; tests/test_redteam_runtime_targets.py:207-224",
+    "status": "RESOLVED",
+    "recommendation": "Retain the name-only lookalike regression; never reintroduce filename-only deletion authority."
+  },
+  {
+    "id": "R6-08",
+    "title": "Manual SOAR suspension bypassed Combat journal and remained resubmittable",
+    "severity": "MEDIUM",
+    "component": "src/angerona/gui/pages.py:275,622-850,3651,3728-3750,3890-3950; src/angerona/modules/adversary_combat.py:928-995,1223-1330",
+    "status": "RESOLVED",
+    "recommendation": "Retain forged-receipt, terminal-submission, queue-ID deduplication, saturation failure-receipt, and timeout regressions."
+  },
+  {
+    "id": "R6-09",
+    "title": "Top Talkers containment used a stale PID and non-enforcing blocklist",
+    "severity": "MEDIUM",
+    "component": "src/angerona/gui/top_talkers.py:70-152,326-405,438-500",
+    "status": "RESOLVED",
+    "recommendation": "Retain stale-PID, changed-executable, changed-peer, and malformed-address negative tests."
+  },
+  {
+    "id": "R6-10",
+    "title": "Deployment mirror accepted destructive arbitrary destinations",
+    "severity": "MEDIUM",
+    "component": "finalize-and-deploy.ps1:18-115,122-145,151-171; tests/test_finalize_deploy_safety.py:1-84",
+    "status": "RESOLVED",
+    "recommendation": "Retain broad-path, overlap, unowned-sentinel, ownership-marker, preview, and wrong-confirmation negatives for Home and Backup."
+  },
+  {
+    "id": "R6-11",
+    "title": "Red STOP killed unrelated Python processes by broad ownership rules",
+    "severity": "MEDIUM",
+    "component": "src/angerona/gui/main_window.py:65-113,4587-4630; tools/angerona_process_owner.ps1:1-73; tests/test_shutdown_process_ownership.py:1-67",
+    "status": "RESOLVED",
+    "recommendation": "Retain exact approved launch positives and venv-pytest, Jupyter, arbitrary-script, substring, and PID-reuse negatives."
+  }
+]

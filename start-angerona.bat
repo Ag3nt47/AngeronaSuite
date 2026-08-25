@@ -229,17 +229,34 @@ set "ANGERONA_WATCHDOG_SIGNED="
 set "ANGERONA_PYTHON=%~dp0venv\Scripts\python.exe"
 set "ANGERONA_STDOUT_LOG=%ANGERONA_DATA%\logs\launcher-stdout.log"
 set "ANGERONA_STDERR_LOG=%ANGERONA_DATA%\logs\launcher-stderr.log"
+set "ANGERONA_STARTUP_READY=%ANGERONA_DATA%\logs\dashboard-ready.signal"
+"%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "Remove-Item -LiteralPath $env:ANGERONA_STARTUP_READY -Force -ErrorAction SilentlyContinue"
 if exist "%ANGERONA_WATCHDOG%" "%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "if ((Get-AuthenticodeSignature -LiteralPath $env:ANGERONA_WATCHDOG).Status -eq 'Valid') {exit 0}; exit 1" >nul 2>&1 && set "ANGERONA_WATCHDOG_SIGNED=1"
 if defined ANGERONA_WATCHDOG_SIGNED (
     set "ANGERONA_EXTERNAL_WATCHDOG=1"
     for /f %%H in ('"%SAFE_SYSTEM32%certutil.exe" -hashfile "venv\Scripts\pythonw.exe" SHA256 ^| "%SAFE_SYSTEM32%findstr.exe" /r "^[0-9a-f]*$"') do set "ANGERONA_AGENT_SHA256=%%H"
     echo [*] Using signed watchdog as resilience parent.
     start "" "%ANGERONA_WATCHDOG%" "venv\Scripts\pythonw.exe" -m angerona --chill
+    "%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "$deadline=[DateTime]::UtcNow.AddSeconds(120); do {Start-Sleep -Milliseconds 250; if (Test-Path -LiteralPath $env:ANGERONA_STARTUP_READY -PathType Leaf) {exit 0}} while ([DateTime]::UtcNow -lt $deadline); exit 2"
+    if errorlevel 2 (
+        echo [!] The watchdog is running but the dashboard did not become ready.
+        echo     The launcher will remain open so this condition is visible.
+        pause
+        exit /b 2
+    )
 ) else (
     REM Keep observing the hidden bootstrap through its high-risk initialization
     REM window. The old 1.5-second check could close this launcher just before a
     REM delayed Qt/storage failure, leaving no dashboard and no visible error.
-    "%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "$p=Start-Process -FilePath $env:ANGERONA_PYTHON -ArgumentList @('-m','angerona','--chill') -WorkingDirectory $env:ANGERONA_INSTALL_ROOT -WindowStyle Hidden -RedirectStandardOutput $env:ANGERONA_STDOUT_LOG -RedirectStandardError $env:ANGERONA_STDERR_LOG -PassThru; $deadline=[DateTime]::UtcNow.AddSeconds(12); do {Start-Sleep -Milliseconds 250; if ($p.HasExited) {exit 1}} while ([DateTime]::UtcNow -lt $deadline); exit 0"
+    "%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "$p=Start-Process -FilePath $env:ANGERONA_PYTHON -ArgumentList @('-m','angerona','--chill') -WorkingDirectory $env:ANGERONA_INSTALL_ROOT -WindowStyle Hidden -RedirectStandardOutput $env:ANGERONA_STDOUT_LOG -RedirectStandardError $env:ANGERONA_STDERR_LOG -PassThru; $deadline=[DateTime]::UtcNow.AddSeconds(120); do {Start-Sleep -Milliseconds 250; if ($p.HasExited) {exit 1}; if (Test-Path -LiteralPath $env:ANGERONA_STARTUP_READY -PathType Leaf) {exit 0}} while ([DateTime]::UtcNow -lt $deadline); exit 2"
+    if errorlevel 2 (
+        echo [!] Angerona is still running but the dashboard did not become ready.
+        echo     The launcher will remain open so this condition is visible.
+        echo     Error log: %ANGERONA_STDERR_LOG%
+        if exist "%ANGERONA_STDERR_LOG%" type "%ANGERONA_STDERR_LOG%"
+        pause
+        exit /b 2
+    )
     if errorlevel 1 (
         echo [!] Angerona exited before its window opened.
         echo     Error log: %ANGERONA_STDERR_LOG%

@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from angerona.core.url_policy import (
-    LOCAL_SERVICE_POLICY,
+    OLLAMA_SERVICE_POLICY,
     local_service_url,
     read_bounded,
     safe_urlopen,
@@ -45,6 +45,7 @@ from angerona.core.attack_tracker import (
     TACTIC_ORDER, THREAT_ACTOR_PLAYBOOKS, _TACTIC_TO_TECHNIQUES, _TID_TO_META,
     get_tracker,
 )
+from angerona.gui.animations import begin_loading, finish_loading
 
 # ── Layout constants ─────────────────────────────────────────────────────────
 _CW    = 108   # cell width  px
@@ -242,6 +243,8 @@ class AttackHeatmapWindow(QDialog):
         self._tabs.addTab(heat_tab, "🔥  Live Heat")
         self._tabs.addTab(self._build_coverage_tab(), "🛡  Coverage")
         self._tabs.addTab(self._build_top_tab(), "📊  Top Techniques")
+        from angerona.gui.context_info import attach_context_info
+        self._context_info = attach_context_info(self._tabs, "attack-map")
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
@@ -501,14 +504,22 @@ class AttackHeatmapWindow(QDialog):
         tracker = get_tracker()
         snap = tracker.snapshot() if tracker else {"matrix": {}, "summary": {}}
         self._show_posture("⏳ Analyzing current ATT&CK posture…")
-        threading.Thread(target=self._posture_worker, args=(snap,), daemon=True).start()
+        loading_token = begin_loading("Retrieving ATT&CK posture analysis…")
+        threading.Thread(
+            target=self._posture_worker,
+            args=(snap, loading_token),
+            daemon=True,
+        ).start()
 
-    def _posture_worker(self, snap: dict) -> None:
-        text = self._heuristic_posture(snap)
-        ai = self._ollama_posture(snap)
-        if ai:
-            text = ai + "\n\n— — —\n(heuristic) " + text
-        self._posture_ready.emit(text)
+    def _posture_worker(self, snap: dict, loading_token: str) -> None:
+        try:
+            text = self._heuristic_posture(snap)
+            ai = self._ollama_posture(snap)
+            if ai:
+                text = ai + "\n\n— — —\n(heuristic) " + text
+            self._posture_ready.emit(text)
+        finally:
+            finish_loading(loading_token)
 
     def _heuristic_posture(self, snap: dict) -> str:
         matrix = snap.get("matrix", {}); summ = snap.get("summary", {})
@@ -554,7 +565,7 @@ class AttackHeatmapWindow(QDialog):
         try:
             req = urllib.request.Request(local_service_url(host, "/api/chat"), data=payload,
                                          headers={"Content-Type": "application/json"})
-            with safe_urlopen(req, policy=LOCAL_SERVICE_POLICY, timeout=30) as resp:
+            with safe_urlopen(req, policy=OLLAMA_SERVICE_POLICY, timeout=30) as resp:
                 data = json.loads(read_bounded(resp).decode())
             return ((data.get("message", {}) or {}).get("content", "") or "").strip() or None
         except Exception:
