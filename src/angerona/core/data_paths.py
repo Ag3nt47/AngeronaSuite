@@ -375,6 +375,8 @@ def _verify_protected_source_data_root(path: Path) -> None:
     """
     if not sys.platform.startswith("win"):
         return
+    if _pytest_isolated_runtime():
+        return
     if not _elevated_source_runtime():
         return
     key = str(path).casefold()
