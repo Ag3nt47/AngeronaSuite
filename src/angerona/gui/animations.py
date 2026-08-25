@@ -6,7 +6,11 @@ can run a different colour/glyph for other events (e.g. a scan sweep).
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QPropertyAnimation, QRectF, Qt, QTimer
+import itertools
+import threading
+from contextlib import contextmanager
+
+from PySide6.QtCore import QObject, QPoint, QPropertyAnimation, QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
@@ -102,7 +106,24 @@ class RunSpinner(QWidget):
         self._done_timer = QTimer(self)
         self._done_timer.setSingleShot(True)
         self._done_timer.timeout.connect(self.stop)
+        self._compact = False
         self.hide()
+
+    def set_compact(self, compact: bool, extent: int = 34) -> None:
+        """Keep the progress ring visible when dashboard header space is tight."""
+        self._compact = bool(compact)
+        self._label.setVisible(not self._compact)
+        if self._compact:
+            width = max(28, int(extent))
+            self.layout().setContentsMargins(4, 0, 4, 0)
+            self.layout().setSpacing(0)
+            self.setMinimumWidth(width)
+            self.setMaximumWidth(width)
+        else:
+            self.layout().setContentsMargins(8, 0, 8, 0)
+            self.layout().setSpacing(8)
+            self.setMinimumWidth(0)
+            self.setMaximumWidth(16_777_215)
 
     def start(self, text: str = "") -> None:
         self._text = text
@@ -170,6 +191,187 @@ class RunSpinner(QWidget):
         self._label.setText(label)
         self._label.setStyleSheet(
             f"color: rgb({c.red()},{c.green()},{c.blue()}); font-weight:700; letter-spacing:0.3px;")
+        self.setToolTip(label)
+
+
+# ── Application-wide loading activity ──────────────────────────────────────────
+class _LoadingActivityBus(QObject):
+    """Thread-safe signal bridge from workers to the dashboard header."""
+
+    started = Signal(str, str, int, int)
+    updated = Signal(str, str, int, int)
+    finished = Signal(str)
+
+
+_loading_bus = _LoadingActivityBus()
+_loading_ids = itertools.count(1)
+_loading_id_lock = threading.Lock()
+
+
+def begin_loading(label: str, *, done: int = 0, total: int = 0) -> str:
+    """Start one globally visible activity and return its opaque token.
+
+    Signals may be emitted from ordinary Python worker threads. Qt queues them
+    safely to every indicator living on the GUI thread.
+    """
+    with _loading_id_lock:
+        token = f"loading-{next(_loading_ids)}"
+    _loading_bus.started.emit(token, str(label or "Loading"), int(done), int(total))
+    return token
+
+
+def update_loading(
+    token: str,
+    label: str | None = None,
+    *,
+    done: int = 0,
+    total: int = 0,
+) -> None:
+    """Update a live activity without touching a widget from a worker thread."""
+    _loading_bus.updated.emit(
+        str(token), str(label or ""), int(done), int(total)
+    )
+
+
+def finish_loading(token: str | None) -> None:
+    """Finish a global activity. Unknown/already-finished tokens are harmless."""
+    if token:
+        _loading_bus.finished.emit(str(token))
+
+
+@contextmanager
+def loading_activity(label: str):
+    """Context-manager form for bounded synchronous or worker operations."""
+    token = begin_loading(label)
+    try:
+        yield token
+    finally:
+        finish_loading(token)
+
+
+class GlobalLoadingIndicator(QWidget):
+    """Reference-counted header animation for overlapping background work.
+
+    Fast operations finish before the short reveal delay and therefore do not
+    make the header flicker. Longer work remains animated until every active
+    token has completed; finishing one job can never hide another job's state.
+    """
+
+    _REVEAL_DELAY_MS = 140
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._ring = _SpinRing(self)
+        self._ring.set_color(QColor(56, 189, 248))
+        self._label = QLabel("")
+        self._label.setStyleSheet(
+            "color:#7dd3fc;font-weight:700;letter-spacing:0.3px;"
+        )
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 0, 8, 0)
+        lay.setSpacing(8)
+        lay.addWidget(self._ring)
+        lay.addWidget(self._label)
+        self._activities: dict[str, tuple[str, int, int]] = {}
+        self._order: list[str] = []
+        self._reveal_timer = QTimer(self)
+        self._reveal_timer.setSingleShot(True)
+        self._reveal_timer.timeout.connect(self._reveal_if_active)
+        _loading_bus.started.connect(self._on_started)
+        _loading_bus.updated.connect(self._on_updated)
+        _loading_bus.finished.connect(self._on_finished)
+        self.setToolTip(
+            "Angerona is loading local information or bringing protection modules online."
+        )
+        self.setAccessibleName("Dashboard loading activity")
+        self.setAccessibleDescription(
+            "Shows startup and background loading progress; details remain available as a tooltip."
+        )
+        self._compact = False
+        self.hide()
+
+    def set_compact(self, compact: bool, extent: int = 34) -> None:
+        """Show a reserved ring-only indicator when the header is constrained."""
+        self._compact = bool(compact)
+        self._label.setVisible(not self._compact)
+        if self._compact:
+            width = max(28, int(extent))
+            self.layout().setContentsMargins(4, 0, 4, 0)
+            self.layout().setSpacing(0)
+            self.setMinimumWidth(width)
+            self.setMaximumWidth(width)
+        else:
+            self.layout().setContentsMargins(8, 0, 8, 0)
+            self.layout().setSpacing(8)
+            self.setMinimumWidth(0)
+            self.setMaximumWidth(16_777_215)
+
+    @property
+    def active_count(self) -> int:
+        return len(self._activities)
+
+    @property
+    def current_text(self) -> str:
+        return self._label.text()
+
+    @Slot(str, str, int, int)
+    def _on_started(self, token: str, label: str, done: int, total: int) -> None:
+        self._activities[token] = (label, done, total)
+        if token in self._order:
+            self._order.remove(token)
+        self._order.append(token)
+        self._render_latest()
+        if not self.isVisible() and not self._reveal_timer.isActive():
+            self._reveal_timer.start(self._REVEAL_DELAY_MS)
+
+    @Slot(str, str, int, int)
+    def _on_updated(self, token: str, label: str, done: int, total: int) -> None:
+        previous = self._activities.get(token)
+        if previous is None:
+            return
+        old_label, old_done, old_total = previous
+        self._activities[token] = (
+            label or old_label,
+            done if total > 0 else old_done,
+            total if total > 0 else old_total,
+        )
+        self._render_latest()
+
+    @Slot(str)
+    def _on_finished(self, token: str) -> None:
+        self._activities.pop(token, None)
+        try:
+            self._order.remove(token)
+        except ValueError:
+            pass
+        if self._activities:
+            self._render_latest()
+            return
+        self._reveal_timer.stop()
+        self._ring.stop()
+        self.hide()
+
+    def _reveal_if_active(self) -> None:
+        if not self._activities:
+            return
+        self._ring.start()
+        self.show()
+        self._render_latest()
+
+    def _render_latest(self) -> None:
+        if not self._order:
+            self._label.clear()
+            return
+        token = self._order[-1]
+        label, done, total = self._activities[token]
+        progress = f"  {done}/{total}" if total > 0 else ""
+        overlap = (
+            f"  (+{len(self._activities) - 1})"
+            if len(self._activities) > 1 else ""
+        )
+        text = f"{label}{progress}{overlap}"
+        self._label.setText(text)
+        self.setToolTip(text)
 
 
 class _LevelBar(QWidget):

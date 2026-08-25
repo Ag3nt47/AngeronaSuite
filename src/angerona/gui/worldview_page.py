@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel
                                QVBoxLayout, QWidget)
 
 from angerona.telemetry.worldview import WorldViewEngine
+from angerona.gui.animations import begin_loading, finish_loading
 
 
 class _OllamaWorker(QThread):
@@ -126,8 +127,12 @@ class WorldViewDialog(QDialog):
         """Launch the Ollama worker if one isn't already running."""
         if self._ollama_worker is not None and self._ollama_worker.isRunning():
             return
+        loading_token = begin_loading("Retrieving local AI diagnostics…")
         self._ollama_worker = _OllamaWorker(self._engine)
         self._ollama_worker.result.connect(self._on_ollama_result)
+        self._ollama_worker.finished.connect(
+            lambda token=loading_token: finish_loading(token)
+        )
         self._ollama_worker.start()
 
     def _on_ollama_result(self, o: dict) -> None:

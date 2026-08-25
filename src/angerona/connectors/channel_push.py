@@ -212,6 +212,7 @@ class ChannelPush:
             # 4 ── min_level filter blocks low-severity sends
             sent.clear()
             crit_only = ChannelPush(enabled=True, min_level=Level.CRITICAL, transport=fake,
+                                    url_validator=lambda _url: True,
                                     targets=[Target("slack", "https://x")])
             rr = crit_only.push("routine info", "INFO")
             assert all(x.skipped for x in rr) and sent == [], "below min_level skipped"

@@ -28,6 +28,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from angerona.gui.animations import begin_loading, finish_loading, update_loading
+
 
 def _emit_if_accepting(owner, signal_name: str, *args) -> bool:
     """Drop late Python-worker results after the owning Qt panel closes."""
@@ -59,6 +61,7 @@ class ScanCenterPanel(QFrame):
         self._last_progress_message = ""
         self._accept_async_results = True
         self._worker_thread: threading.Thread | None = None
+        self._loading_token: str | None = None
         self.result_ready.connect(self._apply_result)
         self.progress_ready.connect(self._apply_progress)
         self.error_ready.connect(self._apply_error)
@@ -444,6 +447,7 @@ class ScanCenterPanel(QFrame):
         self.progress.setFormat("Working…")
         self._last_progress_message = ""
         self.log.setPlainText(label + " started.")
+        self._loading_token = begin_loading(label + "…")
 
         def progress(payload) -> None:
             data = payload.to_dict() if hasattr(payload, "to_dict") else payload
@@ -493,6 +497,12 @@ class ScanCenterPanel(QFrame):
             self.progress.setRange(0, 0)
             self.progress.setFormat("Active")
         self.status.setText(message)
+        update_loading(
+            self._loading_token or "",
+            message,
+            done=completed,
+            total=total,
+        )
         if message != self._last_progress_message:
             self._last_progress_message = message
             self.log.appendPlainText(message)
@@ -521,6 +531,8 @@ class ScanCenterPanel(QFrame):
                 self.findings.setItem(row, column, QTableWidgetItem(text))
         self.findings.resizeRowsToContents()
         self._busy = False
+        finish_loading(self._loading_token)
+        self._loading_token = None
         self._cancellation = None
         self.stop_button.setEnabled(False)
         self.progress.setRange(0, 100)
@@ -545,6 +557,8 @@ class ScanCenterPanel(QFrame):
         if not self._accept_async_results:
             return
         self._busy = False
+        finish_loading(self._loading_token)
+        self._loading_token = None
         self._cancellation = None
         self.stop_button.setEnabled(False)
         self.progress.setRange(0, 100)
@@ -555,6 +569,8 @@ class ScanCenterPanel(QFrame):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
         self._accept_async_results = False
+        finish_loading(self._loading_token)
+        self._loading_token = None
         cancellation = self._cancellation
         if cancellation is not None:
             try:

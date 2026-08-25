@@ -26,6 +26,8 @@ except Exception:  # pragma: no cover
     psutil = None
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.response_contract import process_and_remote_response
+from angerona.modules.intel_sync import is_ip_flagged
 from angerona.telemetry.sensors import list_connections
 
 # Beacon band + regularity thresholds.
@@ -80,7 +82,10 @@ class BeaconDetectorModule(BaseModule):
         super().__init__()
         self.state_lock = threading.Lock()
         self._seen_last: set[tuple] = set()          # (pid, ip) seen on the previous poll
-        self._callbacks: dict[tuple, list[float]] = {}   # (name, ip) -> [ts, ...]
+        # Exact process instance + peer. Name-only grouping lets unrelated
+        # same-name processes fabricate one apparent cadence, and PID-only
+        # grouping crosses Windows PID reuse.
+        self._callbacks: dict[tuple, list[float]] = {}
         self._alerted: set[tuple] = set()
         self._detections = 0
 
@@ -113,6 +118,7 @@ class BeaconDetectorModule(BaseModule):
         now = time.time()
         current: set[tuple] = set()
         names: dict[int, str] = {}
+        create_times: dict[int, float] = {}
         try:
             # Reuse the suite's short-lived connection snapshot. Network
             # Monitor and Counter-Agentic inspect the same OS table on nearby
@@ -131,12 +137,24 @@ class BeaconDetectorModule(BaseModule):
             current.add((pid, ip))
             if pid not in names:
                 try:
-                    names[pid] = psutil.Process(pid).name()
+                    process = psutil.Process(pid)
+                    names[pid] = process.name()
                 except Exception:
                     names[pid] = "?"
+                    process = None
+                try:
+                    if process is not None:
+                        create_times[pid] = float(process.create_time())
+                except Exception:
+                    pass
         # A NEW connection = present now but not on the previous poll.
         for (pid, ip) in current - self._seen_last:
-            key = (names.get(pid, "?"), ip)
+            created = create_times.get(pid)
+            if created is None:
+                # A cadence without a process birth time cannot be bound to one
+                # process instance and therefore cannot authorize containment.
+                continue
+            key = (pid, created, names.get(pid, "?"), ip)
             hist = self._callbacks.setdefault(key, [])
             hist.append(now)
             if len(hist) > self._HISTORY:
@@ -145,12 +163,27 @@ class BeaconDetectorModule(BaseModule):
             if is_b and key not in self._alerted:
                 self._alerted.add(key)
                 self._detections += 1
+                corroborated = is_ip_flagged(ip)
+                response = (
+                    process_and_remote_response(pid, created, ip)
+                    if corroborated
+                    else {}
+                )
                 self.emit(
-                    f"⚠ Possible C2 beacon: {key[0]} → {ip} — {len(hist)} callbacks at a "
+                    f"⚠ Possible C2 beacon: {key[2]} → {ip} — {len(hist)} callbacks at a "
                     f"regular ~{mean:.0f}s cadence (jitter cv={cv:.2f}). Investigate the "
                     "destination; block if it is an unknown external host.",
-                    Severity.HIGH, name=key[0], remote=ip, interval_s=round(mean, 1),
-                    cv=round(cv, 3), mitre="T1071")
+                    Severity.HIGH, name=key[2], pid=pid,
+                    process_create_time=created, remote=ip,
+                    interval_s=round(mean, 1), cv=round(cv, 3), mitre="T1071",
+                    active_attack=True,
+                    threat_intel_corroborated=corroborated,
+                    detector_policy=(
+                        "cadence-plus-threat-intel"
+                        if corroborated
+                        else "cadence-indicator-alert-only"
+                    ),
+                    **response)
         self._seen_last = current
         # evict stale history
         for key, hist in list(self._callbacks.items()):

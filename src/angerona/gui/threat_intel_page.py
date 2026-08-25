@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 from angerona.gui.cve_analysis_window import CveAnalysisWindow
+from angerona.gui.animations import begin_loading, finish_loading
 
 # ── tunables ──────────────────────────────────────────────────────────────────
 _AUTO_REFRESH_MS = 60_000   # re-read upstream_threats.json every 60 s
@@ -119,6 +120,7 @@ class ThreatIntelDashboard(QDialog):
         self._staged: list = []
         self._fix_cache: dict[str, dict] = {}    # cve → analysis result
         self._worker: _FixWorker | None = None
+        self._loading_token: str | None = None
         self.setWindowTitle("🛡  Threat Intelligence — CISA KEV Matches")
         self.setMinimumSize(1040, 560)
         self.resize(1240, 660)
@@ -435,6 +437,9 @@ class ThreatIntelDashboard(QDialog):
             QMessageBox.information(self, "Busy", "Fix analysis is already running.")
             return
         self._footer.setText(f"🔎  Analyzing {len(active)} CVE(s) with local AI…")
+        self._loading_token = begin_loading(
+            f"Analyzing {len(active)} vulnerability record(s)…"
+        )
         self._worker = _FixWorker(active, self)
         self._worker.result.connect(self._on_fix_result)
         self._worker.done.connect(self._on_fix_done)
@@ -449,6 +454,8 @@ class ThreatIntelDashboard(QDialog):
                 break
 
     def _on_fix_done(self, analyzed: int, fixes: int) -> None:
+        finish_loading(self._loading_token)
+        self._loading_token = None
         self._footer.setText(
             f"✅  AI analysis complete: {analyzed} analyzed, {fixes} with a potential fix (❗). "
             "Stage a proposal for review where available; no-fix CVEs remain active.")

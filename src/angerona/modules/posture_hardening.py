@@ -4,8 +4,8 @@ posture_hardening.py — Autonomous, self-healing Posture Hardening Loop.
 Watches the red-team after-action report; any technique that SUCCEEDED (or was
 caught only at LOW-DETECTION-STRENGTH) is recorded as a system weakness, drops
 this module's health below 50 (orange/red on the status strip), and gets a
-deterministic local-LLM–generated PowerShell/registry remediation staged for
-REVIEW. Nothing is ever auto-executed — the user inspects and authorizes.
+deterministic local-LLM advisory. Model output is inert: host changes are
+performed only by the separately reviewed typed remediation library.
 Drop-in BaseModule for AngeronaSuite; imports standalone for testing.
 """
 from __future__ import annotations
@@ -14,14 +14,13 @@ import hashlib
 import json
 import os
 import sqlite3
-import subprocess
 import sys
 import threading
 import time
 from contextlib import closing
 from pathlib import Path
 
-from angerona.core.win import run_hidden, popen_hidden
+from angerona.core.win import run_hidden
 from angerona.engines import ollama_client
 
 # ── AngeronaSuite integration, with a standalone fallback for testing ────────
@@ -61,28 +60,17 @@ def _edr(level: str, msg: str) -> None:
     except Exception:
         pass
 
-# A-03 destructive-command denylist — single source of truth reused from the
-# CVE fix advisor so model-authored remediations get the same scan as CVE fixes.
-try:
-    from angerona.core.cve_fix_advisor import scan_powershell as _scan_ps
-except Exception:                                   # standalone/test fallback
-    def _scan_ps(script: str) -> list:              # pragma: no cover
-        return []
-
 _SYS_REMEDIATE = (
-    "You are an automated Windows Posture Hardening Engine. You are receiving a "
-    "security vulnerability JSON layout successfully exploited by an adversary. "
-    "Generate ONLY a safe, non-destructive, executable PowerShell or Registry "
-    "command script to remediate this specific Windows vulnerability. Do not "
-    "include markdown formatting wraps, code blocks, backticks, explanations, or "
-    "conversational text. Output raw executable string payload only."
+    "You are a defensive Windows posture advisor. Given one security weakness, "
+    "produce a concise human-readable explanation, validation steps, rollback "
+    "considerations, and suggested typed controls. Never output executable code, "
+    "PowerShell, registry commands, shell commands, or instructions to disable "
+    "security controls. This output is inert advice and is never execution authority."
 )
 _SYS_SANDBOX = (
-    "You are a secure Windows Sandbox Parser. The user has provided custom "
-    "mitigation code or logic. Validate its safety, correct any syntax errors, "
-    "and output ONLY a clean, runnable PowerShell script that safely achieves the "
-    "user's intended target configuration. Do not include markdown wraps, "
-    "formatting, or explanations."
+    "You are a defensive change-review assistant. Explain the submitted mitigation "
+    "idea, risks, validation steps, and how to express it with reviewed typed "
+    "controls. Never return runnable code or commands. The response is inert advice."
 )
 
 _SCHEMA = """
@@ -95,9 +83,8 @@ CREATE TABLE IF NOT EXISTS system_weaknesses (
     remediation_script_path TEXT,
     source TEXT DEFAULT 'host'
 );
--- Judgment Gate: SHA-256 of every staged remediation script, stamped the moment
--- it is written. execute_remediation() re-hashes the file on disk and refuses to
--- run if it no longer matches — so a script swapped out after review never runs.
+-- SHA-256 of every inert remediation advisory, stamped when written so later
+-- review can detect replacement. Advisory hashes never grant execution authority.
 CREATE TABLE IF NOT EXISTS remediation_hashes (
     mitre_technique_id TEXT PRIMARY KEY,
     sha256 TEXT NOT NULL,
@@ -738,45 +725,39 @@ class PostureHardening(BaseModule):
                               "severity": severity, "objective": round_obj.get("objective", ""),
                               "target_module": round_obj.get("target", "")}, indent=2)
         script = _ollama(_SYS_REMEDIATE, payload)
-        out = self.remediations / f"{mitre}.ps1"
+        out = self.remediations / f"{mitre}.advisory.md"
         if not script:
-            script = (f"# Ollama unavailable — staged placeholder for {mitre} ({name}).\n"
-                      f"# Review the coverage gap and add a WDAC/ACL/registry hardening rule.\n")
-        else:
-            # A-03 gate: never stamp/stage a model-authored remediation that
-            # contains destructive constructs — a poisoned model could steer a
-            # wipe / AV-disable / account-add into the review-gated library.
-            danger = _scan_ps(script)
-            if danger:
-                self._log_attempt("blocked_destructive_generate", mitre, name=name,
-                                  constructs=danger, script_preview=script[:1000])
-                self.emit(f"REFUSED remediation for {mitre}: local-AI output contained "
-                          f"destructive constructs ({', '.join(danger)}) — nothing staged.",
-                          Severity.HIGH, mitre=mitre, destructive=True)
-                script = (f"# REFUSED: local-AI remediation for {mitre} ({name}) contained "
-                          f"destructive/high-risk constructs ({', '.join(danger)}).\n"
-                          f"# Nothing was staged. Review the coverage gap and add a vetted "
-                          f"WDAC/ACL/registry hardening rule by hand.\n")
-        out.write_text(script, encoding="utf-8")
-        self._stamp_hash(mitre, str(out))          # Judgment Gate: stamp on write
+            script = (
+                f"Ollama unavailable. Review the {mitre} ({name}) coverage gap and "
+                "select a control from the vetted remediation plan."
+            )
+        advisory = (
+            "# INERT LOCAL-AI ADVISORY — NEVER EXECUTED\n\n"
+            "This content is untrusted analysis. It cannot authorize PowerShell, "
+            "registry, service, process, firewall, or filesystem changes.\n\n"
+            + script.strip()
+            + "\n"
+        )
+        out.write_text(advisory, encoding="utf-8")
+        self._stamp_hash(mitre, str(out))
         return str(out)
 
     def _stage_placeholder(self, mitre, name) -> str:
         """Instant, Ollama-free stub written at drill time. The real remediation
         is generated lazily by generate_remediation() when the user clicks
         'Attempt Fix' — so a drill never blocks on / contends for the LLM/VRAM."""
-        out = self.remediations / f"{mitre}.ps1"
+        out = self.remediations / f"{mitre}.advisory.md"
         if not out.exists():
             out.write_text(
-                f"# Remediation for {mitre} ({name}) — click 'Attempt Fix' to have the\n"
-                f"# local AI generate a reviewed hardening script for this weakness.\n",
+                f"# INERT ADVISORY PLACEHOLDER\n\n{mitre} ({name}) — click "
+                "Attempt Fix to generate local analysis and a separate vetted plan.\n",
                 encoding="utf-8")
-        self._stamp_hash(mitre, str(out))          # Judgment Gate: stamp on write
+        self._stamp_hash(mitre, str(out))
         return str(out)
 
     def generate_remediation(self, mitre_id: str, timeout: int = 45) -> dict:
         """On-demand: ask Ollama (temperature 0) for a real remediation for a
-        known weakness and overwrite its staged script. Returns the script text.
+        known weakness and overwrite its inert advisory. Returns the advisory text.
         Intended to be called from a background thread (the 'Attempt Fix' button)."""
         w = next((x for x in self.weaknesses() if x["mitre_id"] == mitre_id), None)
         if not w:
@@ -786,12 +767,19 @@ class PostureHardening(BaseModule):
                                              "resolution, not host PowerShell")}
         r = self._ctx.get(mitre_id, {"objective": "", "target": ""})
         path = self._generate_remediation(mitre_id, w["name"], w["severity"], r)
+        with closing(sqlite3.connect(self.db_path)) as c, c:
+            c.execute(
+                "UPDATE system_weaknesses SET remediation_script_path=? "
+                "WHERE mitre_technique_id=?",
+                (path, mitre_id),
+            )
         script = Path(path).read_text(encoding="utf-8")
         self._log_attempt("ai_generate", mitre_id, name=w["name"], severity=w["severity"],
                           path=path, sha256=self._verify_hash(mitre_id, path)[1],
-                          script_preview=script[:1000], review_required=True)
+                          script_preview=script[:1000], review_required=True,
+                          advisory_only=True)
         return {"ok": True, "mitre": mitre_id, "path": path, "script": script,
-                "review_required": True}
+                "review_required": True, "advisory_only": True, "executable": False}
 
     # ── VETTED ACTIVE REMEDIATION (real, reversible fixes; not model-authored) ─
     def apply_vetted_remediation(self, apply: bool = False) -> dict:
@@ -836,8 +824,7 @@ class PostureHardening(BaseModule):
 
     # ── 4. SECURITY AUTHORIZATION GATE & SANDBOX INTERFACE ───────────────────
     def execute_remediation(self, mitre_id: str, authorized: bool = False) -> dict:
-        """Review gate: a staged remediation runs ONLY when the user passes
-        authorized=True after inspecting it. Never auto-executes."""
+        """Return the inert advisory; model-authored content is never executable."""
         rows = self.weaknesses()
         match = next((w for w in rows if w["mitre_id"] == mitre_id), None)
         if not match or not match["remediation_script_path"]:
@@ -846,65 +833,27 @@ class PostureHardening(BaseModule):
             return {"ok": False, "error": ("simulated detection gaps cannot be repaired by "
                                              "executing host PowerShell")}
         script_path = match["remediation_script_path"]
-        if not authorized:
-            return {"ok": False, "review_required": True,
-                    "script": Path(script_path).read_text(encoding="utf-8")}
-        # Judgment Gate (TOCTOU-closed, BL-08): read the bytes ONCE, verify that
-        # single read against the stamped hash, then execute those EXACT bytes
-        # from a fresh locked temp copy — so a swap of the on-disk .ps1 in the gap
-        # between verify and execute cannot change what actually runs.
-        stored = self._stored_hash(mitre_id)
         try:
-            with open(script_path, "rb") as fh:
-                data = fh.read()
+            advisory = Path(script_path).read_text(encoding="utf-8")
         except Exception as exc:
-            return {"ok": False, "error": f"could not read staged script: {exc}"}
-        actual = hashlib.sha256(data).hexdigest()
-        if not stored or actual != stored:
-            detail = ("no stamped hash on record" if not stored
-                      else f"hash mismatch (stamped {stored[:12]}…, on-disk {actual[:12]}…)")
-            _edr("critical", f"BLOCKED remediation {mitre_id}: staged script failed "
-                             f"integrity check — {detail}")
-            self.emit(f"BLOCKED remediation for {mitre_id}: staged script tampered "
-                      f"({detail}).", Severity.CRITICAL, mitre=mitre_id, tamper=True)
-            self._log_attempt("blocked_tamper", mitre_id, path=script_path, detail=detail)
-            return {"ok": False, "tamper": True,
-                    "error": f"integrity check failed: {detail}"}
-        # A-03 gate (applies to the single-fix AND bulk AAR _apply paths, which
-        # both funnel through here): scan the EXACT verified bytes for destructive
-        # constructs and refuse to run them elevated. Belt-and-suspenders with the
-        # generate-time scan — catches anything staged before this gate existed.
-        danger = _scan_ps(data.decode("utf-8", "ignore"))
-        if danger:
-            _edr("critical", f"BLOCKED remediation {mitre_id}: staged script contains "
-                             f"destructive constructs ({', '.join(danger)}).")
-            self.emit(f"BLOCKED remediation for {mitre_id}: destructive constructs "
-                      f"({', '.join(danger)}) — refused execution.", Severity.CRITICAL,
-                      mitre=mitre_id, destructive=True)
-            self._log_attempt("blocked_destructive", mitre_id, path=script_path,
-                              constructs=danger)
-            return {"ok": False, "destructive": True,
-                    "error": f"refused: destructive constructs {danger}"}
-        import tempfile
-        fd, run_path = tempfile.mkstemp(suffix=".ps1", dir=str(self.remediations))
-        try:
-            with os.fdopen(fd, "wb") as tf:
-                tf.write(data)                       # run the verified bytes, not the path
-            res = self._run_powershell_file(run_path)
-        finally:
-            try:
-                os.remove(run_path)
-            except Exception:
-                pass
-        self._log_attempt("executed", mitre_id, path=script_path,
-                          returncode=res.get("returncode"),
-                          verification=res.get("verification"))
-        if res.get("returncode") == 0:
-            # Test-Driven Defense: don't just trust that the script ran — re-attack
-            # the technique and let the Judgment gate certify (or flag) the fix.
-            verdict = self.verify_mitigation(mitre_id)
-            res["verification"] = verdict.get("result")
-        return res
+            return {"ok": False, "error": f"could not read advisory: {exc}"}
+        self._log_attempt(
+            "model_advisory_execution_refused",
+            mitre_id,
+            path=script_path,
+            authorized=bool(authorized),
+        )
+        return {
+            "ok": False,
+            "advisory_only": True,
+            "executable": False,
+            "review_required": not authorized,
+            "script": advisory,
+            "error": (
+                "Local-AI advice is inert and cannot execute. Use the vetted typed "
+                "remediation plan for host changes."
+            ),
+        }
 
     # ── JUDGMENT LOOP (Continuous Verification Gate) ─────────────────────────
     def verify_mitigation(self, technique_id: str, settle: float = 40.0) -> dict:
@@ -961,41 +910,30 @@ class PostureHardening(BaseModule):
         return {"technique": technique_id, "result": result}
 
     def execute_custom_patch(self, raw_input: str, mode: str) -> dict:
-        """Console/GUI hook. mode='AI-Assisted' cleans+stages via Ollama (no run);
-        mode='Direct Native' runs the user's own authorized script and logs it."""
+        """Convert custom text into an inert review artifact; never execute it."""
         if mode == "AI-Assisted":
             cleaned = _ollama(_SYS_SANDBOX, raw_input) or raw_input
-            out = self.remediations / "custom_user_patch.ps1"
-            out.write_text(cleaned, encoding="utf-8")
+            out = self.remediations / "custom_user_patch.advisory.md"
+            out.write_text(
+                "# INERT CHANGE ADVISORY — NEVER EXECUTED\n\n" + cleaned,
+                encoding="utf-8",
+            )
             return {"ok": True, "mode": mode, "staged": str(out), "script": cleaned,
-                    "note": "staged for review — not executed"}
+                    "advisory_only": True, "executable": False,
+                    "note": "inert advisory saved for review — never executed"}
         if mode == "Direct Native":
-            res = self._run_powershell_inline(raw_input)
-            self._log_to_aar({"type": "custom_patch_exec", "ts": time.time(),
-                              "returncode": res.get("returncode"),
-                              "stdout": res.get("stdout", "")[:2000],
-                              "stderr": res.get("stderr", "")[:2000]})
-            return res
+            self._log_to_aar({
+                "type": "custom_patch_refused",
+                "ts": time.time(),
+                "reason": "arbitrary PowerShell execution is disabled",
+            })
+            return {
+                "ok": False,
+                "advisory_only": True,
+                "executable": False,
+                "error": "Direct Native arbitrary PowerShell is disabled; use typed controls.",
+            }
         return {"ok": False, "error": f"unknown mode {mode!r}"}
-
-    def _run_powershell_inline(self, command: str) -> dict:
-        return self._popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                            "-Command", command])
-
-    def _run_powershell_file(self, path: str) -> dict:
-        return self._popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                            "-File", path])
-
-    def _popen(self, argv: list) -> dict:
-        try:
-            p = popen_hidden(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            out, err = p.communicate(timeout=120)
-            return {"ok": p.returncode == 0, "returncode": p.returncode,
-                    "stdout": out, "stderr": err}
-        except FileNotFoundError:
-            return {"ok": False, "error": "powershell not available on this platform"}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
 
     def _log_to_aar(self, entry: dict) -> None:
         try:

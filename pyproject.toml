@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "angerona"
-version = "1.10.0"
+version = "1.10.2"
 description = "Local-first endpoint security suite for Windows, macOS, and Linux."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -74,6 +74,10 @@ voice = [
     "pyttsx3>=2.90",
     "tqdm>=4.68",
     "websockets>=16",
+]
+hand-controls = [
+    "opencv-python>=4.10",
+    "mediapipe>=0.10.20",
 ]
 cloud = ["google-genai", "groq", "openai"]
 dev = [

@@ -25,6 +25,16 @@ def validate(root: Path) -> list[str]:
             match = re.match(r"([A-Za-z0-9_-]+):", block)
             if match and "runs-on:" in block and "timeout-minutes:" not in block:
                 errors.append(f"{label}: job {match.group(1)} lacks timeout")
+            if (
+                match
+                and "ossf/scorecard-action@" in block
+                and re.search(r"(?m)^\s+publish_results:\s*true\s*$", block)
+                and not re.search(r"(?m)^\s+id-token:\s*write\s*$", block)
+            ):
+                errors.append(
+                    f"{label}: publishing Scorecard job {match.group(1)} "
+                    "requires id-token: write"
+                )
         for line_no, match in enumerate(
             re.finditer(r"(?m)^\s*-\s+uses:\s*([^@\s]+)@([^\s#]+)", text), 1
         ):

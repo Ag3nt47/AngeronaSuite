@@ -1,0 +1,6 @@
+# Exact fingerprints for synthetic credential-shaped values in privacy tests.
+# These are inert fixtures in historical commits, not production credentials.
+478e65e28cd8c25c6f582b0dd39957c34d1dfd63:tests/test_enterprise_readiness_api.py:generic-api-key:108
+280dfc9485b41b507d90392ed25bda99b3428a40:tests/test_enterprise_readiness_api.py:generic-api-key:107
+900844a1a83a2633930c6520c0b56b773df1f1b7:tests/test_case_management.py:generic-api-key:106
+0f7445b069aabe6db2a59327c802070817a74842:tests/test_ir_bundle_privacy.py:generic-api-key:83

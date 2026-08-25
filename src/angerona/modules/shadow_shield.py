@@ -26,9 +26,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -121,6 +123,152 @@ class ShadowShield(BaseModule):
                 old.unlink(missing_ok=True)
         except Exception:
             pass
+
+    @staticmethod
+    def _sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _canonical_protected_path(raw_path: str) -> Path | None:
+        """Resolve one target and prove it remains under a protected root."""
+        try:
+            target = Path(raw_path).expanduser().resolve(strict=False)
+            roots = tuple(
+                Path(value).expanduser().resolve(strict=False)
+                for value in PROTECTED_DIRS
+            )
+        except (OSError, RuntimeError, ValueError):
+            return None
+        if not any(target == root or root in target.parents for root in roots):
+            return None
+        return target
+
+    def prepare_rollback_artifact(
+        self, path: str, *, before_ts: float
+    ) -> dict | None:
+        """Bind one restore authorization to an exact cached file version.
+
+        The returned descriptor is inert metadata.  ``restore_rollback_artifact``
+        revalidates its path, cache key, version, size, and digest immediately
+        before replacing the destination.
+        """
+        target = self._canonical_protected_path(path)
+        if target is None:
+            return None
+        try:
+            cutoff_ns = int(float(before_ts) * 1e9)
+            key = self._key(str(target))
+            keydir = (self._cache_dir / key).resolve(strict=True)
+            if keydir.parent != self._cache_dir.resolve(strict=False):
+                return None
+            source = (keydir / "_source.txt").read_text(encoding="utf-8").strip()
+            source_path = self._canonical_protected_path(source)
+            if source_path != target:
+                return None
+            candidates = sorted(
+                (
+                    item
+                    for item in keydir.glob("*.bak")
+                    if item.is_file()
+                    and not item.is_symlink()
+                    and item.stem.isdigit()
+                    and int(item.stem) < cutoff_ns
+                ),
+                key=lambda item: int(item.stem),
+                reverse=True,
+            )
+            if not candidates:
+                return None
+            backup = candidates[0]
+            digest = self._sha256(backup)
+            size = int(backup.stat().st_size)
+            version = backup.stem
+        except (OSError, RuntimeError, TypeError, ValueError, OverflowError):
+            return None
+        artifact_id = hashlib.sha256(
+            f"{target}\0{key}\0{version}\0{size}\0{digest}".encode("utf-8")
+        ).hexdigest()
+        return {
+            "artifact_id": artifact_id,
+            "source_path": str(target),
+            "cache_key": key,
+            "version_mtime_ns": version,
+            "size": size,
+            "sha256": digest,
+        }
+
+    def restore_rollback_artifact(self, artifact: dict) -> dict:
+        """Restore exactly one previously bound cache artifact, or fail closed."""
+        expected_keys = {
+            "artifact_id", "source_path", "cache_key", "version_mtime_ns",
+            "size", "sha256",
+        }
+        if not isinstance(artifact, dict) or set(artifact) != expected_keys:
+            return {"restored": [], "failed": ["invalid artifact descriptor"]}
+        target = self._canonical_protected_path(str(artifact.get("source_path") or ""))
+        if target is None:
+            return {"restored": [], "failed": ["target outside protected roots"]}
+        key = str(artifact.get("cache_key") or "")
+        version = str(artifact.get("version_mtime_ns") or "")
+        digest = str(artifact.get("sha256") or "").casefold()
+        try:
+            size = int(artifact.get("size"))
+        except (TypeError, ValueError, OverflowError):
+            return {"restored": [], "failed": [str(target)]}
+        expected_id = hashlib.sha256(
+            f"{target}\0{key}\0{version}\0{size}\0{digest}".encode("utf-8")
+        ).hexdigest()
+        if (
+            key != self._key(str(target))
+            or not version.isdigit()
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or artifact.get("artifact_id") != expected_id
+        ):
+            return {"restored": [], "failed": [str(target)]}
+        temporary: Path | None = None
+        try:
+            keydir = (self._cache_dir / key).resolve(strict=True)
+            if keydir.parent != self._cache_dir.resolve(strict=False):
+                raise ValueError("cache directory escaped")
+            source = (keydir / "_source.txt").read_text(encoding="utf-8").strip()
+            if self._canonical_protected_path(source) != target:
+                raise ValueError("cache source changed")
+            backup = (keydir / f"{version}.bak").resolve(strict=True)
+            if backup.parent != keydir or backup.is_symlink() or not backup.is_file():
+                raise ValueError("cache version is not a regular bound file")
+            if backup.stat().st_size != size or self._sha256(backup) != digest:
+                raise ValueError("cache version identity changed")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if self._canonical_protected_path(str(target.parent / target.name)) != target:
+                raise ValueError("destination binding changed")
+            temporary = target.parent / f".{target.name}.angerona-{uuid.uuid4().hex}.tmp"
+            shutil.copy2(backup, temporary)
+            if temporary.stat().st_size != size or self._sha256(temporary) != digest:
+                raise ValueError("restore staging verification failed")
+            os.replace(temporary, target)
+            if target.stat().st_size != size or self._sha256(target) != digest:
+                raise ValueError("restore postcondition failed")
+        except (OSError, RuntimeError, TypeError, ValueError):
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return {"restored": [], "failed": [str(target)]}
+        self._rollbacks += 1
+        self.emit(
+            "Scoped rollback executed: one authorized file version restored.",
+            Severity.HIGH,
+            restored=[str(target)],
+            failed=[],
+            artifact_id=expected_id,
+            version_mtime_ns=version,
+        )
+        return {"restored": [str(target)], "failed": [], "artifact_id": expected_id}
 
     # ── Rollback (called by RANS / SOAR) ─────────────────────────────────────
     def trigger_rollback(self, before_ts: Optional[float] = None,

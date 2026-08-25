@@ -33,7 +33,7 @@ from typing import List, Optional
 
 from angerona.academy.explainer_dictionary import lookup
 from angerona.core.url_policy import (
-    LOCAL_SERVICE_POLICY,
+    OLLAMA_SERVICE_POLICY,
     local_service_url,
     read_bounded,
     safe_urlopen,
@@ -142,7 +142,7 @@ class FlightInstructor:
                                      headers={"Content-Type": "application/json"})
         try:
             with safe_urlopen(
-                req, policy=LOCAL_SERVICE_POLICY, timeout=timeout
+                req, policy=OLLAMA_SERVICE_POLICY, timeout=timeout
             ) as resp:
                 data = json.loads(read_bounded(resp).decode("utf-8"))
             text = (data.get("message", {}) or {}).get("content", "").strip()

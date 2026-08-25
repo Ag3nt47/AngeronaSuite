@@ -163,3 +163,79 @@ bounded (362 LOW+ rows and 16 CRITICAL rows in this run).
 - Focused Round 3 regressions: **12 passed, 0 failed**.
 - Full project self-check: **26 passed, 0 failed**, exit 0.
 - Bugs fixed: **0**. New bugs reported: **1 low-severity performance edge**.
+
+---
+
+# 2026-08-25 Expansion Loop — Round 3 QA Addendum
+
+Environment: supported Windows virtual environment (CPython 3.12.10),
+`PYTHONPATH=src`, `CI=true`, and Qt offscreen. This pass covers the converged
+Adversary Combat, bridge-authority, ARIA/model-pack, telemetry-continuity,
+Community-ID, OCSF, interoperability, and performance edits in the shared tree.
+
+## Gates run
+
+- Package compile: **307/307 passed** through `py_compile`; no syntax errors or
+  stale-mount artifacts were observed.
+- Ruff correctness gate over `src`, `tests`, and `tools`: **passed**.
+- Focused current-change regression set: **93/93 passed**. This included
+  Adversary Combat and protected-target boundaries, ARIA input boundaries and
+  optional controls, the governed model-pack manager, Ollama transport and
+  upgrade lifecycle, Sysmon cursor/event coverage, Community-ID, OCSF 1.8,
+  ETW cache performance, interoperability, URL policy, runbook RAG, and network
+  behavior.
+- Three concurrently finalized UI/credential tests were rerun from their final
+  bytes after the aggregate collection: **17/17 passed**.
+- Menu/catalog audit: canonical menu metadata validated across **7 sections / 31
+  topics**; the explicit context-info and workbench-navigation tests passed
+  **5/5**.
+- Full suite: **1140 passed / 3 intentional platform skips / 0 failed** in
+  114.10 seconds with `CI=true`.
+- Core module-level `self_test()` functions: **19/19 passed**. An initial audit
+  printer using the Windows CP1252 console could not display Unicode arrows in
+  four already-passing details; rerunning with UTF-8 produced the authoritative
+  **19/19** result. This was a console-output artifact, not a product failure.
+- `tools/selfcheck.py`: **26/26 phases passed**. Its event pipeline plus module
+  report was **47 passed / 13 expected inactive-environment results / 8
+  platform or operator-disabled skips**. Subtracting the pipeline row, the 67
+  module self-tests were **46 passed / 13 expected inactive / 8 skipped / 0
+  genuine failures**. Expected inactive results were stopped workers, unarmed
+  idle SOAR, and unavailable optional Ollama.
+- `run-selfcheck.bat`: **exit 0**, with **26 passed / 0 failed** in
+  `selfcheck_report.txt`.
+- Patch-integrity gate: `git diff --check` reported no malformed whitespace;
+  only the repository's expected LF-to-CRLF checkout notices appeared.
+
+## Import, discovery, identity, and registration audit
+
+- Imported **69/69** `angerona.modules.*` files with zero import errors.
+- Discovered **67** built-in `BaseModule` classes with zero discovery errors,
+  zero duplicate module names, and zero duplicate non-empty `CODE` values.
+- **55/55** compatibility `register()` hooks constructed. Twelve class-bearing
+  modules intentionally use the repository's documented subclass discovery
+  contract instead of the optional compatibility hook: `ai_triage`,
+  `cloud_escalation`, `deception`, `file_integrity`, `forensics`,
+  `macos_observe`, `network_monitor`, `persistence_sweep`, `process_monitor`,
+  `soar`, `soar_engine`, and `yara_scanner`. This is not a discovery failure.
+
+## Bugs
+
+### FIXED
+
+- **None in Round 3.** No unambiguous production defect remained after the
+  current remediation changes, so QA did not alter product code or weaken a
+  test.
+
+### REPORTED / external acceptance
+
+- No new code defect or flaky test was found.
+- The live host-wide firewall-isolation validator was deliberately left to the
+  root agent's dedicated single-owner acceptance run. Running it from this
+  parallel QA lane could sever the other active agents. The inert red-team path,
+  action admission, protected-target rejection, receipts, undo, and AAR paths
+  all passed in the focused and aggregate suites.
+
+Totals: **307 files compiled; module self-tests 46 passed / 13 expected inactive /
+8 skipped / 0 genuine failed; core self-tests 19 passed / 0 failed; selfcheck 26
+passed / 0 failed; full pytest 1140 passed / 3 skipped / 0 failed; bugs 0 fixed /
+0 code defects reported (1 dedicated external acceptance gate).**

@@ -114,3 +114,106 @@ without the Qt runtime / would touch a detection module)
   backpressure; EventBus already drops INFO under ring pressure.
 - `telemetry/sensors.py`: shared 1.5 s process/connection snapshot cache already
   exists (P4 is just about *using* it from two stragglers).
+
+---
+
+# 2026-08-25 Expansion Pass — Performance Addendum
+
+This pass re-audited polling, GUI timers, EventBus/storage backpressure,
+Adversary Combat, ETW state, and ARIA/Ollama paths on the current 305-file tree.
+The older P3/P4 proposals above are already resolved in the current source:
+Coverage is populated once, and Beacon Detector now consumes the shared
+connection snapshot. No protection cadence or detection input was reduced.
+
+## APPLIED
+
+### XP1 — Pre-index ARIA runbook term frequencies and BM25 normalizers
+
+- **Component:** `core/runbook_rag.py` (`RunbookRAG._ingest`, `_bm25`).
+- **Problem:** every ARIA runbook question rebuilt one term-frequency dictionary
+  and recalculated the same document-length normalization for every chunk. This
+  made query cost proportional to all indexed tokens and allocated a short-lived
+  dictionary per chunk per question.
+- **Change:** build each chunk's term-frequency map and BM25 length normalizer
+  when the index changes; interactive queries perform only dictionary lookups.
+  The new cache fields are excluded from dataclass comparison, preserving the
+  prior public value equality.
+- **Measured improvement:** on the real 68-chunk `docs/` + `playbooks/` index,
+  5,000 complete BM25 scoring passes fell from **6.299023 s to 0.246808 s**
+  (**25.5x faster; 96.1% less scoring time**). A separate 2,000-chunk, 60-query
+  corpus fell from **2.794296 s to 0.638014 s** (**4.38x faster**).
+- **Behaviour proof:** the regression oracle retains the old scoring algorithm
+  and proves exact float equality for repeated and ordinary query terms, plus
+  identical ranking tuples across repeated queries. `RunbookRAG.self_test()`
+  passes unchanged.
+- **Gate:** `py_compile` PASS; Ruff PASS; focused/regression tests PASS; full
+  `CI=true` suite **1088 passed / 3 intentional platform skips / 0 failed**.
+- **Status:** APPLIED.
+
+### XP2 — Bound the real-time ETW PID/name cache with LRU retention
+
+- **Component:** `modules/etw_realtime_sensor.py` (`_PidNameCache`).
+- **Problem:** every process-start event permanently added a PID/name entry.
+  Long-running endpoints with high process churn therefore grew the cache for
+  the life of Angerona, including dead and reused PIDs.
+- **Change:** use a thread-safe 4,096-entry `OrderedDict` LRU. Cache hits retain
+  active parents; PID reuse replaces the name; an evicted living parent still
+  follows the existing `psutil.Process(pid).name()` fallback.
+- **Measured improvement:** after 100,000 unique synthetic process starts, the
+  old dict retained 100,000 entries and peaked at **15,447,292 bytes**. The new
+  cache retained exactly 4,096 entries, used **914,012 bytes** at measurement,
+  and peaked at **1,210,939 bytes** (**92.2% lower peak** in this stress case).
+- **Behaviour proof:** tests prove fixed capacity, LRU retention of an active
+  parent, correct replacement on PID reuse, and the module's existing
+  Kernel-Process decode self-test passes unchanged.
+- **Gate:** `py_compile` PASS; Ruff PASS; focused/regression tests PASS; full
+  `CI=true` suite **1088 passed / 3 intentional platform skips / 0 failed**.
+- **Status:** APPLIED.
+
+## PROPOSED / NOT APPLIED
+
+### XP3 — Event-driven wake-up for the two legacy SOAR polling tiers
+
+- **Components:** `modules/soar.py` (5 s poll) and `modules/soar_engine.py`
+  (2 s poll).
+- **Finding:** Adversary Combat already uses a bounded EventBus callback queue;
+  `put_nowait()` wakes its blocking consumer immediately, so its response loop
+  has no polling delay. The two older response tiers still consume revision
+  deltas on fixed sleeps.
+- **Proposal:** add a lifecycle-safe notification primitive that wakes those
+  consumers on a HIGH/CRITICAL publication while retaining their bounded
+  priority/revision lanes and periodic fallback.
+- **Expected win:** remove up to approximately 5 s / 2 s scheduling latency from
+  those legacy tiers without changing detector cadence.
+- **Why not applied:** this changes observable response timing on a live security
+  control and needs missed-wakeup, stop/restart, burst-order, overflow, and
+  containment-idempotency proof. Per the performance gate, it remains PROPOSED.
+
+### XP4 — Reconnect TelemetryWorker only if it becomes a production path
+
+- **Component:** `gui/telemetry_worker.py`.
+- **Finding:** it imports a nonexistent module-level `eventbus.recent`, so its
+  EventBus fallback is disabled; source search found no production constructor
+  call outside tests and integration notes. The live GUI uses its own revision-
+  delta path instead.
+- **Proposal:** if this worker is reintroduced, inject the application EventBus
+  and consume `recent_since(revision)` rather than polling/copying `recent(200)`
+  at 20 Hz.
+- **Expected win:** zero ring copies while idle and complete bounded deltas under
+  bursts.
+- **Why not applied:** altering an unused, disconnected architecture would not
+  improve the running product and could create a second GUI ingestion path.
+
+## Current-path audit notes
+
+- `core/storage.py` already keeps SQLite off EventBus publishers with bounded
+  primary/overflow lanes, batch persistence, and durable DLQ fallback.
+- The active GUI paths already use revision/signature gates, worker single-flight,
+  bounded queues, hidden-window timer stops, and off-thread Ollama diagnostics.
+- `engines/ollama_client.py` correctly keeps prompts/responses uncached, bounds
+  request/stream bytes, and derives observability from the last real inference;
+  connection pooling was not introduced because it would require changing the
+  loopback URL-policy transport and failure/lifecycle contract.
+- Adversary Combat's durable per-action flush remains intentionally synchronous:
+  removing it would reduce latency by weakening crash-recovery evidence, which
+  is outside a behaviour-preserving performance pass.

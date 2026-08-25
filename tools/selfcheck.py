@@ -219,9 +219,10 @@ def _():
         f.write("\n# attacker-added line\n")
     bad, _d = ph._verify_hash("T1055", path)
     assert not bad, "a tampered script must fail verification"
-    res = ph.execute_remediation("T1055", authorized=True)    # must be blocked pre-exec
-    assert res.get("tamper") is True, f"execute should block tampered script, got {res}"
-    return "clean=verified, tamper=blocked-before-exec"
+    res = ph.execute_remediation("T1055", authorized=True)    # model advice is inert
+    assert res.get("ok") is False, f"inert advisory unexpectedly executed: {res}"
+    assert res.get("advisory_only") is True and res.get("executable") is False, res
+    return "clean=verified, tamper=detected, model advisory=inert"
 
 
 @phase("Ring 1 Driver-Intel Shield (INTL + FIM + shark)")
@@ -450,9 +451,13 @@ def _():
     assert ph._stored_hash("T2000"), "no stamped hash"
     with open(p, "a", encoding="utf-8") as f:
         f.write("\n# swapped after review\n")
+    clean, _detail = ph._verify_hash("T2000", p)
+    assert not clean, "TOCTOU swap must fail the independent hash check"
     res = ph.execute_remediation("T2000", authorized=True)
-    assert res.get("tamper") is True, f"TOCTOU swap not blocked: {res}"
-    return "guardrail token + neutralize ok; shared client blocks injection; gate TOCTOU-closed"
+    assert res.get("ok") is False, f"inert advisory unexpectedly executed: {res}"
+    assert res.get("advisory_only") is True and res.get("executable") is False, res
+    return ("guardrail token + neutralize ok; shared client blocks injection; "
+            "gate tamper-detects and model advice stays inert")
 
 
 @phase("Vetted active remediation (real file quarantine + gated host actions)")

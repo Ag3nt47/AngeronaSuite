@@ -45,8 +45,12 @@ class Step:
 SETUP_PROFILES: dict[str, dict[str, object]] = {
     "Recommended local protection": {
         "eco_mode": True,
-        "aria_enabled": True,
-        "perf_governor_enabled": True,
+        "aria_enabled": False,
+        "perf_governor_enabled": False,
+        "aria_voice_enabled": False,
+        "aria_conversation_awareness": False,
+        "aria_always_listen": False,
+        "aria_hand_controls": False,
         "process_baseline_enabled": True,
         "require_signed_aar": True,
         "entropy_pool_enabled": False,
@@ -64,8 +68,12 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
     },
     "Maximum local coverage": {
         "eco_mode": False,
-        "aria_enabled": True,
-        "perf_governor_enabled": True,
+        "aria_enabled": False,
+        "perf_governor_enabled": False,
+        "aria_voice_enabled": False,
+        "aria_conversation_awareness": False,
+        "aria_always_listen": False,
+        "aria_hand_controls": False,
         "process_baseline_enabled": True,
         "require_signed_aar": True,
         "entropy_pool_enabled": True,
@@ -83,8 +91,12 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
     },
     "Low-resource local": {
         "eco_mode": True,
-        "aria_enabled": True,
+        "aria_enabled": False,
         "perf_governor_enabled": False,
+        "aria_voice_enabled": False,
+        "aria_conversation_awareness": False,
+        "aria_always_listen": False,
+        "aria_hand_controls": False,
         "process_baseline_enabled": False,
         "require_signed_aar": True,
         "entropy_pool_enabled": False,
@@ -135,9 +147,13 @@ STEPS: tuple[Step, ...] = (
     ),
     Step(
         "Local AI and ARIA",
-        "Configure the local Ollama service. Local AI is the recommended default.",
+        "Configure the local Ollama service. ARIA is optional and remains off until "
+        "you enable it here or later in Settings > ARIA.",
         (
             Field("check", "aria_enabled", "Enable the ARIA local security assistant"),
+            Field("combo", "aria_persona", "Presentation profile",
+                  options=("aria", "friday", "ultron"),
+                  note="Tone only. Friday and Ultron never change tools, permissions, or confirmation gates."),
             Field("text", "ollama_host", "Ollama address", "http://127.0.0.1:11434"),
             Field("text", "ollama_model", "Local model", "llama3"),
             Field("text", "ollama_keep_alive", "Model keep-alive", "30m"),
@@ -160,12 +176,50 @@ STEPS: tuple[Step, ...] = (
     ),
     Step(
         "Voice and microphone",
-        "Configure local speech and the microphone used for push-to-talk.",
+        "Configure optional local speech and the microphone used for voice control. "
+        "The microphone remains closed while voice is off.",
         (
             Field("check", "aria_voice_enabled", "Enable local spoken replies"),
             Field("mic", "aria_mic_device", "Microphone"),
             Field("check", "aria_voice_cloud_tts", "Allow cloud text-to-speech",
                   note="Opt-in network egress; local speech remains available without it."),
+        ),
+    ),
+    Step(
+        "ARIA conversation and hand controls",
+        "These local sensors and hands-free modes are separate opt-ins and are all "
+        "off by default. Camera frames and room context stay transient and local.",
+        (
+            Field(
+                "check", "aria_conversation_awareness",
+                "Enable transient conversational awareness and no-wake follow-ups",
+                note=(
+                    "Keeps a redacted rolling discussion window in memory only; it is "
+                    "discarded when ARIA stops and is never written as a room transcript."
+                ),
+            ),
+            Field(
+                "check", "aria_always_listen",
+                "Accept every multi-word utterance without saying ARIA",
+                note=(
+                    "High-privacy opt-in. Requires voice and conversational awareness. "
+                    "Wake-word mode remains the safer default."
+                ),
+            ),
+            Field(
+                "spin", "aria_follow_up_seconds", "Follow-up window (seconds)",
+                minimum=0, maximum=60,
+            ),
+            Field(
+                "check", "aria_hand_controls",
+                "Enable local camera hand-gesture navigation",
+                note=(
+                    "Open palm focuses ARIA; swipes change evidence tabs; victory opens "
+                    "Help; fist interrupts speech and cancels a staged ARIA action. "
+                    "Gestures never confirm a write."
+                ),
+            ),
+            Field("spin", "aria_camera_index", "Camera index", minimum=0, maximum=16),
         ),
     ),
     Step(
@@ -281,6 +335,35 @@ STEPS: tuple[Step, ...] = (
         ),
     ),
     Step(
+        "Adversary Combat",
+        "Choose the standing autonomous response policy. Maximum mode can terminate "
+        "processes and isolate the host without per-incident prompts; reversible "
+        "changes retain action receipts for operator undo.",
+        (
+            Field("check", "adversary_combat_enabled", "Arm autonomous adversary response"),
+            Field(
+                "combo", "adversary_combat_mode", "Response mode",
+                options=("contain", "aggressive", "maximum"),
+            ),
+            Field(
+                "combo", "adversary_combat_min_severity", "Minimum detector severity",
+                options=("LOW", "MEDIUM", "HIGH", "CRITICAL"),
+            ),
+            Field("check", "adversary_combat_block_network", "Block exact network targets"),
+            Field("check", "adversary_combat_quarantine_files", "Quarantine exact file targets"),
+            Field(
+                "combo", "adversary_combat_process_action", "Process response",
+                options=("suspend", "terminate"),
+            ),
+            Field("check", "adversary_combat_isolate_host", "Allow full host isolation in Maximum mode"),
+            Field("check", "adversary_combat_activate_honeypots", "Activate Smart Deception honeypots"),
+            Field(
+                "spin", "adversary_combat_isolation_threshold",
+                "Active events before host isolation", minimum=1, maximum=100,
+            ),
+        ),
+    ),
+    Step(
         "Performance and startup",
         "Choose the resource profile and sign-in behavior.",
         (
@@ -308,7 +391,10 @@ STEPS: tuple[Step, ...] = (
         "Review and apply",
         "Review the summary below. Finish validates every enabled integration, writes "
         "ordinary settings to the protected data directory, writes credentials to the "
-        "OS store, and applies platform-native startup registration.",
+        "OS store, and applies platform-native startup registration. After launch, use "
+        "Settings search terms 'ARIA', 'conversation', 'hand controls', or 'camera' to "
+        "return directly to these controls; Help > Local AI and ARIA shows the gesture "
+        "map, privacy boundary, verification steps, and interactive tour.",
         (Field("review", "_review", "Pending configuration summary"),),
     ),
 )
@@ -348,7 +434,9 @@ def normalize_setup_values(values: dict[str, object]) -> dict[str, object]:
     for key in ("ollama_host", "ollama_model", "ollama_keep_alive", "accent",
                 "aria_imap_host", "aria_imap_user", "teams_app_id",
                 "teams_allowed_users", "mobile_signal_cli", "mobile_host_number",
-                "mobile_dest_number", "fleet_tenant_id", "github_repo"):
+                "mobile_dest_number", "fleet_tenant_id", "github_repo",
+                "adversary_combat_mode", "adversary_combat_min_severity",
+                "adversary_combat_process_action"):
         if key in normalized:
             normalized[key] = str(normalized[key]).strip()
     return normalized
@@ -361,6 +449,14 @@ def validate_setup(values: dict[str, object]) -> list[str]:
     accent = str(values.get("accent", ""))
     if accent and not re.fullmatch(r"#[0-9A-Fa-f]{6}", accent):
         errors.append("Accent colour must be a six-digit value such as #1f9cff.")
+    if values.get("adversary_combat_mode") not in {"contain", "aggressive", "maximum"}:
+        errors.append("Adversary Combat mode must be contain, aggressive, or maximum.")
+    if values.get("adversary_combat_min_severity") not in {
+        "LOW", "MEDIUM", "HIGH", "CRITICAL",
+    }:
+        errors.append("Adversary Combat minimum severity is invalid.")
+    if values.get("adversary_combat_process_action") not in {"suspend", "terminate"}:
+        errors.append("Adversary Combat process response must be suspend or terminate.")
 
     ollama = str(values.get("ollama_host", ""))
     parsed = urlsplit(ollama)
@@ -394,6 +490,17 @@ def validate_setup(values: dict[str, object]) -> list[str]:
     if values.get("aria_push_enabled") and not str(values.get("aria_push_url", "")).strip():
         if not os.environ.get("ANGERONA_ARIA_PUSH_URL"):
             errors.append("Critical-alert push requires a destination URL.")
+    if values.get("aria_always_listen") and not values.get("aria_conversation_awareness"):
+        errors.append("Always-listen requires ARIA conversational awareness.")
+    if values.get("aria_always_listen") and not values.get("aria_voice_enabled"):
+        errors.append("Always-listen requires ARIA voice input.")
+    if any(values.get(key) for key in (
+        "perf_governor_enabled", "aria_voice_enabled", "aria_voice_cloud_tts",
+        "aria_conversation_awareness", "aria_always_listen", "aria_hand_controls",
+        "aria_cloud_fallback", "aria_push_enabled", "aria_inbox_enabled",
+        "aria_research_egress", "teams_bot_enabled",
+    )) and not values.get("aria_enabled"):
+        errors.append("ARIA controls require the ARIA assistant master switch.")
     if values.get("aria_inbox_enabled") and not (
         str(values.get("aria_imap_host", "")).strip()
         and str(values.get("aria_imap_user", "")).strip()

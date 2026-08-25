@@ -124,6 +124,24 @@ def _canonical_path(value: object) -> str:
     return os.path.normcase(os.path.normpath(raw)) if raw else ""
 
 
+def _remote_endpoint(value: object) -> tuple[str, int | None]:
+    """Normalize a sensor ``host:port`` value without fuzzy text matching."""
+    raw = str(value or "").strip()
+    if not raw:
+        return "", None
+    if raw.startswith("[") and "]:" in raw:
+        host, port_text = raw[1:].split("]:", 1)
+    elif raw.count(":") == 1:
+        host, port_text = raw.rsplit(":", 1)
+    else:
+        host, port_text = raw.strip("[]"), ""
+    try:
+        port = int(port_text) if port_text else None
+    except (TypeError, ValueError):
+        port = None
+    return host.casefold(), port
+
+
 def _matches(step: dict, ev: Event) -> bool:
     """Match only deterministic drill evidence, never a basename or bare PID."""
     details = ev.details or {}
@@ -141,6 +159,31 @@ def _matches(step: dict, ev: Event) -> bool:
         if details.get(key)
     }
     if expected_paths.intersection(observed_paths):
+        return True
+
+    expected_ips = {str(value).strip().casefold()
+                    for value in step.get("remote_ips", []) if value}
+    expected_ports = {int(value) for value in step.get("remote_ports", [])
+                      if isinstance(value, int)}
+    observed_endpoints = [
+        _remote_endpoint(details.get(key))
+        for key in ("raddr", "remote", "remote_address", "destination")
+        if details.get(key)
+    ]
+    observed_endpoints.extend(
+        (_remote_endpoint(details.get(key))[0], details.get("remote_port"))
+        for key in ("remote_ip", "destination_ip", "dest_ip", "dst_ip")
+        if details.get(key)
+    )
+    expected_pid = step.get("pid")
+    if (
+        expected_ips
+        and details.get("pid") == expected_pid
+        and any(
+            host in expected_ips and (not expected_ports or port in expected_ports)
+            for host, port in observed_endpoints
+        )
+    ):
         return True
 
     expected_pids = {p for p in ([step.get("pid")] + list(step.get("pids") or []))
@@ -164,7 +207,7 @@ def _matches_remediation(step: dict, catch: Event, ev: Event) -> bool:
 
 def _is_remediation(ev: Event) -> bool:
     details = ev.details or {}
-    if ev.module == "Active Response SOAR":
+    if ev.module in {"Active Response SOAR", "Adversary Combat"}:
         # Absence is UNKNOWN, never success. Legacy recommendation/action rows
         # must not inflate a modern response score.
         return details.get("mitigated") is True
@@ -290,8 +333,18 @@ def _closure_metrics(verdicts: List[StepVerdict]) -> dict:
     applied = sum(
         1 for rows in classes.values() if any(row.action_applied for row in rows)
     )
+    def response_verified(row: StepVerdict) -> bool:
+        return bool(
+            row.remediation is not None
+            and row.remediation.module == "Adversary Combat"
+            and (row.remediation.details or {}).get("postcondition_verified") is True
+        )
+
     verified = sum(
-        1 for rows in classes.values() if any(row.finding_resolved for row in rows)
+        1
+        for rows in classes.values()
+        if any(row.finding_resolved for row in rows)
+        or (bool(rows) and all(response_verified(row) for row in rows))
     )
     return {
         "actionable_classes": len(classes),
@@ -364,6 +417,14 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
             if v.remediation:
                 lines.append(f"           remediated by {v.remediation.module} in "
                              f"{v.remediation_latency:.2f}s — \"{v.remediation.message}\"")
+                if (v.remediation.module == "Adversary Combat"
+                        and (v.remediation.details or {}).get(
+                            "postcondition_verified"
+                        ) is True):
+                    lines.append(
+                        "           COMBAT CLOSURE VERIFIED: the exact file/process/"
+                        "network postcondition was checked after action."
+                    )
             else:
                 lines.append(f"           not remediated — the {v.catch.severity.label} "
                              "detection did not produce a correlated, successful SOAR action "
@@ -418,7 +479,8 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
                      "(signed Purple Guard evidence + contract verification)")
     if findings_resolved:
         lines.append(f"   Drill findings closed: {findings_resolved}  "
-                     "(authenticated action + fresh rerun proof; expiry/future misses reopen)")
+                     "(authenticated action + verified postcondition or fresh rerun proof; "
+                     "expiry/future misses reopen)")
     resilience = [v for v in verdicts if v.category == "resilience"]
     if resilience:
         fps = sum(1 for v in resilience if v.catch)
