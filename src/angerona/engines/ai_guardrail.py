@@ -213,7 +213,7 @@ def build_app():
     """Build the FastAPI interception proxy with bounded local transport."""
     import asyncio
 
-    from angerona.core.url_policy import local_json_request
+    from angerona.core.url_policy import OLLAMA_SERVICE_POLICY, local_json_request
     from fastapi import FastAPI, Request
     from fastapi.responses import JSONResponse
 
@@ -227,6 +227,7 @@ def build_app():
             payload=payload,
             timeout=120,
             request_maximum=maximum_request,
+            policy=OLLAMA_SERVICE_POLICY,
         )
 
     async def _guard(request: Request, path: str):

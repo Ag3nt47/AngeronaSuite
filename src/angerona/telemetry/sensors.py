@@ -41,7 +41,7 @@ _conn_cache: tuple[float, List[Dict]] = (0.0, [])
 
 
 def list_processes(max_age: float | None = None) -> List[Dict]:
-    """Snapshot of running processes (pid, name, exe, ppid, username, cmdline).
+    """Snapshot processes, including the PID-reuse-safe creation timestamp.
 
     Cached for a short window (``ANGERONA_SENSOR_CACHE_TTL``, default 1.5 s) so
     concurrent sensor threads share one enumeration instead of each running
@@ -66,7 +66,7 @@ def list_processes(max_age: float | None = None) -> List[Dict]:
             return []
         out: List[Dict] = []
         for p in psutil.process_iter([
-            "pid", "name", "exe", "ppid", "username", "cmdline",
+            "pid", "name", "exe", "ppid", "username", "cmdline", "create_time",
         ]):
             try:
                 out.append(p.info)

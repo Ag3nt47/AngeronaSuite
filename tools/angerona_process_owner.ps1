@@ -29,18 +29,38 @@ function Test-AngeronaProcessOwnership {
             [IO.Path]::GetFullPath((Join-Path $rootPath 'venv\Scripts\python.exe')),
             [IO.Path]::GetFullPath((Join-Path $rootPath 'venv\Scripts\pythonw.exe'))
         )
-        if ($suiteInterpreters | Where-Object { $exe.Equals($_, [StringComparison]::OrdinalIgnoreCase) }) {
-            return $true
-        }
-
         $tokens = @(Get-AngeronaCommandLineTokens ([string]$Process.CommandLine))
+        $suiteInterpreter = [bool]($suiteInterpreters | Where-Object {
+            $exe.Equals($_, [StringComparison]::OrdinalIgnoreCase)
+        })
+        $approvedModules = @(
+            'angerona',
+            'angerona.resilience.scanner',
+            'angerona.resilience.status_ui',
+            'angerona.resilience.watchdog'
+        )
+        if (
+            $suiteInterpreter -and
+            $tokens.Count -ge 3 -and
+            $tokens[1] -ceq '-m' -and
+            $tokens[2] -cin $approvedModules
+        ) { return $true }
+
         if ($tokens.Count -lt 2) { return $false }
+        $approvedScripts = @(
+            [IO.Path]::GetFullPath((Join-Path $rootPath 'src\angerona\__main__.py')),
+            [IO.Path]::GetFullPath((Join-Path $rootPath 'blackbox_recorder.py'))
+        )
         for ($i = 1; $i -lt $tokens.Count; $i++) {
             $token = [string]$tokens[$i]
             if ($token -in @('-W', '-X')) { $i++; continue }
             if ($token.StartsWith('-')) { continue }
             if ([IO.Path]::GetExtension($token) -notin @('.py', '.pyw')) { return $false }
-            return Test-AngeronaPathUnderRoot -Candidate $token -Root $rootPath
+            if (-not [IO.Path]::IsPathRooted($token)) { return $false }
+            $script = [IO.Path]::GetFullPath($token)
+            return [bool]($approvedScripts | Where-Object {
+                $script.Equals($_, [StringComparison]::OrdinalIgnoreCase)
+            })
         }
     } catch { }
     return $false

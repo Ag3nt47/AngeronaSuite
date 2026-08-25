@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import os
 import struct
 from pathlib import Path
@@ -208,13 +209,17 @@ def test_signed_parent_watchdog_context_is_narrowly_preserved(
         os.environ.update(original)
 
 
-def test_acl_verifier_uses_trusted_powershell_and_clean_environment(
-    tmp_path, monkeypatch
-):
-    _windows, _system = _patch_windows_paths(monkeypatch, tmp_path)
-    powershell = tmp_path / "trusted-powershell.exe"
-    powershell.write_bytes(b"fixture")
-    monkeypatch.setattr(privilege, "trusted_powershell_path", lambda: powershell)
+def test_acl_verifier_uses_native_windows_security_api():
+    source = inspect.getsource(data_paths._admin_acl_valid)
+    assert "GetNamedSecurityInfoW" in source
+    assert "GetSecurityDescriptorControl" in source
+    assert "EqualSid" in source
+    assert "subprocess" not in source
+
+
+def test_hidden_process_helpers_never_inherit_protected_credentials(monkeypatch):
+    from angerona.core import win
+
     captured = {}
 
     def fake_run(argv, **kwargs):
@@ -222,15 +227,16 @@ def test_acl_verifier_uses_trusted_powershell_and_clean_environment(
         captured["environment"] = kwargs["env"]
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(data_paths.subprocess, "run", fake_run)
-    monkeypatch.setenv("SystemRoot", str(tmp_path / "hostile-root"))
-    monkeypatch.setenv("OPENAI_API_KEY", "provider-secret")
+    monkeypatch.setattr(win.subprocess, "run", fake_run)
+    monkeypatch.setenv("OPENAI_API_KEY", "protected-provider-secret")
+    monkeypatch.setenv("ARIA_IMAP_PASS", "protected-mail-secret")
 
-    target = tmp_path / "runtime"
-    assert data_paths._admin_acl_valid(target)
-    assert captured["argv"][0] == str(powershell)
-    assert captured["environment"]["ANGERONA_ACL_PATH"] == str(target)
+    win.run_hidden(["fixed-tool"], env_allowlist={"LANG": "C"})
+
+    assert captured["argv"] == ["fixed-tool"]
+    assert captured["environment"]["LANG"] == "C"
     assert "OPENAI_API_KEY" not in captured["environment"]
+    assert "ARIA_IMAP_PASS" not in captured["environment"]
 
 
 def test_supervisor_sidecar_receives_runtime_coordinates_not_credentials(

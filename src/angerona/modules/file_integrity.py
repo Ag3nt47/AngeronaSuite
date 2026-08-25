@@ -52,14 +52,70 @@ def _registered_benign_noise(path: str) -> bool:
         return False
     try:
         from types import SimpleNamespace
+
         from angerona.core.practice_scope import provenance_for_event
 
-        provenance = provenance_for_event(
-            SimpleNamespace(details={"path": path})
-        )
+        provenance = provenance_for_event(SimpleNamespace(details={"path": path}))
         return provenance is not None and provenance.kind == "red-team"
     except Exception:
         return False
+
+
+def _combat_file_contract(
+    path: str,
+    *,
+    allow_host_isolation: bool = False,
+    allow_deception: bool = False,
+) -> dict:
+    """Return authority only for the bundled deterministic driver verdicts.
+
+    A generic Documents/Downloads change, or even an unexpected ``.sys`` name,
+    is detection evidence rather than a known-bad classification.  Those
+    events remain visible but cannot directly quarantine or isolate the host.
+    """
+    match = is_known_bad_driver(os.path.basename(str(path)))
+    if match is None:
+        return {}
+    if match.get("drill"):
+        try:
+            from types import SimpleNamespace
+
+            from angerona.core.practice_scope import provenance_for_event
+
+            provenance = provenance_for_event(
+                SimpleNamespace(details={"path": str(path)})
+            )
+            if provenance is None or provenance.kind != "red-team":
+                return {}
+        except Exception:
+            return {}
+    else:
+        # The bundled legacy driver table is filename-oriented and therefore
+        # detection evidence only. A same-name legitimate driver must never be
+        # quarantined. Real-driver response remains closed until a reviewed,
+        # signed exact-hash/version catalog can bind this file; ``sha256`` is
+        # retained in the API for that future catalog without trusting an
+        # operator-configured live IOC feed as mutation authority.
+        return {}
+    actions = ["quarantine_file"]
+    targets: dict[str, object] = {"path": str(path)}
+    if allow_host_isolation:
+        actions.append("isolate_host")
+        targets["host"] = "local"
+    if allow_deception:
+        actions.append("activate_honeypots")
+        targets["deception"] = "Smart Deception"
+    return {
+        "response_authorized": True,
+        "response_classification": (
+            "reviewed-practice-byovd"
+        ),
+        "response_contract": {
+            "version": 1,
+            "actions": actions,
+            "targets": targets,
+        },
+    }
 
 
 def register_runtime_watch(path) -> bool:
@@ -258,7 +314,18 @@ class FileIntegrityModule(BaseModule):
         for name in cur_drivers - self._driver_baseline:
             alert = self._driver_alert(name)
             sev, msg = alert if alert else (Severity.HIGH, f"New driver present: {name}")
-            self.emit(msg, sev, driver=name, path=os.path.join(DRIVER_DIR, name))
+            path = os.path.join(DRIVER_DIR, name)
+            self.emit(
+                msg,
+                sev,
+                driver=name,
+                path=path,
+                **_combat_file_contract(
+                    path,
+                    allow_host_isolation=True,
+                    allow_deception=True,
+                ),
+            )
         self._driver_baseline = cur_drivers
 
     def self_test(self) -> tuple[bool, str]:
@@ -326,18 +393,51 @@ class FileIntegrityModule(BaseModule):
                     continue
                 alert = self._driver_alert(path)
                 if alert:
-                    self.emit(alert[1], alert[0], path=path)
+                    self.emit(
+                        alert[1],
+                        alert[0],
+                        path=path,
+                        **_combat_file_contract(
+                            path,
+                            allow_host_isolation=True,
+                            allow_deception=True,
+                        ),
+                    )
                 else:
-                    self.emit(f"New file created: {path}", Severity.MEDIUM, path=path)
+                    self.emit(
+                        f"New file created: {path}",
+                        Severity.MEDIUM,
+                        path=path,
+                        **_combat_file_contract(path),
+                    )
             for path in base_keys - cur_keys:
-                self.emit(f"Watched file deleted: {path}", Severity.HIGH, path=path)
+                self.emit(
+                    f"Watched file deleted: {path}",
+                    Severity.HIGH,
+                    path=path,
+                    **_combat_file_contract(path, allow_host_isolation=True),
+                )
             for path in base_keys & cur_keys:
                 if self._baseline[path] != current[path]:
                     alert = self._driver_alert(path)
                     if alert:
-                        self.emit(alert[1], alert[0], path=path)
+                        self.emit(
+                            alert[1],
+                            alert[0],
+                            path=path,
+                            **_combat_file_contract(
+                                path,
+                                allow_host_isolation=True,
+                                allow_deception=True,
+                            ),
+                        )
                     else:
-                        self.emit(f"Watched file modified: {path}", Severity.HIGH, path=path)
+                        self.emit(
+                            f"Watched file modified: {path}",
+                            Severity.HIGH,
+                            path=path,
+                            **_combat_file_contract(path, allow_host_isolation=True),
+                        )
 
             # (the kernel driver-pool sweep now runs on the shorter cadence above)
             self._baseline = current

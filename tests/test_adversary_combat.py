@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import queue
 import time
 from types import SimpleNamespace
 
-from angerona.core.eventbus import Event, EventBus, Severity
+from angerona.core.eventbus import BusAuthority, Event, EventBus, Severity
 from angerona.modules.adversary_combat import AdversaryCombat
 from angerona.modules.file_integrity import _combat_intervals
 from angerona.shark.aar_report import evaluate
@@ -46,6 +47,59 @@ def test_maximum_policy_is_armed_without_per_incident_approval(tmp_path, monkeyp
     assert policy.process_action == "terminate"
 
 
+def test_self_test_does_not_claim_a_stopped_worker_is_armed(tmp_path):
+    module, _bus = _module(tmp_path)
+
+    ok, detail = module.self_test()
+
+    assert ok is False
+    assert "status=stopped" in detail
+    assert "armed" not in detail.casefold()
+
+
+def test_saturated_queue_releases_dedup_and_emits_signed_soar_failure(tmp_path):
+    module, bus = _module(tmp_path)
+    bus.arm(BusAuthority(b"q" * 32))
+    module.status = "running"
+    module._queue = queue.Queue(maxsize=1)
+    module._queue.put_nowait(Event("filler", "filler", Severity.LOW))
+    request_id = "a" * 32
+    event = Event(
+        "SOAR Operator Request",
+        "exact request",
+        Severity.HIGH,
+        time.time(),
+        {
+            "active_attack": True,
+            "queue_request_id": request_id,
+            "response_authorized": True,
+            "response_contract": {
+                "version": 1,
+                "actions": ["activate_honeypots"],
+                "targets": {"deception": "Smart Deception"},
+            },
+        },
+    )
+    bus.publish(event)
+    signed_request = bus.recent(1)[0]
+
+    module._submit(signed_request)
+
+    identity = f"soar:{request_id}"
+    assert identity not in module._seen
+    receipt = bus.recent(1)[0]
+    assert receipt.module == "Adversary Combat"
+    assert receipt.details["queue_request_id"] == request_id
+    assert receipt.details["action_succeeded"] is False
+    assert receipt.details["failure_reason"] == "combat_queue_saturated"
+    assert bus.verify(receipt) is True
+
+    module._queue.get_nowait()
+    module._submit(signed_request)
+    assert module._queue.get_nowait() is signed_request
+    assert identity in module._seen
+
+
 def test_file_quarantine_emits_success_and_undo_restores(tmp_path):
     module, bus = _module(tmp_path)
     emitted = []
@@ -57,7 +111,16 @@ def test_file_quarantine_emits_success_and_undo_restores(tmp_path):
         "confirmed hostile artifact",
         Severity.HIGH,
         time.time(),
-        {"path": str(artifact), "active_attack": True},
+        {
+            "path": str(artifact),
+            "active_attack": True,
+            "response_authorized": True,
+            "response_contract": {
+                "version": 1,
+                "actions": ["quarantine_file"],
+                "targets": {"path": str(artifact)},
+            },
+        },
     )
 
     module._handle(event)
@@ -85,17 +148,37 @@ def test_critical_maximum_event_isolates_host_with_undo_receipt(tmp_path, monkey
         adversary_combat_isolate_host=True,
     )
     calls = []
+    active_rules: set[str] = set()
+
+    def firewall(arguments):
+        calls.append(tuple(arguments))
+        name = next(value[5:] for value in arguments if value.startswith("name="))
+        if arguments[:2] == ["add", "rule"]:
+            active_rules.add(name)
+        elif arguments[:2] == ["delete", "rule"]:
+            active_rules.discard(name)
+        return True
+
     monkeypatch.setattr(
         module,
         "_run_firewall",
-        lambda arguments: calls.append(tuple(arguments)) or True,
+        firewall,
     )
+    monkeypatch.setattr(module, "_firewall_rule_exists", active_rules.__contains__)
     event = Event(
         "EDR",
         "critical active attack",
         Severity.CRITICAL,
         time.time(),
-        {"active_attack": True},
+        {
+            "active_attack": True,
+            "response_authorized": True,
+            "response_contract": {
+                "version": 1,
+                "actions": ["isolate_host"],
+                "targets": {"host": "local"},
+            },
+        },
     )
 
     module._handle(event)

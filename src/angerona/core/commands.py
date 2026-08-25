@@ -18,7 +18,7 @@ from typing import Callable, Dict, List
 
 from angerona.core.eventbus import Event, EventBus, Severity
 from angerona.core.url_policy import (
-    LOCAL_SERVICE_POLICY,
+    OLLAMA_SERVICE_POLICY,
     local_service_url,
     read_bounded,
     safe_urlopen,
@@ -1191,7 +1191,7 @@ class CommandConsole:
                 headers={"Content-Type": "application/json"},
             )
             with safe_urlopen(
-                req, policy=LOCAL_SERVICE_POLICY, timeout=30
+                req, policy=OLLAMA_SERVICE_POLICY, timeout=30
             ) as resp:
                 data = json.loads(read_bounded(resp))
             return data.get("response", "").strip() or "(no response)"

@@ -33,7 +33,7 @@ import urllib.request
 from pathlib import Path
 
 from angerona.core.url_policy import (
-    LOCAL_SERVICE_POLICY,
+    OLLAMA_SERVICE_POLICY,
     local_service_url,
     read_bounded,
     safe_urlopen,
@@ -93,7 +93,7 @@ def system_info() -> dict:
 def ollama_available() -> bool:
     try:
         req = urllib.request.Request(local_service_url(_HOST, "/api/tags"))
-        with safe_urlopen(req, policy=LOCAL_SERVICE_POLICY, timeout=4) as r:
+        with safe_urlopen(req, policy=OLLAMA_SERVICE_POLICY, timeout=4) as r:
             return r.status == 200
     except Exception:
         return False
@@ -294,7 +294,7 @@ def analyze(cve_rec: dict, timeout: float = 90.0) -> dict:
                                  headers={"Content-Type": "application/json"})
     try:
         with safe_urlopen(
-            req, policy=LOCAL_SERVICE_POLICY, timeout=timeout
+            req, policy=OLLAMA_SERVICE_POLICY, timeout=timeout
         ) as resp:
             data = json.loads(read_bounded(resp).decode("utf-8"))
         content = (data.get("message", {}) or {}).get("content", "")

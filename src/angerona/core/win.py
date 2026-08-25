@@ -21,25 +21,40 @@ def _startupinfo():
     return si
 
 
+def _protected_child_kwargs(kwargs):
+    """Return child kwargs with an explicit, secret-free environment.
+
+    Callers that need a non-secret variable must pass it through
+    ``env_allowlist={...}``; an ordinary ``env`` mapping is treated only as the
+    source of OS/runtime values and is sanitized before launch.
+    """
+    from angerona.core.privilege import sanitized_child_environment
+
+    prepared = dict(kwargs)
+    allowlist = prepared.pop("env_allowlist", None)
+    source = prepared.pop("env", None)
+    prepared["env"] = sanitized_child_environment(
+        allowlist,
+        source=os.environ if source is None else source,
+    )
+    prepared.setdefault("creationflags", NO_WINDOW)
+    prepared.setdefault("startupinfo", _startupinfo())
+    return prepared
+
+
 def run_hidden(args, **kwargs):
     """subprocess.run with no popup console window."""
-    kwargs.setdefault("creationflags", NO_WINDOW)
-    kwargs.setdefault("startupinfo", _startupinfo())
-    return subprocess.run(args, **kwargs)
+    return subprocess.run(args, **_protected_child_kwargs(kwargs))
 
 
 def check_output_hidden(args, **kwargs):
     """subprocess.check_output with no popup console window."""
-    kwargs.setdefault("creationflags", NO_WINDOW)
-    kwargs.setdefault("startupinfo", _startupinfo())
-    return subprocess.check_output(args, **kwargs)
+    return subprocess.check_output(args, **_protected_child_kwargs(kwargs))
 
 
 def popen_hidden(args, **kwargs):
     """subprocess.Popen with no popup console window."""
-    kwargs.setdefault("creationflags", NO_WINDOW)
-    kwargs.setdefault("startupinfo", _startupinfo())
-    return subprocess.Popen(args, **kwargs)
+    return subprocess.Popen(args, **_protected_child_kwargs(kwargs))
 
 
 def install_no_window_default() -> None:

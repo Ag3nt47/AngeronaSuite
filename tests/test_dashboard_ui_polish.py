@@ -4,6 +4,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import angerona.gui.header_controls as header_controls
 from angerona.gui.dashboard_details import (
     ConsoleDetailDialog,
     FuturisticDetailDialog,
@@ -36,6 +38,17 @@ from angerona.gui.red_team_console import RedTeamConsole
 
 def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def _enable_os_motion_for_animation_contracts(monkeypatch) -> None:
+    """Make animation contracts independent of the CI runner's OS preference."""
+    monkeypatch.delenv("ANGERONA_REDUCE_MOTION", raising=False)
+    monkeypatch.setattr(
+        header_controls,
+        "_windows_client_animations_enabled",
+        lambda: True,
+    )
 
 
 def test_header_actions_have_distinct_vector_icons_and_definitions() -> None:

@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from angerona.core.url_policy import (
-    LOCAL_SERVICE_POLICY,
+    OLLAMA_SERVICE_POLICY,
     local_service_url,
     read_bounded,
     safe_urlopen,
@@ -565,7 +565,7 @@ class AttackHeatmapWindow(QDialog):
         try:
             req = urllib.request.Request(local_service_url(host, "/api/chat"), data=payload,
                                          headers={"Content-Type": "application/json"})
-            with safe_urlopen(req, policy=LOCAL_SERVICE_POLICY, timeout=30) as resp:
+            with safe_urlopen(req, policy=OLLAMA_SERVICE_POLICY, timeout=30) as resp:
                 data = json.loads(read_bounded(resp).decode())
             return ((data.get("message", {}) or {}).get("content", "") or "").strip() or None
         except Exception:

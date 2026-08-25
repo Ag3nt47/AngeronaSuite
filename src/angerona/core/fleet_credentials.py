@@ -16,7 +16,7 @@ import math
 import re
 import secrets
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
@@ -27,6 +27,7 @@ MAX_FLEET_PERMISSIONS = 256
 MAX_FLEET_SECRET_BYTES = 4096
 MAX_LOCAL_FLEET_BUNDLE_BYTES = 32 * 1024
 MAX_LOCAL_FLEET_CREDENTIALS = 8
+LOCAL_FLEET_CREDENTIAL_TTL_SECONDS = 366 * 24 * 60 * 60
 
 INTERNAL_FLEET_CREDENTIALS_KEY = "ANGERONA_INTERNAL_FLEET_CREDENTIALS_V1"
 LEGACY_FLEET_SERVICE_KEY = "ANGERONA_FLEET_SERVICE_KEY"
@@ -612,6 +613,63 @@ def _random_distinct_key(excluded: set[bytes]) -> bytes:
     raise RuntimeError("could not generate an independent local fleet key")
 
 
+def _clock_stamp(clock: Callable[[], float]) -> float:
+    try:
+        value = clock()
+    except Exception as exc:
+        raise RuntimeError("local fleet credential clock is unavailable") from exc
+    try:
+        return _validate_timestamp(value, "local fleet credential time")
+    except ValueError as exc:
+        raise RuntimeError("local fleet credential clock is unavailable") from exc
+
+
+def _persist_finite_expiry_migration(
+    secure_store: Any,
+    root: Path,
+    loaded: LocalFleetCredentialSet,
+    *,
+    clock: Callable[[], float],
+) -> LocalFleetCredentialSet:
+    """One-way migrate legacy non-expiring local credentials in place.
+
+    The key material and identity bindings are retained.  Only an absent expiry
+    is filled once and persisted, so restarting Angerona cannot extend the
+    credential lifetime.
+    """
+    credentials = (loaded.operator, loaded.device)
+    if all(item.expires_at > 0 for item in credentials):
+        return loaded
+    expires_at = _clock_stamp(clock) + LOCAL_FLEET_CREDENTIAL_TTL_SECONDS
+    migrated = tuple(
+        item if item.expires_at > 0 else replace(item, expires_at=expires_at)
+        for item in credentials
+    )
+    encoded = _serialize_local_bundle(
+        loaded.tenant_id,
+        loaded.device_id,
+        loaded.receipt_signing_key,
+        loaded.authorization_audit_key,
+        migrated,
+    )
+    secure_store.write_secret_map({INTERNAL_FLEET_CREDENTIALS_KEY: encoded}, root)
+    verified = secure_store.read_secret_map(root).get(INTERNAL_FLEET_CREDENTIALS_KEY)
+    try:
+        exact = isinstance(verified, str) and hmac.compare_digest(
+            verified.encode("utf-8"), encoded.encode("utf-8")
+        )
+    except UnicodeEncodeError:
+        exact = False
+    if not exact:
+        raise RuntimeError("protected local fleet expiry migration did not verify")
+    return _load_local_bundle(
+        verified,
+        tenant_id=loaded.tenant_id,
+        device_id=loaded.device_id,
+        clock=clock,
+    )
+
+
 def _cleanup_legacy_fleet_key(secure_store: Any, data_root: Path) -> None:
     try:
         secure_store.write_secret_map({LEGACY_FLEET_SERVICE_KEY: ""}, data_root)
@@ -653,6 +711,9 @@ def load_or_migrate_local_credentials(
         loaded = _load_local_bundle(
             existing, tenant_id=tenant, device_id=device, clock=clock
         )
+        loaded = _persist_finite_expiry_migration(
+            secure_store, root, loaded, clock=clock
+        )
         if LEGACY_FLEET_SERVICE_KEY in values:
             _cleanup_legacy_fleet_key(secure_store, root)
         return loaded
@@ -685,6 +746,7 @@ def load_or_migrate_local_credentials(
     device_key = _random_distinct_key(used_keys)
     used_keys.add(device_key)
     audit_key = _random_distinct_key(used_keys)
+    expires_at = _clock_stamp(clock) + LOCAL_FLEET_CREDENTIAL_TTL_SECONDS
     credentials = (
         FleetCredential(
             credential_id=LOCAL_FLEET_OPERATOR_CREDENTIAL_ID,
@@ -692,6 +754,7 @@ def load_or_migrate_local_credentials(
             kind=FleetCredentialKind.TENANT,
             secret=operator_key,
             permissions=_LOCAL_OPERATOR_PERMISSIONS,
+            expires_at=expires_at,
         ),
         FleetCredential(
             credential_id=LOCAL_FLEET_DEVICE_CREDENTIAL_ID,
@@ -700,6 +763,7 @@ def load_or_migrate_local_credentials(
             secret=device_key,
             permissions=_LOCAL_DEVICE_PERMISSIONS,
             device_id=device,
+            expires_at=expires_at,
         ),
     )
     encoded = _serialize_local_bundle(

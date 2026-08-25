@@ -13,7 +13,8 @@ Detects T1486 (Data Encrypted for Impact) through two complementary signals:
    Ransomware renames files en masse (often appending a custom extension).
    We watch a set of canary directories and record how many renames happen
    per 10-second window.  If the rate exceeds RENAME_THRESHOLD the module
-   emits a CRITICAL alert and trips a "rename storm" flag.
+   emits a HIGH alert; recent high-entropy evidence promotes it to CRITICAL and
+   authorizes Maximum-mode host isolation.
 
 Why Shannon entropy?
    Text, executables, and most documents have entropy ≤ 7.5 bits/byte.
@@ -41,6 +42,7 @@ from pathlib import Path
 from typing import Deque, List, Optional
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.response_contract import deception_response, maximum_host_response
 
 # ── GIL relief for the hot entropy path ───────────────────────────────────────
 # Shannon entropy is computed on the first 64 KB of every recently-modified file
@@ -127,6 +129,32 @@ def _default_watch_dirs() -> List[Path]:
     return [p for p in candidates if p.is_dir()]
 
 
+def _rename_pair_count(disappeared: set[str], appeared: set[str]) -> int:
+    """Conservatively pair filename changes that look like ransomware renames.
+
+    Bulk creates or deletes are not renames.  Pair only an appended extension
+    (``report.docx`` -> ``report.docx.locked``) or an extension replacement
+    with the same stem, and consume each new name at most once.
+    """
+    available = set(appeared)
+    paired = 0
+    for old in sorted(disappeared):
+        old_folded = old.casefold()
+        old_stem = Path(old).stem.casefold()
+        match = next((
+            new for new in sorted(available)
+            if (
+                new.casefold().startswith(old_folded + ".")
+                or old_folded.startswith(new.casefold() + ".")
+                or (old_stem and Path(new).stem.casefold() == old_stem)
+            )
+        ), None)
+        if match is not None:
+            available.remove(match)
+            paired += 1
+    return paired
+
+
 class RansomwareHeuristicsModule(BaseModule):
     CODE = "RANS"
     NAME = "Ransomware Heuristics"
@@ -144,8 +172,8 @@ class RansomwareHeuristicsModule(BaseModule):
         super().__init__()
         # (path_str) → last_alert_ts
         self._flagged: dict[str, float] = {}
-        # Sliding window of rename timestamps for rate detection
-        self._rename_times: Deque[float] = deque()
+        # Sliding window of (timestamp, exact directory) rename evidence.
+        self._rename_times: Deque[tuple[float, str]] = deque()
         # Filesystem watcher handle (os.scandir-based)
         self._watch_dirs: List[Path] = []
         # Previous directory snapshots for rename detection:
@@ -277,6 +305,9 @@ class RansomwareHeuristicsModule(BaseModule):
                     entropy=round(ent, 4),
                     threshold=ENTROPY_THRESHOLD,
                     mitre_tags=["T1486"],
+                    active_attack=True,
+                    detector_policy="reviewed-semantic-indicator",
+                    **deception_response(),
                 )
 
     def _file_entropy(self, path: str) -> Optional[float]:
@@ -305,7 +336,7 @@ class RansomwareHeuristicsModule(BaseModule):
 
     def _detect_renames(self, directory: Path, now: float) -> None:
         """Compare directory snapshot to detect file additions/deletions (renames)."""
-        dkey = str(directory)
+        dkey = os.path.normcase(os.path.abspath(str(directory)))
         old  = self._dir_snapshot.get(dkey, {})
         new  = self._snapshot(directory)
         self._dir_snapshot[dkey] = new
@@ -313,34 +344,70 @@ class RansomwareHeuristicsModule(BaseModule):
         disappeared = set(old) - set(new)
         appeared    = set(new) - set(old)
 
-        # Heuristic: a file vanishes AND a new file with similar base name
-        # but a new extension appears in the same tick → likely renamed.
-        # Even without that pairing, both adds and removes are counted because
-        # ransomware often deletes originals after encrypting to new names.
-        n_changes = len(disappeared) + len(appeared)
-        if n_changes:
-            ts_entries = [now] * n_changes
+        # Only paired names count. Bulk creates/deletes, software extraction,
+        # and cleanup must not accumulate whole-host isolation authority.
+        rename_count = _rename_pair_count(disappeared, appeared)
+        if rename_count:
+            ts_entries = [(now, dkey)] * rename_count
             self._rename_times.extend(ts_entries)
 
     def _check_rename_rate(self, now: float) -> None:
-        """Emit CRITICAL if rename count in the last RENAME_WINDOW_S exceeds threshold."""
+        """Emit a storm alert, promoting to CRITICAL only with entropy evidence."""
         cutoff = now - RENAME_WINDOW_S
-        while self._rename_times and self._rename_times[0] < cutoff:
+        while self._rename_times and self._rename_times[0][0] < cutoff:
             self._rename_times.popleft()
-        rate = len(self._rename_times)
+        rates: dict[str, int] = {}
+        # _detect_renames() stores normalized directory identities. Retain a
+        # tiny compatibility normalization map for tests/restored state that
+        # may contain raw paths, but normalize each distinct directory only
+        # once instead of once per rename. During a mass-rename burst this
+        # removes tens of thousands of repeated abspath/normcase calls without
+        # changing the directory-bound correlation decision.
+        normalized_directories: dict[str, str] = {}
+        for _stamp, raw_directory in self._rename_times:
+            directory = normalized_directories.get(raw_directory)
+            if directory is None:
+                directory = os.path.normcase(os.path.abspath(raw_directory))
+                normalized_directories[raw_directory] = directory
+            rates[directory] = rates.get(directory, 0) + 1
+        if not rates:
+            return
+        directory, rate = max(rates.items(), key=lambda item: item[1])
         if rate >= RENAME_THRESHOLD:
+            entropy_corroborated = any(
+                os.path.normcase(os.path.abspath(str(Path(path).parent))) == directory
+                and 0.0 <= now - stamp <= RENAME_WINDOW_S
+                for path, stamp in self._flagged.items()
+            )
             self.emit(
                 f"RENAME STORM detected: {rate} file renames in {RENAME_WINDOW_S}s — "
                 "ransomware mass-encryption likely in progress (T1486). "
                 "Review watched directories immediately.",
-                Severity.CRITICAL,
+                Severity.CRITICAL if entropy_corroborated else Severity.HIGH,
                 rename_count=rate,
                 window_s=RENAME_WINDOW_S,
                 threshold=RENAME_THRESHOLD,
+                watched_directory=directory,
                 mitre_tags=["T1486"],
+                active_attack=True,
+                entropy_corroborated=entropy_corroborated,
+                detector_policy=(
+                    "multi-signal-ransomware-critical"
+                    if entropy_corroborated
+                    else "rename-pattern-high"
+                ),
+                **(
+                    maximum_host_response()
+                    if entropy_corroborated
+                    else deception_response()
+                ),
             )
-            # Clear to avoid re-alerting every tick while storm continues
-            self._rename_times.clear()
+            # Clear only this directory. Evidence for other watched roots must
+            # remain independently attributable and independently actionable.
+            self._rename_times = deque(
+                item for item in self._rename_times
+                if normalized_directories[item[1]] != directory
+            )
 
     # ── Housekeeping ──────────────────────────────────────────────────────────
     def _evict_stale_dedup(self, now: float) -> None:

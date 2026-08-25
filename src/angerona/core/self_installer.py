@@ -1,24 +1,15 @@
-"""core/self_installer.py — let ARIA install its own optional capabilities.
+"""Report ARIA's optional capabilities without mutating the live interpreter.
 
-Several ARIA/Angerona features are gated behind optional third-party packages
-(voice, Teams, extra sensors). Rather than telling the operator to open a
-terminal and run ``pip`` — which fails the moment ``pip`` isn't on PATH, or the
-right interpreter isn't picked — ARIA installs them itself, into the exact
-interpreter the app is already running under (``sys.executable``). That single
-choice sidesteps every "pip is not recognized / wrong Python" problem, and every
-package below ships a prebuilt Windows wheel so no C++ build tools are needed.
-
-Safe by design:
-    • Only an explicit, curated allow-list of packages can ever be installed —
-      never arbitrary operator/LLM-supplied names.
-    • Runtime package installation is refused while Angerona is elevated.
-    • Output is captured and summarised; a failure degrades gracefully.
+Optional Python packages are a software-supply-chain boundary.  Angerona's
+audited installer consumes the repository's exact, hashed release lock; an
+already-running GUI must not reach out to a package index and change the code it
+is executing.  This module therefore provides discovery and setup guidance
+only.  ``install()`` is retained as a compatibility entry point, but it always
+refuses runtime mutation and directs the operator to the verified installer.
 """
 from __future__ import annotations
 
 import importlib.util
-import subprocess
-import sys
 from typing import Callable, Iterable, List, Optional
 
 # capability → (human description, [(import_name, pip_package), …])
@@ -93,85 +84,47 @@ def summary() -> str:
     """One-line-per-capability status the console/ARIA can print."""
     lines = ["ARIA capabilities:"]
     for cap, st in capability_status().items():
-        mark = "✓ ready" if st["ready"] else "✗ missing: " + ", ".join(st["missing"])
-        lines.append(f"  • {cap:<15} {mark}  — {st['desc']}")
+        mark = "[ready]" if st["ready"] else "[missing] " + ", ".join(st["missing"])
+        lines.append(f"  - {cap:<15} {mark} - {st['desc']}")
     lines.append(
-        "\nAsk ARIA to \"install voice\", \"install hand controls\", "
-        "\"install teams\", or \"install all\"."
+        "\nUse Install-Angerona.bat to add missing capabilities from Angerona's "
+        "exact, SHA-256-locked release set. ARIA never changes its live Python "
+        "environment."
     )
     return "\n".join(lines)
+
+
+def capabilities_ready(caps: Optional[Iterable[str]] = None) -> bool:
+    """Return whether every requested capability is already importable."""
+    return not _resolve(caps)
 
 
 def install(caps: Optional[Iterable[str]] = None,
             on_line: Optional[Callable[[str], None]] = None,
             timeout: float = 1200.0) -> str:
-    """Install the missing packages for the given capabilities ('all' = every one).
+    """Refuse live package mutation and return verified setup guidance.
 
-    Uses the running interpreter's own pip (``sys.executable -m pip``) so it can
-    never hit a PATH/wrong-Python problem. Returns a readable report."""
-    def emit(s: str) -> None:
-        if on_line:
-            try:
-                on_line(s)
-            except Exception:
-                pass
-
+    ``on_line`` and ``timeout`` remain accepted so older callers do not break.
+    They deliberately cannot alter this fail-closed policy.
+    """
+    del on_line, timeout
     pkgs = _resolve(caps)
     if not pkgs:
         return "Nothing to install — every requested capability is already present."
 
-    # Angerona normally runs as Administrator for sensors. Installing Internet
-    # packages inside that privileged process crosses a supply-chain boundary;
-    # the signed/one-click installer is the only supported elevated path.
-    try:
-        from angerona.core.privilege import is_admin
-        if is_admin():
-            return ("Runtime package installation is disabled while Angerona is running "
-                    "as Administrator. Re-run Install-Angerona.bat; the one-click "
-                    "installer includes voice, Teams authentication, YARA, and sensors.")
-    except Exception:
-        if sys.platform.startswith("win"):
-            return "Could not verify process privilege; runtime package installation refused."
-
-    # Safety: never pip-install anything outside the curated allow-list.
+    # Keep the allow-list invariant even though this function no longer invokes
+    # pip.  It prevents future callers from turning the compatibility entry point
+    # back into an arbitrary-package channel by accident.
     bad = [p for p in pkgs if p not in _ALLOWED_PACKAGES]
     if bad:
         return f"Refused: {', '.join(bad)} is not on the approved capability list."
-
-    emit(f"Installing {len(pkgs)} package(s) into this Angerona environment: "
-         f"{', '.join(pkgs)} — please wait…")
-    # Hardening (Angerona runs elevated): --only-binary :all: installs prebuilt
-    # wheels ONLY, so a malicious/typosquatted sdist can never run arbitrary
-    # setup.py code as Administrator during install. --isolated ignores any
-    # attacker-planted pip.ini / PIP_* env that could redirect the index or inject
-    # options. --require-virtualenv is deliberately NOT set (we target the app env).
-    cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
-           "--no-input", "--isolated", "--only-binary", ":all:"] + pkgs
-    kwargs: dict = {"capture_output": True, "text": True, "timeout": timeout}
-    if sys.platform.startswith("win"):
-        kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW — no console flash
-    try:
-        proc = subprocess.run(cmd, **kwargs)
-    except FileNotFoundError:
-        return ("pip isn't available in this Python environment, so I can't "
-                "self-install. Reinstall Angerona's dependencies from requirements.txt.")
-    except subprocess.TimeoutExpired:
-        return f"Install timed out after {int(timeout)}s — try again on a faster connection."
-
-    tail = (proc.stdout or "")[-1400:]
-    if proc.stderr:
-        tail += "\n" + proc.stderr[-800:]
-    still_missing = _resolve(caps)
-
-    if proc.returncode == 0 and not still_missing:
-        return (f"✅ Installed: {', '.join(pkgs)}.\n"
-                "Enable the feature in Settings (e.g. Settings ▸ enable voice) — no app "
-                "restart needed for most; voice starts listening on the next toggle.")
-    if proc.returncode == 0 and still_missing:
-        return (f"⚠️ pip finished but these are still missing: {', '.join(still_missing)}.\n"
-                f"{tail.strip()}")
-    return (f"❌ Install failed (pip exit {proc.returncode}). Common causes: no network, "
-            f"or a package needing build tools.\n{tail.strip()}")
+    return (
+        "Runtime package installation refused; no interpreter changes were made.\n"
+        f"Missing approved packages: {', '.join(pkgs)}.\n"
+        "Close Angerona, run Install-Angerona.bat from the verified release, then "
+        "restart. The installer uses requirements-release-hashed.txt with exact "
+        "versions, SHA-256 hashes, binary wheels only, and no dependency drift."
+    )
 
 
 def self_test() -> tuple[bool, str]:
@@ -184,15 +137,17 @@ def self_test() -> tuple[bool, str]:
         assert _resolve(["does-not-exist"]) == [], "unknown capability must resolve to nothing"
         # every resolvable package stays within the allow-list
         assert set(_resolve(["all"])) <= _ALLOWED_PACKAGES
-        return True, f"OK — {len(CAPABILITIES)} capabilities, {len(_ALLOWED_PACKAGES)} approved packages"
+        report = install(["does-not-exist"])
+        assert report.startswith("Nothing to install")
+        return True, f"OK - {len(CAPABILITIES)} capabilities, {len(_ALLOWED_PACKAGES)} approved packages"
     except AssertionError as exc:
-        return False, f"FAIL — {exc}"
+        return False, f"FAIL - {exc}"
     except Exception as exc:  # pragma: no cover
-        return False, f"ERROR — {type(exc).__name__}: {exc}"
+        return False, f"ERROR - {type(exc).__name__}: {exc}"
 
 
 if __name__ == "__main__":
     ok, detail = self_test()
-    print(f"[self_installer] self_test: {'PASS' if ok else 'FAIL'} — {detail}")
+    print(f"[self_installer] self_test: {'PASS' if ok else 'FAIL'} - {detail}")
     print(summary())
     raise SystemExit(0 if ok else 1)

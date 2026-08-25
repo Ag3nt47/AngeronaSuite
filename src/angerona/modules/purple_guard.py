@@ -325,6 +325,12 @@ class PurpleGuard(BaseModule):
                     path=str(path), artifact_path=str(path), mitre=mitre,
                     drill_target=str(target),
                     detector_policy="reviewed-redteam-candidate",
+                    response_authorized=True,
+                    response_contract={
+                        "version": 1,
+                        "actions": ["quarantine_file"],
+                        "targets": {"path": str(path)},
+                    },
                     **practice_details,
                 )
                 self.detected += 1
@@ -366,12 +372,42 @@ class PurpleGuard(BaseModule):
                 continue
             self._seen_events.add(key)
             command = str(details.get("cmdline") or details.get("command_line") or "")
+            pid = details.get("pid")
+            raw_created = (
+                details.get("process_create_time")
+                or details.get("pid_create_time")
+                or details.get("create_time")
+                or details.get("process_start_time")
+            )
+            response = {}
+            try:
+                created = float(raw_created)
+            except (TypeError, ValueError, OverflowError):
+                created = 0.0
+            if isinstance(pid, int) and pid > 0 and created > 0:
+                response = {
+                    "response_authorized": True,
+                    "response_contract": {
+                        "version": 1,
+                        "actions": [
+                            "isolate_program",
+                            "suspend_process",
+                            "terminate_process",
+                        ],
+                        "targets": {
+                            "pid": pid,
+                            "process_create_time": created,
+                        },
+                    },
+                }
             self.emit(
                 f"Purple Guard detected {label} ({mitre}) in process telemetry.",
-                Severity.HIGH, pid=details.get("pid"), cmdline=command,
+                Severity.HIGH, pid=pid, cmdline=command,
+                process_create_time=created or raw_created,
                 event_type="purple_process_detection", mitre=mitre,
                 correlation_token=token,
                 detector_policy="reviewed-redteam-candidate",
+                **response,
                 **_safe_lineage_details(details),
             )
             self.detected += 1

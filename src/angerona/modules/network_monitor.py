@@ -33,10 +33,12 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Dict, Set, Tuple
+from typing import Dict, Mapping, Set, Tuple
 
+from angerona.core.community_id import community_id_v1
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.net_interfaces import interface_type_for_local_ip
+from angerona.modules.intel_sync import is_ip_flagged
 from angerona.telemetry.sensors import list_connections
 
 # Ports commonly abused by malware C2 / tooling (illustrative, tune as needed).
@@ -58,6 +60,58 @@ NOVELTY_WINDOW_S = float(os.environ.get("ANGERONA_NETMON_NOVELTY_WINDOW_MIN", "6
 _STATE_MAX = 10_000
 
 
+def _block_remote_contract(
+    ip: str,
+    *,
+    corroborated: bool = False,
+    classification: str = "",
+) -> dict:
+    """Bind firewall authority only to an explicitly corroborated IOC."""
+    if not corroborated or classification != "threat-intel-ioc":
+        return {}
+    return {
+        "response_authorized": True,
+        "response_classification": classification,
+        "response_contract": {
+            "version": 1,
+            "actions": ["block_remote_ip"],
+            "targets": {"remote_ips": [ip]},
+        },
+    }
+
+
+def _split_endpoint(value: object) -> tuple[str, int] | None:
+    """Parse the bounded ``address:port`` form returned by local sensors."""
+    if not isinstance(value, str) or not value or len(value) > 128:
+        return None
+    if value.startswith("["):
+        close = value.find("]")
+        if close < 2 or value[close + 1:close + 2] != ":":
+            return None
+        address, raw_port = value[1:close], value[close + 2:]
+    else:
+        address, separator, raw_port = value.rpartition(":")
+        if not separator:
+            return None
+    if not raw_port.isascii() or not raw_port.isdecimal() or len(raw_port) > 5:
+        return None
+    port = int(raw_port)
+    if not 0 <= port <= 65_535:
+        return None
+    return address, port
+
+
+def _native_community_id(connection: Mapping[str, object]) -> str:
+    local = _split_endpoint(connection.get("laddr"))
+    remote = _split_endpoint(connection.get("raddr"))
+    if local is None or remote is None:
+        return ""
+    # Established entries from psutil's inet snapshot are TCP.  A sensor that
+    # supplies an explicit protocol may opt into UDP/SCTP correlation as well.
+    protocol = connection.get("proto") or connection.get("protocol") or "tcp"
+    return community_id_v1(local[0], remote[0], local[1], remote[1], protocol)
+
+
 def _poll_interval() -> float:
     enabled = os.environ.get("ANGERONA_ADVERSARY_COMBAT_ENABLED", "0").strip().lower()
     mode = os.environ.get("ANGERONA_ADVERSARY_COMBAT_MODE", "").strip().lower()
@@ -66,6 +120,14 @@ def _poll_interval() -> float:
     if enabled in {"1", "true", "yes", "on"}:
         return 2.0
     return 4.0
+
+
+def _snapshot_max_age() -> float | None:
+    """Keep Maximum/Combat sensor freshness below half its poll cadence."""
+    enabled = os.environ.get("ANGERONA_ADVERSARY_COMBAT_ENABLED", "0").strip().lower()
+    if enabled not in {"1", "true", "yes", "on"}:
+        return None
+    return max(0.05, _poll_interval() / 2.0)
 
 
 def _is_local(ip: str) -> bool:
@@ -105,6 +167,18 @@ class NetworkMonitorModule(BaseModule):
         newest = sorted(mapping.items(), key=lambda item: item[1], reverse=True)
         return dict(newest[:maximum])
 
+    @staticmethod
+    def _drop_older_than(mapping: Dict, cutoff: float) -> None:
+        """Prune expired entries in place, allocating only for stale keys.
+
+        Most polling cycles have no expiry at all. Rebuilding both 10,000-entry
+        novelty maps every cycle imposed steady allocation/GC cost even though
+        every retained identity and timestamp was unchanged.
+        """
+        stale = [key for key, seen_at in mapping.items() if seen_at < cutoff]
+        for key in stale:
+            del mapping[key]
+
     def _prune_state(self, active_connections: Set[Tuple], now: float) -> None:
         """Drop closed sockets and expired PID/host identities.
 
@@ -114,14 +188,10 @@ class NetworkMonitorModule(BaseModule):
         self._seen.intersection_update(active_connections)
         pid_cutoff = now - NOVELTY_WINDOW_S
         host_cutoff = now - (NOVELTY_WINDOW_S * 2)
-        self._known_pid_hosts = self._trim_recent({
-            key: seen_at for key, seen_at in self._known_pid_hosts.items()
-            if seen_at >= pid_cutoff
-        })
-        self._known_hosts = self._trim_recent({
-            host: seen_at for host, seen_at in self._known_hosts.items()
-            if seen_at >= host_cutoff
-        })
+        self._drop_older_than(self._known_pid_hosts, pid_cutoff)
+        self._drop_older_than(self._known_hosts, host_cutoff)
+        self._known_pid_hosts = self._trim_recent(self._known_pid_hosts)
+        self._known_hosts = self._trim_recent(self._known_hosts)
 
     def run(self) -> None:
         now0 = time.time()
@@ -131,7 +201,10 @@ class NetworkMonitorModule(BaseModule):
             # long-running connection doesn't get flagged as novel the
             # moment a second socket to the same host appears after startup.
             if c.get("raddr"):
-                ip = c["raddr"].rsplit(":", 1)[0]
+                remote = _split_endpoint(c["raddr"])
+                if remote is None:
+                    continue
+                ip, _port = remote
                 if not _is_local(ip):
                     self._known_hosts[ip] = now0
                     self._known_pid_hosts[(c["pid"], ip)] = now0
@@ -142,12 +215,20 @@ class NetworkMonitorModule(BaseModule):
         new_external = 0
         while not self.stopping:
             self.sleep(_poll_interval())
-            connections = list_connections()
+            max_age = _snapshot_max_age()
+            connections = (
+                list_connections(max_age=max_age)
+                if max_age is not None
+                else list_connections()
+            )
             active_connections: Set[Tuple] = set()
             for c in connections:
                 if c["status"] != "ESTABLISHED" or not c["raddr"]:
                     continue
-                ip = c["raddr"].rsplit(":", 1)[0]
+                remote = _split_endpoint(c["raddr"])
+                if remote is None:
+                    continue
+                ip, rport = remote
                 if _is_local(ip):
                     continue
                 key = (c["pid"], c["raddr"])
@@ -156,15 +237,24 @@ class NetworkMonitorModule(BaseModule):
                     continue
                 self._seen.add(key)
                 new_external += 1
-                try:
-                    rport = int(c["raddr"].rsplit(":", 1)[1])
-                except Exception:
-                    rport = -1
+                community_id = _native_community_id(c)
+                # Sensor snapshots are shared briefly between modules. Enrich a
+                # private event copy so one consumer cannot mutate telemetry
+                # another consumer is concurrently reading.
+                event_details = dict(c)
+                # Raw socket snapshots are data, never an authority channel.
+                # Only the trusted correlation branch below may add a response
+                # contract to the emitted detector event.
+                event_details.pop("response_authorized", None)
+                event_details.pop("response_contract", None)
+                event_details.pop("response_classification", None)
+                if community_id:
+                    event_details["community_id"] = community_id
 
                 # VPN awareness: tag the owning interface (Physical / Virtual_VPN /
                 # Loopback) so downstream (AI triage, split-tunnel rule) has context.
                 _laddr = c.get("laddr") or ""
-                c["interface_type"] = interface_type_for_local_ip(
+                event_details["interface_type"] = interface_type_for_local_ip(
                     _laddr.rsplit(":", 1)[0] if _laddr else "")
 
                 now = time.time()
@@ -180,8 +270,18 @@ class NetworkMonitorModule(BaseModule):
                 self._known_pid_hosts[pid_host] = now
 
                 if rport in SUSPICIOUS_PORTS:
-                    self.emit(f"Connection to suspicious port {rport}: {c['raddr']} "
-                              f"(pid {c['pid']})", Severity.HIGH, **c)
+                    corroborated = is_ip_flagged(ip)
+                    self.emit(
+                        f"Connection to suspicious port {rport}: {c['raddr']} "
+                        f"(pid {c['pid']})",
+                        Severity.HIGH,
+                        **_block_remote_contract(
+                            ip,
+                            corroborated=corroborated,
+                            classification="threat-intel-ioc" if corroborated else "",
+                        ),
+                        **event_details,
+                    )
                 elif is_novel_host:
                     mins = int(NOVELTY_WINDOW_S // 60)
                     # Novel host on a normal web port = ordinary browsing → LOW.
@@ -190,7 +290,7 @@ class NetworkMonitorModule(BaseModule):
                     self.emit(f"First contact with external host {ip} in the last "
                               f"{mins}min (pid {c['pid']}, port {rport}) — novel-destination "
                               "signal." + (" (web port)" if web else ""),
-                              Severity.LOW if web else Severity.MEDIUM, **c)
+                              Severity.LOW if web else Severity.MEDIUM, **event_details)
                 elif is_novel_for_pid:
                     # The host itself is already known (some other process
                     # touched it recently — very common with shared-IP CDN
@@ -199,7 +299,7 @@ class NetworkMonitorModule(BaseModule):
                     # ever seen, but still a real, distinct "new" signal.
                     self.emit(f"Process {c['pid']} made its first connection to already-known "
                               f"host {ip}:{rport} — new to this process, not to the machine.",
-                              Severity.LOW, **c)
+                              Severity.LOW, **event_details)
 
             self._prune_state(active_connections, time.time())
 

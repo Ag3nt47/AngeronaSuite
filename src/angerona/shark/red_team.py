@@ -184,13 +184,12 @@ class RedTeamEngine:
         *,
         target_dir: Path | None = None,
         artifact_paths: tuple[Path, ...] | None = None,
-        include_orphans: bool = True,
     ) -> int:
-        """Delete only exact drill markers inside one captured target directory.
+        """Delete only exact in-memory drill artifacts from the owning run.
 
-        Delayed cleanup passes an immutable artifact snapshot and disables the
-        orphan glob.  That prevents an older run's timer from deleting a newer
-        run's markers when both runs use the same operator-selected directory.
+        Filename patterns never grant deletion authority. After a crash, an
+        untracked marker is left for operator review rather than risking an
+        unrelated user file in Documents or another selected target.
         """
         removed = 0
         try:
@@ -217,20 +216,6 @@ class RedTeamEngine:
                 if path.exists():
                     path.unlink(missing_ok=True)
                     removed += 1
-            except Exception:
-                pass
-        # 2) belt-and-suspenders glob sweep for anything left behind
-        if include_orphans:
-            try:
-                for path in target.glob(f"{_MARKER_PREFIX}*"):
-                    try:
-                        resolved = path.resolve(strict=False)
-                        if resolved.parent != target or resolved in seen:
-                            continue
-                        resolved.unlink(missing_ok=True)
-                        removed += 1
-                    except Exception:
-                        pass
             except Exception:
                 pass
         if removed:
@@ -271,7 +256,6 @@ class RedTeamEngine:
         removed = self._sweep_markers(
             target_dir=target,
             artifact_paths=artifacts,
-            include_orphans=False,
         )
         self._cleanup_probe_processes()
         if run_id:
@@ -320,7 +304,6 @@ class RedTeamEngine:
                     self._sweep_markers(
                         target_dir=target,
                         artifact_paths=captured,
-                        include_orphans=False,
                     )
                     if captured_run_id:
                         unregister_run(captured_run_id)
@@ -380,6 +363,7 @@ class RedTeamEngine:
         # A completed run may still own a delayed cleanup callback. Cancel it
         # before changing shared run state or creating any marker for this run.
         prior_run_id = str(self.run_id or "")
+        prior_artifacts = self._artifact_paths_snapshot()
         self._cancel_pending_cleanup()
         self.documents_dir = Path(candidate_target)
         self._run_contract = preflight
@@ -400,12 +384,12 @@ class RedTeamEngine:
         register_run(self.run_id, kind="red-team")
         self.steps = []
         self._owned_artifacts = []
-        # Pre-clean: nuke any leftover markers from a prior run that never got
-        # swept (e.g. the app was killed mid-drill) so they don't accumulate.
+        # Pre-clean only exact artifacts still owned by this engine instance.
+        # Crash-orphan prefix globs are deliberately forbidden: the selected
+        # target may be Documents and names are not deletion provenance.
         self._sweep_markers(
             target_dir=self.documents_dir,
-            artifact_paths=(),
-            include_orphans=True,
+            artifact_paths=prior_artifacts,
         )
         if prior_run_id:
             unregister_run(prior_run_id)
@@ -426,7 +410,6 @@ class RedTeamEngine:
         self._sweep_markers(
             target_dir=self.documents_dir,
             artifact_paths=self._artifact_paths_snapshot(),
-            include_orphans=True,
         )
         self._cleanup_probe_processes()
         unregister_run(self.run_id)
@@ -508,7 +491,6 @@ class RedTeamEngine:
                 self._sweep_markers(
                     target_dir=self.documents_dir,
                     artifact_paths=self._artifact_paths_snapshot(),
-                    include_orphans=True,
                 )
                 self._cleanup_probe_processes()
                 unregister_run(self.run_id)
@@ -531,7 +513,6 @@ class RedTeamEngine:
                         self._sweep_markers(
                             target_dir=self.documents_dir,
                             artifact_paths=self._artifact_paths_snapshot(),
-                            include_orphans=False,
                         )
 
     def _step_credential_access(self, jitter_range) -> None:
