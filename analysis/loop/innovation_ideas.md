@@ -1,484 +1,556 @@
-# Round 1 Innovation Challenge — 2026-08-20
+# Host Adaptation Visionary Pass — 2026-08-24
 
 ## Decision
 
-Angerona does not need another broad subsystem in this sweep. It needs a few
-high-leverage boundaries that make the suite more diagnosable, safer to operate,
-and harder to misuse while preserving its local-first design.
+Angerona's new Adaption workbench already has the right first production
+boundary: observation, planning, simulation, and execution are separated;
+profiles come from a closed catalog; plans are short-lived and bound to a host
+and firewall-state digest; a Windows Firewall export is required before a
+write; rollback artifacts are checked; automation is opt-in; and a persistent
+rate breaker limits repeated changes. The GUI already exposes Overview, Audit &
+Drift, Exceptions & Feedback, Profiles & Rollback, Sandbox, Automation, and
+Activity.
 
-This review compared the current 65-module tree, `README.md`, `llms.txt`, and
-`ENTERPRISE_UPGRADE_TODO.txt` against current primary/authoritative sources. It
-intentionally excludes ideas that Angerona already implements or has already
-designed: the kernel-boundary posture ledger, transactional WFP containment,
-telemetry-loss accounting, evidence claim resolution, Pktmon flight recording,
-USN ransomware pulse, NTLM exit mapping, call-stack provenance, model airlock,
-QUIC sightline, split-token architecture, App Control evidence, signed model
-admission/ML-BOM, ClickFix correlation, ATT&CK v19/Sigma 2.1 contracts, and
-ZTDNS/ECH correlation. Production mTLS/OIDC, Authenticode custody, HA/DR, and
-physical-host soaks remain important external gates rather than new local
-features.
+The next pass should strengthen the trust boundaries around that design. In
+particular:
 
-Ranking uses ordinal impact divided by effort weight (`S=1`, `S-M=1.5`, `M=2`,
-`M-L=2.5`). The quotient is a prioritization aid, not an engineering estimate.
+- an unavailable or truncated collector must never look like configuration
+  drift;
+- a friendly SSID or weak VPN-interface guess must never cause a less
+  restrictive posture than a stronger public-network signal;
+- Angerona must understand the effective Windows Firewall policy and its
+  owner, not only the local profile values;
+- manual and automatic workers must not race through the breaker;
+- command success must not be treated as a committed healthy state; and
+- false-positive feedback must not become an attacker-influenceable learning
+  channel.
 
-| Rank | Proposal | Impact | Effort | Impact / effort | Mode |
-|---:|---|---:|:---:|---:|---|
-| 1 | Crash Breadcrumb Capsule + Fault-Domain Circuit Breaker | 5 | S-M | 3.33 | Detect / Harden / Visualize |
-| 2 | RMM and Remote-Support Trust Ledger | 5 | S-M | 3.33 | Detect / Harden / Visualize |
-| 3 | WinRE / Quick Machine Recovery Readiness | 3 | S | 3.00 | Harden / Visualize |
-| 4 | Windows Hello–Bound Response Approval | 5 | M | 2.50 | Respond / Harden |
-| 5 | MCP Tool-and-Data Provenance Firewall | 5 | M | 2.50 | Detect / Harden / Visualize |
-| 6 | Purpose- and Epoch-Bound Telemetry Tokens | 4 | M | 2.00 | Harden / Privacy |
-| 7 | Browser Session-Theft Behavior Correlator | 5 | M-L | 2.00 | Detect / Respond |
+This document began as a research/design pass. The later adversary-remediation
+convergence shipped bounded versions of proposals 1-4: collector-quality
+metadata, strongest-posture context ordering, effective Firewall ActiveStore
+collection/postcondition verification, and single-flight revision-bound action
+admission. Proposals 5-9 remain backlog, as do deep firewall filter joins and
+service executable signer/content-hash attestation. The design does not
+duplicate Angerona's existing Response Broker, WFP containment, Watchdog,
+flight recorder, signed policy/content lifecycle, local AI broker, or
+telemetry-blinding detector; the proposals deliberately reuse those seams.
+
+Ranking uses an ordinal impact divided by an effort weight (S=1, S-M=1.5, M=2,
+L=3). The quotient is a prioritization aid, not a delivery estimate.
+
+| Rank | Proposal | Delivery band | Impact | Effort | Impact / effort | Mode |
+|---:|---|---|---:|:---:|---:|---|
+| 1 | Collector Quality Contract | Safe immediate | 5 | S | 5.00 | Detect / Harden / Visualize |
+| 2 | Restrictive Context Lattice + Hysteresis | Safe immediate | 5 | S | 5.00 | Detect / Respond / Harden / Visualize |
+| 3 | Effective Firewall Policy Ownership Guard | Safe immediate | 5 | S-M | 3.33 | Detect / Harden / Visualize |
+| 4 | Authenticated Single-Flight Action Journal | Safe immediate | 5 | S-M | 3.33 | Respond / Harden / Visualize |
+| 5 | Versioned Baseline Promotion Workflow | Safe immediate | 4 | S-M | 2.67 | Detect / Harden / Visualize |
+| 6 | Event-Driven Drift Provenance | Safe immediate | 4 | S-M | 2.67 | Detect / Visualize |
+| 7 | Trial-Lease Apply + Crash-Independent Rollback | Longer term | 5 | M | 2.50 | Respond / Harden / Visualize |
+| 8 | Poisoning-Resistant Feedback Lab | Longer term | 4 | M | 2.00 | Detect / Harden / Visualize |
+| 9 | Signed Windows Posture Packs | Longer term | 5 | L | 1.67 | Detect / Respond / Harden / Visualize |
 
 ---
 
-## 1. Crash Breadcrumb Capsule + Fault-Domain Circuit Breaker
+## Safe immediate additions
 
-**Pitch.** Keep a tiny, privacy-minimized, process-external record of which
-Angerona fault domains were active immediately before a native crash, then use
-repeatable evidence—not guesswork—to quarantine only an optional suspect module.
+## 1. Collector Quality Contract
 
-### Why now and threat model
+**Pitch.** Make every audit value carry completeness, freshness, and truncation
+state so loss of visibility can never be scored as host drift.
 
-Angerona already records Python/Qt exceptions and GUI stalls, and its watchdog
-has restart budgets and safe mode. A native fail-fast can still terminate the
-process before buffered logs identify the responsible QThread, dialog, native
-library, or module generation. Windows Error Reporting (WER) can collect local
-user-mode dumps, and Application Recovery and Restart can preserve state before
-restart; Microsoft notes that local dumps are collected before the recovery
-callback and that restart applies only after an application has run for at least
-60 seconds. Sources: [Collecting user-mode dumps](https://learn.microsoft.com/en-us/windows/win32/wer/collecting-user-mode-dumps),
-[Registering for Application Restart](https://learn.microsoft.com/en-us/windows/win32/recovery/registering-for-application-restart).
+### Why now
 
-Threats include a crashing native dependency, stale Qt worker ownership,
-restart storms, attacker-induced crash loops, and a diagnostics subsystem that
-accidentally captures secrets. The capsule must help attribution without
-becoming a memory dump or a new recovery authority.
+NIST CSF 2.0 calls for configuration management and continuous monitoring of
+hardware, software, runtime environments, and their data. CISA's current
+StopRansomware guidance likewise recommends routine drift checks against a
+consistent baseline. Those outcomes depend on distinguishing “confirmed
+absent” from “not observed.” Sources:
+[NIST Cybersecurity Framework 2.0](https://nvlpubs.nist.gov/nistpubs/CSWP/NIST.CSWP.29.pdf),
+[CISA StopRansomware Guide](https://www.cisa.gov/stopransomware/ransomware-guide).
 
-### Fit and architecture
+The current collectors intentionally catch many host/permission errors and
+return bounded lists. That is safe for uptime, but an empty services, ports, or
+interfaces list can currently be compared as if every baseline item was
+removed. MAX_SERVICES and MAX_PORTS also cap results without representing
+truncation in the snapshot.
 
-- **Core:** add `core/crash_capsule.py`, a fixed-size, checksummed shared-memory
-  record containing release digest, monotonic boot/session ID, EventBus revision,
-  module generation/state codes, active Qt worker IDs, dialog class identifiers,
-  and the last bounded lifecycle transition. Never store event bodies, command
-  lines, paths, prompts, network addresses, usernames, or stack memory.
-- **Existing seams:** `module_manager.py`, `thread_lifecycle.py`, `crashlog.py`,
-  and `uiwatchdog.py` update O(1) breadcrumbs. The independent Watchdog reads a
-  sealed snapshot only after Core death and attaches its digest to existing
-  `recovery_state.py` evidence.
-- **Circuit breaker:** phase two may quarantine only a nonessential module after
-  the same signed crash signature repeats across at least three fresh process
-  generations. Core telemetry, recovery, storage integrity, and the watchdog are
-  never automatically disabled. Operator reset and expiry are mandatory.
+### Fit
 
-### Implementation slices
+- **Core:** extend host_adaptation snapshot schema v2 with a collection_health
+  record for hardware, services, ports, network context, and firewall. Each
+  record is one of complete, partial, unavailable, unsupported, or truncated
+  and carries bounded counts, start/end time, source, and a sanitized reason
+  code.
+- **Drift engine:** compare a category only when both sides are compatible and
+  complete. A visibility regression becomes its own High “coverage degraded”
+  finding; it never emits thousands of false removals or lowers risk.
+- **Existing architecture:** reuse platform capability contracts and World
+  View's telemetry-blinding vocabulary. Do not create another health system.
+- **GUI:** show coverage and freshness beside risk; exports preserve the
+  quality metadata. This is Detect / Harden / Visualize.
 
-1. **S / recommended now:** diagnostic-only capsule and post-crash viewer; no
-   behavior change, quarantine, dump collection, or registry mutation.
-2. **S-M:** deterministic signature grouping and a GUI “Crash lineage” card.
-3. **M:** policy-gated optional-module circuit breaker after physical-host soak.
+### Effort
 
-### Tests and performance budget
-
-- Kill/fail-fast fixtures verify the last committed capsule survives and never
-  contains forbidden data classes.
-- Torn writes, checksum corruption, stale PID reuse, clock rollback, full disk,
-  concurrent QThreads, clean shutdown, and watchdog restart are covered.
-- A single crash cannot disable anything; differing signatures do not aggregate.
-- Update cost: p99 below 50 microseconds, one preallocated page, no per-event I/O,
-  and no GUI-thread blocking.
+**S.** Schema migration and deterministic fixture tests. Limitations are
+collector-specific permission failures, localized command output, and
+Windows-version availability. Old v1 baselines should remain readable but
+explicitly have unknown quality until recaptured.
 
 ### Safety
 
-Defensive diagnostics only. Phase one does not change host policy, install WER
-registry settings, capture process memory, or disable a module. Any later circuit
-breaker is bounded, reversible, signed, optional-module-only, and never grants
-the AI or watchdog arbitrary process-control authority.
+Defensive and read-only. Unknown visibility fails closed as “cannot assess”; it
+does not trigger host mutation, auto-reversion, or an offensive probe.
 
 ---
 
-## 2. RMM and Remote-Support Trust Ledger
+## 2. Restrictive Context Lattice + Hysteresis
 
-**Pitch.** Treat remote-management software as a time-bound administrative
-session with provenance, not as globally good or globally malicious software.
+**Pitch.** Compose context signals so the most restrictive credible posture
+wins, and require a stable dwell period before any automatic change.
 
-### Why now and threat model
+### Why now
 
-CISA says ransomware actors continue to abuse Remote Monitoring and Management
-(RMM) tools and recommends auditing authorized tools, unexpected execution, and
-portable copies. A June 2025 advisory documented exploitation of SimpleHelp RMM
-against multiple organizations. Sources: [CISA JCDC RMM Cyber Defense Plan](https://www.cisa.gov/topics/partnerships-and-collaboration/joint-cyber-defense-collaborative/jcdc-remote-monitoring-and-management-cyber-defense-plan),
-[CISA StopRansomware Guide](https://www.cisa.gov/stopransomware/ransomware-guide),
-[CISA SimpleHelp RMM advisory](https://www.cisa.gov/sites/default/files/2025-06/aa25-163a-ransomware-simplehelp-rmm-compromise.pdf).
+The final 2025 NIST zero-trust implementation guidance uses real-time,
+risk-based assessment and continuous policy evaluation rather than trusting
+location alone. Microsoft's 2026 trusted-signal documentation models Wi-Fi with
+SSID, BSSID, and security type, while Network List Manager separately exposes
+Public, Private, and DomainAuthenticated categories. Sources:
+[NIST SP 1800-35, Implementing a Zero Trust Architecture](https://www.nist.gov/publications/implementing-zero-trust-architecture-high-level-document),
+[Microsoft trusted-signal fields](https://learn.microsoft.com/en-us/windows/security/identity-protection/hello-for-business/trusted-signal-unlock),
+[NLM_NETWORK_CATEGORY](https://learn.microsoft.com/en-us/windows/win32/api/netlistmgr/ne-netlistmgr-nlm_network_category).
 
-Angerona recognizes RDP/WinRM ATT&CK events but has no RMM/Quick Assist trust
-object. The threat is a legitimate signed product launched from an unexpected
-path, a portable/unmanaged copy, a new unattended service, an out-of-window
-session, or an approved tool whose signer/hash/lineage suddenly changes.
+Today an exact SSID match outranks Public, which means a familiar network name
+can select a less restrictive profile even when Windows classifies the
+connection as untrusted. VPN state is inferred from interface classification
+and a single 15-second observation can trigger an armed profile.
 
-### Fit and architecture
+### Fit
 
-- **Core:** add `core/remote_support_trust.py` with a bounded `SupportSession`
-  keyed by immutable process identity. Expected state binds exact path digest,
-  signer/publisher, file hash/version, service identity, allowed parent, user
-  session type, maintenance window, and expected network class.
-- **BaseModule:** consume existing process, service/persistence, asset inventory,
-  Authenticode, and network observations. Do not packet-inspect or enumerate
-  remote screen content.
-- **Trusted Processes:** add a separate “Remote support” policy category. An
-  ordinary process allowlist must not silently authorize unattended access.
-- **GUI:** display `approved-active`, `approved-out-of-window`, `portable`,
-  `drifted`, `unexpected`, or `unknown`; show exact supporting evidence and
-  policy expiry.
+- **Core policy engine:** assign profiles a monotonic restrictiveness level and
+  resolve all simultaneous matches with a deny-overrides/restrictive-wins
+  lattice. Public or Unknown may harden; neither SSID nor VPN presence may
+  automatically loosen a stronger posture.
+- **Signal confidence:** add stable Windows network GUID, category, WLAN
+  authentication/security type, privacy-hashed optional BSSID, VPN interface
+  plus route evidence, source freshness, and confidence. Never persist WLAN
+  keys or raw profile XML.
+- **Hysteresis:** require two or three consistent samples over a configurable
+  dwell period; debounce roaming; make Unknown and signal disagreement
+  proposal-only. A transition to a less restrictive profile always requires an
+  operator commit.
+- **Sandbox/GUI:** add a scenario matrix for Public + known SSID, VPN drop,
+  network roaming, and Unknown. Show each signal, confidence, conflict, chosen
+  posture, and why. This is Detect / Respond / Harden / Visualize.
 
-### Implementation slices
+### Effort
 
-1. **S-M:** read-only inventory and exact-provenance drift alerts for an
-   operator-supplied catalog; no vendor-name blacklist.
-2. **M:** bounded session correlation across process/service/network evidence.
-3. **M:** existing typed Response Broker may offer a preview to suspend an
-   immutable process identity; never auto-contain on product name alone.
-
-### Tests and performance budget
-
-- Fixtures cover installed/portable RMM, valid update, signer drift, service
-  creation, renamed binary, DLL side-load evidence, VPN/proxy use, expired
-  maintenance window, PID reuse, missing signature service, and ordinary remote
-  work tools.
-- A signed binary is not automatically trusted; a basename match is never enough.
-- One signal remains Low/Informational. High requires provenance drift plus a
-  session/network/persistence signal.
-- Reuse current process/network caches; no scan faster than 30 seconds, at most
-  512 active/recent session records, and steady-state CPU below 0.2%.
+**S** for the lattice, dwell state, and fixture-driven scenario sandbox;
+**S-M** if native WLAN/NLM enrichment is included. Native APIs and Windows
+edition differences are gated. On unsupported systems the feature remains
+proposal-only.
 
 ### Safety
 
-Defensive observation and existing typed response only. The feature never
-connects to an RMM service, records a screen, captures credentials, discovers
-vendor secrets, or teaches remote-tool exploitation.
+Defensive only. Context can tighten or propose; low-confidence context cannot
+silently weaken protection, reclassify a network, connect to Wi-Fi, or inspect
+network content.
 
 ---
 
-## 3. WinRE / Quick Machine Recovery Readiness
+## 3. Effective Firewall Policy Ownership Guard
 
-**Pitch.** Show whether a Windows endpoint can recover from a boot-breaking
-update or driver event—and whether recovery would make an unexpected cloud or
-Wi-Fi egress—without modifying recovery configuration.
+**Pitch.** Refuse local adaptation when GPO, MDM, or another policy store owns
+the effective result, and verify the ActiveStore rather than assuming local
+command success.
 
-### Why now and threat model
+### Why now
 
-Microsoft's Quick Machine Recovery (QMR), available on supported Windows 11
-24H2+ builds, uses Windows Recovery Environment and can contact Windows Update
-after repeated boot failure. Its configuration can include cloud remediation,
-automatic retries, and Wi-Fi credentials. Microsoft calls it best effort and
-documents exact version/edition gates. Sources: [Quick Machine Recovery](https://learn.microsoft.com/en-us/windows/configuration/quick-machine-recovery/),
-[Recovery CSP](https://learn.microsoft.com/en-us/windows/client-management/mdm/recovery-csp).
+Microsoft documents that Windows Firewall's ActiveStore is the resultant set of
+policy from persistent local policy, GPOs, service hardening, and dynamic
+sources. It also documents that local-policy merge can be disabled and that
+explicit allow rules can override a default block posture. Sources:
+[Get-NetFirewallProfile policy stores](https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallprofile?view=windowsserver2025-ps),
+[Windows Firewall rules and merge behavior](https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/rules),
+[Get-NetFirewallRule policy-source tracing](https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallrule?view=windowsserver2025-ps).
 
-Threats are a false “recoverable” claim when WinRE is disabled, unreviewed cloud
-egress from recovery, recovery retry loops, unsupported builds, and accidental
-display or retention of Wi-Fi secrets.
+The current snapshot reads profile defaults and the plan writes the default
+local policy. It does not yet report whether GPO/MDM owns the effective setting,
+whether local policy is merged, or whether a “lockdown” default is weakened by
+effective explicit allows.
 
-### Fit and architecture
+### Fit
 
-- **Core:** add a pure parser/model for `enabled`, `disabled`, `unsupported`,
-  `unreadable`, and `unknown`, plus cloud/auto-remediation booleans and bounded
-  retry/time-to-reboot values.
-- **Collector:** a Windows-only read-side module invokes the absolute trusted
-  `%SystemRoot%\System32\reagentc.exe` with a short timeout. It parses only a
-  bounded schema and discards Wi-Fi SSID/password elements before logging.
-- **GUI:** add recovery readiness to Kernel/Posture evidence, explicitly marking
-  cloud contact as opt-in egress—not universally good or bad.
-- **Fleet:** expose only aggregate readiness state and policy digest; no recovery
-  XML, SSID, password, path, or device identifier.
+- **Core collector:** capture privacy-minimized ActiveStore, PersistentStore,
+  RSOP/source type, merge behavior, active profile, and management ownership.
+  Store aggregate counts and digests by rule source; expose rule detail only in
+  a bounded local review view.
+- **Planner:** mark managed/conflicting settings as non-writable and explain the
+  authoritative source. A locally managed plan must include both persistent and
+  effective precondition digests.
+- **Executor:** after a write, re-read ActiveStore and require the intended
+  effective postcondition. A command that succeeds but is overridden is a
+  failed apply and enters recovery.
+- **GUI:** add “Policy owner,” “effective result,” “local merge,” and “explicit
+  rule caveat” to preview and sandbox. This is Detect / Harden / Visualize.
 
-### Implementation slices
+### Effort
 
-1. **S / recommended now:** version-gated, read-only status and privacy-safe UI.
-2. **S-M:** signed drift evidence after Windows update/reboot.
-3. **External lab only:** QMR test-mode evidence; never run recovery simulation
-   from the ordinary desktop product.
-
-### Tests and performance budget
-
-- Fixtures cover supported/unsupported builds, WinRE disabled, malformed XML,
-  secret-bearing XML, timeout, access denial, cloud on/off, auto-retry, and
-  localization-safe parsing.
-- Tests prove no SSID/password survives parsing, logs, exports, or exceptions.
-- Poll at startup and no more than every six hours; timeout at five seconds;
-  work stays off the GUI thread.
+**S-M.** Windows/NetSecurity only. MDM source attribution is not uniform across
+all editions, and centrally managed endpoints must be reported as managed
+rather than “fixed” locally.
 
 ### Safety
 
-Read-only and defensive. Angerona does not enable QMR, store recovery Wi-Fi
-credentials, enter WinRE, run test mode, change retry policy, download a fix, or
-claim QMR guarantees recovery.
+Defensive only. Angerona never edits a domain GPO, MDM policy, remote computer,
+or organization policy. Ambiguous ownership blocks mutation and directs the
+operator to the actual authority.
 
 ---
 
-## 4. Windows Hello–Bound Response Approval
+## 4. Authenticated Single-Flight Action Journal
 
-**Pitch.** Bind every high-impact local response approval to the exact action
-digest and an explicit Windows Hello or FIDO2 user gesture.
+**Pitch.** Reserve each adaptation atomically, count attempts and recovery
+failures in the breaker, and bind every transition to Angerona's protected
+action and evidence contracts.
 
-### Why now and threat model
+### Why now
 
-NIST SP 800-63B-4, finalized in 2025, requires phishing-resistant options at
-Authentication Assurance Level 2 and explains why manually entered OTPs are not
-phishing-resistant. Windows exposes Win32 WebAuthn APIs for native applications
-to use Windows Hello or external FIDO2 keys. Sources: [NIST SP 800-63B-4](https://www.nist.gov/publications/nist-sp-800-63b-4digital-identity-guidelines-authentication-and-authenticator),
-[Windows WebAuthn APIs](https://learn.microsoft.com/en-us/windows/security/identity-protection/hello-for-business/webauthn-apis).
+Microsoft's current circuit-breaker guidance calls for explicit Closed, Open,
+and Half-Open states, time-windowed failure thresholds, health probes,
+observability, manual override, and concurrency-safe implementation. Microsoft's
+2026 least-privilege guidance also recommends binding authorization to the exact
+action and target with short-lived authority and fresh approval for high-impact
+changes. Sources:
+[Microsoft Circuit Breaker pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/circuit-breaker),
+[Microsoft identity, access, and least-privilege guidance](https://learn.microsoft.com/en-us/security/zero-trust/catalog-ai-defense-capabilities/identity-access-least-privilege).
 
-Angerona already has typed, expiring, idempotent response plans and approvals.
-The remaining local threat is session/UI compromise, voice spoofing, stolen PIN,
-or a confused operator approving a different action than the preview.
+The workbench can run a manual worker while the dashboard timer starts an
+automatic cycle. The current check and later record are separate operations, so
+two callers can pass the breaker before either records a change. Its local
+SHA-256 envelopes detect accidental corruption but are not an authenticated
+audit boundary against a same-user writer.
 
-### Fit and architecture
+### Fit
 
-- **Core:** add `core/operator_presence.py` behind an injectable adapter. The
-  WebAuthn challenge binds action digest, target identity, expiry, policy
-  version, case ID, and a nonce. The receipt stores credential ID token,
-  authenticator flags, counter/result, and assertion digest—not biometric data.
-- **Response:** `safe_response_session.py` and `response_broker.py` can require
-  this receipt for policy-selected High/Critical actions. Existing multi-person
-  approval remains separate; one Hello gesture cannot impersonate two people.
-- **GUI:** the Windows-controlled verification prompt follows the exact action
-  preview. Voice may navigate to the preview but cannot satisfy user presence.
+- **Core:** acquire one durable, host-bound adaptation lease before breaker
+  admission. Reserve the attempt and breaker budget in one transaction; then
+  transition planned → snapshotted → applying → verifying → committed,
+  failed, or rolled_back. Expired owner PID/generation leases recover visibly.
+- **Circuit breaker:** count attempts, apply failures, postcondition failures,
+  automatic rollbacks, and context churn—not only successful changes. Add a
+  bounded Half-Open dry-run/probe state; it never performs a drastic automatic
+  write.
+- **Existing architecture:** route mutation authority through the current
+  Response Broker/action-contract path and anchor action/receipt digests in the
+  authenticated flight recorder. Reuse protected key custody rather than
+  creating an adaptation secret.
+- **GUI:** show the active lease, breaker reason, attempt/failure window, and
+  correlation ID. This is Respond / Harden / Visualize.
 
-### Implementation slices
+### Effort
 
-1. **M:** optional local step-up for one reversible action, with injected fake
-   authenticator tests and explicit unsupported/degraded states.
-2. **M:** policy-required step-up for high-impact actions after accessibility,
-   recovery, credential rotation, and lockout testing.
-
-### Tests and performance budget
-
-- Reject replay, wrong action digest, wrong relying-party ID, expired challenge,
-  cloned credential record, missing user-verification flag, counter regression,
-  cancellation, and changed target/PID generation.
-- Reboot, credential deletion, Hello unavailable, external security key, and
-  accessibility flows fail visibly without silently downgrading a required gate.
-- No biometric template, PIN, authenticator secret, or raw attestation is logged.
-- Verification adds no background work; target p95 after user gesture is below
-  one second excluding human interaction.
+**S-M** for process-local single flight and authenticated receipts; **M** for a
+durable cross-process reservation with crash recovery. Dependency: protected
+key custody and an explicit lock/transaction primitive that works with the
+Watchdog and Core processes.
 
 ### Safety
 
-Defensive authorization only. It never reads biometric material or makes an AI
-decision. A passkey assertion proves an approved user gesture bound to a request;
-it does not prove the requested response is technically correct.
+Defensive only. The journal grants no new action. Recovery and manual reset stay
+available while an open breaker refuses ordinary writes; force-reset never
+bypasses a fresh exact-plan confirmation.
 
 ---
 
-## 5. MCP Tool-and-Data Provenance Firewall
+## 5. Versioned Baseline Promotion Workflow
 
-**Pitch.** Upgrade Angerona's older MCP surface so every request, tool result,
-and model-visible datum carries identity, scope, taint, and an auditable lineage
-receipt.
+**Pitch.** Replace “overwrite the golden baseline” with draft, review, promote,
+supersede, and restore lifecycle states.
 
-### Why now and threat model
+### Why now
 
-Angerona currently implements MCP 2024-11-05 on loopback with an optional bearer
-token. MCP 2025-06-18 adds structured tool output and resource-server
-authorization requirements, including audience validation, resource indicators,
-PKCE, and an explicit ban on token passthrough. The specification also says tool
-descriptions are untrusted and users should understand and consent to tool use.
-Sources: [MCP 2025-06-18 specification](https://modelcontextprotocol.io/specification/2025-06-18/index),
-[MCP authorization](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization),
-[MCP change log](https://modelcontextprotocol.io/specification/2025-06-18/changelog).
+Microsoft's Security Compliance Toolkit treats baselines as comparable,
+storable units and its Policy Analyzer highlights differences, conflicts, and
+changes over time. NIST CSF 2.0 PR.PS-01 calls for established configuration
+management practices. Sources:
+[Microsoft Security Compliance Toolkit](https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/security-compliance-toolkit-10),
+[Microsoft Security Baselines](https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines),
+[NIST Cybersecurity Framework 2.0](https://nvlpubs.nist.gov/nistpubs/CSWP/NIST.CSWP.29.pdf).
 
-Threats are unauthorized local processes querying security data, confused-deputy
-token reuse, malicious tool/result descriptions, telemetry prompt injection,
-and an agent presenting an inference as if it were a sensor fact.
+A single replaceable baseline has no history, promotion reason, maintenance
+window, compatibility gate, or quick restore. A compromised or simply
+misconfigured moment can therefore become the new “normal” after one approval.
 
-### Fit and architecture
+### Fit
 
-- **Transport:** migrate to the current lifecycle/structured-output contract.
-  Local mode gets an installation-generated short-lived scoped credential; a
-  future non-loopback mode requires the enterprise authorization design rather
-  than reusing the local token.
-- **Core:** add a provenance envelope around every tool call/result:
-  client identity, tool schema/version, normalized argument digest, scope,
-  source evidence references, privacy class, untrusted-data taint, truncation,
-  timestamp, and receipt digest.
-- **AI boundary:** `analysis_worker.py`, `ai_security_broker.py`, and ARIA keep
-  sensor evidence, operator text, external content, model inference, and
-  deterministic policy decisions as different types. Taint can narrow access
-  or force quotation; it can never grant a capability.
-- **GUI:** show active clients, scopes, expiry, calls, denied calls, and exact
-  fields disclosed. Revocation is immediate and audited.
+- **Core:** store immutable, authenticated baseline revisions with draft,
+  active, superseded, and quarantined states; parent digest; operator reason;
+  OS/build/capability contract; collection quality; and optional expiry.
+- **Promotion:** always show the delta from active baseline. Refuse promotion
+  from partial/unavailable collectors, active High/Critical incidents, an open
+  breaker, or a host/build incompatibility. Require a second acknowledgement
+  for reduced protection.
+- **Contexts:** allow a small bounded set of operator-named operational
+  baselines such as Development or Travel, but use them for comparison only.
+  Context never auto-promotes or silently rewrites a baseline.
+- **GUI:** baseline timeline, compare, promote, restore, export, and “planned
+  maintenance” annotation. This is Detect / Harden / Visualize.
 
-### Implementation slices
+### Effort
 
-1. **S-M:** make local authentication mandatory when MCP is enabled, rotate it,
-   and add structured result schemas without adding write tools.
-2. **M:** provenance/taint envelope and deterministic hostile-result eval corpus.
-3. **L/external:** OAuth resource-server interoperability only with production
-   identity infrastructure; never invent a home-grown remote auth server.
-
-### Tests and performance budget
-
-- Cover missing/expired/wrong-audience tokens, token passthrough, DNS rebinding,
-  session fixation, malicious tool annotations, hostile event text, nested JSON,
-  Unicode confusables, oversized results, replay, client revocation, and mixed
-  privacy classes.
-- No MCP path can invoke a shell or cross into Response Broker authority.
-- Admission and envelope work p95 below 10 ms; maximum 1 MiB result, 500 rows,
-  eight calls per plan, two concurrent plans, and existing server thread caps.
+**S-M.** Reuses integrity stores, action receipts, and the existing drift table.
+Migration keeps the current golden baseline as revision 1 with explicit legacy
+provenance.
 
 ### Safety
 
-Defensive read-only interoperability. No new offensive tools, generic shell,
-credential relay, autonomous remediation, or hidden network listener. Remote
-authorization remains out of scope until the external mTLS/OIDC gate exists.
+Defensive only. Baselines describe expected state; they do not execute changes.
+No AI, event, or automatic context may promote a baseline.
 
 ---
 
-## 6. Purpose- and Epoch-Bound Telemetry Tokens
+## 6. Event-Driven Drift Provenance
 
-**Pitch.** Replace indefinitely linkable pseudonyms with domain-separated,
-purpose-specific tokens that rotate on policy epochs and require an audited
-join permit for longitudinal analysis.
+**Pitch.** Turn relevant Windows policy events into debounced drift audits that
+explain who or what changed, without automatically fighting legitimate
+administration.
 
-### Why now and threat model
+### Why now
 
-Angerona already HMAC-tokenizes accounts, sources, processes, and destinations,
-but a stable token can still become a long-lived tracking identifier. NIST SP
-800-188 stresses that masking is not automatically sufficient de-identification
-and calls for measurable re-identification review. The IETF Privacy Pass
-architecture formalizes unlinkability across issuance/redemption contexts; this
-proposal borrows the *context separation goal*, not its protocol. Sources:
-[NIST SP 800-188](https://csrc.nist.gov/pubs/sp/800/188/final),
-[RFC 9576 Privacy Pass Architecture](https://www.ietf.org/rfc/rfc9576.html).
+Microsoft recommends monitoring event 4950 against a defined firewall baseline.
+Its current event catalog also identifies 4946–4948 for local rule changes,
+4949 for reset, 4954 for Group Policy refresh, 4956 for active-profile change,
+and 5025 for Firewall Service stop. Event 4697 is recommended for unexpected
+service installation. Windows supports bookmarked push or pull subscriptions
+through EvtSubscribe. Sources:
+[Microsoft event 4950 guidance](https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4950),
+[Microsoft events to monitor](https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/appendix-l--events-to-monitor),
+[Microsoft event 4697 guidance](https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4697),
+[EvtSubscribe](https://learn.microsoft.com/en-us/windows/win32/api/winevt/nf-winevt-evtsubscribe).
 
-Threats are accidental cross-purpose joins, breach-driven long-term tracking,
-salt reuse between tenants/exports, and a rotation that silently destroys the
-minimum correlation needed for detection.
+The current drift check is operator-run and the context timer does not watch
+firewall or service policy changes. That can leave a long detection gap.
 
-### Fit and architecture
+### Fit
 
-- **Core:** extend `data_governance.py` with HKDF-derived keys scoped to
-  `(tenant, purpose, field class, epoch, schema version)`. A token includes only
-  a short purpose/epoch identifier and MAC output.
-- **Analytics:** identity/network analytics declare required lookback and
-  purpose. A bounded overlap permits current/previous epoch comparison; broader
-  joins require a short-lived, typed, audited re-tokenization plan executed at
-  the protected local source.
-- **Export:** each privacy manifest records token domain, epoch, joinability,
-  retention, and deletion state without exposing derivation keys.
-- **Migration:** stable legacy tokens remain labeled `legacy-linkable`; they are
-  never silently relabeled or recomputed without source evidence.
+- **BaseModule/existing endpoint-event engine:** subscribe to the bounded
+  event-ID set with a durable bookmark and publish normalized signed evidence.
+  Do not create a parallel Event Log collector.
+- **Core adaptation:** debounce event bursts, correlate Angerona plan and receipt
+  IDs/time windows, then schedule one read-only audit. Classify provenance as
+  Angerona-approved, local-unattributed, Group Policy refresh, profile
+  transition, service change, or collector gap.
+- **GUI/EventBus:** show change lineage and open the exact drift result. A GPO
+  refresh event is context, not proof of malicious change, and should not be
+  scored without a resulting delta.
+- **Modes:** Detect / Visualize.
 
-### Implementation slices
+### Effort
 
-1. **M:** domain separation for new exports and tests; no database migration.
-2. **M:** epoch rotation for new analytics with measured detection impact.
-3. **M-L:** controlled join permits only after privacy review and recovery tests.
-
-### Tests and performance budget
-
-- Same input in different tenant/purpose/field/epoch domains never matches;
-  same authorized domain is deterministic.
-- Reject weak/missing keys, epoch rollback, cross-tenant salt reuse, unknown
-  versions, oversized values, and unauthorized join attempts.
-- Replay current identity/NDR fixtures across an epoch boundary to quantify lost
-  detections; no privacy change ships if safety-critical correlation regresses.
-- Tokenization remains O(1), adds below 5% to current minimization benchmarks,
-  and retains at most current plus previous epoch keys in memory.
+**S-M** if the existing Windows event pipeline already exposes these IDs;
+otherwise **M** for a reliable bookmark lifecycle. Relevant audit subcategories
+may be disabled, logs can wrap, and access may be denied; periodic bounded
+polling remains a visible degraded fallback.
 
 ### Safety
 
-Privacy hardening only. It does not claim anonymization, export raw identifiers,
-or weaken critical local detections. If privacy and essential response evidence
-conflict, the feature must abstain and show the conflict rather than silently
-breaking either guarantee.
+Defensive and read-only. An event can trigger an audit or alert, never an
+automatic policy reversal, service stop, process action, or remote collection.
 
 ---
 
-## 7. Browser Session-Theft Behavior Correlator
+## Longer-term work
 
-**Pitch.** Detect an infostealer's behavior chain—unexpected access to browser
-credential stores, decryption activity, staging, and outbound transfer—without
-reading, copying, or logging a credential or cookie.
+## 7. Trial-Lease Apply + Crash-Independent Rollback
 
-### Why now and threat model
+**Pitch.** Treat a policy change as a time-limited trial that commits only after
+effective-state and local-health verification; otherwise an independent
+Watchdog restores it.
 
-Microsoft's May 2025 Lumma Stealer analysis shows practical hunting patterns for
-non-browser processes opening sensitive browser files and for suspicious
-cryptographic unprotect operations associated with browser data. Source:
-[Microsoft: Lumma Stealer delivery and capabilities](https://www.microsoft.com/en-us/security/blog/2025/05/21/lumma-stealer-breaking-down-the-delivery-techniques-and-capabilities-of-a-prolific-infostealer/).
+### Why now
 
-Angerona detects LSASS dumping but does not model theft of Chromium/Firefox
-cookies, login databases, or session material. The threat is a signed or renamed
-process accessing browser profile stores, invoking decryption, staging an
-archive, then contacting a new destination. Browser backup, migration,
-password-manager, AV, and enterprise-management software are major benign cases.
+Microsoft documents native Windows Firewall export/import for backup and
+restore, and WFP supports explicit ACID transactions for multi-filter changes.
+NIST's cyber-resiliency guidance calls for dynamic reconfiguration without
+significantly degrading or interrupting service. Sources:
+[netsh advfirewall export/import](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/netsh-advfirewall),
+[Windows Filtering Platform transaction management](https://learn.microsoft.com/en-us/windows/win32/fwp/object-management),
+[NIST SP 800-160 Vol. 2 Rev. 1](https://csrc.nist.gov/pubs/sp/800/160/v2/r1/final).
 
-### Fit and architecture
+The current implementation snapshots before apply and automatically imports on
+an executor exception. A syntactically successful command can still break
+connectivity, be overridden by effective policy, or be followed by a Core/GUI
+crash before the operator can roll back.
 
-- **Core:** add a bounded temporal state machine keyed by immutable process
-  identity. Features are only category flags and keyed path digests:
-  `browser-store-open`, `unexpected-reader`, `decrypt-operation`, `archive-stage`,
-  `new-destination`, `user-session`, and `telemetry-missing`.
-- **Sensors:** consume supported ETW/Event Log/Sysmon or normalized vendor events
-  only when available. Do not install audit policy, read browser databases, hook
-  crypto APIs, or scan cookie values. Missing file-open/decryption evidence is a
-  visible coverage gap.
-- **Baseline:** reuse `process_baseline.py`, exact signer/path/hash provenance,
-  and supervised allowlisting. Never trust basename or publisher alone.
-- **Response:** High confidence requires at least three independent classes,
-  including behavior after access. Resolve Center may stage an exact-process
-  scan/containment preview through existing typed actions.
+### Fit
 
-### Implementation slices
+- **Core:** extend snapshot manifests with ready, trial, committed, rollback_due,
+  restored, and failed states plus an authenticated deadline and expected
+  postcondition digest.
+- **Watchdog:** monitor only a pre-authorized trial receipt. If Core dies, the
+  deadline expires, postconditions fail, or the operator presses “Connectivity
+  lost,” import the exact verified snapshot. Recovery remains allowed while the
+  ordinary breaker is open.
+- **Health contract:** verify the effective ActiveStore, Windows Firewall/BFE
+  service health, Angerona protected IPC/loopback, default-route presence, and
+  optional operator-configured local dependency. No public Internet probe is
+  required or enabled by default.
+- **GUI:** show a countdown with Commit healthy state, Roll back now, and local
+  recovery instructions. Lockdown never commits invisibly.
+- **Future native broker:** when Angerona modifies multiple WFP filters, use one
+  WFP transaction; keep profile-default changes on the documented NetSecurity
+  path. This is Respond / Harden / Visualize.
 
-1. **M:** offline analytic/replay engine with synthetic normalized evidence.
-2. **M-L:** one version-gated passive Windows collector after physical-host
-   privacy and performance measurement.
-3. **M:** signed detection package and benign-enterprise fixture corpus.
+### Effort
 
-### Tests and performance budget
-
-- Positive fixtures cover direct database access, copied database, renamed
-  runtime, decrypt-plus-stage, and stage-plus-egress. Negative fixtures cover
-  browsers, backup/migration, AV, password managers, developer tools, updates,
-  and profile repair.
-- Path strings, URLs, cookie values, passwords, tokens, browser history, and file
-  contents never reach persisted/exported evidence.
-- Missing telemetry, PID reuse, out-of-order data, duplicated records, a single
-  file open, or decryption alone cannot produce High/Critical or authorize action.
-- Fixed five-minute windows, at most 2,048 process states, O(1) updates, and a
-  measured throughput regression below 3% at 50,000 synthetic events/minute.
+**M.** Windows-only, with physical-host, logoff, sleep/resume, service-restart,
+and power-loss acceptance tests. The independent broker must be tightly scoped,
+authenticated, replay-safe, and unable to import arbitrary files.
 
 ### Safety
 
-Defensive detection only. It never opens a browser credential database, calls a
-decryption routine, captures a cookie, simulates theft, generates an exfiltration
-sample, or exposes an infostealer recipe.
+Defensive recovery only. The Watchdog can restore one pre-authorized,
+host-bound snapshot; it cannot run a shell, choose a new policy, contact a
+remote target, or broaden containment.
 
 ---
 
-## Recommended low-risk cut for this sweep
+## 8. Poisoning-Resistant Feedback Lab
 
-1. **Crash Breadcrumb Capsule, diagnostic-only slice.** It directly addresses
-   the current random-crash problem, is one fixed page of metadata, and changes
-   no recovery decision. It should land only after forbidden-field and forced-
-   crash tests prove the capsule is privacy safe.
-2. **WinRE/QMR Readiness, read-only slice.** It is small, version-gated, has no
-   policy mutation, and makes a new Windows recovery/privacy boundary visible.
-   Parsing must discard Wi-Fi elements before any log or model can see them.
+**Pitch.** Move adaptive scoring into a reversible shadow-evaluation workflow so
+attacker-influenced findings and repeated dismissals cannot silently train the
+defender.
 
-The RMM trust ledger is the next detection feature after those two. WebAuthn,
-MCP modernization, rotating telemetry tokens, and browser-theft correlation
-change larger trust or data contracts and should receive their own threat-model
-review before implementation.
+### Why now
 
-## Defensive-only boundary
+NIST's March 2025 adversarial machine-learning taxonomy highlights poisoning,
+evasion, privacy, and misuse attacks and explicitly addresses lifecycle
+mitigations. NIST also cautions that AI/ML defenses are incomplete rather than
+foolproof. Sources:
+[NIST AI 100-2e2025](https://www.nist.gov/publications/adversarial-machine-learning-taxonomy-and-terminology-attacks-and-mitigations-0),
+[NIST announcement and mitigation context](https://www.nist.gov/news-events/news/2025/03/nist-trustworthy-and-responsible-ai-report-adversarial-machine-learning).
 
-Every proposal is defensive, local-first, bounded, and fail-visible. None adds
-exploitation, credential access, destructive payloads, stealth, arbitrary remote
-execution, model-authored executable actions, packet decryption, offensive
-simulation, or an unsigned kernel component. Observation does not authorize
-response; response continues through Angerona's deterministic typed policy and
-human approval paths.
+The current feedback path reduces the weight of an entire category by ten
+percent after a tuned dismissal, down to a floor. It does not distinguish an
+exact development port from all ports, use positive feedback, decay old labels,
+or evaluate the effect before activation. Although operator-confirmed, the
+source finding can still be attacker-shaped.
+
+### Fit
+
+- **Core:** make feedback immutable signed labels scoped to finding type,
+  identity pattern, context, baseline revision, and expiry. Never learn from an
+  event merely because it exists.
+- **Shadow evaluator:** replay only bounded stored feature summaries from recent
+  audits and show false-positive reduction, missed known-positive changes,
+  score delta, and affected findings. Raw paths, PIDs, SSIDs, or command lines
+  are not training data.
+- **Activation:** cap one proposed weight movement to a small delta; require a
+  minimum count across separate audits, positive and negative evidence, exact
+  operator approval, and automatic expiry/rollback. Global category tuning
+  becomes legacy and is resettable.
+- **AI boundary:** local AI may explain a proposal but cannot label evidence,
+  calculate the deterministic score, or activate a change. Reuse the AI
+  Security Broker for typed, cited explanations only.
+- **GUI:** Pending feedback, Shadow result, Activate, Reject, Revert, and Reset
+  controls. This is Detect / Harden / Visualize.
+
+### Effort
+
+**M.** The first version should remain deterministic rather than adding an ML
+dependency. Real anomaly learning needs a much larger labeled corpus and
+adversarial evaluation and is not justified for this local-first feature yet.
+
+### Safety
+
+Defensive only. No online self-training from attacker-controlled telemetry, no
+cloud upload, no autonomous suppression, and no model-generated action.
+
+---
+
+## 9. Signed Windows Posture Packs
+
+**Pitch.** Grow from three firewall profiles into versioned, signed,
+applicability-gated posture assessments whose remediation remains typed,
+previewed, reversible, and separately approved.
+
+### Why now
+
+Microsoft's August 2025 security-baseline guidance says a baseline should
+enforce a setting only when it mitigates a contemporary threat without causing
+worse operational impact. The current Security Compliance Toolkit can compare,
+test, edit, store, and export Microsoft-recommended baselines; Windows Server
+2025 OSConfig now adds versioned, role-aware local baselines with verify and
+remove operations. Sources:
+[Microsoft Security Baselines](https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines),
+[Microsoft Security Compliance Toolkit](https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/security-compliance-toolkit-10),
+[Windows Server 2025 OSConfig baselines](https://learn.microsoft.com/en-us/windows-server/security/osconfig/osconfig-how-to-configure-security-baselines).
+
+Angerona's closed catalog is appropriately narrow today. Adding arbitrary
+PowerShell would destroy that safety property, while hard-coding hundreds of
+settings would create version and policy-ownership drift.
+
+### Fit
+
+- **Detection-content lifecycle:** define a non-executable posture-pack schema
+  signed through Angerona's existing Ed25519 publisher path. It contains stable
+  control IDs, supported OS/build/edition/role, read-only evidence adapters,
+  expected values, severity/rationale, prerequisites, conflicts, verification,
+  and rollback contract.
+- **Phase A — Detect only:** import selected official SCT/Policy Analyzer data
+  through an exact bounded parser, retain source/version/digest, and map a small
+  first set to read-only checks: Firewall, Defender/ASR, audit policy,
+  Credential Guard/VBS, and exposed services. No automatic download or claim of
+  official certification.
+- **Phase B — Reviewed hardening:** implement each mutation as a typed adapter
+  with closed parameters, effective-policy ownership checks, exact dry run,
+  trial lease, postcondition verification, and per-control rollback. AI text is
+  explanation only.
+- **GUI:** posture-pack catalog, applicability, unsupported/conflicting controls,
+  evidence, exceptions with expiry, preview, per-control approval, verification,
+  and rollback. Modes are Detect / Respond / Harden / Visualize.
+
+### Effort
+
+**L.** Dependencies include version-specific Windows APIs, edition/licensing
+gates, domain/MDM precedence, signed-publisher operations, extensive clean-VM
+acceptance, and a policy refresh/rollback lab. Start with five read-only
+controls, not a broad compliance claim.
+
+### Safety
+
+Defensive only. Packs contain no executable script, shell, offensive technique,
+credential material, remote target, or arbitrary registry path. Angerona does
+not bypass enterprise policy, auto-apply a pack, claim CIS/STIG/Microsoft
+certification, or weaponize a setting.
+
+---
+
+## Recommended implementation order
+
+1. Ship the Collector Quality Contract and Restrictive Context Lattice together;
+   they close the two most consequential “bad input becomes bad decision”
+   paths.
+2. Add effective-policy ownership before expanding any automatic apply.
+3. Make action admission single-flight and authenticated before enabling
+   auto-apply outside a lab.
+4. Add versioned baseline promotion and event-driven provenance as read-side
+   improvements.
+5. Require a crash-independent trial lease before treating Emergency Lockdown
+   as production-grade autonomous response.
+6. Keep feedback in shadow mode until it passes poisoning and regression tests.
+7. Treat posture packs as a separate signed-content program after the first six
+   controls have physical-host evidence.
+
+## Explicit non-proposals
+
+- No arbitrary PowerShell, command editor, or “AI-generated fix and run.”
+- No automatic service stop, process kill, route edit, Wi-Fi connect, or network
+  reclassification in Adaption.
+- No SSID-only trust decision and no raw Wi-Fi credential collection.
+- No automatic reversion of GPO/MDM changes.
+- No new kernel driver; future WFP work must reuse Angerona's existing reviewed
+  broker and native qualification boundary.
+- No offensive testing, exploit generation, persistence, credential access, or
+  remote-control capability.

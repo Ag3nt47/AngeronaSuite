@@ -71,6 +71,7 @@ SECURITY NOTES
 from angerona import __version__
 from angerona.core.eventbus import Severity
 from angerona.core.threat import active_threat_events, threat_label
+from angerona.gui.animations import begin_loading, finish_loading
 from angerona.gui.dashboard_details import (
     ConsoleDetailDialog,
     FuturisticDetailDialog,
@@ -2177,6 +2178,15 @@ class ModuleInspector(QDialog):
         if self._is_ai():
             tabs.addTab(self._api_keys_tab(), "API Keys")
             tabs.addTab(self._help_tab(), "Help")
+        from angerona.gui.context_info import (
+            attach_context_info,
+            module_info_topic,
+        )
+        self._context_info = attach_context_info(
+            tabs,
+            "module",
+            resolver=lambda label: module_info_topic(self.module, label),
+        )
         root.addWidget(tabs)
         self._test_done.connect(self._apply_test_result)
 
@@ -2873,12 +2883,16 @@ class AlertDetailDialog(QDialog):
                  "memory_strings": d.get("memory_strings") or [], "details": e.message,
                  "type": e.module}
         self._b_analyze.setEnabled(False); self._b_analyze.setText("Analyzing…")
+        loading_token = begin_loading("Retrieving alert analysis…")
         self._analyze_worker = AnalysisWorker(alert, parent=self)
         self._analyze_worker.progress.connect(self._action_status.setText)
         self._analyze_worker.result_ready.connect(self._on_standalone_analyze)
         self._analyze_worker.error.connect(
             lambda m: (self._action_status.setText(f"⚠ {m}"),
                        self._b_analyze.setEnabled(True), self._b_analyze.setText("Analyze")))
+        self._analyze_worker.finished.connect(
+            lambda token=loading_token: finish_loading(token)
+        )
         self._analyze_worker.start()
 
     def _on_standalone_analyze(self, res: dict) -> None:
@@ -3114,6 +3128,7 @@ class AlertsPanel(QFrame):
             allow_cloud=self._allow_cloud,
             parent=self,
         )
+        loading_token = begin_loading("Retrieving alert analysis…")
         self._analyze_workers.append(worker)
         worker.progress.connect(self._status.setText)
         worker.result_ready.connect(
@@ -3124,6 +3139,9 @@ class AlertsPanel(QFrame):
         # result_ready/error could delete a native QThread that is still
         # unwinding, which aborts the process on Windows.
         worker.finished.connect(lambda w=worker: self._reap_worker(w))
+        worker.finished.connect(
+            lambda token=loading_token: finish_loading(token)
+        )
         worker.start()
 
     @staticmethod
@@ -4894,6 +4912,8 @@ class SettingsDialog(QDialog):
         self._check_updates  = check_updates_fn
         self._apply_theme    = apply_theme_fn
         self._process_baseline = process_baseline
+        self._voice_model_loading_token: str | None = None
+        self._aria_test_loading_tokens: list[str] = []
 
         self.setWindowTitle("Angerona — Settings")
         self.setMinimumWidth(720)
@@ -4933,6 +4953,8 @@ class SettingsDialog(QDialog):
         tabs.addTab(_scroll(self._tab_trusted_processes()), "Trusted Processes")
         tabs.addTab(_scroll(self._tab_mobile()), "Mobile Integration")
         tabs.addTab(_scroll(self._tab_apikeys()), "API Keys")
+        from angerona.gui.context_info import attach_context_info
+        self._context_info = attach_context_info(tabs, "settings")
         self._settings_search.textChanged.connect(self._find_setting)
 
         # ── button row ──
@@ -4957,7 +4979,7 @@ class SettingsDialog(QDialog):
         self._btn_cancel.clicked.connect(self.close)
         # Route background ARIA-test results back to the status label on the GUI thread.
         try:
-            self.aria_test_result.connect(self._aria_test_status.setText)
+            self.aria_test_result.connect(self._aria_test_finished)
             self.voice_model_result.connect(self._voice_model_finished)
             self.process_baseline_result.connect(
                 self._process_baseline_action_finished
@@ -4966,10 +4988,20 @@ class SettingsDialog(QDialog):
             pass
         if initial_tab:
             wanted = str(initial_tab).casefold()
-            for i in range(tabs.count()):
-                if wanted in tabs.tabText(i).casefold():
-                    tabs.setCurrentIndex(i)
-                    break
+            exact = next(
+                (
+                    i for i in range(tabs.count())
+                    if wanted == tabs.tabText(i).casefold()
+                ),
+                None,
+            )
+            if exact is not None:
+                tabs.setCurrentIndex(exact)
+            else:
+                for i in range(tabs.count()):
+                    if wanted in tabs.tabText(i).casefold():
+                        tabs.setCurrentIndex(i)
+                        break
 
     def _find_setting(self, query: str) -> None:
         """Jump to the most relevant settings area without hiding any controls."""
@@ -5981,6 +6013,9 @@ class SettingsDialog(QDialog):
         """The only in-app path that may download a Vosk model: explicit click."""
         self._aria_model_btn.setEnabled(False)
         self._aria_model_status.setText("Downloading and verifying 39 MB to Angerona data…")
+        self._voice_model_loading_token = begin_loading(
+            "Downloading and verifying offline speech model…"
+        )
 
         def _run() -> None:
             try:
@@ -5994,12 +6029,15 @@ class SettingsDialog(QDialog):
         threading.Thread(target=_run, name="VoiceModelInstall", daemon=True).start()
 
     def _voice_model_finished(self, message: str, ready: bool) -> None:
+        finish_loading(self._voice_model_loading_token)
+        self._voice_model_loading_token = None
         self._aria_model_status.setText(message)
         self._aria_model_btn.setEnabled(not ready)
         self._aria_test_status.setText(message)
 
     def _aria_test_voice(self) -> None:
         self._aria_test_status.setText("Speaking a test line…")
+        self._aria_test_loading_tokens.append(begin_loading("Testing local voice…"))
 
         def _run() -> None:
             try:
@@ -6021,6 +6059,7 @@ class SettingsDialog(QDialog):
             self._aria_test_status.setText("Enter IMAP host, mailbox, and password first.")
             return
         self._aria_test_status.setText(f"Connecting to {host} as {user}…")
+        self._aria_test_loading_tokens.append(begin_loading("Retrieving mailbox status…"))
 
         def _run() -> None:
             try:
@@ -6041,6 +6080,7 @@ class SettingsDialog(QDialog):
             return
         kind = self._aria_push_kind.currentText()
         self._aria_test_status.setText(f"Sending a test message to your {kind} webhook…")
+        self._aria_test_loading_tokens.append(begin_loading("Testing notification channel…"))
 
         def _run() -> None:
             try:
@@ -6063,6 +6103,7 @@ class SettingsDialog(QDialog):
             self._aria_test_status.setText("Enter the Teams App ID and password first.")
             return
         self._aria_test_status.setText("Validating Teams bot credentials with Azure…")
+        self._aria_test_loading_tokens.append(begin_loading("Validating Teams connection…"))
 
         def _run() -> None:
             try:
@@ -6079,6 +6120,11 @@ class SettingsDialog(QDialog):
                 msg = f"Teams test error: {exc}"
             self.aria_test_result.emit(msg)
         threading.Thread(target=_run, daemon=True).start()
+
+    def _aria_test_finished(self, message: str) -> None:
+        self._aria_test_status.setText(message)
+        if self._aria_test_loading_tokens:
+            finish_loading(self._aria_test_loading_tokens.pop(0))
 
     def _tab_trusted_processes(self) -> QWidget:
         """Operator-supervised process learning and exact allowlisting."""

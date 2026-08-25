@@ -107,6 +107,10 @@ def test_uac_relaunch_scrubs_hostile_inputs_and_preserves_setup(
     monkeypatch.setattr(privilege.sys, "argv", ["angerona", "--setup"])
     monkeypatch.setattr(privilege.sys, "frozen", False, raising=False)
     original = dict(os.environ)
+    startup_ready = (
+        Path(privilege.__file__).resolve().parents[3].parent
+        / "AngeronaData" / "logs" / "dashboard-ready.signal"
+    ).resolve()
     try:
         os.environ.update({
             "SystemRoot": str(tmp_path / "hostile-root"),
@@ -116,6 +120,7 @@ def test_uac_relaunch_scrubs_hostile_inputs_and_preserves_setup(
             "ANGERONA_CORE_CMD": str(tmp_path / "hostile-core.exe"),
             "ANGERONA_FLEET_SERVICE_KEY": "attacker-authority",
             "OPENAI_API_KEY": "provider-secret",
+            "ANGERONA_STARTUP_READY": str(startup_ready),
         })
         with pytest.raises(SystemExit):
             privilege.ensure_admin()
@@ -127,6 +132,7 @@ def test_uac_relaunch_scrubs_hostile_inputs_and_preserves_setup(
     assert captured["params"] == "-m angerona --setup"
     assert Path(captured["workdir"]).name == "src"
     elevated = captured["environment"]
+    assert elevated["ANGERONA_STARTUP_READY"] == str(startup_ready)
     assert next(
         value for key, value in elevated.items()
         if key.casefold() == "systemroot"
@@ -139,6 +145,22 @@ def test_uac_relaunch_scrubs_hostile_inputs_and_preserves_setup(
         "OPENAI_API_KEY",
     ):
         assert key not in elevated
+
+
+def test_uac_scrub_rejects_noncanonical_startup_ready_path(
+    tmp_path, monkeypatch,
+):
+    _patch_windows_paths(monkeypatch, tmp_path)
+    original = dict(os.environ)
+    try:
+        os.environ["ANGERONA_STARTUP_READY"] = str(
+            tmp_path / "attacker" / "dashboard-ready.signal"
+        )
+        privilege.sanitize_privileged_bootstrap_environment()
+        assert "ANGERONA_STARTUP_READY" not in os.environ
+    finally:
+        os.environ.clear()
+        os.environ.update(original)
 
 
 def test_signed_parent_watchdog_context_is_narrowly_preserved(

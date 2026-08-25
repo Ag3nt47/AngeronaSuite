@@ -119,6 +119,8 @@ class RedTeamConsole(QDialog):
         self._tabs.addTab(self._build_device_lab_tab(), "🛰  Device Security Lab")
         self._tabs.addTab(self._build_editor_tab(), "🧪  Sandbox Editor")
         self._tabs.currentChanged.connect(self._on_tab_changed)
+        from angerona.gui.context_info import attach_context_info
+        self._context_info = attach_context_info(self._tabs, "red-team")
         root.addWidget(self._tabs, 1)
 
         # Engine callbacks originate on worker threads. A queued connection is

@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
 
 from angerona.core.operations_center import LocalOperationsCenter
 from angerona.core.security_interop import OSQUERY_TEMPLATES, discover_osquery
+from angerona.gui.animations import begin_loading, finish_loading
 from angerona.gui.header_controls import motion_allowed
 
 _CASE_STATUSES = ("open", "investigating", "contained", "resolved", "closed")
@@ -273,6 +274,7 @@ class OperationsCenterDialog(QDialog):
         self.service = service
         self.callbacks = dict(callbacks or {})
         self._tasks: set[str] = set()
+        self._task_loading: dict[str, str] = {}
         self._hunt_rows: tuple[Any, ...] = ()
         self.setWindowTitle("Angerona Flow Dashboard — Local SOC")
         self.setMinimumSize(820, 590)
@@ -313,6 +315,8 @@ class OperationsCenterDialog(QDialog):
         self.tabs.addTab(self._build_detections(), "Detection Content")
         self.tabs.addTab(self._build_interoperability(), "Parity & Interop")
         self.tabs.addTab(self._build_audit(), "Audit")
+        from angerona.gui.context_info import attach_context_info
+        self._context_info = attach_context_info(self.tabs, "operations")
         root.addWidget(self.tabs, 1)
 
         actions = QHBoxLayout()
@@ -681,6 +685,9 @@ class OperationsCenterDialog(QDialog):
         if name in self._tasks:
             return
         self._tasks.add(name)
+        self._task_loading[name] = begin_loading(
+            f"Retrieving {name.replace('-', ' ')} information…"
+        )
         self.busy.setText("Working locally: " + ", ".join(sorted(self._tasks)))
 
         def work() -> None:
@@ -696,6 +703,7 @@ class OperationsCenterDialog(QDialog):
 
     def _finish_task(self, name: str, result: object, error: str) -> None:
         self._tasks.discard(name)
+        finish_loading(self._task_loading.pop(name, None))
         self.busy.setText(
             "Working locally: " + ", ".join(sorted(self._tasks)) if self._tasks else "")
         if error:

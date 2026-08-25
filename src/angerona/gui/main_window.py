@@ -30,7 +30,7 @@ from angerona.core.chill_mode import (
 )
 from angerona.core.eco_wakeup import EcoWakeupWorker
 from angerona.core.eventbus import Severity
-from angerona.gui.animations import RunSpinner
+from angerona.gui.animations import GlobalLoadingIndicator, RunSpinner
 from angerona.gui.header_controls import (
     HeaderActionButton, PanelRevealOverlay, motion_allowed)
 from angerona.gui.holographic_orb import HolographicOrbController
@@ -102,6 +102,7 @@ class MainWindow(QMainWindow):
     chill_maintenance_done = Signal(str, bool)
     _security_event_wake = Signal()
     _ir_bundle_done = Signal(object, object)  # Path | None, error | None
+    _adaptation_poll_done = Signal(object, object)  # result | None, error | None
 
     def __init__(
         self, bus, storage, manager, config, *,
@@ -120,6 +121,19 @@ class MainWindow(QMainWindow):
         self._selftest_active = threading.Event()
         self._ir_bundle_in_flight = False
         self._ir_bundle_done.connect(self._on_ir_bundle_done)
+        from angerona.core.host_adaptation import HostAdaptationService
+        try:
+            self._adaptation_service = HostAdaptationService(config.data_dir)
+            self._adaptation_init_error = ""
+        except Exception as exc:
+            # A damaged/locked optional workbench store must not prevent the
+            # defensive dashboard from starting. Opening Adaption retries and
+            # presents the concrete storage error to the operator.
+            self._adaptation_service = None
+            self._adaptation_init_error = str(exc)
+        self._adaptation_dialog = None
+        self._adaptation_poll_active = threading.Event()
+        self._adaptation_poll_done.connect(self._on_adaptation_poll_done)
 
         self.setWindowTitle("Angerona — Security Suite")
         # Custom shield icon (assets/icons/angerona.ico) — falls back to the
@@ -168,6 +182,17 @@ class MainWindow(QMainWindow):
         header = QHBoxLayout()
         left = QWidget(); bl = QHBoxLayout(left)
         bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(8)
+        adaptation_btn = HeaderActionButton(
+            "ADAPTION",
+            "adaptation",
+            "Adaption — Adapt to Host",
+            "Audits this host, detects drift, manages known-good exceptions, "
+            "simulates intent profiles, and applies only reversible, circuit-breaker-"
+            "gated firewall changes.",
+        )
+        adaptation_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                adaptation_btn, self._open_adaptation, "#67e8f9"))
         test_btn = HeaderActionButton(
             "RUN SELF-TEST",
             "selftest",
@@ -221,11 +246,17 @@ class MainWindow(QMainWindow):
         # existing start()/stop()/set_active() call sites harmless.
         self.red_swords = _NoAnim()
         self.shark_swim = _NoAnim()
+        # Adaption is intentionally the first dashboard control: it establishes
+        # what is normal for this host before the operator runs deeper actions.
+        bl.addWidget(adaptation_btn)
         bl.addWidget(test_btn); bl.addWidget(sim_btn); bl.addWidget(self.eco_btn)
         # Live progress wheel: shows self-test / eco-wake activity with a colour-
         # coded percentage (red → amber → green) right beside the buttons.
         self.run_spinner = RunSpinner()
-        bl.addWidget(self.run_spinner)
+        # Separate, reference-counted activity ring for startup and data reads.
+        # It can overlap self-tests/eco wake without either operation hiding the
+        # other's progress, and short reads are filtered by a reveal delay.
+        self.loading_indicator = GlobalLoadingIndicator()
         bl.addStretch(1)
 
         brand = QLabel("ANGERONA")
@@ -244,6 +275,20 @@ class MainWindow(QMainWindow):
         _bl.setSpacing(0)
         _bl.addWidget(brand)
         _bl.addWidget(self.posture_lbl)
+        # Startup and long-running activity owns a small centered lane below
+        # the brand. Keeping it out of the button rows prevents the trailing
+        # ring from being clipped as header actions are added or compacted.
+        activity_box = QWidget()
+        activity_box.setObjectName("HeaderActivityLane")
+        self._header_activity_box = activity_box
+        activity_layout = QHBoxLayout(activity_box)
+        activity_layout.setContentsMargins(0, 0, 0, 0)
+        activity_layout.setSpacing(4)
+        activity_layout.addStretch(1)
+        activity_layout.addWidget(self.run_spinner)
+        activity_layout.addWidget(self.loading_indicator)
+        activity_layout.addStretch(1)
+        _bl.addWidget(activity_box)
 
         right = QWidget(); rl = QHBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(8)
@@ -363,6 +408,7 @@ class MainWindow(QMainWindow):
         rl.addWidget(settings_btn); rl.addWidget(stop_btn)
 
         # Keep references so the guided tour can highlight each control by name.
+        self._adaptation_btn = adaptation_btn
         self._selftest_btn = test_btn
         self._sim_btn = sim_btn
         self._worldview_btn = worldview_btn
@@ -373,7 +419,7 @@ class MainWindow(QMainWindow):
         self._setup_btn = setup_btn
         self._settings_btn = settings_btn
         self._stop_btn = stop_btn
-        self._header_primary_buttons = [test_btn, sim_btn, self.eco_btn]
+        self._header_primary_buttons = [adaptation_btn, test_btn, sim_btn, self.eco_btn]
         self._header_nav_buttons = [
             worldview_btn,
             attack_heatmap_btn,
@@ -415,6 +461,10 @@ class MainWindow(QMainWindow):
         self._right_tabs.addTab(self.alerts_panel, "Live Alerts")
         self._right_tabs.addTab(self.soar_panel, "SOAR Queue")
         self._right_tabs.addTab(self.scan_center, "🛡 Scan Center")
+        from angerona.gui.context_info import attach_context_info
+        self._dashboard_info = attach_context_info(
+            self._right_tabs, "dashboard"
+        )
         self.alerts_panel.scan_requested.connect(
             lambda: self._right_tabs.setCurrentWidget(self.scan_center)
         )
@@ -619,6 +669,11 @@ class MainWindow(QMainWindow):
             self._run_sparse_chill_maintenance
         )
         self._chill_maintenance_timer.start(60 * 60 * 1000)
+        # Trigger state, collection, and any profile work all run on a worker;
+        # the timer callback itself never performs filesystem or host I/O.
+        self._adaptation_timer = QTimer(self)
+        self._adaptation_timer.timeout.connect(self._poll_adaptation_context)
+        self._adaptation_timer.start(15_000)
         # Do NOT call self._refresh() here — modules haven't loaded yet
         # (discover/start run on a background thread after first paint).
         # The first timer tick at t=1s will populate the panels with live data.
@@ -706,6 +761,12 @@ class MainWindow(QMainWindow):
             button.set_compact(nav_compact, icon_extent)
         for button in getattr(self, "_header_primary_buttons", ()):
             button.set_compact(primary_compact, icon_extent)
+        for indicator in (
+            getattr(self, "run_spinner", None),
+            getattr(self, "loading_indicator", None),
+        ):
+            if indicator is not None:
+                indicator.set_compact(width < 1900, icon_extent)
         stop = getattr(self, "_header_stop_button", None)
         if stop is not None:
             stop.set_compact(stop_compact, icon_extent)
@@ -3252,6 +3313,94 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Sandbox", f"Could not open the sandbox: {exc}")
 
+    def _open_adaptation(self):
+        """Open (or raise) the host adaptation safety workbench."""
+        try:
+            if self._adaptation_service is None:
+                from angerona.core.host_adaptation import HostAdaptationService
+                self._adaptation_service = HostAdaptationService(self.config.data_dir)
+                self._adaptation_init_error = ""
+            from angerona.gui.adaptation_workbench import AdaptationWorkbench
+            if self._adaptation_dialog is None:
+                self._adaptation_dialog = AdaptationWorkbench(
+                    self._adaptation_service, self
+                )
+            self._adaptation_dialog.setStyleSheet(self._qss())
+            self._adaptation_dialog.show()
+            self._adaptation_dialog.raise_()
+            self._adaptation_dialog.activateWindow()
+            return self._adaptation_dialog
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Adaption — Adapt to Host",
+                f"The host adaptation workbench could not open.\n\n{exc}",
+            )
+            return None
+
+    def _poll_adaptation_context(self) -> None:
+        """Evaluate armed context rules without ever blocking dashboard paint."""
+        if self._adaptation_poll_active.is_set():
+            return
+        if self._adaptation_service is None:
+            return
+        self._adaptation_poll_active.set()
+
+        def _worker() -> None:
+            try:
+                result = self._adaptation_service.run_automatic_cycle()
+                self._adaptation_poll_done.emit(result, None)
+            except Exception as exc:
+                self._adaptation_poll_done.emit(None, exc)
+
+        threading.Thread(
+            target=_worker, name="HostAdaptionContextMonitor", daemon=True
+        ).start()
+
+    def _on_adaptation_poll_done(self, result, error) -> None:
+        self._adaptation_poll_active.clear()
+        if error is not None:
+            detail = str(error)[:800]
+            if detail != getattr(self, "_adaptation_last_error", ""):
+                self._adaptation_last_error = detail
+                try:
+                    self.console._append(f"[adaption] context cycle safely refused: {detail}")
+                except Exception:
+                    pass
+            return
+        self._adaptation_last_error = ""
+        if not isinstance(result, dict):
+            return
+        status = result.get("status")
+        rule = result.get("rule") or (
+            result.get("matches", [None])[0]
+            if result.get("matches") else {}
+        )
+        if status in {"proposed", "applied"}:
+            profile_id = rule.get("profile_id", "profile") if isinstance(rule, dict) else "profile"
+            message = (
+                f"Context matched; review proposed profile '{profile_id}'."
+                if status == "proposed"
+                else f"Context profile '{profile_id}' applied with a rollback snapshot."
+            )
+            try:
+                self.console._append(f"[adaption] {message}")
+                self.tray.showMessage(
+                    "Angerona Adaption", message,
+                    QSystemTrayIcon.Information, 5000,
+                )
+            except Exception:
+                pass
+        dialog = self._adaptation_dialog
+        if (
+            status in {"proposed", "context-changed", "applied"}
+            and dialog is not None
+            and dialog.isVisible()
+        ):
+            try:
+                dialog.refresh_after_automatic_cycle(str(status))
+            except Exception:
+                pass
+
     def _open_upgrade_console(self) -> None:
         try:
             self._upgrade_console = launch_upgrade_console(
@@ -3328,6 +3477,13 @@ class MainWindow(QMainWindow):
                 view.setReadOnly(True)
                 view.setPlainText(body)
                 tabs.addTab(view, title.split("—")[0].strip()[:20])
+            from angerona.core.menu_info import get_menu_info
+            from angerona.gui.context_info import attach_context_info
+            attach_context_info(
+                tabs,
+                "help",
+                resolver=lambda _label: get_menu_info("help", "Help & Info"),
+            )
             lay.addWidget(tabs)
             brow = QHBoxLayout()
             tour_btn = QPushButton("▶  Take the interactive tour")

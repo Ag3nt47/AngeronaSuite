@@ -81,6 +81,37 @@ def test_startup_eco_defers_heavy_modules_before_their_first_thread() -> None:
     assert not any(name == "Process Monitor" for name, _ in starts)
 
 
+def test_module_startup_reports_each_module_coming_online() -> None:
+    from angerona.core.module_manager import ModuleManager
+
+    progress: list[tuple[int, int, str]] = []
+
+    class FakeModule:
+        enabled_by_default = True
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def start(self) -> None:
+            pass
+
+    class FakeConfig:
+        module_states = {}
+
+    manager = ModuleManager(None, FakeConfig())
+    manager.modules = {
+        "Watchdog Monitor": FakeModule("Watchdog Monitor"),
+        "Light Monitor": FakeModule("Light Monitor"),
+    }
+
+    manager.start_enabled(min_settle=0, progress=lambda *row: progress.append(row))
+
+    assert progress == [
+        (1, 2, "Watchdog Monitor"),
+        (2, 2, "Light Monitor"),
+    ]
+
+
 def test_normal_startup_waits_for_each_initial_work_cycle() -> None:
     from angerona.core.module_manager import ModuleManager
 

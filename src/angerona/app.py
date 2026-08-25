@@ -16,6 +16,42 @@ from angerona.core.evidence_ingestion import EvidenceIngestionWorker
 from angerona.gui.main_window import MainWindow
 
 
+def _mark_dashboard_ready(config) -> bool:
+    """Publish the source-launcher handshake only to the canonical log path."""
+    import json
+    import os
+    import tempfile
+    import time
+    from pathlib import Path
+
+    configured = str(os.environ.get("ANGERONA_STARTUP_READY", "")).strip()
+    if not configured:
+        return False
+    expected = (Path(config.data_dir) / "logs" / "dashboard-ready.signal").resolve()
+    requested = Path(configured).resolve()
+    if requested != expected:
+        return False
+    try:
+        requested.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(
+            prefix=".dashboard-ready.", suffix=".tmp", dir=str(requested.parent)
+        )
+        tmp = Path(temporary)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump({"pid": os.getpid(), "ready_at": time.time()}, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            from angerona.core.atomic_io import replace_with_retry
+
+            replace_with_retry(tmp, requested)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 class AngeronaApp:
     """Owns the lifecycle of every long-lived service."""
 
@@ -249,6 +285,7 @@ class AngeronaApp:
 
             def _show_dashboard():
                 self.window.show()
+                _mark_dashboard_ready(self.config)
                 return self.window
 
             reveal.reveal(
@@ -258,6 +295,7 @@ class AngeronaApp:
             )
         else:
             self.window.show()
+            _mark_dashboard_ready(self.config)
         self.qt.aboutToQuit.connect(self.shutdown)
         from PySide6.QtCore import QTimer
         # Let the window actually paint and become interactive before kicking off
@@ -423,10 +461,14 @@ class AngeronaApp:
         Spawns a background thread for the slow work so the GUI stays
         responsive while modules import and start."""
         import threading
-        threading.Thread(target=self._load_modules_guarded, daemon=True,
+        from angerona.gui.animations import begin_loading
+
+        token = begin_loading("Preparing protection services…")
+        self._startup_loading_token = token
+        threading.Thread(target=self._load_modules_guarded, args=(token,), daemon=True,
                          name="ModuleLoader").start()
 
-    def _load_modules_guarded(self) -> None:
+    def _load_modules_guarded(self, loading_token: str | None = None) -> None:
         """Keep a loader failure observable instead of losing a daemon thread."""
         try:
             self._load_modules()
@@ -440,11 +482,25 @@ class AngeronaApp:
             self._blackbox_note(
                 "protection module loading failed; open Startup Health in Live Alerts"
             )
+        finally:
+            if loading_token:
+                from angerona.gui.animations import finish_loading
+
+                finish_loading(loading_token)
+                self._startup_loading_token = None
 
     def _load_modules(self) -> None:
         """Background thread — no Qt widget access here, only thread-safe
         bus/manager calls. Qt signals emitted by modules are automatically
         queued to the main thread by the Qt runtime."""
+        from angerona.gui.animations import update_loading
+
+        loading_token = getattr(self, "_startup_loading_token", None)
+
+        def _loading(label: str, done: int = 0, total: int = 0) -> None:
+            if loading_token:
+                update_loading(loading_token, label, done=done, total=total)
+
         # Bring the out-of-process watchdog and telemetry scanner online first.
         # They used to wait behind every module's initial scan, so during staged
         # startup their windows could appear minutes late (or not at all if one
@@ -460,6 +516,7 @@ class AngeronaApp:
                 "0", "false", "no", "off"
             )
         ):
+            _loading("Starting recovery and watchdog services…")
             try:
                 from angerona.resilience.manager import start_resilience
                 from angerona.resilience import shutdown_token as _tok
@@ -488,19 +545,42 @@ class AngeronaApp:
                     Severity.HIGH,
                 )
 
+        _loading("Discovering protection modules…")
         self.manager.discover()        # find built-in + drop-in modules
         # In startup Chill Mode, do not start deep scanners merely to stop them a
         # moment later. Their first scans were racing at boot and starving Qt.
         deferred = set()
         if getattr(self.config, "eco_mode", True):
             deferred.update(getattr(self.window, "_ECO_HEAVY_MODULES", ()))
-        self.manager.start_enabled(deferred_names=deferred)
+        enabled_total = (
+            sum(
+                1 for name in self.manager.modules
+                if self.manager.is_enabled(name) and name not in deferred
+            )
+            if isinstance(self.manager, ModuleManager)
+            else 0
+        )
+        _loading("Bringing protection modules online…", 0, enabled_total)
+
+        def _module_progress(done: int, total: int, name: str) -> None:
+            _loading(f"Bringing {name} online…", done, total)
+
+        if isinstance(self.manager, ModuleManager):
+            self.manager.start_enabled(
+                deferred_names=deferred,
+                progress=_module_progress,
+            )
+        else:
+            # Lightweight test/dry-run managers may implement the older,
+            # narrower call surface. Production always uses ModuleManager.
+            self.manager.start_enabled(deferred_names=deferred)
         # Establish the saved Chill policy now (sentinel cadence + model release)
         # (hops to the GUI thread via a queued signal — no widget access here).
         try:
             self.window.startup_eco_requested.emit()
         except Exception:
             pass
+        _loading("Starting status reporting…")
         self.reporter.start()          # begin writing diagnostics/status.txt
         # Start MCP server after modules are loaded so all tools have live data
         if self._mcp is not None:
@@ -513,6 +593,7 @@ class AngeronaApp:
                     "the optional local tool server could not start",
                     exc,
                 )
+        _loading("Finalizing protection services…")
         self._start_fleet_service()
 
     def _start_fleet_service(self) -> bool:

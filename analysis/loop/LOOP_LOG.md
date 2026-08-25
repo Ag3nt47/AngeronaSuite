@@ -1206,3 +1206,90 @@ boundaries, and primary-source citations are in
   clean. The concise record is
   `analysis/loop/cycle22/three_loop_summary.md`; canonical documentation is
   README + both `llms.txt` copies + the consolidated Cycle 22 master manual.
+
+## Round 8 — Host Adaption Red Team
+
+- Five Medium weaknesses were confirmed in the first implementation: stale
+  automation authority, missing effective-state postconditions, over-broad
+  exceptions/feedback, weaker SSID precedence over Public context, and
+  incomplete collector identity/coverage.
+- The pass also required trusted absolute Windows tool paths, a sanitized child
+  environment, more explicit recovery evidence, and honest reporting when a
+  bounded collector is partial.
+- No real firewall policy was changed. Full evidence:
+  `analysis/loop/round8/redteam_findings.md`.
+
+## Round 8 — Host Adaption Remediation
+
+- All five findings were fixed with revision/CAS authorization, final
+  pre-execution context checks, a single-flight apply/rollback transaction,
+  effective ActiveStore postcondition verification, automatic verified recovery,
+  exact anomaly fingerprints, three-distinct-review feedback gating, and
+  strongest-posture context ordering with no automatic relaxation.
+- Service, listener, firewall-profile, and bounded firewall-rule collectors now
+  carry explicit quality metadata. Missing coverage is never scored as healthy.
+  A final live read-only check also fixed profile collection to request
+  `Get-NetFirewallProfile -PolicyStore ActiveStore` explicitly.
+- Deferred: deep firewall program/service/address/port filter joins, service
+  executable signer/content-hash attestation, crash-independent trial leases,
+  and event-driven context wakeups. Full evidence:
+  `analysis/loop/round8/remediation_summary.md`.
+
+## Round 8 — Bug Test
+
+- Host-adaptation QA compiled **304/304** package files, imported **129/129**
+  core modules, passed core self-tests **19/19**, discovered **66 modules / 0
+  errors / 0 duplicate codes**, and passed selfcheck **26/26** through both the
+  Python harness and batch wrapper.
+- The final aggregate after adversary/remediation convergence passed **1077
+  tests / 3 intentional platform skips / 0 failures**; the final focused
+  host-adaptation/UI/performance set passed **20/20**.
+- Fixed context re-entry proposal de-duplication, conservative multi-network
+  Public-category detection, and batch self-check exit-code propagation. Real
+  elevated firewall mutation/rollback and physical mixed-network topology
+  remain controlled external acceptance gates. Full evidence:
+  `analysis/loop/round8/bugtest_results.md`.
+
+## Round 8 — Visionary
+
+### Host Adaptation visionary pass (2026-08-24)
+
+- Reviewed the new Adaption core/workbench against current Microsoft, NIST, and
+  CISA primary guidance. The shipped design already separates audit, preview,
+  simulation, approval, snapshot, apply, rollback, context automation, feedback,
+  and activity with a closed firewall profile catalog.
+- Ranked **9 defensive, buildable proposals**. Safe immediate priorities are a
+  collector-quality contract, restrictive context lattice with hysteresis,
+  effective Firewall ActiveStore/GPO/MDM ownership checks, an authenticated
+  single-flight action journal, versioned baseline promotion, and event-driven
+  drift provenance.
+- Longer-term gates are a health-verified trial lease with crash-independent
+  Watchdog rollback, poisoning-resistant shadow feedback, and signed
+  non-executable Windows posture packs.
+- The pass explicitly rejects arbitrary commands, SSID-only trust, automatic
+  GPO/MDM reversal, online self-training, new offensive capabilities, and a new
+  kernel driver. Full sources, architecture fit, effort, limitations, and safety
+  boundaries are in `analysis/loop/innovation_ideas.md`.
+- During remediation, bounded versions of collector-quality contracts,
+  restrictive context ordering, effective ActiveStore verification, and
+  single-flight revision-bound action admission shipped. Versioned baseline
+  lifecycle, drift provenance, trial leases, shadow feedback, and signed posture
+  packs remain proposals. Concise disposition:
+  `analysis/loop/round8/visionary_summary.md`.
+
+## Round 8 — Performance
+
+- Removed signed-state filesystem I/O from the 15-second Qt timer callback and
+  eliminated its duplicate enabled-cycle state read (two reads to one); all
+  collection and command work remains on the existing single-flight worker.
+- Coalesced full-workbench signed-state reads from three to two while preserving
+  the core breaker's time-window semantics.
+- Added bounded row signatures and selective automatic-cycle refresh routing so
+  unchanged activity, exception, trigger, and snapshot views retain their Qt
+  items. A 500-row activity microbenchmark improved from **12.671 ms** forced
+  rebuild to **0.869 ms** unchanged refresh (**14.6x**).
+- Gates: changed-file compile **PASS**; host-adaptation core self-test **PASS**;
+  focused GUI/core tests **12 passed**. Event-driven Windows network wakeups and
+  an asynchronous first-load bundle remain proposed pending native lifecycle and
+  missed-event testing. Full evidence:
+  `analysis/loop/round8/performance_summary.md`.

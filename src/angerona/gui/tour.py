@@ -243,6 +243,13 @@ def build_default_steps(mw) -> "list[TourStep]":
                  "that isn't a command streams to ARIA, whose reply types in live. Try "
                  "\"what's my posture?\" or \"capabilities\".",
                  g("console")),
+        TourStep("ADAPTION — Adapt to Host",
+                 "Start here to learn what is normal for this computer. Run a deep audit, review and "
+                 "save a golden baseline, pin exact known-good drift, and export JSON or CSV. Intent "
+                 "profiles show their exact command stack and can be tested in a no-write sandbox. "
+                 "Applying requires confirmation and a rollback snapshot; context automation adds "
+                 "cooldowns and a circuit breaker.",
+                 g("_adaptation_btn")),
         TourStep("RUN SELF-TEST",
                  "Runs every module's self-test and an end-to-end pipeline check, so you know your "
                  "sensors actually work. Watch the colour wheel next to the buttons climb red → amber "

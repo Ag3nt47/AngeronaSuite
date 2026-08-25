@@ -49,6 +49,18 @@ def test_backup_batch_has_fail_closed_mirror_boundary() -> None:
     assert "echo   target" not in source
 
 
+def test_backup_batch_does_not_reuse_choice_errorlevel_for_directory_creation() -> None:
+    source = BATCH.read_text(encoding="utf-8").lower()
+
+    assert 'call :ensure_directory "f:\\angerona-backups" "protected backup root"' in source
+    assert 'call :ensure_directory "%dst%" "backup folder"' in source
+    assert ':ensure_directory' in source
+    assert 'if exist "%~1\\" exit /b 0' in source
+    assert 'mkdir "%~1" >nul' in source
+    assert 'mkdir "f:\\angerona-backups" >nul 2>&1' not in source
+    assert "chkdsk f: /f" in source
+
+
 def test_backup_batch_excludes_private_runtime_and_large_state() -> None:
     source = BATCH.read_text(encoding="utf-8").lower()
 

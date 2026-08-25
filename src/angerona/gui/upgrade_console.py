@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from angerona.core.url_policy import LOCAL_SERVICE_POLICY, read_bounded, safe_urlopen
+from angerona.gui.animations import begin_loading, finish_loading
 
 _DEFAULT_OLLAMA_MODELS = ["llama3:8b", "mistral:7b", "phi3:latest"]
 _UPGRADE_UI_POOL: QThreadPool | None = None
@@ -154,6 +155,7 @@ class AngeronaUpgradeConsole(QMainWindow):
         self._model_check_in_flight = False
         self._model_check_token = 0
         self._model_check_name = ""
+        self._loading_tokens: dict[tuple[str, int], str] = {}
         self.setWindowTitle("Project Angerona — Advanced Management Console")
         self.resize(860, 620)
 
@@ -165,6 +167,10 @@ class AngeronaUpgradeConsole(QMainWindow):
         self._init_ai_sandbox_tab()
         self._init_watchdog_tab()
         self._init_telemetry_tab()
+        from angerona.gui.context_info import attach_context_info
+        self._context_info = attach_context_info(
+            self.tabs, "advanced-console"
+        )
 
     # ── helpers ──────────────────────────────────────────────────────────────
     def _data_dir(self) -> Path:
@@ -367,6 +373,9 @@ class AngeronaUpgradeConsole(QMainWindow):
         token = self._new_async_token()
         self._model_list_token = token
         self._model_list_in_flight = True
+        self._loading_tokens[("list_models", token)] = begin_loading(
+            "Retrieving local model list…"
+        )
         worker = _UpgradeWorker(
             "list_models",
             token,
@@ -401,6 +410,9 @@ class AngeronaUpgradeConsole(QMainWindow):
         self._model_check_token = token
         self._model_check_name = model
         self._model_check_in_flight = True
+        self._loading_tokens[("check_model", token)] = begin_loading(
+            f"Checking local model {model}…"
+        )
         self._model_check_btn.setEnabled(False)
         self._model_status.setText(f"Checking {model}…")
         worker = _UpgradeWorker(
@@ -438,6 +450,7 @@ class AngeronaUpgradeConsole(QMainWindow):
     @Slot(str, int, object)
     def _handle_async_result(self, operation: str, token: int, result: object) -> None:
         """Apply worker results on the owning Qt thread only."""
+        finish_loading(self._loading_tokens.pop((operation, token), None))
         if operation == "list_models":
             if token != self._model_list_token:
                 return
@@ -483,6 +496,9 @@ class AngeronaUpgradeConsole(QMainWindow):
     def closeEvent(self, event) -> None:
         """Ignore late worker results and stop periodic refreshes after close."""
         self._accept_async_results = False
+        for loading_token in self._loading_tokens.values():
+            finish_loading(loading_token)
+        self._loading_tokens.clear()
         for name in ("_wd_timer", "_t_timer"):
             timer = getattr(self, name, None)
             if timer is not None:

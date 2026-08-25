@@ -400,6 +400,21 @@ def test_reduced_motion_environment_is_a_hard_override(monkeypatch) -> None:
     parent.close()
 
 
+def test_reveal_overlay_ignores_events_after_animation_teardown() -> None:
+    _app()
+    parent = QWidget()
+    overlay = PanelRevealOverlay(parent)
+
+    class DeletedAnimation:
+        @staticmethod
+        def state():
+            raise RuntimeError("Internal C++ object already deleted")
+
+    overlay._animation = DeletedAnimation()
+    assert overlay._animation_busy() is True
+    parent.close()
+
+
 def test_system_pulse_card_and_human_readable_units() -> None:
     _app()
     card = SystemPulseCard(interval_ms=60_000)

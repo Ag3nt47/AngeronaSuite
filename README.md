@@ -64,9 +64,44 @@ existing BCC/eBPF sensor is an explicit privileged supplement.
 > Secrets, settings, telemetry, diagnostics, and runtime state are excluded by
 > `.gitignore`; review staged files and Git history before publishing a fork.
 
-> **Full documentation:** [Master Manual v1.10.0](analysis/Angerona_Master_Manual_v1.10.0_Cycle22.docx)
-> (Cycle 22), or use [llms.txt](llms.txt) for the machine-readable project
+> **Full documentation:** [Master Manual v1.10.1](analysis/Angerona_Master_Manual_v1.10.1.docx)
+> (Host Adaption improvement loop), or use [llms.txt](llms.txt) for the machine-readable project
 > reference.
+
+## LATEST (v1.10.1 — Host Adaption / Adapt to Host)
+
+- **New dashboard workbench.** The top-left **ADAPTION** button opens a complete
+  local workbench with an always-visible **ADAPT HOST** action and Overview,
+  Audit + Drift, Exceptions + Feedback, Adapt Host, Sandbox, Automation, and
+  Activity tabs plus File, Audit, Adapt, Safety, and Help menus. Dashboard
+  loading activity has a reserved centered lane so header buttons cannot clip it.
+- **Deep audit with honest coverage.** Hardware, services, listeners, network
+  context, effective Windows Firewall ActiveStore profiles, and a bounded rule
+  inventory can be captured as a golden baseline and compared for drift.
+  Collector completeness, truncation, skips, and errors remain visible; missing
+  coverage is never scored as healthy. Exact known-good anomalies can be pinned,
+  and reports export as formula-safe JSON or CSV.
+- **Typed, reversible profiles.** Balanced, Public Network, and Emergency
+  Lockdown use a closed firewall-only catalog. Exact short-lived plans show the
+  command stack before approval; the no-write sandbox projects results without
+  touching the host. A real apply requires a verified firewall export, exact
+  plan confirmation, unchanged preconditions, effective-state postconditions,
+  and automatic verified recovery on failure. One-click rollback verifies both
+  the signed manifest and firewall artifact.
+- **Conservative automation.** SSID, VPN, and Public-network rules begin in
+  proposal-only mode. Auto-apply is separately armed, revision-bound, serialized,
+  and re-authorized immediately before mutation. The strongest matched posture
+  wins, automation never relaxes the observed firewall posture, and a persistent
+  circuit breaker limits repeated changes. Feedback requires distinct exact
+  findings before bounded local tuning.
+- **Loop evidence and remaining depth.** The bug/adversary/remediation,
+  performance, and visionary pass fixed stale-context races, context precedence,
+  over-broad exception/feedback scope, incomplete collection, and unverified
+  apply/restore outcomes. Unchanged table refreshes are up to **14.6x** faster.
+  Final gates are **1078 passed / 3 intentional platform skips**, focused
+  adaptation **20/20**, and selfcheck **26/26**. Real elevated firewall mutation,
+  physical mixed-network acceptance, deep firewall filter joins, and service
+  executable signer/hash attestation remain explicit external or deferred work.
 
 ## LATEST (2026-08-24 — optional ARIA conversation and hand controls)
 
