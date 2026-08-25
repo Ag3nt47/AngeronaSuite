@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
 from angerona.gui.animations import begin_loading, finish_loading
 
 from angerona.core.url_policy import (
-    LOCAL_SERVICE_POLICY,
+    OLLAMA_SERVICE_POLICY,
     local_service_url,
     read_bounded,
     safe_urlopen,
@@ -281,7 +281,7 @@ def _call_ollama(prompt: str) -> Optional[str]:
         headers={"Content-Type": "application/json"},
     )
     try:
-        with safe_urlopen(req, policy=LOCAL_SERVICE_POLICY, timeout=_OLLAMA_TIMEOUT) as resp:
+        with safe_urlopen(req, policy=OLLAMA_SERVICE_POLICY, timeout=_OLLAMA_TIMEOUT) as resp:
             data = json.loads(read_bounded(resp).decode("utf-8"))
         return (data.get("message", {}) or {}).get("content", "").strip()
     except Exception as exc:

@@ -12,6 +12,7 @@ import json
 import queue
 import threading
 import time
+from pathlib import Path
 
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QIcon, QPixmap
@@ -59,6 +60,57 @@ class _NoAnim:
     keep working while nothing renders."""
     def __getattr__(self, _name):
         return lambda *_args, **_kwargs: None
+
+
+def _is_owned_angerona_process(process, project_root: Path) -> bool:
+    """Bind shutdown authority to an exact suite interpreter or script path."""
+    try:
+        root = project_root.resolve(strict=False)
+        executable = Path(str(process.exe() or "")).resolve(strict=False)
+        suite_interpreters = {
+            (root / "venv" / "Scripts" / "python.exe").resolve(strict=False),
+            (root / "venv" / "Scripts" / "pythonw.exe").resolve(strict=False),
+        }
+        command = [str(value) for value in (process.cmdline() or [])]
+        approved_modules = {
+            "angerona",
+            "angerona.resilience.scanner",
+            "angerona.resilience.status_ui",
+            "angerona.resilience.watchdog",
+        }
+        if (
+            executable in suite_interpreters
+            and len(command) >= 3
+            and command[1] == "-m"
+            and command[2] in approved_modules
+        ):
+            return True
+        approved_scripts = {
+            (root / "src" / "angerona" / "__main__.py").resolve(strict=False),
+            (root / "blackbox_recorder.py").resolve(strict=False),
+        }
+        try:
+            working_directory = Path(str(process.cwd() or "")).resolve(strict=False)
+        except Exception:
+            working_directory = root
+        index = 1
+        while index < len(command):
+            token = command[index]
+            if token in {"-W", "-X"}:
+                index += 2
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            candidate = Path(token)
+            if candidate.suffix.casefold() not in {".py", ".pyw"}:
+                return False
+            if not candidate.is_absolute():
+                candidate = working_directory / candidate
+            return candidate.resolve(strict=False) in approved_scripts
+    except Exception:
+        return False
+    return False
 
 
 def _dashboard_refresh_plan(
@@ -2080,26 +2132,30 @@ class MainWindow(QMainWindow):
             for w in vuln:
                 res = pm.generate_remediation(w["mitre_id"])
                 if res.get("ok"):
-                    out.append(f"— {w['name']} ({w['mitre_id']}) → staged {res['path']}\n"
-                               f"{res['script'][:800]}")
+                    out.append(
+                        f"— {w['name']} ({w['mitre_id']}) → inert advisory {res['path']}\n"
+                        f"{res['script']}"
+                    )
                 else:
                     out.append(f"— {w['mitre_id']}: {res.get('error')}")
-            return ("Local-AI remediation generated (review before applying):\n\n"
-                    + "\n\n".join(out))
+            plan = pm.apply_vetted_remediation(apply=False)
+            return (
+                "Local-AI advisories generated (inert; never executed):\n\n"
+                + "\n\n".join(out)
+                + f"\n\n[VETTED PLAN READY] {len(plan.get('plan', []))} reviewed "
+                "typed remediation item(s) are available."
+            )
 
         def _apply() -> str:
             if pm is None:
                 return "Posture Hardening module not available."
-            res = []
-            for w in pm.weaknesses("VULNERABLE"):
-                r = pm.execute_remediation(w["mitre_id"], authorized=True)
-                if r.get("ok"):
-                    res.append(f"— {w['mitre_id']}: applied (rc={r.get('returncode')})")
-                elif r.get("review_required"):
-                    res.append(f"— {w['mitre_id']}: no staged script — run Attempt Fix first")
-                else:
-                    res.append(f"— {w['mitre_id']}: {r.get('error', 'failed')}")
-            return "Apply results:\n" + "\n".join(res)
+            result = pm.apply_vetted_remediation(apply=True)
+            return (
+                "Vetted typed remediation results: "
+                f"applied={result.get('applied', 0)}, "
+                f"skipped={result.get('skipped', 0)}, "
+                f"failed={result.get('failed', 0)}."
+            )
 
         def _clean_markers() -> int:
             """Erase every drill marker/persistence-marker file from both engines."""
@@ -2158,14 +2214,31 @@ class MainWindow(QMainWindow):
             self.aria_history = init_history(_hist_db)
             self._aria_last_score = None
 
-            # Runbook RAG over any local playbooks (best-effort; empty is fine).
-            from angerona.core.data_paths import project_root
-            root = project_root()
-            self._aria_rag = RunbookRAG([str(root / "docs"),
-                                         str(root / "playbooks"),
-                                         str(Path(self.config.data_dir) / "runbooks")])
+            # Governed model/runbook packs use the local Ollama API, a bundled
+            # digest-pinned catalog, resource admission, and HMAC state.  The
+            # manager accepts no arbitrary model name, URL, or executable pack.
             try:
-                self._aria_rag.build()
+                from angerona.core.model_pack_manager import ModelPackManager
+
+                def _set_pack_model(model: str) -> None:
+                    self.config.ollama_model = model
+                    self.config.save()
+
+                self.aria_model_packs = ModelPackManager(
+                    data_dir=self.config.data_dir,
+                    ollama_host=self.config.ollama_host,
+                    config_current=lambda: str(self.config.ollama_model),
+                    config_update=_set_pack_model,
+                )
+            except Exception as exc:
+                self.aria_model_packs = None
+                self.console._append(f"[aria] governed model packs unavailable: {exc}")
+
+            # Runbook RAG over local playbooks plus authenticated, catalog-owned
+            # model-pack runbooks (best-effort; an empty index is fine).
+            self._aria_rag = None
+            try:
+                self._rebuild_aria_rag()
             except Exception:
                 pass
 
@@ -2248,13 +2321,73 @@ class MainWindow(QMainWindow):
                 self.aria.register(
                     "install_capabilities", ToolKind.WRITE,
                     lambda caps="all": self._aria_install(caps),
-                    "install ARIA's optional capability packages (voice/teams/all)",
+                    "show verified setup for ARIA optional capabilities",
                     preview=lambda caps="all": (
-                        "Install the missing packages for "
-                        f"'{caps}' into Angerona's own Python (pip, no admin): "
+                        "Check the verified release setup required for "
+                        f"'{caps}'. The running interpreter will not be changed. Missing: "
                         + (", ".join(_si._resolve(
                             [c.strip() for c in str(caps).replace(',', ' ').split()] or ['all']))
                            or "nothing — already installed") + "."))
+                from angerona.connectors.research import get_research as _get_research
+                from angerona.connectors.research_fetchers import open_sources as _open_sources
+
+                def _research_summary(indicator):
+                    task = _get_research().run(str(indicator))
+                    return {
+                        "indicator": str(indicator),
+                        "kind": task.kind,
+                        "sources": [name for name, _url in task.sources],
+                    }
+
+                self.aria.register(
+                    "research", ToolKind.READ, _research_summary,
+                    "classify an indicator and list vetted sources without egress")
+                self.aria.register(
+                    "open_research_sources", ToolKind.WRITE,
+                    lambda indicator: _open_sources(_get_research().run(str(indicator))),
+                    "open vetted indicator-research sources in the browser",
+                    preview=lambda indicator: (
+                        f"Open vetted browser research sources for {str(indicator)!r}."))
+                if self.aria_model_packs is not None:
+                    self.aria.register(
+                        "model_packs", ToolKind.READ,
+                        self._aria_model_pack_status,
+                        "curated ARIA model/runbook pack status")
+                    self.aria.register(
+                        "model_pack_plan", ToolKind.READ,
+                        self._aria_model_pack_plan,
+                        "resource-admission plan for one exact curated pack ID")
+                    self.aria.register(
+                        "model_pack_install", ToolKind.WRITE,
+                        lambda pack_id: self._aria_model_pack_mutation(
+                            "install", str(pack_id)),
+                        "install one curated, digest-pinned defensive pack",
+                        preview=lambda pack_id: (
+                            f"Install curated model pack {str(pack_id)!r} after "
+                            "resource admission and manifest verification."))
+                    self.aria.register(
+                        "model_pack_activate", ToolKind.WRITE,
+                        lambda pack_id: self._aria_model_pack_mutation(
+                            "activate", str(pack_id)),
+                        "activate one installed governed pack",
+                        preview=lambda pack_id: (
+                            f"Activate installed model pack {str(pack_id)!r}, save "
+                            "ARIA's model setting, and rebuild runbook search."))
+                    self.aria.register(
+                        "model_pack_rollback", ToolKind.WRITE,
+                        lambda: self._aria_model_pack_mutation("rollback"),
+                        "restore the previous governed ARIA model",
+                        preview=lambda: (
+                            "Roll back to the previously recorded ARIA model and "
+                            "rebuild runbook search."))
+                    self.aria.register(
+                        "model_pack_remove", ToolKind.WRITE,
+                        lambda pack_id: self._aria_model_pack_mutation(
+                            "remove", str(pack_id)),
+                        "remove one inactive Angerona-owned pack",
+                        preview=lambda pack_id: (
+                            f"Remove inactive governed pack {str(pack_id)!r} and "
+                            "its verified Angerona-owned model/runbooks."))
             except Exception as exc:
                 self.console._append(f"[aria] action tools skipped: {exc}")
             self._aria_pending_token = ""   # last staged WRITE awaiting confirmation
@@ -2376,12 +2509,14 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             # Two-way Teams bot — opt-in; talk to ARIA from Teams. Off unless
-            # enabled AND an App ID + password (.env) are set. Chat/reads only.
+            # enabled AND an App ID + protected password are set. Chat/reads only.
             try:
-                import os as _os
                 from angerona.connectors.teams_bot import init_teams_bot
+                from angerona.core.secure_store import read_secret_values
                 _tb_enabled = bool(getattr(self.config, "teams_bot_enabled", False))
-                _tb_pw = _os.environ.get("ANGERONA_TEAMS_APP_PASSWORD", "")
+                _tb_pw = read_secret_values(
+                    "ANGERONA_TEAMS_APP_PASSWORD", self.config.data_dir
+                ).get("ANGERONA_TEAMS_APP_PASSWORD", "")
                 _allowed = getattr(self.config, "teams_allowed_users", "") or ""
                 if isinstance(_allowed, str):
                     _allowed = [u for u in _allowed.replace(";", ",").split(",") if u.strip()]
@@ -2424,12 +2559,14 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             # Email scanning — background read-only IMAP poller → bus alerts.
-            # Only starts when enabled AND fully configured (password from .env).
+            # Only starts when enabled AND fully configured in protected storage.
             try:
-                import os as _os
+                from angerona.core.secure_store import read_secret_values
                 _ih = str(getattr(self.config, "aria_imap_host", "") or "").strip()
                 _iu = str(getattr(self.config, "aria_imap_user", "") or "").strip()
-                _ip = _os.environ.get("ARIA_IMAP_PASS", "")
+                _ip = read_secret_values(
+                    "ARIA_IMAP_PASS", self.config.data_dir
+                ).get("ARIA_IMAP_PASS", "")
                 if getattr(self.config, "aria_inbox_enabled", False) and _ih and _iu and _ip:
                     from angerona.connectors.inbox_watcher import InboxWatcher
                     from angerona.core.eventbus import Event, Severity
@@ -2572,11 +2709,11 @@ class MainWindow(QMainWindow):
         import threading as _th
         _th.Thread(target=_run, name="AriaMicMeter", daemon=True).start()
 
-    def _aria_ask(self, text: str) -> str:
+    def _aria_ask(self, text: str, *, input_channel: str = "untrusted") -> str:
         """Public ARIA entry point: run the brain, then speak the reply if voice
         output is enabled. Kept thin so the HUD, the console, and the voice loop
         all share one path."""
-        answer = self._aria_ask_core(text)
+        answer = self._aria_ask_core(text, input_channel=input_channel)
         awareness = getattr(self, "aria_awareness", None)
         if awareness is not None:
             try:
@@ -2593,7 +2730,11 @@ class MainWindow(QMainWindow):
         """Streaming entry point for the HUD: quick intents return instantly (no
         tokens); a real conversation streams token-by-token via on_token. The full
         answer is still returned (and spoken if voice is on)."""
-        answer = self._aria_ask_core(text, on_token=on_token)
+        # This callback is wired only to the editable ARIA GUI prompt.  Voice and
+        # programmatic callers use _aria_ask(), whose default channel is untrusted.
+        answer = self._aria_ask_core(
+            text, on_token=on_token, input_channel="typed_gui"
+        )
         awareness = getattr(self, "aria_awareness", None)
         if awareness is not None:
             try:
@@ -2698,7 +2839,9 @@ class MainWindow(QMainWindow):
                     self._aria_speak("Yes?")
                     continue
                 try:
-                    self._aria_ask(cmd)          # reply is spoken inside _aria_ask
+                    self._aria_ask(
+                        cmd, input_channel="voice"
+                    )                            # reply is spoken inside _aria_ask
                 except Exception:
                     pass
                 _t.sleep(0.2)
@@ -2777,22 +2920,123 @@ class MainWindow(QMainWindow):
                 pass
 
     def _aria_install(self, caps: str = "all") -> str:
-        """Install a capability, then — for voice — bring listening up live so the
-        mic meter appears and ARIA can hear you without a restart."""
+        """Report verified capability setup; never mutate the live interpreter."""
         from angerona.core import self_installer as si
         names = [c.strip() for c in str(caps).replace(",", " ").split()] or ["all"]
         report = si.install(names)
         low = [n.lower() for n in names]
-        if any(n in ("voice", "all", "windows-speech") for n in low) and "❌" not in report:
+        if (si.capabilities_ready(names)
+                and any(n in ("voice", "all", "windows-speech") for n in low)):
             try:
-                self._voice_live_requested.emit()   # start on the GUI thread
+                self._voice_live_requested.emit()
                 report += ("\n\nVoice is coming online now — watch the mic bar next to ARIA "
                            "and speak; when it moves, I can hear you. Then say 'hey aria …'.")
             except Exception:
                 report += "\n\n(Installed — restart Angerona to start voice listening.)"
         return report
 
-    def _aria_ask_core(self, text: str, on_token=None) -> str:
+    def _rebuild_aria_rag(self) -> int:
+        """Atomically replace ARIA's runbook index after a governed pack change."""
+        from pathlib import Path
+
+        from angerona.core.data_paths import project_root
+        from angerona.core.runbook_rag import RunbookRAG
+
+        root = project_root()
+        roots = [
+            str(root / "docs"),
+            str(root / "playbooks"),
+            str(Path(self.config.data_dir) / "runbooks"),
+        ]
+        manager = getattr(self, "aria_model_packs", None)
+        if manager is not None:
+            roots.extend(str(path) for path in manager.runbook_roots())
+        replacement = RunbookRAG(roots)
+        count = replacement.build()
+        self._aria_rag = replacement
+        return count
+
+    def _aria_model_pack_status(self) -> dict:
+        """Return bounded, curated model-pack status for ARIA's READ tool."""
+        manager = getattr(self, "aria_model_packs", None)
+        if manager is None:
+            return {"available": False, "packs": []}
+        state = manager.state()
+        installed = state.get("installed", {})
+        batch_plans = getattr(manager, "admission_plans", None)
+        plans = (
+            batch_plans()
+            if callable(batch_plans)
+            else {
+                pack_id: manager.admission_plan(pack_id)
+                for pack_id in manager.catalog
+            }
+        )
+        rows = []
+        for pack_id, pack in sorted(manager.catalog.items()):
+            plan = plans[pack_id]
+            rows.append({
+                "id": pack.id,
+                "title": pack.title,
+                "version": pack.version,
+                "installed": pack.id in installed,
+                "active": state.get("active_pack") == pack.id,
+                "admitted": plan.admitted,
+                "deficits": list(plan.deficits),
+            })
+        return {
+            "available": True,
+            "active_pack": state.get("active_pack"),
+            "packs": rows,
+        }
+
+    def _aria_model_pack_plan(self, pack_id: str) -> dict:
+        """Return admission details for one exact trusted-catalog pack ID."""
+        from dataclasses import asdict
+
+        manager = getattr(self, "aria_model_packs", None)
+        if manager is None:
+            raise RuntimeError("governed model packs are unavailable")
+        pack = manager._pack(str(pack_id))
+        plan = manager.admission_plan(pack.id)
+        return {
+            "id": pack.id,
+            "title": pack.title,
+            "version": pack.version,
+            "description": pack.description,
+            "model": pack.model.managed_name,
+            "manifest_digest": pack.model.manifest_digest,
+            "runbooks": [runbook.title for runbook in pack.runbooks],
+            "admission": asdict(plan),
+        }
+
+    def _aria_model_pack_mutation(
+        self, action: str, pack_id: str | None = None
+    ) -> dict:
+        """Execute one already-confirmed governed lifecycle operation."""
+        manager = getattr(self, "aria_model_packs", None)
+        if manager is None:
+            raise RuntimeError("governed model packs are unavailable")
+        operations = {
+            "install": manager.install,
+            "activate": manager.activate,
+            "rollback": manager.rollback,
+            "remove": manager.remove,
+        }
+        operation = operations.get(str(action))
+        if operation is None:
+            raise ValueError("unknown governed model-pack operation")
+        receipt = operation() if action == "rollback" else operation(str(pack_id))
+        self._rebuild_aria_rag()
+        return receipt
+
+    def _aria_ask_core(
+        self,
+        text: str,
+        on_token=None,
+        *,
+        input_channel: str = "untrusted",
+    ) -> str:
         """HUD chat handler. A few quick intents (posture / indicator research)
         are answered directly; everything else is a real conversation with the
         local model, grounded with runbook excerpts + live posture. Runs on a
@@ -2829,16 +3073,8 @@ class MainWindow(QMainWindow):
                     return get(topic)
                 except Exception:
                     pass
-            # "trust my running apps" → baseline current apps into the allowlist.
-            if "trust" in low and any(k in low for k in (
-                    "running", "my apps", "these apps", "current apps", "open apps",
-                    "programs i", "programs im", "what i'm running", "what im running")):
-                try:
-                    return self.console.backend._trust_running([])
-                except Exception as exc:
-                    return f"Couldn't baseline running apps: {exc}"
             # Gated actions / live reads (suspend/kill/resume/module, confirm …).
-            acted = self._aria_action(t)
+            acted = self._aria_action(t, input_channel=input_channel)
             if acted is not None:
                 return acted
             # Strategy / planning → a prioritized, grounded action plan.
@@ -2850,20 +3086,24 @@ class MainWindow(QMainWindow):
                           "each item give the exact Angerona step/command/Setting to use. "
                           "Operator asked: " + t)
                 return self._aria_converse(plan_q, on_token=on_token)
-            # Indicator? Open vetted lookups (user-initiated, read-only recon).
-            from angerona.connectors.research import classify, get_research
+            # Indicator classification is a READ tool: it lists vetted sources
+            # but performs no browser/network side effect. Opening sources is a
+            # separate exact-token WRITE action ("open sources for <indicator>").
+            from angerona.connectors.research import classify
             if classify(t) != "unknown":
-                task = get_research().run(t)
-                from angerona.connectors.research_fetchers import open_sources
-                opened = open_sources(task)
-                srcs = ", ".join(n for n, _ in task.sources) or "none"
-                return f"{t} → {task.kind}: opened {opened} vetted source(s) [{srcs}]."
+                result = self.aria.invoke("research", t)
+                if not result.ok:
+                    return result.text
+                data = result.data if isinstance(result.data, dict) else {}
+                sources = ", ".join(data.get("sources", [])) or "none"
+                return (f"{t} → {data.get('kind', 'unknown')}: vetted sources "
+                        f"[{sources}]. To open them, ask 'open sources for {t}'.")
             # Everything else → conversational answer from the local model.
             return self._aria_converse(t, on_token=on_token)
         except Exception as exc:
             return f"[aria error] {exc}"
 
-    def _aria_action(self, text: str):
+    def _aria_action(self, text: str, *, input_channel: str = "untrusted"):
         """Map a natural-language request to a gated ARIA tool. READ tools answer
         live; WRITE tools stage behind a confirm token (assistant.py enforces the
         gate). Returns a string to show, or None if this wasn't an action request."""
@@ -2874,12 +3114,25 @@ class MainWindow(QMainWindow):
         low = text.lower().strip()
 
         # 1) Confirm / cancel a pending write.
-        m = re.search(r"\bconfirm\s+([0-9a-f]{8,})\b", low)
+        m = re.fullmatch(r"confirm\s+([0-9a-f]{32})", low)
         if m:
-            return aria.confirm(m.group(1)).text
+            if input_channel != "typed_gui":
+                return (
+                    "Confirmation refused. Exact tokens are accepted only when "
+                    "typed into the trusted ARIA GUI prompt; voice, callbacks, "
+                    "and other text channels cannot authorize a host change."
+                )
+            token = m.group(1)
+            result = aria.confirm(token)
+            if token == self._aria_pending_token:
+                self._aria_pending_token = ""
+            return result.text
+        if low.startswith("confirm"):
+            return ("Confirmation refused. Use the exact 32-character token from "
+                    "the staged action, with no extra words: confirm <token>.")
         if low in ("confirm", "yes", "do it", "go ahead", "proceed", "y") and self._aria_pending_token:
-            tok, self._aria_pending_token = self._aria_pending_token, ""
-            return aria.confirm(tok).text
+            return ("That phrase cannot authorize a host change. Use the exact "
+                    "command shown in the preview: confirm <32-character-token>.")
         if low in ("cancel", "no", "abort", "stop", "nvm", "never mind") and self._aria_pending_token:
             aria.cancel(self._aria_pending_token); self._aria_pending_token = ""
             return "Cancelled the pending action."
@@ -2918,9 +3171,44 @@ class MainWindow(QMainWindow):
         if (re.search(r"\b(capabilit|dependenc|what.*can you install|what.*missing)\b", low)
                 and not re.search(r"\binstall\b", low)):
             return aria.invoke("capabilities").text
+        pack_plan = re.fullmatch(
+            r"(?:show\s+)?(?:the\s+)?(?:model\s+)?pack\s+plan\s+([a-z0-9][a-z0-9-]{2,63})",
+            low,
+        )
+        if pack_plan:
+            return aria.invoke("model_pack_plan", pack_plan.group(1)).text
+        if (low in {
+                "model packs", "model pack status", "show model packs",
+                "list model packs", "aria model packs",
+        }):
+            return aria.invoke("model_packs").text
 
         # 3) Write intents (staged behind confirmation).
         res = None
+        if "trust" in low and any(k in low for k in (
+                "running", "my apps", "these apps", "current apps", "open apps",
+                "programs i", "programs im", "what i'm running", "what im running")):
+            res = aria.invoke("trust_running")
+        open_match = re.fullmatch(
+            r"(?:please\s+)?open\s+(?:the\s+)?(?:research\s+)?sources?\s+for\s+(.+)",
+            text.strip(),
+            flags=re.IGNORECASE,
+        )
+        if open_match:
+            res = aria.invoke("open_research_sources", open_match.group(1).strip())
+        pack_write = re.fullmatch(
+            r"(install|activate|remove)\s+(?:the\s+)?(?:aria\s+)?model\s+pack\s+"
+            r"([a-z0-9][a-z0-9-]{2,63})",
+            low,
+        )
+        if pack_write:
+            verb, pack_id = pack_write.groups()
+            res = aria.invoke(f"model_pack_{verb}", pack_id)
+        if re.fullmatch(
+            r"(?:rollback|roll\s+back)\s+(?:the\s+)?(?:aria\s+)?model\s+pack",
+            low,
+        ):
+            res = aria.invoke("model_pack_rollback")
         # Self-install optional capabilities. "install voice", "install your
         # dependencies", "set up teams", "install everything".
         _inst = re.search(r"\b(install|set ?up|add|enable)\b", low)
@@ -2966,6 +3254,9 @@ class MainWindow(QMainWindow):
         if res is None:
             return None
         if res.needs_confirmation:
+            previous = str(getattr(self, "_aria_pending_token", "") or "")
+            if previous and previous != res.confirm_token:
+                aria.cancel(previous)
             self._aria_pending_token = res.confirm_token
         return res.text
 
@@ -2988,7 +3279,8 @@ class MainWindow(QMainWindow):
             "• optional local hand navigation — open palm focuses the prompt, swipes "
             "change evidence tabs, victory opens Help, fist stops/cancels\n\n"
             "Everything I do is local and defensive; any action stays behind a "
-            "confirm-then-execute gate. Hand gestures and persona profiles cannot confirm it."
+            "confirm-then-execute gate requiring the exact 32-character token. "
+            "Generic replies, voice, hand gestures, and persona profiles cannot confirm it."
         )
 
     @staticmethod
@@ -3403,8 +3695,29 @@ class MainWindow(QMainWindow):
 
     def _open_upgrade_console(self) -> None:
         try:
+            pack_manager = getattr(self, "aria_model_packs", None)
+            if pack_manager is None:
+                from angerona.core.model_pack_manager import ModelPackManager
+
+                def _set_pack_model(model: str) -> None:
+                    self.config.ollama_model = model
+                    self.config.save()
+
+                pack_manager = ModelPackManager(
+                    data_dir=self.config.data_dir,
+                    ollama_host=self.config.ollama_host,
+                    config_current=lambda: str(self.config.ollama_model),
+                    config_update=_set_pack_model,
+                )
+                self.aria_model_packs = pack_manager
             self._upgrade_console = launch_upgrade_console(
-                self.manager, self.config, self.bus, self)
+                self.manager,
+                self.config,
+                self.bus,
+                self,
+                model_pack_manager=pack_manager,
+                pack_change_callback=self._rebuild_aria_rag,
+            )
         except Exception as exc:
             QMessageBox.warning(self, "Console", f"Could not open the console: {exc}")
 
@@ -4285,11 +4598,14 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
 
-        # Hard-kill sibling Angerona python processes first (we're elevated).
+        # Hard-kill only exact, revalidated sibling Angerona processes. Merely
+        # mentioning the repository in an unrelated Python command line never
+        # grants termination authority.
         import os
         me = os.getpid()
         try:
             import psutil
+            project_root = Path(__file__).resolve(strict=False).parents[3]
             # Command-line reads are expensive and may retry on protected Windows
             # processes. Query names for the whole process table, then request a
             # command line only for the small set of Python candidates.
@@ -4297,9 +4613,15 @@ class MainWindow(QMainWindow):
                 try:
                     if "python" not in (p.info.get("name") or "").lower():
                         continue
-                    cmd = " ".join(p.cmdline() or []).lower()
-                    if ("angerona" in cmd or "local-security-ai" in cmd) and p.pid != me:
-                        p.kill()
+                    if p.pid == me or not _is_owned_angerona_process(p, project_root):
+                        continue
+                    captured_create_time = float(p.create_time())
+                    current = psutil.Process(int(p.pid))
+                    if (
+                        abs(float(current.create_time()) - captured_create_time) <= 0.001
+                        and _is_owned_angerona_process(current, project_root)
+                    ):
+                        current.kill()
                 except Exception:
                     continue
         except Exception:

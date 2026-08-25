@@ -22,7 +22,7 @@ import urllib.request
 
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.url_policy import (
-    LOCAL_SERVICE_POLICY,
+    OLLAMA_SERVICE_POLICY,
     local_service_url,
     read_bounded,
     safe_urlopen,
@@ -136,7 +136,7 @@ class AITriageModule(BaseModule):
         )
         try:
             with safe_urlopen(
-                req, policy=LOCAL_SERVICE_POLICY, timeout=self._CB_TIMEOUT_S,
+                req, policy=OLLAMA_SERVICE_POLICY, timeout=self._CB_TIMEOUT_S,
             ) as resp:
                 data = json.loads(read_bounded(resp).decode("utf-8"))
             return (data.get("message", {}) or {}).get("content", "").strip()
@@ -164,7 +164,7 @@ class AITriageModule(BaseModule):
         req = urllib.request.Request(local_service_url(self._host, "/api/tags"))
         try:
             with safe_urlopen(
-                req, policy=LOCAL_SERVICE_POLICY, timeout=3.0,
+                req, policy=OLLAMA_SERVICE_POLICY, timeout=3.0,
             ) as resp:
                 data = json.loads(read_bounded(resp).decode("utf-8"))
             installed = [

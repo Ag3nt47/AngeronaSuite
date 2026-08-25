@@ -20,6 +20,8 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Callable, Iterable
 
+import psutil
+
 from angerona.core import drill_resolution
 from angerona.core.eventbus import Event, EventBus, Severity
 from angerona.core.practice_scope import (
@@ -161,6 +163,9 @@ def _publish_process_probe(bus: EventBus, verification_id: str) -> tuple[Event, 
         pid=int(process.pid),
         kind="practice-verification",
     )
+    live = psutil.Process(int(process.pid))
+    process_create_time = float(live.create_time())
+    process_exe = str(live.exe())
     event = Event(
         "Red Team Practice Lab",
         "PRACTICE TEST: benign tagged process positive control.",
@@ -168,6 +173,8 @@ def _publish_process_probe(bus: EventBus, verification_id: str) -> tuple[Event, 
         details={
             "event_type": "process_creation",
             "pid": int(process.pid),
+            "process_create_time": process_create_time,
+            "exe": process_exe,
             "cmdline": f"{sys.executable} -c <inert sleep> {tag}",
             "correlation_token": tag,
             "practice_verification_id": verification_id,

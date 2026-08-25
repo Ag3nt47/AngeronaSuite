@@ -47,7 +47,7 @@ def test_internal_protected_values_never_enter_process_environment(
     assert key not in os.environ
 
 
-def test_verified_protected_secret_overrides_inherited_environment(
+def test_verified_protected_secret_is_not_published_to_environment(
     monkeypatch, tmp_path
 ) -> None:
     monkeypatch.setattr(secure_store.sys, "platform", "win32")
@@ -63,7 +63,8 @@ def test_verified_protected_secret_overrides_inherited_environment(
 
     secure_store.load_into_environment(tmp_path)
 
-    assert os.environ["OPENAI_API_KEY"] == "protected"
+    assert "OPENAI_API_KEY" not in os.environ
+    assert secure_store.read_secret_map(tmp_path)["OPENAI_API_KEY"] == "protected"
 
 
 def test_unreadable_secret_store_is_never_overwritten(monkeypatch, tmp_path) -> None:

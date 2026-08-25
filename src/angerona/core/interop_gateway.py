@@ -15,7 +15,9 @@ from typing import Any, Mapping
 from angerona.core.data_governance import EgressPolicy
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{2,127}$")
-_SCHEMAS = {"ocsf-1.3", "stix-2.1", "otlp-1.0", "angerona-1"}
+# Accept the prior identifier for already-spooled envelopes, while all new
+# Angerona exports target the current OCSF 1.8 contract.
+_SCHEMAS = {"ocsf-1.3", "ocsf-1.8", "stix-2.1", "otlp-1.0", "angerona-1"}
 MAX_PAYLOAD = 256 * 1024
 
 

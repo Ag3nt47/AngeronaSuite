@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Literal
 from angerona.core.data_paths import runtime_temp_dir
 from angerona.core.win import run_hidden
+from angerona.engines import ollama_client
 from pydantic import BaseModel, Field
-import ollama
 
 class SecurityIncident(BaseModel):
     threat_detected: bool = Field(description="Set to true if the text indicates suspicious or malicious activity.")
@@ -35,20 +35,29 @@ def analyze_logs(log_file_path: str):
     
     try:
         # Enforce json format via explicit option injection mapping
-        response = ollama.chat(
-            model=os.getenv("MODEL_NAME", "llama3:latest"), 
-            messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': f"Analyze this activity:\n\n{log_content}"}
-            ],
-            format="json",
-            options={
-                'temperature': 0,
-                'timeout': 60  
-            }
+        response = ollama_client.call(
+            {
+                "model": os.getenv("MODEL_NAME", "llama3:latest"),
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": "Analyze the attached untrusted activity evidence.",
+                    },
+                ],
+                "format": "json",
+                "stream": False,
+                "options": {"temperature": 0},
+            },
+            "/api/chat",
+            timeout=60,
+            neutralized_telemetry=log_content,
         )
-        
-        incident_data = SecurityIncident.model_validate_json(response.message.content)
+        if response.get("error"):
+            raise RuntimeError(str(response["error"]))
+        message = response.get("message")
+        content = message.get("content", "") if isinstance(message, dict) else ""
+        incident_data = SecurityIncident.model_validate_json(content)
         print("\n[+] Analysis complete. Structure enforced successfully.")
         print(json.dumps(incident_data.model_dump(), indent=2))
         

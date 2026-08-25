@@ -30,6 +30,9 @@ from angerona.modules.cloud_escalation import CloudEscalationModule
 
 
 def _clear_provider_environment(monkeypatch) -> None:
+    from angerona.core import secure_store
+
+    monkeypatch.setattr(secure_store, "read_secret_map", lambda _root=None: {})
     for provider in PROVIDER_CREDENTIALS:
         monkeypatch.delenv(provider.environment_key, raising=False)
         for alias in provider.legacy_aliases:
@@ -93,6 +96,20 @@ def test_provider_status_and_form_mapping_use_canonical_ids() -> None:
     assert set(form) == {provider.provider_id for provider in PROVIDER_CREDENTIALS}
 
 
+def test_default_provider_lookup_is_scoped_to_protected_store(monkeypatch) -> None:
+    from angerona.core import secure_store
+
+    _clear_provider_environment(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "inherited-attacker-value")
+    monkeypatch.setattr(
+        secure_store,
+        "read_secret_map",
+        lambda _root=None: {"OPENAI_API_KEY": "protected-approved-value"},
+    )
+
+    assert credential_value("openai") == "protected-approved-value"
+
+
 def test_settings_main_save_persists_and_clears_provider_credentials(
     tmp_path, monkeypatch
 ) -> None:
@@ -141,7 +158,7 @@ def test_advanced_console_has_read_only_status_and_canonical_route(monkeypatch) 
     _clear_provider_environment(monkeypatch)
     monkeypatch.setattr(
         upgrade_console.AngeronaUpgradeConsole,
-        "_start_model_listing",
+        "_start_pack_status",
         lambda _self: None,
     )
     window = upgrade_console.AngeronaUpgradeConsole()
@@ -154,6 +171,9 @@ def test_advanced_console_has_read_only_status_and_canonical_route(monkeypatch) 
     assert not hasattr(window, "api_key_input")
     assert not hasattr(window, "custom_provider")
     assert not hasattr(window, "hardware_pin_input")
+    assert window.model_box.isEditable() is False
+    assert "Install" in buttons
+    assert "Open PowerShell" not in buttons
     window.close()
     app.processEvents()
 
@@ -208,7 +228,13 @@ def test_module_inspector_credential_tab_is_read_only_and_routes_to_settings(
 
 def test_all_gemini_consumers_accept_the_canonical_pool(monkeypatch) -> None:
     _clear_provider_environment(monkeypatch)
-    monkeypatch.setenv("GEMINI_API_KEYS", "primary-key,rotation-key")
+    from angerona.core import secure_store
+
+    monkeypatch.setattr(
+        secure_store,
+        "read_secret_map",
+        lambda _root=None: {"GEMINI_API_KEYS": "primary-key,rotation-key"},
+    )
     module = CloudEscalationModule()
     assert module._keys == ["primary-key", "rotation-key"]
 
@@ -228,7 +254,13 @@ def test_all_gemini_consumers_accept_the_canonical_pool(monkeypatch) -> None:
 
 def test_groq_is_a_real_explicit_consult_provider(monkeypatch) -> None:
     _clear_provider_environment(monkeypatch)
-    monkeypatch.setenv("GROQ_API_KEY", "groq-key")
+    from angerona.core import secure_store
+
+    monkeypatch.setattr(
+        secure_store,
+        "read_secret_map",
+        lambda _root=None: {"GROQ_API_KEY": "groq-key"},
+    )
     posted: list[tuple[str, dict[str, str], dict]] = []
     monkeypatch.setattr(
         ai_consult,
@@ -247,7 +279,13 @@ def test_cloud_fallback_passes_canonical_gemini_key_explicitly(monkeypatch) -> N
     from angerona.engines import cloud_fallback
 
     _clear_provider_environment(monkeypatch)
-    monkeypatch.setenv("GEMINI_API_KEYS", "cloud-key,rotation-key")
+    from angerona.core import secure_store
+
+    monkeypatch.setattr(
+        secure_store,
+        "read_secret_map",
+        lambda _root=None: {"GEMINI_API_KEYS": "cloud-key,rotation-key"},
+    )
     received: list[str] = []
 
     class Models:
@@ -271,7 +309,13 @@ def test_cloud_fallback_passes_canonical_gemini_key_explicitly(monkeypatch) -> N
 
 def test_self_compiler_reads_canonical_key_at_call_time(monkeypatch) -> None:
     _clear_provider_environment(monkeypatch)
-    monkeypatch.setenv("GEMINI_API_KEYS", "compiler-key")
+    from angerona.core import secure_store
+
+    monkeypatch.setattr(
+        secure_store,
+        "read_secret_map",
+        lambda _root=None: {"GEMINI_API_KEYS": "compiler-key"},
+    )
     monkeypatch.setattr(self_compiler, "_CLOUD_SYNTHESIS_ENABLED", True)
     requests = []
 

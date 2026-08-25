@@ -9,6 +9,8 @@ psutil only for the connection walk; enrichment reuses core.net_interfaces.
 """
 from __future__ import annotations
 
+import ipaddress
+import os
 import socket
 import weakref
 from collections import defaultdict
@@ -21,7 +23,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout,
 )
 
-from angerona.core.url_policy import LOCAL_SERVICE_POLICY, read_bounded, safe_urlopen
+from angerona.core.url_policy import OLLAMA_SERVICE_POLICY, read_bounded, safe_urlopen
 from angerona.core.ollama_lifecycle import effective_keep_alive
 
 
@@ -79,6 +81,8 @@ def _collect_top_talkers(resolve_hostnames: bool) -> dict:
         "remotes": [],
         "remote_ips": [],
         "iface": "",
+        "create_time": None,
+        "exe": "",
     })
     total_ext = 0
     try:
@@ -108,7 +112,10 @@ def _collect_top_talkers(resolve_hostnames: bool) -> dict:
     for pid, rec in by_pid.items():
         if pid:
             try:
-                rec["name"] = psutil.Process(pid).name()
+                process = psutil.Process(pid)
+                rec["name"] = process.name()
+                rec["create_time"] = float(process.create_time())
+                rec["exe"] = process.exe() or ""
             except Exception:
                 rec["name"] = "?"
         else:
@@ -129,7 +136,10 @@ def _collect_top_talkers(resolve_hostnames: bool) -> dict:
             "conns": rec["conns"],
             "ext": rec["ext"],
             "top": top,
+            "remote_ip": rec["remote_ips"][0] if rec["remote_ips"] else "",
             "iface": rec["iface"],
+            "create_time": rec["create_time"],
+            "exe": rec["exe"],
         })
     return {"rows": rows, "process_count": len(by_pid), "total_ext": total_ext}
 
@@ -286,6 +296,7 @@ class TopTalkersDialog(QDialog):
             (
                 rec.get("name"), rec.get("pid"), rec.get("conns"), rec.get("ext"),
                 rec.get("top"), rec.get("iface"),
+                rec.get("remote_ip"), rec.get("create_time"), rec.get("exe"),
             )
             for rec in rows
         )
@@ -304,7 +315,9 @@ class TopTalkersDialog(QDialog):
             r = self.table.rowCount()
             self.table.insertRow(r)
             self.table.setItem(r, 0, QTableWidgetItem(rec["name"]))
-            self.table.setItem(r, 1, self._num(rec["pid"]))
+            pid_item = self._num(rec["pid"])
+            pid_item.setData(Qt.UserRole, dict(rec))
+            self.table.setItem(r, 1, pid_item)
             self.table.setItem(r, 2, self._num(rec["conns"]))
             ext_item = self._num(rec["ext"])
             if rec["ext"]:
@@ -326,52 +339,60 @@ class TopTalkersDialog(QDialog):
     def _on_process(self, row: int, _col: int) -> None:
         try:
             name = self.table.item(row, 0).text()
-            pid = int(self.table.item(row, 1).data(Qt.DisplayRole))
+            pid_item = self.table.item(row, 1)
+            pid = int(pid_item.data(Qt.DisplayRole))
+            snapshot = pid_item.data(Qt.UserRole)
             dest_item = self.table.item(row, 4)
             dest = dest_item.text() if dest_item else ""
         except Exception:
             return
-        self._process_actions(pid, name, dest)
+        if not isinstance(snapshot, dict):
+            return
+        self._process_actions(pid, name, dest, snapshot)
 
-    def _process_actions(self, pid: int, name: str, dest: str) -> None:
+    def _process_actions(self, pid: int, name: str, dest: str, snapshot: dict) -> None:
         from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                                        QPushButton, QMessageBox)
         dlg = QDialog(self); dlg.setWindowTitle(f"Process actions — {name} (PID {pid})")
         dlg.resize(480, 200)
         lay = QVBoxLayout(dlg)
         lay.addWidget(QLabel(f"<b>{name}</b>  (PID {pid})<br>Top remote: {dest or '—'}"))
-        lay.addWidget(QLabel("Choose an action for this process's network activity:"))
+        lay.addWidget(QLabel(
+            "Choose an analyst note or submit exact containment to Adversary Combat:"
+        ))
         ai_status = QLabel("")
         ai_status.setStyleSheet("color:#93c5fd;")
         lay.addWidget(ai_status)
         rowb = QHBoxLayout()
-        b_allow = QPushButton("✓ Allow"); b_block = QPushButton("⛔ Block")
+        b_allow = QPushButton("✓ Mark reviewed")
+        b_block = QPushButton("⛔ Contain via Combat")
         b_ai = QPushButton("🤖 Ask AI"); b_close = QPushButton("Close")
         for b in (b_allow, b_block, b_ai, b_close):
             rowb.addWidget(b)
         lay.addLayout(rowb)
 
         def _allow():
-            self._record_list("talker_allowlist.json", pid, name, dest)
-            QMessageBox.information(dlg, "Allowed", f"{name} (PID {pid}) added to the allowlist.")
+            self._record_list("talker_reviews.json", pid, name, dest)
+            QMessageBox.information(
+                dlg,
+                "Reviewed",
+                f"{name} (PID {pid}) recorded as analyst-reviewed. "
+                "This note does not create a security exclusion.",
+            )
 
         def _block():
             if QMessageBox.question(
-                    dlg, "Block",
-                    f"Block {name} (PID {pid})?\n\nThis records it to the blocklist and "
-                    "terminates the process to stop its current connections.") != QMessageBox.Yes:
+                    dlg, "Contain via Adversary Combat",
+                    f"Contain {name} (PID {pid}) and its exact remote peer?\n\n"
+                    "The live PID birth time, executable, and connection will be "
+                    "revalidated before a signed Combat request is accepted.") != QMessageBox.Yes:
                 return
-            self._record_list("talker_blocklist.json", pid, name, dest)
-            killed = False
-            try:
-                import psutil
-                psutil.Process(pid).terminate()
-                killed = True
-            except Exception:
-                pass
-            QMessageBox.information(dlg, "Blocked",
-                                   f"{name} added to the blocklist"
-                                   + (" and terminated." if killed else " (could not terminate)."))
+            submitted, message = self._submit_combat_containment(snapshot)
+            QMessageBox.information(
+                dlg,
+                "Combat request submitted" if submitted else "Containment refused",
+                message,
+            )
             self.refresh()
 
         def _ai():
@@ -382,6 +403,100 @@ class TopTalkersDialog(QDialog):
         b_ai.clicked.connect(_ai)
         b_close.clicked.connect(dlg.close)
         dlg.exec()
+
+    def _combat_module(self):
+        parent = self.parent()
+        manager = getattr(parent, "manager", None) if parent is not None else None
+        return (
+            getattr(manager, "modules", {}).get("Adversary Combat")
+            if manager is not None
+            else None
+        )
+
+    def _submit_combat_containment(self, snapshot: dict) -> tuple[bool, str]:
+        """Publish one exact, signed operator-confirmed response contract."""
+        if psutil is None or not isinstance(snapshot, dict):
+            return False, "Live process telemetry is unavailable; no action was taken."
+        pid = snapshot.get("pid")
+        created = snapshot.get("create_time")
+        executable = str(snapshot.get("exe") or "")
+        remote_raw = snapshot.get("remote_ip")
+        if (
+            isinstance(pid, bool)
+            or not isinstance(pid, int)
+            or pid <= 0
+            or not isinstance(created, (int, float))
+            or isinstance(created, bool)
+            or float(created) <= 0
+            or not executable
+        ):
+            return False, "The selected row lacks an exact process identity; no action was taken."
+        try:
+            remote_ip = str(ipaddress.ip_address(str(remote_raw)))
+            process = psutil.Process(pid)
+            live_created = float(process.create_time())
+            live_executable = process.exe() or ""
+            if (
+                abs(live_created - float(created)) > 0.001
+                or os.path.normcase(os.path.abspath(live_executable))
+                != os.path.normcase(os.path.abspath(executable))
+            ):
+                return False, "The PID now belongs to a different process; no action was taken."
+            connection_is_live = any(
+                conn.pid == pid
+                and conn.status == psutil.CONN_ESTABLISHED
+                and bool(conn.raddr)
+                and str(conn.raddr.ip) == remote_ip
+                for conn in psutil.net_connections(kind="inet")
+            )
+            if not connection_is_live:
+                return False, "The selected remote connection is no longer live; no action was taken."
+        except Exception as exc:
+            return False, f"Live identity revalidation failed; no action was taken ({exc})."
+
+        combat = self._combat_module()
+        bus = getattr(combat, "_bus", None) if combat is not None else None
+        policy = combat.policy() if combat is not None else None
+        if (
+            combat is None
+            or getattr(combat, "status", "") != "running"
+            or policy is None
+            or not policy.enabled
+            or bus is None
+        ):
+            return False, "Adversary Combat is not armed; no action was taken."
+
+        from angerona.core.eventbus import Event, Severity
+        from angerona.core.response_contract import process_and_remote_response
+
+        response = process_and_remote_response(
+            pid,
+            live_created,
+            remote_ip,
+            isolate_program=True,
+            activate_deception=True,
+        )
+        if not response:
+            return False, "The exact response contract could not be built; no action was taken."
+        bus.publish(Event(
+            "Top Talkers Operator",
+            f"Operator-confirmed live talker containment: PID {pid} to {remote_ip}",
+            Severity.HIGH,
+            details={
+                "pid": pid,
+                "process_create_time": live_created,
+                "exe": live_executable,
+                "remote_ip": remote_ip,
+                "active_attack": True,
+                "detector_policy": "operator-confirmed-exact-live-talker",
+                **response,
+            },
+        ))
+        return True, (
+            "The signed request was submitted to Adversary Combat. It will block the "
+            "exact peer/program and contain only the revalidated process instance. "
+            "Review Action history for the verified receipt and Undo controls."
+        )
 
     def _start_ai_request(
         self,
@@ -506,7 +621,7 @@ class TopTalkersDialog(QDialog):
             }).encode()
             req = urllib.request.Request("http://127.0.0.1:11434/api/generate", data=body,
                                          headers={"Content-Type": "application/json"})
-            with safe_urlopen(req, policy=LOCAL_SERVICE_POLICY, timeout=20) as r:
+            with safe_urlopen(req, policy=OLLAMA_SERVICE_POLICY, timeout=20) as r:
                 data = json.loads(read_bounded(r).decode("utf-8", "ignore"))
             return data.get("response", "").strip() or "(no response from local AI)"
         except Exception as exc:

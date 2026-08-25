@@ -13,7 +13,7 @@ Design contract
   * NON-BLOCKING. All signal-cli calls are short subprocess invocations run from
     THIS module's daemon thread — never the Qt UI loop.
   * NON-REPLAYABLE. Tokens are random, single-use, and expire in 10 minutes; an
-    expired token auto-falls-back to a safe SUSPEND and notifies the phone.
+    expired token is audit-only and notifies the phone without authorizing action.
   * FAIL-OPEN for the suite. Any error here degrades health, never crashes.
 
 Outbound metadata leaves the host (module/PID/severity/category) over the Signal
@@ -31,7 +31,13 @@ import subprocess
 import time
 from typing import Optional
 
+from angerona.core.eventbus import Event, is_remote_observe_only
 from angerona.core.module_base import BaseModule, Severity
+
+try:
+    import psutil
+except Exception:  # pragma: no cover - commands fail closed without identity data
+    psutil = None
 
 try:
     from angerona.engines.ai_guardrail import neutralize_telemetry
@@ -56,11 +62,11 @@ _HELP_TEXT = (
     "❓ HELP - Display this guide\n"
     "📊 STATUS - View Threat Posture & Active KEVs\n"
     "🌿 ECO ON / OFF - Toggle Governor resource throttling\n"
-    "🚨 LOCKDOWN <PIN> - Isolate endpoint firewall instantly\n"
+    "🚨 LOCKDOWN <PIN> - Request receipt-verified Combat host isolation\n"
     "🛠️ DIAG - Export Black Box diagnostic package\n"
-    "🚫 KILL <TOKEN> <PIN> - Terminate ransomware/worm PID\n"
-    "⏸️ SUSPEND <TOKEN> <PIN> - Freeze process in memory\n"
-    "🔄 ROLLBACK <TOKEN> <PIN> - Trigger Shadow Shield recovery\n"
+    "🚫 KILL <TOKEN> <PIN> - Terminate an exact bound process instance\n"
+    "⏸️ SUSPEND <TOKEN> <PIN> - Suspend an exact bound process instance\n"
+    "🔄 ROLLBACK <TOKEN> <PIN> - Restore one exact Shadow Shield version\n"
     "📕 MUTE <TOKEN> - Suppress alert module rules for 15m\n"
     "-----------------------------------------\n"
     "Note: Token-based commands expire in 10 minutes.\n"
@@ -219,17 +225,50 @@ class MobileResponseBridge(BaseModule):
             self._gate_alert(ev)
 
     def _gate_alert(self, ev) -> None:
-        pid = (ev.details or {}).get("pid")
+        details = ev.details if isinstance(ev.details, dict) else {}
+        pid = details.get("pid")
         module = neutralize_telemetry(str(ev.module), 80)
         threat = neutralize_telemetry(str(ev.message), 200)
-        action = "SUSPEND" if pid else "REVIEW"
+        process_target = self._bind_process_target(pid, details)
+        rollback_artifact = self._prepare_rollback_artifact(ev)
+        response_eligible = (
+            not is_remote_observe_only(ev)
+            and self._bus is not None
+            and getattr(self._bus, "integrity_enabled", False)
+        )
+        if response_eligible:
+            try:
+                response_eligible = bool(self._bus.verify(ev))
+            except Exception:
+                response_eligible = False
+        action = "RESPOND" if response_eligible and (process_target or rollback_artifact) else "REVIEW"
         token = self._new_token()
         self.pending_alerts[token] = {
-            "pid": pid, "action": action, "module": ev.module,
+            "pid": process_target.get("pid") if process_target else None,
+            "process_create_time": (
+                process_target.get("process_create_time") if process_target else None
+            ),
+            "exe": process_target.get("exe") if process_target else None,
+            "process_name": process_target.get("name") if process_target else None,
+            "rollback_artifact": rollback_artifact,
+            "response_eligible": response_eligible,
+            "source_event_hmac": str(getattr(ev, "hmac_sig", "") or ""),
+            "action": action,
+            "module": ev.module,
             "timestamp": time.time(),
         }
+        commands = []
+        if response_eligible and process_target:
+            commands.extend(("KILL", "SUSPEND"))
+        if response_eligible and rollback_artifact:
+            commands.append("ROLLBACK")
+        command_text = (
+            "/".join(commands) + f" {token} <PIN>"
+            if commands
+            else "REVIEW ONLY — no exact response target"
+        )
         line = (f"🚨 [{ev.severity.label}] {module} (PID {pid}) — {threat}\n"
-                f"Token {token}: KILL/SUSPEND/ROLLBACK {token} <PIN>  ·  MUTE {token}")
+                f"Token {token}: {command_text}  ·  MUTE {token}")
 
         # Rate-limit: >_FLOOD_MAX alerts in the window → aggregate into a digest.
         now = time.time()
@@ -272,9 +311,17 @@ class MobileResponseBridge(BaseModule):
             self.pending_alerts.pop(token, None)
             pid = info.get("pid")
             if pid:
-                self._emit_mitigation("SUSPEND", pid, reason=f"token {token} expired")
-                self._send(f"Token [{token}] expired. Target process safely "
-                           "suspended awaiting manual review.")
+                self._emit_mitigation(
+                    "SUSPEND",
+                    pid,
+                    reason=f"token {token} expired",
+                    directive_authorized=False,
+                    event_type="mobile_token_expiry",
+                )
+                self._send(
+                    f"Token [{token}] expired. No action taken; request a fresh "
+                    "alert token before responding."
+                )
             else:
                 self._send(f"Token [{token}] expired. No action taken (review-only alert).")
         # expire mutes
@@ -350,8 +397,16 @@ class MobileResponseBridge(BaseModule):
 
     def _spoof(self, body: str, why: str) -> None:
         h = hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()[:16]
-        self.emit(f"Spoof/Unauthorized Access Attempt ({why}) — msg_sha={h}",
-                  Severity.HIGH, reason=why, msg_sha256=h)
+        self.emit(
+            f"Spoof/Unauthorized Access Attempt ({why}) — msg_sha={h}",
+            Severity.HIGH,
+            reason=why,
+            msg_sha256=h,
+            disposition="health",
+            event_type="mobile_auth_failure",
+            response_authorized=False,
+            audit_only=True,
+        )
 
     # ── Command implementations ────────────────────────────────────────────────
     def _status_text(self) -> str:
@@ -404,13 +459,231 @@ class MobileResponseBridge(BaseModule):
         self._send(f"🌿 ECO {'ON' if on else 'OFF'} — {'throttled' if on else 'restored'} "
                    f"{n} non-critical module(s).")
 
+    @staticmethod
+    def _bind_process_target(pid, details: dict) -> dict | None:
+        """Capture one live PID/create-time/executable identity or fail closed."""
+        if not isinstance(pid, int) or pid <= 0 or psutil is None:
+            return None
+        try:
+            process = psutil.Process(pid)
+            created = float(process.create_time())
+            exe = os.path.normcase(os.path.realpath(str(process.exe() or "")))
+            name = str(process.name() or "")
+            if not exe:
+                return None
+            supplied_created = details.get("process_create_time")
+            if supplied_created is not None and abs(float(supplied_created) - created) > 0.001:
+                return None
+            supplied_exe = details.get("exe") or details.get("process_path") or details.get("image")
+            if supplied_exe:
+                expected_exe = os.path.normcase(os.path.realpath(str(supplied_exe)))
+                if expected_exe != exe:
+                    return None
+            if abs(float(process.create_time()) - created) > 0.001:
+                return None
+        except Exception:
+            return None
+        return {
+            "pid": pid,
+            "process_create_time": created,
+            "exe": exe,
+            "name": name,
+        }
+
+    def _prepare_rollback_artifact(self, ev) -> dict | None:
+        if is_remote_observe_only(ev):
+            return None
+        details = ev.details if isinstance(ev.details, dict) else {}
+        raw_path = details.get("path") or details.get("artifact_path")
+        if not isinstance(raw_path, str) or not raw_path:
+            return None
+        try:
+            shadow = (
+                getattr(self._manager, "modules", {}).get("Shadow Shield")
+                if self._manager is not None
+                else None
+            )
+            prepare = getattr(shadow, "prepare_rollback_artifact", None)
+            if not callable(prepare):
+                return None
+            artifact = prepare(raw_path, before_ts=float(ev.ts))
+            return dict(artifact) if isinstance(artifact, dict) else None
+        except Exception:
+            return None
+
+    def _combat_consumer(self):
+        try:
+            combat = (
+                getattr(self._manager, "modules", {}).get("Adversary Combat")
+                if self._manager is not None
+                else None
+            )
+        except Exception:
+            combat = None
+        if combat is None or getattr(combat, "status", "stopped") != "running":
+            return None
+        if not callable(getattr(combat, "list_actions", None)):
+            return None
+        return combat
+
+    def _source_event_valid(self, info: dict) -> bool:
+        """Rebind a mobile token to its still-live authenticated source alert."""
+        source_hmac = str(info.get("source_event_hmac") or "")
+        if (
+            self._bus is None
+            or not getattr(self._bus, "integrity_enabled", False)
+            or not re.fullmatch(r"[0-9a-f]{64}", source_hmac)
+        ):
+            return False
+        try:
+            events = self._bus.recent(500)
+        except Exception:
+            return False
+        for event in events:
+            if not hmac.compare_digest(str(event.hmac_sig or ""), source_hmac):
+                continue
+            try:
+                if not self._bus.verify(event) or is_remote_observe_only(event):
+                    return False
+            except Exception:
+                return False
+            details = event.details if isinstance(event.details, dict) else {}
+            return details.get("pid") == info.get("pid")
+        return False
+
+    @staticmethod
+    def _receipt_ids(combat, *, trigger_ts: float, expected_action: str) -> set[str]:
+        found: set[str] = set()
+        try:
+            rows = combat.list_actions(limit=250)
+        except Exception:
+            return found
+        for row in rows:
+            try:
+                same_ts = abs(float(row.get("trigger_ts")) - trigger_ts) < 0.000001
+            except (TypeError, ValueError, OverflowError):
+                same_ts = False
+            if (
+                same_ts
+                and row.get("trigger_module") == "Mobile Response Bridge"
+                and row.get("action") == expected_action
+                and row.get("status") == "applied"
+                and row.get("integrity_status") == "verified"
+                and row.get("details", {}).get("postcondition_verified") is True
+            ):
+                action_id = str(row.get("action_id") or "")
+                if action_id:
+                    found.add(action_id)
+        return found
+
+    def _execute_combat(self, cmd: str, info: dict) -> tuple[bool, str]:
+        """Publish one authenticated exact contract and await its Combat receipt."""
+        combat = self._combat_consumer()
+        if combat is None:
+            return False, "authenticated Combat consumer unavailable"
+        if self._bus is None or not getattr(self._bus, "integrity_enabled", False):
+            return False, "EventBus response authentication is unavailable"
+
+        if cmd == "LOCKDOWN":
+            try:
+                policy = combat.policy()
+            except Exception:
+                return False, "Combat policy unavailable"
+            if not policy.isolate_host or policy.mode != "maximum":
+                return False, "Combat policy does not authorize host isolation"
+            expected_action = "isolate_host"
+            details = {
+                "active_attack": True,
+                "operator_authenticated": True,
+                "response_authorized": True,
+                "response_contract": {
+                    "version": 1,
+                    "actions": [expected_action],
+                    "targets": {"host": "local"},
+                },
+            }
+        else:
+            if info.get("response_eligible") is not True:
+                return False, "alert is not eligible for local response"
+            if not self._source_event_valid(info):
+                return False, "source alert authentication expired or changed"
+            bound = self._bind_process_target(info.get("pid"), info)
+            if bound is None:
+                return False, "process identity changed or PID was reused"
+            try:
+                policy = combat.policy()
+            except Exception:
+                return False, "Combat policy unavailable"
+            if cmd == "KILL":
+                if policy.process_action != "terminate" or policy.mode == "contain":
+                    return False, "Combat policy does not authorize termination"
+                expected_action = "terminate_process"
+            elif cmd == "SUSPEND":
+                if policy.process_action != "suspend" and policy.mode != "contain":
+                    return False, "Combat policy does not authorize suspension"
+                expected_action = "suspend_process"
+            else:
+                return False, "unsupported mobile response command"
+            details = {
+                "pid": bound["pid"],
+                "process_create_time": bound["process_create_time"],
+                "exe": bound["exe"],
+                "operator_authenticated": True,
+                "source_event_hmac": str(info.get("source_event_hmac") or ""),
+                "response_authorized": True,
+                "response_contract": {
+                    "version": 1,
+                    "actions": [expected_action],
+                    "targets": {
+                        "pid": bound["pid"],
+                        "process_create_time": bound["process_create_time"],
+                    },
+                },
+            }
+
+        trigger_ts = time.time()
+        before = self._receipt_ids(
+            combat, trigger_ts=trigger_ts, expected_action=expected_action
+        )
+        try:
+            self._bus.publish(Event(
+                self.name,
+                f"Authenticated mobile {cmd} request for exact local target.",
+                Severity.CRITICAL,
+                trigger_ts,
+                details,
+            ))
+        except Exception as exc:
+            return False, f"directive publication failed ({exc})"
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            current = self._receipt_ids(
+                combat, trigger_ts=trigger_ts, expected_action=expected_action
+            )
+            created = current - before
+            if created:
+                return True, sorted(created)[0]
+            time.sleep(0.05)
+        return False, "no verified Combat completion receipt"
+
     def _lockdown(self) -> None:
-        # Emit a high-priority host-isolation directive (SOAR / WFP consumes it).
-        self._emit_mitigation("MACRO_ISOLATE", None,
-                              reason="operator LOCKDOWN via mobile bridge")
-        self._soar_event("MACRO_ISOLATE", None, "operator LOCKDOWN (mobile)")
-        self._send("🚨 LOCKDOWN issued — host network isolation requested "
-                   "(loopback/Ollama/IPC stay reachable).")
+        ok, receipt = self._execute_combat("LOCKDOWN", {})
+        if ok:
+            self._soar_event(
+                "MACRO_ISOLATE", None, "operator LOCKDOWN (mobile)",
+                applied=True, receipt_id=receipt,
+            )
+            self._send(
+                f"🚨 LOCKDOWN applied and postcondition-verified "
+                f"(Combat receipt {receipt})."
+            )
+        else:
+            self._soar_event(
+                "MACRO_ISOLATE", None, "operator LOCKDOWN rejected",
+                applied=False, error=receipt,
+            )
+            self._send(f"🚨 LOCKDOWN rejected — no host action: {receipt}.")
 
     def _gated(self, cmd: str, token: str) -> None:
         info = self.pending_alerts.pop(token, None)   # single-use
@@ -418,24 +691,56 @@ class MobileResponseBridge(BaseModule):
             return
         pid = info.get("pid")
         if cmd == "ROLLBACK":
-            ok = self._rollback(pid, info)
-            self._send(f"🔄 ROLLBACK {token} — Shadow Shield recovery "
-                       f"{'triggered' if ok else 'unavailable'}.")
+            ok, result = self._rollback(info)
+            if ok:
+                self._send(
+                    f"🔄 ROLLBACK {token} — one exact Shadow Shield version "
+                    f"restored ({result})."
+                )
+            else:
+                self._send(f"🔄 ROLLBACK {token} rejected — no file restored: {result}.")
             return
         # KILL / SUSPEND
-        self._emit_mitigation(cmd, pid, reason=f"operator {cmd} token {token}")
-        self._send(f"{'🚫 KILL' if cmd == 'KILL' else '⏸️ SUSPEND'} {token} — "
-                   f"signed directive dropped for PID {pid}.")
+        ok, result = self._execute_combat(cmd, info)
+        label = "🚫 KILL" if cmd == "KILL" else "⏸️ SUSPEND"
+        if ok:
+            self._soar_event(
+                cmd, pid, f"operator {cmd} token {token}",
+                applied=True, receipt_id=result,
+            )
+            self._send(
+                f"{label} {token} — applied and postcondition-verified "
+                f"(Combat receipt {result})."
+            )
+        else:
+            self._soar_event(
+                cmd, pid, f"operator {cmd} rejected",
+                applied=False, error=result,
+            )
+            self._send(f"{label} {token} rejected — no process action: {result}.")
 
-    def _rollback(self, pid, info) -> bool:
+    def _rollback(self, info: dict) -> tuple[bool, str]:
+        if info.get("response_eligible") is not True:
+            return False, "alert is not eligible for local rollback"
+        if not self._source_event_valid(info):
+            return False, "source alert authentication expired or changed"
+        artifact = info.get("rollback_artifact")
+        if not isinstance(artifact, dict):
+            return False, "token has no exact authorized rollback artifact"
         try:
             shdw = self._manager.modules.get("Shadow Shield") if self._manager else None
-            if shdw and hasattr(shdw, "trigger_rollback"):
-                shdw.trigger_rollback(before_ts=info.get("timestamp"))
-                return True
-        except Exception:
-            pass
-        return False
+            restore = getattr(shdw, "restore_rollback_artifact", None)
+            if not callable(restore):
+                return False, "scoped Shadow Shield consumer unavailable"
+            result = restore(dict(artifact))
+        except Exception as exc:
+            return False, f"scoped Shadow Shield failure ({exc})"
+        restored = result.get("restored") if isinstance(result, dict) else None
+        failed = result.get("failed") if isinstance(result, dict) else None
+        expected = str(artifact.get("source_path") or "")
+        if restored == [expected] and not failed:
+            return True, str(artifact.get("artifact_id") or "")
+        return False, "exact artifact postcondition was not verified"
 
     def _mute(self, token: str) -> None:
         info = self.pending_alerts.get(token) or {}
@@ -447,14 +752,42 @@ class MobileResponseBridge(BaseModule):
             self._send(f"MUTE {token} — could not resolve originating module.")
 
     # ── Mitigation directive helpers ────────────────────────────────────────────
-    def _emit_mitigation(self, action: str, pid, reason: str) -> None:
+    def _emit_mitigation(
+        self,
+        action: str,
+        pid,
+        reason: str,
+        *,
+        directive_authorized: bool,
+        event_type: str = "mobile_response_directive",
+    ) -> None:
+        # This bus record is an audit/directive envelope, not detector evidence.
+        # Its authority is deliberately scoped to an exact directive consumer;
+        # generic response tiers must not turn KILL/SUSPEND into host isolation.
         self.emit(
             f"[MOBILE-DIRECTIVE] {action} requested (pid={pid}) — {reason}",
             Severity.CRITICAL,
-            soar_action=action, target_pid=pid, origin="mobile_bridge", reason=reason,
+            soar_action=action,
+            target_pid=pid,
+            origin="mobile_bridge",
+            reason=reason,
+            disposition="health" if not directive_authorized else "directive",
+            event_type=event_type,
+            response_authorized=False,
+            directive_authorized=directive_authorized,
+            response_scope="mobile-directive-only",
         )
 
-    def _soar_event(self, action: str, pid, reason: str) -> None:
+    def _soar_event(
+        self,
+        action: str,
+        pid,
+        reason: str,
+        *,
+        applied: bool = False,
+        receipt_id: str = "",
+        error: str = "",
+    ) -> None:
         try:
             from pathlib import Path
             from angerona.core.data_paths import data_dir
@@ -463,7 +796,8 @@ class MobileResponseBridge(BaseModule):
             d.mkdir(parents=True, exist_ok=True)
             ev = {"ts": time.time(), "type": action, "severity": "Critical",
                   "pid": pid, "reason": reason, "origin": "mobile_bridge",
-                  "auto_applied": False}
+                  "auto_applied": bool(applied), "receipt_id": receipt_id,
+                  "error": error[:500]}
             with open(d / "soar_events.json", "a", encoding="utf-8") as f:
                 f.write(json.dumps(ev) + "\n")
         except Exception:

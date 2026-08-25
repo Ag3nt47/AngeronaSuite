@@ -699,20 +699,31 @@ class AngeronaApp:
             self._admin_audit = AdminAuditLedger(
                 self.config.data_dir / "admin-audit.db", audit_key
             )
-            authorization_expiry = time.time() + (366 * 24 * 60 * 60)
+            authenticated_at = time.time()
+            # Principal authority must never outlive the durable credentials
+            # that authenticated it.  In particular, restarting Angerona must
+            # not roll a fresh one-year principal expiry forward indefinitely.
+            authorization_expiry = min(
+                credential_set.operator.expires_at,
+                credential_set.device.expires_at,
+            )
+            if authorization_expiry <= authenticated_at:
+                raise RuntimeError("local fleet credentials have expired")
+            operator_context = credential_set.operator.authenticated_context(
+                authenticated_at
+            )
+            device_context = credential_set.device.authenticated_context(
+                authenticated_at
+            )
             authorization_policy = AuthorizationPolicy(
                 (
                     Principal(
-                        credential_set.operator.authenticated_context(
-                            time.time()
-                        ).principal_id,
+                        operator_context.principal_id,
                         PrincipalKind.SERVICE,
                         expires_at=authorization_expiry,
                     ),
                     Principal(
-                        credential_set.device.authenticated_context(
-                            time.time()
-                        ).principal_id,
+                        device_context.principal_id,
                         PrincipalKind.SERVICE,
                         expires_at=authorization_expiry,
                     ),
@@ -723,16 +734,12 @@ class AngeronaApp:
                 ),
                 (
                     RoleBinding(
-                        credential_set.operator.authenticated_context(
-                            time.time()
-                        ).principal_id,
+                        operator_context.principal_id,
                         "fleet-local-operator",
                         f"fleet/{self.config.fleet_tenant_id}",
                     ),
                     RoleBinding(
-                        credential_set.device.authenticated_context(
-                            time.time()
-                        ).principal_id,
+                        device_context.principal_id,
                         "fleet-local-device",
                         "fleet/"
                         f"{self.config.fleet_tenant_id}/device/"

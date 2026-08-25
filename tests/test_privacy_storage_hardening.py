@@ -33,6 +33,11 @@ def test_usb_pin_is_stored_but_never_published_to_environment(
     monkeypatch.setenv("ANGERONA_USB_PIN", "inherited-on-unrelated-update")
     secure_store.write_secret_map({"OPENAI_API_KEY": "provider-secret"}, tmp_path)
     assert "ANGERONA_USB_PIN" not in os.environ
+    assert "OPENAI_API_KEY" not in os.environ
+
+    monkeypatch.setenv("OPENAI_API_KEY", "inherited-provider")
+    secure_store.load_into_environment(tmp_path)
+    assert "OPENAI_API_KEY" not in os.environ
 
 
 def test_jarvis_authority_is_stored_but_never_published_to_environment(
@@ -51,6 +56,26 @@ def test_jarvis_authority_is_stored_but_never_published_to_environment(
     secure_store.load_into_environment(tmp_path)
     assert key not in os.environ
 
+
+def test_scoped_secret_retrieval_returns_only_requested_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        secure_store,
+        "read_secret_map",
+        lambda _root=None, strict=False: {
+            "OPENAI_API_KEY": "provider",
+            "ARIA_IMAP_PASS": "mail",
+            "ANGERONA_INTERNAL_FLEET_CREDENTIALS_V1": "fleet-authority",
+        },
+    )
+
+    assert secure_store.read_secret_values(("OPENAI_API_KEY", "ARIA_IMAP_PASS")) == {
+        "OPENAI_API_KEY": "provider",
+        "ARIA_IMAP_PASS": "mail",
+    }
+    with pytest.raises(ValueError, match="duplicates"):
+        secure_store.read_secret_values(("OPENAI_API_KEY", "OPENAI_API_KEY"))
 
 def test_legacy_env_reparse_source_is_ignored_and_not_deleted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

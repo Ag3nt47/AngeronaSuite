@@ -9,6 +9,7 @@ import pytest
 
 from angerona.core.url_policy import (
     LOCAL_SERVICE_POLICY,
+    OLLAMA_SERVICE_POLICY,
     PUBLIC_HTTPS_POLICY,
     UrlPolicyError,
     host_policy,
@@ -115,12 +116,13 @@ def test_local_json_request_uses_bounded_loopback_transport(monkeypatch) -> None
         payload={"prompt": "safe"},
         timeout=7,
         response_maximum=1024,
+        policy=OLLAMA_SERVICE_POLICY,
     )
 
     assert result == {"ok": True}
     assert captured["request"].get_method() == "POST"
     assert b'"prompt":"safe"' in captured["request"].data
-    assert captured["policy"] is LOCAL_SERVICE_POLICY
+    assert captured["policy"] is OLLAMA_SERVICE_POLICY
     assert captured["timeout"] == 7
 
 
@@ -138,6 +140,37 @@ def test_local_json_request_rejects_oversized_or_non_object_payload() -> None:
             "/api/generate",
             payload=["not", "an", "object"],
         )
+
+
+def test_local_json_request_supports_delete_with_bounded_json(monkeypatch) -> None:
+    captured = {}
+
+    class Response:
+        headers = {"Content-Length": "11"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _amount):
+            return b'{"ok":true}'
+
+    def fake_open(request, *, policy, timeout):
+        captured.update(request=request, policy=policy, timeout=timeout)
+        return Response()
+
+    monkeypatch.setattr("angerona.core.url_policy.safe_urlopen", fake_open)
+    result = local_json_request(
+        "http://127.0.0.1:11434",
+        "/api/delete",
+        method="DELETE",
+        payload={"model": "angerona-test:v1"},
+    )
+    assert result == {"ok": True}
+    assert captured["request"].get_method() == "DELETE"
+    assert captured["request"].data == b'{"model":"angerona-test:v1"}'
 
 
 def test_local_transport_pins_one_resolution_and_disables_inherited_proxy(
@@ -166,7 +199,7 @@ def test_local_transport_pins_one_resolution_and_disables_inherited_proxy(
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
 
-    request = urllib.request.Request("http://localhost:11434/api/chat")
+    request = urllib.request.Request("http://localhost:11434/healthz")
     safe_urlopen(request, policy=LOCAL_SERVICE_POLICY, timeout=3)
 
     assert resolutions == 1
@@ -179,3 +212,57 @@ def test_local_transport_pins_one_resolution_and_disables_inherited_proxy(
     ]
     assert len(proxies) == 1
     assert proxies[0].proxies == {}
+
+
+def test_ollama_policy_attests_custom_port_but_unrelated_local_service_does_not(
+    monkeypatch,
+) -> None:
+    from angerona.core import ollama_lifecycle
+
+    attested: list[str] = []
+    monkeypatch.setattr(
+        ollama_lifecycle,
+        "attest_ollama_service",
+        lambda host: attested.append(host) or object(),
+    )
+
+    class Opener:
+        def open(self, _request, timeout):
+            assert timeout == 1
+            return SimpleNamespace()
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *_handlers: Opener())
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda _host, port, **kwargs: [
+            (socket.AF_INET, kwargs["type"], 6, "", ("127.0.0.1", port))
+        ],
+    )
+
+    safe_urlopen(
+        "http://localhost:23145/api/chat",
+        policy=LOCAL_SERVICE_POLICY,
+        timeout=1,
+    )
+    safe_urlopen(
+        "http://localhost:23146/healthz",
+        policy=LOCAL_SERVICE_POLICY,
+        timeout=1,
+    )
+
+    assert attested == ["http://localhost:23145"]
+
+
+def test_ollama_policy_refuses_non_ollama_route_before_connection(monkeypatch) -> None:
+    monkeypatch.setattr(
+        urllib.request,
+        "build_opener",
+        lambda *_handlers: (_ for _ in ()).throw(AssertionError("must not connect")),
+    )
+    with pytest.raises(UrlPolicyError, match="Ollama API path"):
+        safe_urlopen(
+            "http://127.0.0.1:11434/not-ollama",
+            policy=OLLAMA_SERVICE_POLICY,
+            timeout=1,
+        )

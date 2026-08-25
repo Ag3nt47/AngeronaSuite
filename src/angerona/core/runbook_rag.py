@@ -45,6 +45,13 @@ class Chunk:
     heading: str         # nearest heading, or "(intro)"
     text: str            # raw chunk body
     tokens: list[str] = field(default_factory=list, repr=False)
+    # Querying is the interactive hot path.  Build these two immutable scoring
+    # inputs when the index changes instead of reconstructing a frequency dict
+    # and length normaliser for every chunk on every ARIA question.
+    term_freq: dict[str, int] = field(
+        default_factory=dict, repr=False, compare=False
+    )
+    length_norm: float = field(default=0.0, repr=False, compare=False)
 
 
 @dataclass
@@ -134,9 +141,18 @@ class RunbookRAG:
         total_len = 0
         for c in chunks:
             total_len += len(c.tokens)
-            for term in set(c.tokens):
+            term_freq: dict[str, int] = {}
+            for term in c.tokens:
+                term_freq[term] = term_freq.get(term, 0) + 1
+            c.term_freq = term_freq
+            for term in term_freq:
                 self._df[term] = self._df.get(term, 0) + 1
         self._avgdl = (total_len / self._n) if self._n else 0.0
+        average = self._avgdl or 1.0
+        for c in chunks:
+            c.length_norm = self._K1 * (
+                1 - self._B + self._B * len(c.tokens) / average
+            )
 
     # ── Query ─────────────────────────────────────────────────────────────────
     def query(self, text: str, k: int = 5) -> list[Hit]:
@@ -155,19 +171,15 @@ class RunbookRAG:
     def _bm25(self, q_terms: list[str], c: Chunk) -> float:
         if not c.tokens:
             return 0.0
-        dl = len(c.tokens)
-        tf: dict[str, int] = {}
-        for t in c.tokens:
-            tf[t] = tf.get(t, 0) + 1
         score = 0.0
         for term in q_terms:
-            f = tf.get(term, 0)
+            f = c.term_freq.get(term, 0)
             if f == 0:
                 continue
             df = self._df.get(term, 0)
             # BM25 idf with +1 so it never goes negative on very common terms.
             idf = math.log(1 + (self._n - df + 0.5) / (df + 0.5))
-            denom = f + self._K1 * (1 - self._B + self._B * dl / (self._avgdl or 1))
+            denom = f + c.length_norm
             score += idf * (f * (self._K1 + 1)) / denom
         return score
 

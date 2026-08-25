@@ -1202,7 +1202,18 @@ class AsyncFlightRecorder:
                     self._overflow_queued += 1
                 return
             except queue.Full:
-                pass
+                # A full observation can race the C-backed consumer releasing
+                # a slot. Yield once and make one bounded retry before taking
+                # the much slower synchronous evidence path. A genuinely
+                # exhausted lane still falls through without an unbounded wait.
+                time.sleep(0)
+                try:
+                    self._overflow_queue.put_nowait(event)
+                    with self._metrics_lock:
+                        self._overflow_queued += 1
+                    return
+                except queue.Full:
+                    pass
         written = self._recorder._route_to_dlq(event)
         with self._metrics_lock:
             if written:

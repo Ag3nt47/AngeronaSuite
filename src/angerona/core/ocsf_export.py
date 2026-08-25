@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import time
 
+from angerona import __version__
+
 # OCSF severity_id: 1 Informational, 2 Low, 3 Medium, 4 High, 5 Critical, 6 Fatal
 _SEV_ID = {"INFO": 1, "LOW": 2, "MEDIUM": 3, "HIGH": 4, "CRITICAL": 5}
-_PRODUCT_VERSION = "1.3.0"
+_OCSF_VERSION = "1.8.0"
 
 
 def _sev(event) -> tuple[int, str]:
@@ -62,9 +64,13 @@ def to_finding(event) -> dict:
         "time": int(ts * 1000),
         "message": msg[:1024],
         "metadata": {
-            "version": "1.3.0",
+            # The mapping intentionally stays on the stable Detection Finding
+            # class while declaring the exact schema release it targets.  OCSF
+            # 1.8 is backwards compatible with this 1.3-era event class and adds
+            # newer profiles/objects without invalidating the core contract.
+            "version": _OCSF_VERSION,
             "product": {"name": "Angerona", "vendor_name": "Angerona",
-                        "version": _PRODUCT_VERSION, "feature": {"name": module}},
+                        "version": __version__, "feature": {"name": module}},
         },
         "finding_info": {
             "title": f"{module}: {msg[:120]}",
@@ -76,6 +82,40 @@ def to_finding(event) -> dict:
         "unmapped": {"module": module,
                      "details": {k: str(v)[:200] for k, v in (det.items() if isinstance(det, dict) else [])}},
     }
+
+
+def validate_finding_shape(document: object) -> tuple[bool, tuple[str, ...]]:
+    """Validate Angerona's bounded OCSF 1.8 Detection Finding contract.
+
+    This is deliberately a local structural admission check, not a claim that
+    it replaces the upstream OCSF schema compiler.  Exporters can call it before
+    queueing a document so malformed mappings fail closed.
+    """
+    errors: list[str] = []
+    if not isinstance(document, dict):
+        return False, ("document must be an object",)
+    if document.get("class_uid") != 2004:
+        errors.append("class_uid must be 2004")
+    if document.get("category_uid") != 2:
+        errors.append("category_uid must be 2")
+    if document.get("type_uid") != 200401:
+        errors.append("type_uid must be 200401")
+    if document.get("severity_id") not in {1, 2, 3, 4, 5, 6}:
+        errors.append("severity_id is outside the OCSF range")
+    if not isinstance(document.get("time"), int) or document.get("time", 0) <= 0:
+        errors.append("time must be a positive epoch-millisecond integer")
+    metadata = document.get("metadata")
+    if not isinstance(metadata, dict) or metadata.get("version") != _OCSF_VERSION:
+        errors.append(f"metadata.version must be {_OCSF_VERSION}")
+    product = metadata.get("product") if isinstance(metadata, dict) else None
+    if not isinstance(product, dict) or product.get("name") != "Angerona":
+        errors.append("metadata.product.name must be Angerona")
+    finding = document.get("finding_info")
+    if not isinstance(finding, dict) or not str(finding.get("title") or "").strip():
+        errors.append("finding_info.title is required")
+    if not isinstance(document.get("observables"), list):
+        errors.append("observables must be an array")
+    return not errors, tuple(errors)
 
 
 def self_test() -> tuple[bool, str]:
@@ -90,10 +130,11 @@ def self_test() -> tuple[bool, str]:
         details = {"pid": 6624, "name": "evil.exe", "remote": "8.8.8.8:443", "mitre": "T1071"}
 
     f = to_finding(_Ev())
-    ok = (f["class_uid"] == 2004 and f["severity_id"] == 4 and f["severity"] == "High"
+    shape_ok, _errors = validate_finding_shape(f)
+    ok = (shape_ok and f["class_uid"] == 2004 and f["severity_id"] == 4 and f["severity"] == "High"
           and f["metadata"]["product"]["name"] == "Angerona"
           and f["attacks"] and f["attacks"][0]["technique"]["uid"] == "T1071"
           and any(o["name"] == "process.pid" and o["value"] == "6624" for o in f["observables"])
           and any(o["name"] == "dst_endpoint.ip" and o["value"] == "8.8.8.8" for o in f["observables"]))
-    return ok, ("OCSF Detection Finding mapping verified (class 2004, severity, "
+    return ok, ("OCSF 1.8 Detection Finding mapping verified (class 2004, severity, "
                 "attack technique, observables)" if ok else f"failed: {f}")

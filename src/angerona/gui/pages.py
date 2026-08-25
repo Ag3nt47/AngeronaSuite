@@ -272,7 +272,9 @@ _SOAR_STATE_MAX_BYTES = 4 * 1024 * 1024
 _SOAR_PENDING = "PENDING REVIEW"
 _SOAR_APPROVED = "APPROVED — execution required"
 _SOAR_DISMISSED = "DISMISSED — no host action taken"
-_SOAR_EXECUTED = "EXECUTED — process suspended"
+_SOAR_SUBMITTED = "SUBMITTED — Adversary Combat receipt pending"
+_SOAR_EXECUTED = "EXECUTED — verified Adversary Combat receipt"
+_SOAR_RECEIPT_TIMEOUT_SECONDS = 120.0
 
 
 def _invalidate_soar_queue_cache() -> None:
@@ -457,7 +459,8 @@ def _read_soar_queue_state() -> dict[str, dict]:
         return {}
     allowed = {
         "status", "reviewed_at", "approved_at", "dismissed_at",
-        "executed_at", "execution_result", "execution_error",
+        "submitted_at", "executed_at", "execution_result", "execution_error",
+        "receipt_hmac", "receipt_action_ids", "receipt_postcondition_verified",
     }
     out: dict[str, dict] = {}
     for request_id, updates in value.items():
@@ -501,7 +504,8 @@ def _update_soar_queue_record(request_id: str, **updates) -> bool:
     """
     allowed = {
         "status", "reviewed_at", "approved_at", "dismissed_at",
-        "executed_at", "execution_result", "execution_error",
+        "submitted_at", "executed_at", "execution_result", "execution_error",
+        "receipt_hmac", "receipt_action_ids", "receipt_postcondition_verified",
     }
     if not updates or not set(updates) <= allowed:
         return False
@@ -615,14 +619,8 @@ def _soar_process_preflight(record: dict, bus, manager):
     from angerona.core.threat import event_disposition
 
     request_id = _soar_record_id(record)
-    for receipt_event in bus.recent(500) if bus is not None else ():
-        receipt_details = getattr(receipt_event, "details", {}) or {}
-        if (
-            isinstance(receipt_details, dict)
-            and receipt_details.get("queue_request_id") == request_id
-            and receipt_details.get("action_succeeded") is True
-        ):
-            raise PermissionError("this containment request was already executed")
+    if _verified_combat_receipt(bus, request_id) is not None:
+        raise PermissionError("this containment request already has a Combat receipt")
 
     event = _soar_origin_event(record, bus)
     if is_remote_observe_only(event):
@@ -692,42 +690,155 @@ def _soar_process_preflight(record: dict, bus, manager):
     return process, event
 
 
+def _verified_combat_receipt(bus, request_id: str):
+    """Return a locally authenticated, structurally complete Combat receipt."""
+    if bus is None or not getattr(bus, "integrity_enabled", False):
+        return None
+    for event in reversed(bus.recent(500)):
+        if getattr(event, "module", "") != "Adversary Combat":
+            continue
+        details = getattr(event, "details", {}) or {}
+        if (
+            not isinstance(details, dict)
+            or details.get("queue_request_id") != request_id
+            or not bus.verify(event)
+        ):
+            continue
+        succeeded = details.get("action_succeeded") is True
+        action_ids = details.get("action_ids")
+        actions = details.get("actions")
+        if succeeded:
+            if (
+                details.get("postcondition_verified") is not True
+                or not isinstance(action_ids, list)
+                or not action_ids
+                or not all(isinstance(value, str) and value for value in action_ids)
+                or not isinstance(actions, list)
+                or "suspend_process" not in actions
+            ):
+                continue
+        elif not (
+            details.get("action_succeeded") is False
+            and isinstance(action_ids, list)
+            and not action_ids
+            and isinstance(actions, list)
+            and not actions
+        ):
+            continue
+        return event
+    return None
+
+
+def _reconcile_soar_submission_receipts(
+    records: list[dict], bus, *, timeout_seconds: float = _SOAR_RECEIPT_TIMEOUT_SECONDS
+) -> bool:
+    """Close submitted queue items only from signed Combat results or timeout."""
+    changed = False
+    now = time.time()
+    for record in records:
+        if not str(record.get("status", "")).upper().startswith("SUBMITTED"):
+            continue
+        request_id = _soar_record_id(record)
+        receipt = _verified_combat_receipt(bus, request_id)
+        if receipt is not None:
+            details = getattr(receipt, "details", {}) or {}
+            succeeded = details.get("action_succeeded") is True
+            changed = _update_soar_queue_record(
+                request_id,
+                status=(
+                    _SOAR_EXECUTED
+                    if succeeded
+                    else "FAILED — verified Combat receipt reported no action"
+                ),
+                executed_at=float(getattr(receipt, "ts", now)),
+                execution_result=(
+                    str(getattr(receipt, "message", ""))[:1000]
+                    if succeeded
+                    else ""
+                ),
+                execution_error=(
+                    ""
+                    if succeeded
+                    else str(getattr(receipt, "message", ""))[:1000]
+                ),
+                receipt_hmac=str(getattr(receipt, "hmac_sig", "") or ""),
+                receipt_action_ids=list(details.get("action_ids", [])),
+                receipt_postcondition_verified=(
+                    details.get("postcondition_verified") is True
+                ),
+            ) or changed
+            continue
+        try:
+            submitted_at = float(record.get("submitted_at", 0.0))
+        except (TypeError, ValueError, OverflowError):
+            submitted_at = 0.0
+        if submitted_at > 0 and now - submitted_at >= max(1.0, timeout_seconds):
+            changed = _update_soar_queue_record(
+                request_id,
+                status="FAILED — Combat receipt timeout; verify Action history",
+                executed_at=now,
+                execution_error=(
+                    "No verified Combat completion receipt arrived before the "
+                    "queue timeout. The request remains closed to resubmission."
+                ),
+            ) or changed
+    return changed
+
+
 def _execute_approved_soar_record(record: dict, bus, manager) -> str:
-    """Suspend one verified process and publish an auditable response event."""
+    """Submit one verified process suspension to Combat's durable journal."""
     from angerona.core.eventbus import Event as BusEvent
+    from angerona.core.response_contract import authorize_response
 
     process, origin = _soar_process_preflight(record, bus, manager)
     pid = int(process.pid)
     name = str(process.name() or "process")
-    process.suspend()
-    try:
-        bus.publish(BusEvent(
-            module="SOAR Automation",
-            severity=Severity.HIGH,
-            message=(
-                f"Manual containment: suspended {name} (pid {pid}) after "
-                "explicit operator approval."
-            ),
-            details={
-                "pid": pid,
-                "action": "suspend",
-                "action_succeeded": True,
-                "operator_approved": True,
-                "queue_request_id": _soar_record_id(record),
-                "trigger_module": getattr(origin, "module", ""),
-                "trigger_ts": getattr(origin, "ts", 0.0),
-                "disposition": "response_audit",
-            },
-        ))
-    except Exception as exc:
-        # A response without its audit event is not an acceptable success. Undo
-        # the reversible suspension before reporting failure.
-        try:
-            process.resume()
-        except Exception:
-            pass
-        raise RuntimeError("containment audit failed; suspension was rolled back") from exc
-    return f"Suspended {name} (pid {pid}); use Console 'resume {pid}' to roll back."
+    combat = (
+        getattr(manager, "modules", {}).get("Adversary Combat")
+        if manager is not None
+        else None
+    )
+    policy = combat.policy() if combat is not None else None
+    if (
+        combat is None
+        or getattr(combat, "status", "") != "running"
+        or policy is None
+        or not policy.enabled
+        or not callable(getattr(combat, "response_ready", None))
+        or not combat.response_ready()
+    ):
+        raise PermissionError("Adversary Combat is not armed")
+    action = record.get("action", {})
+    response = authorize_response(
+        ("suspend_process",),
+        pid=pid,
+        process_create_time=action.get("create_time"),
+    )
+    if not response:
+        raise PermissionError("the exact Combat response contract is invalid")
+    bus.publish(BusEvent(
+        module="SOAR Operator Request",
+        severity=Severity.HIGH,
+        message=(
+            f"Operator-approved exact process suspension request for {name} (pid {pid})."
+        ),
+        details={
+            "pid": pid,
+            "process_create_time": float(action["create_time"]),
+            "exe": str(action.get("exe") or ""),
+            "operator_approved": True,
+            "queue_request_id": _soar_record_id(record),
+            "trigger_module": getattr(origin, "module", ""),
+            "trigger_ts": getattr(origin, "ts", 0.0),
+            "active_attack": True,
+            "detector_policy": "operator-approved-exact-soar-request",
+            **response,
+        },
+    ))
+    return (
+        f"Submitted exact suspension for {name} (pid {pid}) to Adversary Combat. "
+        "Review Action history for the verified receipt and Undo control."
+    )
 
 
 def _section(text: str) -> QLabel:
@@ -1267,9 +1378,9 @@ class ThreatWindow(QDialog):
         root.addWidget(self.detail)
 
         controls = QHBoxLayout()
-        self.fix_btn = QPushButton("Attempt fix (stage)")
+        self.fix_btn = QPushButton("Generate advisory + vetted plan")
         self.fix_btn.clicked.connect(self._attempt_fix)
-        self.apply_btn = QPushButton("Apply staged fix…")
+        self.apply_btn = QPushButton("Apply vetted typed fixes…")
         self.apply_btn.clicked.connect(self._apply_fix)
         self.apply_btn.setEnabled(False)
         self.harden_btn = QPushButton("Harden system")
@@ -1405,12 +1516,16 @@ class ThreatWindow(QDialog):
             res = posture.generate_remediation(mitre)
             if isinstance(res, dict) and res.get("ok", True) and not res.get("error"):
                 self._selected_mitre = mitre
-                return (f"[+] Staged a review-gated remediation for {mitre}. "
-                        f"Inspect it, then click 'Apply staged fix…' to run it.")
+                plan = posture.apply_vetted_remediation(apply=False)
+                return (
+                    f"[+] Saved an inert local-AI advisory for {mitre}. "
+                    f"A vetted typed plan contains {len(plan.get('plan', []))} item(s); "
+                    "use 'Apply vetted typed fixes' for host changes."
+                )
             return f"[!] Could not stage a fix for {mitre}: {res}"
 
         self._run_async(do)
-        # enable Apply once staging kicks off; execution still confirms first
+        # The Apply button invokes only the reviewed typed remediation library.
         self.apply_btn.setEnabled(True)
 
     def _apply_fix(self) -> None:
@@ -1418,23 +1533,25 @@ class ThreatWindow(QDialog):
             return
         mitre = self._selected_mitre
         if not mitre:
-            self.status_lbl.setText("Stage a fix first with 'Attempt fix'.")
+            self.status_lbl.setText("Generate an advisory and vetted plan first.")
             return
         from PySide6.QtWidgets import QMessageBox
         if QMessageBox.question(
-                self, "Apply staged remediation?",
-                f"This will EXECUTE the staged remediation script for {mitre} on this "
-                f"machine (PowerShell, as Administrator).\n\nProceed?",
+                self, "Apply vetted typed remediations?",
+                f"Apply the reviewed typed remediation library for current open "
+                f"weaknesses (selected technique: {mitre})? No local-AI text or "
+                "arbitrary PowerShell will execute.\n\nProceed?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         posture = self._posture()
 
         def do():
-            res = posture.execute_remediation(mitre, authorized=True)
-            if isinstance(res, dict) and res.get("returncode") == 0:
-                v = res.get("verification", "")
-                return f"[+] Remediation applied for {mitre}. Verification: {v or 'n/a'}"
-            return f"[!] Remediation for {mitre} did not complete cleanly: {res}"
+            res = posture.apply_vetted_remediation(apply=True)
+            return (
+                "[+] Vetted typed remediation run completed: "
+                f"applied={res.get('applied', 0)}, skipped={res.get('skipped', 0)}, "
+                f"failed={res.get('failed', 0)}."
+            )
 
         self._run_async(do)
 
@@ -1457,8 +1574,8 @@ class ThreatWindow(QDialog):
                     staged += 1
                 except Exception:
                     pass
-            return (f"[+] Staged review-gated remediations for {staged}/{len(weaknesses)} "
-                    f"open weakness(es). Review and apply them per-threat.")
+            return (f"[+] Generated inert advisories for {staged}/{len(weaknesses)} "
+                    "open weakness(es). Host changes require the vetted typed plan.")
 
         self._run_async(do)
 
@@ -3220,8 +3337,9 @@ class AlertsPanel(QFrame):
                    f"Time: {ts_str}\n\n"
                    f"Message: {event.message}\n\n"
                    f"Target: {process_name} (pid {pid})\n\n"
-                   f"Confirming will SUSPEND this exact process instance now.\n"
-                   f"This is reversible with Console: resume {pid}.\n"
+                   f"Confirming submits this exact process instance to Combat now.\n"
+                   "A durable intent is written before suspension and the action is "
+                   "reversible from Settings → Adversary Combat → Action history.\n"
                    f"No process is killed and no file is deleted.")
         dlg = QMessageBox(self.window())
         dlg.setWindowTitle("Confirm Direct Containment")
@@ -3256,8 +3374,8 @@ class AlertsPanel(QFrame):
             return False
         updated = _update_soar_queue_record(
             _soar_record_id(record),
-            status=_SOAR_EXECUTED,
-            executed_at=time.time(),
+            status=_SOAR_SUBMITTED,
+            submitted_at=time.time(),
             execution_result=result,
         )
         suffix = "" if updated else " (SOAR history status update failed)"
@@ -3530,6 +3648,8 @@ class SoarPanel(QFrame):
 
     def refresh(self) -> None:
         items = _read_soar_queue()
+        if _reconcile_soar_submission_receipts(items, self.bus):
+            items = _read_soar_queue()
         fingerprint = tuple(
             (
                 _soar_record_id(record),
@@ -3537,7 +3657,9 @@ class SoarPanel(QFrame):
                 record.get("reviewed_at"),
                 record.get("approved_at"),
                 record.get("dismissed_at"),
+                record.get("submitted_at"),
                 record.get("executed_at"),
+                record.get("receipt_hmac"),
             )
             for record in items
         )
@@ -3605,7 +3727,7 @@ class SoarPanel(QFrame):
     @staticmethod
     def _terminal_record(record: dict) -> bool:
         status = str(record.get("status", "")).upper()
-        return status.startswith(("EXECUTED", "DISMISSED", "FAILED"))
+        return status.startswith(("SUBMITTED", "EXECUTED", "DISMISSED", "FAILED"))
 
     def _sync_action_buttons(self) -> None:
         record = self._selected_record()
@@ -3762,7 +3884,7 @@ class SoarPanel(QFrame):
                 status="FAILED — no host action taken",
                 execution_error=reason[:1000],
             )
-            self._approved_requests.discard(request_id)
+            self._approved_requests.pop(request_id, None)
             self._force_queue_refresh()
             self._status.setText(f"Execution refused safely: {reason}")
             return
@@ -3771,8 +3893,8 @@ class SoarPanel(QFrame):
             "Execute Approved Containment",
             f"Suspend {name} (pid {pid}) now?\n\n"
             "Angerona will revalidate the signed alert, allowlist, protected-process "
-            "rules, PID creation time, name, and executable again. This action does "
-            f"not kill the process and can be reversed with: resume {pid}",
+            "rules, PID creation time, name, and executable again, then submit the "
+            "exact suspension to Combat's durable intent/commit/undo journal.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         ) != QMessageBox.Yes:
@@ -3814,8 +3936,8 @@ class SoarPanel(QFrame):
             return
         updated = _update_soar_queue_record(
             request_id,
-            status=_SOAR_EXECUTED,
-            executed_at=time.time(),
+            status=_SOAR_SUBMITTED,
+            submitted_at=time.time(),
             execution_result=result,
         )
         self._approved_requests.pop(request_id, None)
@@ -4824,13 +4946,13 @@ class AARDialog(QDialog):
             self.body.appendPlainText("\n" + text)
         # Only offer to apply when a remediation was actually generated. If the
         # posture is clean (no open weaknesses), there is nothing to run.
-        if not self._on_apply or "staged" not in text.lower():
+        if not self._on_apply or "[vetted plan ready]" not in text.lower():
             return
         from PySide6.QtWidgets import QMessageBox
         if QMessageBox.question(
-                self, "Apply remediation",
-                "Apply the generated remediation now? This runs an elevated PowerShell "
-                "script on THIS machine. Review the text above first.",
+                self, "Apply vetted remediation",
+                "Apply the reviewed typed remediation plan now? Local-AI advisory text "
+                "will remain inert and will not execute.",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
             self.body.appendPlainText("\n[Apply] Running remediation…")
             import threading
@@ -5449,13 +5571,22 @@ class SettingsDialog(QDialog):
         self._combat_history_status = QLabel()
         self._combat_history_status.setWordWrap(True)
         lay.addWidget(self._combat_history_status)
+        select_row = QHBoxLayout()
+        select_row.addWidget(QLabel("Reversible action:"))
+        self._combat_undo_selector = QComboBox()
+        self._combat_undo_selector.setMinimumContentsLength(36)
+        select_row.addWidget(self._combat_undo_selector, 1)
+        lay.addLayout(select_row)
         undo_row = QHBoxLayout()
         self._combat_refresh_btn = QPushButton("Refresh action history")
-        self._combat_undo_btn = QPushButton("Undo last reversible action")
+        self._combat_undo_btn = QPushButton("Undo selected")
+        self._combat_undo_all_btn = QPushButton("Undo all reversible")
         self._combat_refresh_btn.clicked.connect(self._refresh_combat_actions)
-        self._combat_undo_btn.clicked.connect(self._undo_last_combat_action)
+        self._combat_undo_btn.clicked.connect(self._undo_selected_combat_action)
+        self._combat_undo_all_btn.clicked.connect(self._undo_all_combat_actions)
         undo_row.addWidget(self._combat_refresh_btn)
         undo_row.addWidget(self._combat_undo_btn)
+        undo_row.addWidget(self._combat_undo_all_btn)
         undo_row.addStretch()
         lay.addLayout(undo_row)
         self._refresh_combat_actions()
@@ -5471,16 +5602,33 @@ class SettingsDialog(QDialog):
         label = getattr(self, "_combat_history_status", None)
         if label is None:
             return
+        selector = getattr(self, "_combat_undo_selector", None)
+        undo_button = getattr(self, "_combat_undo_btn", None)
+        undo_all_button = getattr(self, "_combat_undo_all_btn", None)
+        if selector is not None:
+            selector.clear()
         module = self._combat_module()
         if module is None:
             label.setText("Adversary Combat is not attached to this Settings window yet.")
+            if selector is not None:
+                selector.setEnabled(False)
+            if undo_button is not None:
+                undo_button.setEnabled(False)
+            if undo_all_button is not None:
+                undo_all_button.setEnabled(False)
             return
-        actions = module.list_actions(limit=5)
+        actions = module.list_actions(limit=100)
         if not actions:
             label.setText("No combat actions have been recorded.")
+            if selector is not None:
+                selector.setEnabled(False)
+            if undo_button is not None:
+                undo_button.setEnabled(False)
+            if undo_all_button is not None:
+                undo_all_button.setEnabled(False)
             return
         rows = []
-        for action in actions:
+        for action in actions[:5]:
             status = "UNDONE" if action.get("undone") else "APPLIED"
             stamp = time.strftime(
                 "%Y-%m-%d %H:%M:%S",
@@ -5491,7 +5639,70 @@ class SettingsDialog(QDialog):
             )
         label.setText("\n".join(rows))
 
+        reversible = [
+            action for action in actions
+            if action.get("reversible") is True
+            and not action.get("undone")
+            and action.get("integrity_status") == "verified"
+            and action.get("status") == "applied"
+        ]
+        if selector is not None:
+            for action in reversible:
+                target = str(action.get("target") or "")
+                if len(target) > 70:
+                    target = "…" + target[-69:]
+                selector.addItem(
+                    f"{action.get('action')} · {target}",
+                    str(action.get("action_id") or ""),
+                )
+            selector.setEnabled(bool(reversible))
+        if undo_button is not None:
+            undo_button.setEnabled(bool(reversible))
+        if undo_all_button is not None:
+            undo_all_button.setEnabled(bool(reversible))
+
+    def _undo_selected_combat_action(self) -> None:
+        module = self._combat_module()
+        selector = getattr(self, "_combat_undo_selector", None)
+        action_id = str(selector.currentData() or "") if selector is not None else ""
+        if module is None or not action_id:
+            self._combat_history_status.setText(
+                "No verified reversible action is selected; no action was changed."
+            )
+            return
+        result = module.undo_action(action_id)
+        if result.get("ok"):
+            self._combat_history_status.setText(
+                f"Undo completed: {result.get('action')} ({result.get('action_id')})."
+            )
+        else:
+            self._combat_history_status.setText(
+                f"Undo did not run: {result.get('error', 'unknown error')}"
+            )
+        QTimer.singleShot(500, self._refresh_combat_actions)
+
+    def _undo_all_combat_actions(self) -> None:
+        module = self._combat_module()
+        if module is None:
+            self._combat_history_status.setText(
+                "Adversary Combat is unavailable; no action was changed."
+            )
+            return
+        result = module.undo_all()
+        if result.get("ok"):
+            self._combat_history_status.setText(
+                f"Undo all completed: {result.get('undone', 0)} reversible "
+                "action(s) restored."
+            )
+        else:
+            self._combat_history_status.setText(
+                f"Undo all completed with {len(result.get('failures', []))} "
+                "failure(s); review the verified action journal."
+            )
+        QTimer.singleShot(500, self._refresh_combat_actions)
+
     def _undo_last_combat_action(self) -> None:
+        """Compatibility hook for older UI callers; newest action is selected."""
         module = self._combat_module()
         if module is None:
             self._combat_history_status.setText(
@@ -6098,7 +6309,15 @@ class SettingsDialog(QDialog):
         self._aria_imap_user.setPlaceholderText("you@example.com")
         igrid.addWidget(self._aria_imap_user, 1, 1)
         igrid.addWidget(QLabel("Password / app-password:"), 2, 0)
-        self._aria_imap_pass = QLineEdit(os.environ.get("ARIA_IMAP_PASS", ""))
+        from angerona.core.secure_store import read_secret_values
+
+        protected_secrets = read_secret_values(
+            ("ARIA_IMAP_PASS", "ANGERONA_TEAMS_APP_PASSWORD"),
+            self._cfg.data_dir,
+        )
+        self._aria_imap_pass = QLineEdit(
+            protected_secrets.get("ARIA_IMAP_PASS", "")
+        )
         self._aria_imap_pass.setEchoMode(QLineEdit.Password)
         self._aria_imap_pass.setPlaceholderText(
             "protected by the operating-system credential store"
@@ -6131,7 +6350,9 @@ class SettingsDialog(QDialog):
         self._teams_app_id.setPlaceholderText("Azure Bot Microsoft App ID")
         tgrid.addWidget(self._teams_app_id, 0, 1)
         tgrid.addWidget(QLabel("App password:"), 1, 0)
-        self._teams_pw = QLineEdit(os.environ.get("ANGERONA_TEAMS_APP_PASSWORD", ""))
+        self._teams_pw = QLineEdit(
+            protected_secrets.get("ANGERONA_TEAMS_APP_PASSWORD", "")
+        )
         self._teams_pw.setEchoMode(QLineEdit.Password)
         self._teams_pw.setPlaceholderText(
             "protected by the operating-system credential store"

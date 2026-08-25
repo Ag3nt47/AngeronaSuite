@@ -124,7 +124,8 @@ def _attack_penalty() -> int:
         snap = tracker.snapshot()
         heats = []
         if isinstance(snap, dict):
-            for v in snap.values():
+            matrix = snap.get("matrix", {})
+            for v in matrix.values() if isinstance(matrix, dict) else ():
                 if isinstance(v, dict) and "heat" in v:
                     heats.append(float(v.get("heat", 0)))
         hot = sum(1 for h in heats if h > 0.15)
