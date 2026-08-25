@@ -24,11 +24,11 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: github/codeql-action/init@4187e74d05793876e9989daffde9c3e66b4acd07 # v3 reviewed 2026-07-29
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
         with:
           languages: python
-      - uses: github/codeql-action/analyze@4187e74d05793876e9989daffde9c3e66b4acd07 # v3 reviewed 2026-07-29
+      - uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
 
   secret-scan:
     runs-on: ubuntu-latest
@@ -37,7 +37,7 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@f586c14365d4643c6aa59d472ae6e984bf47bb34 # v2.3.9
@@ -57,6 +57,6 @@ jobs:
           results_file: results.sarif
           results_format: sarif
           publish_results: true
-      - uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3 reviewed 2026-07-29
+      - uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
         with:
           sarif_file: results.sarif
