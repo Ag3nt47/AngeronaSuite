@@ -315,6 +315,9 @@ def _windows_atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> No
     flush_file = kernel32.FlushFileBuffers
     flush_file.argtypes = (wintypes.HANDLE,)
     flush_file.restype = wintypes.BOOL
+    move_file = kernel32.MoveFileExW
+    move_file.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD)
+    move_file.restype = wintypes.BOOL
     set_info = kernel32.SetFileInformationByHandle
     set_info.argtypes = (
         wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
@@ -346,6 +349,7 @@ def _windows_atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> No
     generic_write = 0x40000000
     delete_access = 0x00010000
     share_read_write = 0x00000001 | 0x00000002
+    share_read_write_delete = share_read_write | 0x00000004
     open_existing = 3
     create_new = 1
     backup_semantics = 0x02000000
@@ -423,7 +427,7 @@ def _windows_atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> No
                 temp_handle = open_handle(
                     temp_path,
                     generic_write | delete_access,
-                    share_read_write,
+                    share_read_write_delete,
                     create_new,
                     normal_attributes | open_reparse,
                 )
@@ -454,34 +458,15 @@ def _windows_atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> No
             raise OSError(ctypes.get_last_error(), "sandbox flush failed")
 
         expected_identity = file_identity(temp_handle)
-        filename = os.fspath(path)
-        filename_type = wintypes.WCHAR * len(filename)
-
-        class FileRenameInfo(ctypes.Structure):
-            _fields_ = (
-                ("ReplaceIfExists", ctypes.c_ubyte),
-                ("RootDirectory", wintypes.HANDLE),
-                ("FileNameLength", wintypes.DWORD),
-                ("FileName", filename_type),
-            )
-
-        rename = FileRenameInfo()
-        rename.ReplaceIfExists = True
-        rename.RootDirectory = None
-        rename.FileNameLength = len(filename.encode("utf-16-le"))
-        rename.FileName = filename
-        if not set_info(temp_handle, 3, ctypes.byref(rename), ctypes.sizeof(rename)):
+        # MoveFileExW publishes the rename consistently across hosted Windows
+        # filesystem drivers. The verified source handle remains open with
+        # delete sharing, the directory boundary remains pinned, and the target
+        # is accepted only if its kernel identity matches this exact temp file.
+        if not move_file(os.fspath(temp_path), os.fspath(path), 0x1 | 0x8):
             raise OSError(ctypes.get_last_error(), "secure sandbox replace failed")
         delete_temp = False
-        # Some Windows filesystem drivers keep a handle-based rename pending
-        # until the source handle closes. Preserve its unforgeable identity,
-        # commit visibility, then re-open the exact destination under the still-
-        # pinned parent boundary and demand the same volume/file ID.
-        if not close_handle(temp_handle):
-            raise OSError(ctypes.get_last_error(), "sandbox rename commit failed")
-        temp_handle = None
         target_handle = open_handle(
-            path, read_attributes, share_read_write, open_existing,
+            path, read_attributes, share_read_write_delete, open_existing,
             normal_attributes | open_reparse,
         )
         try:
