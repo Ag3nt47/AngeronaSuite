@@ -1206,3 +1206,318 @@ boundaries, and primary-source citations are in
   clean. The concise record is
   `analysis/loop/cycle22/three_loop_summary.md`; canonical documentation is
   README + both `llms.txt` copies + the consolidated Cycle 22 master manual.
+
+## Round 8 — Host Adaption Red Team
+
+- Five Medium weaknesses were confirmed in the first implementation: stale
+  automation authority, missing effective-state postconditions, over-broad
+  exceptions/feedback, weaker SSID precedence over Public context, and
+  incomplete collector identity/coverage.
+- The pass also required trusted absolute Windows tool paths, a sanitized child
+  environment, more explicit recovery evidence, and honest reporting when a
+  bounded collector is partial.
+- No real firewall policy was changed. Full evidence:
+  `analysis/loop/round8/redteam_findings.md`.
+
+## Round 8 — Host Adaption Remediation
+
+- All five findings were fixed with revision/CAS authorization, final
+  pre-execution context checks, a single-flight apply/rollback transaction,
+  effective ActiveStore postcondition verification, automatic verified recovery,
+  exact anomaly fingerprints, three-distinct-review feedback gating, and
+  strongest-posture context ordering with no automatic relaxation.
+- Service, listener, firewall-profile, and bounded firewall-rule collectors now
+  carry explicit quality metadata. Missing coverage is never scored as healthy.
+  A final live read-only check also fixed profile collection to request
+  `Get-NetFirewallProfile -PolicyStore ActiveStore` explicitly.
+- Deferred: deep firewall program/service/address/port filter joins, service
+  executable signer/content-hash attestation, crash-independent trial leases,
+  and event-driven context wakeups. Full evidence:
+  `analysis/loop/round8/remediation_summary.md`.
+
+## Round 8 — Bug Test
+
+- Host-adaptation QA compiled **304/304** package files, imported **129/129**
+  core modules, passed core self-tests **19/19**, discovered **66 modules / 0
+  errors / 0 duplicate codes**, and passed selfcheck **26/26** through both the
+  Python harness and batch wrapper.
+- The final aggregate after adversary/remediation convergence passed **1077
+  tests / 3 intentional platform skips / 0 failures**; the final focused
+  host-adaptation/UI/performance set passed **20/20**.
+- Fixed context re-entry proposal de-duplication, conservative multi-network
+  Public-category detection, and batch self-check exit-code propagation. Real
+  elevated firewall mutation/rollback and physical mixed-network topology
+  remain controlled external acceptance gates. Full evidence:
+  `analysis/loop/round8/bugtest_results.md`.
+
+## Round 8 — Visionary
+
+### Host Adaptation visionary pass (2026-08-24)
+
+- Reviewed the new Adaption core/workbench against current Microsoft, NIST, and
+  CISA primary guidance. The shipped design already separates audit, preview,
+  simulation, approval, snapshot, apply, rollback, context automation, feedback,
+  and activity with a closed firewall profile catalog.
+- Ranked **9 defensive, buildable proposals**. Safe immediate priorities are a
+  collector-quality contract, restrictive context lattice with hysteresis,
+  effective Firewall ActiveStore/GPO/MDM ownership checks, an authenticated
+  single-flight action journal, versioned baseline promotion, and event-driven
+  drift provenance.
+- Longer-term gates are a health-verified trial lease with crash-independent
+  Watchdog rollback, poisoning-resistant shadow feedback, and signed
+  non-executable Windows posture packs.
+- The pass explicitly rejects arbitrary commands, SSID-only trust, automatic
+  GPO/MDM reversal, online self-training, new offensive capabilities, and a new
+  kernel driver. Full sources, architecture fit, effort, limitations, and safety
+  boundaries are in `analysis/loop/innovation_ideas.md`.
+- During remediation, bounded versions of collector-quality contracts,
+  restrictive context ordering, effective ActiveStore verification, and
+  single-flight revision-bound action admission shipped. Versioned baseline
+  lifecycle, drift provenance, trial leases, shadow feedback, and signed posture
+  packs remain proposals. Concise disposition:
+  `analysis/loop/round8/visionary_summary.md`.
+
+## Round 8 — Performance
+
+- Removed signed-state filesystem I/O from the 15-second Qt timer callback and
+  eliminated its duplicate enabled-cycle state read (two reads to one); all
+  collection and command work remains on the existing single-flight worker.
+- Coalesced full-workbench signed-state reads from three to two while preserving
+  the core breaker's time-window semantics.
+- Added bounded row signatures and selective automatic-cycle refresh routing so
+  unchanged activity, exception, trigger, and snapshot views retain their Qt
+  items. A 500-row activity microbenchmark improved from **12.671 ms** forced
+  rebuild to **0.869 ms** unchanged refresh (**14.6x**).
+- Gates: changed-file compile **PASS**; host-adaptation core self-test **PASS**;
+  focused GUI/core tests **12 passed**. Event-driven Windows network wakeups and
+  an asynchronous first-load bundle remain proposed pending native lifecycle and
+  missed-event testing. Full evidence:
+  `analysis/loop/round8/performance_summary.md`.
+
+## Round 1 — Bug Test (2026-08-25 expansion loop)
+
+- Compiled **305/305** package files; imported **69/69** module files; discovered
+  **67 classes** with 0 duplicate names; and constructed **55/55** compatibility
+  `register()` hooks.
+- Fixed one real self-test reporting defect: stopped Adversary Combat incorrectly
+  described itself as `armed`, making the headless harness report an unexpected
+  failure. The status detail is now lifecycle-accurate and regression-covered.
+- Core self-tests passed **19/19**; direct and batch selfcheck passed **26/26**;
+  focused Adversary Combat/ARIA/Ollama/setup/update/menu tests passed **47/47**;
+  the full `CI=true` suite passed **1085 tests / 3 intentional platform skips / 0
+  failures**; Ruff passed.
+- Live host-wide firewall mutation was reserved for a dedicated single-owner
+  elevated acceptance run so parallel research was not disconnected. Full evidence:
+  `analysis/loop/round1/bugtest_results.md` (2026-08-25 addendum).
+
+## Round 1 — Innovation
+
+### Defensive ecosystem and ARIA supply-chain review (2026-08-25)
+
+- Compared the current 66-module baseline with primary documentation from
+  Wazuh, Velociraptor, osquery/Fleet, Falco, Suricata, Zeek, Security Onion,
+  Sigma, YARA-X, OCSF, OASIS STIX/TAXII, Microsoft Windows telemetry, Ollama,
+  SLSA, and OWASP GenAI.
+- Ranked **12 concrete defensive proposals**. The highest impact-per-effort
+  shortlist is Community-ID flow fusion, restart-safe broader Windows event
+  continuity, evidence-grade BYOVD handling, ARIA untrusted-data separation and
+  hostile-eval gating, and OCSF 1.8 conformance.
+- The next delivery tier is a strict signed Sigma 2.1 correlation runtime,
+  verified stateful containment leases, and a provenance/hash/resource/eval/
+  rollback-gated Ollama model and non-executable ARIA pack manager.
+- Performance and depth proposals add YARA-X rule-cost admission,
+  journal-backed ransomware/deception attribution, a bounded STIX/TAXII
+  intelligence lifecycle, and a separately reviewed signed Linux CO-RE sidecar.
+- The review explicitly rejects offensive tooling, arbitrary response scripts,
+  executable downloaded skills, insecure or unverified model pulls, bulk
+  community-artifact trust, an unsigned Windows driver, and blanket
+  100-percent-coverage claims.
+- Full sources, codebase fit, limitations, safety boundaries, and acceptance
+  tests are in analysis/loop/innovation_ideas.md.
+
+## Round 1 — Performance (2026-08-25 expansion loop)
+
+- ARIA's local runbook BM25 hot path now pre-indexes term frequencies and length
+  normalizers. Exact-score tests pass; real-index scoring improved **25.5x**
+  (6.299023 s to 0.246808 s across 5,000 passes).
+- The real-time ETW PID/name cache is now a 4,096-entry LRU with live-process
+  fallback. A 100,000-PID stress case reduced peak tracked allocation from
+  15,447,292 to 1,210,939 bytes (**92.2%**) while retaining active-parent and PID-
+  reuse semantics.
+- Gates: changed-file compile PASS, Ruff PASS, focused/regression **19/19**, both
+  module behaviour checks PASS, and full `CI=true` suite **1088 passed / 3
+  intentional platform skips / 0 failed**.
+- Event-driven wake-up for the two legacy SOAR pollers remains proposed pending
+  security-timing/lifecycle proof. Adversary Combat itself is already bounded
+  and event-driven. Full evidence: `analysis/loop/round1/performance_summary.md`
+  (2026-08-25 addendum).
+
+## Round 3 — Bug Test (2026-08-25 expansion loop)
+
+- Compiled **307/307** package files; Ruff passed; imported **69/69** module
+  files; and discovered **67 modules** with no import/discovery errors,
+  duplicate names, or duplicate non-empty codes.
+- The focused Combat/bridge/ARIA/model-pack/Ollama/Sysmon/Community-ID/OCSF/
+  interoperability/performance set passed **93/93**. Final concurrently edited
+  UI/credential tests passed **17/17**, and the explicit menu/catalog audit
+  passed **5/5** across 7 sections and 31 topics.
+- The complete `CI=true` suite passed **1140 tests / 3 intentional platform
+  skips / 0 failures**. Core self-tests passed **19/19**; direct and batch
+  selfcheck passed **26/26**, with the batch wrapper exiting 0.
+- No production defect or flaky test remained, so QA changed no product code and
+  weakened no tests. The root agent retains the single-owner elevated
+  host-isolation acceptance run to avoid disconnecting concurrent agents.
+- Full evidence: `analysis/loop/round3/bugtest_results.md` (2026-08-25
+  expansion-loop addendum).
+
+## Round 3 — Performance (2026-08-25 expansion loop)
+
+- Moved the Upgrade Console's periodic watchdog/core/heartbeat and scanner
+  diagnostic file reads off the Qt thread while preserving Qt-owned rendering.
+  Per-source single-flight backpressure prevents timer backlog: a 50 ms injected
+  read returned control to Qt in **0.036 ms**, and 11 pending refresh requests
+  coalesced to one job.
+- Verified bounded model-pack catalogs/runbooks/state histories, stateless
+  Community-ID and OCSF mappings, batch-level Sysmon cursor persistence, the
+  4,096-entry ETW PID LRU, and pre-indexed ARIA BM25 scoring.
+- Gates: changed-file compile PASS, Ruff PASS, and the governed-pack,
+  Community-ID, OCSF, Sysmon, RAG, ETW, Upgrade Console, and shutdown regression
+  set passed **45/45**.
+- Constant-time first-run Sysmon tail seeking and asynchronous one-time ARIA
+  manager/RAG startup remain proposed pending Windows-native cursor-race and
+  startup lifecycle gates. Full evidence:
+  `analysis/loop/round3/performance_summary.md` (2026-08-25 expansion addendum).
+
+## Round 5 — Performance (2026-08-25 final hardening audit)
+
+- Cached Sysmon's successfully derived cursor HMAC key while preserving missing-
+  authority retry, signed cursor verification, atomic replacement, and per-batch
+  durability. Repeated derivation improved from **282.11 us** to **0.095 us**
+  (**2,969x**).
+- Reduced Windows SourceSandbox handle-pinned component validation from quadratic
+  ancestor re-walks to one pre/post validation per pinned component. An eight-
+  level path improved from **6.862 ms** to **1.742 ms** (**3.94x**) with every
+  reparse/TOCTOU gate retained.
+- Eliminated the embedded Upgrade Console's duplicate post-lifecycle RAG build
+  (**50% less indexing**) and batched catalog admission through one coherent
+  resource snapshot (**44.22x / 97.7% faster** at the 128-pack bound). Actual
+  install admission remains freshly probed immediately before mutation.
+- Gates: changed-file compile and Ruff **PASS**; broad affected suite **62 passed**;
+  Windows confinement set and live Sysmon self-test **PASS**.
+- Full-history authenticated Combat journal append cost is superlinear (50/100/200
+  records: **0.8551/1.9286/4.9859 s**). Signed segmentation remains **PROPOSED**;
+  unsafe tail/stat caching and model-blob metadata caching were rejected because
+  they could weaken mutation or local-model integrity. Full evidence:
+  `analysis/loop/round5/performance_summary.md`.
+
+## Round 5 — Bug Test (2026-08-25 final hardening audit)
+
+- Compiled **307/307** package files; Ruff and patch-integrity gates passed;
+  imported **69/69** module files; and discovered **67 modules** with no errors,
+  duplicate names, or duplicate non-empty codes.
+- Fixed two concrete regressions: an older Purple Guard test now verifies the
+  required exact-target response contract, and FIM's accidentally stranded
+  benign-drill provenance block is restored with an exact-registered-artifact
+  versus filename-lookalike regression.
+- Core/Shark self-tests passed **20/20**. Direct and batch selfcheck passed
+  **26/26**; the module harness had **46 genuine passes / 13 expected inactive /
+  8 disabled-platform skips / 0 genuine failures**. ARIA passed **15/15**.
+- The final focused Combat/Sandbox/ARIA/model/Sysmon/producer set passed
+  **96/96**; the complete `CI=true` suite passed **1181 / 3 intentional platform
+  skips / 0 failures** after the final performance edits.
+- Reported one design-level residual: Maximum Combat's 0.75/1.0-second network/
+  process polling can reuse the default 1.5-second shared telemetry snapshot.
+  Choosing a fast-mode cache age remains a detection-latency/performance policy
+  decision; it was not silently changed in QA.
+- Full evidence: `analysis/loop/round5/bugtest_results.md`.
+
+## Round 5 — Red Team (2026-08-25 final release audit)
+
+- **R5-01 HIGH:** default-on Maximum Combat grants raw FIM/network/process/Sysmon observations direct quarantine, firewall, process, honeypot, and host-isolation authority; ordinary or induced benign activity can create an elevated outage.
+- **R5-02 HIGH:** Combat quarantine and undo validate string paths before later `shutil.move` calls without pinned parent handles, leaving a junction/TOCTOU privileged file-move or file-plant boundary.
+- **R5-03 HIGH:** legacy SOAR tiers bypass exact response contracts and durable receipts; PID-only corroboration/state permits reuse mistakes, while armed Active Response can kill/unlink an event target without protected binding.
+- **R5-04 HIGH:** authenticated mobile KILL/SUSPEND/LOCKDOWN directives have no consumer but report issuance; ROLLBACK instead restores every cached Shadow Shield file without an exact target.
+- **R5-05 MEDIUM:** privileged bootstrap removes `ANGERONA_ENFORCE_KEY_ACL` before source data-root custody checks, so direct elevated source startup bypasses the intended fail-closed assertion.
+- **R5-06 MEDIUM:** model manifests/blobs are verified, but inference trusts any process that owns unauthenticated loopback Ollama port 11434.
+- **R5-07 LOW:** the SOAR stale/preflight-refusal GUI path calls `.discard()` on a dictionary and throws after correctly refusing the host action.
+- Verdict: **release blocked**. Focused read-only boundary suites passed **160/160**, but do not cover these negative/race/consumer cases. Full evidence: `analysis/loop/round5/redteam_results.md`.
+
+## Round 6 — Red Team (2026-08-25 exact-target response audit)
+
+- **R6-01 HIGH (RESOLVED):** host escalation is explicit; weak Office/RWX/cadence/lattice signals have no host authority; LSASS/VSS gates now require role-aware argv plus exact trusted image semantics, while ambiguous PowerShell stays alert-only.
+- **R6-02 HIGH (RESOLVED):** rename rates and recent entropy are now correlated within the same normalized directory; cross-directory evidence cannot mint host isolation, and uncorroborated churn can activate deception only.
+- **R6-03 MEDIUM:** `isolate_program` is not contract-bound to executable identity, and Combat performs slow firewall work after its last PID birth-time check but before suspend/kill.
+- **R6-04 MEDIUM:** handle-based Windows quarantine has no cross-volume path; the audited source layout stores quarantine on D: while default user watch roots are on C:.
+- **R6-05 MEDIUM (RESOLVED):** commit/compensation failure now exposes an authenticated recovery-required orphan, opens the mutation circuit, and blocks later same-event/future actions; non-reversible commit loss also disarms Combat.
+- Verified closed during this audit: filename-only real-driver response, unregistered BYOVD drill lookalikes, unpaired file-churn isolation, cross-PID beacon aggregation, and Evidence Lattice live-PID rebinding.
+- Re-audit verdict: **both R6 High findings resolved; no release blocker remains in these exact semantic surfaces**. The semantic contract file passed **20/20** after strict LSASS/VSS negative controls; R6-05's journal/Undo circuit is now closed. R5-02 and R6-02 are resolved; R5-01 is materially narrowed. Full evidence: `analysis/loop/round6/redteam_findings.md`.
+
+## Round 7 — Performance (2026-08-25 final release candidate)
+
+- Removed redundant resolver calls for already-numeric loopback identities while
+  retaining hostname resolution/pinning and call-time Ollama listener,
+  process-birth, executable/signature, route, redirect, proxy, and size gates.
+  Literal pinning improved **2.16x / 53.7%**.
+- Memoized normalized directory identities within each ransomware correlation
+  cycle. A ten-pass, 100,000-record flood benchmark improved **6.91x / 85.5%**
+  without changing same-directory entropy authority or response output.
+- Pruned only expired Network Monitor novelty identities instead of rebuilding
+  two unchanged 10,000-entry maps every Maximum-mode poll, improving the measured
+  state cycle **1.88x / 46.9%** without changing cadence or freshness.
+- Compile and Ruff passed; the broad affected set passed **52/52**, and the final
+  performance-boundary file passed **4/4**. Signed Combat journal segmentation
+  and OS-native listener-bound attestation remain proposals because naive caches
+  would weaken tamper or process-owner guarantees. Full evidence:
+  `analysis/loop/round7/performance_summary.md`.
+
+## Round 6 — Red Team (2026-08-25 broad current-tree closure)
+
+- **R6-01 HIGH RESOLVED:** LSASS/VSS host escalation now requires exact trusted executable and role-aware destructive argv semantics.
+- **R6-02 HIGH RESOLVED:** ransomware rename/entropy authority is directory-bound; unrelated roots cannot compose host isolation.
+- **R6-03 MEDIUM OPEN:** process response still lacks a retained OS handle and persistent program rules lack a bounded executable-file lease.
+- **R6-04 MEDIUM RESOLVED:** pinned, verified cross-volume copy/delete and undo now cover C:-to-D: quarantine.
+- **R6-05 MEDIUM RESOLVED:** failed compensation exposes the authenticated orphan, trips a mutation circuit, blocks later actions, and supports exact manual recovery; irreversible commit loss also disarms Combat.
+- **R6-06 HIGH RESOLVED:** local-model posture output is inert advisory text and cannot execute even with the old authorization flag.
+- **R6-07 MEDIUM RESOLVED:** Red Team cleanup deletes exact run-owned artifacts only; filename-prefix lookalikes survive.
+- **R6-08 MEDIUM RESOLVED:** SOAR delegates to Combat's journal; SUBMITTED is terminal, verified receipts reconcile exact queue IDs, and queue-admission failure releases dedup plus emits a signed failure receipt.
+- **R6-09 MEDIUM RESOLVED:** Top Talkers binds PID birth/executable/peer and delegates typed containment to Combat instead of stale-PID termination.
+- **R6-10 MEDIUM RESOLVED:** deployment mirror rejects broad/protected/overlapping/unowned destinations, previews `/MIR`, and requires exact typed authorization.
+- **R6-11 MEDIUM RESOLVED:** GUI and helper shutdown require exact approved Angerona launch grammar plus PID creation-time revalidation; venv pytest/Jupyter and substring lookalikes are excluded.
+- Verdict: **no Critical, High, or Medium release blocker remains**. R6-03 stays open only as defense-in-depth process-handle/program-file lease hardening. Full evidence: `analysis/loop/round6/redteam_findings.md`.
+
+## Round 7 — Bug Test (2026-08-25 frozen v1.10.2 release candidate)
+
+- Compiled **308/308** package files; Ruff, recursive imports, module discovery,
+  and duplicate-name/code checks passed with zero errors.
+- Collected **1,258 tests across 197 files**. The complete Windows contention-
+  controlled run finished **1,255 passed / 3 intentional skips / 0 failed**.
+- Module self-tests produced **46 genuine passes / 0 genuine failures**, plus 13
+  expected inactive-environment results and 8 platform/operator skips. Core and
+  Shark self-tests passed **20/20**; ARIA passed **15/15**.
+- Direct and batch selfcheck entry points both passed **26/26**, including the
+  Combat, Ollama, ARIA, SOAR, GUI/menu, and host-action surfaces.
+- Fixed six low-risk regressions/harness gaps: exact Combat contract fixtures,
+  Combat Undo empty-state controls, Posture advisory-path persistence, Red Team
+  rapid-rerun cleanup ordering, SOAR signed receipt reconciliation coverage,
+  and stale selfcheck expectations for now-inert model advice.
+- `pip-audit --local` found no known vulnerabilities. No reproducible
+  release-blocking QA defect remains. Full evidence:
+  `analysis/loop/round7/bugtest_results.md`.
+
+## Final documentation closure (2026-08-25 — v1.10.2)
+
+- Consolidated the operator and engineering reference into the root
+  `Angerona_Master_Manual.docx`; history now lives there instead of in parallel
+  master/capability Word documents.
+- Recast `ANGERONA_CAPABILITIES.md` as a short current-state capability and use-
+  case sheet with no development history; refreshed `README.md` and `llms.txt`
+  to point at the canonical current documents.
+- Updated the security and feature-versus-defect assessments with the frozen
+  release evidence and the explicit non-blocking R6-03 defense-in-depth item.
+- Final Word QA: master 22 pages, security assessment 17 pages, and
+  vulnerability/remediation assessment 13 pages. Every page was visually
+  inspected after its final render; all three documents reopened successfully,
+  required text was present, and the master's 23 tables fit the 9,360-DXA usable
+  width. Accessibility audit reported zero high findings in all documents and
+  zero medium findings in both assessments; the master retains seven intentional
+  no-header layout-table notices (six one-cell callouts plus its footer).

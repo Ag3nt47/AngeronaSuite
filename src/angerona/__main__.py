@@ -2,6 +2,55 @@
 from __future__ import annotations
 
 import sys
+from types import ModuleType
+
+
+def _install_fast_pyside_feature_detection() -> bool:
+    """Avoid Shiboken rereading every imported source file during startup.
+
+    PySide's feature hook normally calls ``inspect.getsource()`` after imports
+    to decide whether a module uses PySide.  Angerona does not use
+    ``from __feature__`` anywhere, and on antivirus-inspected Windows volumes
+    those redundant reads can block for tens of seconds per module.  A module
+    that explicitly imports ``__feature__`` registers itself before this
+    fallback runs, so replacing only the fallback preserves that mechanism.
+    """
+    try:
+        import shibokensupport.feature as feature
+
+        if bool(getattr(feature, "_angerona_fast_detection", False)):
+            return True
+        original = feature._mod_uses_pyside
+
+        def _uses_pyside_without_source_read(module) -> bool:
+            name = str(getattr(module, "__name__", ""))
+            if name.startswith(("PySide6", "shiboken6", "shibokensupport")):
+                return bool(original(module))
+            # All Angerona code uses PySide's default naming/property behavior.
+            # Selecting the default explicitly avoids source inspection while
+            # preserving the exact API exposed before this optimization.
+            if name == "angerona" or name.startswith("angerona."):
+                return True
+            try:
+                for value in vars(module).values():
+                    origin = (
+                        value.__name__
+                        if isinstance(value, ModuleType)
+                        else getattr(value, "__module__", "")
+                    )
+                    if str(origin).startswith("PySide6"):
+                        return True
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+            return False
+
+        feature._mod_uses_pyside = _uses_pyside_without_source_read
+        feature._angerona_fast_detection = True
+        return True
+    except (AttributeError, ImportError, RuntimeError):
+        # Compatibility fallback for a future PySide build that changes this
+        # private hook. Startup remains correct, only less optimized.
+        return False
 
 def main() -> int:
     setup_requested = "--setup" in sys.argv
@@ -65,6 +114,7 @@ def main() -> int:
 
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication, QMessageBox
+    _install_fast_pyside_feature_detection()
     # ``--setup`` is an Angerona switch, not a Qt switch. Remove it before Qt
     # parses arguments so the same dedicated setup shortcut works in source and
     # frozen releases without an unknown-option warning.

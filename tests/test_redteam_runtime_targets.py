@@ -78,6 +78,12 @@ def test_purple_guard_detects_registered_custom_target_only(tmp_path: Path) -> N
                 "mitre": "T1003",
                 "drill_target": str(custom_target.resolve()),
                 "detector_policy": "reviewed-redteam-candidate",
+                "response_authorized": True,
+                "response_contract": {
+                    "version": 1,
+                    "actions": ["quarantine_file"],
+                    "targets": {"path": str(marker)},
+                },
             }
         ]
     finally:
@@ -196,3 +202,23 @@ def test_rapid_rerun_cancels_stale_cleanup_before_new_markers(
 
     assert not old_marker.exists(), "the new-run pre-clean should remove prior markers"
     assert new_marker.exists(), "a prior run's delayed cleanup must not touch the new run"
+
+
+def test_redteam_cleanup_never_deletes_name_only_lookalikes(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    legitimate = target / "_redteam_notes_for_project.txt"
+    legitimate.write_text("user-owned", encoding="utf-8")
+    tracked = target / "_redteam_lsass_dump_owned.txt"
+    tracked.write_text("inert drill", encoding="utf-8")
+    engine = RedTeamEngine(tmp_path / "data", documents_dir=target)
+    engine._owned_artifacts.append(tracked)
+
+    removed = engine._sweep_markers(
+        target_dir=target,
+        artifact_paths=engine._artifact_paths_snapshot(),
+    )
+
+    assert removed == 1
+    assert not tracked.exists()
+    assert legitimate.read_text(encoding="utf-8") == "user-owned"

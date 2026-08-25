@@ -2,8 +2,8 @@
 
 Watches the event stream and runs response *playbooks* when serious events fire.
 By default it operates in RECOMMEND mode (it suggests the containment action and
-logs it). Set the env var ANGERONA_SOAR_AUTOCONTAIN=1 to let it ACT
-automatically — e.g. auto-suspend the offending process on a CRITICAL event.
+logs it). Set the env var ANGERONA_SOAR_AUTOCONTAIN=1 to let it request an
+automatic action from the hardened Adversary Combat response sink.
 
 Auto-containment is opt-in on purpose: automatically freezing processes is
 powerful and occasionally wrong, so you choose when to hand it the keys.
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 from typing import List
 
 from angerona.core.module_base import BaseModule, Severity
@@ -79,9 +80,12 @@ class SOARModule(BaseModule):
         self._pending: dict[int, List[tuple[float, str]]] = {}
         self._high_events: list = []        # (ts, pid, module) for attack detection
         self._under_attack_until = 0.0
-        self._suspended_pids: set[int] = set()
         self._contained = 0                 # remediations actually taken
         self._attempts = 0
+        self._manager = None
+
+    def bind_manager(self, manager) -> None:
+        self._manager = manager
 
     def run(self) -> None:
         mode = ("AUTO-CONTAIN" if self._auto
@@ -242,6 +246,16 @@ class SOARModule(BaseModule):
             # active attack (a burst of corroborated threats). Otherwise recommend.
             act_now = self._auto or (self._active_defense and self._under_attack())
             if act_now:
+                if not self._exact_process_contract_ok(ev):
+                    self.emit(
+                        f"Playbook[contain]: REFUSED pid {pid} — automatic response "
+                        "requires an exact PID/create-time/executable contract.",
+                        Severity.HIGH,
+                        pid=pid,
+                        action_succeeded=False,
+                        response_authorized=False,
+                    )
+                    return
                 # G3-B: accumulate signal; only act when corroborated
                 if self._add_signal(pid, ev):
                     self._contain(pid, ev)
@@ -317,40 +331,96 @@ class SOARModule(BaseModule):
                 del self._pending[pid]
 
     def _contain(self, pid: int, ev) -> None:
-        if psutil is None:
-            self.emit("Playbook[contain]: psutil unavailable, cannot act.", Severity.MEDIUM)
-            return
+        """Delegate exact-target containment to the journaled Combat sink.
+
+        This legacy module deliberately has no direct process/firewall mutation
+        path.  Combat owns PID identity revalidation, intent/commit records,
+        postconditions, recovery, and undo.
+        """
         self._attempts += 1
-        try:
-            p = psutil.Process(pid)
-            name = p.name()
-            if pid in self._suspended_pids:
-                # Already suspended once and still corroborating → escalate to KILL.
-                p.kill()
-                self._contained += 1
-                self._suspended_pids.discard(pid)
-                self.emit(
-                    f"Playbook[contain]: TERMINATED {name} (pid {pid}) — repeat corroborated "
-                    f"threat from {ev.module}. Active defense.",
-                    Severity.HIGH, pid=pid, action="terminate", mitre="T1562",
-                    trigger_ts=ev.ts, trigger_module=ev.module,
-                    action_succeeded=True)
-            else:
-                p.suspend()
-                self._suspended_pids.add(pid)
-                self._contained += 1
-                self._network_block(pid, name)   # isolate its outbound too
-                self.emit(
-                    f"Playbook[contain]: AUTO-SUSPENDED {name} (pid {pid}) — corroborated "
-                    f"CRITICAL from {ev.module}. Investigate, then resume/kill.",
-                    Severity.HIGH, pid=pid, action="suspend",
-                    trigger_ts=ev.ts, trigger_module=ev.module,
-                    action_succeeded=True)
-        except Exception as exc:
+        if not self._exact_process_contract_ok(ev):
             self.emit(
-                f"Playbook[contain]: could not act on pid {pid}: {exc}",
-                Severity.MEDIUM, pid=pid, action_succeeded=False,
+                f"Playbook[contain]: REFUSED pid {pid} — exact process "
+                "identity changed before delegation.",
+                Severity.HIGH,
+                pid=pid,
+                action_succeeded=False,
+                response_authorized=False,
             )
+            return
+        combat = None
+        try:
+            combat = (
+                getattr(self._manager, "modules", {}).get("Adversary Combat")
+                if self._manager is not None
+                else None
+            )
+        except Exception:
+            combat = None
+        if combat is None or getattr(combat, "status", "stopped") != "running":
+            self.emit(
+                f"Playbook[contain]: REFUSED pid {pid} — hardened Adversary "
+                "Combat consumer is unavailable.",
+                Severity.HIGH,
+                pid=pid,
+                action_succeeded=False,
+                response_authorized=False,
+            )
+            return
+        submit = getattr(combat, "_submit", None)
+        if not callable(submit):
+            self.emit(
+                f"Playbook[contain]: REFUSED pid {pid} — response consumer "
+                "does not expose the authenticated queue.",
+                Severity.HIGH,
+                pid=pid,
+                action_succeeded=False,
+                response_authorized=False,
+            )
+            return
+        submit(ev)
+        self.emit(
+            f"Playbook[contain]: queued exact process instance pid {pid} for "
+            "Adversary Combat; only Combat's signed completion receipt counts as success.",
+            Severity.INFO,
+            pid=pid,
+            action="combat_delegate",
+            trigger_ts=ev.ts,
+            trigger_module=ev.module,
+            action_succeeded=False,
+            action_pending=True,
+            response_authorized=False,
+        )
+
+    @staticmethod
+    def _exact_process_contract_ok(ev) -> bool:
+        """Require and locally preflight Combat's exact process contract."""
+        try:
+            from angerona.modules.adversary_combat import AdversaryCombat
+
+            actions = AdversaryCombat._response_actions(ev)
+        except Exception:
+            return False
+        if not actions or not actions.intersection(
+            {"isolate_program", "suspend_process", "terminate_process"}
+        ):
+            return False
+        details = ev.details if isinstance(ev.details, dict) else {}
+        pid = details.get("pid")
+        raw_exe = details.get("exe") or details.get("process_path") or details.get("image")
+        if not isinstance(pid, int) or pid <= 0 or not isinstance(raw_exe, str) or not raw_exe:
+            return False
+        if psutil is None:
+            return False
+        try:
+            expected_created = float(details.get("process_create_time"))
+            process = psutil.Process(pid)
+            actual_created = float(process.create_time())
+            actual_exe = os.path.normcase(str(Path(process.exe()).resolve(strict=False)))
+            expected_exe = os.path.normcase(str(Path(raw_exe).resolve(strict=False)))
+        except (OSError, RuntimeError, TypeError, ValueError, OverflowError):
+            return False
+        return abs(actual_created - expected_created) <= 0.001 and actual_exe == expected_exe
 
     # ── under-attack detection + active-defense state ────────────────────────
     def _track_attack(self, ev) -> None:
@@ -392,34 +462,3 @@ class SOARModule(BaseModule):
             }, indent=2), encoding="utf-8")
         except Exception:
             pass
-
-    def _network_block(self, pid: int, name: str) -> None:
-        """Active isolation: block the offending program's OUTBOUND traffic via the
-        Windows firewall so it can't reach its C2 even if it's later resumed. This
-        is what turns a "suspend" into real containment. Best-effort, Windows-only,
-        runs hidden. The rule name is tagged so it's easy to find/remove afterward."""
-        if os.name != "nt" or psutil is None:
-            return
-        try:
-            exe = psutil.Process(pid).exe()
-        except Exception:
-            exe = ""
-        if not exe:
-            return
-        try:
-            from angerona.core.win import run_hidden
-            rule = f"Angerona-Isolate-{name}-{pid}"
-            run_hidden([
-                "netsh", "advfirewall", "firewall", "add", "rule",
-                f"name={rule}", "dir=out", "action=block",
-                f"program={exe}", "enable=yes",
-            ], timeout=10)
-            self.emit(
-                f"Playbook[isolate]: OUTBOUND NETWORK BLOCKED for {name} (pid {pid}, {exe}). "
-                "It can no longer reach a C2 server. Remove the firewall rule "
-                f"'{rule}' after investigation.",
-                Severity.HIGH, pid=pid, action="network_block", rule=rule)
-        except Exception as exc:
-            self.emit(
-                f"Playbook[isolate]: could not block network for pid {pid}: {exc}",
-                Severity.LOW, pid=pid)

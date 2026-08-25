@@ -34,7 +34,6 @@ _MACOS_KEYCHAIN_ACCOUNT = "runtime-secrets-v1"
 _LINUX_REFERENCE_FILENAME = "secrets.secret-service-reference"
 _LINUX_SECRET_SERVICE = "org.angerona.security-suite"
 _LINUX_SECRET_ACCOUNT = "runtime-secrets-v1"
-_INTERNAL_SECRET_PREFIX = "ANGERONA_INTERNAL_"
 _NON_ENVIRONMENT_SECRETS = frozenset({
     "ANGERONA_USB_PIN",
     # This token authorizes a loopback control plane in an elevated process.
@@ -45,11 +44,11 @@ _NON_ENVIRONMENT_SECRETS = frozenset({
 _MAX_LEGACY_ENV_BYTES = 1024 * 1024
 
 
-def _publishable_secret(key: str) -> bool:
-    return (
-        not key.startswith(_INTERNAL_SECRET_PREFIX)
-        and key not in _NON_ENVIRONMENT_SECRETS
-    )
+def _remove_environment_secrets(keys) -> None:
+    """Ensure protected values never become process-global child inheritance."""
+    for key in keys:
+        if isinstance(key, str) and key:
+            os.environ.pop(key, None)
 
 
 def _is_link_or_reparse(path: Path) -> bool:
@@ -223,11 +222,44 @@ def read_secret_map(
         return {}
 
 
+def read_secret_values(
+    names,
+    data_root: Path | None = None,
+    *,
+    strict: bool = False,
+) -> dict[str, str]:
+    """Return only explicitly named values from protected storage.
+
+    The encrypted payload is one OS-protected map, but callers do not need to
+    receive unrelated fleet, connector, or provider authority in their local
+    scope. Requests are bounded and duplicate-free.
+    """
+    if isinstance(names, str):
+        requested = (names,)
+    else:
+        requested = tuple(names)
+    if not 1 <= len(requested) <= 64 or any(
+        not isinstance(name, str)
+        or not name
+        or len(name) > 256
+        or any(ord(character) < 33 or ord(character) == 127 for character in name)
+        for name in requested
+    ):
+        raise ValueError("protected credential name request is invalid")
+    if len(set(requested)) != len(requested):
+        raise ValueError("protected credential name request contains duplicates")
+    values = (
+        read_secret_map(data_root, strict=True)
+        if strict
+        else read_secret_map(data_root)
+    )
+    return {name: values[name] for name in requested if name in values}
+
+
 def write_secret_map(updates: Mapping[str, object], data_root: Path | None = None) -> Path:
     # Clear an inherited plaintext PIN even when this particular update does
     # not contain the PIN. It must only ever be read from protected storage.
-    for key in _NON_ENVIRONMENT_SECRETS:
-        os.environ.pop(key, None)
+    _remove_environment_secrets((*_NON_ENVIRONMENT_SECRETS, *updates))
     path = secure_store_path(data_root)
     values = (
         _read_macos_secret_map(strict=True)
@@ -254,13 +286,7 @@ def write_secret_map(updates: Mapping[str, object], data_root: Path | None = Non
             raise RuntimeError(
                 "macOS Keychain verification failed; credentials were not accepted"
             )
-        for key, value in values.items():
-            if _publishable_secret(key):
-                os.environ[key] = value
-            else:
-                os.environ.pop(key, None)
-        for key in removed:
-            os.environ.pop(key, None)
+        _remove_environment_secrets((*values, *removed))
         # Kept as a stable API return value; no secret is written at this path.
         return path
     if sys.platform.startswith("linux"):
@@ -270,13 +296,7 @@ def write_secret_map(updates: Mapping[str, object], data_root: Path | None = Non
             raise RuntimeError(
                 "Linux Secret Service verification failed; credentials were not accepted"
             )
-        for key, value in values.items():
-            if _publishable_secret(key):
-                os.environ[key] = value
-            else:
-                os.environ.pop(key, None)
-        for key in removed:
-            os.environ.pop(key, None)
+        _remove_environment_secrets((*values, *removed))
         return path
     blob = _protect_bytes(payload)
     if blob is None:
@@ -341,13 +361,7 @@ def write_secret_map(updates: Mapping[str, object], data_root: Path | None = Non
                 tmp.unlink(missing_ok=True)
         except OSError:
             pass
-    for key, value in values.items():
-        if _publishable_secret(key):
-            os.environ[key] = value
-        else:
-            os.environ.pop(key, None)
-    for key in removed:
-        os.environ.pop(key, None)
+    _remove_environment_secrets((*values, *removed))
     return path
 
 
@@ -369,19 +383,15 @@ def parse_env(path: Path) -> dict[str, str]:
 
 
 def load_into_environment(data_root: Path | None = None) -> None:
-    # High-authority local secrets are consumed directly from the OS-protected
-    # store. Remove inherited plaintext copies as well as refusing to publish
-    # protected values into the process environment.
-    for key in _NON_ENVIRONMENT_SECRETS:
-        os.environ.pop(key, None)
-    for key, value in read_secret_map(data_root).items():
-        if _publishable_secret(key):
-            # A verified protected value is authoritative over an inherited
-            # launch environment. This prevents a wrapper or stale shell from
-            # silently replacing the key the operator approved.
-            os.environ[key] = value
-        else:
-            os.environ.pop(key, None)
+    """Scrub protected names from the environment without publishing values.
+
+    Historical callers retain this startup hook, but consumers now retrieve
+    only the exact credential they need from the protected store.  This keeps
+    optional provider and mail functionality while preventing generic child
+    processes, crash handlers, or unrelated modules from inheriting secrets.
+    """
+    values = read_secret_map(data_root)
+    _remove_environment_secrets((*_NON_ENVIRONMENT_SECRETS, *values))
 
 
 def migrate_legacy_env(paths: list[Path], data_root: Path | None = None) -> list[Path]:

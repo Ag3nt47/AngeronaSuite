@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import stat
-import subprocess
 import sys
 import ctypes
 import threading
@@ -99,8 +98,12 @@ def _create_admin_directory_atomic(path: Path) -> bool:
     advapi = ctypes.WinDLL("advapi32", use_last_error=True)
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     descriptor = wintypes.LPVOID()
-    # Owner/group = Administrators; protected DACL; full control to SYSTEM/admins.
-    sddl = "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+    # Apply the protected DACL atomically. Windows initially selects the token's
+    # default owner; the trusted native icacls utility transfers ownership to
+    # Administrators immediately after creation. Supplying O:BA to
+    # CreateDirectoryW fails with ERROR_INVALID_OWNER on otherwise valid admin
+    # tokens when SeRestorePrivilege is not enabled.
+    sddl = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
     convert = advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW
     convert.argtypes = [wintypes.LPCWSTR, wintypes.DWORD,
                         ctypes.POINTER(wintypes.LPVOID), wintypes.LPVOID]
@@ -113,6 +116,36 @@ def _create_admin_directory_atomic(path: Path) -> bool:
         create.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(SECURITY_ATTRIBUTES)]
         create.restype = wintypes.BOOL
         if create(str(path), ctypes.byref(attrs)):
+            from angerona.core.privilege import (
+                sanitized_child_environment,
+                trusted_windows_directories,
+            )
+            import subprocess
+
+            _windows, system = trusted_windows_directories()
+            icacls = system / "icacls.exe"
+            if not icacls.is_file():
+                raise OSError("Trusted icacls.exe is unavailable")
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            env = sanitized_child_environment()
+            commands = (
+                [str(icacls), str(path), "/setowner", "*S-1-5-32-544", "/L", "/Q"],
+                [
+                    str(icacls), str(path), "/inheritance:r", "/grant:r",
+                    "*S-1-5-18:(OI)(CI)(F)", "*S-1-5-32-544:(OI)(CI)(F)",
+                    "/L", "/Q",
+                ],
+            )
+            for command in commands:
+                result = subprocess.run(
+                    command, env=env, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, timeout=20, check=False,
+                    creationflags=flags,
+                )
+                if result.returncode != 0:
+                    raise PermissionError(
+                        "Unable to establish Administrators/SYSTEM custody"
+                    )
             return True
         error = ctypes.get_last_error()
         if error == 183:  # ERROR_ALREADY_EXISTS: caller must distrust then verify.
@@ -123,35 +156,141 @@ def _create_admin_directory_atomic(path: Path) -> bool:
 
 
 def _admin_acl_valid(path: Path) -> bool:
-    """Verify owner and every DACL identity without interpolating the path."""
-    from angerona.core.privilege import (
-        sanitized_child_environment,
-        trusted_powershell_path,
-    )
+    """Verify the owner and DACL directly through the Windows security API.
 
+    This remains fail-closed but avoids spawning PowerShell during import.  The
+    former child-process check could time out on a loaded host (including CI),
+    turning a valid protected directory into repeated 20-second collection
+    failures.  Native SID comparison is also independent of locale and PATH.
+    """
+    if not sys.platform.startswith("win"):
+        return False
     try:
-        powershell = trusted_powershell_path()
-    except OSError:
+        from ctypes import wintypes
+
+        class ACL_SIZE_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("AceCount", wintypes.DWORD),
+                ("AclBytesInUse", wintypes.DWORD),
+                ("AclBytesFree", wintypes.DWORD),
+            ]
+
+        class ACE_HEADER(ctypes.Structure):
+            _fields_ = [
+                ("AceType", ctypes.c_ubyte),
+                ("AceFlags", ctypes.c_ubyte),
+                ("AceSize", wintypes.WORD),
+            ]
+
+        class ACCESS_ALLOWED_ACE(ctypes.Structure):
+            _fields_ = [
+                ("Header", ACE_HEADER),
+                ("Mask", wintypes.DWORD),
+                ("SidStart", wintypes.DWORD),
+            ]
+
+        advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_security = advapi.GetNamedSecurityInfoW
+        get_security.argtypes = [
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.LPVOID),
+            ctypes.POINTER(wintypes.LPVOID),
+        ]
+        get_security.restype = wintypes.DWORD
+        convert_sid = advapi.ConvertStringSidToSidW
+        convert_sid.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.LPVOID)]
+        convert_sid.restype = wintypes.BOOL
+        equal_sid = advapi.EqualSid
+        equal_sid.argtypes = [wintypes.LPVOID, wintypes.LPVOID]
+        equal_sid.restype = wintypes.BOOL
+        get_control = advapi.GetSecurityDescriptorControl
+        get_control.argtypes = [
+            wintypes.LPVOID,
+            ctypes.POINTER(wintypes.WORD),
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        get_control.restype = wintypes.BOOL
+        get_acl_info = advapi.GetAclInformation
+        get_acl_info.argtypes = [
+            wintypes.LPVOID,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+        ]
+        get_acl_info.restype = wintypes.BOOL
+        get_ace = advapi.GetAce
+        get_ace.argtypes = [
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.LPVOID),
+        ]
+        get_ace.restype = wintypes.BOOL
+        kernel.LocalFree.argtypes = [wintypes.HLOCAL]
+        kernel.LocalFree.restype = wintypes.HLOCAL
+
+        owner = wintypes.LPVOID()
+        dacl = wintypes.LPVOID()
+        descriptor = wintypes.LPVOID()
+        allowed_sids = [wintypes.LPVOID(), wintypes.LPVOID()]
+        try:
+            # SE_FILE_OBJECT; OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION.
+            error = get_security(
+                str(path), 1, 0x00000005, ctypes.byref(owner), None,
+                ctypes.byref(dacl), None, ctypes.byref(descriptor),
+            )
+            if error or not descriptor or not owner or not dacl:
+                return False
+            for index, sid_text in enumerate(("S-1-5-18", "S-1-5-32-544")):
+                if not convert_sid(sid_text, ctypes.byref(allowed_sids[index])):
+                    return False
+            if not any(equal_sid(owner, sid) for sid in allowed_sids):
+                return False
+
+            control = wintypes.WORD()
+            revision = wintypes.DWORD()
+            if not get_control(descriptor, ctypes.byref(control), ctypes.byref(revision)):
+                return False
+            if not control.value & 0x1000:  # SE_DACL_PROTECTED
+                return False
+
+            acl_info = ACL_SIZE_INFORMATION()
+            if not get_acl_info(dacl, ctypes.byref(acl_info), ctypes.sizeof(acl_info), 2):
+                return False
+            if acl_info.AceCount < 2:
+                return False
+            seen = [False, False]
+            for ace_index in range(acl_info.AceCount):
+                ace_pointer = wintypes.LPVOID()
+                if not get_ace(dacl, ace_index, ctypes.byref(ace_pointer)):
+                    return False
+                header = ctypes.cast(
+                    ace_pointer, ctypes.POINTER(ACE_HEADER)
+                ).contents
+                if header.AceType != 0:  # ACCESS_ALLOWED_ACE_TYPE
+                    return False
+                sid_pointer = wintypes.LPVOID(
+                    ace_pointer.value + ACCESS_ALLOWED_ACE.SidStart.offset
+                )
+                matches = [bool(equal_sid(sid_pointer, sid)) for sid in allowed_sids]
+                if not any(matches):
+                    return False
+                for index, matched in enumerate(matches):
+                    seen[index] = seen[index] or matched
+            return all(seen)
+        finally:
+            for sid in allowed_sids:
+                if sid:
+                    kernel.LocalFree(sid)
+            if descriptor:
+                kernel.LocalFree(descriptor)
+    except (AttributeError, OSError, TypeError, ValueError):
         return False
-    if not powershell.is_file():
-        return False
-    script = (
-        "$a=Get-Acl -LiteralPath $env:ANGERONA_ACL_PATH; "
-        "$o=(New-Object Security.Principal.NTAccount($a.Owner)).Translate("
-        "[Security.Principal.SecurityIdentifier]).Value; "
-        "$bad=@($a.Access|Where-Object {"
-        "$_.AccessControlType -ne 'Allow' -or "
-        "$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value "
-        "-notin @('S-1-5-18','S-1-5-32-544')}); "
-        "if ($o -notin @('S-1-5-18','S-1-5-32-544') -or $bad.Count -ne 0 "
-        "-or $a.Access.Count -lt 2) {exit 1}; exit 0"
-    )
-    env = sanitized_child_environment({"ANGERONA_ACL_PATH": str(path)})
-    result = subprocess.run([str(powershell), "-NoProfile", "-Command", script],
-                            env=env, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, timeout=20, check=False,
-                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    return result.returncode == 0
 
 
 def _harden_frozen_data_root(path: Path, existed: bool) -> None:
@@ -169,6 +308,53 @@ def _harden_frozen_data_root(path: Path, existed: bool) -> None:
         )
     if not trusted or _is_reparse_point(path):
         raise PermissionError("Packaged data-directory trust verification failed")
+    _hardened_roots.add(key)
+
+
+def _elevated_source_runtime() -> bool:
+    """Return whether this is an elevated, non-frozen Windows source runtime.
+
+    This decision is made after elevation from the effective process token.  A
+    launcher-supplied environment flag is not authority: the privileged
+    bootstrap intentionally deletes every such inherited flag.
+    """
+    if not sys.platform.startswith("win") or getattr(sys, "frozen", False):
+        return False
+    try:
+        from angerona.core.privilege import is_admin
+
+        return bool(is_admin())
+    except (ImportError, OSError):
+        return False
+
+
+def _canonical_source_data_root() -> Path:
+    """Derive the source runtime root from this installed module, never env."""
+    return Path(__file__).resolve().parents[3].parent / "AngeronaData"
+
+
+def _verify_protected_source_data_root(path: Path) -> None:
+    """Enforce post-elevation custody for an elevated source install.
+
+    The source launcher protects ``AngeronaData`` before Python starts.  Keep
+    that boundary fail-closed in the application too: bypassing the launcher
+    while requesting elevated key custody must not silently downgrade the
+    journal, cursor, and signing-key directory to an inherited user-writable
+    ACL.
+    """
+    if not sys.platform.startswith("win"):
+        return
+    if not _elevated_source_runtime():
+        return
+    key = str(path).casefold()
+    if key in _hardened_roots:
+        return
+    if _is_reparse_point(path) or not _admin_acl_valid(path):
+        raise PermissionError(
+            "Elevated source runtime storage is not protected by an "
+            f"Administrators/SYSTEM-only ACL: {path}. Start Angerona through "
+            "the guarded launcher so key custody can be established first."
+        )
     _hardened_roots.add(key)
 
 
@@ -234,7 +420,15 @@ def data_dir(create: bool = True) -> Path:
     explicit override on every platform.
     """
     frozen = getattr(sys, "frozen", False)
-    configured = os.environ.get("ANGERONA_DATA", "").strip()
+    elevated_source = _elevated_source_runtime()
+    # An elevated source process derives its key-custody root from the loaded
+    # package location.  Neither ANGERONA_DATA nor ANGERONA_HOME may redirect
+    # the privileged journal/signing-key root after bootstrap sanitization.
+    configured = (
+        str(_canonical_source_data_root())
+        if elevated_source
+        else os.environ.get("ANGERONA_DATA", "").strip()
+    )
     path = _canonical_data_path(
         configured,
         frozen,
@@ -279,15 +473,36 @@ def data_dir(create: bool = True) -> Path:
             path = path.resolve(strict=True)
     else:
         existed = False
-    os.environ.setdefault("ANGERONA_DATA", str(path))
+    if elevated_source:
+        os.environ["ANGERONA_DATA"] = str(path)
+    else:
+        os.environ.setdefault("ANGERONA_DATA", str(path))
     if create:
         if not frozen:
             key = str(path).casefold()
             if key not in _ready_source_roots:
                 with _data_path_lock:
                     if key not in _ready_source_roots:
-                        path.mkdir(parents=True, exist_ok=True)
-                        _harden_posix_data_root(path)
+                        if sys.platform.startswith("win") and elevated_source:
+                            if not path.parent.is_dir() or _is_reparse_point(path.parent):
+                                raise PermissionError(
+                                    f"Refusing unsafe Angerona data parent: {path.parent}"
+                                )
+                            if path.exists():
+                                if not path.is_dir() or _is_reparse_point(path):
+                                    raise PermissionError(
+                                        f"Refusing unsafe Angerona data directory: {path}"
+                                    )
+                            else:
+                                _create_admin_directory_atomic(path)
+                            path = path.resolve(strict=True)
+                            _verify_protected_source_data_root(path)
+                        else:
+                            path.mkdir(parents=True, exist_ok=True)
+                            if sys.platform.startswith("win"):
+                                _verify_protected_source_data_root(path)
+                            else:
+                                _harden_posix_data_root(path)
                         _ready_source_roots.add(key)
         else:
             if sys.platform.startswith("win"):

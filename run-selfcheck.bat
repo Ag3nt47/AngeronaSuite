@@ -15,5 +15,7 @@ if not exist "venv\Scripts\python.exe" (
 
 echo Running Angerona self-check... > "%REPORT%"
 "venv\Scripts\python.exe" -u -X utf8 tools\selfcheck.py >> "%REPORT%" 2>&1
+set "ANGERONA_SELFCHECK_EXIT=%errorlevel%"
 echo. >> "%REPORT%"
-echo (exit code %errorlevel%) >> "%REPORT%"
+echo (exit code %ANGERONA_SELFCHECK_EXIT%) >> "%REPORT%"
+exit /b %ANGERONA_SELFCHECK_EXIT%

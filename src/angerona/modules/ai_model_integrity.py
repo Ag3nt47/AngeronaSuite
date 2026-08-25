@@ -34,13 +34,37 @@ module-level register().
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
+import re
+import stat
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from angerona.core.module_base import BaseModule, Severity
+
+
+_SHA256_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+_MAX_MANIFEST_BYTES = 16 * 1024 * 1024
+_MAX_MANIFEST_BLOBS = 10_000
+
+
+class ModelIntegrityError(RuntimeError):
+    """Raised when a local Ollama model cannot be verified from disk."""
+
+
+@dataclass(frozen=True)
+class LocalModelVerification:
+    """Bounded evidence from an on-disk Ollama manifest and its blobs."""
+
+    manifest_digest: str
+    blob_count: int
+    bytes_verified: int
+    manifest_path: str
 
 
 def _repo_root() -> Path:
@@ -60,6 +84,201 @@ def _hash_file(filepath: str | os.PathLike, chunk: int = 4096 * 1024) -> str:
         return "FILE_NOT_FOUND"
     except Exception as exc:  # permission / IO
         return f"ERROR:{exc}"
+
+
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    except OSError:
+        return True
+
+
+def _require_confined_regular_file(path: Path, root: Path) -> tuple[Path, os.stat_result]:
+    """Resolve a model file while rejecting links/junctions and non-files."""
+    try:
+        root_resolved = root.resolve(strict=True)
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(root_resolved)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ModelIntegrityError("Ollama model path escaped or is unavailable") from exc
+
+    current = resolved.parent
+    while current != root_resolved:
+        if current.is_symlink() or _is_reparse_point(current):
+            raise ModelIntegrityError("Ollama model path contains a link or junction")
+        parent = current.parent
+        if parent == current:
+            raise ModelIntegrityError("Ollama model path is not confined")
+        current = parent
+    if resolved.is_symlink() or _is_reparse_point(resolved):
+        raise ModelIntegrityError("Ollama model file is a link or reparse point")
+    try:
+        info = resolved.stat()
+    except OSError as exc:
+        raise ModelIntegrityError("Ollama model file is unavailable") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise ModelIntegrityError("Ollama model object is not a regular file")
+    return resolved, info
+
+
+def _read_verified_file(path: Path, root: Path, *, maximum: int) -> bytes:
+    resolved, before = _require_confined_regular_file(path, root)
+    if before.st_size < 1 or before.st_size > maximum:
+        raise ModelIntegrityError("Ollama manifest has an invalid size")
+    try:
+        with resolved.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (opened.st_dev, opened.st_ino, opened.st_size) != (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+            ):
+                raise ModelIntegrityError("Ollama manifest changed before verification")
+            payload = stream.read(maximum + 1)
+            after = os.fstat(stream.fileno())
+    except OSError as exc:
+        raise ModelIntegrityError("Ollama manifest could not be read") from exc
+    if len(payload) != before.st_size or len(payload) > maximum:
+        raise ModelIntegrityError("Ollama manifest changed during verification")
+    if (after.st_dev, after.st_ino, after.st_size) != (
+        opened.st_dev,
+        opened.st_ino,
+        opened.st_size,
+    ):
+        raise ModelIntegrityError("Ollama manifest changed during verification")
+    return payload
+
+
+def _hash_verified_blob(path: Path, root: Path, expected_size: int) -> str:
+    resolved, before = _require_confined_regular_file(path, root)
+    if before.st_size != expected_size:
+        raise ModelIntegrityError("Ollama blob size does not match its manifest")
+    digest = hashlib.sha256()
+    try:
+        with resolved.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (opened.st_dev, opened.st_ino, opened.st_size) != (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+            ):
+                raise ModelIntegrityError("Ollama blob changed before verification")
+            for block in iter(lambda: stream.read(4 * 1024 * 1024), b""):
+                digest.update(block)
+            after = os.fstat(stream.fileno())
+    except OSError as exc:
+        raise ModelIntegrityError("Ollama blob could not be read") from exc
+    if (after.st_dev, after.st_ino, after.st_size) != (
+        opened.st_dev,
+        opened.st_ino,
+        opened.st_size,
+    ):
+        raise ModelIntegrityError("Ollama blob changed during verification")
+    return digest.hexdigest()
+
+
+def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ModelIntegrityError(f"duplicate Ollama manifest field: {key}")
+        result[key] = value
+    return result
+
+
+def verify_ollama_model_files(
+    model_ref: str,
+    expected_manifest_digest: str | None = None,
+    *,
+    models_root: str | os.PathLike[str] | None = None,
+) -> LocalModelVerification:
+    """Verify a local Ollama manifest and every referenced content-addressed blob.
+
+    This does not consult Ollama's loopback API.  The manifest digest is computed
+    from the actual file and each referenced blob is checked against both the
+    manifest size and the SHA-256 embedded in its content-addressed filename.
+    """
+    from angerona.core.ollama_lifecycle import validate_model_ref
+
+    normalized = validate_model_ref(model_ref)
+    if "@" in normalized:
+        raise ModelIntegrityError("local verification requires a named model tag")
+    name, separator, tag = normalized.partition(":")
+    tag = tag if separator else "latest"
+    if expected_manifest_digest is not None and not _SHA256_DIGEST.fullmatch(
+        expected_manifest_digest
+    ):
+        raise ModelIntegrityError("expected model manifest digest is invalid")
+
+    if models_root is None:
+        root = AIModelIntegrityGuardModule._models_root()
+    else:
+        root = Path(models_root)
+    if root is None:
+        raise ModelIntegrityError("Ollama model directory is unavailable")
+    try:
+        root = root.resolve(strict=True)
+    except OSError as exc:
+        raise ModelIntegrityError("Ollama model directory is unavailable") from exc
+    if root.is_symlink() or _is_reparse_point(root) or not root.is_dir():
+        raise ModelIntegrityError("Ollama model directory is not trusted")
+
+    manifest_path = (
+        root / "manifests" / "registry.ollama.ai" / "library" / name / tag
+    )
+    raw = _read_verified_file(manifest_path, root, maximum=_MAX_MANIFEST_BYTES)
+    actual_manifest_digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+    if expected_manifest_digest is not None and not hmac.compare_digest(
+        actual_manifest_digest, expected_manifest_digest
+    ):
+        raise ModelIntegrityError("local Ollama manifest digest does not match the catalog")
+    try:
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_json_object)
+    except ModelIntegrityError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ModelIntegrityError("Ollama manifest is not valid UTF-8 JSON") from exc
+    if not isinstance(document, dict):
+        raise ModelIntegrityError("Ollama manifest root is invalid")
+    config = document.get("config")
+    layers = document.get("layers")
+    if not isinstance(config, dict) or not isinstance(layers, list):
+        raise ModelIntegrityError("Ollama manifest descriptors are invalid")
+    descriptors = [config, *layers]
+    if not 1 <= len(descriptors) <= _MAX_MANIFEST_BLOBS:
+        raise ModelIntegrityError("Ollama manifest blob inventory is invalid")
+
+    total = 0
+    seen: set[str] = set()
+    blob_root = root / "blobs"
+    for descriptor in descriptors:
+        if not isinstance(descriptor, dict):
+            raise ModelIntegrityError("Ollama manifest blob descriptor is invalid")
+        digest = descriptor.get("digest")
+        size = descriptor.get("size")
+        if (
+            not isinstance(digest, str)
+            or not _SHA256_DIGEST.fullmatch(digest)
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or not 0 <= size <= 2**50
+        ):
+            raise ModelIntegrityError("Ollama manifest blob identity is invalid")
+        if digest in seen:
+            raise ModelIntegrityError("Ollama manifest contains a duplicate blob")
+        seen.add(digest)
+        hexadecimal = digest.removeprefix("sha256:")
+        actual = _hash_verified_blob(blob_root / f"sha256-{hexadecimal}", root, size)
+        if not hmac.compare_digest(actual, hexadecimal):
+            raise ModelIntegrityError("Ollama blob content digest does not match its manifest")
+        total += size
+    return LocalModelVerification(
+        manifest_digest=actual_manifest_digest,
+        blob_count=len(descriptors),
+        bytes_verified=total,
+        manifest_path=str(manifest_path),
+    )
 
 
 class AIModelIntegrityGuardModule(BaseModule):

@@ -14,7 +14,7 @@ Pure engine (no GUI) so it's unit-testable; the GUI page just renders these dict
 from __future__ import annotations
 import os, time
 
-from angerona.core.url_policy import local_json_request
+from angerona.core.url_policy import OLLAMA_SERVICE_POLICY, local_json_request
 from angerona.engines import ollama_client
 
 try:
@@ -104,6 +104,7 @@ class WorldViewEngine:
                 method="GET",
                 timeout=3,
                 response_maximum=512 * 1024,
+                policy=OLLAMA_SERVICE_POLICY,
             )
             models = ps.get("models", [])
             if models:

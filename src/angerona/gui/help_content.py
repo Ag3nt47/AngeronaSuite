@@ -23,6 +23,8 @@ def _getting_started_body() -> str:
         "explains evidence, and keeps cloud or messaging features off until the "
         "operator explicitly configures them.\n"
         "• The dashboard shows module health, alerts, posture, and current threat level.\n"
+        "• Adaption audits this host, establishes a reviewed golden baseline, and previews "
+        "reversible intent profiles in a no-write sandbox.\n"
         "• The ARIA console accepts commands or plain-language questions.\n"
         "• Run Self-Test to verify local pipelines; use only inert Red Team drills for "
         "built-in validation.\n"
@@ -45,6 +47,22 @@ _SUPPLEMENTARY_TOPICS: dict[str, tuple[str, str]] = {
         "approval controls. There is no generic remote shell.\n"
         "• Treat every recommendation as advice until the resulting evidence and receipt "
         "have been verified.",
+    ),
+    "adaption": (
+        "Adaption — Adapt to Host",
+        "Adaption learns a reviewed operational baseline for this computer; it does not "
+        "silently learn every change as trusted.\n"
+        "• Audit & Drift captures hardware, services, listening ports, adapters, connection "
+        "context, and Windows Firewall posture.\n"
+        "• Exact known-good exceptions remain visible but contribute zero drift risk. False-"
+        "positive feedback tunes only the affected local score category within fixed bounds.\n"
+        "• Profiles must be previewed, expire after ten minutes, and can be run in the no-write "
+        "sandbox before applying. Every apply requires a firewall snapshot and exact-plan approval.\n"
+        "• SSID, VPN, and Public-network rules default to proposal-only. Auto-apply is a separate "
+        "persistent authorization protected by cooldowns, rate limits, and a circuit breaker.\n"
+        "• Rollback verifies both its manifest and firewall artifact before import. Adaption never "
+        "kills processes, stops services, edits routes, disables the firewall, or runs arbitrary "
+        "commands.",
     ),
     "troubleshooting": (
         "Troubleshooting",
@@ -145,10 +163,22 @@ _ALIASES = {
     "stt": "local-ai",
     "tts": "local-ai",
     "mic": "local-ai",
+    "friday": "local-ai",
+    "ultron": "local-ai",
+    "persona": "local-ai",
+    "gesture": "local-ai",
+    "hand-controls": "local-ai",
+    "camera": "local-ai",
+    "conversation": "local-ai",
+    "awareness": "local-ai",
     "phone": "mobile",
     "signal": "mobile",
     "trusted": "trusted-processes",
     "trusted-apps": "trusted-processes",
+    "adapt": "adaption",
+    "adaptation": "adaption",
+    "baseline": "adaption",
+    "configuration-drift": "adaption",
     "test": "red-team",
     "testing": "red-team",
     "drill": "red-team",

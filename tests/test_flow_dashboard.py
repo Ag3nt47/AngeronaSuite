@@ -36,7 +36,7 @@ def test_flow_dashboard_exposes_all_local_operations_tabs(tmp_path: Path) -> Non
         labels = [dialog.tabs.tabText(index) for index in range(dialog.tabs.count())]
         assert labels == [
             "Overview", "Cases", "Hunt", "Assets", "Detection Content",
-            "Parity & Interop", "Audit",
+            "Parity & Interop", "Audit", "Info",
         ]
         assert dialog.deck.cards.keys() == {
             "cases", "evidence", "audit", "assets", "detections"

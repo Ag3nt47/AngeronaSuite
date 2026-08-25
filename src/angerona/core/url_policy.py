@@ -40,6 +40,28 @@ LOCAL_SERVICE_POLICY = UrlPolicy(
     loopback_only=True,
 )
 
+OLLAMA_SERVICE_POLICY = UrlPolicy(
+    name="attested local Ollama service",
+    schemes=frozenset({"http", "https"}),
+    loopback_only=True,
+)
+
+_OLLAMA_API_PATHS = frozenset({
+    "/api/chat",
+    "/api/copy",
+    "/api/create",
+    "/api/delete",
+    "/api/embed",
+    "/api/embeddings",
+    "/api/generate",
+    "/api/ps",
+    "/api/pull",
+    "/api/push",
+    "/api/show",
+    "/api/tags",
+    "/api/version",
+})
+
 PUBLIC_HTTPS_POLICY = UrlPolicy(
     name="operator-approved public HTTPS",
     schemes=frozenset({"https"}),
@@ -121,10 +143,14 @@ def validate_url(
         literal = ipaddress.ip_address(host)
     except ValueError:
         literal = None
-    if policy.resolve_addresses:
-        addresses = _resolved_addresses(host, port, resolver)
-    elif literal is not None:
+    # An IP literal is already the final connection identity. Sending it
+    # through getaddrinfo() adds a second resolver/system call to every pinned
+    # local request without providing any DNS-rebinding protection. Keep DNS
+    # resolution mandatory for hostnames, while validating literals directly.
+    if literal is not None:
         addresses = (literal,)
+    elif policy.resolve_addresses:
+        addresses = _resolved_addresses(host, port, resolver)
     else:
         addresses = ()
 
@@ -193,6 +219,8 @@ class _PolicyRedirectHandler(urllib.request.HTTPRedirectHandler):
         self._policy = policy
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if self._policy is OLLAMA_SERVICE_POLICY:
+            raise UrlPolicyError("attested Ollama requests must not redirect")
         if self._policy.loopback_only:
             newurl = _pin_loopback_url(newurl)
         else:
@@ -212,6 +240,22 @@ def safe_urlopen(
         if isinstance(request_or_url, urllib.request.Request)
         else str(request_or_url)
     )
+    parsed = urlsplit(url)
+    ollama_route = parsed.path in _OLLAMA_API_PATHS or parsed.path.startswith(
+        "/api/blobs/sha256:"
+    )
+    if policy is OLLAMA_SERVICE_POLICY and not ollama_route:
+        raise UrlPolicyError("unsupported attested Ollama API path")
+    if policy.loopback_only and ollama_route:
+        # The fixed Ollama route is itself the service discriminator. Promote
+        # even a generic local policy so an accidental caller cannot silently
+        # bypass ownership attestation; unrelated local routes remain generic.
+        policy = OLLAMA_SERVICE_POLICY
+        # Call-time import avoids url_policy <-> ollama_lifecycle import cycles.
+        from angerona.core.ollama_lifecycle import attest_ollama_service
+
+        base = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+        attest_ollama_service(base)
     if policy.loopback_only:
         pinned_url = _pin_loopback_url(url)
         if isinstance(request_or_url, urllib.request.Request):
@@ -265,6 +309,7 @@ def local_json_request(
     timeout: float = 30.0,
     request_maximum: int = 2 * 1024 * 1024,
     response_maximum: int = 4 * 1024 * 1024,
+    policy: UrlPolicy = LOCAL_SERVICE_POLICY,
 ) -> dict:
     """Exchange one bounded JSON document with a loopback-only service.
 
@@ -272,8 +317,10 @@ def local_json_request(
     URL validation, redirect revalidation, serialization bounds, and response
     bounds without creating a new third-party HTTP session per request.
     """
+    if policy not in {LOCAL_SERVICE_POLICY, OLLAMA_SERVICE_POLICY}:
+        raise ValueError("local JSON request requires a local service policy")
     verb = (method or ("POST" if payload is not None else "GET")).upper()
-    if verb not in {"GET", "POST"}:
+    if verb not in {"GET", "POST", "DELETE"}:
         raise UrlPolicyError("local JSON request method is not permitted")
     if payload is not None and not isinstance(payload, dict):
         raise TypeError("local JSON request payload must be an object")
@@ -309,7 +356,7 @@ def local_json_request(
     )
     with safe_urlopen(
         request,
-        policy=LOCAL_SERVICE_POLICY,
+        policy=policy,
         timeout=float(timeout),
     ) as response:
         raw = read_bounded(response, int(response_maximum))
@@ -342,6 +389,7 @@ def host_policy(
 
 __all__ = [
     "LOCAL_SERVICE_POLICY",
+    "OLLAMA_SERVICE_POLICY",
     "PUBLIC_HTTPS_POLICY",
     "UrlPolicy",
     "UrlPolicyError",

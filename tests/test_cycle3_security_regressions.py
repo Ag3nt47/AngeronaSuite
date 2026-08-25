@@ -47,7 +47,7 @@ def test_internal_protected_values_never_enter_process_environment(
     assert key not in os.environ
 
 
-def test_verified_protected_secret_overrides_inherited_environment(
+def test_verified_protected_secret_is_not_published_to_environment(
     monkeypatch, tmp_path
 ) -> None:
     monkeypatch.setattr(secure_store.sys, "platform", "win32")
@@ -63,7 +63,8 @@ def test_verified_protected_secret_overrides_inherited_environment(
 
     secure_store.load_into_environment(tmp_path)
 
-    assert os.environ["OPENAI_API_KEY"] == "protected"
+    assert "OPENAI_API_KEY" not in os.environ
+    assert secure_store.read_secret_map(tmp_path)["OPENAI_API_KEY"] == "protected"
 
 
 def test_unreadable_secret_store_is_never_overwritten(monkeypatch, tmp_path) -> None:
@@ -198,7 +199,10 @@ def test_source_launcher_is_bounded_and_reports_early_startup_failures():
     assert text.index(":validate") < text.index(":launch")
     assert "launcher-preflight.log" in text
     assert "launcher-stderr.log" in text
-    assert "AddSeconds(12)" in text
+    assert "AddSeconds(120)" in text
+    assert "dashboard-ready.signal" in text
+    assert "ANGERONA_STARTUP_READY" in text
+    assert "the dashboard did not become ready" in text
     assert "Start-Sleep -Milliseconds 1500" not in text
     assert "[IO.DriveInfo]::new([IO.Path]::GetPathRoot($r.FullName))" in text
     assert "$r.PSDrive.DriveType" not in text

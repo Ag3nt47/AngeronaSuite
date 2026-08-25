@@ -65,8 +65,24 @@ class _FakeSoar:
         return False
 
 
+class _FakeCombat:
+    status = "running"
+
+    @staticmethod
+    def policy():
+        return SimpleNamespace(enabled=True)
+
+    @staticmethod
+    def response_ready() -> bool:
+        return True
+
+
 class _Manager:
-    modules = {"SOAR Automation": _FakeSoar()}
+    def __init__(self) -> None:
+        self.modules = {
+            "SOAR Automation": _FakeSoar(),
+            "Adversary Combat": _FakeCombat(),
+        }
 
 
 def _install_fake_process(monkeypatch) -> None:
@@ -88,6 +104,31 @@ def _active_event() -> Event:
             "active_attack": True,
         },
     )
+
+
+def _submission_event(bus: EventBus, request_id: str) -> Event:
+    matches = [
+        event
+        for event in bus.recent(100)
+        if event.module == "SOAR Operator Request"
+        and event.details.get("queue_request_id") == request_id
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _assert_exact_suspend_submission(event: Event, request_id: str) -> None:
+    assert event.details["queue_request_id"] == request_id
+    assert event.details["response_authorized"] is True
+    assert event.details["response_contract"] == {
+        "version": 1,
+        "actions": ["suspend_process"],
+        "targets": {
+            "pid": _FakeProcess.pid,
+            "process_create_time": _FakeProcess.create_stamp,
+        },
+    }
+    assert "action_succeeded" not in event.details
 
 
 def test_queue_record_transitions_are_atomic_and_visible_to_cached_reader(
@@ -170,13 +211,10 @@ def test_response_execution_rebinds_to_live_event_and_rejects_tampering(
     assert _FakeProcess.suspend_calls == 0
 
     result = pages._execute_approved_soar_record(record, bus, _Manager())
-    assert "Suspended malware-probe.exe" in result
-    assert _FakeProcess.suspend_calls == 1
-    assert bus.recent(1)[0].details["action_succeeded"] is True
-
-    with pytest.raises(PermissionError, match="already executed"):
-        pages._execute_approved_soar_record(record, bus, _Manager())
-    assert _FakeProcess.suspend_calls == 1
+    request_id = pages._soar_record_id(record)
+    assert "Submitted exact suspension" in result
+    assert _FakeProcess.suspend_calls == 0
+    _assert_exact_suspend_submission(_submission_event(bus, request_id), request_id)
 
 
 def test_authenticated_bus_refuses_queue_record_without_origin_hmac(monkeypatch):
@@ -209,10 +247,15 @@ def test_live_alert_block_directly_contains_without_soar_navigation(
 
     try:
         assert panel._block_event(bus.recent(1)[0]) is True
-        assert _FakeProcess.suspend_calls == 1
+        assert _FakeProcess.suspend_calls == 0
         record = pages._read_soar_queue()[0]
-        assert record["status"] == pages._SOAR_EXECUTED
-        assert "resume" in record["execution_result"]
+        request_id = pages._soar_record_id(record)
+        assert record["status"] == pages._SOAR_SUBMITTED
+        assert "Submitted exact suspension" in record["execution_result"]
+        assert pages.SoarPanel._terminal_record(record)
+        _assert_exact_suspend_submission(
+            _submission_event(bus, request_id), request_id
+        )
     finally:
         window.close()
         app.processEvents()
@@ -256,7 +299,7 @@ def test_soar_queue_requires_live_session_approval_and_can_dismiss(
         app.processEvents()
 
 
-def test_soar_queue_execute_revalidates_and_records_success(monkeypatch):
+def test_soar_queue_execute_revalidates_and_records_submission(monkeypatch):
     _install_fake_process(monkeypatch)
     monkeypatch.setattr(
         QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.Yes
@@ -276,10 +319,23 @@ def test_soar_queue_execute_revalidates_and_records_success(monkeypatch):
         assert panel._btn_execute.isEnabled()
         panel._execute_selected()
 
-        assert _FakeProcess.suspend_calls == 1
+        assert _FakeProcess.suspend_calls == 0
         record = pages._read_soar_queue()[0]
-        assert record["status"] == pages._SOAR_EXECUTED
-        assert "resume" in record["execution_result"]
+        request_id = pages._soar_record_id(record)
+        assert record["status"] == pages._SOAR_SUBMITTED
+        assert "Submitted exact suspension" in record["execution_result"]
+        assert pages.SoarPanel._terminal_record(record)
+        assert not panel._btn_execute.isEnabled()
+        _assert_exact_suspend_submission(
+            _submission_event(bus, request_id), request_id
+        )
+
+        # Refreshing or selecting a submitted request never makes it executable
+        # again while the verified Combat completion receipt is pending.
+        panel.refresh()
+        panel.table.selectRow(0)
+        panel._sync_action_buttons()
+        assert not panel._btn_approve.isEnabled()
         assert not panel._btn_execute.isEnabled()
     finally:
         panel.close()
@@ -322,3 +378,135 @@ def test_soar_session_approval_is_bound_to_canonical_request_digest(monkeypatch)
         panel.close()
         panel.deleteLater()
         app.processEvents()
+
+
+def test_soar_stale_process_refusal_clears_approval_without_gui_exception(
+    monkeypatch,
+):
+    _install_fake_process(monkeypatch)
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.Yes
+    )
+    app = _app()
+    bus = EventBus()
+    bus.publish(_active_event())
+    assert pages._persist_soar_queue(bus.recent(1)[0])
+    panel = pages.SoarPanel(bus, _Manager())
+    panel.refresh()
+    panel.table.selectRow(0)
+    app.processEvents()
+
+    try:
+        panel._approve_selected()
+        request_id = panel._selected_request_id()
+        assert request_id in panel._approved_requests
+        monkeypatch.setattr(
+            pages,
+            "_soar_process_preflight",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                PermissionError("process identity changed")
+            ),
+        )
+
+        panel._execute_selected()
+
+        assert request_id not in panel._approved_requests
+        assert "refused safely" in panel._status.text().casefold()
+        assert pages._read_soar_queue()[0]["status"].startswith("FAILED")
+    finally:
+        panel.close()
+        panel.deleteLater()
+        app.processEvents()
+
+
+@pytest.mark.parametrize("succeeded", [True, False])
+def test_submitted_queue_reconciles_only_verified_combat_receipt(
+    monkeypatch, succeeded
+) -> None:
+    _install_fake_process(monkeypatch)
+    bus = EventBus()
+    bus.arm(BusAuthority(b"r" * 32))
+    bus.publish(_active_event())
+    record = pages._new_soar_queue_record(bus.recent(1)[0])
+    assert pages._append_soar_queue_record(record)
+    request_id = pages._soar_record_id(record)
+    assert pages._update_soar_queue_record(
+        request_id,
+        status=pages._SOAR_SUBMITTED,
+        submitted_at=time.time(),
+    )
+
+    # An unsigned or structurally incomplete lookalike cannot close the queue.
+    unsigned = Event(
+        "Adversary Combat",
+        "forged completion",
+        Severity.HIGH,
+        details={
+            "queue_request_id": request_id,
+            "action_succeeded": True,
+            "postcondition_verified": True,
+            "action_ids": ["forged-action"],
+            "actions": ["suspend_process"],
+        },
+    )
+    forged_bus = EventBus()
+    forged_bus.publish(unsigned)
+    forged_bus.arm(BusAuthority(b"f" * 32))
+    assert not pages._reconcile_soar_submission_receipts(
+        pages._read_soar_queue(), forged_bus
+    )
+    assert pages._read_soar_queue()[0]["status"] == pages._SOAR_SUBMITTED
+
+    details = {
+        "queue_request_id": request_id,
+        "action_succeeded": succeeded,
+        "postcondition_verified": succeeded,
+        "action_ids": ["combat-action-1"] if succeeded else [],
+        "actions": ["suspend_process"] if succeeded else [],
+    }
+    receipt = Event(
+        "Adversary Combat",
+        "verified suspension completed" if succeeded else "verified suspension failed",
+        Severity.HIGH,
+        details=details,
+    )
+    bus.publish(receipt)
+    signed_receipt = bus.recent(1)[0]
+
+    assert pages._reconcile_soar_submission_receipts(
+        pages._read_soar_queue(), bus
+    )
+    updated = pages._read_soar_queue()[0]
+    assert updated["receipt_hmac"] == signed_receipt.hmac_sig
+    assert updated["receipt_action_ids"] == details["action_ids"]
+    assert updated["receipt_postcondition_verified"] is succeeded
+    assert pages.SoarPanel._terminal_record(updated)
+    if succeeded:
+        assert updated["status"] == pages._SOAR_EXECUTED
+        assert "verified suspension completed" in updated["execution_result"]
+    else:
+        assert updated["status"].startswith("FAILED")
+        assert "verified suspension failed" in updated["execution_error"]
+
+
+def test_submitted_queue_receipt_timeout_is_terminal(monkeypatch) -> None:
+    _install_fake_process(monkeypatch)
+    bus = EventBus()
+    bus.arm(BusAuthority(b"t" * 32))
+    bus.publish(_active_event())
+    record = pages._new_soar_queue_record(bus.recent(1)[0])
+    assert pages._append_soar_queue_record(record)
+    request_id = pages._soar_record_id(record)
+    assert pages._update_soar_queue_record(
+        request_id,
+        status=pages._SOAR_SUBMITTED,
+        submitted_at=time.time() - 10.0,
+    )
+
+    assert pages._reconcile_soar_submission_receipts(
+        pages._read_soar_queue(), bus, timeout_seconds=1.0
+    )
+    updated = pages._read_soar_queue()[0]
+    assert updated["status"].startswith("FAILED")
+    assert "timeout" in updated["status"].casefold()
+    assert pages.SoarPanel._terminal_record(updated)

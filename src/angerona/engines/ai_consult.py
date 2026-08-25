@@ -35,7 +35,7 @@ from angerona.core.provider_credentials import (
     credential_value,
 )
 from angerona.core.url_policy import (
-    LOCAL_SERVICE_POLICY,
+    OLLAMA_SERVICE_POLICY,
     host_policy,
     local_service_url,
     read_bounded,
@@ -67,7 +67,7 @@ def _post(url: str, headers: dict, payload: dict) -> dict:
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     if url.startswith(OLLAMA_HOST + "/"):
-        policy = LOCAL_SERVICE_POLICY
+        policy = OLLAMA_SERVICE_POLICY
     else:
         policy = host_policy(
             "configured AI provider",

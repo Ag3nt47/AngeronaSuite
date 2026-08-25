@@ -199,3 +199,94 @@ unthrottled. Existing ARP/WLAN/deep-decoder fallback floors were not increased.
   **47/47 PASS**.
 - Edited module self-tests: Evolution PASS; Active Deception PASS in an isolated
   temporary profile; no real user canaries or host state were touched.
+
+---
+
+# 2026-08-25 Expansion Loop — Round 3 Performance Regression
+
+This pass re-audited the new governed model-pack lifecycle, Upgrade Console,
+Sysmon continuity/full event coverage, Community-ID, OCSF 1.8 mapping, and the
+round-1 ARIA RAG/ETW optimizations. Detection cadence, response thresholds,
+event shapes, and security controls were not changed.
+
+## APPLIED
+
+### XP3.1 — Move periodic resilience/scanner file reads off the Qt thread
+
+- **Component:** `gui/upgrade_console.py`.
+- **Problem:** the new model-pack state/admission and mutation paths correctly
+  used `QRunnable`, but the same console's 3-second watchdog timer still read
+  two diagnostic JSON files plus heartbeat state on the Qt thread, and its
+  1.5-second telemetry timer read scanner JSON there. Slow storage or endpoint
+  scanning could therefore stall painting and input.
+- **Change:** timer callbacks now submit background snapshots through the
+  console's stable worker bridge. Result rendering stays on the owning Qt
+  thread. Separate single-flight flags coalesce repeated timer ticks, stale
+  tokens are ignored, the zero-delay initial timer is stopped on close, and
+  late results retain the existing safe shutdown behavior.
+- **Measured improvement:** with a deterministic 50 ms diagnostic read, the Qt
+  callback returned in **0.036 ms** while the 51.492 ms I/O completed on a
+  worker. Eleven refresh requests while that read was pending retained exactly
+  **one queued job** (90.9% request coalescing in the stress sample; no backlog).
+- **Behavior proof:** runtime tests verify that both watchdog and scanner reads
+  run off the Qt thread, completed values render on Qt, and duplicate ticks are
+  single-flight. Existing model-pack async, stale-result, mutation, provider,
+  and close-during-worker tests remain green.
+- **Gate:** `py_compile` PASS; Ruff PASS; focused cross-feature regression
+  **45/45 passed**.
+- **Status:** APPLIED.
+
+## VERIFIED / NO CHANGE NEEDED
+
+- **Governed model packs:** install/activate/rollback/remove network and disk
+  work is already off-thread in the Upgrade Console. Catalog input is capped at
+  2 MiB/128 packs, runbooks at 256 per pack/16,000 characters each, receipts at
+  256, and activation history at 64. Lifecycle state is HMAC-attested and model
+  operations are process-wide single-flight.
+- **Community-ID and OCSF:** both paths are stateless, bounded pure mappings.
+  Native Community-ID is calculated only for newly observed external sockets,
+  not every active socket on every poll. OCSF validation allocates only a small
+  error list and is not a polling path.
+- **Sysmon:** steady-state polling remains at two seconds, cursor persistence is
+  once per consumed batch rather than once per record, and fallback PID state is
+  replaced by the current process snapshot. Full event-range parsing is bounded
+  to 1 MiB XML per record and bounded copied fields.
+- **Round-1 RAG/ETW changes:** the pre-indexed BM25 term-frequency/normalizer
+  cache and 4,096-entry ETW PID LRU remain behavior-equivalent; their focused
+  performance regressions passed in the 45-test gate.
+
+## PROPOSED / NOT APPLIED
+
+### XP3.2 — Constant-time first-run Sysmon tail positioning
+
+- **Problem:** a brand-new cursor still drains the retained Sysmon channel to
+  establish its initial tail. A large channel can make first startup O(records).
+- **Proposal:** use `EVENTLOG_SEEK_READ` at the range-reported newest record,
+  with an explicit concurrent-arrival boundary and sequential fallback.
+- **Expected win:** replace an unbounded initial discard loop with one seek plus
+  normal incremental reads.
+- **Why proposed:** pywin32 seek-buffer advancement and records arriving between
+  the range query and seek need a Windows-native integration gate. Applying this
+  from static reasoning could skip a first live record and weaken detection.
+- **Status:** PROPOSED.
+
+### XP3.3 — Asynchronous ARIA startup index/manager construction
+
+- **Problem:** production model operations and periodic status reads are
+  off-thread, but ARIA's one-time startup still constructs the pack manager and
+  builds the initial local runbook index during main-window initialization. The
+  Upgrade Console's standalone/fallback constructor likewise reads the bundled
+  catalog and install key synchronously.
+- **Proposal:** prepare an immutable manager/index bundle on a startup worker and
+  atomically attach it before exposing model-pack tools.
+- **Expected win:** remove one-time catalog/key/directory and documentation-tree
+  I/O from GUI startup.
+- **Why proposed:** this crosses ARIA tool-registration/readiness sequencing and
+  needs startup-close, disabled-ARIA, corrupt-state, and retry lifecycle tests.
+- **Status:** PROPOSED.
+
+| Optimization | Component | Status | Expected/measured win |
+|---|---|---|---|
+| Async coalesced diagnostic snapshots | Upgrade Console | APPLIED | 50 ms I/O becomes 0.036 ms Qt submission; 11 ticks → 1 job |
+| Constant-time first-run cursor seek | Sysmon Listener | PROPOSED | O(retained records) → O(1) initial positioning |
+| Async initial manager/RAG bundle | ARIA startup | PROPOSED | Remove one-time local disk scan from GUI initialization |

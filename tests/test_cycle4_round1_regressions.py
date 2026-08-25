@@ -73,15 +73,31 @@ def test_temporary_drill_response_scope_rejects_unrelated_files(
     monkeypatch.setenv("ANGERONA_SOAR_RESPONSE_SCOPE", str(sandbox))
     module = ActiveResponseSOAR()
 
-    def event(path=None, cmdline=""):
+    def event(path=None, cmdline="", *, contracted=True):
         details = {"cmdline": cmdline}
         if path is not None:
             details["artifact_path"] = str(path)
+        if contracted:
+            if path is not None:
+                actions = ["quarantine_file"]
+                targets = {"path": str(path)}
+            else:
+                actions = ["activate_honeypots"]
+                targets = {"deception": "Smart Deception"}
+            details.update({
+                "response_authorized": True,
+                "response_contract": {
+                    "version": 1,
+                    "actions": actions,
+                    "targets": targets,
+                },
+            })
         return Event("detector", "alert", Severity.HIGH, details=details)
 
     assert module._event_in_response_scope(event(marker))
     assert not module._event_in_response_scope(event(unrelated))
     assert not module._event_in_response_scope(event(outside))
+    assert not module._event_in_response_scope(event(marker, contracted=False))
     assert module._event_in_response_scope(
         event(cmdline="cmd /c rem ANGERONA_REDTEAM_deadbeef")
     )

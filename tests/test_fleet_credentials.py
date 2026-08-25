@@ -11,6 +11,7 @@ from angerona.core.fleet_credentials import (
     INTERNAL_FLEET_CREDENTIALS_KEY,
     LEGACY_FLEET_SERVICE_KEY,
     LOCAL_FLEET_DEVICE_CREDENTIAL_ID,
+    LOCAL_FLEET_CREDENTIAL_TTL_SECONDS,
     LOCAL_FLEET_OPERATOR_CREDENTIAL_ID,
     MAX_LOCAL_FLEET_BUNDLE_BYTES,
     MAX_FLEET_CREDENTIALS,
@@ -251,6 +252,8 @@ def test_one_time_legacy_migration_preserves_derivations_and_separates_keys(
     assert loaded.receipt_signing_key == expected_receipt
     assert loaded.operator.tenant_id == "tenant-acme"
     assert loaded.device.device_id == "device-123"
+    assert loaded.operator.expires_at == 100 + LOCAL_FLEET_CREDENTIAL_TTL_SECONDS
+    assert loaded.device.expires_at == loaded.operator.expires_at
     assert loaded.registry.resolve(
         LOCAL_FLEET_OPERATOR_CREDENTIAL_ID, now=100
     ) == loaded.operator
@@ -295,6 +298,36 @@ def test_existing_v1_wins_over_every_legacy_source_and_retries_cleanup(
     assert reloaded.device.secret == original.device.secret
     assert memory_store.values[INTERNAL_FLEET_CREDENTIALS_KEY] == encoded
     assert LEGACY_FLEET_SERVICE_KEY not in memory_store.values
+
+
+def test_non_expiring_v1_is_migrated_once_without_restart_extension(
+    tmp_path, memory_store
+) -> None:
+    memory_store.values[LEGACY_FLEET_SERVICE_KEY] = "a" * 48
+    load_or_migrate_local_credentials(
+        tmp_path, "tenant-acme", "device-123", clock=lambda: 100
+    )
+    legacy_v1 = json.loads(memory_store.values[INTERNAL_FLEET_CREDENTIALS_KEY])
+    for row in legacy_v1["credentials"]:
+        row["expires_at"] = 0
+    memory_store.values[INTERNAL_FLEET_CREDENTIALS_KEY] = json.dumps(legacy_v1)
+
+    migrated = load_or_migrate_local_credentials(
+        tmp_path, "tenant-acme", "device-123", clock=lambda: 200
+    )
+    first_expiry = 200 + LOCAL_FLEET_CREDENTIAL_TTL_SECONDS
+    assert migrated.operator.expires_at == first_expiry
+    assert migrated.device.expires_at == first_expiry
+    persisted_after_migration = memory_store.values[INTERNAL_FLEET_CREDENTIALS_KEY]
+
+    restarted = load_or_migrate_local_credentials(
+        tmp_path, "tenant-acme", "device-123", clock=lambda: 300
+    )
+    assert restarted.operator.expires_at == first_expiry
+    assert restarted.device.expires_at == first_expiry
+    assert memory_store.values[INTERNAL_FLEET_CREDENTIALS_KEY] == (
+        persisted_after_migration
+    )
 
 
 @pytest.mark.parametrize("payload", (

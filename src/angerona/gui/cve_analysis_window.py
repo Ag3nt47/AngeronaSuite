@@ -37,8 +37,10 @@ from PySide6.QtWidgets import (
     QScrollArea, QSizePolicy, QSplitter, QVBoxLayout, QWidget,
 )
 
+from angerona.gui.animations import begin_loading, finish_loading
+
 from angerona.core.url_policy import (
-    LOCAL_SERVICE_POLICY,
+    OLLAMA_SERVICE_POLICY,
     local_service_url,
     read_bounded,
     safe_urlopen,
@@ -279,7 +281,7 @@ def _call_ollama(prompt: str) -> Optional[str]:
         headers={"Content-Type": "application/json"},
     )
     try:
-        with safe_urlopen(req, policy=LOCAL_SERVICE_POLICY, timeout=_OLLAMA_TIMEOUT) as resp:
+        with safe_urlopen(req, policy=OLLAMA_SERVICE_POLICY, timeout=_OLLAMA_TIMEOUT) as resp:
             data = json.loads(read_bounded(resp).decode("utf-8"))
         return (data.get("message", {}) or {}).get("content", "").strip()
     except Exception as exc:
@@ -337,6 +339,7 @@ class CveAnalysisWindow(QDialog):
         super().__init__(parent)
         self._intl = intl_module
         self._ai_running = False
+        self._loading_token: str | None = None
 
         self.setWindowTitle("🔍  CVE Deep Analysis — Host Correlation & AI Remediation")
         self.setMinimumSize(1100, 680)
@@ -584,6 +587,7 @@ class CveAnalysisWindow(QDialog):
             return
 
         self._ai_running = True
+        self._loading_token = begin_loading("Retrieving local CVE analysis…")
         self._gen_btn.setEnabled(False)
         self._gen_btn.setText("⏳  Generating…")
         self._ai_pane.setPlainText(
@@ -607,6 +611,8 @@ class CveAnalysisWindow(QDialog):
 
     def _on_ai_done(self, text: str) -> None:
         """Receive AI result on the Qt main thread."""
+        finish_loading(self._loading_token)
+        self._loading_token = None
         self._ai_pane.setPlainText(text)
         self._ai_running = False
         self._gen_btn.setEnabled(True)

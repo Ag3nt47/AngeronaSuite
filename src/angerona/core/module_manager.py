@@ -17,7 +17,7 @@ import os
 import pkgutil
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 from angerona.core.capability_manifest import verify_external_module
 from angerona.core.config import Config
@@ -270,6 +270,7 @@ class ModuleManager:
     _NO_STAGGER = {
         "Watchdog Monitor",
         "Anti-Suspension Heartbeat",
+        "Adversary Combat",
         "Active Response SOAR",
         "Zero-Trust Local IPC Guard",
         "SOAR Automation",
@@ -296,6 +297,7 @@ class ModuleManager:
         sequential_cycles: bool = True,
         cycle_timeout: float = 30.0,
         min_settle: float = 0.10,
+        progress: Callable[[int, int, str], None] | None = None,
     ) -> list[str]:
         """Start enabled modules without creating a first-scan stampede.
 
@@ -305,7 +307,9 @@ class ModuleManager:
         broken sensor from blocking the entire suite forever.
 
         Returning the skipped names lets Eco Mode wake exactly those modules later.
-        Deferred modules never create a thread or begin their first scan.
+        Deferred modules never create a thread or begin their first scan. The
+        optional progress callback receives ``(completed, total, module_name)``;
+        callback failures never weaken or interrupt module startup.
         """
         deferred = set(deferred_names or ())
         skipped: list[str] = []
@@ -322,13 +326,28 @@ class ModuleManager:
             else:
                 staged.append(mod)
 
+        total = len(critical) + len(staged)
+        completed = 0
+
+        def _report(mod: BaseModule) -> None:
+            if progress is None:
+                return
+            try:
+                progress(completed, total, mod.name)
+            except Exception:
+                pass
+
         # Do not make containment, IPC protection, or the watchdog wait behind a
         # slow scanner. These modules are intentionally lightweight.
         for mod in critical:
             mod.start()
+            completed += 1
+            _report(mod)
 
         for mod in staged:
             mod.start()
+            completed += 1
+            _report(mod)
             if not sequential_cycles:
                 continue
             waiter = getattr(mod, "wait_for_first_cycle", None)

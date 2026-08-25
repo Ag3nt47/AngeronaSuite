@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
 
 
 _ICON_COLORS = {
+    "adaptation": "#67e8f9",
     "selftest": "#5eead4",
     "simulation": "#fb7185",
     "eco": "#4ade80",
@@ -82,7 +83,24 @@ def _icon_pixmap(kind: str, color: str, size: int = 22) -> QPixmap:
     s = float(size)
     cx, cy = s / 2.0, s / 2.0
 
-    if kind == "selftest":
+    if kind == "adaptation":
+        # Host adaptation: a protected core with two bounded feedback arrows.
+        p.drawEllipse(QRectF(7.5, 7.5, 7.0, 7.0))
+        upper = QPainterPath()
+        upper.moveTo(3.0, 9.0)
+        upper.cubicTo(4.0, 4.0, 9.0, 2.5, 13.5, 4.0)
+        upper.lineTo(12.0, 1.8)
+        upper.moveTo(13.5, 4.0)
+        upper.lineTo(10.8, 5.4)
+        lower = QPainterPath()
+        lower.moveTo(19.0, 13.0)
+        lower.cubicTo(18.0, 18.0, 13.0, 19.5, 8.5, 18.0)
+        lower.lineTo(10.0, 20.2)
+        lower.moveTo(8.5, 18.0)
+        lower.lineTo(11.2, 16.6)
+        p.drawPath(upper)
+        p.drawPath(lower)
+    elif kind == "selftest":
         p.drawEllipse(QRectF(3.0, 3.0, s - 6.0, s - 6.0))
         p.drawLine(QPointF(7.0, 11.5), QPointF(10.0, 14.5))
         p.drawLine(QPointF(10.0, 14.5), QPointF(16.0, 8.0))
@@ -495,6 +513,16 @@ class PanelRevealOverlay(QWidget):
             self._clear_pending_windows()
             app.removeEventFilter(self)
 
+    def _animation_busy(self) -> bool:
+        """Treat a torn-down Qt animation as unavailable during app shutdown."""
+        try:
+            return self._animation.state() == QPropertyAnimation.Running
+        except RuntimeError:
+            # QApplication teardown can delete child QObjects before the
+            # application-wide event filter receives its final Show events.
+            # Refusing another reveal is the safe and quiet shutdown behavior.
+            return True
+
     def reveal(
         self,
         source: QWidget,
@@ -505,7 +533,7 @@ class PanelRevealOverlay(QWidget):
         if (
             self._armed
             or self._target is not None
-            or self._animation.state() == QPropertyAnimation.Running
+            or self._animation_busy()
         ):
             return False
         app = QApplication.instance()
@@ -600,7 +628,7 @@ class PanelRevealOverlay(QWidget):
             self._global_windows
             and not self._armed
             and self._target is None
-            and self._animation.state() != QPropertyAnimation.Running
+            and not self._animation_busy()
             and event.type() == QEvent.Show
             and isinstance(watched, QWidget)
             and self._is_reveal_destination(watched)
@@ -742,7 +770,7 @@ class PanelRevealOverlay(QWidget):
         if (
             self._target is not None
             or self._armed
-            or self._animation.state() == QPropertyAnimation.Running
+            or self._animation_busy()
         ):
             return
         while self._pending_windows:

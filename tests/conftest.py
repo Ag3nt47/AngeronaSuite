@@ -9,6 +9,7 @@ That became visible once the launcher correctly protected the real tree.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import os
 import secrets
 from pathlib import Path
@@ -36,6 +37,12 @@ os.environ["TMP"] = str(_BOOTSTRAP_ROOT / "tmp")
 # operator's live Black Box and terminate it during fixture cleanup.
 os.environ["ANGERONA_BLACKBOX_ENABLED"] = "0"
 Path(os.environ["TEMP"]).mkdir(parents=True, exist_ok=True)
+
+# Hosted Windows runners use an administrator token. Tests still need their
+# disposable per-case roots, while the dedicated custody tests below explicitly
+# monkeypatch elevated mode back on when exercising that production boundary.
+_data_paths = importlib.import_module("angerona.core.data_paths")
+_data_paths._elevated_source_runtime = lambda: False
 
 
 def _clear_data_path_caches() -> None:

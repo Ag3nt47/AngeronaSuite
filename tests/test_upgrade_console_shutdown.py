@@ -20,16 +20,13 @@ class _HoldingPool:
         self.jobs.append(worker)
 
 
-def test_upgrade_console_immediate_close_during_model_listing_is_quiet(
+def test_upgrade_console_immediate_close_during_pack_status_is_quiet(
     monkeypatch,
 ) -> None:
     app = QApplication.instance() or QApplication([])
     pool = _HoldingPool()
     python_errors: list[BaseException] = []
     qt_messages: list[str] = []
-
-    def list_models(_self) -> list[str]:
-        return ["unit-model:latest"]
 
     def capture_thread_error(args: threading.ExceptHookArgs) -> None:
         python_errors.append(args.exc_value)
@@ -39,11 +36,6 @@ def test_upgrade_console_immediate_close_during_model_listing_is_quiet(
         upgrade_console.AngeronaUpgradeConsole,
         "_refresh_watchdog",
         lambda _self: None,
-    )
-    monkeypatch.setattr(
-        upgrade_console.AngeronaUpgradeConsole,
-        "_list_ollama_models",
-        list_models,
     )
     monkeypatch.setattr(
         sys,
