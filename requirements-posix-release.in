@@ -16,7 +16,7 @@ cyclonedx-bom==7.3.0
 pip-audit==2.10.1
 pytest==9.1.1
 setuptools==83.0.0
-wheel==0.47.0
+wheel==0.48.0
 # Local conversational controls are bundled in native desktop releases.
 sounddevice==0.5.5
 pyttsx3==2.99
