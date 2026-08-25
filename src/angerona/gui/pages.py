@@ -4948,6 +4948,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(_scroll(self._tab_information()), "Information")
         tabs.addTab(_scroll(self._tab_general()), "General")
         tabs.addTab(_scroll(self._tab_system()),  "System")
+        tabs.addTab(_scroll(self._tab_adversary_combat()), "Adversary Combat")
         tabs.addTab(_scroll(self._tab_enterprise()), "Enterprise")
         tabs.addTab(_scroll(self._tab_aria()),    "ARIA")
         tabs.addTab(_scroll(self._tab_trusted_processes()), "Trusted Processes")
@@ -5339,6 +5340,174 @@ class SettingsDialog(QDialog):
 
         lay.addStretch()
         return w
+
+    def _tab_adversary_combat(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setSpacing(10)
+
+        lay.addWidget(self._section("Standing autonomous response authority"))
+        warning = QLabel(
+            "When armed, Angerona acts on detector evidence immediately without "
+            "asking for per-incident permission. Maximum mode accepts outage risk: "
+            "it can terminate processes and isolate all remote network traffic."
+        )
+        warning.setWordWrap(True)
+        warning.setStyleSheet(
+            "color:#fecaca; background:#450a0a; border:1px solid #991b1b; "
+            "border-radius:6px; padding:10px; font-weight:700;"
+        )
+        lay.addWidget(warning)
+
+        self._combat_enabled_chk = QCheckBox(
+            "Arm Adversary Combat and act automatically on my behalf"
+        )
+        self._combat_enabled_chk.setChecked(bool(getattr(
+            self._cfg, "adversary_combat_enabled", True
+        )))
+        lay.addWidget(self._combat_enabled_chk)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel("Response level:"), 0, 0)
+        self._combat_mode_combo = QComboBox()
+        self._combat_mode_combo.addItem("Contain · suspend and quarantine", "contain")
+        self._combat_mode_combo.addItem("Aggressive · terminate exact targets", "aggressive")
+        self._combat_mode_combo.addItem("Maximum · terminate + host isolation", "maximum")
+        mode_index = self._combat_mode_combo.findData(str(getattr(
+            self._cfg, "adversary_combat_mode", "maximum"
+        )).lower())
+        self._combat_mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else 2)
+        grid.addWidget(self._combat_mode_combo, 0, 1)
+
+        grid.addWidget(QLabel("Minimum detector severity:"), 1, 0)
+        self._combat_severity_combo = QComboBox()
+        for severity in ("LOW", "MEDIUM", "HIGH", "CRITICAL"):
+            self._combat_severity_combo.addItem(severity.title(), severity)
+        severity_index = self._combat_severity_combo.findData(str(getattr(
+            self._cfg, "adversary_combat_min_severity", "LOW"
+        )).upper())
+        self._combat_severity_combo.setCurrentIndex(
+            severity_index if severity_index >= 0 else 0
+        )
+        grid.addWidget(self._combat_severity_combo, 1, 1)
+
+        grid.addWidget(QLabel("Process response:"), 2, 0)
+        self._combat_process_combo = QComboBox()
+        self._combat_process_combo.addItem("Suspend (reversible)", "suspend")
+        self._combat_process_combo.addItem("Terminate (not reversible)", "terminate")
+        process_index = self._combat_process_combo.findData(str(getattr(
+            self._cfg, "adversary_combat_process_action", "terminate"
+        )).lower())
+        self._combat_process_combo.setCurrentIndex(
+            process_index if process_index >= 0 else 1
+        )
+        grid.addWidget(self._combat_process_combo, 2, 1)
+
+        grid.addWidget(QLabel("Host-isolation trigger count (30s):"), 3, 0)
+        self._combat_isolation_threshold = QLineEdit(str(getattr(
+            self._cfg, "adversary_combat_isolation_threshold", 3
+        )))
+        self._combat_isolation_threshold.setValidator(
+            QRegularExpressionValidator(QRegularExpression(r"[1-9][0-9]?|100"))
+        )
+        grid.addWidget(self._combat_isolation_threshold, 3, 1)
+        lay.addLayout(grid)
+
+        self._combat_block_chk = QCheckBox(
+            "Block the named remote IP and offending program at Windows Firewall"
+        )
+        self._combat_block_chk.setChecked(bool(getattr(
+            self._cfg, "adversary_combat_block_network", True
+        )))
+        self._combat_quarantine_chk = QCheckBox(
+            "Quarantine the exact file artifact (reversible)"
+        )
+        self._combat_quarantine_chk.setChecked(bool(getattr(
+            self._cfg, "adversary_combat_quarantine_files", True
+        )))
+        self._combat_host_isolation_chk = QCheckBox(
+            "Automatically isolate the whole host on critical/correlated attack evidence"
+        )
+        self._combat_host_isolation_chk.setChecked(bool(getattr(
+            self._cfg, "adversary_combat_isolate_host", True
+        )))
+        self._combat_honeypot_chk = QCheckBox(
+            "Keep Smart Deception honeypots active automatically"
+        )
+        self._combat_honeypot_chk.setChecked(bool(getattr(
+            self._cfg, "adversary_combat_activate_honeypots", True
+        )))
+        for widget in (
+            self._combat_block_chk,
+            self._combat_quarantine_chk,
+            self._combat_host_isolation_chk,
+            self._combat_honeypot_chk,
+        ):
+            lay.addWidget(widget)
+
+        lay.addWidget(self._section("Action history and undo"))
+        self._combat_history_status = QLabel()
+        self._combat_history_status.setWordWrap(True)
+        lay.addWidget(self._combat_history_status)
+        undo_row = QHBoxLayout()
+        self._combat_refresh_btn = QPushButton("Refresh action history")
+        self._combat_undo_btn = QPushButton("Undo last reversible action")
+        self._combat_refresh_btn.clicked.connect(self._refresh_combat_actions)
+        self._combat_undo_btn.clicked.connect(self._undo_last_combat_action)
+        undo_row.addWidget(self._combat_refresh_btn)
+        undo_row.addWidget(self._combat_undo_btn)
+        undo_row.addStretch()
+        lay.addLayout(undo_row)
+        self._refresh_combat_actions()
+        lay.addStretch()
+        return w
+
+    def _combat_module(self):
+        parent = self.parent()
+        manager = getattr(parent, "manager", None)
+        return getattr(manager, "modules", {}).get("Adversary Combat") if manager else None
+
+    def _refresh_combat_actions(self) -> None:
+        label = getattr(self, "_combat_history_status", None)
+        if label is None:
+            return
+        module = self._combat_module()
+        if module is None:
+            label.setText("Adversary Combat is not attached to this Settings window yet.")
+            return
+        actions = module.list_actions(limit=5)
+        if not actions:
+            label.setText("No combat actions have been recorded.")
+            return
+        rows = []
+        for action in actions:
+            status = "UNDONE" if action.get("undone") else "APPLIED"
+            stamp = time.strftime(
+                "%Y-%m-%d %H:%M:%S",
+                time.localtime(float(action.get("applied_at") or 0.0)),
+            )
+            rows.append(
+                f"{stamp} · {status} · {action.get('action')} · {action.get('target')}"
+            )
+        label.setText("\n".join(rows))
+
+    def _undo_last_combat_action(self) -> None:
+        module = self._combat_module()
+        if module is None:
+            self._combat_history_status.setText(
+                "Adversary Combat is unavailable; no action was changed."
+            )
+            return
+        result = module.undo_last()
+        if result.get("ok"):
+            self._combat_history_status.setText(
+                f"Undo completed: {result.get('action')} ({result.get('action_id')})."
+            )
+        else:
+            self._combat_history_status.setText(
+                f"Undo did not run: {result.get('error', 'unknown error')}"
+            )
+        QTimer.singleShot(500, self._refresh_combat_actions)
 
     def _tab_system(self) -> QWidget:
         w   = QWidget()
@@ -6899,6 +7068,44 @@ class SettingsDialog(QDialog):
         else:
             _os.environ.pop("ANGERONA_ENTROPY_POOL", None)
 
+        # Adversary Combat is a standing authorization policy. Save applies it
+        # live; detector/response loops re-read these fields for every event.
+        self._cfg.adversary_combat_enabled = self._combat_enabled_chk.isChecked()
+        self._cfg.adversary_combat_mode = str(
+            self._combat_mode_combo.currentData() or "maximum"
+        )
+        self._cfg.adversary_combat_min_severity = str(
+            self._combat_severity_combo.currentData() or "LOW"
+        )
+        self._cfg.adversary_combat_block_network = self._combat_block_chk.isChecked()
+        self._cfg.adversary_combat_quarantine_files = (
+            self._combat_quarantine_chk.isChecked()
+        )
+        self._cfg.adversary_combat_process_action = str(
+            self._combat_process_combo.currentData() or "terminate"
+        )
+        self._cfg.adversary_combat_isolate_host = (
+            self._combat_host_isolation_chk.isChecked()
+        )
+        self._cfg.adversary_combat_activate_honeypots = (
+            self._combat_honeypot_chk.isChecked()
+        )
+        try:
+            self._cfg.adversary_combat_isolation_threshold = max(
+                1,
+                min(100, int(self._combat_isolation_threshold.text().strip() or "3")),
+            )
+        except ValueError:
+            self._cfg.adversary_combat_isolation_threshold = 3
+        if self._cfg.adversary_combat_enabled:
+            _os.environ["ANGERONA_ADVERSARY_COMBAT_ENABLED"] = "1"
+            _os.environ["ANGERONA_ADVERSARY_COMBAT_MODE"] = (
+                self._cfg.adversary_combat_mode
+            )
+        else:
+            _os.environ.pop("ANGERONA_ADVERSARY_COMBAT_ENABLED", None)
+            _os.environ.pop("ANGERONA_ADVERSARY_COMBAT_MODE", None)
+
         want_autostart = self._autostart_chk.isChecked()
         self._cfg.autostart_enabled = want_autostart
         try:
@@ -7050,6 +7257,22 @@ class SettingsDialog(QDialog):
         except Exception as exc:
             QMessageBox.warning(self, "Settings not saved", str(exc))
             return
+        combat = self._combat_module()
+        if combat is not None:
+            try:
+                if self._cfg.adversary_combat_enabled:
+                    if getattr(combat, "status", "stopped") != "running":
+                        combat.start()
+                elif getattr(combat, "status", "stopped") == "running":
+                    combat.stop()
+                self._refresh_combat_actions()
+            except Exception as exc:
+                QMessageBox.warning(
+                    self,
+                    "Adversary Combat policy saved",
+                    "The standing policy was saved, but its live module state "
+                    f"could not be changed: {exc}",
+                )
         if self._process_baseline is not None:
             self._process_baseline.set_enabled(
                 self._cfg.process_baseline_enabled

@@ -37,7 +37,10 @@ class ProcessMonitorModule(BaseModule):
         self.emit("Process monitor active.", Severity.INFO)
 
         while not self.stopping:
-            self.sleep(3)
+            combat = os.environ.get(
+                "ANGERONA_ADVERSARY_COMBAT_ENABLED", "0"
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            self.sleep(1.0 if combat else 3.0)
             procs = list_processes()
             live: Set[int] = set()
             names: Dict[int, str] = {}
@@ -52,6 +55,24 @@ class ProcessMonitorModule(BaseModule):
                 pid = p.get("pid")
                 if pid is None or pid in self._seen:
                     continue
+                # Publish complete process-creation telemetry for correlation.
+                # INFO is not a malicious verdict; reviewed detectors such as
+                # Purple Guard can promote exact tagged evidence independently.
+                raw_command = p.get("cmdline") or []
+                command = (
+                    " ".join(str(part) for part in raw_command)
+                    if isinstance(raw_command, (list, tuple))
+                    else str(raw_command)
+                )
+                self.emit(
+                    f"Process created: {p.get('name') or '?'} (pid {pid})",
+                    Severity.INFO,
+                    event_type="process_creation",
+                    pid=pid,
+                    ppid=p.get("ppid"),
+                    exe=p.get("exe"),
+                    cmdline=command,
+                )
                 self._evaluate(p, names)
 
             self._seen = live

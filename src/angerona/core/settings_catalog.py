@@ -31,6 +31,13 @@ AREAS = (
         "Local configuration", True,
     ),
     SettingsArea(
+        "combat", "Adversary Combat",
+        "Unattended blocking, containment, quarantine, host isolation, honeypots and undo.",
+        ("adversary combat", "autonomous response", "standing authority",
+         "maximum response", "lockdown", "quarantine", "honeypot", "undo action"),
+        "Local automatic host mutation; availability risk accepted", False,
+    ),
+    SettingsArea(
         "enterprise", "Enterprise",
         "Readiness evidence, signed content, fleet and policy controls.",
         ("enterprise", "fleet", "policy", "rbac", "manifest", "signature",

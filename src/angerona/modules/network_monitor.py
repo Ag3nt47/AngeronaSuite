@@ -58,6 +58,16 @@ NOVELTY_WINDOW_S = float(os.environ.get("ANGERONA_NETMON_NOVELTY_WINDOW_MIN", "6
 _STATE_MAX = 10_000
 
 
+def _poll_interval() -> float:
+    enabled = os.environ.get("ANGERONA_ADVERSARY_COMBAT_ENABLED", "0").strip().lower()
+    mode = os.environ.get("ANGERONA_ADVERSARY_COMBAT_MODE", "").strip().lower()
+    if enabled in {"1", "true", "yes", "on"} and mode == "maximum":
+        return 0.75
+    if enabled in {"1", "true", "yes", "on"}:
+        return 2.0
+    return 4.0
+
+
 def _is_local(ip: str) -> bool:
     if not ip:
         return True
@@ -131,7 +141,7 @@ class NetworkMonitorModule(BaseModule):
         last_summary = time.time()
         new_external = 0
         while not self.stopping:
-            self.sleep(4)
+            self.sleep(_poll_interval())
             connections = list_connections()
             active_connections: Set[Tuple] = set()
             for c in connections:

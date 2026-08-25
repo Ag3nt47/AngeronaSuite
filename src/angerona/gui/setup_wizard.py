@@ -335,6 +335,35 @@ STEPS: tuple[Step, ...] = (
         ),
     ),
     Step(
+        "Adversary Combat",
+        "Choose the standing autonomous response policy. Maximum mode can terminate "
+        "processes and isolate the host without per-incident prompts; reversible "
+        "changes retain action receipts for operator undo.",
+        (
+            Field("check", "adversary_combat_enabled", "Arm autonomous adversary response"),
+            Field(
+                "combo", "adversary_combat_mode", "Response mode",
+                options=("contain", "aggressive", "maximum"),
+            ),
+            Field(
+                "combo", "adversary_combat_min_severity", "Minimum detector severity",
+                options=("LOW", "MEDIUM", "HIGH", "CRITICAL"),
+            ),
+            Field("check", "adversary_combat_block_network", "Block exact network targets"),
+            Field("check", "adversary_combat_quarantine_files", "Quarantine exact file targets"),
+            Field(
+                "combo", "adversary_combat_process_action", "Process response",
+                options=("suspend", "terminate"),
+            ),
+            Field("check", "adversary_combat_isolate_host", "Allow full host isolation in Maximum mode"),
+            Field("check", "adversary_combat_activate_honeypots", "Activate Smart Deception honeypots"),
+            Field(
+                "spin", "adversary_combat_isolation_threshold",
+                "Active events before host isolation", minimum=1, maximum=100,
+            ),
+        ),
+    ),
+    Step(
         "Performance and startup",
         "Choose the resource profile and sign-in behavior.",
         (
@@ -405,7 +434,9 @@ def normalize_setup_values(values: dict[str, object]) -> dict[str, object]:
     for key in ("ollama_host", "ollama_model", "ollama_keep_alive", "accent",
                 "aria_imap_host", "aria_imap_user", "teams_app_id",
                 "teams_allowed_users", "mobile_signal_cli", "mobile_host_number",
-                "mobile_dest_number", "fleet_tenant_id", "github_repo"):
+                "mobile_dest_number", "fleet_tenant_id", "github_repo",
+                "adversary_combat_mode", "adversary_combat_min_severity",
+                "adversary_combat_process_action"):
         if key in normalized:
             normalized[key] = str(normalized[key]).strip()
     return normalized
@@ -418,6 +449,14 @@ def validate_setup(values: dict[str, object]) -> list[str]:
     accent = str(values.get("accent", ""))
     if accent and not re.fullmatch(r"#[0-9A-Fa-f]{6}", accent):
         errors.append("Accent colour must be a six-digit value such as #1f9cff.")
+    if values.get("adversary_combat_mode") not in {"contain", "aggressive", "maximum"}:
+        errors.append("Adversary Combat mode must be contain, aggressive, or maximum.")
+    if values.get("adversary_combat_min_severity") not in {
+        "LOW", "MEDIUM", "HIGH", "CRITICAL",
+    }:
+        errors.append("Adversary Combat minimum severity is invalid.")
+    if values.get("adversary_combat_process_action") not in {"suspend", "terminate"}:
+        errors.append("Adversary Combat process response must be suspend or terminate.")
 
     ollama = str(values.get("ollama_host", ""))
     parsed = urlsplit(ollama)

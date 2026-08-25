@@ -270,6 +270,7 @@ class ModuleManager:
     _NO_STAGGER = {
         "Watchdog Monitor",
         "Anti-Suspension Heartbeat",
+        "Adversary Combat",
         "Active Response SOAR",
         "Zero-Trust Local IPC Guard",
         "SOAR Automation",

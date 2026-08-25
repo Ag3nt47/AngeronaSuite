@@ -137,6 +137,20 @@ class Config:
     # changes threat posture until the operator approves a mature candidate.
     process_baseline_enabled: bool = False
 
+    # ── Adversary Combat standing authority ────────────────────────────────
+    # Maximum mode is deliberately availability-aggressive: detections are
+    # acted on without a per-incident approval prompt. Every reversible action
+    # is recorded so the operator can undo it from Settings.
+    adversary_combat_enabled: bool = True
+    adversary_combat_mode: str = "maximum"        # contain | aggressive | maximum
+    adversary_combat_min_severity: str = "LOW"    # LOW | MEDIUM | HIGH | CRITICAL
+    adversary_combat_block_network: bool = True
+    adversary_combat_quarantine_files: bool = True
+    adversary_combat_process_action: str = "terminate"  # suspend | terminate
+    adversary_combat_isolate_host: bool = True
+    adversary_combat_activate_honeypots: bool = True
+    adversary_combat_isolation_threshold: int = 3
+
     # ── Self-hardening input integrity ─────────────────────────────────────
     # When True, After-Action Reports that aren't HMAC-authenticated (unsigned
     # or unverifiable) are REFUSED by the self-hardening loop, not just flagged
@@ -315,6 +329,64 @@ class Config:
                     "process_baseline_enabled",
                     cfg.process_baseline_enabled,
                 )
+                cfg.adversary_combat_enabled = _bool_setting(
+                    data, "adversary_combat_enabled", cfg.adversary_combat_enabled)
+                requested_combat_mode = str(data.get(
+                    "adversary_combat_mode", cfg.adversary_combat_mode
+                )).strip().lower()
+                cfg.adversary_combat_mode = (
+                    requested_combat_mode
+                    if requested_combat_mode in {"contain", "aggressive", "maximum"}
+                    else "maximum"
+                )
+                requested_combat_severity = str(data.get(
+                    "adversary_combat_min_severity",
+                    cfg.adversary_combat_min_severity,
+                )).strip().upper()
+                cfg.adversary_combat_min_severity = (
+                    requested_combat_severity
+                    if requested_combat_severity in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+                    else "LOW"
+                )
+                cfg.adversary_combat_block_network = _bool_setting(
+                    data,
+                    "adversary_combat_block_network",
+                    cfg.adversary_combat_block_network,
+                )
+                cfg.adversary_combat_quarantine_files = _bool_setting(
+                    data,
+                    "adversary_combat_quarantine_files",
+                    cfg.adversary_combat_quarantine_files,
+                )
+                requested_process_action = str(data.get(
+                    "adversary_combat_process_action",
+                    cfg.adversary_combat_process_action,
+                )).strip().lower()
+                cfg.adversary_combat_process_action = (
+                    requested_process_action
+                    if requested_process_action in {"suspend", "terminate"}
+                    else "terminate"
+                )
+                cfg.adversary_combat_isolate_host = _bool_setting(
+                    data,
+                    "adversary_combat_isolate_host",
+                    cfg.adversary_combat_isolate_host,
+                )
+                cfg.adversary_combat_activate_honeypots = _bool_setting(
+                    data,
+                    "adversary_combat_activate_honeypots",
+                    cfg.adversary_combat_activate_honeypots,
+                )
+                try:
+                    cfg.adversary_combat_isolation_threshold = max(
+                        1,
+                        min(100, int(data.get(
+                            "adversary_combat_isolation_threshold",
+                            cfg.adversary_combat_isolation_threshold,
+                        ))),
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    cfg.adversary_combat_isolation_threshold = 3
                 try:
                     cfg.holographic_orb_x = int(
                         data.get("holographic_orb_x", cfg.holographic_orb_x)
@@ -352,6 +424,14 @@ class Config:
                 os.environ["ANGERONA_USER_FOLDER_DECEPTION"] = "1"
             else:
                 os.environ.pop("ANGERONA_USER_FOLDER_DECEPTION", None)
+            if cfg.adversary_combat_enabled:
+                os.environ["ANGERONA_ADVERSARY_COMBAT_ENABLED"] = "1"
+                os.environ["ANGERONA_ADVERSARY_COMBAT_MODE"] = (
+                    cfg.adversary_combat_mode
+                )
+            else:
+                os.environ.pop("ANGERONA_ADVERSARY_COMBAT_ENABLED", None)
+                os.environ.pop("ANGERONA_ADVERSARY_COMBAT_MODE", None)
         except Exception:
             pass
         # The ARIA master switch is a real authority/sensor boundary. Legacy or
@@ -441,6 +521,15 @@ class Config:
                     "holographic_orb_x":     self.holographic_orb_x,
                     "holographic_orb_y":     self.holographic_orb_y,
                     "process_baseline_enabled": self.process_baseline_enabled,
+                    "adversary_combat_enabled": self.adversary_combat_enabled,
+                    "adversary_combat_mode": self.adversary_combat_mode,
+                    "adversary_combat_min_severity": self.adversary_combat_min_severity,
+                    "adversary_combat_block_network": self.adversary_combat_block_network,
+                    "adversary_combat_quarantine_files": self.adversary_combat_quarantine_files,
+                    "adversary_combat_process_action": self.adversary_combat_process_action,
+                    "adversary_combat_isolate_host": self.adversary_combat_isolate_host,
+                    "adversary_combat_activate_honeypots": self.adversary_combat_activate_honeypots,
+                    "adversary_combat_isolation_threshold": self.adversary_combat_isolation_threshold,
                     "require_signed_aar":    self.require_signed_aar,
                     "entropy_pool_enabled":  self.entropy_pool_enabled,
                 },

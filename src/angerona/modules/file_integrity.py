@@ -29,6 +29,39 @@ _RUNTIME_WATCH: set[str] = set()
 _RUNTIME_WATCH_LOCK = threading.RLock()
 
 
+def _combat_intervals() -> tuple[float, float]:
+    """Return driver/file cadences for the selected standing-response policy.
+
+    Maximum Adversary Combat is explicitly an availability-overhead tradeoff:
+    it keeps FIM at a one-second detection cadence instead of the quiet 30-second
+    maintenance cadence.
+    """
+    enabled = os.environ.get("ANGERONA_ADVERSARY_COMBAT_ENABLED", "0").strip().lower()
+    mode = os.environ.get("ANGERONA_ADVERSARY_COMBAT_MODE", "").strip().lower()
+    if enabled in {"1", "true", "yes", "on"} and mode == "maximum":
+        return 0.5, 1.0
+    if enabled in {"1", "true", "yes", "on"}:
+        return 2.0, 5.0
+    return 10.0, 30.0
+
+
+def _registered_benign_noise(path: str) -> bool:
+    """Ignore only the exact in-memory registered Red Team noise artifact."""
+    name = os.path.basename(path).casefold()
+    if not (name.startswith("_redteam_benign_note_") and name.endswith(".txt")):
+        return False
+    try:
+        from types import SimpleNamespace
+        from angerona.core.practice_scope import provenance_for_event
+
+        provenance = provenance_for_event(
+            SimpleNamespace(details={"path": path})
+        )
+        return provenance is not None and provenance.kind == "red-team"
+    except Exception:
+        return False
+
+
 def register_runtime_watch(path) -> bool:
     """Add a drill-selected directory for this process lifetime only."""
     if not path:
@@ -56,10 +89,16 @@ def unregister_runtime_watch(path) -> None:
 
 
 def watch_roots() -> list[str]:
+    # A bounded validation or incident-response session may deliberately scope
+    # FIM to one path.  This is an explicit operator setting (never enabled by
+    # the normal app) and keeps proof campaigns from spending minutes hashing
+    # unrelated personal files before the first detector cycle is armed.
+    only = os.environ.get("ANGERONA_FIM_WATCH_ONLY", "").strip()
+    configured = [p.strip() for p in only.split(os.pathsep) if p.strip()]
     with _RUNTIME_WATCH_LOCK:
         extra = sorted(_RUNTIME_WATCH)
     roots, seen = [], set()
-    for root in [*DEFAULT_WATCH, *extra]:
+    for root in [*(configured or DEFAULT_WATCH), *extra]:
         key = os.path.normcase(os.path.abspath(str(root)))
         if key not in seen:
             roots.append(str(root))
@@ -252,8 +291,8 @@ class FileIntegrityModule(BaseModule):
         self.emit(f"Baseline armed: {len(self._baseline)} files watched, "
                   f"{len(self._driver_baseline)} drivers.", Severity.INFO)
 
-        _DRIVER_INTERVAL, _FILE_INTERVAL = 10.0, 30.0
         while not self.stopping:
+            _DRIVER_INTERVAL, _FILE_INTERVAL = _combat_intervals()
             # Sweep the (cheap, name-only) driver pool every _DRIVER_INTERVAL for a
             # fast BYOVD catch, while the full file-integrity scan runs every
             # _FILE_INTERVAL. BL-13: shorter driver-pool interval.
@@ -283,6 +322,8 @@ class FileIntegrityModule(BaseModule):
             cur_keys = set(current)
 
             for path in cur_keys - base_keys:
+                if _registered_benign_noise(path):
+                    continue
                 alert = self._driver_alert(path)
                 if alert:
                     self.emit(alert[1], alert[0], path=path)
