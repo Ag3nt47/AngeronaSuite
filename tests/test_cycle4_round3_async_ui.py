@@ -218,6 +218,11 @@ def test_upgrade_console_loads_curated_pack_status_without_blocking_construction
         "_refresh_watchdog",
         lambda _self: None,
     )
+    monkeypatch.setattr(
+        upgrade_console.AngeronaUpgradeConsole,
+        "_refresh_telemetry",
+        lambda _self: None,
+    )
     window = upgrade_console.AngeronaUpgradeConsole(model_pack_manager=manager)
     try:
         # Construction only submits the bounded request.  This structural
@@ -250,6 +255,11 @@ def test_upgrade_console_ignores_stale_pack_status_token(monkeypatch) -> None:
         "_refresh_watchdog",
         lambda _self: None,
     )
+    monkeypatch.setattr(
+        upgrade_console.AngeronaUpgradeConsole,
+        "_refresh_telemetry",
+        lambda _self: None,
+    )
     window = upgrade_console.AngeronaUpgradeConsole(model_pack_manager=manager)
     try:
         current = window._pack_status_token
@@ -279,6 +289,11 @@ def test_upgrade_pack_install_is_single_flight_and_updates_on_qt(monkeypatch) ->
     monkeypatch.setattr(
         upgrade_console.AngeronaUpgradeConsole,
         "_refresh_watchdog",
+        lambda _self: None,
+    )
+    monkeypatch.setattr(
+        upgrade_console.AngeronaUpgradeConsole,
+        "_refresh_telemetry",
         lambda _self: None,
     )
     manager = _FakePackManager()
@@ -321,6 +336,11 @@ def test_upgrade_console_ignores_pack_result_after_close(monkeypatch) -> None:
     monkeypatch.setattr(
         upgrade_console.AngeronaUpgradeConsole,
         "_refresh_watchdog",
+        lambda _self: None,
+    )
+    monkeypatch.setattr(
+        upgrade_console.AngeronaUpgradeConsole,
+        "_refresh_telemetry",
         lambda _self: None,
     )
     manager = _FakePackManager()

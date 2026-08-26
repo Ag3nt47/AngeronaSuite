@@ -4,6 +4,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication, QHeaderView
 
 from angerona.gui.scan_center import ScanCenterPanel
@@ -48,6 +49,9 @@ def test_scan_center_reflows_narrow_controls_without_clipping() -> None:
         panel.findings.viewport().width()
     )
     panel.close()
+    panel.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
 
 
 def test_scan_center_uses_two_columns_then_restores_wide_layout() -> None:
@@ -74,3 +78,6 @@ def test_scan_center_uses_two_columns_then_restores_wide_layout() -> None:
         QHeaderView.ResizeMode.Stretch
     )
     panel.close()
+    panel.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()

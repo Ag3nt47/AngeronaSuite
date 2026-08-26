@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QCoreApplication, QEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from angerona.core.config import Config  # noqa: E402
@@ -43,6 +44,8 @@ def test_flow_dashboard_exposes_all_local_operations_tabs(tmp_path: Path) -> Non
         }
         assert "LOCAL ONLY" in dialog.boundary.text()
         dialog.close()
+        dialog.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         app.processEvents()
     finally:
         service.close()

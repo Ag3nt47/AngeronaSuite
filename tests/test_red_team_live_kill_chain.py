@@ -4,7 +4,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QCoreApplication, QEvent, Signal
 from PySide6.QtWidgets import QApplication, QMainWindow
 
 from angerona.gui.red_team_console import RedTeamConsole
@@ -64,6 +64,10 @@ def test_live_feed_marks_current_and_completed_stages(tmp_path) -> None:
     assert dialog._live_panel.parentWidget() is dialog._run_splitter
     dialog.close()
     parent.close()
+    dialog.deleteLater()
+    parent.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
 
 
 def test_simulation_console_survives_unavailable_editor_sandbox(
@@ -93,4 +97,7 @@ def test_simulation_console_survives_unavailable_editor_sandbox(
     finally:
         dialog.close()
         parent.close()
+        dialog.deleteLater()
+        parent.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         app.processEvents()

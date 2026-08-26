@@ -299,12 +299,14 @@ def test_practice_fix_requires_detection_recorder_response_and_cleanup(
             bus=bus,
             purple_guard=guard,
             active_response=response,
-            recorder_timeout=1.0,
+            # The production budget is 10 seconds. Keep the test bounded while
+            # allowing a loaded Windows runner to finish its SQLite WAL commit.
+            recorder_timeout=5.0,
         )
     finally:
         recorder.close()
 
-    assert result["ok"]
+    assert result["ok"], result
     assert result["verified"] == result["total"] == 1
     checks = result["results"][0]["checks"]
     assert all(checks.values())
@@ -343,12 +345,12 @@ def test_process_practice_fix_kills_only_its_tagged_child_and_closes(
             bus=bus,
             purple_guard=guard,
             active_response=response,
-            recorder_timeout=1.0,
+            recorder_timeout=5.0,
         )
     finally:
         recorder.close()
 
-    assert result["ok"]
+    assert result["ok"], result
     assert result["results"][0]["checks"]["response_succeeded"] is True
     assert result["results"][0]["checks"]["postcondition_satisfied"] is True
     closure = drill_resolution.resolution_snapshot(tmp_path)["t1059"]

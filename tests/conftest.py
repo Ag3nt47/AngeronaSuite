@@ -36,6 +36,11 @@ os.environ["TMP"] = str(_BOOTSTRAP_ROOT / "tmp")
 # Process-level adoption probes must never attach the test supervisor to the
 # operator's live Black Box and terminate it during fixture cleanup.
 os.environ["ANGERONA_BLACKBOX_ENABLED"] = "0"
+# A Qt application is process-global native state.  Some UI tests create their
+# first widget through a short-lived local Python reference; allowing that
+# wrapper to be collected can destroy and later recreate QApplication, which
+# PySide does not support reliably in one process (notably on Python 3.13).
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 Path(os.environ["TEMP"]).mkdir(parents=True, exist_ok=True)
 
 # Hosted Windows runners use an administrator token. Tests still need their
@@ -43,6 +48,25 @@ Path(os.environ["TEMP"]).mkdir(parents=True, exist_ok=True)
 # monkeypatch elevated mode back on when exercising that production boundary.
 _data_paths = importlib.import_module("angerona.core.data_paths")
 _data_paths._elevated_source_runtime = lambda: False
+
+
+@pytest.fixture(scope="session", autouse=True)
+def keep_qt_application_alive():
+    """Anchor one headless QApplication for the entire pytest process."""
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        # Core-only development environments may intentionally omit the GUI
+        # extra; their non-Qt tests should remain collectible and runnable.
+        yield
+        return
+
+    app = QApplication.instance() or QApplication([])
+    app.setQuitOnLastWindowClosed(False)
+    yield
+    # Drain deferred deletes while the Python wrapper and native application
+    # are both still alive.  Process teardown owns final QApplication cleanup.
+    app.processEvents()
 
 
 def _clear_data_path_caches() -> None:

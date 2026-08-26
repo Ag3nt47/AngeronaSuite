@@ -85,7 +85,36 @@ function Get-VerifiedAsset {
         if ($matches.Count -ne 1) {
             throw "Expected exactly one $executable in $($Asset.asset), found $($matches.Count)."
         }
-        Copy-Item -LiteralPath $matches[0].FullName -Destination (Join-Path $BinRoot $executable) -Force
+        $expectedExecutable = ""
+        if ($null -ne $Asset.executable_sha256) {
+            $digestProperty = $Asset.executable_sha256.PSObject.Properties[
+                [string]$executable
+            ]
+            if ($null -ne $digestProperty) {
+                $expectedExecutable = ([string]$digestProperty.Value).ToLowerInvariant()
+            }
+        }
+        if ([string]$Asset.id -eq "gitleaks" -and -not $expectedExecutable) {
+            throw "The Gitleaks executable must have its own pinned SHA-256."
+        }
+        if ($expectedExecutable) {
+            $extractedHash = (
+                Get-FileHash -LiteralPath $matches[0].FullName -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            if ($extractedHash -ne $expectedExecutable) {
+                throw "Extracted $executable does not match its pinned SHA-256."
+            }
+        }
+        $installed = Join-Path $BinRoot $executable
+        Copy-Item -LiteralPath $matches[0].FullName -Destination $installed -Force
+        if ($expectedExecutable) {
+            $installedHash = (
+                Get-FileHash -LiteralPath $installed -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            if ($installedHash -ne $expectedExecutable) {
+                throw "Installed $executable does not match its pinned SHA-256."
+            }
+        }
     }
 }
 

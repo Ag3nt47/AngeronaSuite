@@ -72,7 +72,7 @@ if not exist "%GITLEAKS%" (
         pause & exit /b 1
     )
 )
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$m=Get-Content -LiteralPath '.\tools\github_toolkit.lock.json' -Raw|ConvertFrom-Json;$a=$m.github_assets|Where-Object id -CEQ 'gitleaks';$h=(Get-FileHash -LiteralPath $env:GITLEAKS -Algorithm SHA256).Hash.ToLowerInvariant();if($null -eq $a -or $h -cne $a.sha256){exit 1}"
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$m=Get-Content -LiteralPath '.\tools\github_toolkit.lock.json' -Raw|ConvertFrom-Json;$a=$m.github_assets|Where-Object id -CEQ 'gitleaks';$e=[string]$a.executable_sha256.'gitleaks.exe';$h=(Get-FileHash -LiteralPath $env:GITLEAKS -Algorithm SHA256).Hash.ToLowerInvariant();if($null -eq $a -or -not $e -or $h -cne $e.ToLowerInvariant()){exit 1}"
 if errorlevel 1 (
     echo [ABORT] The local secret scanner failed its pinned SHA-256 check. Nothing was committed.
     pause & exit /b 1

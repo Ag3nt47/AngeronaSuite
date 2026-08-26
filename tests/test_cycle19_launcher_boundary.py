@@ -101,6 +101,7 @@ def test_push_helper_does_not_execute_commit_text_or_push_after_commit_failure()
     assert secret_scan < commit < commit_failure < push
     assert "Commit failed. Nothing was pushed." in helper
     assert "Get-FileHash" in helper
+    assert "executable_sha256.'gitleaks.exe'" in helper
     assert "credential-free HTTPS on github.com" in helper
 
     helper = (ROOT / "pull-from-github.bat").read_text(encoding="utf-8")
@@ -109,6 +110,7 @@ def test_push_helper_does_not_execute_commit_text_or_push_after_commit_failure()
     assert "git status --porcelain" in helper
     assert "credential-free HTTPS on github.com" in helper
     assert "Get-FileHash" in helper
+    assert "executable_sha256.'gitleaks.exe'" in helper
     assert "fetch --no-tags" in helper
     assert "submodule.recurse=false" in helper
     assert "Incoming commits modify GitHub workflows" in helper
