@@ -4,3 +4,10 @@
 280dfc9485b41b507d90392ed25bda99b3428a40:tests/test_enterprise_readiness_api.py:generic-api-key:107
 900844a1a83a2633930c6520c0b56b773df1f1b7:tests/test_case_management.py:generic-api-key:106
 0f7445b069aabe6db2a59327c802070817a74842:tests/test_ir_bundle_privacy.py:generic-api-key:83
+
+# Exact historical false positives from synthetic App Control test arguments.
+# These fingerprints do not suppress future findings or any other file/line.
+e1fc5e4fce1147eb8fdbc5062d9c9215ab2d92ce:tests/test_app_control_monitor.py:generic-api-key:215
+e1fc5e4fce1147eb8fdbc5062d9c9215ab2d92ce:tests/test_app_control_monitor.py:generic-api-key:226
+e1fc5e4fce1147eb8fdbc5062d9c9215ab2d92ce:tests/test_app_control_monitor.py:generic-api-key:243
+e1fc5e4fce1147eb8fdbc5062d9c9215ab2d92ce:tests/test_app_control_monitor.py:generic-api-key:260

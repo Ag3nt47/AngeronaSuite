@@ -55,6 +55,19 @@
         "gh.exe"
       ],
       "use": "Repository authentication, pull-request state, and GitHub workflow inspection without a system-wide install."
+    },
+    {
+      "id": "gitleaks",
+      "repository": "https://github.com/gitleaks/gitleaks",
+      "version": "8.30.1",
+      "license": "MIT",
+      "asset": "gitleaks_8.30.1_windows_x64.zip",
+      "url": "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_windows_x64.zip",
+      "sha256": "d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e",
+      "executables": [
+        "gitleaks.exe"
+      ],
+      "use": "Pre-push and full-history secret scanning with redacted output."
     }
   ],
   "python_tools": [

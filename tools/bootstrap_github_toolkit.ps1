@@ -133,6 +133,7 @@ Write-Host "Verified Angerona developer toolkit:"
 & (Join-Path $BinRoot "py-spy.exe") --version
 & (Join-Path $BinRoot "hyperfine.exe") --version
 & (Join-Path $BinRoot "gh.exe") --version
+& (Join-Path $BinRoot "gitleaks.exe") version
 & $auditPython -m bandit --version
 & $auditPython -m vulture --version
 Write-Host "Location: $ToolkitRoot (development-only and ignored by Git)"

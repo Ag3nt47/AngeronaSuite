@@ -153,6 +153,13 @@ python -m pytest -q
 python tools/selfcheck.py
 ```
 
+For guarded GitHub synchronization, use `push-to-github.bat` and
+`pull-from-github.bat`. Push scans the exact staged patch with a pinned,
+SHA-256-verified Gitleaks binary before committing. Pull scans incoming commits
+before a fast-forward merge and refuses dirty trees, divergent history,
+credential-bearing/non-HTTPS remotes, submodule recursion, and unreviewed
+workflow changes.
+
 Linux and macOS release archives use `Install-Angerona-Release.sh`. Source
 installation uses `install-angerona.sh`; Linux also supports a local-user
 headless service. See the Master Manual for platform-specific prerequisites,

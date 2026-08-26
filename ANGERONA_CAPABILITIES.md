@@ -110,6 +110,9 @@ local AI, and validation into one native desktop application.
 - Self-tests: **48 module + 20 core/Shark + 15 ARIA passed**, with zero genuine
   failures; direct and batch selfcheck: **26/26** each.
 - Dependency audit: **no known vulnerabilities**.
+- Guarded GitHub push/pull: pinned Gitleaks verifies staged or incoming changes
+  before commit/merge; the helper verifies the scanner digest, permits only
+  credential-free GitHub HTTPS remotes, and keeps pulls fast-forward-only.
 - Combat negative controls: **128/128**.
 - Auto-contain Red Team runs pre-arm the complete **13/13** simulation-only
   validation detector pack and fail closed if it cannot be persisted.

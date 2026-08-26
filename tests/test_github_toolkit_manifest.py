@@ -26,6 +26,8 @@ def test_github_toolkit_is_pinned_development_only_and_ignored() -> None:
         assert asset["license"]
         assert asset["executables"]
 
+    assert "gitleaks" in ids
+
     for tool in manifest["python_tools"]:
         assert tool["repository"].startswith("https://github.com/")
         assert re.fullmatch(r"[^<>=!~\s]+==[^<>=!~\s]+", tool["requirement"])

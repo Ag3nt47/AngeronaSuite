@@ -212,7 +212,7 @@ def test_pending_activity_join_survives_restart(tmp_path: Path) -> None:
     source = FakeSource()
     key = b"t" * 32
     first = AppControlDecisionSensor(
-        source, tmp_path, cursor_key=key, correlation_ttl=60
+        source, tmp_path, correlation_ttl=60, cursor_key=key
     )
     first.bind(EventBus())
     first.poll_once()
@@ -223,7 +223,7 @@ def test_pending_activity_join_survives_restart(tmp_path: Path) -> None:
 
     bus = EventBus()
     restarted = AppControlDecisionSensor(
-        source, tmp_path, cursor_key=key, correlation_ttl=60
+        source, tmp_path, correlation_ttl=60, cursor_key=key
     )
     restarted.bind(bus)
     source.rows.append(_xml(3089, 2, {
@@ -240,7 +240,7 @@ def test_tampered_pending_state_is_visible_and_replayed(tmp_path: Path) -> None:
     source = FakeSource()
     key = b"u" * 32
     first = AppControlDecisionSensor(
-        source, tmp_path, cursor_key=key, correlation_ttl=60
+        source, tmp_path, correlation_ttl=60, cursor_key=key
     )
     first.bind(EventBus())
     first.poll_once()
@@ -257,7 +257,7 @@ def test_tampered_pending_state_is_visible_and_replayed(tmp_path: Path) -> None:
 
     bus = EventBus()
     restarted = AppControlDecisionSensor(
-        source, tmp_path, cursor_key=key, correlation_ttl=60
+        source, tmp_path, correlation_ttl=60, cursor_key=key
     )
     restarted.bind(bus)
     restarted.poll_once()

@@ -92,11 +92,30 @@ def test_push_helper_does_not_execute_commit_text_or_push_after_commit_failure()
     assert 'git commit -m "%MSG%"' not in helper
     assert "$env:MSG" in helper
     assert 'git commit -F "%MSGFILE%"' in helper
+    assert 'git show ":%%F" | "%GITLEAKS%" stdin --redact --no-banner' in helper
+    assert "--diff-filter^=ACMR" in helper
+    secret_scan = helper.index('"%GITLEAKS%" stdin --redact --no-banner')
     commit = helper.index('git commit -F "%MSGFILE%"')
     commit_failure = helper.index("if not \"%COMMIT_RC%\"==\"0\"")
     push = helper.index("git push", commit_failure)
-    assert commit < commit_failure < push
+    assert secret_scan < commit < commit_failure < push
     assert "Commit failed. Nothing was pushed." in helper
+    assert "Get-FileHash" in helper
+    assert "credential-free HTTPS on github.com" in helper
+
+    helper = (ROOT / "pull-from-github.bat").read_text(encoding="utf-8")
+
+    assert "git pull" not in helper
+    assert "git status --porcelain" in helper
+    assert "credential-free HTTPS on github.com" in helper
+    assert "Get-FileHash" in helper
+    assert "fetch --no-tags" in helper
+    assert "submodule.recurse=false" in helper
+    assert "Incoming commits modify GitHub workflows" in helper
+    assert '"%GITLEAKS%" git . --redact --no-banner' in helper
+    scan = helper.index('"%GITLEAKS%" git . --redact --no-banner')
+    merge = helper.index("merge --ff-only")
+    assert scan < merge
 
 
 @pytest.mark.skipif(os.name != "nt", reason="cmd.exe regression")
