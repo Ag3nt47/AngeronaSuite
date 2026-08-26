@@ -23,7 +23,7 @@ def _getting_started_body() -> str:
         "explains evidence, and keeps cloud or messaging features off until the "
         "operator explicitly configures them.\n"
         "• The dashboard shows module health, alerts, posture, and current threat level.\n"
-        "• Adaption audits this host, establishes a reviewed golden baseline, and previews "
+        "• Adaptation audits this host, establishes a reviewed golden baseline, and previews "
         "reversible intent profiles in a no-write sandbox.\n"
         "• The ARIA console accepts commands or plain-language questions.\n"
         "• Run Self-Test to verify local pipelines; use only inert Red Team drills for "
@@ -49,8 +49,8 @@ _SUPPLEMENTARY_TOPICS: dict[str, tuple[str, str]] = {
         "have been verified.",
     ),
     "adaption": (
-        "Adaption — Adapt to Host",
-        "Adaption learns a reviewed operational baseline for this computer; it does not "
+        "Adaptation — Adapt to Host",
+        "Adaptation learns a reviewed operational baseline for this computer; it does not "
         "silently learn every change as trusted.\n"
         "• Audit & Drift captures hardware, services, listening ports, adapters, connection "
         "context, and Windows Firewall posture.\n"
@@ -60,7 +60,7 @@ _SUPPLEMENTARY_TOPICS: dict[str, tuple[str, str]] = {
         "sandbox before applying. Every apply requires a firewall snapshot and exact-plan approval.\n"
         "• SSID, VPN, and Public-network rules default to proposal-only. Auto-apply is a separate "
         "persistent authorization protected by cooldowns, rate limits, and a circuit breaker.\n"
-        "• Rollback verifies both its manifest and firewall artifact before import. Adaption never "
+        "• Rollback verifies both its manifest and firewall artifact before import. Adaptation never "
         "kills processes, stops services, edits routes, disables the firewall, or runs arbitrary "
         "commands.",
     ),

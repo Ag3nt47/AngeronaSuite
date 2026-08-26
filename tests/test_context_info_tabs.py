@@ -131,18 +131,62 @@ def test_settings_tabs_open_their_registered_code_in_sandbox(tmp_path: Path) -> 
             assert find_text.startswith("def _tab_")
             assert dialog._settings_sandbox_btn.isEnabled()
             assert label in dialog._settings_sandbox_btn.text()
-
-        assert dialog._select_tab("ARIA")
-        dialog._open_current_tab_sandbox()
+            dialog._open_current_tab_sandbox()
+            app.processEvents()
+            sandbox = dialog._settings_sandbox_dialogs[topic.key]
+            assert sandbox._current == preselect
+            assert find_text in sandbox.editor.textCursor().block().text()
+            registered_files = {
+                sandbox.file_box.itemData(index)
+                for index in range(sandbox.file_box.count())
+            }
+            assert set(topic.source_paths).issubset(registered_files)
+            sandbox.close()
+            app.processEvents()
+    finally:
+        dialog.close()
         app.processEvents()
-        sandbox = dialog._settings_sandbox_dialogs["settings-aria"]
-        assert sandbox._current == "src/angerona/gui/pages.py"
-        assert "def _tab_aria" in sandbox.editor.textCursor().block().text()
-        assert "src/angerona/core/assistant.py" in {
-            sandbox.file_box.itemData(index)
-            for index in range(sandbox.file_box.count())
+
+
+def test_settings_remains_usable_when_code_sandbox_storage_is_unavailable(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from angerona.core.config import Config
+    from angerona.gui import context_info
+    from angerona.gui.pages import SettingsDialog
+
+    class UnavailableSandbox:
+        def __init__(self, *_args, **_kwargs) -> None:
+            raise PermissionError("protected sandbox directory is unavailable")
+
+    def unavailable_data_root():
+        raise PermissionError("protected runtime directory is unavailable")
+
+    monkeypatch.setattr(context_info, "SourceSandboxWorkspace", UnavailableSandbox)
+    monkeypatch.setattr(context_info, "data_dir", unavailable_data_root)
+    app = QApplication.instance() or QApplication([])
+    dialog = SettingsDialog(
+        Config(data_dir=tmp_path), lambda: None, lambda _theme: None
+    )
+    try:
+        assert dialog.windowTitle() == "Angerona — Settings"
+        assert dialog._select_tab("Info")
+        info = dialog._context_info.info
+        assert info.heading.text() == "About Overview"
+        assert not info.open_sandbox.isEnabled()
+        assert not info.reset_sandbox.isEnabled()
+        assert "sandbox unavailable" in info.open_sandbox.toolTip().casefold()
+        assert "sandbox unavailable" in info.reset_sandbox.toolTip().casefold()
+        assert "Code sandbox unavailable" in info.sandbox_status.text()
+        assert "Settings and help remain usable" in info.sandbox_status.text()
+        assert info.paths.rowCount() >= 2
+        locations = {
+            info.paths.item(row, 1).text() for row in range(info.paths.rowCount())
         }
-        sandbox.close()
+        assert any("<runtime data unavailable>" in value for value in locations)
     finally:
         dialog.close()
         app.processEvents()

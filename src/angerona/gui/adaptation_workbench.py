@@ -88,7 +88,7 @@ class AdaptationWorkbench(QDialog):
         # dashboard context monitor.  Retain small, bounded row signatures so
         # an unchanged poll does not discard and recreate hundreds of Qt items.
         self._view_signatures: dict[str, tuple[Any, ...]] = {}
-        self.setWindowTitle("Adaption — Adapt to Host")
+        self.setWindowTitle("Adaptation — Adapt to Host")
         self.setMinimumSize(920, 650)
         self.resize(1160, 780)
         self.setSizeGripEnabled(True)
@@ -99,7 +99,7 @@ class AdaptationWorkbench(QDialog):
         root.setMenuBar(self._build_menu())
 
         heading_row = QHBoxLayout()
-        heading = QLabel("ADAPTION")
+        heading = QLabel("ADAPTATION")
         heading.setStyleSheet("font-size:22px; font-weight:800; color:#67e8f9;")
         subtitle = QLabel("Adapt to Host  ·  local, reversible, operator-controlled")
         subtitle.setStyleSheet("color:#94a3b8;")
@@ -241,7 +241,7 @@ class AdaptationWorkbench(QDialog):
         ))
         layout.addWidget(_InfoPanel(
             "Hard safety boundary",
-            "Adaption never stops services, kills processes, edits routes, disables the firewall, "
+            "Adaptation never stops services, kills processes, edits routes, disables the firewall, "
             "or runs user-authored commands. Non-Windows systems retain the full audit, drift, "
             "exception, export, and context workflow; active profile mutation is refused until a "
             "native reversible broker exists.",
@@ -510,7 +510,7 @@ class AdaptationWorkbench(QDialog):
     def _run_task(self, name: str, operation: Callable[[], Any]) -> None:
         if self._busy_task:
             QMessageBox.information(
-                self, "Adaption busy", f"{self._busy_task.replace('_', ' ').title()} is still running."
+                self, "Adaptation busy", f"{self._busy_task.replace('_', ' ').title()} is still running."
             )
             return
         self._busy_task = name
@@ -534,7 +534,7 @@ class AdaptationWorkbench(QDialog):
         if error is not None:
             self.busy_label.setText("Safely refused / failed")
             self.footer_detail.setText(str(error))
-            QMessageBox.warning(self, "Adaption", str(error))
+            QMessageBox.warning(self, "Adaptation", str(error))
             self._refresh_status()
             return
         self.busy_label.setText("Ready")
@@ -1135,7 +1135,7 @@ class AdaptationWorkbench(QDialog):
     def _show_safety_help(self) -> None:
         QMessageBox.information(
             self,
-            "Adaption safety model",
+            "Adaptation safety model",
             "Observation, planning, sandboxing, execution, and rollback are separate stages.\n\n"
             "Plans are immutable, expire after ten minutes, and bind to the current firewall "
             "digest. Apply requires exact-plan approval, a rollback snapshot, a closed command "
@@ -1146,7 +1146,7 @@ class AdaptationWorkbench(QDialog):
     def _show_phase_help(self) -> None:
         QMessageBox.information(
             self,
-            "Adaption phases",
+            "Adaptation phases",
             "Phase 1: audit, baseline, drift, exact exceptions, JSON/CSV export.\n\n"
             "Phase 2: intent profiles, exact dry-run commands, no-write sandbox, automatic "
             "snapshot, explicit apply, and one-click rollback.\n\n"
@@ -1157,7 +1157,7 @@ class AdaptationWorkbench(QDialog):
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
         if self._busy_task in {"apply", "rollback"}:
             QMessageBox.information(
-                self, "Adaption operation active",
+                self, "Adaptation operation active",
                 "Keep this window open until the host-change or recovery operation finishes."
             )
             event.ignore()

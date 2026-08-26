@@ -279,7 +279,7 @@ def test_workbench_has_complete_navigation_and_nonwriting_sandbox(tmp_path: Path
     _app()
     service = HostAdaptationService(tmp_path)
     dialog = AdaptationWorkbench(service)
-    assert dialog.windowTitle() == "Adaption — Adapt to Host"
+    assert dialog.windowTitle() == "Adaptation — Adapt to Host"
     assert [dialog.tabs.tabText(index) for index in range(dialog.tabs.count())] == [
         "Overview", "Audit + Drift", "Exceptions + Feedback", "Adapt Host",
         "Sandbox", "Automation", "Activity",
@@ -321,12 +321,12 @@ def test_workbench_surfaces_incomplete_audit_collectors(tmp_path: Path) -> None:
     dialog.close()
 
 
-def test_dashboard_places_adaption_before_other_left_header_actions() -> None:
+def test_dashboard_places_adaptation_before_other_left_header_actions() -> None:
     source = Path("src/angerona/gui/main_window.py").read_text(encoding="utf-8")
     adaptation = source.index("bl.addWidget(adaptation_btn)")
     self_test = source.index("bl.addWidget(test_btn)", adaptation)
     assert adaptation < self_test
-    assert '"ADAPTION"' in source
+    assert '"ADAPTATION"' in source
     assert "_open_adaptation" in source
 
 

@@ -1,6 +1,6 @@
 # Angerona Capabilities
 
-Current status: **v1.10.2**. This is a present-tense capability and use-case
+Current status: **v1.10.3**. This is a present-tense capability and use-case
 summary. Operating detail is in the [Master Manual](Angerona_Master_Manual.docx).
 
 ## Core proposition
@@ -16,6 +16,11 @@ local AI, and validation into one native desktop application.
 
 - Windows ETW, WMI/CIM, AMSI, WFP, Defender, Windows Security log, and Sysmon
   coverage, including Sysmon event IDs 1-29 and 255 with an authenticated cursor.
+- Read-only Windows App Control/Code Integrity evidence for audit would-block and
+  enforced-block decisions, strict ActivityID-to-3089 signature correlation,
+  authenticated restart state, record-bound clear/rollover detection, and
+  privacy-minimized default details. The sensor observes OS decisions; it does
+  not modify policy or grant response authority.
 - Process lineage, file integrity, persistence, memory injection, LSASS access,
   shadow-copy tamper, ransomware, beacon/C2 cadence, removable media,
   vulnerable-driver, deception, YARA/YARA-X, and network behavior detection.
@@ -98,10 +103,11 @@ local AI, and validation into one native desktop application.
 
 ## Proven status
 
-- Full pytest: **1,258 passed / 3 intentional skips / 0 failed** from 1,261
-  collected tests in 197 files.
-- Compile: **308/308**. Ruff/import/discovery/duplicate gates: pass.
-- Self-tests: **46 module + 20 core/Shark + 15 ARIA passed**, with zero genuine
+- Full pytest: **1,305 passed / 3 intentional skips / 0 failed** from 1,308
+  collected tests in 201 files.
+- Compile: **310/310**. Ruff/import/discovery/duplicate gates: pass; static
+  discovery reports **68 modules**.
+- Self-tests: **48 module + 20 core/Shark + 15 ARIA passed**, with zero genuine
   failures; direct and batch selfcheck: **26/26** each.
 - Dependency audit: **no known vulnerabilities**.
 - Combat negative controls: **128/128**.

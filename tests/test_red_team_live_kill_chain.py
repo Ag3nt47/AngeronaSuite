@@ -64,3 +64,33 @@ def test_live_feed_marks_current_and_completed_stages(tmp_path) -> None:
     assert dialog._live_panel.parentWidget() is dialog._run_splitter
     dialog.close()
     parent.close()
+
+
+def test_simulation_console_survives_unavailable_editor_sandbox(
+    tmp_path, monkeypatch,
+) -> None:
+    app = _app()
+    parent = _Parent()
+
+    class UnavailableSandbox:
+        def __init__(self, *_args, **_kwargs) -> None:
+            raise PermissionError("protected sandbox directory is unavailable")
+
+    monkeypatch.setattr(
+        "angerona.gui.red_team_console.SourceSandboxWorkspace",
+        UnavailableSandbox,
+    )
+    dialog = RedTeamConsole(parent, default_target=str(tmp_path))
+    try:
+        assert dialog.launch_btn.isEnabled()
+        assert dialog.stop_btn.isEnabled()
+        assert dialog.editor.isReadOnly()
+        assert not dialog._editor_save.isEnabled()
+        assert not dialog._editor_reload.isEnabled()
+        assert not dialog._editor_rollback.isEnabled()
+        assert "working-copy directory" in dialog._editor_save.toolTip()
+        assert "simulation controls remain usable" in dialog.edit_status.text()
+    finally:
+        dialog.close()
+        parent.close()
+        app.processEvents()

@@ -179,7 +179,7 @@ class MainWindow(QMainWindow):
             self._adaptation_init_error = ""
         except Exception as exc:
             # A damaged/locked optional workbench store must not prevent the
-            # defensive dashboard from starting. Opening Adaption retries and
+            # defensive dashboard from starting. Opening Adaptation retries and
             # presents the concrete storage error to the operator.
             self._adaptation_service = None
             self._adaptation_init_error = str(exc)
@@ -235,9 +235,9 @@ class MainWindow(QMainWindow):
         left = QWidget(); bl = QHBoxLayout(left)
         bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(8)
         adaptation_btn = HeaderActionButton(
-            "ADAPTION",
+            "ADAPTATION",
             "adaptation",
-            "Adaption — Adapt to Host",
+            "Adaptation — Adapt to Host",
             "Audits this host, detects drift, manages known-good exceptions, "
             "simulates intent profiles, and applies only reversible, circuit-breaker-"
             "gated firewall changes.",
@@ -298,7 +298,7 @@ class MainWindow(QMainWindow):
         # existing start()/stop()/set_active() call sites harmless.
         self.red_swords = _NoAnim()
         self.shark_swim = _NoAnim()
-        # Adaption is intentionally the first dashboard control: it establishes
+        # Adaptation is intentionally the first dashboard control: it establishes
         # what is normal for this host before the operator runs deeper actions.
         bl.addWidget(adaptation_btn)
         bl.addWidget(test_btn); bl.addWidget(sim_btn); bl.addWidget(self.eco_btn)
@@ -3659,7 +3659,7 @@ class MainWindow(QMainWindow):
             return self._adaptation_dialog
         except Exception as exc:
             QMessageBox.warning(
-                self, "Adaption — Adapt to Host",
+                self, "Adaptation — Adapt to Host",
                 f"The host adaptation workbench could not open.\n\n{exc}",
             )
             return None
@@ -3712,7 +3712,7 @@ class MainWindow(QMainWindow):
             try:
                 self.console._append(f"[adaption] {message}")
                 self.tray.showMessage(
-                    "Angerona Adaption", message,
+                    "Angerona Adaptation", message,
                     QSystemTrayIcon.Information, 5000,
                 )
             except Exception:

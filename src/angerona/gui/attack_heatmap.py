@@ -28,10 +28,11 @@ from PySide6.QtGui import (
     QBrush, QColor, QFont, QPen, QPolygonF,
 )
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFileDialog, QGraphicsItem, QGraphicsRectItem,
-    QGraphicsScene, QGraphicsTextItem, QGraphicsView, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QPushButton, QSizePolicy, QTabWidget, QTableWidget,
-    QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QGraphicsItem,
+    QGraphicsRectItem, QGraphicsScene, QGraphicsTextItem, QGraphicsView,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QSizePolicy,
+    QTabWidget, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
+    QWidget,
 )
 
 from angerona.core.url_policy import (
@@ -153,9 +154,22 @@ class AttackHeatmapWindow(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("🔥  MITRE ATT&CK Heatmap  — Live")
-        self.setMinimumSize(1420, 720)
-        self.resize(1540, 820)
+        # The matrix already has a horizontal scrollbar, so do not force the
+        # whole window wider than common laptop and remote-session desktops.
+        # Size generously when space exists while keeping every toolbar and
+        # tab reachable on a compact display.
+        self.setMinimumSize(760, 520)
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            self.resize(
+                max(760, min(1540, int(available.width() * 0.94))),
+                max(520, min(820, int(available.height() * 0.90))),
+            )
+        else:
+            self.resize(1180, 720)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
 
         self._cells: dict[str, _CellItem] = {}
         self._scene = QGraphicsScene(self)
@@ -197,25 +211,35 @@ class AttackHeatmapWindow(QDialog):
         self._active_only.stateChanged.connect(lambda _s: self._refresh())
 
         explain_btn = QPushButton("Explain posture")
+        explain_btn.setObjectName("HeatmapExplainPosture")
         explain_btn.setFixedWidth(120)
         explain_btn.setToolTip("Plain-English summary of the current matrix (local AI, with a heuristic fallback).")
         explain_btn.clicked.connect(self._explain_posture)
 
         export_nav_btn = QPushButton("Export to Navigator")
+        export_nav_btn.setObjectName("HeatmapExportNavigator")
         export_nav_btn.setFixedWidth(150)
         export_nav_btn.setToolTip("Save active techniques as a MITRE ATT&CK Navigator v4.9 layer JSON")
         export_nav_btn.clicked.connect(self._export_navigator)
 
         reset_btn = QPushButton("Reset counts")
+        reset_btn.setObjectName("HeatmapResetCounts")
         reset_btn.setFixedWidth(105)
         reset_btn.clicked.connect(self._reset)
 
-        stats_row = QHBoxLayout()
-        stats_row.addWidget(self._stats_lbl)
-        stats_row.addStretch(1)
-        for w in (self._search, self._active_only, self._actor_combo,
-                  explain_btn, export_nav_btn, reset_btn):
-            stats_row.addWidget(w)
+        toolbar = QVBoxLayout()
+        toolbar.setSpacing(4)
+        filters_row = QHBoxLayout()
+        filters_row.addWidget(self._stats_lbl)
+        filters_row.addStretch(1)
+        for widget in (self._search, self._active_only, self._actor_combo):
+            filters_row.addWidget(widget)
+        actions_row = QHBoxLayout()
+        actions_row.addStretch(1)
+        for widget in (explain_btn, export_nav_btn, reset_btn):
+            actions_row.addWidget(widget)
+        toolbar.addLayout(filters_row)
+        toolbar.addLayout(actions_row)
 
         # ── Detail panel ──────────────────────────────────────────────────────
         self._detail_hdr = QLabel("Click a technique cell for details")
@@ -248,7 +272,7 @@ class AttackHeatmapWindow(QDialog):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
-        root.addLayout(stats_row)
+        root.addLayout(toolbar)
         root.addWidget(self._tabs, 1)
 
         self._build_scene()

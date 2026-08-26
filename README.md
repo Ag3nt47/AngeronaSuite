@@ -14,7 +14,7 @@ application.
 ![Python](https://img.shields.io/badge/Python-3.10--3.13-3776AB)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-Current version: **v1.10.2**
+Current version: **v1.10.3**
 
 [Master Manual](Angerona_Master_Manual.docx) ·
 [Current capabilities](ANGERONA_CAPABILITIES.md) ·
@@ -36,7 +36,7 @@ executables against `release-files.sha256` before installation. Releases are not
 currently Authenticode publisher-signed, so Windows may show **Unknown
 Publisher** even when the checksum and GitHub attestation are valid.
 
-## What is current in v1.10.2
+## What is current in v1.10.3
 
 - **Governed Adversary Combat:** unattended local defensive response can block a
   peer, isolate an exact executable, suspend or terminate a verified process,
@@ -56,6 +56,12 @@ Publisher** even when the checksum and GitHub attestation are valid.
 - **Windows telemetry continuity and interoperability:** Sysmon event IDs 1-29
   plus 255, an authenticated restart cursor, Community ID v1 flow identity, and
   OCSF 1.8 mappings improve continuity and evidence exchange.
+- **App Control decision evidence:** a read-only Windows Code Integrity sensor
+  distinguishes audit would-block from enforced block decisions, joins bounded
+  3089 signature rows by ActivityID, survives restarts with authenticated pending
+  state, and detects retention gaps, clears, record reuse, and mid-poll generation
+  changes with record-bound checkpoint anchors. Default UI/export evidence omits
+  exact local paths and cannot authorize response or change App Control policy.
 - **Hardened trust boundaries:** Ollama is re-attested at call time to an approved
   loopback listener, process birth, and executable path. Source Sandbox stages
   inert files, runtime installers are not accepted, and fleet credentials have a
@@ -161,13 +167,13 @@ synthetic.
 
 ## Validation status
 
-The frozen v1.10.2 tree produced the following local evidence on Windows:
+The frozen v1.10.3 tree produced the following local evidence on Windows:
 
-- 1,261 pytest cases collected across 197 files: **1,258 passed, 3 intentional
+- 1,308 pytest cases collected across 201 files: **1,305 passed, 3 intentional
   skips, 0 failed**.
-- **308/308** Python files compiled; Ruff, imports, module discovery, duplicate
+- **310/310** product Python files compiled; Ruff, imports, module discovery, duplicate
   checks, direct selfcheck, and batch selfcheck passed.
-- Module self-tests: **46 genuine passes, 0 genuine failures**, plus 13 expected
+- Module self-tests: **48 genuine passes, 0 genuine failures**, plus 13 expected
   inactive results and 8 platform/operator skips. Core/Shark: **20/20**. ARIA:
   **15/15**. Dependency audit: **no known vulnerabilities**.
 - Deterministic Combat negative controls: **128/128**.
@@ -217,6 +223,6 @@ a claim of complete attack coverage.
 MIT licensed. See [LICENSE](LICENSE), [SECURITY.md](SECURITY.md), and
 [SUPPORT.md](SUPPORT.md).
 
-**Final Cycle 8 verification.** Frozen v1.10.2 passes **1258 tests with 3 intentional platform skips**; static discovery reports **67 modules**.
+**Final Cycle 9 verification.** Frozen v1.10.3 passes **1305 tests with 3 intentional platform skips**; static discovery reports **68 modules**.
 
-<!-- ANGERONA_DOC_STATUS tests=1258 skips=3 modules=67 -->
+<!-- ANGERONA_DOC_STATUS tests=1305 skips=3 modules=68 -->

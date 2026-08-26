@@ -14,7 +14,7 @@ import queue
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from angerona.core.eventbus import Event, EventBus, Severity
 from angerona.core.module_base import BaseModule
@@ -40,8 +40,20 @@ class SelfTestRunner:
         # module, or a deep scanner intentionally parked by Chill Mode.
         self.last_skips: List[dict] = []
 
-    def run(self, names: Optional[List[str]] = None, timeout: float = 15.0,
-            progress_cb=None) -> str:
+    def run(
+        self,
+        names: Optional[List[str]] = None,
+        timeout: float = 15.0,
+        progress_cb=None,
+        expected_failure_cb: Callable[[str, str], Optional[str]] | None = None,
+    ) -> str:
+        """Run the pipeline and module checks.
+
+        ``expected_failure_cb`` is reserved for controlled harnesses that
+        intentionally do not start live sensors.  Returning a reason converts
+        that specific result to a structured skip.  The default remains strict,
+        and callback errors fail closed as ordinary test failures.
+        """
         lines = ["===== SELF-TEST / STRESS DRILL =====", ""]
         passed = failed = skipped = 0
         failures: List[dict] = []
@@ -174,10 +186,27 @@ class SelfTestRunner:
                 skips.append({"module": mod.name, "detail": skip_detail})
                 continue
             t_ok, t_detail = mod_results[mod.name]
-            lines.append(f"  [{'PASS' if t_ok else 'FAIL'}] {mod.name} — {t_detail}")
             if t_ok:
+                lines.append(f"  [PASS] {mod.name} — {t_detail}")
                 passed += 1
             else:
+                expected_reason = None
+                if expected_failure_cb is not None:
+                    try:
+                        expected_reason = expected_failure_cb(mod.name, t_detail)
+                    except Exception:
+                        expected_reason = None
+                if expected_reason:
+                    lines.append(
+                        f"  [SKIP] {mod.name} — {expected_reason}"
+                    )
+                    skipped += 1
+                    skips.append({
+                        "module": mod.name,
+                        "detail": str(expected_reason),
+                    })
+                    continue
+                lines.append(f"  [FAIL] {mod.name} — {t_detail}")
                 failed += 1
                 failures.append({
                     "module": mod.name,

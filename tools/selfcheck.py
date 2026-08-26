@@ -115,23 +115,28 @@ bus.publish(Event("Defense Monitor", "exploit attempt blocked", Severity.CRITICA
 @phase("SelfTestRunner over all modules")
 def _():
     from angerona.core.selftest import SelfTestRunner
-    report = SelfTestRunner(manager, bus).run(timeout=12.0)
-    print(report)
+    from selfcheck_policy import is_expected_unstarted_failure
+
     # In a headless, non-elevated harness some self-tests can't pass for reasons
     # that are NOT defects: a module we never started reports 'stopped'; AI Triage
     # needs a live Ollama; SOAR is idle-by-design; the Go watchdog binary is a
-    # separate build. Treat those as expected so only a GENUINE regression fails.
-    # The runner itself now emits structured [SKIP] rows for non-native,
-    # disabled, and Chill-paused modules; never mask those as expected failures.
-    expected = ["status=stopped", "idle", "ollama", "timed out",
-                "watchdog binary absent", "set angerona_soar"]
-    real_fails = []
-    for ln in report.splitlines():
-        if "[FAIL]" in ln and not any(e in ln.lower() for e in expected):
-            real_fails.append(ln.strip())
-    if real_fails:
-        raise AssertionError(f"{len(real_fails)} UNEXPECTED module failure(s): {real_fails}")
-    return report.splitlines()[-1] + " (expected stopped/idle/ollama fails treated as skips)"
+    # separate build. Classify those as SKIP at evaluation time so the report,
+    # persisted result, and exit status all agree. Timeouts and exceptions are
+    # deliberately never eligible for this conversion.
+    def _expected_reason(module: str, detail: str) -> str | None:
+        if not is_expected_unstarted_failure(module, detail):
+            return None
+        return f"not started by headless harness / optional prerequisite: {detail}"
+
+    runner = SelfTestRunner(manager, bus)
+    report = runner.run(timeout=12.0, expected_failure_cb=_expected_reason)
+    print(report)
+    if runner.last_failures:
+        raise AssertionError(
+            f"{len(runner.last_failures)} UNEXPECTED module failure(s): "
+            f"{runner.last_failures}"
+        )
+    return report.splitlines()[-1] + " (unstarted/optional states classified as skips)"
 
 
 @phase("build MainWindow")

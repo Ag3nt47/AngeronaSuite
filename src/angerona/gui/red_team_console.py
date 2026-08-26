@@ -844,25 +844,48 @@ class RedTeamConsole(QDialog):
         )
         help_text.setWordWrap(True)
         lay.addWidget(help_text)
-        self._editor_workspace = SourceSandboxWorkspace(
-            "red-team-console", (_RED_TEAM_SOURCE,)
-        )
+        self._editor_workspace: SourceSandboxWorkspace | None = None
         self.editor = QPlainTextEdit()
         self.editor.setStyleSheet("font-family:'Fira Code',monospace; font-size:11px;")
         lay.addWidget(self.editor, 1)
         row = QHBoxLayout()
-        save = QPushButton("💾  Save working copy"); save.clicked.connect(self._save_editor)
-        reload_copy = QPushButton("↻  Reload saved copy")
-        reload_copy.clicked.connect(self._reload_editor)
-        rollback = QPushButton("↩  Roll back copy")
-        rollback.clicked.connect(self._rollback_editor)
+        self._editor_save = QPushButton("💾  Save working copy")
+        self._editor_save.clicked.connect(self._save_editor)
+        self._editor_reload = QPushButton("↻  Reload saved copy")
+        self._editor_reload.clicked.connect(self._reload_editor)
+        self._editor_rollback = QPushButton("↩  Roll back copy")
+        self._editor_rollback.clicked.connect(self._rollback_editor)
         self.edit_status = QLabel(""); self.edit_status.setStyleSheet("color:#9fb3c8;")
-        row.addWidget(save); row.addWidget(reload_copy); row.addWidget(rollback)
+        row.addWidget(self._editor_save)
+        row.addWidget(self._editor_reload)
+        row.addWidget(self._editor_rollback)
         row.addWidget(self.edit_status, 1)
         lay.addLayout(row)
         # Load AFTER edit_status exists — _load_editor() writes to it, so calling
         # it earlier raised 'RedTeamConsole has no attribute edit_status'.
-        self._load_editor()
+        try:
+            self._editor_workspace = SourceSandboxWorkspace(
+                "red-team-console", (_RED_TEAM_SOURCE,)
+            )
+            self._load_editor()
+        except Exception as exc:
+            self.editor.setPlainText(
+                f"# sandbox editor unavailable in this session: {exc}"
+            )
+            self.editor.setReadOnly(True)
+            for button in (
+                self._editor_save,
+                self._editor_reload,
+                self._editor_rollback,
+            ):
+                button.setEnabled(False)
+                button.setToolTip(
+                    "The protected working-copy directory is unavailable. "
+                    "Simulation controls are unaffected."
+                )
+            self.edit_status.setText(
+                "❌ sandbox unavailable; simulation controls remain usable"
+            )
         return w
 
     # ── helpers ──────────────────────────────────────────────────────────────
@@ -987,6 +1010,11 @@ class RedTeamConsole(QDialog):
 
     # ── editor ───────────────────────────────────────────────────────────────
     def _load_editor(self) -> None:
+        if self._editor_workspace is None:
+            self.edit_status.setText(
+                "❌ sandbox unavailable; simulation controls remain usable"
+            )
+            return
         try:
             source = self._editor_workspace.reload(_RED_TEAM_SOURCE)
             self.editor.setPlainText(source)
@@ -1003,6 +1031,9 @@ class RedTeamConsole(QDialog):
         self._load_editor()
 
     def _save_editor(self) -> None:
+        if self._editor_workspace is None:
+            self.edit_status.setText("❌ sandbox working copy unavailable")
+            return
         src = self.editor.toPlainText()
         try:
             self._editor_workspace.save(_RED_TEAM_SOURCE, src)
@@ -1019,6 +1050,9 @@ class RedTeamConsole(QDialog):
 
     def _rollback_editor(self) -> None:
         """Restore only the runtime working copy from immutable installed source."""
+        if self._editor_workspace is None:
+            self.edit_status.setText("❌ sandbox working copy unavailable")
+            return
         answer = QMessageBox.question(
             self,
             "Roll back sandbox working copy?",

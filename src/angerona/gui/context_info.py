@@ -32,7 +32,11 @@ from angerona.gui.animations import RunSpinner
 
 
 def _display_location(value: str) -> str:
-    return str(value).replace("{data}", str(data_dir()))
+    try:
+        runtime_root = str(data_dir())
+    except Exception:
+        runtime_root = "<runtime data unavailable>"
+    return str(value).replace("{data}", runtime_root)
 
 
 class SourceSandboxDialog(QDialog):
@@ -270,6 +274,12 @@ class ContextInfoTab(QWidget):
         self.loading_spinner = RunSpinner()
         self.layout.addWidget(self.loading_spinner)
         self._load_generation = 0
+        self._scheduled_generation = 0
+        self._topic_finish_timer = QTimer(self)
+        self._topic_finish_timer.setSingleShot(True)
+        self._topic_finish_timer.timeout.connect(
+            self._finish_scheduled_topic_loading
+        )
         self.overview = QLabel()
         self.overview.setWordWrap(True)
         self.overview.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -348,10 +358,7 @@ class ContextInfoTab(QWidget):
             self.open_sandbox.setEnabled(False)
             self.reset_sandbox.setEnabled(False)
             if animate:
-                QTimer.singleShot(
-                    180,
-                    lambda g=generation: self._finish_topic_loading(g),
-                )
+                self._schedule_topic_finish(generation)
             return
 
         self.heading.setText(f"About {topic.title}")
@@ -362,35 +369,67 @@ class ContextInfoTab(QWidget):
             self.meanings.setItem(row, 1, QTableWidgetItem(meaning))
         self.meanings.resizeRowsToContents()
 
-        self.workspace = SourceSandboxWorkspace(
-            f"{self.surface}-{topic.key}", topic.source_paths
-        )
         rows: list[tuple[str, str]] = []
-        available_by_name = {
-            item.relative_path: str(item.source_path) for item in self.workspace.files
-        }
+        try:
+            self.workspace = SourceSandboxWorkspace(
+                f"{self.surface}-{topic.key}", topic.source_paths
+            )
+            available_by_name = {
+                item.relative_path: str(item.source_path)
+                for item in self.workspace.files
+            }
+            sandbox_location = str(self.workspace.root)
+            sandbox_available = self.workspace.available
+            sandbox_status = (
+                f"Sandbox scope: {len(self.workspace.files)} available implementation "
+                f"file(s) · {self.workspace.root}"
+            )
+        except Exception as exc:
+            # Contextual help is part of several primary windows.  A protected,
+            # unavailable, or temporarily unreadable sandbox directory must not
+            # prevent Settings (or another menu) from opening.  Keep the help
+            # and source locations useful while making the unavailable action
+            # explicit instead of raising out of the window constructor.
+            self.workspace = None
+            root = project_root()
+            available_by_name = {
+                relative: str(root / relative)
+                for relative in topic.source_paths
+                if (root / relative).is_file()
+            }
+            sandbox_location = "Unavailable in this session"
+            sandbox_available = False
+            sandbox_status = (
+                "Code sandbox unavailable in this session. Settings and help "
+                f"remain usable. Details: {exc}"
+            )
         for relative in topic.source_paths:
             rows.append(
                 ("Source", available_by_name.get(relative, f"{relative} (not available in this build)"))
             )
         rows.extend(("Runtime", _display_location(value)) for value in topic.locations)
-        rows.append(("Sandbox", str(self.workspace.root)))
+        rows.append(("Sandbox", sandbox_location))
         self.paths.setRowCount(len(rows))
         for row, (kind, location) in enumerate(rows):
             self.paths.setItem(row, 0, QTableWidgetItem(kind))
             self.paths.setItem(row, 1, QTableWidgetItem(location))
         self.paths.resizeRowsToContents()
-        self.open_sandbox.setEnabled(self.workspace.available)
-        self.reset_sandbox.setEnabled(self.workspace.available)
-        self.sandbox_status.setText(
-            f"Sandbox scope: {len(self.workspace.files)} available implementation "
-            f"file(s) · {self.workspace.root}"
-        )
+        self.open_sandbox.setEnabled(sandbox_available)
+        self.reset_sandbox.setEnabled(sandbox_available)
+        self.sandbox_status.setText(sandbox_status)
+        if not sandbox_available:
+            self.open_sandbox.setToolTip(sandbox_status)
+            self.reset_sandbox.setToolTip(sandbox_status)
         if animate:
-            QTimer.singleShot(
-                180,
-                lambda g=generation: self._finish_topic_loading(g),
-            )
+            self._schedule_topic_finish(generation)
+
+    def _schedule_topic_finish(self, generation: int) -> None:
+        """Finish only the newest Info refresh on this widget's owned timer."""
+        self._scheduled_generation = generation
+        self._topic_finish_timer.start(180)
+
+    def _finish_scheduled_topic_loading(self) -> None:
+        self._finish_topic_loading(self._scheduled_generation)
 
     def _finish_topic_loading(self, generation: int) -> None:
         if generation == self._load_generation:
