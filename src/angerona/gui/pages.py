@@ -5027,6 +5027,25 @@ class SettingsDialog(QDialog):
     voice_model_result = Signal(str, bool)
     process_baseline_result = Signal(str, bool)
 
+    _SANDBOX_TARGETS = {
+        "Overview": ("src/angerona/gui/pages.py", "def _tab_overview"),
+        "Information": ("src/angerona/gui/pages.py", "def _tab_information"),
+        "General": ("src/angerona/gui/pages.py", "def _tab_general"),
+        "System": ("src/angerona/gui/pages.py", "def _tab_system"),
+        "Adversary Combat": (
+            "src/angerona/gui/pages.py",
+            "def _tab_adversary_combat",
+        ),
+        "Enterprise": ("src/angerona/gui/pages.py", "def _tab_enterprise"),
+        "ARIA": ("src/angerona/gui/pages.py", "def _tab_aria"),
+        "Trusted Processes": (
+            "src/angerona/gui/pages.py",
+            "def _tab_trusted_processes",
+        ),
+        "Mobile Integration": ("src/angerona/gui/pages.py", "def _tab_mobile"),
+        "API Keys": ("src/angerona/gui/pages.py", "def _tab_apikeys"),
+    }
+
     def __init__(self, config, check_updates_fn, apply_theme_fn, parent=None,
                  initial_tab: str | None = None, process_baseline=None):
         super().__init__(parent)
@@ -5078,6 +5097,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(_scroll(self._tab_apikeys()), "API Keys")
         from angerona.gui.context_info import attach_context_info
         self._context_info = attach_context_info(tabs, "settings")
+        self._settings_sandbox_dialogs: dict[str, QDialog] = {}
         self._settings_search.textChanged.connect(self._find_setting)
 
         # ── button row ──
@@ -5088,6 +5108,10 @@ class SettingsDialog(QDialog):
             "egress.")
         self._privacy_btn.clicked.connect(self._restore_privacy_defaults)
         btn_row.addWidget(self._privacy_btn)
+        self._settings_sandbox_btn = QPushButton("Open Tab Code Sandbox")
+        self._settings_sandbox_btn.setObjectName("SettingsTabSandbox")
+        self._settings_sandbox_btn.clicked.connect(self._open_current_tab_sandbox)
+        btn_row.addWidget(self._settings_sandbox_btn)
         btn_row.addStretch()
         self._btn_save   = QPushButton("Save")
         self._btn_cancel = QPushButton("Cancel")
@@ -5100,6 +5124,8 @@ class SettingsDialog(QDialog):
 
         self._btn_save.clicked.connect(self._save)
         self._btn_cancel.clicked.connect(self.close)
+        tabs.currentChanged.connect(self._update_settings_sandbox_button)
+        self._update_settings_sandbox_button()
         # Route background ARIA-test results back to the status label on the GUI thread.
         try:
             self.aria_test_result.connect(self._aria_test_finished)
@@ -5140,6 +5166,87 @@ class SettingsDialog(QDialog):
                 self.tabs.setCurrentIndex(index)
                 return True
         return False
+
+    def _current_settings_tab_label(self) -> str:
+        """Return the functional tab represented by the current Settings view."""
+        index = self.tabs.currentIndex()
+        if self.tabs.tabText(index) == "Info":
+            index = int(getattr(self._context_info, "last_functional_index", index))
+        if 0 <= index < self.tabs.count():
+            return self.tabs.tabText(index)
+        return ""
+
+    def _settings_sandbox_target(self):
+        from angerona.core.menu_info import get_menu_info
+
+        label = self._current_settings_tab_label()
+        topic = get_menu_info("settings", label)
+        target = self._SANDBOX_TARGETS.get(label)
+        if topic is None or target is None:
+            return label, None, "", ""
+        return label, topic, target[0], target[1]
+
+    def _update_settings_sandbox_button(self, _index: int = -1) -> None:
+        label, topic, preselect, _find_text = self._settings_sandbox_target()
+        enabled = bool(topic and preselect)
+        self._settings_sandbox_btn.setEnabled(enabled)
+        self._settings_sandbox_btn.setText(
+            f"Open {label} Code Sandbox" if enabled else "Code Sandbox Unavailable"
+        )
+        if enabled:
+            paths = ", ".join(topic.source_paths)
+            self._settings_sandbox_btn.setToolTip(
+                f"Open isolated editable copies for {label}. Related files: {paths}"
+            )
+        else:
+            self._settings_sandbox_btn.setToolTip(
+                "No editable implementation files are registered for this tab."
+            )
+
+    def _open_current_tab_sandbox(self) -> None:
+        """Open this tab's related source files at its UI implementation."""
+        label, topic, preselect, find_text = self._settings_sandbox_target()
+        if topic is None:
+            QMessageBox.warning(
+                self,
+                "Code Sandbox",
+                f"No sandbox source mapping is registered for {label or 'this tab'}.",
+            )
+            return
+        existing = self._settings_sandbox_dialogs.get(topic.key)
+        if existing is not None:
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return
+        try:
+            from angerona.core.source_sandbox import SourceSandboxWorkspace
+            from angerona.gui.context_info import SourceSandboxDialog
+
+            workspace = SourceSandboxWorkspace(topic.key, topic.source_paths)
+            if not workspace.available:
+                raise ValueError("the registered source files are unavailable")
+            dialog = SourceSandboxDialog(
+                workspace,
+                self,
+                preselect=preselect,
+                find_text=find_text,
+            )
+            self._settings_sandbox_dialogs[topic.key] = dialog
+            dialog.destroyed.connect(
+                lambda *_args, key=topic.key: self._settings_sandbox_dialogs.pop(
+                    key, None
+                )
+            )
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Code Sandbox",
+                f"Could not open the {label} sandbox:\n{exc}",
+            )
 
     def _restore_privacy_defaults(self) -> None:
         """Stage safe local-only defaults; Save applies them."""

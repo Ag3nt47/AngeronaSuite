@@ -60,6 +60,10 @@ Publisher** even when the checksum and GitHub attestation are valid.
   loopback listener, process birth, and executable path. Source Sandbox stages
   inert files, runtime installers are not accepted, and fleet credentials have a
   finite lifecycle and protected custody.
+- **Tab-aware Settings sandbox:** every functional Settings tab exposes an
+  `Open <tab> Code Sandbox` button. It opens isolated editable copies of that
+  tab's registered implementation files and jumps to the corresponding UI code;
+  installed code remains unchanged.
 - **Measured performance improvements:** runbook scoring is 25.5x faster on the
   real index (4.38x on the synthetic corpus); ETW cache peak allocation is 92.2%
   lower in the stress case; Upgrade Console I/O submission returns in about
@@ -159,7 +163,7 @@ synthetic.
 
 The frozen v1.10.2 tree produced the following local evidence on Windows:
 
-- 1,260 pytest cases collected across 197 files: **1,257 passed, 3 intentional
+- 1,261 pytest cases collected across 197 files: **1,258 passed, 3 intentional
   skips, 0 failed**.
 - **308/308** Python files compiled; Ruff, imports, module discovery, duplicate
   checks, direct selfcheck, and batch selfcheck passed.
@@ -213,6 +217,6 @@ a claim of complete attack coverage.
 MIT licensed. See [LICENSE](LICENSE), [SECURITY.md](SECURITY.md), and
 [SUPPORT.md](SUPPORT.md).
 
-**Final Cycle 8 verification.** Frozen v1.10.2 passes **1257 tests with 3 intentional platform skips**; static discovery reports **67 modules**.
+**Final Cycle 8 verification.** Frozen v1.10.2 passes **1258 tests with 3 intentional platform skips**; static discovery reports **67 modules**.
 
-<!-- ANGERONA_DOC_STATUS tests=1257 skips=3 modules=67 -->
+<!-- ANGERONA_DOC_STATUS tests=1258 skips=3 modules=67 -->

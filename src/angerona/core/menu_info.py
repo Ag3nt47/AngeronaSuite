@@ -114,6 +114,14 @@ MENU_INFO: dict[str, tuple[MenuInfoTopic, ...]] = {
             locations=("{data}/settings.json", "{data}/diagnostics"),
         ),
         _topic(
+            "settings-adversary-combat", "Adversary Combat",
+            "Configures Angerona's standing autonomous-response policy, intensity, exact action permissions, protected boundaries, history, and verified Undo controls.",
+            (("Mode", "Selects the bounded response posture used after a qualifying detection."), ("Automatic action", "Executes only actions admitted by the saved typed policy; no per-alert prompt is required."), ("Undo", "Reverses an eligible exact action and verifies the rollback postcondition.")),
+            "src/angerona/gui/pages.py", "src/angerona/modules/adversary_combat.py",
+            "src/angerona/core/action_policy.py", "src/angerona/shark/aar_report.py",
+            locations=("{data}/settings.json", "{data}/adversary-combat"),
+        ),
+        _topic(
             "settings-enterprise", "Enterprise",
             "Shows evidence-backed readiness and configures the authenticated loopback fleet preview, signed content, policy, and proof controls.",
             (("Readiness", "An engineering assessment, not a certification or marketing grade."), ("Fleet service", "Loopback-only authenticated API; remote fleet access is not implied."), ("Evidence", "Bounded public-safe proof with local identifiers removed.")),

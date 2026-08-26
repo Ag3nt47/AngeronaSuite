@@ -63,6 +63,9 @@ local AI, and validation into one native desktop application.
   and partial states.
 - Source Sandbox confines inert proposals and rejects runtime installers,
   path escapes, untrusted links, and automatic production deployment.
+- Every functional Settings tab has a tab-aware code-sandbox button that opens
+  its registered implementation files in an isolated editable copy and jumps to
+  the tab's UI builder. Sandbox saves never rewrite installed source.
 - Finite fleet credentials, protected secret custody, authenticated loopback
   fleet preview, signed packages, and privacy-minimized exports.
 
@@ -95,7 +98,7 @@ local AI, and validation into one native desktop application.
 
 ## Proven status
 
-- Full pytest: **1,257 passed / 3 intentional skips / 0 failed** from 1,260
+- Full pytest: **1,258 passed / 3 intentional skips / 0 failed** from 1,261
   collected tests in 197 files.
 - Compile: **308/308**. Ruff/import/discovery/duplicate gates: pass.
 - Self-tests: **46 module + 20 core/Shark + 15 ARIA passed**, with zero genuine

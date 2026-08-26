@@ -95,3 +95,54 @@ def test_settings_info_tab_tracks_the_last_settings_area(tmp_path: Path) -> None
     finally:
         dialog.close()
         app.processEvents()
+
+
+def test_settings_tabs_open_their_registered_code_in_sandbox(tmp_path: Path) -> None:
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from angerona.core.config import Config
+    from angerona.gui.pages import SettingsDialog
+
+    app = QApplication.instance() or QApplication([])
+    dialog = SettingsDialog(
+        Config(data_dir=tmp_path), lambda: None, lambda _theme: None
+    )
+    expected = {
+        "Overview",
+        "Information",
+        "General",
+        "System",
+        "Adversary Combat",
+        "Enterprise",
+        "ARIA",
+        "Trusted Processes",
+        "Mobile Integration",
+        "API Keys",
+    }
+    try:
+        for label in expected:
+            assert dialog._select_tab(label)
+            app.processEvents()
+            selected, topic, preselect, find_text = dialog._settings_sandbox_target()
+            assert selected == label
+            assert topic is not None
+            assert preselect in topic.source_paths
+            assert find_text.startswith("def _tab_")
+            assert dialog._settings_sandbox_btn.isEnabled()
+            assert label in dialog._settings_sandbox_btn.text()
+
+        assert dialog._select_tab("ARIA")
+        dialog._open_current_tab_sandbox()
+        app.processEvents()
+        sandbox = dialog._settings_sandbox_dialogs["settings-aria"]
+        assert sandbox._current == "src/angerona/gui/pages.py"
+        assert "def _tab_aria" in sandbox.editor.textCursor().block().text()
+        assert "src/angerona/core/assistant.py" in {
+            sandbox.file_box.itemData(index)
+            for index in range(sandbox.file_box.count())
+        }
+        sandbox.close()
+    finally:
+        dialog.close()
+        app.processEvents()

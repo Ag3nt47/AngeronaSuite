@@ -37,7 +37,7 @@
     "release": "v1.10.2 frozen release candidate",
     "release_blockers": 0,
     "defense_in_depth_open": "R6-03 Medium, non-blocking",
-    "pytest": "1,257 passed / 3 intentional skips / 0 failed from 1,260 cases across 197 files",
+    "pytest": "1,258 passed / 3 intentional skips / 0 failed from 1,261 cases across 197 files",
     "compile": "308/308",
     "selfcheck": "26/26 direct and batch PASS",
     "combat_negative_controls": "128/128 PASS",

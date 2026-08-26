@@ -38,12 +38,20 @@ def _display_location(value: str) -> str:
 class SourceSandboxDialog(QDialog):
     """Edit allow-listed working copies without touching installed code."""
 
-    def __init__(self, workspace: SourceSandboxWorkspace, parent=None) -> None:
+    def __init__(
+        self,
+        workspace: SourceSandboxWorkspace,
+        parent=None,
+        *,
+        preselect: str | None = None,
+        find_text: str | None = None,
+    ) -> None:
         super().__init__(parent)
         self.workspace = workspace
         self.workspace.ensure()
         self._current = ""
         self._changing_file = False
+        self._initial_find_text = str(find_text or "")
         self.setWindowTitle("Angerona — Isolated Source Sandbox")
         self.setMinimumSize(760, 520)
         self.resize(1040, 720)
@@ -120,7 +128,13 @@ class SourceSandboxDialog(QDialog):
 
         self.file_box.currentIndexChanged.connect(self._select_file)
         if self.file_box.count():
-            self._select_file(0)
+            initial_index = self.file_box.findData(str(preselect or ""))
+            if initial_index < 0:
+                initial_index = 0
+            self._changing_file = True
+            self.file_box.setCurrentIndex(initial_index)
+            self._changing_file = False
+            self._select_file(initial_index)
 
     def _confirm_discard(self) -> bool:
         if not self.editor.document().isModified():
@@ -151,7 +165,13 @@ class SourceSandboxDialog(QDialog):
         self.editor.setPlainText(self.workspace.read(requested))
         self.editor.document().setModified(False)
         state = "modified" if self.workspace.changed(requested) else "matches installed source"
-        self.status.setText(f"Loaded isolated copy — {state}.")
+        location = ""
+        if self._initial_find_text:
+            find_text = self._initial_find_text
+            self._initial_find_text = ""
+            if self.editor.find(find_text):
+                location = f" Opened at {find_text}."
+        self.status.setText(f"Loaded isolated copy — {state}.{location}")
 
     def _check_syntax(self) -> bool:
         if not self._current:
