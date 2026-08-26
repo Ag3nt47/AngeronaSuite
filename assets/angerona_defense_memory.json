@@ -1,0 +1,394 @@
+{
+  "schema_version": 1,
+  "memory_id": "angerona-defense-memory",
+  "version": "1.0.0",
+  "governance": {
+    "classification": "defensive-reference",
+    "authority": "read-only",
+    "contains_live_data": false,
+    "contains_secrets": false,
+    "contains_executable_actions": false,
+    "contains_offensive_procedures": false,
+    "agency_attribution": "prohibited"
+  },
+  "entries": [
+    {
+      "id": "capability-workflow",
+      "title": "Angerona capability map and operator workflow",
+      "summary": "Angerona is a local-first defensive suite that combines endpoint and network sensors, bounded EventBus telemetry, module health, posture scoring, evidence review, guided scans, response staging, forensics, and local assistant retrieval. The normal workflow is observe, corroborate, review scope, apply the least-privileged reversible control, and verify the result.",
+      "keywords": [
+        "angerona",
+        "capabilities",
+        "how to",
+        "dashboard",
+        "modules",
+        "self-test",
+        "alerts",
+        "resolve center",
+        "forensics",
+        "local soc"
+      ],
+      "guidance": [
+        "Start with Guided Setup and confirm the intended privacy, performance, notification, and optional ARIA settings.",
+        "Use the module and status surfaces to confirm sensors are running, then run Self-Test and investigate degraded or unavailable coverage.",
+        "Review Live Alerts and the Resolve Center before containment; use Forensics and Local SOC to preserve evidence and connect related observations.",
+        "Treat posture scores as navigation aids. Confirm the underlying signed or corroborated evidence before making a consequential change.",
+        "Prefer reversible controls with a preview, explicit operator confirmation, a receipt, and a verified rollback path."
+      ],
+      "limits": [
+        "A healthy dashboard is not proof that firmware, the kernel, every network device, or every identity provider is trustworthy.",
+        "ARIA retrieval is advisory and cannot authorize a write operation or replace operator review.",
+        "Coverage depends on enabled sensors, platform support, permissions, event retention, and the quality of upstream telemetry."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "Visibility loss across several defensive surfaces",
+          "defensive_objective": "Correlate module health, telemetry continuity, posture changes, and independent evidence before declaring the host healthy.",
+          "evidence_grade": "corroborated"
+        }
+      ]
+    },
+    {
+      "id": "zero-trust-operations",
+      "title": "Defense in depth, least privilege, and zero-trust operation",
+      "summary": "Angerona treats network location, a private address range, and an operating-system network category as context rather than identity. Trust is narrow, time-bounded, evidence-backed, and specific to one subject and purpose. No single sensor, allowlist, router, model answer, or dashboard score is a universal trust grant.",
+      "keywords": [
+        "zero trust",
+        "least privilege",
+        "defense in depth",
+        "authorization",
+        "segmentation",
+        "trust boundary",
+        "reversible response"
+      ],
+      "guidance": [
+        "Keep routine monitoring read-only and grant mutation authority only to the narrow response component that requires it.",
+        "Separate observation, decision, authorization, execution, and verification so a compromised layer cannot silently approve its own result.",
+        "Use exact identities and short-lived attestations instead of broad network, process-name, or location-based trust.",
+        "Require multiple independent signals for destructive or availability-impacting decisions and degrade safely when evidence is missing.",
+        "Maintain an offline recovery path and test restoration without weakening live safeguards."
+      ],
+      "limits": [
+        "Zero trust reduces implicit authority; it does not make software, credentials, users, or hardware infallible.",
+        "More controls can increase operational friction and false positives, so exceptions must be narrow, reviewed, and expiring.",
+        "Segmentation limits blast radius but cannot validate the integrity of every endpoint inside a segment."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "Credential replay and remote-service abuse",
+          "defensive_objective": "Bind access to a verified identity, device context, narrow service scope, and fresh evidence rather than network location alone.",
+          "evidence_grade": "corroborated"
+        },
+        {
+          "threat_pattern": "Compromise of one defensive control",
+          "defensive_objective": "Retain independent sensors, authenticated state, bounded response authority, and recovery evidence across separate layers.",
+          "evidence_grade": "sensor-dependent"
+        }
+      ]
+    },
+    {
+      "id": "ssh-defense",
+      "title": "SSH Surface / Key / Tunnel Guard",
+      "summary": "SSH Surface / Key / Tunnel Guard performs bounded read-only inspection of OpenSSH posture, authorized-key fingerprints, host keys, services, listeners, authentication evidence, and tunnel drift with authenticated baselines and privacy tokens. It identifies risky SSH posture and suspicious remote-access changes without collecting private keys, probing a listener, attempting a login, or granting remote control.",
+      "keywords": [
+        "ssh",
+        "openssh",
+        "remote access",
+        "key authentication",
+        "administrator access",
+        "brute force",
+        "service drift",
+        "remote services",
+        "authorized keys",
+        "host keys",
+        "tunnel drift"
+      ],
+      "guidance": [
+        "Confirm whether SSH is intentionally enabled and restrict reachability to the smallest approved network and user population.",
+        "Prefer managed key-based authentication, protect key custody outside Angerona, and disable broad privileged sign-in where the host role permits.",
+        "Review service, listener, authentication-policy, authorized-key fingerprint, host-key, tunnel, and firewall-scope drift together; a single compliant setting is not sufficient evidence.",
+        "Correlate repeated authentication failures, unexpected success, new privileged access, and audit-log continuity before escalating.",
+        "After an approved change, re-check effective service posture and retain the review or response receipt."
+      ],
+      "limits": [
+        "Observation cannot prove that an upstream identity system, stolen private key, firmware layer, or remote client is uncompromised.",
+        "Disabled or cleared authentication logs reduce confidence and must be reported as a visibility gap rather than a clean result.",
+        "Angerona does not store SSH private keys, probe listeners, perform remote logins, or automatically rewrite remote-access policy."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "SSH remote services and valid-account abuse mapped to T1021.004 and T1078",
+          "defensive_objective": "Reduce exposure, constrain identities, detect policy drift, and correlate authentication outcomes with process and network evidence.",
+          "evidence_grade": "corroborated"
+        },
+        {
+          "threat_pattern": "Authentication telemetry suppression",
+          "defensive_objective": "Treat missing or discontinuous logs as degraded coverage and seek independent service, process, and connection evidence.",
+          "evidence_grade": "sensor-dependent"
+        }
+      ]
+    },
+    {
+      "id": "audit-log-integrity",
+      "title": "Audit-log clearing and telemetry continuity defense",
+      "summary": "Audit Log Integrity Guard observes Windows log-clearing indicators, audit-policy drift, logging-service impairment, channel retention gaps, record reuse, and authenticated cursor tampering. It anchors channel generations and omits raw event payloads. Log erasure is reported as a visibility and integrity incident, never interpreted as proof that no activity occurred.",
+      "keywords": [
+        "event log clearing",
+        "audit log erased",
+        "windows event log",
+        "log deletion",
+        "telemetry continuity",
+        "audit policy drift",
+        "cursor tampering",
+        "T1070.001"
+      ],
+      "guidance": [
+        "Check the Audit Log Integrity Guard health and review which channel, continuity generation, and evidence class produced the alert.",
+        "Corroborate a clearing or gap signal with service state, audit-policy changes, process telemetry, evidence custody records, and any independent forwarding destination.",
+        "Preserve authenticated checkpoints and retained evidence before changing retention or restarting a logging component.",
+        "Treat an unreadable or unauthenticated checkpoint as untrusted state; do not silently create a clean continuity baseline over it.",
+        "Restore visibility first, then investigate the interval that cannot be proven complete."
+      ],
+      "limits": [
+        "A user-mode guard cannot guarantee evidence survival after full host compromise, offline disk modification, or firmware compromise.",
+        "A continuity gap establishes missing confidence, not the exact activity that occurred during the gap.",
+        "Independent append-only forwarding and protected backups remain important defense-in-depth controls."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "Clear Windows event logs mapped to T1070.001",
+          "defensive_objective": "Detect explicit clearing indicators and discontinuities, authenticate cursor state, and preserve independent evidence.",
+          "evidence_grade": "corroborated"
+        },
+        {
+          "threat_pattern": "Impair defences through audit-policy or logging-service changes mapped to T1562.002",
+          "defensive_objective": "Correlate policy drift, service impairment, channel health, and gaps instead of trusting one event source.",
+          "evidence_grade": "sensor-dependent"
+        }
+      ]
+    },
+    {
+      "id": "network-trust",
+      "title": "Paranoid Wi-Fi and Ethernet network trust",
+      "summary": "Zero-Trust Network Path Monitor evaluates every active non-loopback physical Wi-Fi or Ethernet path as untrusted by default. It tokenizes local identifiers and evaluates security posture, route and infrastructure drift, interface generation, and an optional independently verified gateway attestation. A private network label or private address does not establish identity.",
+      "keywords": [
+        "wifi",
+        "wireless",
+        "ethernet",
+        "router compromise",
+        "network trust",
+        "gateway drift",
+        "dns drift",
+        "dhcp drift",
+        "untrusted network"
+      ],
+      "guidance": [
+        "Assume a directly attached router, access point, switch, DNS service, and DHCP service may be hostile until separately verified.",
+        "Compare the current interface generation and infrastructure tokens with the approved baseline, but do not turn a baseline match into endpoint trust.",
+        "Use restrictive host firewall policy, encrypted application protocols, endpoint identity checks, and narrow egress even on familiar networks.",
+        "Escalate unexpected route, gateway, DNS, DHCP, Wi-Fi security, or interface-generation changes for operator review.",
+        "Re-establish trust after roaming, resume, adapter reset, or topology change instead of carrying forward a stale decision."
+      ],
+      "limits": [
+        "The evaluator is pure and observation-driven; it does not discover devices, reconfigure a router, or change routes and firewall rules.",
+        "A strong Wi-Fi mode protects the radio link but does not prove that the router, provider, DNS path, or destination is trustworthy.",
+        "An attested gateway labels only one path and does not grant trust to resources reached through that path."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "Compromised edge device, rogue access point, or infrastructure redirection",
+          "defensive_objective": "Default the path to untrusted, detect topology drift, preserve encrypted endpoint identity, and constrain host traffic.",
+          "evidence_grade": "sensor-dependent"
+        }
+      ]
+    },
+    {
+      "id": "personal-sentinel-gateway",
+      "title": "Personal Sentinel Gateway intermediate firewall",
+      "summary": "The Personal Sentinel Gateway capability is a vendor-neutral attestation client for an operator-controlled intermediate router or firewall placed between the protected host and an upstream router. Enrollment is explicit and narrow. Normal certificate validation, an additional certificate pin, a policy digest, nonce freshness, bounded responses, and fail-closed verification establish only the gateway path state.",
+      "keywords": [
+        "personal router",
+        "intermediate router",
+        "personal firewall",
+        "sentinel gateway",
+        "router attestation",
+        "firewall appliance",
+        "upstream router",
+        "network isolation"
+      ],
+      "guidance": [
+        "Place an operator-controlled firewall or router between the host and the less-trusted upstream network when the topology permits.",
+        "Enroll one explicit private or loopback gateway endpoint with its expected certificate pin and policy digest; do not use discovery or broad trust.",
+        "Require normal certificate-chain and hostname validation in addition to pinning, and reject redirects, proxy inheritance, stale attestations, and nonce mismatch.",
+        "Use gateway attestation as one layer alongside host firewall policy, endpoint authentication, encrypted protocols, and independent monitoring.",
+        "On any attestation failure, label the path untrusted and preserve the reason for review rather than silently accepting the last known state."
+      ],
+      "limits": [
+        "The client attests a gateway policy state; it is not a router-management interface and cannot configure vendor devices.",
+        "A valid attestation does not prove the gateway firmware, upstream router, service provider, or destination is uncompromised.",
+        "Angerona stores no router credentials and exposes no route or firewall mutation interface through this capability."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "Network edge manipulation and policy rollback",
+          "defensive_objective": "Verify a fresh nonce-bound policy attestation over a pinned authenticated channel and fail closed on drift or replay.",
+          "evidence_grade": "attested-path"
+        }
+      ]
+    },
+    {
+      "id": "live-defense-activity",
+      "title": "Live Defense Activity dashboard privacy boundary",
+      "summary": "Live Defense Activity is a cosmetic operational view of coarse module health and recent sanitized EventBus summaries. It requests at most sixteen recent events, displays at most five rows, and refreshes only through the existing dashboard cadence. It never reads event details, raw payloads, source code, local identifiers, secrets, or private model reasoning.",
+      "keywords": [
+        "live defense activity",
+        "event bus",
+        "dashboard activity",
+        "module running",
+        "module degraded",
+        "privacy",
+        "live thinking"
+      ],
+      "guidance": [
+        "Use the card to confirm that observable defensive modules and the EventBus are active, then open the dedicated evidence surface for investigation.",
+        "Interpret the running and degraded counts as coarse health, not as proof that every sensor is complete or trustworthy.",
+        "Hover the card for its explicit privacy and display limits.",
+        "Use Live Alerts, Forensics, or Local SOC when more context is required; the activity card intentionally cannot reveal raw event details."
+      ],
+      "limits": [
+        "The card is not a debugger, code tracer, evidence viewer, or model-reasoning display.",
+        "Sanitized summaries can omit context needed for attribution or response decisions.",
+        "An idle card can mean no retained recent publications; it does not prove that the host is safe."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "Operator visibility overload or accidental sensitive-data exposure",
+          "defensive_objective": "Provide bounded operational awareness while keeping raw evidence and private reasoning behind dedicated trust boundaries.",
+          "evidence_grade": "advisory"
+        }
+      ]
+    },
+    {
+      "id": "response-evidence",
+      "title": "Evidence-led response and recovery",
+      "summary": "State-grade defense assumes that individual telemetry sources, administrative sessions, and recovery mechanisms may be targeted. Angerona therefore separates observe-only evidence from response authority, stages consequential changes for confirmation, favors reversible containment, authenticates durable state where supported, and records verification receipts.",
+      "keywords": [
+        "evidence",
+        "containment",
+        "response",
+        "rollback",
+        "recovery",
+        "authorization",
+        "receipts",
+        "corroboration"
+      ],
+      "guidance": [
+        "Preserve the minimum evidence needed to explain the decision before altering the affected process, network path, service, or policy.",
+        "Verify target identity and freshness at execution time; names and earlier snapshots alone are not sufficient authority.",
+        "Choose reversible containment before destructive response when risk and timing permit.",
+        "Keep recovery material and evidence copies outside the same administrative and storage boundary as the protected host.",
+        "After response, verify the intended postcondition and investigate any mismatch instead of treating an issued request as success."
+      ],
+      "limits": [
+        "Cryptographic authentication detects alteration but does not guarantee that the original observation was complete or correct.",
+        "Containment can interrupt legitimate work and may cause an adversary to change behavior, so scope and timing remain operator decisions.",
+        "Backups are useful only when restoration, custody, integrity, and dependency recovery are tested."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "Living-off-the-land activity mixed with legitimate administration",
+          "defensive_objective": "Correlate identity, process ancestry, behavior, network evidence, and change authorization rather than blocking on a binary name alone.",
+          "evidence_grade": "corroborated"
+        },
+        {
+          "threat_pattern": "Recovery inhibition and evidence destruction",
+          "defensive_objective": "Protect independent backups, authenticated checkpoints, append-only evidence, and tested offline recovery paths.",
+          "evidence_grade": "corroborated"
+        }
+      ]
+    },
+    {
+      "id": "state-grade-mappings",
+      "title": "Defensive state-grade tradecraft mappings",
+      "summary": "These mappings describe high-capability defensive concerns without attributing activity to any government, organization, or campaign. A technique match is not attribution. Escalation should be based on evidence quality, impact, scope, persistence, and control-plane risk rather than a prestigious threat label.",
+      "keywords": [
+        "state-grade",
+        "advanced tradecraft",
+        "defense evasion",
+        "identity compromise",
+        "living off the land",
+        "supply chain",
+        "control plane",
+        "attribution"
+      ],
+      "guidance": [
+        "Map observations to behaviors and defensive objectives while keeping attribution explicitly unassessed.",
+        "Prioritize control-plane, identity, telemetry, backup, signing, update, and network-edge integrity because compromise there can invalidate many downstream signals.",
+        "Hunt for low-and-slow sequences across authentication, policy, process, network, and evidence continuity instead of relying only on single high-severity alerts.",
+        "Treat signed binaries, familiar tools, valid accounts, and approved network locations as inputs to verification, not automatic trust.",
+        "Increase assurance through independent sensors and offline verification rather than by collecting more copies of the same upstream signal."
+      ],
+      "limits": [
+        "Behavioral mappings cannot identify an actor and should not be presented as attribution.",
+        "Absence of a mapped technique is not proof of absence; collection and retention gaps must remain visible.",
+        "High-capability defense still depends on timely patching, secure administration, hardware trust, and practiced recovery outside Angerona."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "Valid accounts, remote services, and quiet lateral movement",
+          "defensive_objective": "Constrain identity scope, verify device and session context, detect anomalous sequences, and segment access paths.",
+          "evidence_grade": "corroborated"
+        },
+        {
+          "threat_pattern": "Telemetry tampering, policy drift, and defense impairment",
+          "defensive_objective": "Authenticate continuity state, monitor sensor health independently, and preserve off-host evidence and recovery.",
+          "evidence_grade": "corroborated"
+        },
+        {
+          "threat_pattern": "Trusted-tool and supply-chain abuse",
+          "defensive_objective": "Verify provenance and effective behavior, narrow update authority, and detect drift from reviewed baselines.",
+          "evidence_grade": "sensor-dependent"
+        },
+        {
+          "threat_pattern": "Long-dwell collection with minimal observable noise",
+          "defensive_objective": "Retain bounded longitudinal baselines, correlate weak signals, and review unexplained changes in identity and control-plane state.",
+          "evidence_grade": "sensor-dependent"
+        }
+      ]
+    },
+    {
+      "id": "operational-limits",
+      "title": "Security limits and assurance tradeoffs",
+      "summary": "No defensive product is one hundred percent secure. Angerona improves detection, visibility, evidence quality, and governed response, but it cannot guarantee prevention or replace secure architecture, patching, identity governance, network segmentation, protected backups, hardware and firmware assurance, and trained human review.",
+      "keywords": [
+        "limits",
+        "not one hundred percent",
+        "false positive",
+        "false negative",
+        "coverage gap",
+        "assurance",
+        "tradeoff",
+        "risk"
+      ],
+      "guidance": [
+        "Track what each sensor can and cannot observe, and make unknown or stale coverage visible instead of defaulting it to healthy.",
+        "Balance collection depth against performance, privacy, retention, and operator workload; keep high-value evidence and bound noisy data.",
+        "Exercise self-tests, benign simulations, backup restoration, and rollback paths before an incident.",
+        "Review exceptions and trusted identities regularly, remove unused authority, and investigate unexpected expansion in scope.",
+        "Use independent external controls when a single-host suite cannot provide the required assurance."
+      ],
+      "limits": [
+        "False positives and false negatives remain possible even when every module reports healthy.",
+        "A compromised administrator, kernel, hypervisor, firmware layer, or supply chain can undermine user-mode observations.",
+        "Cloud fallback is optional and receives only redacted operator text, coarse posture, and selected excerpts from this pinned Defense Memory; live telemetry and arbitrary runbooks remain local."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "Assurance failure caused by over-trusting one healthy control",
+          "defensive_objective": "Expose uncertainty, retain independent verification, and test recovery under the assumption that one layer can fail.",
+          "evidence_grade": "advisory"
+        }
+      ]
+    }
+  ]
+}

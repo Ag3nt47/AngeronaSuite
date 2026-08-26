@@ -1,0 +1,50 @@
+[
+  {
+    "id": "R2-01",
+    "title": "Matching authenticated state pairs can be rolled back after a newer revision",
+    "severity": "MEDIUM",
+    "component": "src/angerona/core/event_log_integrity.py:324-379,507-540,575-684; src/angerona/core/network_trust.py:892-920,1076-1180; src/angerona/core/personal_sentinel_gateway.py:478-496,862-1036",
+    "status": "DEFERRED",
+    "recommendation": "Bind separate audit/network revisions and state digests to an independently administered, server-enforced monotonic append-only head (or a policy-bound TPM high-water value), reject behind/forked state on load, and define bounded provisional offline, crash, migration, restore, clone, witness-loss and re-enrollment behavior. A third local HMAC file is not independent custody; do not claim resistance to Administrator/SYSTEM denial or kernel/firmware compromise."
+  },
+  {
+    "id": "R2-02",
+    "title": "Per-user SSH sources are resolved against the config directory and replacement custody is incomplete",
+    "severity": "MEDIUM",
+    "component": "src/angerona/core/ssh_surface.py:946-1006,1028-1046,1204-1315,1318-1382,1504-1585; src/angerona/modules/ssh_surface_guard.py:296-330,530-591",
+    "status": "FIXED",
+    "recommendation": "Implement bounded directive-specific OpenSSH per-user expansion and plain-relative-home semantics with explicit incomplete/unresolved states, then verify target and parent-chain Windows owner/DACL/delete/rename/FILE_DELETE_CHILD replacement custody under user-aware policy and bind the normalized result to the authenticated baseline."
+  },
+  {
+    "id": "R2-03",
+    "title": "The 64-interface collector cap can hide a standby route while completeness remains asserted",
+    "severity": "LOW",
+    "component": "src/angerona/modules/network_trust_monitor.py:351-387,520-603,685-836",
+    "status": "FIXED",
+    "recommendation": "Detect interface overflow before slicing/filtering, carry explicit interface/rejected-row/per-family completeness into snapshots, and refuse gateway attestation in both pre- and post-exchange checks whenever any active interface or default-route candidate was omitted."
+  },
+  {
+    "id": "R2-04",
+    "title": "A transient Windows OpenSSH source-open failure is never retried",
+    "severity": "LOW",
+    "component": "src/angerona/modules/ssh_surface_guard.py:202,336-406,452-487",
+    "status": "FIXED",
+    "recommendation": "Use a bounded source lifecycle with capped exponential reopen backoff, explicit degraded/recovered health, stale-source close/reopen after repeated query failures, and bounded-tail cursor reinitialization without claiming lost history was recovered."
+  },
+  {
+    "id": "R2-05",
+    "title": "SSH forwarding option normalization misses real tunnels and creates false High alerts",
+    "severity": "LOW",
+    "component": "src/angerona/core/ssh_surface.py:1692-1716,1930-2028; src/angerona/modules/ssh_surface_guard.py:659-682",
+    "status": "FIXED",
+    "recommendation": "Parse a strict bounded SSH option grammar with argument consumption for direct and supported -o forwarding/tunnel forms, remove substring matching, label -F client configuration uninspected unless separately admitted, and retain only normalized flags/completeness rather than raw arguments or endpoints."
+  },
+  {
+    "id": "R2-06",
+    "title": "Audit XML classification accepts foreign providers and attacker-shaped field keys",
+    "severity": "LOW",
+    "component": "src/angerona/core/windows_event_log.py:32-55,90-117; src/angerona/core/event_log_integrity.py:143-164,206-266; src/angerona/modules/audit_log_guard.py:148-166,296-331",
+    "status": "FIXED",
+    "recommendation": "Admit authoritative channel/provider/event-ID triples, require the XML channel to match the fixed source, map per-event typed values to fixed Angerona-owned keys with privacy filtering, and advance rejected record IDs with a bounded schema/provider-rejected coverage signal."
+  }
+]

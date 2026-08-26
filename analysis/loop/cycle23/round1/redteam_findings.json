@@ -1,0 +1,74 @@
+[
+  {
+    "id": "R1-01",
+    "title": "A missing checkpoint silently baselines past retained log-clear evidence",
+    "severity": "MEDIUM",
+    "component": "src/angerona/modules/audit_log_guard.py:150-191,281-301; src/angerona/core/event_log_integrity.py:186-204,257-360",
+    "status": "FIXED",
+    "recommendation": "Persist a separately authenticated installation epoch outside the replaceable cursor; reject link/reparse and unstable file identities, enforce monotonic anti-rollback, treat a post-install missing checkpoint as untrusted, replay a bounded retained window including explicit clear/tamper event IDs on genuine first enrollment, and promote only after stable anchors."
+  },
+  {
+    "id": "R1-02",
+    "title": "The continuity guard can bridge old rows to a post-clear terminal anchor",
+    "severity": "LOW",
+    "component": "src/angerona/modules/audit_log_guard.py:206-265,281-301",
+    "status": "FIXED",
+    "recommendation": "Stage records, revalidate both the original admission anchor and terminal anchor immediately before an expected-prior checkpoint commit, discard the batch and report/replay on any generation change, and publish only after the transition succeeds."
+  },
+  {
+    "id": "R1-03",
+    "title": "Effective SSH configuration and key custody are not baselined across configured sources",
+    "severity": "MEDIUM",
+    "component": "src/angerona/core/ssh_surface.py:375-456,861-925,1047-1123; src/angerona/modules/ssh_surface_guard.py:279-306,377-407",
+    "status": "FIXED",
+    "recommendation": "Resolve and aggregate-hash a strictly bounded, canonical, reparse-safe include graph; inventory configured key/CA/principals sources; flag command-backed sources explicitly; and add native Windows ACL custody verification to the authenticated baseline."
+  },
+  {
+    "id": "R1-04",
+    "title": "Default Windows OpenSSH authentication and non-service tunnel activity are blind",
+    "severity": "MEDIUM",
+    "component": "src/angerona/core/ssh_surface.py:1338-1443,2057-2070; src/angerona/modules/ssh_surface_guard.py:246-334",
+    "status": "FIXED",
+    "recommendation": "Add a fixed-provider, bounded OpenSSH Windows event-channel adapter and enumerate sshd.exe/ssh.exe process and socket evidence bound to PID birth and executable identity, retaining only normalized forwarding flags and keyed endpoints with explicit source-completeness state."
+  },
+  {
+    "id": "R1-05",
+    "title": "Network drift state and collection quality reset across process restarts",
+    "severity": "MEDIUM",
+    "component": "src/angerona/modules/network_trust_monitor.py:60-73,125-171,287-359,375-390,530-552; src/angerona/core/network_trust.py:583-599",
+    "status": "FIXED",
+    "recommendation": "Use a purpose-derived stable key and strict HMAC-authenticated persisted baseline with provisional/trusted states; expose per-interface/family completeness, withhold healthy baseline promotion when incomplete, enforce child-output limits during pipe reads, and collect DNS/DHCP/routes/neighbors with structured interface binding."
+  },
+  {
+    "id": "R1-06",
+    "title": "Gateway attestation labels an interface despite competing or unobserved egress routes",
+    "severity": "MEDIUM",
+    "component": "src/angerona/modules/network_trust_monitor.py:207-224,410-478; src/angerona/core/network_trust.py:402-425",
+    "status": "FIXED",
+    "recommendation": "Bind attestation to the selected default egress route for each family, including interface index, gateway, metric and interface epoch before and after exchange; represent trust per route/family, collect Windows IPv4 and IPv6 routes, and keep the interface untrusted on incomplete or competing bypass paths."
+  },
+  {
+    "id": "R1-07",
+    "title": "Live defense messages can expose MAC/SSID/user text and path fragments",
+    "severity": "LOW",
+    "component": "src/angerona/gui/live_defense_activity.py:27-81,89-124; src/angerona/modules/arp_watchdog.py:171-179,278-287",
+    "status": "FIXED",
+    "recommendation": "Define and enforce an identity-free EventBus public-message contract, add MAC/SSID and robust spaced/quoted-path redaction, and test the live card with actual messages from identifier-bearing producers."
+  },
+  {
+    "id": "R1-08",
+    "title": "The network monitor's advertised non-Windows support is skipped by preflight",
+    "severity": "INFO",
+    "component": "src/angerona/modules/network_trust_monitor.py:362-373; src/angerona/core/platforms.py:140-172; src/angerona/core/module_manager.py:142-159",
+    "status": "FIXED",
+    "recommendation": "Add a literal module-level SUPPORTED_PLATFORMS tuple and non-Windows discovery regressions while preserving the conservative Windows-only default for undeclared legacy modules."
+  },
+  {
+    "id": "R1-09",
+    "title": "Defense Memory reads an unbounded, reparse-following asset before enforcing its cap",
+    "severity": "LOW",
+    "component": "src/angerona/core/defense_memory.py:234-263,374-386",
+    "status": "FIXED",
+    "recommendation": "Require a regular resource-root-contained non-reparse file, open it once with no-follow/stable-identity checks, read at most MAX_FILE_BYTES plus one, and retain the existing canonical digest, strict schema, structure and governance validation after the bounded read."
+  }
+]

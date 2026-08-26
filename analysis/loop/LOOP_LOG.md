@@ -1521,3 +1521,295 @@ boundaries, and primary-source citations are in
   width. Accessibility audit reported zero high findings in all documents and
   zero medium findings in both assessments; the master retains seven intentional
   no-header layout-table notices (six one-cell callouts plus its footer).
+
+## Cycle 23 Round 1 — Red Team (2026-08-26)
+
+- **R1-01 MEDIUM:** missing event-log checkpoints baseline at newest and can silently skip an already-retained clear event.
+- **R1-02 LOW:** a clear/refill after the post-query anchor check can bridge old rows to a replacement-generation terminal checkpoint, but physical WEVT timing/record-ID recreation was not demonstrated.
+- **R1-03 MEDIUM:** SSH baseline coverage excludes included configuration bytes, configured custom key/CA/principals sources, and verified Windows ACL custody.
+- **R1-04 MEDIUM:** default Windows OpenSSH event-channel evidence, non-service `sshd.exe`, and client-side tunnel processes are outside current runtime/log coverage.
+- **R1-05 MEDIUM:** zero-trust network drift state uses an ephemeral key/in-memory baseline, while incomplete first collection can still report healthy.
+- **R1-06 MEDIUM:** gateway attestation labels an interface when the enrolled gateway is merely one route; competing metrics and Windows IPv6 egress are not bound.
+- **R1-07 LOW:** live activity public messages can retain MAC/SSID/user text and fragments of Windows paths containing spaces.
+- **R1-08 INFO:** non-Windows discovery skips the network monitor because it lacks the required module-level literal platform declaration.
+- **R1-09 LOW:** Defense Memory follows and fully reads its asset before enforcing the 64-KiB cap, allowing resource pressure before digest rejection.
+- New findings: **9 open — 0 Critical, 0 High, 5 Medium, 3 Low, 1 Info**. Prior items explicitly rechecked: **1 resolved, 3 still open/architectural**. Focused regressions: **104 passed, 1 skipped**. Full evidence: `analysis/loop/cycle23/round1/redteam_findings.md`.
+
+## Cycle 23 Round 1 — Remediation (2026-08-26)
+
+- **R1-01/R1-02 FIXED:** event-log coverage now has a separate authenticated
+  enrollment epoch, monotonic CAS cursor, stable non-reparse I/O, oldest-retained
+  bounded replay, staged evidence, and pre/post-commit generation validation.
+- **R1-03/R1-04 FIXED:** SSH coverage now aggregate-hashes bounded Include and
+  configured key-authority sources, verifies Windows ACL custody, reads fixed
+  OpenSSH event channels, and observes non-service server/client process,
+  forwarding and socket evidence with explicit completeness. Authenticode stays
+  explicitly unavailable rather than being falsely asserted.
+- **R1-05/R1-06 FIXED:** network drift uses stable purpose keys and an
+  authenticated provisional/trusted baseline; incomplete collection cannot
+  enroll or advance it. Gateway labels require complete IPv4/IPv6 evidence,
+  one selected route per family, matching interface index/epoch, no competitor,
+  and unchanged pre/post-exchange context.
+- **R1-07/R1-08/R1-09 FIXED:** public dashboard messages redact local identity
+  and spaced paths, cross-platform AST discovery sees the network monitor, and
+  Defense Memory uses bounded root-confined stable non-reparse admission.
+- Gates: compile PASS; Ruff PASS; **134 passed, 2 skipped, 0 failed**; Audit Log,
+  Network Trust, SSH Surface and ARP Watchdog self-tests PASS. Full evidence:
+  `analysis/loop/cycle23/round1/remediation_summary.md`.
+
+## Cycle 23 Round 1 — Bug Test (2026-08-26)
+
+- Compiled **320/320** package files; imported **73/73** module files; discovered
+  **71/71** module classes with zero errors or duplicate names/codes; all
+  **57/57** optional registration hooks and **22/22** core/Shark self-tests
+  passed.
+- Direct and batch selfcheck each passed **26/26**. The module harness had
+  **50 genuine passes / 13 inactive-or-optional skips / 5 operator-disabled
+  skips / 3 platform skips / 0 genuine failures**, plus a passing EventBus
+  pipeline.
+- The focused Cycle 23 set passed **126 / 2 host-capability skips / 0 failures**;
+  the complete serial suite collected 1,436 tests and passed **1,431 / 5
+  intentional skips / 0 failures** across 207 files. Ruff also passed.
+- **QA-R1-01 MEDIUM — REPORTED:** both event-log and network continuity stores
+  reject a missing or tampered member, but a previously valid matching
+  cursor/enrollment pair can be replayed after a newer revision and is accepted
+  as current. Correct repair needs an independent monotonic/append-only witness
+  plus migration and recovery policy; no unsafe local patch was applied.
+- Bugs fixed: **0**. Bugs reported: **1**. Full evidence:
+  `analysis/loop/cycle23/round1/bugtest_results.md`.
+
+## Cycle 23 Round 1 — Performance (2026-08-26)
+
+- Quiescent audit polls now re-read and authenticate both continuity documents
+  without replacing/`fsync`ing identical state. Median checkpoint work improved
+  from **42.189 ms to 1.001 ms (97.6%)**, avoiding up to **43,200** idle durable
+  replacements per day at the unchanged four-second cadence.
+- SSH runtime inventory now requests command lines only for admitted SSH client
+  processes. The measured process-enumeration phase improved from **41.050 ms
+  to 3.726 ms (90.9%)** while preserving process/socket evidence and forwarding
+  findings.
+- The network monitor still scans every collector-supplied link/route, but no
+  longer rebuilds an already-untrusted immutable snapshot. The declared-bound
+  benchmark improved from **1,319.25 us to 88.70 us (93.3%)**; forged positive
+  attestation flags are still stripped.
+- Compile and Ruff passed; focused gates passed **112 tests / 2 intentional
+  host-capability skips / 0 failures**, and all three affected module self-tests
+  passed. Windows inventory-process coalescing, a narrow post-attestation route
+  observer, and event-driven WEVT delivery remain proposals pending dedicated
+  completeness/race proofs. Full evidence:
+  `analysis/loop/cycle23/round1/performance_summary.md`.
+
+## Cycle 23 Round 2 — Red Team (2026-08-26)
+
+- **R2-01 MEDIUM:** replaying both members of an older valid event/network state pair is accepted after a newer revision because neither store has independent high-water custody.
+- **R2-02 MEDIUM:** relative per-user SSH key/principals sources resolve against the config directory, and file-only Windows ACL checks omit parent replacement custody.
+- **R2-03 LOW:** the unreported 64-interface cap can omit a standby route while route/interface completeness remains asserted, allowing a positive gateway context the full view rejects.
+- **R2-04 LOW:** one transient Windows OpenSSH source-open failure is never retried until module reconstruction, although the unavailable state remains fail visible.
+- **R2-05 LOW:** SSH option normalization misses split `-o RemoteForward` forms and substring-matches unrelated long options into false High forwarding alerts.
+- **R2-06 LOW:** audit classification does not bind provider/XML channel and preserves attacker-shaped field names or allowlisted values in EventBus details.
+- New findings: **6 open — 0 Critical, 0 High, 2 Medium, 4 Low, 0 Info**. Round 1 exact red-team behaviors: **9 resolved, 0 reopened**; QA-R1-01: **1 still open**; older architectural residuals: **3 still open**. Focused regression gate: **5 passed**. Full evidence: `analysis/loop/cycle23/round2/redteam_findings.md`.
+
+## Cycle 23 Round 2 — Remediation (2026-08-26)
+
+- **R2-01 DEFERRED:** both authenticated stores now support a strictly injected,
+  separate-domain monotonic high-water contract and reject witnessed
+  behind/fork/clone state. Offline, migration, witness-loss, and external-first
+  crash cases are fail-visible and non-advancing. No server/TPM authority is
+  implemented or claimed; the existing Personal Sentinel compact receipt is
+  not promoted to anti-rollback authority without server-enforced monotonic CAS.
+- **R2-02/R2-04/R2-05 FIXED:** per-user SSH sources use bounded home/token
+  semantics and explicit incomplete states; Windows custody covers the full
+  parent replacement chain; event sources use capped reopen backoff with honest
+  history bounds; forwarding classification uses a strict consuming grammar
+  and normalized completeness labels only.
+- **R2-03 FIXED:** omitted interfaces, rejected/overflow route rows, and
+  incomplete address evidence clear authenticated completeness tokens, so both
+  pre- and post-exchange Personal Sentinel labeling fail closed.
+- **R2-06 FIXED:** audit events require authoritative channel/provider/event
+  identity, publish fixed privacy-safe keys, and advance rejected parseable
+  record IDs with bounded Angerona-owned rejection reasons.
+- Gates: compile PASS; Ruff PASS; **135 passed, 2 existing host-capability
+  skips, 0 failed**; network core plus Audit Log, Network Trust, and SSH Surface
+  self-tests PASS. Full evidence:
+  `analysis/loop/cycle23/round2/remediation_summary.md`.
+
+## Cycle 23 Round 2 — Bug Test (2026-08-26)
+
+- Compiled **321/321** package files; imported **73/73** module files; native
+  discovery created **71/71** module classes with zero errors or duplicate
+  names/non-empty codes. All **58/58** zero-argument compatibility hooks and
+  **22/22** standalone core/Shark self-tests passed.
+- Direct and batch selfcheck each passed **26/26**. The internal harness had
+  **50 module passes / 0 failures / 21 expected skips**, plus one passing
+  EventBus pipeline.
+- The focused Round 2 set passed **135 / 2 host-capability skips / 0 failures**.
+  Ruff passed, and the complete serial suite collected 1,460 tests across 208
+  files and finished **1,455 passed / 5 intentional skips / 0 failed**.
+- **QA-R2-01 FIXED:** added the omitted optional `register()` and `__all__`
+  compatibility exports for the new SSH Surface guard; changed-file compile,
+  Ruff, SSH tests, registration discovery, and the full suite all passed.
+- **R2-01 remains REPORTED/DEFERRED:** the injected audit/network high-water
+  contract rejects behind/fork/clone state and makes outage, migration, and
+  external-first crashes fail visible, but no separately administered server
+  or TPM authority is bundled. Without one, matching older local HMAC pairs
+  remain locally authentic and explicitly not independently fresh.
+- Bugs fixed: **1**. Bugs reported: **1 retained architectural residual**.
+  Full evidence: `analysis/loop/cycle23/round2/bugtest_results.md`.
+
+## Cycle 23 Round 2 — Performance (2026-08-26)
+
+- Per-user SSH `%h`/`%u`/`%U`/`%%` source expansion now uses an exact
+  no-token fast path and one-pass bounded token scanning instead of repeated
+  cumulative-length rescans. Maximum-size `%%` input improved from **213.317
+  ms to 1.335 ms (99.4%)**; a mixed over-limit fail-closed input improved from
+  **70.783 ms to 0.827 ms (98.8%)**.
+- Token grammar, ProgramData substitution, account/UID requirements,
+  relative-home containment, privacy output, and the 4,096-character cap are
+  unchanged. A randomized **2,000-case** differential corpus matched, then
+  compile, Ruff, the module self-test, and the focused SSH suite passed.
+- Final gates: changed-file compile PASS; Ruff PASS; SSH Surface Guard
+  `self_test()` PASS; **33 passed / 1 expected host-capability skip / 0
+  failed**.
+- Exact audit sanitizer translation, fixed XPath precomputation, ASCII byte-cap
+  admission, direct EventData iteration, and malformed-marker early rejection
+  remain measured proposals. No high-water/anchor/route/completeness/freshness
+  check or polling/retry cadence was changed. Full evidence:
+  `analysis/loop/cycle23/round2/performance_summary.md`.
+
+## Cycle 23 Round 2 — Visionary (2026-08-26)
+
+- Reviewed five actor-neutral candidates and selected **no MVP**. No product,
+  test, configuration, asset, README, manual, or `llms.txt` file changed.
+- A separately administered Personal Sentinel monotonic witness remains
+  **PROPOSED/DEFERRED**. It must enforce per-installation/per-domain CAS on a
+  separate device/service under independent administration; an on-host file,
+  receipt, database, or test fixture is not anti-rollback custody.
+- Local semantic-correlation and ambient-telemetry variants were deprioritized:
+  Evidence Lattice, incidents, Telemetry Expectations, Canary Drill silence
+  checks, and module health already cover their useful local mechanics. A new
+  wrapper would need a proven non-overlap and typed recovery semantics.
+- Resource-scoped gateway assurance leases and SSH key-to-session provenance
+  remain proposals pending policy/enforcement and authoritative event-schema
+  design. Full scorecard and trust boundary:
+  `analysis/loop/cycle23/round2/visionary_summary.md`.
+
+## Round 3 — Red Team (Cycle 23, 2026-08-26)
+
+- **R3-01 MEDIUM:** a newly observed physical network path updates only the
+  in-memory trusted baseline; the authenticated pair remains stale, and a
+  restart reloads the old path set without a drift finding. Recommended repair:
+  emit interface-set drift and require gated reconciliation/persistence.
+- Prior accounting: 14 Cycle 23 findings remain verified fixed; R2-01 remains
+  honestly deferred to a separately administered monotonic authority. The
+  stale A-07 entry is verified resolved (SHA-256); A-04/A-06/R6-03 are unchanged
+  older architectural residuals, not new Cycle 23 findings.
+
+## Round 3 — Remediation (Cycle 23, 2026-08-26)
+
+- **R3-01 FIXED:** established baselines now produce an explicit bounded,
+  tokenized `network.path_added` finding for a newly observed physical path.
+- Complete addition-only candidates enter the authenticated cursor/epoch pair
+  as provisional through the existing revision/freshness gate and independent
+  high-water CAS when configured. A persisted tokenized pending set requires
+  each added path to remain active and unchanged before promotion. Other drift,
+  freshness loss, a failed transition, absence, or bounded-history eviction
+  freezes the last authenticated comparison state.
+- Restart regressions verify changed new-path evidence survives, stable
+  reconciliation does not rewrite again, and removed paths retain their prior
+  epoch semantics. Endpoint trust and response authority remain false.
+- Gates: compile PASS; Ruff PASS; focused network/high-water/Personal Sentinel
+  suite **92 passed, 0 skipped, 0 failed**; **2/2** network self-tests PASS.
+  Full evidence: `analysis/loop/cycle23/round3/remediation_summary.md`.
+
+## Cycle 23 Round 3 — Bug Test (2026-08-26)
+
+- Compiled **321/321** product Python files; imported **73/73** module files;
+  native discovery created **71/71** modules with zero errors or duplicate
+  names/non-empty codes. All **58/58** compatibility hooks and **22/22**
+  standalone core/Shark self-tests passed.
+- Direct and batch selfcheck each passed **26/26**. The internal harness had
+  **50 module passes / 0 failures / 21 expected skips**, plus one passing
+  EventBus pipeline.
+- The focused Cycle 23/R3 security and integration gate passed **155 tests / 2
+  expected host skips / 0 failures**. It independently confirms provisional
+  path-add persistence, add-path restart drift, absent-pending non-promotion,
+  stable active promotion without repeated writes, the 64-link history bound,
+  and conservative provisional schema-v1 pending-token migration.
+- With no external authority, both audit and network state explicitly report
+  `local-authenticity-only` and `independent_freshness_verified=False`.
+  Dashboard, Defense Memory, cloud-egress, observe-only, and privacy boundaries
+  remained green; no Personal Sentinel receipt or local fixture is represented
+  as independent anti-rollback custody.
+- Ruff passed. The complete serial suite collected **1,465 tests across 208
+  files** and finished **1,460 passed / 5 intentional host-capability skips / 0
+  failed**. Documentation counts remain intentionally stale for the final docs
+  agent.
+- Bugs fixed: **0**. Newly reported bugs: **0**. One separately administered
+  monotonic high-water dependency remains honestly deferred. Full evidence:
+  `analysis/loop/cycle23/round3/bugtest_results.md`.
+
+## Cycle 23 Round 3 — Performance (2026-08-26)
+
+- **No production or test change applied.** The Round 3 pending-token and
+  finding-classification work is bounded to 64 paths and introduced no material
+  hot path. Direct state predicates were retained so path-addition, promotion,
+  completeness, history, privacy, freshness/CAS, and observe-only gates remain
+  easy to audit.
+- A 64-path baseline construction measured **23.256 us** with one pending path
+  and **131.025 us** at the artificial 64-pending bound. Set reuse saved only
+  **45.978 us** at that bound and regressed the normal one-pending validation
+  kernel by **15.5%**, so it remains proposal-only.
+- On an evaluator-produced 443-finding stress state, a one-pass drift/addition
+  accumulator regressed from **53.817 us to 56.166 us (4.4%)**. The current
+  short-circuit predicates were retained.
+- End-to-end pure evaluation measured **3.113 ms** for a stable complete
+  64-path state and **2.817 ms** for a complete 63-to-64 path addition. The
+  unchanged 30-second cadence and inventory I/O dominate these bounded costs.
+- Compile and Ruff passed; focused network tests passed **36 / 0 skipped / 0
+  failed**; both affected self-tests passed. Full evidence:
+  `analysis/loop/cycle23/round3/performance_summary.md`.
+
+## Cycle 23 Round 3 — Visionary (2026-08-26)
+
+- Final convergence selected **no MVP** and changed no product, test,
+  configuration, asset, README, manual, or `llms.txt` file.
+- R3-01's authenticated provisional pending-path flow closes the local
+  topology-reconciliation gap; another local path reconciler is no longer a
+  novel candidate.
+- The separately administered monotonic witness remains the highest-value
+  **PROPOSED/DEFERRED** design. Its CAS namespace must live on a separate
+  device/service under independent administration; same-host files, receipts,
+  databases, loopback services, and fixtures are not independent custody.
+- Resource-scoped gateway leases and SSH key-to-session provenance remain
+  proposals. Hardware-rooted Personal Sentinel firmware attestation remains a
+  separate deferred release project. Local correlation/ambient-health wrappers
+  remain deprioritized because existing Evidence Lattice, incidents, Telemetry
+  Expectations, Canary Drill, module health, and the new typed path-addition
+  flow already cover their local mechanics.
+- Full scorecard and trust boundaries:
+  `analysis/loop/cycle23/round3/visionary_summary.md`.
+
+## Cycle 23 — Final text documentation (2026-08-26, v1.10.3)
+
+- Consolidated the three-round record in
+  `analysis/loop/cycle23/summary.md`: **16 findings / 15 fixed / 1 deferred
+  external dependency**, with actor-neutral language, exact shipped/proposed
+  boundaries, performance measurements, final validation, and primary sources.
+- Reordered the public README so purpose, capability map, use cases, platform,
+  installation, validation, and honest limits precede the detailed v1.10.3
+  update notes. Added SSH, audit continuity, physical-network zero trust,
+  Personal Sentinel client topology, Live Defense Activity, and ARIA Defense
+  Memory without claiming an appliance/server, firmware attestation, endpoint
+  trust, independent freshness, live code, or hidden reasoning.
+- Updated `ANGERONA_CAPABILITIES.md`, root and analysis `llms.txt`, and
+  `analysis/README.md` to the final evidence: **1,460 passed / 5 expected skips /
+  0 failed from 1,465 tests across 208 files; 321/321 compile; 73/73 module files;
+  71/71 modules; 58/58 compatibility hooks; 22/22 core/Shark self-tests; 50
+  module pass / 0 fail / 21 expected skips plus EventBus; selfcheck 26/26 direct
+  and batch; Ruff clean**.
+- Reconciled `PRIOR_FINDINGS.md`: A-07 is RESOLVED with SHA-256; A-04, A-06,
+  and R6-03 remain architectural/defense-in-depth residuals; independent
+  high-water custody is tracked as the Cycle 23 deferred external dependency.
+- Product version remains **v1.10.3**. The canonical Word manual remains under
+  the coordinator's separate artifact workflow and was not touched by this
+  documentation agent.

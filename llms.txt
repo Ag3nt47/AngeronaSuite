@@ -1,9 +1,72 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
-Version: 1.10.2
-Date: 2026-08-25
+Version: 1.10.3
+Date: 2026-08-26
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
+
+## LATEST (v1.10.3 - Cycle 23 state-grade-pattern defensive hardening)
+
+- Research and detections are actor-neutral. Public CISA, FBI/NSA, NIST,
+  Microsoft, and MITRE reporting is translated into observable SSH, audit-log,
+  tunnel, route, DNS/DHCP, and telemetry-suppression patterns. Do not infer or
+  claim agency/state attribution from these signals.
+- `modules/ssh_surface_guard.py` (`SSHG`) is an observe-only SSH Surface / Key /
+  Tunnel Guard. It baselines bounded Include graphs, configured public-key/CA/
+  principals sources, fingerprints and custody, server/client processes,
+  listeners, fixed OpenSSH event sources, and normalized forwarding grammar.
+  It collects no private keys or credentials, does not retain or publish full
+  command lines or raw endpoints, and never probes or logs in.
+- `modules/audit_log_guard.py` (`ALIG`) observes fixed Windows Security, System,
+  and Sysmon clear/tamper identities, audit-policy/service changes, continuity
+  gaps, record reuse, provider/channel rejection, and authenticated cursor
+  damage. Bounded replay plus staged generation anchors detects clear/refill
+  races without changing or restoring event logs.
+- `modules/network_trust_monitor.py` (`NZTR`) treats every physical Wi-Fi and
+  Ethernet path as untrusted by default and persists tokenized DNS, DHCP, route,
+  gateway, profile, epoch, and path-addition history. Incomplete/overflowed
+  IPv4/IPv6 evidence cannot enroll, advance, or produce a positive gateway label.
+- `core/personal_sentinel_gateway.py` is an explicitly enrolled direct-HTTPS
+  attestation client for one operator-controlled intermediate gateway. It
+  requires platform TLS/hostname validation plus a certificate pin, nonce and
+  freshness, policy digest, peer match, bounded schemas, no proxy/redirect, and
+  unchanged pre/post route context; optional mTLS paths are supported. It is not
+  router discovery/management and contains no router credentials or mutation.
+- Intended topology: `Angerona host -> operator-controlled Personal Sentinel
+  gateway/firewall -> upstream/ISP router -> Internet`. Attestation describes
+  only that exact observed path. It does not trust endpoints, identities,
+  applications, destinations, the upstream router, or gateway firmware.
+- `gui/live_defense_activity.py` adds a five-row sanitized operational card over
+  public EventBus/module state. It never reads Event details, raw telemetry,
+  executing source, hidden AI reasoning, or chain-of-thought.
+- `assets/angerona_defense_memory.json` plus `core/defense_memory.py` provide a
+  strict-schema, bounded, data-only, canonical-SHA-256-pinned reference at
+  `angerona://defense-memory`. ARIA local retrieval uses it for Angerona
+  capability, usage, defensive-measure, and actor-neutral tradecraft questions.
+  It defines no tools/actions. Only selected, bounded, redacted excerpts can
+  cross an already authorized cloud-fallback boundary.
+- `core/independent_high_water.py` defines an injected, privacy-minimal
+  monotonic compare-and-swap contract for audit/network state. No separately
+  administered service or policy-bound TPM authority is bundled. Default state
+  is `local-authenticity-only` with
+  `independent_freshness_verified=false`; the Personal Sentinel compact receipt
+  and in-memory tests are not independent anti-rollback custody.
+- Cycle result: Round 1 fixed 9/9 findings; Round 2 fixed 5/6 and deferred the
+  external high-water authority; Round 3 fixed 1/1. A Round 2 QA compatibility
+  issue added the SSH module's optional `register()` export.
+- Cycle performance: quiescent audit checkpoint work improved 97.6%; measured
+  SSH process enumeration 90.9%; declared-bound network snapshot handling
+  93.3%; and maximum-size per-user SSH token expansion 99.4%. Round 3 applied no
+  optimization because measured candidates did not justify complexity or risk.
+- Final evidence: 1,465 tests across 208 files; **1,460 passed / 5 expected
+  host-capability skips / 0 failed**; compile **321/321**; module imports
+  **73/73**; discovery **71/71**; registration hooks **58/58**; standalone
+  core/Shark self-tests **22/22**; module harness **50 pass / 0 fail / 21
+  expected skips** plus EventBus PASS; direct and batch selfcheck **26/26**;
+  Ruff clean.
+- Not shipped: a Personal Sentinel appliance/server or routing role, firmware or
+  measured-boot attestation, a separately administered monotonic authority,
+  resource-scoped egress leases, and SSH key-to-session provenance.
 
 ## LATEST (v1.10.2 - governed autonomous defense and final improvement loop)
 
@@ -62,7 +125,9 @@ validation.
   model packs, OCSF/Community ID, policy, credentials, secure stores, cases,
   evidence, interoperability, and platform abstractions.
 - `src/angerona/modules/`: independent `BaseModule` detectors and responders.
-  Current frozen discovery: 67 modules, no duplicate names or codes.
+  Current discovery: 71 modules, no duplicate names or non-empty codes. Cycle 23
+  adds Audit Log Integrity Guard, SSH Surface / Key / Tunnel Guard, and
+  Zero-Trust Network Path Monitor.
 - `src/angerona/gui/`: Classic dashboard, Flow Dashboard / Local SOC, Settings,
   operations, Scan Center, Red Team, ATT&CK, Adversary Combat history/Undo, and
   Upgrade Console.

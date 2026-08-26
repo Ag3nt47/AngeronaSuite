@@ -169,12 +169,13 @@ class ARPWatchdogModule(BaseModule):
                 continue   # already alerted for this specific change
             self._alerted[ip] = mac
             self.emit(
-                f"ARP CACHE POISONING DETECTED: IP {ip} MAC changed from "
-                f"{baseline_mac} → {mac} — possible Man-in-the-Middle attack (T1557.002)",
+                "ARP cache mapping changed — possible Man-in-the-Middle attack "
+                "(T1557.002)",
                 Severity.CRITICAL,
                 ip=ip,
                 original_mac=baseline_mac,
                 current_mac=mac,
+                local_network_identifiers_omitted=True,
                 mitre_tags=["T1557.002", "T1040"],
             )
 
@@ -276,13 +277,13 @@ class ARPWatchdogModule(BaseModule):
 
                 self._alerted[sender_ip] = sender_mac
                 self.emit(
-                    f"REAL-TIME ARP POISON: IP {sender_ip} claimed by {sender_mac} "
-                    f"(baseline={baseline_mac}) — gratuitous ARP reply (T1557.002)",
+                    "Real-time gratuitous ARP mapping change detected (T1557.002)",
                     Severity.CRITICAL,
                     ip=sender_ip,
                     claimed_mac=sender_mac,
                     baseline_mac=baseline_mac,
                     realtime=True,
+                    local_network_identifiers_omitted=True,
                     mitre_tags=["T1557.002"],
                 )
             except Exception:

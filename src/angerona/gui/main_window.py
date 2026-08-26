@@ -35,6 +35,7 @@ from angerona.gui.animations import GlobalLoadingIndicator, RunSpinner
 from angerona.gui.header_controls import (
     HeaderActionButton, PanelRevealOverlay, motion_allowed)
 from angerona.gui.holographic_orb import HolographicOrbController
+from angerona.gui.live_defense_activity import LiveDefenseActivityCard
 from angerona.gui.dashboard_details import (
     AriaDetailDialog,
     SystemPulseDetailDialog,
@@ -546,6 +547,7 @@ class MainWindow(QMainWindow):
         self.system_pulse.details_requested.connect(
             self._open_system_pulse_details
         )
+        self.live_defense_activity = LiveDefenseActivityCard(bus, manager)
         if getattr(self, "aria_hud", None) is not None:
             self.aria_hud.details_requested.connect(self._open_aria_details)
             self._console_section = QSplitter(Qt.Horizontal)
@@ -555,11 +557,13 @@ class MainWindow(QMainWindow):
             self.aria_hud.setMaximumWidth(420)
             self._console_section.addWidget(self.aria_hud)
             self._console_section.addWidget(self.console)
+            self._console_section.addWidget(self.live_defense_activity)
             self._console_section.addWidget(self.system_pulse)
             self._console_section.setStretchFactor(0, 2)
-            self._console_section.setStretchFactor(1, 7)
-            self._console_section.setStretchFactor(2, 2)
-            self._console_section.setSizes([210, 760, 250])
+            self._console_section.setStretchFactor(1, 6)
+            self._console_section.setStretchFactor(2, 3)
+            self._console_section.setStretchFactor(3, 2)
+            self._console_section.setSizes([180, 650, 300, 230])
             self._console_section.setOpaqueResize(False)
             self._console_section.setChildrenCollapsible(False)
             self._console_section.setHandleWidth(7)
@@ -567,10 +571,12 @@ class MainWindow(QMainWindow):
         else:
             self._console_section = QSplitter(Qt.Horizontal)
             self._console_section.addWidget(self.console)
+            self._console_section.addWidget(self.live_defense_activity)
             self._console_section.addWidget(self.system_pulse)
-            self._console_section.setStretchFactor(0, 8)
-            self._console_section.setStretchFactor(1, 2)
-            self._console_section.setSizes([900, 250])
+            self._console_section.setStretchFactor(0, 6)
+            self._console_section.setStretchFactor(1, 3)
+            self._console_section.setStretchFactor(2, 2)
+            self._console_section.setSizes([700, 300, 230])
             self._console_section.setOpaqueResize(False)
             self._console_section.setChildrenCollapsible(False)
             self._console_section.setHandleWidth(7)
@@ -990,7 +996,8 @@ class MainWindow(QMainWindow):
             # once per minute while minimized.
             # skip the others (or blow up the whole tick).
             for _fn in (self.cards.refresh, self.modules_panel.refresh,
-                        self.alerts_panel.refresh, self.soar_panel.refresh):
+                        self.alerts_panel.refresh, self.soar_panel.refresh,
+                        self.live_defense_activity.refresh):
                 try:
                     _fn()
                 except Exception:
@@ -2975,8 +2982,16 @@ class MainWindow(QMainWindow):
         from pathlib import Path
 
         from angerona.core.data_paths import project_root
+        from angerona.core.defense_memory import (
+            DEFENSE_MEMORY_SOURCE,
+            bundled_defense_memory,
+        )
         from angerona.core.runbook_rag import RunbookRAG
 
+        # Verify the read-only built-in before constructing a replacement.  If
+        # its strict schema or canonical digest fails, the previous trusted
+        # index remains installed rather than accepting a partial rebuild.
+        defense_memory = bundled_defense_memory()
         root = project_root()
         roots = [
             str(root / "docs"),
@@ -2988,6 +3003,10 @@ class MainWindow(QMainWindow):
             roots.extend(str(path) for path in manager.runbook_roots())
         replacement = RunbookRAG(roots)
         count = replacement.build()
+        replacement.add_document(
+            defense_memory.to_markdown(), source=DEFENSE_MEMORY_SOURCE
+        )
+        count += len(defense_memory.entries)
         self._aria_rag = replacement
         return count
 
@@ -3416,11 +3435,27 @@ class MainWindow(QMainWindow):
         from angerona.core.eventbus import Severity   # local import: keep top clean
         # Grounding: top runbook chunks (if any) + current posture.
         context = ""
+        cloud_reference = ""
         try:
+            from angerona.core.defense_memory import DEFENSE_MEMORY_SOURCE
+
             rag = getattr(self, "_aria_rag", None)
             hits = rag.query(question, k=3) if rag is not None else []
             if hits:
-                context = "\n\n".join(f"[{h.source} › {h.heading}]\n{h.excerpt}" for h in hits)
+                rendered_hits = [
+                    f"[{h.source} › {h.heading}]\n{h.excerpt}" for h in hits
+                ]
+                context = "\n\n".join(rendered_hits)
+                # Local ARIA can use operator and governed-pack runbooks.  The
+                # optional online fallback is narrower: only excerpts whose
+                # source is the canonical, digest-pinned Defense Memory marker
+                # may cross that boundary. Live context and arbitrary files do
+                # not enter ``cloud_reference``.
+                cloud_reference = "\n\n".join(
+                    rendered
+                    for hit, rendered in zip(hits, rendered_hits)
+                    if str(hit.source) == DEFENSE_MEMORY_SOURCE
+                )
         except Exception:
             pass
         p = getattr(self, "_last_posture", {}) or {}
@@ -3490,13 +3525,18 @@ class MainWindow(QMainWindow):
             # Local model down → optionally consult an ONLINE AI. This only does
             # anything if the operator configured a provider key (Settings ▸ API
             # Keys); consult_ai self-gates and returns an error otherwise, so no
-            # egress happens by default. Full ARIA context is passed along.
+            # egress happens by default. Only the filtered, pinned memory
+            # excerpt is eligible as cloud reference context.
             if getattr(self.config, "aria_cloud_fallback", False):
                 try:
                     from angerona.core.privacy import cloud_assistant_prompt
                     from angerona.engines.ai_consult import consult_ai
                     online = consult_ai(cloud_assistant_prompt(
-                        question, score=p.get("score", "?"), label=p.get("label", "?")))
+                        question,
+                        score=p.get("score", "?"),
+                        label=p.get("label", "?"),
+                        reference=cloud_reference,
+                    ))
                     if isinstance(online, dict) and online.get("text"):
                         return (f"[ARIA · online:{online.get('provider', '?')}]\n"
                                 + str(online["text"]).strip())

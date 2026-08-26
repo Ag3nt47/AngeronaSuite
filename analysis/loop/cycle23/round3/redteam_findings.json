@@ -1,0 +1,10 @@
+[
+  {
+    "id": "R3-01",
+    "title": "A newly observed physical path advances only the in-memory baseline",
+    "severity": "MEDIUM",
+    "component": "src/angerona/modules/network_trust_monitor.py:1063-1160; src/angerona/core/network_trust.py:760-868",
+    "status": "FIXED",
+    "recommendation": "Treat a current physical path absent from the authenticated baseline as explicit interface-set drift, keep the authenticated baseline frozen for comparison, and require an explicit or bounded provisional reconciliation before saving the enlarged set through the existing CAS/high-water gate; add add-path/restart/change regressions."
+  }
+]

@@ -283,10 +283,13 @@ class ModuleManager:
         "WFP Controller",
         "ARP Watchdog",
         "WLAN Monitor",
+        "Zero-Trust Network Path Monitor",
         "ETW Core Listener",
         "ETW Real-Time Process Sensor",
         "AMSI Bridge",
         "AV Telemetry Bridge",
+        "Audit Log Integrity Guard",
+        "SSH Surface / Key / Tunnel Guard",
         "Removable-Media / USB Monitor",
     }
 
