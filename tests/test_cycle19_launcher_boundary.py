@@ -148,7 +148,10 @@ def test_launcher_selftest_rejects_hostile_inherited_environment(launcher):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        timeout=10,
+        # This is an environment-sanitization contract, not a startup-speed
+        # benchmark. Hosted Windows runners can spend more than ten seconds in
+        # process creation and trust checks under load.
+        timeout=30,
         check=False,
     )
 
