@@ -190,6 +190,16 @@ def test_release_installer_hardens_before_local_code_and_does_not_grant_medium_u
     assert "ANGERONA_PRINCIPAL%:(OI)(CI)F" not in text
 
 
+def test_release_installer_refuses_a_volume_root_before_acl_mutation():
+    root = os.path.dirname(os.path.dirname(__file__))
+    text = open(os.path.join(root, "Install-Angerona.bat"), encoding="utf-8").read()
+    root_guard = 'if /I "%~dp0"=="%~d0\\" ('
+    assert root_guard in text
+    assert "Refusing to install or harden an entire filesystem volume root" in text
+    assert text.index(root_guard) < text.index("call :harden_trust_root")
+    assert text.index(root_guard) < text.index("Set-Acl -LiteralPath $env:ANGERONA_INSTALL_ROOT")
+
+
 def test_source_launcher_is_bounded_and_reports_early_startup_failures():
     root = os.path.dirname(os.path.dirname(__file__))
     text = open(os.path.join(root, "start-angerona.bat"), encoding="utf-8").read()

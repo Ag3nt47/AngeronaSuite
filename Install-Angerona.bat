@@ -16,6 +16,13 @@ REM  Output is color-coded: [INFO] cyan, [OK] green, [WARN] yellow, [ERROR] red.
 REM ============================================================================
 setlocal EnableExtensions
 title Angerona Installer
+REM Never let this elevated installer treat an entire drive or UNC share root as
+REM its private install tree. The trust-root step replaces and propagates ACLs.
+if /I "%~dp0"=="%~d0\" (
+    echo [ERROR] Refusing to install or harden an entire filesystem volume root.
+    echo         Move this installer into a dedicated Angerona folder and retry.
+    exit /b 1
+)
 cd /d "%~dp0"
 REM This script self-elevates. Do not let an inherited environment variable
 REM redirect privileged temporary/runtime writes into a caller-selected tree.
