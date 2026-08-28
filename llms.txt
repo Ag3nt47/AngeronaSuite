@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
-Version: 1.11.0
-Date: 2026-08-27
+Version: 1.12.0
+Date: 2026-08-28
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -21,6 +21,108 @@ No offensive payload, exploit, credential theft, evasion, remote scan,
 persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
+
+## LATEST: v1.12.0 / Cycle 25
+
+### Capability and version truth
+
+- The reproducible Windows-target inventory contains exactly 80 capabilities.
+  Every capability receives a validated
+  `angerona.capability-contract.v12` contract and common operational
+  lifecycle/freshness/loss snapshot.
+- Contract maturity is explicit: 5 native contracts and 75 compatibility
+  adapters. Implementation versions are 51 at 1.0.0, 28 at 1.1.0, and one
+  macOS Observe preview at 0.1.0. Product semver and capability implementation
+  semver are independent; never call all 80 native v12 implementations.
+- Capability Center and Module Inspector search, filter, typed-sort, and open
+  bounded details for contracts, source, dependency, permission, path,
+  lifecycle, freshness, loss, and recent evidence.
+
+### Guided Auto Adapt and firewall recovery
+
+- Guided Auto Adapt presents closed Balanced, Public, and Emergency Lockdown
+  choices. It performs audit, completeness gating, immutable planning, and
+  no-write simulation. Accepted choices are copied immutably before background
+  work; an optional apply needs a separate confirmation of the exact plan.
+- Context automation is proposal-only. Legacy/tampered `auto_apply` state is
+  reset false; AI/content/observations do not authorize unattended mutation.
+- Recovery baseline enrollment is explicit, HMAC-authenticated, host-bound,
+  and non-replaceable. Apply refuses before mutation without a complete
+  baseline. The baseline restores complete Windows Firewall policy only—the
+  complete mutation scope of Host Adaptation—not hardware, services, ports,
+  applications, network devices, or whole-host configuration.
+- Every apply has a pre-change snapshot, HMAC transaction journal, exact
+  verification, compensation, startup reconciliation, and circuit breaker.
+  Fresh bounded WTS, SSH/current-session, and common remote-control agent
+  process checks reduce lockout risk; unknown evidence cannot authorize.
+- Run safe automatic checkup audits once and simulates all profiles without
+  writing.
+
+### Clickable evidence and bounded work
+
+- Shared tables sort typed severity and numeric risk rather than display text.
+  Adaptation, alert, Live Defense, Context Info, CVE, capability, module, and
+  governed-path rows open bounded read-only details.
+- Alert identity, deterministic fingerprint, and verified HMAC authenticity
+  are distinct labels. Analysis is bounded to 2 active workers plus 6 queued
+  exact event identities with deduplication.
+- Exact-rule suppression is confirmed, 15-minute, audited, undoable, and never
+  available to integrity alerts. SOAR clear creates an atomic recoverable
+  archive/digest manifest and restore refuses overwrite. CVE workers are owned
+  and nonblocking.
+
+### Durability, authority, and hardening
+
+- SIEM/Remote use bounded durable outboxes, monotonic revision cursors,
+  drain-stage-drain, explicit gap receipts, leases/retry/dead-letter,
+  persistent tombstones, and HMAC-authenticated mutable state. The local queue
+  key is independent of transport-key rotation.
+- Delivery is at least once and may duplicate. Row deletion/whole-database
+  rollback is not independently witnessed. Transport-key coordination uses
+  restart epochs.
+- Settings and Intel Sync use atomic publication; Settings compensates exact
+  settings bytes, protected credentials, environment projection, and autostart.
+- Evolution, mitigation tuning, contextual adaptation, and unapproved
+  behavioral learning are proposal-only. Behavioral activation requires exact
+  SHA-256 approval and hash drift returns to pending review.
+- Self-integrity covers full callable semantics. Persistence uses explicit
+  COMPLETE/PARTIAL/UNKNOWN. Process/driver/direction-specific firewall actions
+  bind exact identities, return codes, postconditions, and rollback. Ambiguous
+  ACL lockdown is not a production automatic action.
+- IPC key custody uses the OS protected store with exact legacy plaintext
+  migration/residue removal. IPC Guard is an authenticated loopback diagnostic
+  admission preview, not a production payload consumer or TPM-backed channel.
+
+### Standards and upstream comparison
+
+- ATT&CK 19.2 curated endpoint catalog across 15 Enterprise tactics;
+  Navigator 5.3.2/layer 4.5; constrained-preview OCSF 1.8 typed resolving
+  observables; deliberately limited Sigma subset with atomic bounded
+  admission/refusal receipts. These are not complete ATT&CK coverage, OCSF
+  compiler, or full Sigma compatibility claims.
+- Primary-source comparison used Velociraptor client monitoring/local buffers,
+  Wazuh stateful/stateless Active Response, Fleet policy definitions, osquery
+  packs/selectors, Elastic detection-as-code validation, and Velociraptor
+  community-artifact warnings. Angerona adapted local design lessons; it does
+  not claim their fleet/server/content ecosystems or support model.
+
+### Performance and verification
+
+- Recorder handoff: 22.306 -> 15.925 us/event (28.6% faster).
+- Capability summary: 43.324 -> 1.508 us/call (96.5% faster).
+- Stable Module Inspector tick: 13.458 -> 0.474 ms (96.5% faster).
+- Batched durable commits, immutable compiled Sigma plans, and a global per-CVE
+  detail-worker cap are proposed, not shipped.
+- Authoritative serial release evidence, including the 3 final-performance
+  tests: 1,811 passed / 6 expected host-platform skips / 0 failed. The added
+  tests and their surrounding performance/reliability group also passed a
+  focused 106/106 gate.
+- Compile 346/346; 82/82 module files imported; 64/64 compatibility hooks;
+  80 capability discovery; 92 core/module self-tests passed plus EventBus and
+  12 expected inactive/platform skips; selfcheck 26/26 direct and batch; Ruff
+  and diff checks clean.
+- Full disposition, upstream sources, tests, and residuals:
+  `analysis/loop/cycle25/summary.md`.
 
 ## LATEST: v1.11.0 / Cycle 24
 
@@ -251,23 +353,36 @@ Development:
     python run_aria_selftests.py
     run-adversary-combat-validation.bat
 
-Current focused Cycle 24 evidence:
+Current focused Cycle 25 evidence:
 
-- Round 2 release remediation: 20 passed.
-- Round 2 core remediation: 88 passed, 1 expected platform skip.
-- Round 3 reliability/security paths: 78 passed, 1 expected platform skip.
-- Round 3 combined high-risk gate: 111 passed, 1 expected platform skip.
-- Round 3 release-boundary gate: 29 passed.
-- Round 3 Linux peripheral gate: 24 passed.
-- Changed-file Ruff/compile, release YAML/MSIX XML, PowerShell parsing, and diff
-  gates passed in recorded focused runs.
-- Paired four-screenshot public-gallery runs were byte-identical.
-- Final converged serial suite: 1,675 collected across 229 files; 1,670 passed;
-  5 expected host-capability skips; 0 failed.
+- Authoritative serial release gate including all final-performance tests:
+  1,811 passed, 6 expected host-platform skips, 0 failed.
+- Final performance/reliability gate: 106 passed.
+- Compile 346/346; 82/82 module files imported; 64/64 compatibility hooks;
+  80 capability discovery without duplicate identity.
+- 92 standalone core/module self-tests passed, 12 expected inactive/platform
+  skips, plus EventBus passed.
+- Direct and batch selfcheck 26/26; Ruff and diff checks clean.
 
 Focused groups overlap and are not a final-suite total. Clean-VM publisher,
 install, upgrade, uninstall, and external-custody acceptance are not proven by
 repository tests.
+
+## CYCLE 25 FINDING DISPOSITION
+
+- Round 1 recorded 12 traceable risk/reliability lineages without invented
+  retrospective CVSS scoring; all are fixed or truthfully scoped.
+- Round 2 re-audited 8 overlapping durability/lifecycle records and fixed all
+  8, including one IPC self-test concurrent-accounting race.
+- Round 3 performed 12 final closure checks and found no open High/Critical code
+  finding in the v1.12 change set.
+- Accepted boundaries include firewall-only recovery scope, at-least-once
+  duplicates, no independent witness for outbox deletion/whole-DB rollback,
+  restart-epoch transport-key coordination, constrained OCSF/Sigma, diagnostic-
+  only IPC, and 75 compatibility adapters.
+
+See `analysis/loop/cycle25/prior_findings.md` and
+`analysis/loop/cycle25/summary.md`.
 
 ## CYCLE 24 FINDING DISPOSITION
 
@@ -293,6 +408,14 @@ See `analysis/loop/cycle24/prior_findings.md` and
 
 ## PERFORMANCE EVIDENCE
 
+- Cycle 25 recorder handoff: 22.306 to 15.925 us/event (28.6% faster).
+- Cycle 25 capability summary: 43.324 to 1.508 us/call (96.5% faster).
+- Cycle 25 unchanged Module Inspector tick: 13.458 to 0.474 ms (96.5%
+  faster).
+- Proposed only: batched durable commits, immutable compiled Sigma plans, and a
+  global per-CVE detail-worker cap.
+- Historical Cycle 24 evidence follows.
+
 - Personal Sentinel canonical unsigned-state reuse: 30.2-39.0% lower measured
   serialization/signing kernel CPU across 64-4096 nonces; fsync/replace
   unchanged.
@@ -309,6 +432,13 @@ See `analysis/loop/cycle24/prior_findings.md` and
 
 ## KNOWN LIMITS / NOT SHIPPED
 
+- No whole-host rollback from the Host Adaptation baseline; it covers complete
+  Windows Firewall policy only.
+- No exactly-once exporter claim, independent outbox rollback witness, or
+  coordinated no-restart transport-key epoch protocol.
+- No full OCSF/Sigma implementation or complete ATT&CK coverage claim.
+- No IPC production payload consumer or TPM-backed transport.
+- No claim that 75 compatibility adapters are native v12 implementations.
 - No turnkey Personal Sentinel appliance, router, routing role, router
   credentials, router discovery/configuration, firewall mutation, remote command
   plane, or firmware attestation.
@@ -328,6 +458,8 @@ See `analysis/loop/cycle24/prior_findings.md` and
 
 ## PRIMARY DEFENSIVE SOURCES
 
+- Cycle 25 upstream/standards sources:
+  `analysis/loop/cycle25/round1/upstream_project_comparison.md`.
 - CISA AA25-239A:
   https://www.cisa.gov/news-events/cybersecurity-advisories/aa25-239a
 - CISA AA24-038A:
@@ -357,8 +489,9 @@ prove attribution, product efficacy, or completeness.
 - Human manual: `Angerona_Master_Manual.docx`
 - Public overview and screenshots: `README.md`
 - Current capability sheet: `ANGERONA_CAPABILITIES.md`
-- Cycle 24 summary: `analysis/loop/cycle24/summary.md`
-- Cycle 24 finding reconciliation:
-  `analysis/loop/cycle24/prior_findings.md`
+- Cycle 25 summary: `analysis/loop/cycle25/summary.md`
+- Cycle 25 finding reconciliation:
+  `analysis/loop/cycle25/prior_findings.md`
+- Historical Cycle 24 summary: `analysis/loop/cycle24/summary.md`
 - Architecture: `docs/architecture.md`
 - Security policy: `SECURITY.md`

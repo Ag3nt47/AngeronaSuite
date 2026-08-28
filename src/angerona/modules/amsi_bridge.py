@@ -176,6 +176,7 @@ class AMSIBridgeModule(BaseModule):
         "time.  Does NOT patch AmsiScanBuffer (no offensive bypass)."
     )
     category = "Endpoint"
+    version = "1.1.0"
 
     _POLL_INTERVAL = 5.0   # how often to drain the bus for new script events
 
@@ -183,7 +184,6 @@ class AMSIBridgeModule(BaseModule):
         super().__init__()
         self._amsi:      Optional[_AMSI] = None
         self._fallback:  bool = False
-        self._last_ts:   float = 0.0
         self._last_health_check: float = 0.0
         # (hash of content) → last_alert_ts
         self._seen: dict[int, float] = {}
@@ -274,11 +274,8 @@ class AMSIBridgeModule(BaseModule):
         if self._bus is None:
             return
 
-        for ev in self._bus.recent(50):
-            if ev.ts <= self._last_ts:
-                continue
-            self._last_ts = max(self._last_ts, ev.ts)
-
+        events, _overflow = self.poll_bus_events()
+        for ev in events:
             content = self._extract_script_content(ev)
             if not content:
                 continue

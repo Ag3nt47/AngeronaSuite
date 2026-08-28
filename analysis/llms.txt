@@ -10,6 +10,82 @@
 ## STACK / LAUNCH
 Python package metadata supports 3.10–3.13; the hardened Windows source bootstrap and launcher require the reviewed **CPython 3.12 x64** ABI and hash-locked wheels. PySide6 GUI · local Ollama (llama3) triage; sanitized cloud fallback is opt-in and default-off. Windows editable install: `pip install -e .[windows,voice]`; Linux/macOS source editions use target extras through the hash-locked installer. Entry `python -m angerona` → `app.py:AngeronaApp` builds core services + `gui/main_window.py:MainWindow`. First-run install, SETUP, `--setup`, and `angerona-setup` enter the same 16-step Full Setup. Self-elevating source launchers overwrite inherited `ANGERONA_DATA` with the sibling `<install-folder>\..\AngeronaData` on D: before elevation; frozen Windows builds prefer protected `D:\AngeronaData`. DB: `flight-recorder.db`. TEMP/TMP, watchdog state, reports, diagnostics, scanner evidence, legacy engine status/telemetry, and incident staging use canonical data/temp helpers rather than the checkout.
 
+## LATEST (v1.12.0 — Cycle 25 capability, adaptation, and reliability loop)
+
+- **Inventory truth:** exactly 80 Windows-target capabilities use the validated
+  `angerona.capability-contract.v12` schema and a common operational
+  lifecycle/freshness/loss snapshot. Five contracts are native and 75 are
+  explicit compatibility adapters. Implementation versions are 51 at 1.0.0,
+  28 at 1.1.0, and one macOS Observe preview at 0.1.0. Product and module semver
+  are independent; do not relabel all modules as native v12.
+- **Capability UI:** Capability Center and Module Inspector search, filter,
+  typed-sort, and open bounded contract, source, dependency, permission, path,
+  lifecycle, loss, freshness, and evidence details. Live projections avoid
+  recursive full-contract copying; Inspector event refresh is revision-gated.
+- **Guided Auto Adapt:** closed Balanced, Public, and Emergency Lockdown choices
+  flow through audit, completeness gating, immutable planning, and no-write
+  simulation. Accepted choices are copied immutably before background work. An
+  optional apply requires a separate exact-plan confirmation. Context
+  automation and legacy `auto_apply` remain proposal-only/false.
+- **Recovery truth:** explicit HMAC-authenticated, host-bound, non-replaceable
+  enrollment captures complete Windows Firewall policy and is required before
+  Host Adaptation mutation. This is not whole-host rollback: hardware,
+  services, ports, applications, and network context are observations. Each
+  apply also has a pre-change snapshot, HMAC journal, exact verification,
+  compensation, startup reconciliation, and circuit breaker.
+- **Safe automatic checkup:** one audit plus no-write simulation of every
+  profile. Fresh bounded WTS, SSH/current-session, and common third-party
+  remote-control agent checks reduce lockout; unknown/error evidence does not
+  authorize mutation.
+- **Clickable bounded evidence:** typed severity/numeric sorting and bounded
+  details cover adaptation, alerts, Live Defense, Context Info, CVE, SOAR,
+  capabilities, modules, and governed paths. Alert identity/fingerprint/HMAC
+  authenticity are distinct. Alert analysis is 2 active + 6 queued exact event
+  IDs; exact-rule suppression is confirmed/15-minute/audited/undoable and not
+  allowed for integrity alerts. SOAR clear archives atomically and restore
+  refuses overwrite; CVE workers are owned/nonblocking.
+- **Durable delivery:** SIEM/Remote use bounded durable outboxes, revision
+  cursors, drain-stage-drain, explicit gap receipts, leases/retry/dead-letter,
+  persistent tombstones, and HMAC-authenticated mutable state. Queue custody is
+  independent of transport-key rotation. Delivery is at least once and can
+  duplicate; row deletion/whole-DB rollback is not independently witnessed;
+  key coordination uses restart epochs.
+- **Atomic state:** core/GUI Settings compensate exact settings bytes, protected
+  credentials, environment projection, and autostart. Intel Sync is generation-
+  and cancellation-aware with atomic replacement. IPC self-test accounting no
+  longer restores stale live counters.
+- **Authority hardening:** evolution, mitigation tuning, contextual adaptation,
+  and unapproved behavioral learning are proposal-only. Behavioral activation
+  requires exact SHA-256 approval. Process/driver/direction-specific firewall
+  actions bind exact identity, return codes, postconditions, and rollback;
+  ambiguous ACL lockdown is absent from production actions. Self-integrity
+  covers full callable semantics; persistence reports COMPLETE/PARTIAL/UNKNOWN.
+- **IPC truth:** protected-store key custody includes exact legacy plaintext
+  migration/residue removal and fails closed without secure storage. IPC Guard
+  is a loopback diagnostic admission preview, not a production payload consumer
+  or TPM-backed channel.
+- **Standards truth:** ATT&CK 19.2 curated 15-tactic endpoint catalog;
+  Navigator 5.3.2/layer 4.5; constrained-preview OCSF 1.8 resolving typed
+  observables; deliberately limited Sigma subset with bounded atomic admission/
+  refusal receipts. No complete ATT&CK/OCSF/Sigma claim.
+- **Upstream comparison:** primary-source review covered Velociraptor monitoring
+  and Artifact Exchange warnings, Wazuh stateful/stateless response, Fleet
+  policies, osquery packs, and Elastic detection-as-code. Angerona adopted local
+  contract/admission/durability lessons, not fleet/server/content parity.
+- **Performance:** recorder 22.306 -> 15.925 us/event (28.6%); capability summary
+  43.324 -> 1.508 us/call (96.5%); stable Inspector 13.458 -> 0.474 ms (96.5%).
+  Batched outbox commits, immutable compiled Sigma plans, and a global per-CVE
+  worker cap are proposed only.
+- **Authoritative release evidence:** 1,811 passed / 6 expected host-platform
+  skips / 0 failed, including all three final-performance tests; those tests
+  and their surrounding group also passed a focused 106/106 gate. Compile
+  346/346; 82/82 module
+  files; 64/64 hooks; 80 discovery; 92 core/module self-tests plus EventBus and
+  12 expected inactive/platform skips; selfcheck 26/26 direct/batch; Ruff and
+  diff clean. Do not claim 1,811 until the post-doc suite verifies it.
+- Full three-round disposition, sources, and residuals:
+  `analysis/loop/cycle25/summary.md`.
+
 ## LATEST (v1.10.3 — Cycle 23 SSH, audit continuity, and zero-trust paths)
 - **Actor-neutral threat model:** translate documented advanced/state-grade
   tradecraft into observable SSH, tunneling, log-clear/continuity, route,
@@ -137,7 +213,7 @@ Python package metadata supports 3.10–3.13; the hardened Windows source bootst
 
 ## ARCHITECTURE MAP (`src/angerona/`)
 - `app.py` — wires Config, EventBus, FlightRecorder(storage), ModuleManager, StatusReporter, MainWindow. Subscribes `storage.record_bus`, `incidents.on_event`, `init_log(db_path)`, and `init_tracker().on_event` at startup.
-- `core/` — `module_base.py` (BaseModule), `module_manager.py` (auto-discovers modules and enforces explicit platform availability), `platforms.py` (canonical Windows/macOS/Linux capability contract and import-safe AST preflight), `sensor_events.py` (bounded versioned platform-neutral event envelope), `eventbus.py` (complete event HMAC + bounded recent history without subscriber suppression), `telemetry_contracts.py` (TECT bounded deadline/echo state machine), `windows_event_log.py` + `event_log_integrity.py` (fixed-source bounded Windows audit continuity), `ssh_surface.py` (bounded SSH posture/key/runtime evidence), `network_trust.py` + `personal_sentinel_gateway.py` (tokenized physical-path state and pinned gateway client), `independent_high_water.py` (injected external freshness protocol only), `defense_memory.py` (pinned data-only ARIA reference), `config.py`, `storage.py` (durable WAL recorder plus committed revision and immediate-only GUI reads), `security_interop.py` (honest comparator matrix, bounded NDR/OCSF import and fixed osquery snapshots), `singleton.py` (:47921), `commands.py` (console), `selftest.py`, `autostart.py`, `privilege.py`, `status_report.py`, `remediation_log.py` (SQLite audit ledger, `init_log()`/`get_log()`), `attack_tracker.py` (live ATT&CK heat; 86 techniques, 14 tactics; `init_tracker()`/`get_tracker()`; `on_event()` bus subscriber; `snapshot()`), `process_allowlist.py` (exact-path enforcement for path-rich events; basename fallback only for genuinely pathless telemetry), `drill_resolution.py` (authenticated typed action contracts plus applied/verified/expired/reopened drill lifecycle and signed receipts), `assistant.py` (immutable, expiring ARIA action staging), and `action_policy.py` (non-authoritative Response Safety Kernel shadow evaluator). **Next-gen engines (v1.7.6, additive/read-only/unwired):** `cortex.py` (unified entity-graph correlation brain — per-entity malice via convergence fusion; `init_cortex()/get_cortex()/attach(bus)/snapshot()`), `angerona_score.py` (one 0–100 score + next-best-action), `sigma_engine.py` (Sigma-subset matcher), `ocsf_export.py` (OCSF Detection Finding), `d3fend_map.py` (ATT&CK→D3FEND), `purple_loop.py` (coverage-gap → review-gated proposals), `copilot.py` (local NL query over Cortex/events).
+- `core/` — `module_base.py` (BaseModule), `module_manager.py` (auto-discovers modules and enforces explicit platform availability), `platforms.py` (canonical Windows/macOS/Linux capability contract and import-safe AST preflight), `sensor_events.py` (bounded versioned platform-neutral event envelope), `eventbus.py` (complete event HMAC + bounded recent history without subscriber suppression), `telemetry_contracts.py` (TECT bounded deadline/echo state machine), `windows_event_log.py` + `event_log_integrity.py` (fixed-source bounded Windows audit continuity), `ssh_surface.py` (bounded SSH posture/key/runtime evidence), `network_trust.py` + `personal_sentinel_gateway.py` (tokenized physical-path state and pinned gateway client), `independent_high_water.py` (injected external freshness protocol only), `defense_memory.py` (pinned data-only ARIA reference), `config.py`, `storage.py` (durable WAL recorder plus committed revision and immediate-only GUI reads), `security_interop.py` (honest comparator matrix, bounded NDR/OCSF import and fixed osquery snapshots), `singleton.py` (:47921), `commands.py` (console), `selftest.py`, `autostart.py`, `privilege.py`, `status_report.py`, `remediation_log.py` (SQLite audit ledger, `init_log()`/`get_log()`), `attack_tracker.py` (live ATT&CK 19.2 heat; 107 curated techniques, 15 tactics; `init_tracker()`/`get_tracker()`; `on_event()` bus subscriber; `snapshot()`), `process_allowlist.py` (exact-path enforcement for path-rich events; basename fallback only for genuinely pathless telemetry), `drill_resolution.py` (authenticated typed action contracts plus applied/verified/expired/reopened drill lifecycle and signed receipts), `assistant.py` (immutable, expiring ARIA action staging), and `action_policy.py` (non-authoritative Response Safety Kernel shadow evaluator). **Next-gen engines (v1.7.6, additive/read-only/unwired):** `cortex.py` (unified entity-graph correlation brain — per-entity malice via convergence fusion; `init_cortex()/get_cortex()/attach(bus)/snapshot()`), `angerona_score.py` (one 0–100 score + next-best-action), `sigma_engine.py` (Sigma-subset matcher), `ocsf_export.py` (OCSF Detection Finding), `d3fend_map.py` (ATT&CK→D3FEND), `purple_loop.py` (coverage-gap → review-gated proposals), `copilot.py` (local NL query over Cortex/events).
 - `gui/` — `main_window.py` (vector-icon header actions including LOCAL SOC; DashboardCards; Modules|Alerts/SOAR/Scan Center over ARIA/Console/System Pulse; StatusStrip; two-tier refresh), `operations_center.py` (toggleable Flow Dashboard with hover-expanded radial metrics and Overview/Cases/Hunt/Assets/Detection Content/Parity & Interop/Audit tabs; slow hunts/inventory/imports stay off the Qt thread), `pages.py` (StatCard, dashboard panels, alert/case-facing dialogs, Settings), `header_controls.py` (accessible icons plus forward/reverse real-window reveal), `flow_window.py` (six-stage World View architecture flow), and `attack_heatmap.py` (tabbed ATT&CK coverage and hit matrix).
 - `modules/` — **71 declared** `BaseModule` subclasses, AUTO-DISCOVERED by `module_manager` (scans `angerona.modules`, no manual registration). Platform gating exposes only compatible capabilities and imports only explicitly compatible modules on non-Windows hosts. The set now also includes **audit_log_guard**, **ssh_surface_guard**, **network_trust_monitor**, **app_control_monitor** (authenticated, read-only Code Integrity decision/signature evidence), **linux_observe**, **kernel_posture_ledger** (bounded, authenticated, read-only kernel-boundary posture evidence), **macos_observe**, **purple_guard**, **evidence_lattice (ELAT)**, and the established detection, response, telemetry, resilience, and platform modules.
   **G2 sensor modules (new):** **sysmon_listener (SYSL)** — Sysmon XML + win32evtlog bridge (EID 1/3/6/8/10/25); **mem_inject_scanner (MINJ)** — VirtualQueryEx RWX scanner (T1055), JIT allowlist, 60s dedup; **ransomware_heuristics (RANS)** — Shannon entropy ≥7.9 + mass-rename detector, user-folder watchdog; **wfp_controller (WFPC)** — iphlpapi GetExtendedTcpTable/UdpTable singleton, IPv4+IPv6 (BL-17 fixed), 5s TTL cache; **amsi_bridge (AMSI)** — AmsiScanBuffer consumer (NOT patching), EICAR health check; **wlan_monitor (WLAN)** — evil-twin detection via netsh SSID/BSSID diff; **arp_watchdog (ARPW)** — ARP cache diff + optional scapy sniffer; **av_telemetry_bridge (AVTB)** — Defender Operational log (EID 1116/1117/5001) + Get-MpThreatDetection PS fallback; **dynamic_resource (DRES)** — HIGH_PRIORITY_CLASS escalation under load, NORMAL_PRIORITY_CLASS cooldown after 60s.
@@ -427,7 +503,7 @@ A whole-project static security review (analysis/Angerona_Security_Assessment_v2
 - **Bootstrapper** (`Install-Angerona.bat`) — idempotent one-shot: UAC, winget Python 3.10, venv+deps, Ollama + `llama3:8b`, compiles the watchdog, Desktop shortcuts.
 
 - **MCP Server (`engines/mcp_server.py`)** — opt-in `AngeronaMCPServer` (HTTP+SSE, stdlib only, no new deps). Implements MCP 2024-11-05 protocol on loopback `127.0.0.1:47923`. Six read-only tools: `get_recent_alerts` (EventBus ring), `get_module_status` (all module health), `get_attack_heatmap` (ATT&CK tracker snapshot), `get_incidents` (correlator), `get_remediation_log` (audit ledger), `search_events` (FlightRecorder + bus fallback). Config: `mcp_enabled` (bool, default False) + `mcp_port` (int, default 47923) in `Config` and `settings.json`. Toggle in Settings ▸ MCP Server. Connect Claude Desktop: add `"angerona": { "url": "http://127.0.0.1:47923/sse" }` to `~/.claude/claude_desktop_config.json`. Started after `manager.discover()` in `app.py:start()`; stopped before `manager.stop_all()` in `shutdown()`. Any bind failure silently disables it without affecting startup.
-- **Live MITRE ATT&CK Heatmap (`core/attack_tracker.py` + `gui/attack_heatmap.py`)** — singleton `AttackTracker` subscribed to every EventBus event. Tags are extracted three ways: explicit `mitre_tags` attrs, `_ETW_TAG_MAP` (38 kind→TID mappings), `_PROC_MAP` (22 process-name→TID inferences). `TechniqueHeat` stores hit counts with 24h log-weighted decay (heat 0.0–1.0). 86 techniques across 14 tactics pre-populated so the matrix is always full. `AttackHeatmapWindow` (non-modal QDialog): 14 tactic columns with colour-coded headers, clickable cells on dark→blue→amber→red ramp, 3px heat bar, 5s QTimer refresh, detail panel (TID, count, heat, last event IDs), "Reset counts". `🔥 ATT&CK MAP` button in main_window header. Wired in `app.py` via `init_tracker().on_event` (same singleton pattern as `remediation_log`).
+- **Live MITRE ATT&CK Heatmap (`core/attack_tracker.py` + `gui/attack_heatmap.py`)** — singleton `AttackTracker` subscribed to every EventBus event. Tags are extracted three ways: explicit `mitre_tags` attrs, `_ETW_TAG_MAP` (38 kind→TID mappings), `_PROC_MAP` (22 process-name→TID inferences). `TechniqueHeat` stores hit counts with 24h log-weighted decay (heat 0.0–1.0). The curated ATT&CK 19.2 catalog pre-populates 107 techniques across 15 tactics. `AttackHeatmapWindow` (non-modal QDialog): 15 tactic columns with colour-coded headers, clickable cells on dark→blue→amber→red ramp, 3px heat bar, 5s QTimer refresh, detail panel (TID, count, heat, last event IDs), "Reset counts". `🔥 ATT&CK MAP` button in main_window header. Wired in `app.py` via `init_tracker().on_event` (same singleton pattern as `remediation_log`).
 - **World View flowchart redesign (`gui/flow_window.py` + `core/flow_metrics.py`)** — rebuilt from 7-node single-row (1460 px, `fitInView` scale 0.68 → invisible text) to compact 2×3 grid (~780 px, scale ~0.9). Six steps: ① CAPTURE · ② DETECT · ③ AI TRIAGE · ④ RESPOND · ⑤ ATTACK · ⑥ SELF-HARDEN → loop. Each node: colour-coded header band (blue=defensive, purple=AI, red=adversarial, green=self-hardening), 12pt bold white title, 8pt subtitle, live metric badge. Edges: bezier cubic with filled-triangle arrowheads clipped to node boundary and edge-label text (events / alerts / score / gate / weakness / fixed ↺). `flow_metrics.py` supplies per-node live data keyed to the six step IDs.
 - **Remediation audit log (`core/remediation_log.py`)** — persistent SQLite table in `flight-recorder.db`; every `apply_remediation()` call writes timestamp, caller, MITRE TID, action key/title, outcome (applied/skipped/dry_run/rolled_back/error), verify result, host-level flag, full return JSON. Console: `remlog [n]` / `remlog <T####>`.
 - **Phase 3 hardening modules (4) + performance layer** — `src/angerona/modules/` + `src/angerona/core/` + `src/angerona/gui/`:

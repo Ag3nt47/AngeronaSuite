@@ -8,13 +8,85 @@ plaintext imports require an explicit action.
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
+import re
+import secrets
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict
 
 
 _ARIA_PUSH_URL_KEY = "ANGERONA_ARIA_PUSH_URL"
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Durably stage UTF-8 text and atomically replace one settings file."""
+    from angerona.core.atomic_io import replace_with_retry
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    candidate = path.with_name(f".{path.name}.{secrets.token_hex(12)}.tmp")
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            candidate,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            descriptor = None
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        replace_with_retry(candidate, path)
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _bounded_setting(value: object, default: str, limit: int) -> str:
+    try:
+        text = str(value if value is not None else "").strip()
+    except Exception:
+        return default
+    if len(text) > limit or any(ord(character) < 32 for character in text):
+        return default
+    return text
+
+
+def _port_setting(value: object, default: int) -> int:
+    try:
+        port = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return port if 1 <= port <= 65535 else default
+
+
+def _https_feed_setting(value: object) -> str:
+    text = _bounded_setting(value, "", 2048)
+    if not text:
+        return ""
+    try:
+        parsed = urlsplit(text)
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme.casefold() != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return ""
+    return text
 
 
 def _bool_setting(data: dict, key: str, default: bool) -> bool:
@@ -84,6 +156,23 @@ class Config:
     fleet_service_enabled: bool = False
     fleet_service_port: int = 47930
     fleet_tenant_id: str = "local"
+
+    # ── Audited interoperability (off until a destination is configured) ──
+    siem_host: str = ""
+    siem_port: int = 6514
+    siem_protocol: str = "tls"               # tls | tcp | udp
+    siem_min_severity: str = "MEDIUM"
+    siem_allow_plaintext: bool = False
+    siem_ca_file: str = ""
+    siem_include_raw: bool = False
+    remote_bridge_mode: str = ""              # "" | SENDER | RECEIVER
+    remote_bridge_peer: str = ""
+    remote_bridge_bind: str = "127.0.0.1"
+    remote_bridge_port: int = 47924
+    remote_bridge_node_id: str = ""
+    remote_bridge_allow_nonloopback: bool = False
+    ioc_feed_url: str = ""
+    ioc_feed_sha256: str = ""
 
     # ── ARIA assistant layer (v1.8.0) — local, gated, defensive-only ───────
     aria_enabled: bool = False                  # master opt-in: HUD + local assistant
@@ -177,6 +266,127 @@ class Config:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def validate_integration_settings(self) -> None:
+        """Validate non-secret interoperability settings before persistence/use."""
+
+        def bounded(name: str, value: object, limit: int) -> str:
+            text = _bounded_setting(value, "", limit)
+            if text != str(value if value is not None else "").strip():
+                raise ValueError(f"{name} contains invalid or excessive text")
+            return text
+
+        self.siem_host = bounded("SIEM host", self.siem_host, 253)
+        if self.siem_host and (
+            any(character.isspace() for character in self.siem_host)
+            or any(character in self.siem_host for character in "/\\@")
+        ):
+            raise ValueError("SIEM host must be a hostname or IP address")
+        self.siem_port = _port_setting(self.siem_port, 0)
+        if not self.siem_port:
+            raise ValueError("SIEM port must be between 1 and 65535")
+        self.siem_protocol = bounded(
+            "SIEM protocol", self.siem_protocol, 8
+        ).casefold()
+        if self.siem_protocol not in {"tls", "tcp", "udp"}:
+            raise ValueError("SIEM protocol must be TLS, TCP, or UDP")
+        self.siem_min_severity = bounded(
+            "SIEM severity", self.siem_min_severity, 16
+        ).upper()
+        if self.siem_min_severity not in {
+            "INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"
+        }:
+            raise ValueError("SIEM severity is invalid")
+        if self.siem_protocol != "tls" and not self.siem_allow_plaintext:
+            raise ValueError(
+                "TCP/UDP SIEM export requires explicit plaintext approval"
+            )
+        self.siem_ca_file = bounded("SIEM CA file", self.siem_ca_file, 1024)
+        if self.siem_ca_file:
+            ca_path = Path(self.siem_ca_file).expanduser()
+            if not ca_path.is_absolute() or not ca_path.is_file():
+                raise ValueError("SIEM CA file must be an existing absolute file")
+            self.siem_ca_file = str(ca_path.resolve())
+
+        self.remote_bridge_mode = bounded(
+            "Remote Bridge mode", self.remote_bridge_mode, 16
+        ).upper()
+        if self.remote_bridge_mode not in {"", "SENDER", "RECEIVER"}:
+            raise ValueError("Remote Bridge mode must be Off, Sender, or Receiver")
+        self.remote_bridge_peer = bounded(
+            "Remote Bridge peer", self.remote_bridge_peer, 320
+        )
+        if self.remote_bridge_mode == "SENDER":
+            host, separator, port_text = self.remote_bridge_peer.rpartition(":")
+            if not separator or not host or _port_setting(port_text, 0) == 0:
+                raise ValueError("Remote Bridge sender requires peer host:port")
+        self.remote_bridge_bind = bounded(
+            "Remote Bridge bind", self.remote_bridge_bind, 253
+        ) or "127.0.0.1"
+        try:
+            bind_address = ipaddress.ip_address(self.remote_bridge_bind)
+        except ValueError as exc:
+            raise ValueError("Remote Bridge bind must be a literal IP address") from exc
+        if (
+            self.remote_bridge_mode == "RECEIVER"
+            and not bind_address.is_loopback
+            and not self.remote_bridge_allow_nonloopback
+        ):
+            raise ValueError(
+                "Non-loopback Remote Bridge receive requires explicit approval"
+            )
+        self.remote_bridge_port = _port_setting(self.remote_bridge_port, 0)
+        if not self.remote_bridge_port:
+            raise ValueError("Remote Bridge port must be between 1 and 65535")
+        self.remote_bridge_node_id = bounded(
+            "Remote Bridge node ID", self.remote_bridge_node_id, 64
+        )
+
+        raw_feed = bounded("IOC feed URL", self.ioc_feed_url, 2048)
+        self.ioc_feed_url = _https_feed_setting(raw_feed)
+        if raw_feed and not self.ioc_feed_url:
+            raise ValueError("IOC feed must be a public HTTPS URL without credentials")
+        self.ioc_feed_sha256 = bounded(
+            "IOC feed SHA-256", self.ioc_feed_sha256, 64
+        ).casefold()
+        if self.ioc_feed_sha256 and not _SHA256.fullmatch(self.ioc_feed_sha256):
+            raise ValueError("IOC feed SHA-256 must be exactly 64 hexadecimal characters")
+        if self.ioc_feed_sha256 and not self.ioc_feed_url:
+            raise ValueError("IOC feed pin requires an IOC feed URL")
+
+    def publish_integration_environment(self) -> None:
+        """Publish validated, non-secret connector settings to legacy modules."""
+        self.validate_integration_settings()
+        values = {
+            "ANGERONA_SIEM_HOST": self.siem_host,
+            "ANGERONA_SIEM_PORT": str(self.siem_port),
+            "ANGERONA_SIEM_PROTO": self.siem_protocol,
+            "ANGERONA_SIEM_MINSEV": self.siem_min_severity,
+            "ANGERONA_SIEM_CA_FILE": self.siem_ca_file,
+            "ANGERONA_BRIDGE_MODE": self.remote_bridge_mode,
+            "ANGERONA_BRIDGE_PEER": self.remote_bridge_peer,
+            "ANGERONA_BRIDGE_BIND": self.remote_bridge_bind,
+            "ANGERONA_BRIDGE_PORT": str(self.remote_bridge_port),
+            "ANGERONA_BRIDGE_NODE_ID": self.remote_bridge_node_id,
+            "ANGERONA_IOC_FEED": self.ioc_feed_url,
+            "ANGERONA_IOC_FEED_SHA256": self.ioc_feed_sha256,
+        }
+        for name, value in values.items():
+            if value:
+                os.environ[name] = value
+            else:
+                os.environ.pop(name, None)
+        for name, enabled in {
+            "ANGERONA_SIEM_ALLOW_PLAINTEXT": self.siem_allow_plaintext,
+            "ANGERONA_SIEM_INCLUDE_RAW": self.siem_include_raw,
+            "ANGERONA_BRIDGE_ALLOW_NONLOOPBACK": (
+                self.remote_bridge_allow_nonloopback
+            ),
+        }.items():
+            if enabled:
+                os.environ[name] = "1"
+            else:
+                os.environ.pop(name, None)
+
     # ── Persistence ─────────────────────────────────────────────────────────
     @classmethod
     def load(cls) -> "Config":
@@ -227,6 +437,70 @@ class Config:
                     pass
                 cfg.fleet_tenant_id = str(
                     data.get("fleet_tenant_id", cfg.fleet_tenant_id)
+                )
+                cfg.siem_host = _bounded_setting(
+                    data.get("siem_host"), cfg.siem_host, 253
+                )
+                cfg.siem_port = _port_setting(
+                    data.get("siem_port"), cfg.siem_port
+                )
+                requested_siem_protocol = _bounded_setting(
+                    data.get("siem_protocol"), cfg.siem_protocol, 8
+                ).casefold()
+                cfg.siem_protocol = (
+                    requested_siem_protocol
+                    if requested_siem_protocol in {"tls", "tcp", "udp"}
+                    else "tls"
+                )
+                requested_siem_severity = _bounded_setting(
+                    data.get("siem_min_severity"), cfg.siem_min_severity, 16
+                ).upper()
+                cfg.siem_min_severity = (
+                    requested_siem_severity
+                    if requested_siem_severity
+                    in {"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"}
+                    else "MEDIUM"
+                )
+                cfg.siem_allow_plaintext = _bool_setting(
+                    data, "siem_allow_plaintext", cfg.siem_allow_plaintext
+                )
+                cfg.siem_ca_file = _bounded_setting(
+                    data.get("siem_ca_file"), cfg.siem_ca_file, 1024
+                )
+                cfg.siem_include_raw = _bool_setting(
+                    data, "siem_include_raw", cfg.siem_include_raw
+                )
+                requested_bridge_mode = _bounded_setting(
+                    data.get("remote_bridge_mode"), "", 16
+                ).upper()
+                cfg.remote_bridge_mode = (
+                    requested_bridge_mode
+                    if requested_bridge_mode in {"", "SENDER", "RECEIVER"}
+                    else ""
+                )
+                cfg.remote_bridge_peer = _bounded_setting(
+                    data.get("remote_bridge_peer"), "", 320
+                )
+                cfg.remote_bridge_bind = _bounded_setting(
+                    data.get("remote_bridge_bind"), "127.0.0.1", 253
+                )
+                cfg.remote_bridge_port = _port_setting(
+                    data.get("remote_bridge_port"), cfg.remote_bridge_port
+                )
+                cfg.remote_bridge_node_id = _bounded_setting(
+                    data.get("remote_bridge_node_id"), "", 64
+                )
+                cfg.remote_bridge_allow_nonloopback = _bool_setting(
+                    data,
+                    "remote_bridge_allow_nonloopback",
+                    cfg.remote_bridge_allow_nonloopback,
+                )
+                cfg.ioc_feed_url = _https_feed_setting(data.get("ioc_feed_url"))
+                requested_ioc_pin = _bounded_setting(
+                    data.get("ioc_feed_sha256"), "", 64
+                ).casefold()
+                cfg.ioc_feed_sha256 = (
+                    requested_ioc_pin if _SHA256.fullmatch(requested_ioc_pin) else ""
                 )
                 cfg.aria_enabled = _bool_setting(
                     data, "aria_enabled", cfg.aria_enabled)
@@ -449,21 +723,39 @@ class Config:
             cfg.aria_inbox_enabled = False
             cfg.aria_research_egress = False
             cfg.teams_bot_enabled = False
+        try:
+            cfg.publish_integration_environment()
+        except ValueError:
+            # A hand-edited invalid integration block is never inherited as
+            # network authority. Reset only that block and publish safe defaults.
+            defaults = cls(data_dir=cfg.data_dir)
+            for name in (
+                "siem_host", "siem_port", "siem_protocol", "siem_min_severity",
+                "siem_allow_plaintext", "siem_ca_file", "siem_include_raw",
+                "remote_bridge_mode", "remote_bridge_peer", "remote_bridge_bind",
+                "remote_bridge_port", "remote_bridge_node_id",
+                "remote_bridge_allow_nonloopback", "ioc_feed_url",
+                "ioc_feed_sha256",
+            ):
+                setattr(cfg, name, getattr(defaults, name))
+            cfg.publish_integration_environment()
         return cfg
 
     def save(self) -> None:
+        self.validate_integration_settings()
         # Persist the push webhook before replacing settings.json. If the OS store is
         # unavailable, fail the save rather than falling back to a plaintext
         # credential in the general settings file.
-        if self.aria_push_url or os.environ.get(_ARIA_PUSH_URL_KEY):
-            from angerona.core.secure_store import write_secret_map
+        previous_push: str | None = None
+        push_touched = bool(self.aria_push_url or os.environ.get(_ARIA_PUSH_URL_KEY))
+        if push_touched:
+            from angerona.core.secure_store import read_secret_values, write_secret_map
 
-            write_secret_map(
-                {_ARIA_PUSH_URL_KEY: self.aria_push_url},
-                self.data_dir,
-            )
-        self.settings_path.write_text(
-            json.dumps(
+            previous_push = read_secret_values(
+                (_ARIA_PUSH_URL_KEY,), self.data_dir, strict=True
+            ).get(_ARIA_PUSH_URL_KEY)
+            write_secret_map({_ARIA_PUSH_URL_KEY: self.aria_push_url}, self.data_dir)
+        encoded = json.dumps(
                 {
                     "ollama_host": self.ollama_host,
                     "ollama_model": self.ollama_model,
@@ -488,6 +780,23 @@ class Config:
                     "fleet_service_enabled": self.fleet_service_enabled,
                     "fleet_service_port": self.fleet_service_port,
                     "fleet_tenant_id": self.fleet_tenant_id,
+                    "siem_host": self.siem_host,
+                    "siem_port": self.siem_port,
+                    "siem_protocol": self.siem_protocol,
+                    "siem_min_severity": self.siem_min_severity,
+                    "siem_allow_plaintext": self.siem_allow_plaintext,
+                    "siem_ca_file": self.siem_ca_file,
+                    "siem_include_raw": self.siem_include_raw,
+                    "remote_bridge_mode": self.remote_bridge_mode,
+                    "remote_bridge_peer": self.remote_bridge_peer,
+                    "remote_bridge_bind": self.remote_bridge_bind,
+                    "remote_bridge_port": self.remote_bridge_port,
+                    "remote_bridge_node_id": self.remote_bridge_node_id,
+                    "remote_bridge_allow_nonloopback": (
+                        self.remote_bridge_allow_nonloopback
+                    ),
+                    "ioc_feed_url": self.ioc_feed_url,
+                    "ioc_feed_sha256": self.ioc_feed_sha256,
                     "aria_enabled":          self.aria_enabled,
                     "perf_governor_enabled": self.perf_governor_enabled,
                     "aria_persona":          self.aria_persona,
@@ -534,9 +843,24 @@ class Config:
                     "entropy_pool_enabled":  self.entropy_pool_enabled,
                 },
                 indent=2,
-            ),
-            encoding="utf-8",
-        )
+            )
+        try:
+            _atomic_write_text(self.settings_path, encoded)
+        except Exception as save_exc:
+            if push_touched:
+                try:
+                    from angerona.core.secure_store import write_secret_map
+
+                    write_secret_map(
+                        {_ARIA_PUSH_URL_KEY: previous_push or ""}, self.data_dir
+                    )
+                except Exception as rollback_exc:
+                    raise RuntimeError(
+                        "settings save failed and protected push credential rollback failed: "
+                        f"save={save_exc}; rollback={rollback_exc}"
+                    ) from save_exc
+            raise
+        self.publish_integration_environment()
 
     @staticmethod
     def _load_dotenv(cfg: "Config") -> None:

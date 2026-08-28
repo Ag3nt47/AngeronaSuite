@@ -46,6 +46,7 @@ def _snapshot(service: HostAdaptationService) -> dict:
         "network": {
             "captured_at": "2026-08-24T18:00:00+00:00", "ssid": "Lab",
             "network_category": "Private", "vpn_active": False,
+            "remote_session": False,
             "interfaces": [{"name": "Ethernet", "type": "Physical", "up": True}],
         },
         "firewall": {
@@ -56,11 +57,32 @@ def _snapshot(service: HostAdaptationService) -> dict:
                 {"name": "Public", "enabled": True, "inbound": "Block", "outbound": "Allow"},
             ],
         },
+        "collector_status": {
+            name: {
+                "available": True,
+                "complete": True,
+                "truncated": False,
+                "error": "",
+            }
+            for name in ("services", "ports", "network", "firewall")
+        },
     }
 
 
 def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _enroll_recovery_baseline(
+    service: HostAdaptationService, snapshot: dict
+) -> None:
+    source = service.snapshots_dir / "test-enrolled-firewall.wfw"
+    source.write_bytes(b"complete test firewall policy export")
+    service._ensure_security_baseline(
+        source_snapshot_id="snap-test-enrollment",
+        current=snapshot,
+        firewall_file=source,
+    )
 
 
 def test_baseline_drift_exact_exceptions_feedback_and_exports(tmp_path: Path) -> None:
@@ -137,10 +159,107 @@ def test_integrity_checked_state_fails_closed(tmp_path: Path) -> None:
         service.state()
 
 
+def test_adaptation_store_rejects_recomputed_unkeyed_digest(tmp_path: Path) -> None:
+    service = HostAdaptationService(tmp_path)
+    service.set_automation(True, False)
+    payload = json.loads(service.state_path.read_text(encoding="utf-8"))
+    payload["body"]["auto_apply"] = True
+    unsigned = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"sha256", "hmac_sha256"}
+    }
+    payload["sha256"] = hashlib.sha256(
+        json.dumps(
+            unsigned,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    service.state_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(IntegrityError):
+        service.state()
+
+
+def test_security_baseline_is_immutable_scoped_and_restorable(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.setattr("angerona.core.host_adaptation.platform.system", lambda: "Windows")
+    service = HostAdaptationService(tmp_path)
+    snapshot = _snapshot(service)
+    source = service.snapshots_dir / "source-firewall.wfw"
+    source.write_bytes(b"exact complete firewall policy export")
+    manifest = service._ensure_security_baseline(
+        source_snapshot_id="snap-test-source",
+        current=snapshot,
+        firewall_file=source,
+    )
+    status = service.security_baseline_status()
+    assert status["available"] is True
+    assert status["restorable_components"] == ["windows-firewall-policy"]
+    assert "services" in status["observational_only"]
+    assert manifest["replacement_allowed"] is False
+
+    second = service.snapshots_dir / "another-firewall.wfw"
+    second.write_bytes(b"different policy")
+    assert service._ensure_security_baseline(
+        source_snapshot_id="snap-later",
+        current=snapshot,
+        firewall_file=second,
+    )["firewall_sha256"] == manifest["firewall_sha256"]
+
+    monkeypatch.setattr(service, "capture_snapshot", lambda: snapshot)
+    restored_paths = []
+    receipt = service.restore_security_baseline(
+        approved=True,
+        snapshot_provider=lambda *_: "snap-before-restore",
+        executor=lambda path: restored_paths.append(path) or True,
+        postcondition_provider=lambda: snapshot["firewall"],
+    )
+    assert restored_paths == [service.security_baseline_firewall_path]
+    assert receipt["pre_restore_snapshot_id"] == "snap-before-restore"
+
+
+def test_incomplete_capture_cannot_become_golden_baseline(tmp_path: Path) -> None:
+    service = HostAdaptationService(tmp_path)
+    snapshot = _snapshot(service)
+    snapshot["collector_status"]["ports"]["complete"] = False
+    with pytest.raises(AdaptationError, match="incomplete host collectors: ports"):
+        service.save_baseline(snapshot)
+
+
+def test_first_apply_requires_explicit_recovery_baseline_enrollment(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    service = HostAdaptationService(tmp_path)
+    snapshot = _snapshot(service)
+    monkeypatch.setattr(service, "capture_snapshot", lambda: snapshot)
+    plan = service.build_plan("balanced", snapshot)
+    executed: list[str] = []
+
+    with pytest.raises(AdaptationError, match="explicitly enrolled"):
+        service.apply_plan(
+            plan,
+            approved=True,
+            approved_plan_id=plan.plan_id,
+            snapshot_provider=lambda *_: "snap-should-not-exist",
+            executor=lambda _plan: executed.append("mutated") or ("done",),
+        )
+
+    assert executed == []
+    assert not service.security_baseline_manifest_path.exists()
+    assert not service.security_baseline_firewall_path.exists()
+    assert service.transactions() == []
+
+
 def test_preview_sandbox_apply_binding_and_circuit_breaker(tmp_path: Path, monkeypatch) -> None:
     now = [1_800_000_000.0]
     service = HostAdaptationService(tmp_path, clock=lambda: now[0])
     snapshot = _snapshot(service)
+    _enroll_recovery_baseline(service, snapshot)
     monkeypatch.setattr(service, "capture_snapshot", lambda: snapshot)
 
     plan = service.build_plan("lockdown", snapshot)
@@ -154,6 +273,8 @@ def test_preview_sandbox_apply_binding_and_circuit_breaker(tmp_path: Path, monke
     assert {item["profile"] for item in simulation["changes"]} == {
         "Domain", "Private", "Public",
     }
+    exact_simulation = service.simulate_plan(plan, snapshot)
+    assert exact_simulation["plan_id"] == plan.plan_id
 
     with pytest.raises(PermissionError):
         service.apply_plan(
@@ -176,6 +297,9 @@ def test_preview_sandbox_apply_binding_and_circuit_breaker(tmp_path: Path, monke
     )
     assert receipt.snapshot_id == "snap-test"
     assert receipt.profile_id == "lockdown"
+    committed = service.transactions()[-1]
+    assert committed["status"] == "COMMITTED"
+    assert committed["receipt_digest"] == receipt.receipt_digest
 
     now[0] += 30
     fresh = service.build_plan("balanced", snapshot)
@@ -233,7 +357,7 @@ def test_context_transition_can_propose_again_after_no_match(tmp_path: Path) -> 
     assert service.run_automatic_cycle()["status"] == "proposed"
 
 
-def test_auto_apply_refuses_context_that_changes_during_plan_capture(
+def test_unattended_apply_request_remains_proposal_only(
     tmp_path: Path, monkeypatch,
 ) -> None:
     service = HostAdaptationService(tmp_path)
@@ -242,13 +366,13 @@ def test_auto_apply_refuses_context_that_changes_during_plan_capture(
     monkeypatch.setattr(service, "capture_context", lambda: {
         "ssid": "Coffee Shop", "network_category": "Public", "vpn_active": False,
     })
-    # The deeper snapshot observes that the machine already moved away from
-    # that SSID. No executor or firewall mutation should be reached.
-    snapshot = _snapshot(service)
-    snapshot["network"]["ssid"] = "Home"
-    monkeypatch.setattr(service, "capture_snapshot", lambda: snapshot)
+    monkeypatch.setattr(
+        service, "capture_snapshot",
+        lambda: pytest.fail("proposal-only automation captured a mutation snapshot"),
+    )
     result = service.run_automatic_cycle()
-    assert result["status"] == "context-changed"
+    assert result["status"] == "proposed"
+    assert service.state()["auto_apply"] is False
     assert service.state()["active_profile_id"] == ""
 
 
@@ -288,14 +412,15 @@ def test_workbench_has_complete_navigation_and_nonwriting_sandbox(tmp_path: Path
     assert menus == ["File", "Audit", "Adapt", "Safety", "Help"]
     buttons = {button.text() for button in dialog.findChildren(QPushButton)}
     assert {
-        "ADAPT HOST…", "Choose an adaptation profile…",
+        "AUTO ADAPT…", "Choose an adaptation profile…",
         "Run deep audit", "Save as golden baseline…", "1. Preview adaptation",
         "3. ADAPT HOST with this preview…", "Run no-write simulation",
         "Evaluate current context now", "Reset circuit breaker…",
-        "Roll back selected snapshot…",
+        "Roll back selected snapshot…", "Run safe automatic checkup",
+        "Capture immutable host baseline…", "Restore host baseline…",
     }.issubset(buttons)
     dialog.tabs.setCurrentIndex(0)
-    dialog.adapt_host_button.click()
+    dialog._show_adapt_host()
     assert dialog.tabs.currentIndex() == dialog.adapt_tab_index
     assert dialog.tabs.tabText(dialog.tabs.currentIndex()) == "Adapt Host"
     assert not navigation_icon("adaptation").isNull()
@@ -419,6 +544,23 @@ def test_firewall_collector_parses_explicit_values_and_rejects_numeric_enums(
                 "Name": "allow-demo", "DisplayName": "Allow demo",
                 "Enabled": "True", "Direction": "Inbound", "Action": "Allow",
                 "Profile": "Public", "PolicyStoreSourceType": "Local",
+                "Group": "Demo", "EdgeTraversalPolicy": "Block",
+                "LooseSourceMapping": "False", "LocalOnlyMapping": "False",
+                "PolicyStoreSource": "PersistentStore",
+                "ApplicationFilter": {"Program": "C:/demo.exe", "Package": "Any"},
+                "AddressFilter": {"LocalAddress": "Any", "RemoteAddress": "10.0.0.0/8"},
+                "PortFilter": {
+                    "Protocol": "TCP", "LocalPort": "443", "RemotePort": "Any",
+                    "IcmpType": "Any", "DynamicTarget": "Any",
+                },
+                "InterfaceFilter": {"InterfaceAlias": "Any"},
+                "InterfaceTypeFilter": {"InterfaceType": "Any"},
+                "ServiceFilter": {"Service": "Any"},
+                "SecurityFilter": {
+                    "LocalUser": "Any", "RemoteUser": "Any", "RemoteMachine": "Any",
+                    "Authentication": "NotRequired", "Encryption": "NotRequired",
+                    "OverrideBlockRules": "False",
+                },
             }],
         })
 
@@ -432,6 +574,9 @@ def test_firewall_collector_parses_explicit_values_and_rejects_numeric_enums(
     assert firewall["complete"] is True
     assert firewall["profiles"][0]["enabled"] is True
     assert firewall["rules"][0]["action"] == "Allow"
+    assert firewall["rules"][0]["application"]["program"] == "C:/demo.exe"
+    assert firewall["rules"][0]["address"]["remote"] == "10.0.0.0/8"
+    assert firewall["rules"][0]["port"]["local"] == "443"
     assert "$ErrorActionPreference='Stop'" in observed_scripts[0]
     assert "Get-NetFirewallProfile -PolicyStore ActiveStore" in observed_scripts[0]
 
@@ -441,11 +586,62 @@ def test_firewall_collector_parses_explicit_values_and_rejects_numeric_enums(
     assert incomplete["profiles"][0]["enabled"] is None
 
 
+def test_restore_verification_binds_full_firewall_rule_scope(tmp_path: Path) -> None:
+    service = HostAdaptationService(tmp_path)
+    expected = _snapshot(service)["firewall"]
+    expected["complete"] = True
+    expected["rules"] = [{
+        "name": "allow-demo", "enabled": True, "direction": "Inbound",
+        "action": "Allow", "profile": "Public",
+        "application": {"program": "C:/demo.exe", "package": "Any"},
+        "address": {"local": "Any", "remote": "10.0.0.0/8"},
+        "port": {"protocol": "TCP", "local": "443", "remote": "Any"},
+        "interface": {"alias": "Any"}, "interface_type": {"type": "Any"},
+        "service": {"name": "Any"},
+        "security": {"authentication": "NotRequired", "encryption": "NotRequired"},
+    }]
+    widened = json.loads(json.dumps(expected))
+    widened["rules"][0]["application"]["program"] = "Any"
+    widened["rules"][0]["address"]["remote"] = "Any"
+    widened["rules"][0]["port"]["local"] = "Any"
+
+    with pytest.raises(AdaptationError, match="rollback postcondition mismatch"):
+        service._verify_restore_postconditions(expected, widened)
+
+
+def test_auto_apply_never_executes_lockdown_or_changes_remote_session(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    for remote_session, profile_id in ((False, "lockdown"), (True, "balanced")):
+        service = HostAdaptationService(tmp_path / f"case-{remote_session}-{profile_id}")
+        service.add_trigger("ssid", "Lab", profile_id)
+        service.set_automation(True, True)
+        state = service.state()
+        state["auto_apply"] = True  # legacy state must still hit inner safety guards
+        service._save_state(state)
+        context = {
+            "ssid": "Lab", "network_category": "Private", "vpn_active": False,
+            "remote_session": remote_session,
+        }
+        snapshot = _snapshot(service)
+        snapshot["network"].update(context)
+        monkeypatch.setattr(service, "capture_context", lambda value=context: dict(value))
+        monkeypatch.setattr(service, "capture_snapshot", lambda value=snapshot: dict(value))
+        monkeypatch.setattr(
+            service, "apply_plan",
+            lambda *_args, **_kwargs: pytest.fail("unsafe automatic apply was reached"),
+        )
+
+        result = service.run_automatic_cycle()
+        assert result["status"] in {"manual-review", "context-changed", "proposed"}
+
+
 def test_apply_rolls_back_when_fresh_firewall_postcondition_mismatches(
     tmp_path: Path, monkeypatch,
 ) -> None:
     service = HostAdaptationService(tmp_path)
     snapshot = _snapshot(service)
+    _enroll_recovery_baseline(service, snapshot)
     monkeypatch.setattr(service, "capture_snapshot", lambda: snapshot)
     plan = service.build_plan("lockdown", snapshot)
     monkeypatch.setattr(service, "_capture_rollback_snapshot", lambda *_: "snap-real")
@@ -464,6 +660,92 @@ def test_apply_rolls_back_when_fresh_firewall_postcondition_mismatches(
     script = service._action_script(plan.actions[0])
     assert "$ErrorActionPreference='Stop'" in script
     assert "-ErrorAction Stop" in script
+
+
+def test_apply_and_rollback_failure_locks_breaker_and_records_needs_review(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    service = HostAdaptationService(tmp_path)
+    snapshot = _snapshot(service)
+    _enroll_recovery_baseline(service, snapshot)
+    monkeypatch.setattr(service, "capture_snapshot", lambda: snapshot)
+    plan = service.build_plan("lockdown", snapshot)
+    monkeypatch.setattr(service, "_capture_rollback_snapshot", lambda *_: "snap-real")
+    monkeypatch.setattr(service, "_execute_actions", lambda _: service.command_stack(plan))
+    monkeypatch.setattr(service, "_firewall", lambda: snapshot["firewall"])
+    monkeypatch.setattr(
+        service,
+        "rollback",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AdaptationError("injected rollback failure")
+        ),
+    )
+
+    with pytest.raises(AdaptationError, match="locked for recovery review"):
+        service.apply_plan(plan, approved=True, approved_plan_id=plan.plan_id)
+
+    transaction = service.transactions()[-1]
+    assert transaction["status"] == "NEEDS_REVIEW"
+    assert "rollback failure" in transaction["rollback_error"]
+    assert service.breaker_status()["locked"] is True
+    with pytest.raises(CircuitBreakerOpen):
+        service.apply_plan(plan, approved=True, approved_plan_id=plan.plan_id)
+
+
+def test_startup_reconciles_interrupted_transaction_against_exact_firewall_state(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    service = HostAdaptationService(tmp_path)
+    snapshot = _snapshot(service)
+    snapshot["firewall"]["complete"] = True
+    plan = service.build_plan("balanced", snapshot)
+    transaction = service._begin_transaction(
+        "apply",
+        snapshot_id="snap-reconcile",
+        authorization="test",
+        before_firewall=snapshot["firewall"],
+        plan=plan,
+    )
+    service._transition_transaction(transaction["transaction_id"], "MUTATING")
+    monkeypatch.setattr(
+        HostAdaptationService,
+        "_firewall",
+        lambda _self: snapshot["firewall"],
+    )
+
+    reopened = HostAdaptationService(tmp_path)
+
+    assert reopened.transactions()[-1]["status"] == "ROLLED_BACK"
+    assert reopened.breaker_status()["locked"] is False
+
+
+def test_startup_locks_on_ambiguous_interrupted_transaction(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    service = HostAdaptationService(tmp_path)
+    snapshot = _snapshot(service)
+    snapshot["firewall"]["complete"] = True
+    plan = service.build_plan("balanced", snapshot)
+    transaction = service._begin_transaction(
+        "apply",
+        snapshot_id="snap-ambiguous",
+        authorization="test",
+        before_firewall=snapshot["firewall"],
+        plan=plan,
+    )
+    service._transition_transaction(transaction["transaction_id"], "MUTATING")
+    ambiguous = json.loads(json.dumps(snapshot["firewall"]))
+    ambiguous["profiles"][0]["outbound"] = "Block"
+    monkeypatch.setattr(
+        HostAdaptationService,
+        "_firewall",
+        lambda _self: ambiguous,
+    )
+
+    reopened = HostAdaptationService(tmp_path)
+
+    assert reopened.transactions()[-1]["status"] == "NEEDS_REVIEW"
+    assert reopened.breaker_status()["locked"] is True
 
 
 def test_rollback_requires_fresh_canonical_firewall_postcondition(
@@ -497,30 +779,29 @@ def test_rollback_requires_fresh_canonical_firewall_postcondition(
     assert service.list_snapshots()[0]["status"] == "ready"
 
 
-def test_concurrent_disable_cancels_stale_automatic_cycle(
+def test_legacy_auto_apply_is_migrated_to_proposal_only(
     tmp_path: Path, monkeypatch,
 ) -> None:
     service = HostAdaptationService(tmp_path)
     service.add_trigger("ssid", "Lab", "balanced")
     service.set_automation(True, True)
+    state = service.state()
+    state["auto_apply"] = True  # simulate legacy/tampered persisted pre-authorization
+    service._save_state(state)
     monkeypatch.setattr(service, "capture_context", lambda: {
         "ssid": "Lab", "network_category": "Private", "vpn_active": False,
     })
     snapshot = _snapshot(service)
 
-    def capture_then_disable():
-        service.set_automation(False)
-        return snapshot
-
-    monkeypatch.setattr(service, "capture_snapshot", capture_then_disable)
+    monkeypatch.setattr(service, "capture_snapshot", lambda: snapshot)
     monkeypatch.setattr(
         service, "apply_plan",
         lambda *_args, **_kwargs: pytest.fail("disabled automation reached apply"),
     )
     result = service.run_automatic_cycle()
-    assert result["status"] == "context-changed"
+    assert result["status"] == "proposed"
     state = service.state()
-    assert state["automation_enabled"] is False
+    assert state["automation_enabled"] is True
     assert state["auto_apply"] is False
 
 
@@ -538,6 +819,9 @@ def test_public_matching_prefers_strongest_rule_and_auto_never_relaxes(
     service = HostAdaptationService(tmp_path / "no-relax")
     service.add_trigger("ssid", "Lab", "balanced")
     service.set_automation(True, True)
+    state = service.state()
+    state["auto_apply"] = True  # exercise legacy fail-closed migration path
+    service._save_state(state)
     monkeypatch.setattr(service, "capture_context", lambda: {
         "ssid": "Lab", "network_category": "Private", "vpn_active": False,
     })
@@ -546,4 +830,17 @@ def test_public_matching_prefers_strongest_rule_and_auto_never_relaxes(
         row["outbound"] = "Block"
     monkeypatch.setattr(service, "capture_snapshot", lambda: snapshot)
     result = service.run_automatic_cycle()
-    assert result["status"] == "manual-review"
+    assert result["status"] == "proposed"
+
+
+def test_remote_session_state_detects_shell_and_third_party_agents(monkeypatch) -> None:
+    monkeypatch.setenv("SSH_CONNECTION", "198.51.100.8 1234 192.0.2.4 22")
+    assert HostAdaptationService._remote_session_state() == (True, "")
+    monkeypatch.delenv("SSH_CONNECTION")
+
+    processes = [SimpleNamespace(info={"name": "AnyDesk.exe"})]
+    monkeypatch.setattr(
+        "angerona.core.host_adaptation.psutil.process_iter",
+        lambda attrs: processes,
+    )
+    assert HostAdaptationService._remote_control_agent_active() == (True, "")

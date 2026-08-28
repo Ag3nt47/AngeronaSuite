@@ -3,8 +3,8 @@
 The service deliberately separates observation, planning, simulation, and
 execution.  An audit or sandbox run can never mutate the host.  A profile can
 only reach the Windows Firewall broker after an immutable plan is previewed,
-bound to an explicit approval (or a separately armed context rule), checked
-against current state, and backed up for one-click rollback.
+bound to an explicit approval, checked against current state, and backed up for
+one-click rollback. Context rules are proposal-only.
 
 No profile kills processes, stops services, or edits routes.  Those operations
 have much larger recovery surfaces and remain outside this workbench.
@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import hmac
 import io
 import json
 import os
 import platform
 import socket
+import stat
 import subprocess
 import tempfile
 import threading
@@ -35,6 +37,7 @@ from angerona.core.privilege import (
     trusted_powershell_path,
     trusted_windows_directories,
 )
+from angerona.core.durable_outbox import load_or_create_outbox_key
 
 
 SCHEMA_VERSION = 1
@@ -45,9 +48,11 @@ MAX_ACTIVITY = 500
 MAX_EXCEPTIONS = 1_000
 MAX_TRIGGERS = 100
 MAX_FEEDBACK_REVIEWS = 5_000
+MAX_TRANSACTIONS = 200
 FEEDBACK_MIN_DISTINCT = 3
 PLAN_TTL_SECONDS = 10 * 60
 SNAPSHOT_RETENTION = 10
+MAX_FIREWALL_ARTIFACT_BYTES = 256 * 1024 * 1024
 
 
 class AdaptationError(RuntimeError):
@@ -192,38 +197,69 @@ class HostAdaptationService:
     ) -> None:
         self.data_dir = Path(data_dir).expanduser().resolve()
         self.root = (self.data_dir / "adaptation").resolve()
+        try:
+            self.root.relative_to(self.data_dir)
+        except ValueError as exc:
+            raise AdaptationError("adaptation root escaped the configured data directory") from exc
         self.snapshots_dir = (self.root / "snapshots").resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
+        if self.root.is_symlink() or self.snapshots_dir.is_symlink():
+            raise AdaptationError("adaptation storage may not traverse a symbolic link")
+        self._store_key = load_or_create_outbox_key(self.root / "adaptation.key")
         self._clock = clock
         self._lock = threading.RLock()
         # UI apply/rollback and the context monitor share one service. Keep the
         # entire snapshot→mutate→receipt transaction exclusive so two valid
         # plans cannot both pass a precondition before either records its change.
         self._mutation_lock = threading.RLock()
+        self._store_warnings: dict[str, str] = {}
         self.baseline_path = self.root / "golden-baseline.json"
         self.exceptions_path = self.root / "exceptions.json"
         self.state_path = self.root / "state.json"
         self.activity_path = self.root / "activity.json"
+        self.transactions_path = self.root / "transactions.json"
+        self.security_baseline_manifest_path = (
+            self.snapshots_dir / "host-security-baseline.json"
+        )
+        self.security_baseline_firewall_path = (
+            self.snapshots_dir / "host-security-baseline.wfw"
+        )
+        self._reconcile_incomplete_transactions()
 
     # ── Persistence and integrity ──────────────────────────────────────────
-    @staticmethod
-    def _envelope(kind: str, body: Any) -> dict[str, Any]:
+    def _envelope(self, kind: str, body: Any) -> dict[str, Any]:
         payload = {
             "schema": f"angerona.host-adaptation.{kind}/v{SCHEMA_VERSION}",
             "body": body,
         }
         payload["sha256"] = _digest(payload)
+        payload["hmac_sha256"] = hmac.new(
+            self._store_key, _canonical(payload), hashlib.sha256
+        ).hexdigest()
         return payload
 
-    @staticmethod
-    def _verify_envelope(payload: Any, kind: str) -> Any:
+    def _verify_envelope(self, payload: Any, kind: str) -> Any:
         if not isinstance(payload, dict):
             raise IntegrityError(f"{kind} store is not a JSON object")
         supplied = payload.get("sha256")
-        unsigned = {key: value for key, value in payload.items() if key != "sha256"}
+        supplied_hmac = payload.get("hmac_sha256")
+        authenticated = {
+            key: value for key, value in payload.items() if key != "hmac_sha256"
+        }
+        unsigned = {
+            key: value for key, value in authenticated.items() if key != "sha256"
+        }
         expected_schema = f"angerona.host-adaptation.{kind}/v{SCHEMA_VERSION}"
-        if payload.get("schema") != expected_schema or supplied != _digest(unsigned):
+        valid_hmac = isinstance(supplied_hmac, str) and hmac.compare_digest(
+            supplied_hmac,
+            hmac.new(self._store_key, _canonical(authenticated), hashlib.sha256).hexdigest(),
+        )
+        if (
+            payload.get("schema") != expected_schema
+            or supplied != _digest(unsigned)
+            or not valid_hmac
+        ):
             raise IntegrityError(f"{kind} store failed its schema or digest check")
         return payload.get("body")
 
@@ -250,6 +286,182 @@ class HostAdaptationService:
                 pass
             raise
 
+    @staticmethod
+    def _exclusive_write(path: Path, payload: bytes) -> None:
+        """Create one immutable artifact without following a pre-placed target."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            info = path.stat()
+            if not path.is_file() or getattr(info, "st_nlink", 1) != 1:
+                raise IntegrityError("immutable artifact is not a single regular file")
+        except Exception:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            raise
+
+    @staticmethod
+    def _bounded_file_bytes(path: Path, *, max_bytes: int) -> bytes:
+        """Read one stable regular file through a bounded no-follow descriptor."""
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(str(path), flags)
+        except OSError as exc:
+            raise IntegrityError(f"store could not be opened safely: {exc}") from exc
+        try:
+            info = os.fstat(descriptor)
+            attributes = int(getattr(info, "st_file_attributes", 0))
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or getattr(info, "st_nlink", 1) != 1
+                or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            ):
+                raise IntegrityError("store is not a single regular file")
+            if info.st_size <= 0 or info.st_size > max_bytes:
+                raise IntegrityError(f"store is empty or exceeds {max_bytes} bytes")
+            remaining = info.st_size
+            chunks: list[bytes] = []
+            while remaining:
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                if not chunk:
+                    raise IntegrityError("store changed while it was read")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            if os.read(descriptor, 1):
+                raise IntegrityError("store grew while it was read")
+            return b"".join(chunks)
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _bounded_file_sha256(
+        path: Path, *, max_bytes: int = MAX_FIREWALL_ARTIFACT_BYTES
+    ) -> str:
+        """Hash one stable, bounded regular file without following links."""
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(str(path), flags)
+        except OSError as exc:
+            raise IntegrityError(f"recovery artifact could not be opened safely: {exc}") from exc
+        try:
+            info = os.fstat(descriptor)
+            attributes = int(getattr(info, "st_file_attributes", 0))
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or getattr(info, "st_nlink", 1) != 1
+                or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            ):
+                raise IntegrityError("recovery artifact is not a single regular file")
+            if info.st_size <= 0 or info.st_size > max_bytes:
+                raise IntegrityError(
+                    f"recovery artifact is empty or exceeds {max_bytes} bytes"
+                )
+            digest = hashlib.sha256()
+            remaining = info.st_size
+            while remaining:
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                if not chunk:
+                    raise IntegrityError("recovery artifact changed while it was read")
+                digest.update(chunk)
+                remaining -= len(chunk)
+            if os.read(descriptor, 1):
+                raise IntegrityError("recovery artifact grew while it was read")
+            return digest.hexdigest()
+        finally:
+            os.close(descriptor)
+
+    @classmethod
+    def _exclusive_copy_bounded(
+        cls,
+        source: Path,
+        target: Path,
+        *,
+        max_bytes: int = MAX_FIREWALL_ARTIFACT_BYTES,
+    ) -> str:
+        """Copy a bounded recovery artifact into a new immutable target."""
+        source_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            source_flags |= os.O_NOFOLLOW
+        source_fd = os.open(str(source), source_flags)
+        target_fd: int | None = None
+        created = False
+        try:
+            source_info = os.fstat(source_fd)
+            attributes = int(getattr(source_info, "st_file_attributes", 0))
+            if (
+                not stat.S_ISREG(source_info.st_mode)
+                or getattr(source_info, "st_nlink", 1) != 1
+                or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            ):
+                raise IntegrityError("recovery source is not a single regular file")
+            if source_info.st_size <= 0 or source_info.st_size > max_bytes:
+                raise AdaptationError(
+                    f"firewall recovery export is empty or exceeds {max_bytes} bytes"
+                )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target_fd = os.open(
+                str(target),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+                0o600,
+            )
+            created = True
+            digest = hashlib.sha256()
+            remaining = source_info.st_size
+            while remaining:
+                chunk = os.read(source_fd, min(1024 * 1024, remaining))
+                if not chunk:
+                    raise IntegrityError("recovery source changed while it was copied")
+                digest.update(chunk)
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(target_fd, view)
+                    if written <= 0:
+                        raise OSError("short write while preserving recovery artifact")
+                    view = view[written:]
+                remaining -= len(chunk)
+            if os.read(source_fd, 1):
+                raise IntegrityError("recovery source grew while it was copied")
+            os.fsync(target_fd)
+            target_info = os.fstat(target_fd)
+            if (
+                not stat.S_ISREG(target_info.st_mode)
+                or getattr(target_info, "st_nlink", 1) != 1
+                or target_info.st_size != source_info.st_size
+            ):
+                raise IntegrityError("immutable recovery copy failed validation")
+            return digest.hexdigest()
+        except Exception:
+            if target_fd is not None:
+                os.close(target_fd)
+                target_fd = None
+            if created:
+                try:
+                    target.unlink()
+                except OSError:
+                    pass
+            raise
+        finally:
+            os.close(source_fd)
+            if target_fd is not None:
+                os.close(target_fd)
+
+    def _save_store_exclusive(self, path: Path, kind: str, body: Any) -> None:
+        encoded = json.dumps(
+            self._envelope(kind, body), indent=2, ensure_ascii=False, default=str
+        ).encode("utf-8")
+        with self._lock:
+            self._exclusive_write(path, encoded)
+
     def _save_store(self, path: Path, kind: str, body: Any) -> None:
         encoded = json.dumps(
             self._envelope(kind, body), indent=2, ensure_ascii=False, default=str
@@ -262,14 +474,219 @@ class HostAdaptationService:
             if not path.exists():
                 return default
             try:
-                if path.stat().st_size > 16 * 1024 * 1024:
-                    raise IntegrityError(f"{kind} store exceeds its size bound")
-                payload = json.loads(path.read_text(encoding="utf-8"))
+                encoded = self._bounded_file_bytes(path, max_bytes=16 * 1024 * 1024)
+                payload = json.loads(encoded.decode("utf-8"))
+                if isinstance(payload, dict) and "hmac_sha256" not in payload:
+                    unsigned = {
+                        key: value for key, value in payload.items() if key != "sha256"
+                    }
+                    expected_schema = (
+                        f"angerona.host-adaptation.{kind}/v{SCHEMA_VERSION}"
+                    )
+                    if (
+                        payload.get("schema") == expected_schema
+                        and payload.get("sha256") == _digest(unsigned)
+                    ):
+                        # Pre-v1.12 adjacent digests provided corruption checks,
+                        # not authority. Never import their baseline, triggers,
+                        # automation, or exceptions as trusted state.
+                        self._store_warnings[kind] = (
+                            "legacy digest-only store was quarantined logically; "
+                            "review and explicitly recreate it"
+                        )
+                        return default
                 return self._verify_envelope(payload, kind)
             except IntegrityError:
                 raise
             except Exception as exc:
                 raise IntegrityError(f"could not read {kind} store: {exc}") from exc
+
+    def store_warnings(self) -> dict[str, str]:
+        return dict(self._store_warnings)
+
+    # ── Crash-durable mutation journal ──────────────────────────────────────
+    def transactions(self) -> list[dict[str, Any]]:
+        rows = self._load_store(self.transactions_path, "transactions", [])
+        if not isinstance(rows, list):
+            raise IntegrityError("adaptation transaction journal is not a list")
+        if len(rows) > MAX_TRANSACTIONS:
+            raise IntegrityError("adaptation transaction journal exceeds its bound")
+        return [dict(row) for row in rows if isinstance(row, dict)]
+
+    def _save_transaction_record(self, record: Mapping[str, Any]) -> dict[str, Any]:
+        transaction_id = str(record.get("transaction_id") or "")
+        if not transaction_id.startswith("txn-"):
+            raise IntegrityError("adaptation transaction identity is invalid")
+        with self._lock:
+            rows = self.transactions()
+            updated = dict(record)
+            updated["updated_at"] = _utc_now()
+            found = False
+            for index, row in enumerate(rows):
+                if row.get("transaction_id") == transaction_id:
+                    rows[index] = updated
+                    found = True
+                    break
+            if not found:
+                rows.append(updated)
+            self._save_store(
+                self.transactions_path,
+                "transactions",
+                rows[-MAX_TRANSACTIONS:],
+            )
+        return updated
+
+    def _begin_transaction(
+        self,
+        kind: str,
+        *,
+        snapshot_id: str,
+        authorization: str,
+        before_firewall: Mapping[str, Any] | None,
+        plan: AdaptationPlan | None = None,
+        target_firewall: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        record = {
+            "transaction_id": f"txn-{uuid.uuid4().hex}",
+            "kind": _safe_text(kind, 60),
+            "status": "PREPARED",
+            "created_at": _utc_now(),
+            "updated_at": _utc_now(),
+            "host_id": self.host_id(),
+            "snapshot_id": _safe_text(snapshot_id, 160),
+            "authorization": _safe_text(authorization, 160),
+            "plan": asdict(plan) if plan is not None else None,
+            "plan_digest": plan.digest if plan is not None else "",
+            "profile_id": plan.profile_id if plan is not None else "",
+            "drastic": bool(plan.drastic) if plan is not None else False,
+            "before_firewall_digest": (
+                _digest(before_firewall) if before_firewall else ""
+            ),
+            "target_firewall_digest": (
+                _digest(target_firewall) if target_firewall else ""
+            ),
+            "after_firewall_digest": "",
+            "commands": [],
+            "receipt_digest": "",
+            "error": "",
+            "rollback_error": "",
+        }
+        return self._save_transaction_record(record)
+
+    def _transition_transaction(
+        self, transaction_id: str, status: str, **updates: Any
+    ) -> dict[str, Any]:
+        allowed = {
+            "PREPARED", "MUTATING", "VERIFIED", "COMMITTED",
+            "ROLLED_BACK", "NEEDS_REVIEW",
+        }
+        if status not in allowed:
+            raise IntegrityError("adaptation transaction status is invalid")
+        with self._lock:
+            rows = self.transactions()
+            record = next(
+                (row for row in rows if row.get("transaction_id") == transaction_id),
+                None,
+            )
+            if record is None:
+                raise IntegrityError("adaptation transaction disappeared")
+            record.update({key: value for key, value in updates.items()})
+            record["status"] = status
+            return self._save_transaction_record(record)
+
+    def _lock_breaker_for_review(self, reason: str, transaction_id: str) -> None:
+        with self._lock:
+            state = self.state()
+            breaker = dict(self._default_state()["breaker"])
+            breaker.update(state.get("breaker") or {})
+            breaker["locked"] = True
+            breaker["reason"] = _safe_text(
+                f"Recovery review required for {transaction_id}: {reason}", 500
+            )
+            state["breaker"] = breaker
+            self._save_state(state)
+        self.log_activity("transaction.needs_review", "critical", breaker["reason"])
+
+    def _mark_transaction_needs_review(
+        self,
+        transaction_id: str,
+        *,
+        error: object,
+        rollback_error: object = "",
+    ) -> None:
+        reason = _safe_text(error, 1000)
+        self._transition_transaction(
+            transaction_id,
+            "NEEDS_REVIEW",
+            error=reason,
+            rollback_error=_safe_text(rollback_error, 1000),
+        )
+        self._lock_breaker_for_review(reason, transaction_id)
+
+    def _reconcile_incomplete_transactions(self) -> None:
+        """Classify crash-interrupted mutations before new apply authority exists."""
+        if not self.transactions_path.exists():
+            return
+        pending = [
+            row for row in self.transactions()
+            if row.get("status") in {"PREPARED", "MUTATING", "VERIFIED"}
+        ]
+        if not pending:
+            return
+        try:
+            current = self._firewall()
+            if not current.get("supported") or current.get("complete") is not True:
+                raise AdaptationError(
+                    current.get("reason") or "fresh firewall state is incomplete"
+                )
+            current_digest = _digest(current)
+        except Exception as exc:
+            for record in pending:
+                self._mark_transaction_needs_review(
+                    str(record.get("transaction_id")), error=exc
+                )
+            return
+        for record in pending:
+            transaction_id = str(record.get("transaction_id"))
+            before = str(record.get("before_firewall_digest") or "")
+            after = str(
+                record.get("after_firewall_digest")
+                or record.get("target_firewall_digest")
+                or ""
+            )
+            if before and hmac.compare_digest(current_digest, before):
+                self._transition_transaction(
+                    transaction_id,
+                    "ROLLED_BACK",
+                    error="startup reconciliation observed the exact pre-mutation state",
+                )
+                continue
+            if after and hmac.compare_digest(current_digest, after):
+                try:
+                    with self._lock:
+                        state = self.state()
+                        if record.get("kind") == "apply":
+                            state["active_profile_id"] = _safe_text(
+                                record.get("profile_id"), 80
+                            )
+                        else:
+                            state["active_profile_id"] = ""
+                        self._save_state(state)
+                    self._transition_transaction(
+                        transaction_id,
+                        "COMMITTED",
+                        error="startup reconciliation verified the exact postcondition",
+                    )
+                    continue
+                except Exception as exc:
+                    self._mark_transaction_needs_review(
+                        transaction_id, error=exc
+                    )
+                    continue
+            self._mark_transaction_needs_review(
+                transaction_id,
+                error="startup state matches neither authenticated precondition nor postcondition",
+            )
 
     def _default_state(self) -> dict[str, Any]:
         return {
@@ -311,6 +728,9 @@ class HostAdaptationService:
         )
         if not isinstance(state.get("breaker"), dict):
             state["breaker"] = self._default_state()["breaker"]
+        # v1.12 migration: context monitoring is proposal-only. A legacy or
+        # hand-edited auto_apply flag never regains unattended mutation authority.
+        state["auto_apply"] = False
         return state
 
     def _save_state(self, state: Mapping[str, Any]) -> None:
@@ -619,6 +1039,38 @@ class HostAdaptationService:
             }
         script = (
             "$ErrorActionPreference='Stop';"
+            "$app=@{};Get-NetFirewallApplicationFilter -PolicyStore ActiveStore "
+            "-ErrorAction Stop|ForEach-Object{$app[[string]$_.InstanceID]="
+            "[PSCustomObject]@{Program=[string]::Join(',',@($_.Program));"
+            "Package=[string]::Join(',',@($_.Package))}};"
+            "$addr=@{};Get-NetFirewallAddressFilter -PolicyStore ActiveStore "
+            "-ErrorAction Stop|ForEach-Object{$addr[[string]$_.InstanceID]="
+            "[PSCustomObject]@{LocalAddress=[string]::Join(',',@($_.LocalAddress));"
+            "RemoteAddress=[string]::Join(',',@($_.RemoteAddress))}};"
+            "$port=@{};Get-NetFirewallPortFilter -PolicyStore ActiveStore "
+            "-ErrorAction Stop|ForEach-Object{$port[[string]$_.InstanceID]="
+            "[PSCustomObject]@{Protocol=[string]::Join(',',@($_.Protocol));"
+            "LocalPort=[string]::Join(',',@($_.LocalPort));"
+            "RemotePort=[string]::Join(',',@($_.RemotePort));"
+            "IcmpType=[string]::Join(',',@($_.IcmpType));"
+            "DynamicTarget=[string]::Join(',',@($_.DynamicTarget))}};"
+            "$iface=@{};Get-NetFirewallInterfaceFilter -PolicyStore ActiveStore "
+            "-ErrorAction Stop|ForEach-Object{$iface[[string]$_.InstanceID]="
+            "[PSCustomObject]@{InterfaceAlias=[string]::Join(',',@($_.InterfaceAlias))}};"
+            "$iftype=@{};Get-NetFirewallInterfaceTypeFilter -PolicyStore ActiveStore "
+            "-ErrorAction Stop|ForEach-Object{$iftype[[string]$_.InstanceID]="
+            "[PSCustomObject]@{InterfaceType=[string]::Join(',',@($_.InterfaceType))}};"
+            "$svc=@{};Get-NetFirewallServiceFilter -PolicyStore ActiveStore "
+            "-ErrorAction Stop|ForEach-Object{$svc[[string]$_.InstanceID]="
+            "[PSCustomObject]@{Service=[string]::Join(',',@($_.Service))}};"
+            "$sec=@{};Get-NetFirewallSecurityFilter -PolicyStore ActiveStore "
+            "-ErrorAction Stop|ForEach-Object{$sec[[string]$_.InstanceID]="
+            "[PSCustomObject]@{LocalUser=[string]::Join(',',@($_.LocalUser));"
+            "RemoteUser=[string]::Join(',',@($_.RemoteUser));"
+            "RemoteMachine=[string]::Join(',',@($_.RemoteMachine));"
+            "Authentication=[string]::Join(',',@($_.Authentication));"
+            "Encryption=[string]::Join(',',@($_.Encryption));"
+            "OverrideBlockRules=[string]::Join(',',@($_.OverrideBlockRules))}};"
             "$p=@(Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop | ForEach-Object {"
             "[PSCustomObject]@{Name=[string]$_.Name;Enabled=[string]$_.Enabled;"
             "DefaultInboundAction=[string]$_.DefaultInboundAction;"
@@ -627,11 +1079,20 @@ class HostAdaptationService:
             "PolicyStoreSourceType=[string]$_.PolicyStoreSourceType}});"
             f"$r=@(Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction Stop | "
             f"Select-Object -First {MAX_FIREWALL_RULES + 1} | ForEach-Object {{"
+            "$id=[string]$_.InstanceID;"
             "[PSCustomObject]@{Name=[string]$_.Name;DisplayName=[string]$_.DisplayName;"
+            "Group=[string]$_.Group;"
             "Enabled=[string]$_.Enabled;Direction=[string]$_.Direction;"
             "Action=[string]$_.Action;Profile=[string]$_.Profile;"
-            "PolicyStoreSourceType=[string]$_.PolicyStoreSourceType}});"
-            "[PSCustomObject]@{Profiles=$p;Rules=$r}|ConvertTo-Json -Depth 4 -Compress"
+            "EdgeTraversalPolicy=[string]$_.EdgeTraversalPolicy;"
+            "LooseSourceMapping=[string]$_.LooseSourceMapping;"
+            "LocalOnlyMapping=[string]$_.LocalOnlyMapping;"
+            "PolicyStoreSource=[string]$_.PolicyStoreSource;"
+            "PolicyStoreSourceType=[string]$_.PolicyStoreSourceType;"
+            "ApplicationFilter=$app[$id];AddressFilter=$addr[$id];PortFilter=$port[$id];"
+            "InterfaceFilter=$iface[$id];InterfaceTypeFilter=$iftype[$id];"
+            "ServiceFilter=$svc[$id];SecurityFilter=$sec[$id]}});"
+            "[PSCustomObject]@{Profiles=$p;Rules=$r}|ConvertTo-Json -Depth 6 -Compress"
         )
         try:
             raw = self._run_readonly(
@@ -678,6 +1139,23 @@ class HostAdaptationService:
                 })
             truncated = len(rule_payload) > MAX_FIREWALL_RULES
             rules: list[dict[str, Any]] = []
+
+            def filter_row(
+                source: Mapping[str, Any],
+                source_name: str,
+                fields: tuple[tuple[str, str], ...],
+            ) -> dict[str, str]:
+                raw_filter = source.get(source_name)
+                if not isinstance(raw_filter, dict):
+                    parse_errors.append(
+                        f"firewall rule is missing {source_name} evidence"
+                    )
+                    return {target: "" for _provider, target in fields}
+                return {
+                    target: _safe_text(raw_filter.get(provider), 2_000)
+                    for provider, target in fields
+                }
+
             for item in rule_payload[:MAX_FIREWALL_RULES]:
                 if not isinstance(item, dict):
                     parse_errors.append("invalid rule row")
@@ -700,12 +1178,63 @@ class HostAdaptationService:
                 rules.append({
                     "name": name,
                     "display_name": _safe_text(item.get("DisplayName"), 300),
+                    "group": _safe_text(item.get("Group"), 300),
                     "enabled": enabled,
                     "direction": _safe_text(direction, 40),
                     "action": _safe_text(action, 40),
                     "profile": _safe_text(item.get("Profile"), 100),
+                    "edge_traversal": _safe_text(
+                        item.get("EdgeTraversalPolicy"), 80
+                    ),
+                    "loose_source_mapping": _safe_text(
+                        item.get("LooseSourceMapping"), 80
+                    ),
+                    "local_only_mapping": _safe_text(
+                        item.get("LocalOnlyMapping"), 80
+                    ),
+                    "policy_store_source": _safe_text(
+                        item.get("PolicyStoreSource"), 300
+                    ),
                     "policy_store_source_type": _safe_text(
                         item.get("PolicyStoreSourceType"), 80
+                    ),
+                    "application": filter_row(
+                        item, "ApplicationFilter",
+                        (("Program", "program"), ("Package", "package")),
+                    ),
+                    "address": filter_row(
+                        item, "AddressFilter",
+                        (("LocalAddress", "local"), ("RemoteAddress", "remote")),
+                    ),
+                    "port": filter_row(
+                        item, "PortFilter",
+                        (
+                            ("Protocol", "protocol"),
+                            ("LocalPort", "local"),
+                            ("RemotePort", "remote"),
+                            ("IcmpType", "icmp_type"),
+                            ("DynamicTarget", "dynamic_target"),
+                        ),
+                    ),
+                    "interface": filter_row(
+                        item, "InterfaceFilter", (("InterfaceAlias", "alias"),)
+                    ),
+                    "interface_type": filter_row(
+                        item, "InterfaceTypeFilter", (("InterfaceType", "type"),)
+                    ),
+                    "service": filter_row(
+                        item, "ServiceFilter", (("Service", "name"),)
+                    ),
+                    "security": filter_row(
+                        item, "SecurityFilter",
+                        (
+                            ("LocalUser", "local_user"),
+                            ("RemoteUser", "remote_user"),
+                            ("RemoteMachine", "remote_machine"),
+                            ("Authentication", "authentication"),
+                            ("Encryption", "encryption"),
+                            ("OverrideBlockRules", "override_block_rules"),
+                        ),
                     ),
                 })
             complete = bool(profiles) and not truncated and not parse_errors
@@ -735,6 +1264,108 @@ class HostAdaptationService:
                 "rules": [],
             }
 
+    @staticmethod
+    def _wts_remote_session_active() -> tuple[bool, str]:
+        """Inspect every Windows Terminal Services session, not only this one."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class WTS_SESSION_INFO(ctypes.Structure):
+                _fields_ = [
+                    ("SessionId", wintypes.DWORD),
+                    ("pWinStationName", wintypes.LPWSTR),
+                    ("State", ctypes.c_int),
+                ]
+
+            wts = ctypes.windll.wtsapi32
+            sessions = ctypes.POINTER(WTS_SESSION_INFO)()
+            count = wintypes.DWORD()
+            if not wts.WTSEnumerateSessionsW(
+                wintypes.HANDLE(0), 0, 1, ctypes.byref(sessions), ctypes.byref(count)
+            ):
+                raise ctypes.WinError()
+            try:
+                for index in range(min(int(count.value), 256)):
+                    item = sessions[index]
+                    if int(item.State) not in {0, 1, 3}:  # Active, Connected, Shadow
+                        continue
+                    protocol_buffer = wintypes.LPWSTR()
+                    protocol_bytes = wintypes.DWORD()
+                    ok = wts.WTSQuerySessionInformationW(
+                        wintypes.HANDLE(0),
+                        item.SessionId,
+                        16,  # WTSClientProtocolType
+                        ctypes.byref(protocol_buffer),
+                        ctypes.byref(protocol_bytes),
+                    )
+                    if not ok:
+                        continue
+                    try:
+                        protocol = ctypes.cast(
+                            protocol_buffer, ctypes.POINTER(wintypes.USHORT)
+                        ).contents.value
+                    finally:
+                        wts.WTSFreeMemory(protocol_buffer)
+                    station = str(item.pWinStationName or "").casefold()
+                    if protocol == 2 or station.startswith(("rdp-", "ica-")):
+                        return True, ""
+            finally:
+                wts.WTSFreeMemory(sessions)
+            if int(count.value) > 256:
+                return False, "remote-session inventory exceeded 256 sessions"
+            return False, ""
+        except Exception as exc:
+            return False, f"WTS remote-session status: {_safe_text(exc, 180)}"
+
+    @staticmethod
+    def _remote_control_agent_active() -> tuple[bool, str]:
+        """Conservatively detect common console-sharing agent processes."""
+        names = {
+            "anydesk.exe", "teamviewer.exe", "teamviewer_service.exe",
+            "rustdesk.exe", "screenconnect.clientservice.exe", "connectwisecontrol.client.exe",
+            "splashtopremote.exe", "srmanager.exe", "logmein.exe", "bomgar-scc.exe",
+            "dwagent.exe", "meshagent.exe",
+        }
+        try:
+            for index, process in enumerate(psutil.process_iter(["name"])):
+                if index >= 4096:
+                    return False, "remote-control process inventory exceeded 4096 entries"
+                name = str((process.info or {}).get("name") or "").casefold()
+                if name in names:
+                    return True, ""
+            return False, ""
+        except Exception as exc:
+            return False, f"remote-control agent status: {_safe_text(exc, 180)}"
+
+    @staticmethod
+    def _remote_session_state() -> tuple[bool, str]:
+        """Return host-wide remote-operator state without retaining peer details."""
+        if any(
+            bool(os.environ.get(name))
+            for name in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")
+        ):
+            return True, ""
+        session_name = str(os.environ.get("SESSIONNAME") or "").strip().casefold()
+        if session_name.startswith("rdp-"):
+            return True, ""
+        if platform.system() != "Windows":
+            return False, ""
+        try:
+            import ctypes
+
+            if bool(ctypes.windll.user32.GetSystemMetrics(0x1000)):
+                return True, ""
+        except Exception as exc:
+            return False, f"remote-session status: {_safe_text(exc, 180)}"
+        wts_active, wts_error = HostAdaptationService._wts_remote_session_active()
+        if wts_active:
+            return True, ""
+        agent_active, agent_error = HostAdaptationService._remote_control_agent_active()
+        if agent_active:
+            return True, ""
+        return False, "; ".join(error for error in (wts_error, agent_error) if error)
+
     def capture_context(self) -> dict[str, Any]:
         interfaces = []
         vpn_active = False
@@ -754,6 +1385,9 @@ class HostAdaptationService:
 
         ssid = ""
         category = "Unknown"
+        remote_session, remote_error = self._remote_session_state()
+        if remote_error:
+            errors.append(remote_error)
         if platform.system() == "Windows":
             try:
                 output = self._run_readonly(
@@ -802,6 +1436,7 @@ class HostAdaptationService:
             "ssid": ssid,
             "network_category": category,
             "vpn_active": vpn_active,
+            "remote_session": remote_session,
             "interfaces": interfaces[:256],
             "collector": quality,
         }
@@ -838,6 +1473,23 @@ class HostAdaptationService:
     def save_baseline(self, snapshot: Mapping[str, Any]) -> None:
         if snapshot.get("host_id") != self.host_id():
             raise AdaptationError("refusing a golden baseline captured from another host")
+        quality = snapshot.get("collector_status")
+        required = ("services", "ports", "network", "firewall")
+        if not isinstance(quality, Mapping) or any(
+            not isinstance(quality.get(name), Mapping)
+            or quality[name].get("complete") is not True
+            for name in required
+        ):
+            raise AdaptationError(
+                "refusing to baseline incomplete host collectors: "
+                + ", ".join(
+                    name
+                    for name in required
+                    if not isinstance(quality, Mapping)
+                    or not isinstance(quality.get(name), Mapping)
+                    or quality[name].get("complete") is not True
+                )
+            )
         self._save_store(self.baseline_path, "baseline", dict(snapshot))
         self.log_activity("baseline.saved", "success", "Golden baseline replaced by operator.")
 
@@ -1265,6 +1917,18 @@ class HostAdaptationService:
     def sandbox(self, profile_id: str, snapshot: Mapping[str, Any] | None = None) -> dict[str, Any]:
         current = dict(snapshot or self.capture_snapshot())
         plan = self.build_plan(profile_id, current)
+        return self.simulate_plan(plan, current)
+
+    def simulate_plan(
+        self, plan: AdaptationPlan, snapshot: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Simulate the exact immutable plan that may later be approved."""
+        self._verify_plan(plan)
+        current = dict(snapshot or self.capture_snapshot())
+        if current.get("host_id") != plan.host_id:
+            raise AdaptationError("sandbox snapshot belongs to another host")
+        if _digest(current.get("firewall") or {}) != plan.precondition_digest:
+            raise AdaptationError("sandbox snapshot no longer matches the immutable plan")
         before = self._indexed((current.get("firewall") or {}).get("profiles") or [], "name")
         after = {key: dict(value) for key, value in before.items()}
         changes = []
@@ -1284,7 +1948,7 @@ class HostAdaptationService:
             "schema": f"angerona.adaptation-sandbox/v{SCHEMA_VERSION}",
             "simulated_at": _utc_now(),
             "host_mutated": False,
-            "profile_id": profile_id,
+            "profile_id": plan.profile_id,
             "plan_id": plan.plan_id,
             "commands": list(self.command_stack(plan)),
             "changes": changes,
@@ -1329,7 +1993,9 @@ class HostAdaptationService:
                 self.log_activity("breaker.opened", "blocked", breaker["reason"])
                 raise CircuitBreakerOpen(breaker["reason"])
 
-    def _record_change(self, plan: AdaptationPlan) -> None:
+    def _record_change(
+        self, plan: AdaptationPlan, *, transaction_id: str = ""
+    ) -> None:
         with self._lock:
             state = self.state()
             breaker = self.breaker_status()
@@ -1337,6 +2003,7 @@ class HostAdaptationService:
             events.append({
                 "epoch": self._clock(), "at": _utc_now(),
                 "profile_id": plan.profile_id, "drastic": plan.drastic,
+                "transaction_id": _safe_text(transaction_id, 80),
             })
             breaker["events"] = events[-20:]
             drastic_count = sum(bool(item.get("drastic")) for item in events)
@@ -1355,6 +2022,15 @@ class HostAdaptationService:
             self._save_state(state)
 
     def reset_breaker(self) -> None:
+        unresolved = [
+            row for row in self.transactions()
+            if row.get("status") == "NEEDS_REVIEW"
+        ]
+        if unresolved:
+            raise CircuitBreakerOpen(
+                "complete or resolve the recorded recovery transaction before "
+                "resetting the adaptation breaker"
+            )
         with self._lock:
             state = self.state()
             state["breaker"] = self._default_state()["breaker"]
@@ -1369,7 +2045,118 @@ class HostAdaptationService:
             raise AdaptationError("snapshot path escaped its data directory")
         return candidate
 
-    def _capture_rollback_snapshot(self, plan: AdaptationPlan, current: Mapping[str, Any]) -> str:
+    def _security_baseline(self) -> dict[str, Any] | None:
+        manifest_exists = self.security_baseline_manifest_path.exists()
+        artifact_exists = self.security_baseline_firewall_path.exists()
+        if not manifest_exists and not artifact_exists:
+            return None
+        if manifest_exists != artifact_exists:
+            raise IntegrityError("host security baseline is incomplete")
+        manifest = self._load_store(
+            self.security_baseline_manifest_path, "security-baseline", None
+        )
+        if not isinstance(manifest, dict) or manifest.get("host_id") != self.host_id():
+            raise IntegrityError("host security baseline belongs to another host")
+        artifact = self.security_baseline_firewall_path
+        digest = self._bounded_file_sha256(artifact)
+        if not hmac.compare_digest(digest, str(manifest.get("firewall_sha256") or "")):
+            raise IntegrityError("host security baseline artifact failed authentication")
+        return manifest
+
+    def security_baseline_status(self) -> dict[str, Any]:
+        """Describe only the component state Angerona can actually restore."""
+        if platform.system().casefold() != "windows":
+            return {
+                "available": False,
+                "supported": False,
+                "restorable_components": [],
+                "observational_only": [
+                    "hardware", "services", "listening-ports", "network-context"
+                ],
+                "detail": "Immutable Windows Firewall recovery is unsupported on this host.",
+            }
+        manifest = self._security_baseline()
+        if manifest is None:
+            return {
+                "available": False,
+                "supported": True,
+                "restorable_components": ["windows-firewall-policy"],
+                "observational_only": [
+                    "hardware", "services", "listening-ports", "network-context"
+                ],
+                "detail": "Capture is required before the first profile change.",
+            }
+        return {
+            "available": True,
+            "supported": True,
+            "baseline_id": manifest.get("baseline_id"),
+            "captured_at": manifest.get("captured_at"),
+            "restorable_components": list(manifest.get("restorable_components") or ()),
+            "observational_only": list(manifest.get("observational_only") or ()),
+            "firewall_sha256": manifest.get("firewall_sha256"),
+            "detail": "Immutable original firewall policy is available for verified restore.",
+        }
+
+    def _ensure_security_baseline(
+        self,
+        *,
+        source_snapshot_id: str,
+        current: Mapping[str, Any],
+        firewall_file: Path,
+    ) -> dict[str, Any]:
+        existing = self._security_baseline()
+        if existing is not None:
+            return existing
+        baseline_id = "host-security-baseline-v1"
+        artifact_created = False
+        try:
+            digest = self._exclusive_copy_bounded(
+                firewall_file, self.security_baseline_firewall_path
+            )
+            artifact_created = True
+            manifest = {
+                "baseline_id": baseline_id,
+                "captured_at": _utc_now(),
+                "host_id": self.host_id(),
+                "source_snapshot_id": source_snapshot_id,
+                "firewall_file": self.security_baseline_firewall_path.name,
+                "firewall_sha256": digest,
+                "firewall": current.get("firewall") or {},
+                "network_context": current.get("network") or {},
+                "restorable_components": ["windows-firewall-policy"],
+                "observational_only": [
+                    "hardware", "services", "listening-ports", "network-context"
+                ],
+                "replacement_allowed": False,
+            }
+            self._save_store_exclusive(
+                self.security_baseline_manifest_path,
+                "security-baseline",
+                manifest,
+            )
+        except Exception:
+            # Remove only the exact artifact this transaction created. A
+            # pre-existing target is never opened or overwritten.
+            if artifact_created and not self.security_baseline_manifest_path.exists():
+                try:
+                    self.security_baseline_firewall_path.unlink()
+                except OSError:
+                    pass
+            raise
+        self.log_activity(
+            "security_baseline.captured",
+            "success",
+            f"{baseline_id}; restorable=windows-firewall-policy",
+        )
+        return manifest
+
+    def _capture_rollback_snapshot(
+        self,
+        plan: AdaptationPlan,
+        current: Mapping[str, Any],
+        *,
+        purpose: str = "pre-adaptation",
+    ) -> str:
         snapshot_id = f"snap-{int(self._clock())}-{plan.plan_id[-10:]}"
         firewall_file = self._snapshot_path(snapshot_id, ".wfw")
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -1390,9 +2177,10 @@ class HostAdaptationService:
             "host_id": self.host_id(),
             "plan": asdict(plan),
             "firewall_file": firewall_file.name,
-            "firewall_sha256": hashlib.sha256(firewall_file.read_bytes()).hexdigest(),
+            "firewall_sha256": self._bounded_file_sha256(firewall_file),
             "network": current.get("network") or {},
             "firewall": current.get("firewall") or {},
+            "purpose": _safe_text(purpose, 120),
             "status": "ready",
         }
         self._save_store(
@@ -1400,6 +2188,40 @@ class HostAdaptationService:
         )
         self._prune_snapshots()
         return snapshot_id
+
+    def capture_security_baseline(self, *, approved: bool) -> dict[str, Any]:
+        """Explicitly capture the immutable original firewall recovery point."""
+        if not approved:
+            raise PermissionError("explicit security-baseline approval is required")
+        if not self._mutation_lock.acquire(blocking=False):
+            raise AdaptationError("another adaptation or rollback transaction is active")
+        try:
+            existing = self._security_baseline()
+            if existing is not None:
+                return self.security_baseline_status()
+            current = self.capture_snapshot()
+            firewall = current.get("firewall") or {}
+            quality = (current.get("collector_status") or {}).get("firewall") or {}
+            if (
+                not firewall.get("supported")
+                or firewall.get("complete") is not True
+                or quality.get("complete") is not True
+            ):
+                raise AdaptationError(
+                    "a complete Windows Firewall capture is required for a restorable baseline"
+                )
+            plan = self.build_plan("balanced", current)
+            snapshot_id = self._capture_rollback_snapshot(
+                plan, current, purpose="host-security-baseline-enrollment"
+            )
+            self._ensure_security_baseline(
+                source_snapshot_id=snapshot_id,
+                current=current,
+                firewall_file=self._snapshot_path(snapshot_id, ".wfw"),
+            )
+            return self.security_baseline_status()
+        finally:
+            self._mutation_lock.release()
 
     def _prune_snapshots(self) -> None:
         manifests = sorted(
@@ -1545,6 +2367,11 @@ class HostAdaptationService:
             raise AdaptationError("adaptation plan expired; preview it again")
         if plan.host_id != self.host_id():
             raise AdaptationError("adaptation plan belongs to another host")
+        if self._security_baseline() is None:
+            raise AdaptationError(
+                "an explicitly enrolled immutable firewall recovery baseline is "
+                "required before the first profile change"
+            )
         self._check_breaker(plan.drastic)
         current = self.capture_snapshot()
         if _digest(current.get("firewall") or {}) != plan.precondition_digest:
@@ -1553,9 +2380,20 @@ class HostAdaptationService:
         snapshot_id = provider(plan, current)
         if not snapshot_id:
             raise AdaptationError("rollback provider returned no snapshot identity")
+        transaction = self._begin_transaction(
+            "apply",
+            snapshot_id=snapshot_id,
+            authorization=authorization,
+            before_firewall=current.get("firewall") or {},
+            plan=plan,
+        )
+        transaction_id = str(transaction["transaction_id"])
+        mutation_started = False
         try:
             if pre_execute_check is not None:
                 pre_execute_check(plan, current)
+            self._transition_transaction(transaction_id, "MUTATING")
+            mutation_started = True
             commands = tuple(executor(plan)) if executor else self._execute_actions(plan)
             if not commands:
                 raise AdaptationError("profile executor returned no completed actions")
@@ -1563,15 +2401,47 @@ class HostAdaptationService:
                 postcondition_provider() if postcondition_provider else self._firewall()
             )
             self._verify_profile_postconditions(plan, postcondition)
-        except Exception:
+            self._transition_transaction(
+                transaction_id,
+                "VERIFIED",
+                commands=list(commands),
+                after_firewall_digest=_digest(postcondition),
+            )
+        except Exception as primary_exc:
+            if not mutation_started:
+                self._transition_transaction(
+                    transaction_id, "ROLLED_BACK", error=_safe_text(primary_exc, 1000)
+                )
+                raise
+            rollback_error: Exception | None = None
             if snapshot_provider is None:
                 try:
                     self.rollback(snapshot_id, approved=True, authorization="automatic-failure-recovery")
                 except Exception as rollback_exc:
+                    rollback_error = rollback_exc
                     self.log_activity(
                         "rollback.failed", "error",
                         f"Automatic recovery after apply failure also failed: {rollback_exc}",
                     )
+            else:
+                rollback_error = AdaptationError(
+                    "custom snapshot provider has no automatic rollback authority"
+                )
+            if rollback_error is not None:
+                self._mark_transaction_needs_review(
+                    transaction_id,
+                    error=primary_exc,
+                    rollback_error=rollback_error,
+                )
+                raise AdaptationError(
+                    "profile apply failed and rollback also failed; adaptation is "
+                    f"locked for recovery review: {rollback_error}"
+                ) from primary_exc
+            self._transition_transaction(
+                transaction_id,
+                "ROLLED_BACK",
+                error=_safe_text(primary_exc, 1000),
+            )
             raise
         body = {
             "plan_id": plan.plan_id,
@@ -1583,7 +2453,12 @@ class HostAdaptationService:
         }
         receipt = AdaptationReceipt(receipt_digest=_digest(body), **body)
         try:
-            self._record_change(plan)
+            self._record_change(plan, transaction_id=transaction_id)
+            self._transition_transaction(
+                transaction_id,
+                "COMMITTED",
+                receipt_digest=receipt.receipt_digest,
+            )
         except Exception as exc:
             # An unrecorded host mutation violates the transaction contract.
             # Production applies always own a real rollback artifact, so restore
@@ -1595,10 +2470,20 @@ class HostAdaptationService:
                         authorization="automatic-receipt-failure-recovery",
                     )
                 except Exception as rollback_exc:
+                    self._mark_transaction_needs_review(
+                        transaction_id,
+                        error=exc,
+                        rollback_error=rollback_exc,
+                    )
                     raise AdaptationError(
                         "profile changed but receipt state failed, and automatic rollback "
                         f"also failed: {rollback_exc}"
                     ) from exc
+                self._transition_transaction(
+                    transaction_id,
+                    "ROLLED_BACK",
+                    error=_safe_text(exc, 1000),
+                )
             raise AdaptationError(
                 f"profile receipt could not be committed: {exc}"
             ) from exc
@@ -1646,41 +2531,95 @@ class HostAdaptationService:
         firewall_file = self._snapshot_path(snapshot_id, ".wfw")
         if not firewall_file.is_file():
             raise IntegrityError("rollback firewall artifact is missing")
-        if hashlib.sha256(firewall_file.read_bytes()).hexdigest() != manifest.get("firewall_sha256"):
+        if not hmac.compare_digest(
+            self._bounded_file_sha256(firewall_file),
+            str(manifest.get("firewall_sha256") or ""),
+        ):
             raise IntegrityError("rollback firewall artifact failed its digest check")
-        if executor is not None:
-            ok = bool(executor(firewall_file))
-        else:
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            completed = subprocess.run(
-                [self._netsh_path(), "advfirewall", "import", str(firewall_file)],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=30, check=False, creationflags=flags,
-                env=sanitized_child_environment(),
-            )
-            ok = completed.returncode == 0
-            if not ok:
-                raise AdaptationError(
-                    "Windows Firewall rollback failed: "
-                    + _safe_text(completed.stderr or completed.stdout, 500)
+        before_firewall: Mapping[str, Any] = {}
+        try:
+            observed_before = self._firewall()
+            if observed_before.get("supported") and observed_before.get("complete") is True:
+                before_firewall = observed_before
+        except Exception:
+            pass
+        transaction = self._begin_transaction(
+            "rollback",
+            snapshot_id=snapshot_id,
+            authorization=authorization,
+            before_firewall=before_firewall,
+            target_firewall=manifest.get("firewall") or {},
+        )
+        transaction_id = str(transaction["transaction_id"])
+        try:
+            self._transition_transaction(transaction_id, "MUTATING")
+            if executor is not None:
+                ok = bool(executor(firewall_file))
+            else:
+                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                completed = subprocess.run(
+                    [self._netsh_path(), "advfirewall", "import", str(firewall_file)],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=30, check=False, creationflags=flags,
+                    env=sanitized_child_environment(),
                 )
-        if not ok:
-            raise AdaptationError("rollback broker reported failure")
-        if executor is None or postcondition_provider is not None:
-            restored = (
-                postcondition_provider() if postcondition_provider else self._firewall()
+                ok = completed.returncode == 0
+                if not ok:
+                    raise AdaptationError(
+                        "Windows Firewall rollback failed: "
+                        + _safe_text(completed.stderr or completed.stdout, 500)
+                    )
+            if not ok:
+                raise AdaptationError("rollback broker reported failure")
+            restored: Mapping[str, Any] | None = None
+            if executor is None or postcondition_provider is not None:
+                restored = (
+                    postcondition_provider() if postcondition_provider else self._firewall()
+                )
+                self._verify_restore_postconditions(
+                    manifest.get("firewall") or {}, restored
+                )
+            self._transition_transaction(
+                transaction_id,
+                "VERIFIED",
+                after_firewall_digest=_digest(
+                    restored if restored is not None else manifest.get("firewall") or {}
+                ),
+                verification=(
+                    "fresh-postcondition" if restored is not None else "broker-only"
+                ),
             )
-            self._verify_restore_postconditions(
-                manifest.get("firewall") or {}, restored
-            )
-        manifest["status"] = "restored"
-        manifest["restored_at"] = _utc_now()
-        manifest["restore_authorization"] = _safe_text(authorization, 160)
-        self._save_store(manifest_path, "rollback-snapshot", manifest)
-        with self._lock:
-            state = self.state()
-            state["active_profile_id"] = ""
-            self._save_state(state)
+            manifest["status"] = "restored"
+            manifest["restored_at"] = _utc_now()
+            manifest["restore_authorization"] = _safe_text(authorization, 160)
+            self._save_store(manifest_path, "rollback-snapshot", manifest)
+            with self._lock:
+                state = self.state()
+                state["active_profile_id"] = ""
+                self._save_state(state)
+            self._transition_transaction(transaction_id, "COMMITTED")
+            # A successful exact rollback resolves earlier ambiguous mutations
+            # that reference this recovery point. The breaker stays locked
+            # until the operator reviews and explicitly resets it.
+            for record in self.transactions():
+                if (
+                    record.get("transaction_id") != transaction_id
+                    and record.get("status") == "NEEDS_REVIEW"
+                    and record.get("snapshot_id") == snapshot_id
+                ):
+                    self._transition_transaction(
+                        str(record.get("transaction_id")),
+                        "ROLLED_BACK",
+                        error="operator completed the exact authenticated rollback",
+                    )
+        except Exception as exc:
+            try:
+                self._mark_transaction_needs_review(
+                    transaction_id, error=exc
+                )
+            except Exception:
+                self._lock_breaker_for_review(str(exc), transaction_id)
+            raise
         self.log_activity("profile.rolled_back", "success", f"{snapshot_id}; {authorization}")
         return True
 
@@ -1696,21 +2635,23 @@ class HostAdaptationService:
                     or f"{label} Windows Firewall state is incomplete"
                 )
 
-        def canonical(document: Mapping[str, Any]) -> dict[str, tuple[tuple[Any, ...], ...]]:
+        def canonical(document: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
+            # Compare the full normalized effective policy. Rule identity alone
+            # is insufficient: changing a program, service, port, address,
+            # protocol, interface, edge, or IPsec filter can radically widen
+            # an allow rule without changing its name.
             profiles = tuple(sorted(
-                (
-                    str(row.get("name", "")), bool(row.get("enabled")),
-                    str(row.get("inbound", "")), str(row.get("outbound", "")),
+                json.dumps(
+                    dict(row), sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=True, default=str,
                 )
                 for row in document.get("profiles") or []
                 if isinstance(row, Mapping)
             ))
             rules = tuple(sorted(
-                (
-                    str(row.get("name", "")), row.get("enabled"),
-                    str(row.get("direction", "")), str(row.get("action", "")),
-                    str(row.get("profile", "")),
-                    str(row.get("policy_store_source_type", "")),
+                json.dumps(
+                    dict(row), sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=True, default=str,
                 )
                 for row in document.get("rules") or []
                 if isinstance(row, Mapping)
@@ -1728,20 +2669,166 @@ class HostAdaptationService:
                 "Firewall rollback postcondition mismatch: " + ", ".join(mismatches)
             )
 
+    def restore_security_baseline(
+        self,
+        *,
+        approved: bool,
+        authorization: str = "operator-confirmed-security-baseline",
+        executor: Callable[[Path], bool] | None = None,
+        postcondition_provider: Callable[[], Mapping[str, Any]] | None = None,
+        snapshot_provider: Callable[[AdaptationPlan, Mapping[str, Any]], str] | None = None,
+    ) -> dict[str, Any]:
+        """Restore the immutable firewall baseline with a pre-restore recovery point."""
+        if not approved:
+            raise PermissionError("explicit host security-baseline restore approval is required")
+        if not self._mutation_lock.acquire(blocking=False):
+            raise AdaptationError("another adaptation or rollback transaction is active")
+        try:
+            manifest = self._security_baseline()
+            if manifest is None:
+                raise AdaptationError("no restorable host security baseline is available")
+            current = self.capture_snapshot()
+            plan = self.build_plan("balanced", current)
+            pre_restore_snapshot_id = (
+                snapshot_provider(plan, current)
+                if snapshot_provider is not None
+                else self._capture_rollback_snapshot(
+                    plan, current, purpose="pre-security-baseline-restore"
+                )
+            )
+            if not pre_restore_snapshot_id:
+                raise AdaptationError("pre-restore snapshot provider returned no identity")
+            artifact = self.security_baseline_firewall_path
+            transaction = self._begin_transaction(
+                "security-baseline-restore",
+                snapshot_id=pre_restore_snapshot_id,
+                authorization=authorization,
+                before_firewall=current.get("firewall") or {},
+                plan=plan,
+                target_firewall=manifest.get("firewall") or {},
+            )
+            transaction_id = str(transaction["transaction_id"])
+            mutation_started = False
+            try:
+                self._transition_transaction(transaction_id, "MUTATING")
+                mutation_started = True
+                if executor is not None:
+                    restored_ok = bool(executor(artifact))
+                else:
+                    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    completed = subprocess.run(
+                        [self._netsh_path(), "advfirewall", "import", str(artifact)],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=30,
+                        check=False,
+                        creationflags=flags,
+                        env=sanitized_child_environment(),
+                    )
+                    restored_ok = completed.returncode == 0
+                    if not restored_ok:
+                        raise AdaptationError(
+                            "Windows Firewall security-baseline restore failed: "
+                            + _safe_text(completed.stderr or completed.stdout, 500)
+                        )
+                if not restored_ok:
+                    raise AdaptationError("security-baseline restore broker reported failure")
+                restored = (
+                    postcondition_provider()
+                    if postcondition_provider is not None
+                    else self._firewall()
+                )
+                self._verify_restore_postconditions(
+                    manifest.get("firewall") or {}, restored
+                )
+                self._transition_transaction(
+                    transaction_id,
+                    "VERIFIED",
+                    after_firewall_digest=_digest(restored),
+                )
+            except Exception as primary_exc:
+                if not mutation_started:
+                    self._transition_transaction(
+                        transaction_id,
+                        "ROLLED_BACK",
+                        error=_safe_text(primary_exc, 1000),
+                    )
+                    raise
+                rollback_error: Exception | None = None
+                if snapshot_provider is None:
+                    try:
+                        self._rollback_locked(
+                            pre_restore_snapshot_id,
+                            approved=True,
+                            authorization="automatic-baseline-restore-failure-recovery",
+                        )
+                    except Exception as rollback_exc:
+                        rollback_error = rollback_exc
+                        self.log_activity(
+                            "security_baseline.restore_rollback_failed",
+                            "critical",
+                            str(rollback_exc),
+                        )
+                else:
+                    rollback_error = AdaptationError(
+                        "custom snapshot provider has no automatic rollback authority"
+                    )
+                if rollback_error is not None:
+                    self._mark_transaction_needs_review(
+                        transaction_id,
+                        error=primary_exc,
+                        rollback_error=rollback_error,
+                    )
+                    raise AdaptationError(
+                        "security-baseline restore failed and rollback also failed; "
+                        f"adaptation is locked for recovery review: {rollback_error}"
+                    ) from primary_exc
+                self._transition_transaction(
+                    transaction_id,
+                    "ROLLED_BACK",
+                    error=_safe_text(primary_exc, 1000),
+                )
+                raise
+            with self._lock:
+                state = self.state()
+                state["active_profile_id"] = ""
+                self._save_state(state)
+            self._transition_transaction(transaction_id, "COMMITTED")
+            restored_at = _utc_now()
+            self.log_activity(
+                "security_baseline.restored",
+                "success",
+                f"{manifest.get('baseline_id')}; pre-restore={pre_restore_snapshot_id}; "
+                f"{_safe_text(authorization, 160)}",
+            )
+            return {
+                "baseline_id": manifest.get("baseline_id"),
+                "restored_at": restored_at,
+                "pre_restore_snapshot_id": pre_restore_snapshot_id,
+                "restored_components": list(
+                    manifest.get("restorable_components") or ()
+                ),
+            }
+        finally:
+            self._mutation_lock.release()
+
     # ── Context triggers and autonomous feedback loop ──────────────────────
     def set_automation(self, enabled: bool, auto_apply: bool = False) -> None:
         with self._lock:
             state = self.state()
             state["automation_enabled"] = bool(enabled)
-            state["auto_apply"] = bool(enabled and auto_apply)
-            # A configuration revision must be evaluated anew. In particular,
-            # arming auto-apply after proposal-only mode cannot inherit a
-            # "stable" marker that prevents the newly authorized evaluation.
+            # Context signals such as SSID/VPN/category are not authenticated
+            # liveness proofs. They may propose an exact profile, but may not
+            # mutate a firewall unattended or risk severing remote management.
+            state["auto_apply"] = False
             state["last_trigger_signature"] = ""
             self._save_state(state)
         self.log_activity(
-            "automation.configured", "success",
-            f"enabled={bool(enabled)} auto_apply={bool(enabled and auto_apply)}",
+            "automation.configured", "review" if auto_apply else "success",
+            f"enabled={bool(enabled)} auto_apply=False"
+            + ("; unattended apply request refused" if auto_apply else ""),
         )
 
     def add_trigger(self, kind: str, value: str, profile_id: str) -> dict[str, Any]:
@@ -1842,6 +2929,10 @@ class HostAdaptationService:
             raise AutomationAuthorizationChanged(
                 "network context collector is incomplete"
             )
+        if current.get("remote_session") is True:
+            raise AutomationAuthorizationChanged(
+                "automatic firewall mutation is blocked during a remote operator session"
+            )
         with self._lock:
             state = self.state()
             if not state.get("automation_enabled") or not state.get("auto_apply"):
@@ -1862,6 +2953,10 @@ class HostAdaptationService:
             return evaluation
 
     def run_automatic_cycle(self) -> dict[str, Any]:
+        with self._lock:
+            state = self.state()
+            if not state.get("automation_enabled"):
+                return {"status": "disabled"}
         context = self.capture_context()
         with self._lock:
             state = self.state()
@@ -1922,6 +3017,12 @@ class HostAdaptationService:
             )
             return {"status": "context-changed", "rule": rule, **evaluation}
         plan = self.build_plan(str(rule["profile_id"]), snapshot)
+        if plan.drastic:
+            self.log_activity(
+                "trigger.drastic_refused", "review",
+                "Emergency Lockdown requires a fresh exact-plan operator confirmation.",
+            )
+            return {"status": "manual-review", "rule": rule, **fresh}
         if self._plan_relaxes_current(plan, snapshot.get("firewall") or {}):
             self.log_activity(
                 "trigger.relaxation_refused", "review",

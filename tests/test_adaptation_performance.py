@@ -71,7 +71,7 @@ def test_dashboard_monitor_does_not_read_state_on_the_gui_thread(monkeypatch) ->
     window = Window()
     MainWindow._poll_adaptation_context(window)
     for thread in threading.enumerate():
-        if thread.name == "HostAdaptionContextMonitor":
+        if thread.name == "HostAdaptationContextMonitor":
             thread.join(timeout=2)
 
     assert window._adaptation_poll_done.values == [({"status": "disabled"}, None)]

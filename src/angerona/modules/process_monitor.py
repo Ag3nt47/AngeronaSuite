@@ -32,11 +32,57 @@ class ProcessMonitorModule(BaseModule):
     name = "Process Monitor"
     description = "Flags suspicious process spawns and execution from risky locations."
     category = "Processes"
+    version = "1.1.0"
 
     def __init__(self) -> None:
         super().__init__()
         self._seen: Set[int] = set()
         self._names: Dict[int, str] = {}
+
+    def self_test(self) -> tuple[bool, str]:
+        """Exercise lineage and risky-path rules without enumerating processes."""
+        emitted: list[tuple[str, Severity, dict]] = []
+        original_emit = self.emit
+        original_names = self._names
+        try:
+            self.emit = lambda message, severity=Severity.INFO, **details: emitted.append(
+                (message, severity, details)
+            )
+            self._names = {10: "winword.exe"}
+            self._evaluate(
+                {
+                    "pid": 11,
+                    "ppid": 10,
+                    "name": "powershell.exe",
+                    "exe": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+                    "create_time": 123.0,
+                },
+                dict(self._names),
+            )
+            self._evaluate(
+                {
+                    "pid": 12,
+                    "ppid": 10,
+                    "name": "fixture.exe",
+                    "exe": r"C:\Users\Test\Downloads\fixture.exe",
+                    "create_time": 124.0,
+                },
+                dict(self._names),
+            )
+        finally:
+            self.emit = original_emit
+            self._names = original_names
+        ok = bool(
+            len(emitted) == 2
+            and emitted[0][1] == Severity.CRITICAL
+            and emitted[0][2].get("process_create_time") == 123.0
+            and emitted[1][1] == Severity.MEDIUM
+        )
+        return (
+            ok,
+            "offline lineage and risky-path rules passed"
+            if ok else "process rule fixture failed",
+        )
 
     def run(self) -> None:
         # Prime the set so we don't alert on everything already running.

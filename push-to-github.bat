@@ -108,11 +108,10 @@ echo.
 echo [*] Pushing to GitHub ...
 git remote get-url origin >nul 2>&1
 if errorlevel 1 (
-    echo [INFO] No 'origin' remote is configured, so the commit is saved locally only.
-    echo        Publish the repo once in GitHub Desktop, or add a remote:
+    echo [ERROR] No 'origin' remote is configured. The commit is local only and
+    echo         cannot be reported as published. Configure the canonical remote:
     echo          git remote add origin https://github.com/USER/REPO.git
-    echo          git push -u origin HEAD
-    pause & exit /b 0
+    pause & exit /b 1
 )
 for /f "usebackq delims=" %%R in (`git remote get-url origin`) do set "REMOTE_URL=%%R"
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$u=[Uri]$env:REMOTE_URL; if($u.Scheme -cne 'https' -or $u.Host -cne 'github.com' -or $u.UserInfo){exit 1}"
@@ -120,16 +119,45 @@ if errorlevel 1 (
     echo [ABORT] Origin must be credential-free HTTPS on github.com. Nothing was pushed.
     pause & exit /b 1
 )
-git push
+if not exist "%CD%\tools\publish_github_update.py" (
+    echo [ERROR] The guarded GitHub publication verifier is missing.
+    pause & exit /b 1
+)
+call :publish_github
 if errorlevel 1 (
     echo.
-    echo [WARN] Push did not complete. If this is the first push, set the upstream:
-    echo          git push -u origin HEAD
-    echo        You may also be prompted to sign in to GitHub.
+    echo [ERROR] GitHub publication was not proven complete.
+    echo         No force-push or automatic divergence repair was attempted.
     pause & exit /b 1
 )
 
 echo.
-echo [DONE] Changes pushed to GitHub.
+echo [DONE] Current branch, default main, remote SHA, and public images verified.
 pause
 exit /b 0
+
+:publish_github
+if exist "%CD%\venv\Scripts\python.exe" (
+    "%CD%\venv\Scripts\python.exe" "%CD%\tools\publish_github_update.py"
+    if errorlevel 1 exit /b 1
+    exit /b 0
+)
+if exist "%CD%\.venv\Scripts\python.exe" (
+    "%CD%\.venv\Scripts\python.exe" "%CD%\tools\publish_github_update.py"
+    if errorlevel 1 exit /b 1
+    exit /b 0
+)
+where py >nul 2>&1
+if not errorlevel 1 (
+    py -3 "%CD%\tools\publish_github_update.py"
+    if errorlevel 1 exit /b 1
+    exit /b 0
+)
+where python >nul 2>&1
+if not errorlevel 1 (
+    python "%CD%\tools\publish_github_update.py"
+    if errorlevel 1 exit /b 1
+    exit /b 0
+)
+echo [ERROR] Python 3 is required for exact GitHub publication verification.
+exit /b 1

@@ -16,6 +16,7 @@ default is a dry-run PLAN so you can see exactly what would change first.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -93,7 +94,74 @@ class RemediationAction:
         return {"ok": False, "error": "not reversible"}
 
     def verify(self, weakness: dict, record: dict) -> bool:
-        return True
+        # Every registered mutation must prove its own exact postcondition.
+        # A permissive base implementation can turn a command failure into a
+        # false PATCHED receipt, so unknown actions fail closed.
+        return False
+
+
+def _expected_process_identity(weakness: dict) -> dict | None:
+    """Extract the sensor-bound process identity required for PID mutation."""
+    try:
+        pid = int(weakness.get("pid"))
+        created = float(
+            weakness.get("process_create_time")
+            or weakness.get("pid_create_time")
+            or weakness.get("create_time")
+        )
+    except (TypeError, ValueError):
+        return None
+    if pid <= 4 or pid in {os.getpid(), os.getppid()} or created <= 0:
+        return None
+    exe = str(
+        weakness.get("exe")
+        or weakness.get("process_path")
+        or weakness.get("image")
+        or ""
+    ).strip()
+    name = str(
+        weakness.get("process_name")
+        or weakness.get("proc_name")
+        or weakness.get("name")
+        or ""
+    ).strip().casefold()
+    if not exe and not name:
+        return None
+    return {
+        "pid": pid,
+        "create_time": created,
+        "exe": os.path.normcase(os.path.abspath(exe)) if exe else "",
+        "name": name,
+    }
+
+
+def _compare_process_identity(process, expected: dict) -> bool | None:
+    """Return True/False for a proven match/mismatch, None when unreadable."""
+    try:
+        if int(process.pid) != int(expected["pid"]):
+            return False
+        if abs(float(process.create_time()) - float(expected["create_time"])) > 0.001:
+            return False
+        current_name = str(process.name() or "").casefold()
+        if expected.get("name") and current_name != expected["name"]:
+            return False
+        if expected.get("exe"):
+            current_exe = os.path.normcase(os.path.abspath(str(process.exe() or "")))
+            if current_exe != expected["exe"]:
+                return False
+        return current_name not in _SYSTEM_NEVER_KILL
+    except Exception:
+        return None
+
+
+def _process_matches_identity(process, expected: dict) -> bool:
+    """Revalidate a retained psutil Process immediately before mutation."""
+    return _compare_process_identity(process, expected) is True
+
+
+def _no_such_process(exc: Exception) -> bool:
+    cls = getattr(_psutil, "NoSuchProcess", ()) if _psutil is not None else ()
+    return bool(cls) and isinstance(exc, cls)
 
 
 # ── 1. Quarantine a flagged file (SAFE, reversible, no OS state) ─────────────
@@ -144,21 +212,69 @@ class DisableDriverServiceAction(RemediationAction):
         return os.name == "nt" and bool(self._svc(weakness))
 
     def apply(self, weakness: dict, quarantine_dir: Path) -> dict:
+        del quarantine_dir
         svc = self._svc(weakness)
-        # Record prior start type for rollback.
         prior = run_hidden(["sc", "qc", svc], capture_output=True, text=True, timeout=15)
-        run_hidden(["sc", "config", svc, "start=", "disabled"],
-                   capture_output=True, text=True, timeout=15)
-        return {"ok": True, "action": self.key, "service": svc, "prior_qc": prior.stdout[:400]}
+        prior_text = str(prior.stdout or "")
+        match = re.search(r"START_TYPE\s*:\s*([0-4])", prior_text, re.IGNORECASE)
+        prior_modes = {"0": "boot", "1": "system", "2": "auto", "3": "demand", "4": "disabled"}
+        if prior.returncode != 0 or match is None:
+            return {
+                "ok": False,
+                "action": self.key,
+                "service": svc,
+                "error": "could not prove prior driver start mode",
+                "rc": prior.returncode,
+            }
+        prior_mode = prior_modes[match.group(1)]
+        changed = run_hidden(
+            ["sc", "config", svc, "start=", "disabled"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return {
+            "ok": changed.returncode == 0,
+            "action": self.key,
+            "service": svc,
+            "prior_start": prior_mode,
+            "prior_qc": prior_text[:400],
+            "rc": changed.returncode,
+            "stderr": str(changed.stderr or "")[:300],
+        }
 
     def rollback(self, record: dict) -> dict:
-        # Conservative restore to 'demand' start (was on-demand for most drivers).
         try:
-            run_hidden(["sc", "config", record["service"], "start=", "demand"],
-                       capture_output=True, text=True, timeout=15)
-            return {"ok": True}
+            prior = record.get("prior_start")
+            if prior not in {"boot", "system", "auto", "demand", "disabled"}:
+                return {"ok": False, "error": "prior driver start mode is unavailable"}
+            result = run_hidden(
+                ["sc", "config", record["service"], "start=", prior],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            return {"ok": result.returncode == 0, "rc": result.returncode}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    def verify(self, weakness: dict, record: dict) -> bool:
+        del weakness
+        if not record.get("ok"):
+            return False
+        try:
+            result = run_hidden(
+                ["sc", "qc", record["service"]],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            match = re.search(
+                r"START_TYPE\s*:\s*([0-4])", str(result.stdout or ""), re.IGNORECASE
+            )
+            return result.returncode == 0 and match is not None and match.group(1) == "4"
+        except Exception:
+            return False
 
 
 def _hay(weakness: dict) -> str:
@@ -286,20 +402,47 @@ class LockdownAclAction(RemediationAction):
         Path(quarantine_dir).mkdir(parents=True, exist_ok=True)
         backup = str(Path(quarantine_dir) / f"acl_{int(time.time())}.bak")
         parent = str(Path(target).parent)
-        run_hidden(["icacls", target, "/save", backup, "/t"],
-                   capture_output=True, text=True, timeout=30)
-        run_hidden(["icacls", target, "/inheritance:r",
-                    "/grant:r", "SYSTEM:(OI)(CI)F",
-                    f"{os.getenv('USERNAME', 'Administrators')}:(OI)(CI)F", "/t"],
-                   capture_output=True, text=True, timeout=30)
-        return {"ok": True, "action": self.key, "target": target,
-                "acl_backup": backup, "parent": parent}
+        saved = run_hidden(
+            ["icacls", target, "/save", backup, "/t"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if saved.returncode != 0 or not Path(backup).exists():
+            return {
+                "ok": False,
+                "action": self.key,
+                "target": target,
+                "error": "ACL backup could not be verified",
+                "rc": saved.returncode,
+            }
+        changed = run_hidden(
+            [
+                "icacls", target, "/inheritance:r", "/grant:r", "SYSTEM:(OI)(CI)F",
+                f"{os.getenv('USERNAME', 'Administrators')}:(OI)(CI)F", "/t",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return {
+            "ok": changed.returncode == 0,
+            "action": self.key,
+            "target": target,
+            "acl_backup": backup,
+            "parent": parent,
+            "rc": changed.returncode,
+        }
 
     def rollback(self, record: dict) -> dict:
         try:
-            run_hidden(["icacls", record["parent"], "/restore", record["acl_backup"]],
-                       capture_output=True, text=True, timeout=30)
-            return {"ok": True}
+            result = run_hidden(
+                ["icacls", record["parent"], "/restore", record["acl_backup"]],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            return {"ok": result.returncode == 0, "rc": result.returncode}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
@@ -345,32 +488,78 @@ class NetworkIsolationAction(RemediationAction):
         return os.name == "nt" and _first_ip_in(w) is not None
 
     def apply(self, w: dict, quarantine_dir: Path) -> dict:
+        del quarantine_dir
         ip = _first_ip_in(w)
-        rule = f"Angerona-Block-{ip}-{int(time.time())}"
+        rule = f"Angerona-Block-{ip}-{time.time_ns()}"
         # Outbound + inbound block scoped to this one remote IP. Fully reversible
         # (delete the named rule). netsh is deterministic — nothing model-authored.
+        rules: dict[str, str] = {}
+        results: dict[str, int] = {}
         for direction in ("out", "in"):
-            run_hidden(["netsh", "advfirewall", "firewall", "add", "rule",
-                        f"name={rule}", f"dir={direction}", "action=block",
-                        f"remoteip={ip}", "enable=yes"],
-                       capture_output=True, text=True, timeout=15)
-        return {"ok": True, "action": self.key, "ip": ip, "rule": rule}
+            named = f"{rule}-{direction}"
+            result = run_hidden(
+                [
+                    "netsh", "advfirewall", "firewall", "add", "rule",
+                    f"name={named}", f"dir={direction}", "action=block",
+                    f"remoteip={ip}", "enable=yes",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            rules[direction] = named
+            results[direction] = result.returncode
+        return {
+            "ok": all(code == 0 for code in results.values()) and len(results) == 2,
+            "action": self.key,
+            "ip": ip,
+            "rule": rule,
+            "rules": rules,
+            "returncodes": results,
+        }
 
     def rollback(self, record: dict) -> dict:
         try:
-            run_hidden(["netsh", "advfirewall", "firewall", "delete", "rule",
-                        f"name={record['rule']}"],
-                       capture_output=True, text=True, timeout=15)
-            return {"ok": True}
+            rules = record.get("rules") or {
+                "legacy": record.get("rule", "")
+            }
+            results = []
+            for name in rules.values():
+                if not name:
+                    continue
+                result = run_hidden(
+                    ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={name}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                results.append(result.returncode)
+            return {"ok": bool(results) and all(code == 0 for code in results), "returncodes": results}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
     def verify(self, w: dict, record: dict) -> bool:
+        del w
+        if not record.get("ok") or set(record.get("rules") or {}) != {"in", "out"}:
+            return False
         try:
-            r = run_hidden(["netsh", "advfirewall", "firewall", "show", "rule",
-                            f"name={record['rule']}"],
-                           capture_output=True, text=True, timeout=15)
-            return record["rule"] in (r.stdout or "")
+            for direction, name in record["rules"].items():
+                result = run_hidden(
+                    ["netsh", "advfirewall", "firewall", "show", "rule", f"name={name}", "verbose"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                output = str(result.stdout or "").casefold()
+                wanted = "in" if direction == "in" else "out"
+                if (
+                    result.returncode != 0
+                    or name.casefold() not in output
+                    or record["ip"].casefold() not in output
+                    or not re.search(rf"direction\s*:\s*{wanted}(?:bound)?\b", output)
+                ):
+                    return False
+            return True
         except Exception:
             return False
 
@@ -440,32 +629,37 @@ class SuspendProcessAction(RemediationAction):
         except (TypeError, ValueError):
             return None
 
-    def _safe(self, pid: int) -> bool:
-        if _psutil is None:
+    def matches(self, w: dict) -> bool:
+        expected = _expected_process_identity(w)
+        if _psutil is None or expected is None:
             return False
         try:
-            name = _psutil.Process(pid).name().lower()
-            return name not in _SYSTEM_NEVER_KILL
+            return _process_matches_identity(_psutil.Process(expected["pid"]), expected)
         except Exception:
             return False
 
-    def matches(self, w: dict) -> bool:
-        pid = self._pid(w)
-        return _psutil is not None and pid is not None and self._safe(pid)
-
     def apply(self, w: dict, quarantine_dir: Path) -> dict:
-        pid = self._pid(w)
+        del quarantine_dir
+        expected = _expected_process_identity(w)
+        pid = expected["pid"] if expected else self._pid(w)
         try:
+            if expected is None:
+                raise ValueError("sensor-bound PID identity is required")
             proc = _psutil.Process(pid)
+            if not _process_matches_identity(proc, expected):
+                raise RuntimeError("process identity changed before suspend")
             name = proc.name()
             proc.suspend()
-            return {"ok": True, "action": self.key, "pid": pid, "name": name}
+            return {"ok": True, "action": self.key, **expected, "name": name.casefold()}
         except Exception as exc:
             return {"ok": False, "action": self.key, "pid": pid, "error": str(exc)}
 
     def rollback(self, record: dict) -> dict:
         try:
-            _psutil.Process(record["pid"]).resume()
+            process = _psutil.Process(record["pid"])
+            if not _process_matches_identity(process, record):
+                return {"ok": False, "error": "process identity changed before resume"}
+            process.resume()
             return {"ok": True}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
@@ -474,7 +668,8 @@ class SuspendProcessAction(RemediationAction):
         if not record.get("ok"):
             return False
         try:
-            return _psutil.Process(record["pid"]).status() in ("stopped", "sleeping")
+            process = _psutil.Process(record["pid"])
+            return _process_matches_identity(process, record) and process.status() == "stopped"
         except Exception:
             return False
 
@@ -500,12 +695,11 @@ class KillProcessAction(RemediationAction):
             return None
 
     def matches(self, w: dict) -> bool:
-        pid = self._pid(w)
-        if _psutil is None or pid is None:
+        expected = _expected_process_identity(w)
+        if _psutil is None or expected is None:
             return False
         try:
-            name = _psutil.Process(pid).name().lower()
-            if name in _SYSTEM_NEVER_KILL:
+            if not _process_matches_identity(_psutil.Process(expected["pid"]), expected):
                 return False
         except Exception:
             return False
@@ -513,12 +707,18 @@ class KillProcessAction(RemediationAction):
         return any(t in h for t in self._TRIGGERS)
 
     def apply(self, w: dict, quarantine_dir: Path) -> dict:
-        pid = self._pid(w)
+        del quarantine_dir
+        expected = _expected_process_identity(w)
+        pid = expected["pid"] if expected else self._pid(w)
         try:
+            if expected is None:
+                raise ValueError("sensor-bound PID identity is required")
             proc = _psutil.Process(pid)
+            if not _process_matches_identity(proc, expected):
+                raise RuntimeError("process identity changed before termination")
             name = proc.name()
             proc.kill()
-            return {"ok": True, "action": self.key, "pid": pid, "name": name}
+            return {"ok": True, "action": self.key, **expected, "name": name.casefold()}
         except Exception as exc:
             return {"ok": False, "action": self.key, "pid": pid, "error": str(exc)}
 
@@ -526,17 +726,24 @@ class KillProcessAction(RemediationAction):
         if not record.get("ok"):
             return False
         try:
-            _psutil.Process(record["pid"])
-            return False  # still alive
-        except Exception:
-            return True  # NoSuchProcess → successfully killed
+            process = _psutil.Process(record["pid"])
+            # A reused PID is not proof that our target survived. The original
+            # identity is gone, so only a proven mismatch is a success. An
+            # AccessDenied/read error is unknown and therefore fails closed.
+            return _compare_process_identity(process, record) is False
+        except Exception as exc:
+            return _no_such_process(exc)
 
 
 # ── 10. Persistence cleanup — remove a Run/RunOnce entry (reversible) ────────
 class PersistenceCleanupAction(RemediationAction):
-    """Remove a malicious persistence entry from the user-mode Run/RunOnce keys.
-    Only deletes the specific value named in the weakness dict ('run_key_value').
-    Records the original data for rollback."""
+    """Compatibility stub for legacy ambiguous autorun findings.
+
+    A value name alone cannot authorize registry mutation: hive, 32/64-bit
+    view, full subkey, registry type, and an expected data digest are all part
+    of identity. Until the response catalog carries that typed evidence and a
+    quarantined rollback export, autorun cleanup remains manual-review only.
+    """
     key = "persistence_cleanup"
     title = "Remove malicious startup persistence entry (Run/RunOnce)"
     reversible = True
@@ -559,79 +766,41 @@ class PersistenceCleanupAction(RemediationAction):
         return None, None
 
     def matches(self, w: dict) -> bool:
-        name, _ = self._entry(w)
-        return os.name == "nt" and name is not None
+        del w
+        return False
 
     def apply(self, w: dict, quarantine_dir: Path) -> dict:
-        import winreg
-        entry_name, subkey = self._entry(w)
-        prior_data = None
-        deleted_from = None
-        for key_path in self._RUN_KEYS:
-            try:
-                k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0,
-                                   winreg.KEY_READ | winreg.KEY_SET_VALUE)
-                try:
-                    data, _ = winreg.QueryValueEx(k, entry_name)
-                    prior_data = data
-                    winreg.DeleteValue(k, entry_name)
-                    deleted_from = key_path
-                finally:
-                    winreg.CloseKey(k)
-                if deleted_from:
-                    break
-            except FileNotFoundError:
-                continue
-            except Exception as exc:
-                return {"ok": False, "action": self.key, "error": str(exc)}
-        if deleted_from is None:
-            return {"ok": False, "action": self.key,
-                    "error": f"'{entry_name}' not found in any Run key"}
-        return {"ok": True, "action": self.key, "key_path": deleted_from,
-                "value_name": entry_name, "prior_data": prior_data}
+        del w, quarantine_dir
+        return {
+            "ok": False,
+            "action": self.key,
+            "proposal_only": True,
+            "error": (
+                "Automatic autorun deletion is disabled: require typed hive/view/subkey/name/"
+                "type/data-digest identity and a verified rollback export."
+            ),
+        }
 
     def rollback(self, record: dict) -> dict:
-        import winreg
-        try:
-            k = winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, record["key_path"],
-                                   0, winreg.KEY_SET_VALUE)
-            try:
-                winreg.SetValueEx(k, record["value_name"], 0,
-                                  winreg.REG_SZ, record["prior_data"] or "")
-            finally:
-                winreg.CloseKey(k)
-            return {"ok": True}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+        del record
+        return {"ok": False, "proposal_only": True}
 
     def verify(self, w: dict, record: dict) -> bool:
-        import winreg
-        if not record.get("ok"):
-            return False
-        try:
-            k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, record["key_path"],
-                               0, winreg.KEY_READ)
-            try:
-                winreg.QueryValueEx(k, record["value_name"])
-                return False  # still present
-            except FileNotFoundError:
-                return True
-            finally:
-                winreg.CloseKey(k)
-        except Exception:
-            return False
+        del w, record
+        return False
 
 
 # ── registry of vetted actions (most specific first) ────────────────────────
 ACTIONS: list[RemediationAction] = [
     KillProcessAction(),             # active ransomware/worm/exfil PID → hard-kill
     SuspendProcessAction(),          # suspicious PID → suspend (preserves forensics)
-    PersistenceCleanupAction(),      # T1547 Run/RunOnce entry → delete
+    # Ambiguous Run/RunOnce value-name deletion is deliberately not registered.
     DisableDriverServiceAction(),    # BYOVD driver → disable its service
     RegistryHardeningAction(),       # credential-access / UAC bypass → registry fix
     DefenderHardeningAction(),       # defense-evasion → re-assert Defender baseline
     NetworkIsolationAction(),        # C2 / exfil peer IP → host-firewall block
-    LockdownAclAction(),             # flagged DIRECTORY → tighten ACL
+    # ACL lockdown stays proposal-only until a locale-independent descriptor
+    # verifier can prove and restore the exact DACL, owner, and inheritance.
     AVDetectionQuarantineAction(),   # G2-G: AV telemetry threat → quarantine
     QuarantineFileAction(),          # flagged FILE → quarantine (fallback)
 ]

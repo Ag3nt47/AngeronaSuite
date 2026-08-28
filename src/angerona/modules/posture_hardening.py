@@ -11,8 +11,10 @@ Drop-in BaseModule for AngeronaSuite; imports standalone for testing.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
+import secrets
 import sqlite3
 import sys
 import threading
@@ -127,7 +129,7 @@ class PostureHardening(BaseModule):
     name = "Posture Hardening"
     description = "Self-healing loop: turns red-team SUCCESS into staged, review-gated OS hardening."
     category = "SOAR"
-    version = "1.0.0"
+    version = "1.1.0"
     enabled_by_default = True
 
     def __init__(self, data_dir=None) -> None:
@@ -145,11 +147,53 @@ class PostureHardening(BaseModule):
         self._ctx: dict = {}          # mitre_id -> round context, for on-demand fixes
         self._certified: set = set()  # technique_ids whose mitigation the gate has certified
         self._manager = None
+        # Typed, single-use in-memory receipts are the only authority the
+        # Evolution Engine accepts. Event details alone are not authorization:
+        # another in-process publisher can construct a similarly shaped event.
+        self._judgment_receipt_key = secrets.token_bytes(32)
+        self._judgment_receipt_lock = threading.RLock()
+        self._judgment_receipts: dict[str, tuple[str, str, float]] = {}
         self._init_db()
 
     def bind_manager(self, manager) -> None:
         """Receive sibling-module access for bounded practice verification."""
         self._manager = manager
+
+    def _issue_judgment_bypass_receipt(self, technique_id: str) -> tuple[str, str]:
+        """Create a bounded, short-lived receipt for one verified bypass."""
+        now = time.monotonic()
+        receipt_id = secrets.token_hex(16)
+        digest = hmac.new(
+            self._judgment_receipt_key,
+            f"judgment-bypass\0{receipt_id}\0{technique_id}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        with self._judgment_receipt_lock:
+            self._judgment_receipts = {
+                rid: value
+                for rid, value in self._judgment_receipts.items()
+                if value[2] > now
+            }
+            while len(self._judgment_receipts) >= 64:
+                self._judgment_receipts.pop(next(iter(self._judgment_receipts)))
+            self._judgment_receipts[receipt_id] = (technique_id, digest, now + 300.0)
+        return receipt_id, digest
+
+    def consume_judgment_bypass_receipt(
+        self, receipt_id: str, technique_id: str, digest: str
+    ) -> bool:
+        """Consume an exact Judgment bypass receipt once, failing closed."""
+        now = time.monotonic()
+        with self._judgment_receipt_lock:
+            record = self._judgment_receipts.pop(str(receipt_id), None)
+        if record is None:
+            return False
+        expected_technique, expected_digest, expires_at = record
+        return (
+            expires_at > now
+            and hmac.compare_digest(expected_technique, str(technique_id))
+            and hmac.compare_digest(expected_digest, str(digest))
+        )
 
     # ── 1. DB SCHEMA & STATE ─────────────────────────────────────────────────
     def _init_db(self) -> None:
@@ -887,21 +931,32 @@ class PostureHardening(BaseModule):
             _edr("error", f"[JUDGMENT] Mitigation for {technique_id} FAILED verification — the "
                           f"mutated Red Team payload STILL bypassed the staged fix. Operator "
                           f"attention required.")
+            receipt_id, receipt_digest = self._issue_judgment_bypass_receipt(
+                technique_id
+            )
             self.emit(f"⚠ VERIFICATION FAILED: {technique_id} still exploitable after the fix — "
                       f"the staged mitigation did not stop the attack.", Severity.HIGH,
-                      technique=technique_id, verified="SUCCESS")
-            # Component 1: autonomous SOAR playbook tuning when a Kill Process ran
-            # but the vector persisted — synthesize a network-containment block,
-            # wire it into mitigation_gate.ps1, and re-test the Judgment pipeline.
+                      technique=technique_id, verified="SUCCESS",
+                      event_type="judgment-bypass-receipt.v1",
+                      receipt_id=receipt_id, receipt_digest=receipt_digest,
+                      response_authorized=False)
+            # A bypass produces review evidence only. Model/script output is not
+            # response authority and cannot truthfully certify an unapplied fix.
             try:
                 from angerona.shark.playbook_tuner import tune_containment
                 pb = tune_containment(technique_id)
-                if pb.get("reverify") == "BLOCKED":
-                    _edr("info", f"[SOAR-TUNE] Dynamic containment playbook now BLOCKS "
-                                 f"{technique_id} — path certified.")
-                    self.mark_patched(technique_id)
-                    self.emit(f"🧯 SOAR containment playbook certified for {technique_id}.",
-                              Severity.INFO, technique=technique_id, verified="BLOCKED")
+                if pb.get("ok"):
+                    self.emit(
+                        f"Containment proposal staged for {technique_id}; no host "
+                        "change or verification was performed.",
+                        Severity.MEDIUM,
+                        technique=technique_id,
+                        proposal_id=pb.get("proposal_id"),
+                        proposal_path=pb.get("proposal"),
+                        executed=False,
+                        verified=False,
+                        response_authorized=False,
+                    )
             except Exception as exc:
                 self.last_error = str(exc)
         else:

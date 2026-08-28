@@ -173,12 +173,12 @@ class FastPathModule(BaseModule):
         "known-bad patterns."
     )
     category = "AI"
+    version = "1.1.0"
 
     _POLL_INTERVAL = 3.0
 
     def __init__(self) -> None:
         super().__init__()
-        self._last_ts = 0.0
         # (rule_label, source_module, pid_str) → last_alert_ts
         self._seen: dict[tuple[str, str, str], float] = {}
 
@@ -200,17 +200,16 @@ class FastPathModule(BaseModule):
         self.set_health(100, "")
 
         while not self.stopping:
-            self.sleep(self._POLL_INTERVAL)
+            self.sleep(self._POLL_INTERVAL, cycle_complete=False)
             self._scan_bus()
             self._evict_stale_dedup()
+            self.mark_cycle_complete()
 
     def _scan_bus(self) -> None:
         if self._bus is None:
             return
-        for ev in self._bus.recent(50):
-            if ev.ts <= self._last_ts:
-                continue
-            self._last_ts = max(self._last_ts, ev.ts)
+        events, _overflow = self.poll_bus_events()
+        for ev in events:
             if ev.module == self.name:
                 continue   # never process our own output
 

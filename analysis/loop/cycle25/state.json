@@ -1,0 +1,82 @@
+{
+  "loop": "angerona-improvement",
+  "active_cycle": "cycle25",
+  "release": "1.12.0",
+  "focus": "universal capability contracts, guided firewall adaptation and recovery, durable delivery, bounded clickable evidence, standards truth, and three-round safety/reliability closure",
+  "rounds_total": 3,
+  "phase": "READY_FOR_PUBLICATION",
+  "round_1_status": "COMPLETE",
+  "round_2_status": "COMPLETE",
+  "round_3_status": "COMPLETE",
+  "research_done": true,
+  "text_docs_update_done": true,
+  "docs_update_done": true,
+  "manual_update_done": true,
+  "publication_done": false,
+  "started": "2026-08-27",
+  "updated": "2026-08-28",
+  "capability_inventory": {
+    "schema": "angerona.release-capability-inventory.v12",
+    "contract_schema": "angerona.capability-contract.v12",
+    "capability_count": 80,
+    "native_contracts": 5,
+    "compatibility_adapters": 75,
+    "implementation_versions": {
+      "0.1.0": 1,
+      "1.0.0": 51,
+      "1.1.0": 28
+    },
+    "version_boundary": "product and module implementation semver are independent"
+  },
+  "round_1_results": {
+    "traceable_lineages": 12,
+    "severity_model": "no retrospective CVSS scoring",
+    "research": "visionary and primary-source upstream comparison complete",
+    "disposition": "all lineages fixed or truthfully scoped; later rounds supersede provisional status"
+  },
+  "round_2_results": {
+    "overlapping_reliability_records": 8,
+    "fixed": 8,
+    "bug_fixed": "IPC self-test concurrent accounting race",
+    "focused_qa": "see round2/bugtest_results.md"
+  },
+  "round_3_results": {
+    "closure_checks": 12,
+    "open_high_or_critical": 0,
+    "performance_focused": "106 passed",
+    "performance": {
+      "recorder_us_per_event": "22.306 -> 15.925 (28.6%)",
+      "capability_summary_us_per_call": "43.324 -> 1.508 (96.5%)",
+      "stable_inspector_ms": "13.458 -> 0.474 (96.5%)"
+    }
+  },
+  "final_results": {
+    "pytest": "1811 passed / 6 expected host-platform skips / 0 failed",
+    "compile": "346/346 product Python files",
+    "module_files": "82/82 imported",
+    "register_hooks": "64/64 valid",
+    "capabilities": "80 discovered",
+    "self_tests": "92 core/module passed / 12 expected inactive-platform skips plus EventBus passed",
+    "selfcheck": "26/26 direct and batch",
+    "ruff": "clean",
+    "documentation_version": "1.12.0",
+    "documentation_record": "analysis/loop/cycle25/summary.md"
+  },
+  "honest_boundaries": [
+    "immutable host recovery baseline restores complete Windows Firewall policy only",
+    "context automation, evolution, mitigation tuning, and unapproved behavioral changes are proposal-only",
+    "durable delivery is at least once and whole-database rollback lacks an independent witness",
+    "transport-key rotation coordination uses restart epochs",
+    "ATT&CK is curated; OCSF and Sigma support is constrained",
+    "IPC Guard is a diagnostic admission preview, not a production payload channel or TPM-backed transport",
+    "75 capability contracts are compatibility adapters rather than native declarations",
+    "user-mode evidence cannot guarantee truth after privileged compromise"
+  ],
+  "proposed_not_shipped": [
+    "batched durable commits",
+    "immutable compiled Sigma plans",
+    "global per-CVE detail-worker cap",
+    "independent durable-outbox rollback witness",
+    "coordinated no-restart transport-key epochs"
+  ]
+}

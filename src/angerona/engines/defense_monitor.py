@@ -1,10 +1,6 @@
 import json
 import os
-import tempfile
-from pathlib import Path
 from typing import Literal
-from angerona.core.data_paths import runtime_temp_dir
-from angerona.core.win import run_hidden
 from angerona.engines import ollama_client
 from pydantic import BaseModel, Field
 
@@ -62,7 +58,8 @@ def analyze_logs(log_file_path: str):
         print(json.dumps(incident_data.model_dump(), indent=2))
         
         if incident_data.threat_detected and incident_data.recommended_action != "No Action":
-            trigger_mitigation_gate(incident_data)
+            gate = trigger_mitigation_gate(incident_data)
+            print(json.dumps(gate, indent=2))
         else:
             print("[+] System determined activity is normal or low priority. No action taken.")
 
@@ -73,30 +70,25 @@ def trigger_mitigation_gate(incident: SecurityIncident):
     print(f"\n[⚠️] CRITICAL ALERT TRIGGERED: {incident.category} ({incident.severity})")
     print(f"Proposed Action: {incident.recommended_action} on target: {incident.target_identifier}")
     
-    script_dir = Path(__file__).resolve().parent
-    ps_script_path = script_dir / "mitigation_gate.ps1"
-    payload_fd, payload_name = tempfile.mkstemp(
-        prefix="incident_payload_",
-        suffix=".json",
-        dir=runtime_temp_dir(),
-    )
-    temp_payload_path = Path(payload_name)
-
-    try:
-        with os.fdopen(payload_fd, "w", encoding='utf-8') as f:
-            json.dump(incident.model_dump(), f, indent=4)
-        run_hidden([
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(ps_script_path),
-            "-PayloadPath",
-            str(temp_payload_path),
-        ])
-    finally:
-        temp_payload_path.unlink(missing_ok=True)
+    # The legacy mitigation gate discovered arbitrary generated PowerShell and
+    # dot-sourced it under elevation. It had no exact target binding,
+    # postcondition, rollback, or trustworthy receipt. Version 12 therefore
+    # makes this analysis-only path explicitly review-gated. Host changes live
+    # behind typed broker actions (SOAR queue / Auto Adapt) instead of model
+    # prose or repository scripts.
+    return {
+        "schema": "angerona.mitigation-proposal.v12",
+        "status": "review_required",
+        "category": incident.category,
+        "severity": incident.severity,
+        "target_identifier": str(incident.target_identifier)[:256],
+        "proposed_action": incident.recommended_action,
+        "executed": False,
+        "reason": (
+            "Legacy dynamic-script execution is disabled; review a typed, "
+            "precondition-bound action in the SOAR queue."
+        ),
+    }
 
 if __name__ == "__main__":
     target_log = "system_activity_log.txt"

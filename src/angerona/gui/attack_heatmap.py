@@ -2,7 +2,7 @@
 gui/attack_heatmap.py — Live MITRE ATT&CK heatmap dialog.
 
 Three tabs:
-  • Live Heat  — 14 tactic columns × N technique rows, coloured by heat score
+  • Live Heat  — 15 tactic columns × N technique rows, coloured by heat score
     (0 = dark/inactive → blue → amber → red at 1.0). Click a cell for details:
     full technique info, recent event IDs (click to pivot), which Angerona
     module covers it, and a MITRE ATT&CK link.
@@ -18,6 +18,7 @@ and attack_coverage; the only optional network call is loopback Ollama.
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 import webbrowser
@@ -43,8 +44,8 @@ from angerona.core.url_policy import (
 )
 
 from angerona.core.attack_tracker import (
-    TACTIC_ORDER, THREAT_ACTOR_PLAYBOOKS, _TACTIC_TO_TECHNIQUES, _TID_TO_META,
-    get_tracker,
+    ATTACK_CATALOG_SCOPE, ATTACK_DOMAIN, ATTACK_VERSION, TACTIC_ORDER,
+    THREAT_ACTOR_PLAYBOOKS, _TACTIC_TO_TECHNIQUES, _TID_TO_META, get_tracker,
 )
 from angerona.gui.animations import begin_loading, finish_loading
 
@@ -59,7 +60,8 @@ _PAD   = 12    # scene outer padding
 _TACTIC_CLR: dict[str, str] = {
     "TA0043": "#374151", "TA0042": "#1e3a5f", "TA0001": "#7c2d12",
     "TA0002": "#581c87", "TA0003": "#14532d", "TA0004": "#713f12",
-    "TA0005": "#1e1b4b", "TA0006": "#7f1d1d", "TA0007": "#164e63",
+    "TA0005": "#1e1b4b", "TA0112": "#3f1d2e", "TA0006": "#7f1d1d",
+    "TA0007": "#164e63",
     "TA0008": "#1a1a2e", "TA0009": "#3b0764", "TA0011": "#0c4a6e",
     "TA0010": "#431407", "TA0040": "#450a0a",
 }
@@ -93,6 +95,107 @@ def _mitre_url(tid: str) -> str:
     base = tid.split(".")[0]
     sub = tid.split(".")[1] if "." in tid else None
     return f"https://attack.mitre.org/techniques/{base}/" + (f"{sub}/" if sub else "")
+
+
+NAVIGATOR_VERSION = "5.3.2"
+NAVIGATOR_LAYER_VERSION = "4.5"
+
+
+def build_navigator_layer(snapshot: object, *, exported_at: str | None = None) -> dict:
+    """Build a deterministic Navigator 4.5 layer from a tracker snapshot.
+
+    Only active entries from Angerona's explicitly curated Enterprise endpoint
+    catalog are exported.  This is activity evidence, not a claim that the
+    layer represents complete Enterprise ATT&CK coverage.
+    """
+    root = snapshot if isinstance(snapshot, dict) else {}
+    matrix = root.get("matrix") if isinstance(root.get("matrix"), dict) else {}
+    techniques: list[dict] = []
+    for tid in sorted(matrix):
+        row = matrix.get(tid)
+        if tid not in _TID_TO_META or not isinstance(row, dict):
+            continue
+        try:
+            count = max(0, int(row.get("count", 0)))
+            raw_heat = float(row.get("heat", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(raw_heat):
+            continue
+        heat = min(1.0, max(0.0, raw_heat))
+        if count == 0:
+            continue
+        last_seen = str(row.get("last_seen") or "never")[:64]
+        techniques.append({
+            "techniqueID": tid,
+            "score": int(round(heat * 100)),
+            "comment": f"hits={count} last={last_seen}",
+            "enabled": True,
+            "showSubtechniques": False,
+        })
+
+    generated = (exported_at or time.strftime("%Y-%m-%dT%H:%M:%S"))[:64]
+    return {
+        "name": "Angerona Live Heatmap",
+        "versions": {
+            "attack": ATTACK_VERSION,
+            "navigator": NAVIGATOR_VERSION,
+            "layer": NAVIGATOR_LAYER_VERSION,
+        },
+        "domain": ATTACK_DOMAIN,
+        "description": (
+            f"Exported {generated} from Angerona live ATT&CK heat tracking. "
+            "Contains active entries from a curated endpoint catalog; it is "
+            "not a complete Enterprise ATT&CK coverage statement."
+        ),
+        "filters": {"platforms": ["Windows"]},
+        "sorting": 3,
+        "layout": {
+            "layout": "side",
+            "aggregateFunction": "average",
+            "showID": True,
+            "showName": True,
+            "expandedSubtechniques": "annotated",
+        },
+        "hideDisabled": False,
+        "techniques": techniques,
+        "gradient": {
+            "colors": ["#0f172a", "#1d4ed8", "#d97706", "#dc2626"],
+            "minValue": 0,
+            "maxValue": 100,
+        },
+        "legendItems": [],
+        "metadata": [
+            {"name": "ATT&CK content", "value": ATTACK_VERSION},
+            {"name": "Catalog scope", "value": ATTACK_CATALOG_SCOPE},
+        ],
+        "showTacticRowBackground": True,
+        "tacticRowBackground": "#15202b",
+        "selectTechniquesAcrossTactics": True,
+        "selectSubtechniquesWithParent": False,
+        "selectVisibleTechniques": False,
+        "links": [],
+    }
+
+
+class _SortableItem(QTableWidgetItem):
+    """Display friendly text while sorting by its typed value."""
+
+    _SORT_ROLE = Qt.UserRole + 1
+
+    def __init__(self, text: str, sort_value=None) -> None:
+        super().__init__(text)
+        self.setData(self._SORT_ROLE, text.casefold() if sort_value is None else sort_value)
+
+    def __lt__(self, other) -> bool:
+        if isinstance(other, QTableWidgetItem):
+            left = self.data(self._SORT_ROLE)
+            right = other.data(self._SORT_ROLE)
+            try:
+                return left < right
+            except TypeError:
+                return str(left).casefold() < str(right).casefold()
+        return super().__lt__(other)
 
 
 # ── Clickable technique cell ─────────────────────────────────────────────────
@@ -219,7 +322,10 @@ class AttackHeatmapWindow(QDialog):
         export_nav_btn = QPushButton("Export to Navigator")
         export_nav_btn.setObjectName("HeatmapExportNavigator")
         export_nav_btn.setFixedWidth(150)
-        export_nav_btn.setToolTip("Save active techniques as a MITRE ATT&CK Navigator v4.9 layer JSON")
+        export_nav_btn.setToolTip(
+            "Save active curated techniques as an ATT&CK Navigator 5.3.2 / "
+            "layer-format 4.5 JSON file."
+        )
         export_nav_btn.clicked.connect(self._export_navigator)
 
         reset_btn = QPushButton("Reset counts")
@@ -300,6 +406,8 @@ class AttackHeatmapWindow(QDialog):
         self._cov_tbl.verticalHeader().setVisible(False)
         self._cov_tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self._cov_tbl.setStyleSheet("QTableWidget{font-size:11px;} QTableWidget::item{padding:3px 6px;}")
+        self._cov_tbl.setSortingEnabled(True)
+        self._cov_tbl.cellDoubleClicked.connect(self._on_coverage_double)
         lay.addWidget(self._cov_tbl, 1)
         return w
 
@@ -320,6 +428,7 @@ class AttackHeatmapWindow(QDialog):
             f"Simulate {s['simulate']}   ·   Remediate {s['remediate']}")
         valid = cov._valid_action_keys()
         rows = cov.COVERAGE
+        self._cov_tbl.setSortingEnabled(False)
         self._cov_tbl.setRowCount(len(rows))
         for i, t in enumerate(rows):
             rem_ok = [k for k in t.remediate if k in valid]
@@ -332,13 +441,25 @@ class AttackHeatmapWindow(QDialog):
                 "✓ covered" if covered else "✗ GAP",
             ]
             for c, txt in enumerate(cells):
-                it = QTableWidgetItem(txt)
+                it = _SortableItem(txt)
+                if c == 0:
+                    it.setData(Qt.UserRole, t.tid)
                 if c == 5:
                     it.setForeground(QColor("#22c55e" if covered else "#ef4444"))
                 elif c in (2, 3, 4) and txt == "·":
                     it.setForeground(QColor("#475569"))
                 self._cov_tbl.setItem(i, c, it)
+        self._cov_tbl.setSortingEnabled(True)
         self._coverage_populated = True
+
+    def _on_coverage_double(self, row: int, _column: int) -> None:
+        item = self._cov_tbl.item(row, 0)
+        tid = item.data(Qt.UserRole) if item is not None else None
+        if tid:
+            try:
+                webbrowser.open(_mitre_url(str(tid)))
+            except Exception:
+                pass
 
     # ── Top techniques tab ───────────────────────────────────────────────────
     def _build_top_tab(self) -> QWidget:
@@ -354,6 +475,7 @@ class AttackHeatmapWindow(QDialog):
         self._top_tbl.verticalHeader().setVisible(False)
         self._top_tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self._top_tbl.setStyleSheet("QTableWidget{font-size:11px;} QTableWidget::item{padding:3px 6px;}")
+        self._top_tbl.setSortingEnabled(True)
         self._top_tbl.cellDoubleClicked.connect(self._on_top_double)
         lay.addWidget(self._top_tbl, 1)
         return w
@@ -363,6 +485,10 @@ class AttackHeatmapWindow(QDialog):
         active = [(tid, r) for tid, r in matrix.items() if r.get("count", 0) > 0]
         active.sort(key=lambda kv: kv[1].get("heat", 0), reverse=True)
         active = active[:25]
+        header = self._top_tbl.horizontalHeader()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
+        self._top_tbl.setSortingEnabled(False)
         self._top_tbl.setRowCount(len(active))
         for i, (tid, r) in enumerate(active):
             meta = _TID_TO_META.get(tid, (tid, "?", tid))
@@ -370,12 +496,21 @@ class AttackHeatmapWindow(QDialog):
                     str(r.get("count", 0)), f"{r.get('heat', 0):.3f}",
                     r.get("last_seen") or "—"]
             for c, txt in enumerate(vals):
-                it = QTableWidgetItem(txt)
+                sort_value = (
+                    i + 1 if c == 0 else
+                    int(r.get("count", 0)) if c == 3 else
+                    float(r.get("heat", 0.0)) if c == 4 else
+                    txt.casefold()
+                )
+                it = _SortableItem(txt, sort_value)
                 if c == 0:
                     it.setData(Qt.UserRole, tid)
                 if c == 4:
                     it.setForeground(_heat_border(r.get("heat", 0)))
                 self._top_tbl.setItem(i, c, it)
+        self._top_tbl.setSortingEnabled(True)
+        if sort_column >= 0:
+            self._top_tbl.sortItems(sort_column, sort_order)
 
     def _on_top_double(self, row: int, _col: int) -> None:
         it = self._top_tbl.item(row, 0)
@@ -613,30 +748,7 @@ class AttackHeatmapWindow(QDialog):
         tracker = get_tracker()
         if tracker is None:
             return
-        snap   = tracker.snapshot()
-        matrix = snap.get("matrix", {})
-        techniques = []
-        for tid, row in matrix.items():
-            if row["count"] == 0:
-                continue
-            techniques.append({
-                "techniqueID": tid, "score": int(round(row["heat"] * 100)), "color": "",
-                "comment": f"hits={row['count']} last={row.get('last_seen') or 'never'}",
-                "enabled": True, "metadata": [], "showSubtechniques": False,
-            })
-        layer = {
-            "name": "Angerona Live Heatmap",
-            "versions": {"attack": "14", "navigator": "4.9", "layer": "4.5"},
-            "domain": "enterprise-attack",
-            "description": f"Exported {time.strftime('%Y-%m-%dT%H:%M:%S')} from Angerona live ATT&CK heat tracker",
-            "filters": {"platforms": ["Windows"]}, "sorting": 3,
-            "layout": {"layout": "side", "aggregateFunction": "average", "showID": True, "showName": True},
-            "hideDisabled": False, "techniques": techniques,
-            "gradient": {"colors": ["#0f172a", "#1d4ed8", "#d97706", "#dc2626"], "minValue": 0, "maxValue": 100},
-            "legendItems": [], "metadata": [], "showTacticRowBackground": True,
-            "tacticRowBackground": "#15202b", "selectTechniquesAcrossTactics": True,
-            "selectSubtechniquesWithParent": False, "links": [],
-        }
+        layer = build_navigator_layer(tracker.snapshot())
         default_name = f"angerona_navigator_{time.strftime('%Y%m%d_%H%M%S')}.json"
         path, _ = QFileDialog.getSaveFileName(
             self, "Export ATT&CK Navigator Layer", default_name, "JSON files (*.json)")

@@ -38,12 +38,12 @@ class ForensicsModule(BaseModule):
     name = "Forensics Capture"
     description = "On serious events, captures memory strings, sockets, and shell history for the suspect PID."
     category = "Forensics"
+    version = "1.1.0"
     enabled_by_default = False
 
     def __init__(self) -> None:
         super().__init__()
         self._captured: Dict[Tuple[int, float | None], float] = {}
-        self._last_ts = 0.0
 
     @staticmethod
     def _process_identity(pid: int, details: dict) -> Tuple[int, float | None]:
@@ -79,24 +79,50 @@ class ForensicsModule(BaseModule):
         self._captured[identity] = now
         return True
 
+    def self_test(self) -> tuple[bool, str]:
+        """Validate PID-generation dedupe without reading process memory or disk."""
+        original = self._captured
+        try:
+            self._captured = {}
+            first = self._capture_needed(4242, {"process_create_time": 100.0}, now=200.0)
+            duplicate = self._capture_needed(
+                4242, {"process_create_time": 100.0}, now=201.0
+            )
+            reused = self._capture_needed(4242, {"process_create_time": 101.0}, now=202.0)
+            expired = self._capture_needed(
+                4242,
+                {"process_create_time": 100.0},
+                now=200.0 + _CAPTURE_TTL_S + 1.0,
+            )
+            ok = first and not duplicate and reused and expired and len(self._captured) <= _CAPTURE_MAX
+        finally:
+            self._captured = original
+        return (
+            ok,
+            "offline PID-generation, TTL, and capacity gates passed"
+            if ok else "forensic capture identity/retention contract failed",
+        )
+
     def run(self) -> None:
         self.emit("Forensics capture armed (watching for serious events).", Severity.INFO)
         while not self.stopping:
-            self.sleep(5)
+            self.sleep(5, cycle_complete=False)
             if self._bus is None:
+                self.mark_cycle_complete()
                 continue
-            for ev in self._bus.recent(25):
-                if ev.ts <= self._last_ts or ev.severity < Severity.HIGH:
+            events, _overflow = self.poll_bus_events(priority=True)
+            for ev in events:
+                if ev.severity < Severity.HIGH:
                     continue
                 if ev.module == self.name:
                     continue
-                self._last_ts = max(self._last_ts, ev.ts)
                 pid = ev.details.get("pid")
                 if (
                     isinstance(pid, int) and
                     self._capture_needed(pid, ev.details or {})
                 ):
                     self._capture(pid)
+            self.mark_cycle_complete()
 
     # ── Capture pipeline ─────────────────────────────────────────────────────
     def _capture(self, pid: int) -> None:

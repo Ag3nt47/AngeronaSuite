@@ -56,6 +56,36 @@ class ActiveResponseSOAR(BaseModule):
     name = "Active Response SOAR"
     description = "Opt-in: terminates the offending process and rolls back its file artifact on real CRITICAL alerts."
     category = "Response"
+    version = "1.1.0"
+    supported_platforms = ("windows",)
+    capability_mode = "respond"
+    capability_inputs = ("authenticated-critical-event", "operator-response-scope")
+    capability_outputs = ("typed-process-termination", "scoped-artifact-rollback", "response-receipt")
+    capability_permissions = ("process-inspection", "process-terminate", "scoped-file-delete")
+    high_risk_permissions = ("process-terminate", "scoped-file-delete")
+    data_classes = ("process-identity", "artifact-path", "security-finding")
+    egress = "none"
+    retention = "bounded-event-cursor-and-local-response-evidence"
+    response_authority = "typed-response"
+    restart_policy = "bounded-three-attempt-backoff-quarantine"
+    loss_behavior = "priority-revision-gap-degrades-and-never-authorizes"
+    resource_budget = {
+        "worker_model": "single-lifecycle-thread",
+        "event_delivery": "bounded-revision-best-effort",
+        "startup_cycle_timeout_seconds": 30.0,
+    }
+    settings_schema = {
+        "type": "object",
+        "properties": {
+            "armed": {"type": "boolean", "default": False},
+            "minimum_severity": {
+                "type": "string", "enum": ["MEDIUM", "HIGH", "CRITICAL"],
+                "default": "CRITICAL",
+            },
+            "response_scope": {"type": "array", "items": {"type": "string"}},
+        },
+        "additionalProperties": False,
+    }
     enabled_by_default = True  # idles harmlessly unless armed — see _armed()
 
     def __init__(self) -> None:
@@ -97,8 +127,9 @@ class ActiveResponseSOAR(BaseModule):
         self.emit("Active Response SOAR online (idle unless armed via "
                   "ANGERONA_SOAR_KILL_AND_ROLLBACK).", Severity.INFO)
         while not self.stopping:
-            self.sleep(2)
+            self.sleep(2, cycle_complete=False)
             self.process_pending_once()
+            self.mark_cycle_complete()
 
     @staticmethod
     def _cursor_key(ev) -> str:

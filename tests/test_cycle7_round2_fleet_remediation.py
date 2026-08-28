@@ -194,18 +194,6 @@ def test_defense_payload_is_staged_in_runtime_temp_and_removed(
     monkeypatch.setitem(sys.modules, "ollama", types.ModuleType("ollama"))
     sys.modules.pop("angerona.engines.defense_monitor", None)
     monitor = importlib.import_module("angerona.engines.defense_monitor")
-    runtime_tmp = tmp_path / "runtime" / "tmp"
-    runtime_tmp.mkdir(parents=True)
-    observed: dict[str, object] = {}
-
-    def fake_run_hidden(command):
-        payload = Path(command[-1])
-        observed["command"] = command
-        observed["payload"] = payload
-        observed["data"] = json.loads(payload.read_text(encoding="utf-8"))
-
-    monkeypatch.setattr(monitor, "runtime_temp_dir", lambda: runtime_tmp)
-    monkeypatch.setattr(monitor, "run_hidden", fake_run_hidden)
     incident = monitor.SecurityIncident(
         threat_detected=True,
         category="Malicious Process",
@@ -215,13 +203,10 @@ def test_defense_payload_is_staged_in_runtime_temp_and_removed(
         recommended_action="Kill Process",
     )
 
-    monitor.trigger_mitigation_gate(incident)
+    proposal = monitor.trigger_mitigation_gate(incident)
 
-    payload = observed["payload"]
-    assert isinstance(payload, Path)
-    assert payload.parent == runtime_tmp
-    assert not payload.exists()
-    command = observed["command"]
-    assert "-Command" not in command
-    assert command[-2] == "-PayloadPath"
-    assert observed["data"]["target_identifier"] == "1234"
+    assert proposal["schema"] == "angerona.mitigation-proposal.v12"
+    assert proposal["status"] == "review_required"
+    assert proposal["executed"] is False
+    assert proposal["target_identifier"] == "1234"
+    assert "dynamic-script execution is disabled" in proposal["reason"]

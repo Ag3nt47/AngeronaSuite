@@ -86,7 +86,7 @@ def test_source_python_repair_is_confirmed_bounded_and_hash_locked():
     assert "/.tmp/repair-wheels/" in ignored
 
 
-def test_push_helper_does_not_execute_commit_text_or_push_after_commit_failure():
+def test_push_helper_does_not_execute_commit_text_or_publish_after_commit_failure():
     helper = (ROOT / "push-to-github.bat").read_text(encoding="utf-8")
 
     assert 'git commit -m "%MSG%"' not in helper
@@ -97,8 +97,10 @@ def test_push_helper_does_not_execute_commit_text_or_push_after_commit_failure()
     secret_scan = helper.index('"%GITLEAKS%" stdin --redact --no-banner')
     commit = helper.index('git commit -F "%MSGFILE%"')
     commit_failure = helper.index("if not \"%COMMIT_RC%\"==\"0\"")
-    push = helper.index("git push", commit_failure)
-    assert secret_scan < commit < commit_failure < push
+    publisher = helper.index("call :publish_github", commit_failure)
+    assert secret_scan < commit < commit_failure < publisher
+    assert "git push" not in helper
+    assert "tools\\publish_github_update.py" in helper
     assert "Commit failed. Nothing was pushed." in helper
     assert "Get-FileHash" in helper
     assert "executable_sha256.'gitleaks.exe'" in helper

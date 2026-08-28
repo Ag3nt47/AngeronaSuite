@@ -275,6 +275,38 @@ STEPS: tuple[Step, ...] = (
         ),
     ),
     Step(
+        "Defensive data integrations",
+        "Optional SIEM, authenticated Remote Bridge, and pinned IOC feed settings. "
+        "All egress/listeners remain off until you provide an explicit destination or mode.",
+        (
+            Field("text", "siem_host", "SIEM destination host"),
+            Field("spin", "siem_port", "SIEM destination port", minimum=1, maximum=65535),
+            Field("combo", "siem_protocol", "SIEM transport", options=("tls", "tcp", "udp")),
+            Field(
+                "combo", "siem_min_severity", "Minimum SIEM severity",
+                options=("INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"),
+            ),
+            Field("check", "siem_allow_plaintext", "Explicitly allow plaintext TCP/UDP"),
+            Field("text", "siem_ca_file", "Custom SIEM CA file"),
+            Field("check", "siem_include_raw", "Include raw alert text in SIEM output"),
+            Field("combo", "remote_bridge_mode", "Remote Bridge mode", options=("", "SENDER", "RECEIVER")),
+            Field("text", "remote_bridge_peer", "Remote Bridge sender peer", "host:port"),
+            Field("text", "remote_bridge_bind", "Remote Bridge receiver bind", "127.0.0.1"),
+            Field("spin", "remote_bridge_port", "Remote Bridge receiver port", minimum=1, maximum=65535),
+            Field("text", "remote_bridge_node_id", "Privacy-safe node label"),
+            Field(
+                "check", "remote_bridge_allow_nonloopback",
+                "Explicitly allow a non-loopback receiver bind",
+            ),
+            Field(
+                "password_env", "ANGERONA_BRIDGE_KEY", "Remote Bridge shared key",
+                note="64+ hexadecimal characters stored in the protected credential store.",
+            ),
+            Field("text", "ioc_feed_url", "Public HTTPS IOC feed URL"),
+            Field("text", "ioc_feed_sha256", "Exact IOC feed SHA-256 pin"),
+        ),
+    ),
+    Step(
         "Local integrations",
         "These services bind to loopback only. Keep them disabled unless a local integration needs them.",
         (
@@ -436,7 +468,10 @@ def normalize_setup_values(values: dict[str, object]) -> dict[str, object]:
                 "teams_allowed_users", "mobile_signal_cli", "mobile_host_number",
                 "mobile_dest_number", "fleet_tenant_id", "github_repo",
                 "adversary_combat_mode", "adversary_combat_min_severity",
-                "adversary_combat_process_action"):
+                "adversary_combat_process_action", "siem_host", "siem_protocol",
+                "siem_min_severity", "siem_ca_file", "remote_bridge_mode",
+                "remote_bridge_peer", "remote_bridge_bind", "remote_bridge_node_id",
+                "ioc_feed_url", "ioc_feed_sha256"):
         if key in normalized:
             normalized[key] = str(normalized[key]).strip()
     return normalized
@@ -479,6 +514,38 @@ def validate_setup(values: dict[str, object]) -> list[str]:
                 raise ValueError
         except (TypeError, ValueError):
             errors.append(f"{label} port must be between 1024 and 65535.")
+
+    for key, label in (("siem_port", "SIEM"), ("remote_bridge_port", "Remote Bridge")):
+        try:
+            port = int(values.get(key, 0))
+            if not 1 <= port <= 65535:
+                raise ValueError
+        except (TypeError, ValueError):
+            errors.append(f"{label} port must be between 1 and 65535.")
+    if values.get("siem_protocol") not in {"tls", "tcp", "udp"}:
+        errors.append("SIEM transport must be TLS, TCP, or UDP.")
+    if values.get("siem_min_severity") not in {
+        "INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL",
+    }:
+        errors.append("SIEM minimum severity is invalid.")
+    if values.get("siem_protocol") != "tls" and not values.get("siem_allow_plaintext"):
+        errors.append("Plaintext SIEM TCP/UDP requires its explicit risk acknowledgement.")
+    if values.get("remote_bridge_mode") not in {"", "SENDER", "RECEIVER"}:
+        errors.append("Remote Bridge mode must be blank, SENDER, or RECEIVER.")
+    if values.get("remote_bridge_mode") == "SENDER" and ":" not in str(
+        values.get("remote_bridge_peer", "")
+    ):
+        errors.append("Remote Bridge sender mode requires a host:port peer.")
+    feed_url = str(values.get("ioc_feed_url", ""))
+    if feed_url:
+        feed = urlsplit(feed_url)
+        if feed.scheme != "https" or not feed.hostname or feed.username or feed.password:
+            errors.append("IOC feed must use a public credential-free HTTPS URL.")
+    feed_pin = str(values.get("ioc_feed_sha256", ""))
+    if feed_pin and not re.fullmatch(r"[0-9a-fA-F]{64}", feed_pin):
+        errors.append("IOC feed SHA-256 must contain exactly 64 hexadecimal characters.")
+    if feed_pin and not feed_url:
+        errors.append("IOC feed SHA-256 requires an IOC feed URL.")
 
     try:
         interval = int(values.get("aria_inbox_interval_min", 0))
@@ -556,6 +623,21 @@ def validate_secret_requirements(
             errors.append(
                 "JARVIS controls require a protected token of at least 32 bytes. "
                 "Use Generate a new protected JARVIS token."
+            )
+    if values.get("remote_bridge_mode"):
+        bridge_key = str(
+            secret_updates.get("ANGERONA_BRIDGE_KEY")
+            or protected.get("ANGERONA_BRIDGE_KEY")
+            or ""
+        ).strip()
+        try:
+            decoded = bytes.fromhex(bridge_key)
+        except ValueError:
+            decoded = b""
+        if len(decoded) < 32:
+            errors.append(
+                "Remote Bridge requires a protected shared key of at least 32 bytes "
+                "encoded as hexadecimal."
             )
     return errors
 
@@ -909,7 +991,7 @@ if _HAVE_QT:
             values, secret_updates, providers = self._staged()
             errors = validate_setup(values)
             protected_secrets: Mapping[str, str] = {}
-            if values.get("jarvis_control_enabled"):
+            if values.get("jarvis_control_enabled") or values.get("remote_bridge_mode"):
                 try:
                     from angerona.core.secure_store import read_secret_map
 
@@ -940,6 +1022,7 @@ if _HAVE_QT:
                 "aria_cloud_fallback", "alert_analysis_cloud_fallback",
                 "aria_voice_cloud_tts", "aria_research_egress", "aria_push_enabled",
                 "aria_inbox_enabled", "teams_bot_enabled", "mobile_enabled",
+                "siem_host", "remote_bridge_mode", "ioc_feed_url",
             ))
             if outbound and QMessageBox.question(
                 self, "Confirm optional network features",

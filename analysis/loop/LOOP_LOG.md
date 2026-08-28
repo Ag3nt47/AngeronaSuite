@@ -1946,3 +1946,113 @@ boundaries, and primary-source citations are in
 - Final evidence: `analysis/loop/cycle24/summary.md`,
   `analysis/loop/cycle24/round3/qa_summary.md`, and
   `analysis/loop/cycle24/round3/release_remediation_summary.md`.
+
+## Cycle 25 Round 2 — Bug Test (2026-08-27)
+
+- Validated **346/346** product Python sources; nine locked `__pycache__`
+  output artifacts passed fresh-path recompilation and were not syntax bugs.
+- Discovery found **80 modules**, no import/discovery or duplicate-identity
+  errors, and **61/61** declared module codes unique. Core self-tests passed
+  **24/24**. The module phase passed **64/64** including EventBus with 17
+  expected inactive/platform skips; selfcheck passed **26/26** directly and
+  through `run-selfcheck.bat`.
+- Focused gates passed **56/56**, lifecycle/persistence gates passed **38/38**,
+  and the final complete `test_v12_*` sweep passed **46 with 1 expected skip**.
+- Fixed one live-accounting race in the IPC self-test: isolated handshakes no
+  longer modify and restore production counters, so concurrent real
+  authorization counts cannot be erased. Compile and **4/4** IPC contract
+  regressions passed.
+- One initial YARA timeout cleared in a ~47 ms isolated run and two complete
+  harness reruns; it was classified as transient host contention, and no test
+  or timeout was weakened. Full evidence:
+  `analysis/loop/cycle25/round2/bugtest_results.md`.
+
+## Cycle 25 Round 3 — Performance (2026-08-28)
+
+- Applied two behavior-preserving v1.12 optimizations: the primary async flight-
+  recorder handoff now uses the existing exact-capacity C-backed queue adapter,
+  and capability/module-detail UI ticks now use immutable contract summaries,
+  one EventBus revision-gated snapshot, and unchanged-row fingerprints.
+- Measured wins: recorder multi-producer handoff **22.306 -> 15.925 us/event
+  (28.6%)**; capability projection **43.324 -> 1.508 us/call (96.5%)**;
+  unchanged Module Inspector tick **13.458 -> 0.474 ms (96.5%)**.
+- Final focused gate passed **106/106**, Ruff, compile, and diff checks. A broader
+  lifecycle sweep had one non-repeatable 20 ms scheduling assertion; the exact
+  Eco cancellation case passed **10/10** in isolation and no product failure was
+  found. Durable batching, immutable compiled Sigma plans, and global per-CVE
+  detail-worker backpressure remain proposals because their observable crash,
+  trust, or click behavior needs separate design approval.
+- Full evidence: `analysis/loop/cycle25/round3/performance_summary.md`.
+
+## Cycle 25 Round 3 — Bug Test (2026-08-28)
+
+- Final product compilation passed **346/346** files. Structural discovery
+  imported **82/82** module files, constructed **64/64** compatibility
+  registrations, discovered **80 modules**, and found no broken imports,
+  discovery errors, or duplicate names/codes/capability IDs.
+- The exhaustive targeted harness recorded **69 passes** including EventBus with 12
+  explicit inactive/platform skips; standalone core self-tests passed
+  **24/24**. Direct and batch selfcheck both passed **26/26** after repair.
+- Fixed one stale selfcheck assertion that still expected automatic directory
+  ACL lockdown after v1.12 intentionally made that ambiguous action
+  proposal-only. Focused remediation tests passed **5/5**, and no production
+  remediation behavior or safety gate was weakened.
+- Final complete serial pytest passed **1,808 tests** with six expected
+  host-capability skips and zero failures; Ruff, final compile, and diff checks
+  passed. One concurrent YARA timeout was non-reproducible across five isolated
+  runs, the full module rerun, and both selfchecks. Full evidence:
+  `analysis/loop/cycle25/round3/bugtest_results.md`.
+
+## Cycle 25 — Three-round v1.12 closure (2026-08-28)
+
+- **Round 1 adversary:** inspected all 80 discovered capabilities and their
+  shared authority, lifecycle, persistence, integration, and GUI boundaries.
+  Twelve traceable risk/reliability lineages were recorded without inventing
+  retrospective CVSS scores. Universal v12 contracts, Guided Auto Adapt,
+  explicit firewall recovery enrollment, proposal-only automation/evolution,
+  exact remediation, behavioral approval, persistence, IPC custody, callable
+  integrity, and evidence-first UI work entered remediation.
+- **Round 1 visionary/upstream:** compared Velociraptor monitoring/local
+  buffers and community-artifact warnings, Wazuh stateful/stateless response,
+  Fleet policy definitions, osquery packs, Elastic detection-as-code, ATT&CK
+  19.2, Navigator 4.5, OCSF 1.8, and Sigma primary specifications. Angerona
+  adapted local durability/admission/contract patterns without claiming fleet,
+  server, content-ecosystem, or complete-standard parity.
+- **Round 2 reliability:** re-audited eight overlapping crash/saturation/
+  lifecycle lineages. Durable SIEM/Remote outboxes, revision cursors,
+  drain-stage-drain, mutable-state HMAC, independent queue-key custody, atomic
+  Settings/Intel state, and bounded helper/subscriber behavior closed the
+  reproducible code defects. IPC self-test accounting race was found and fixed.
+- **Round 3 closure:** no open High/Critical code finding remained in the v1.12
+  change set. Auto Adapt consent/race handling, remote-session anti-lockout,
+  settings compensation, alert identity/backpressure/suppression, recoverable
+  SOAR archive, nonblocking CVE details, standards truth, and legacy IPC residue
+  received final adversarial and focused regression gates.
+- **Inventory truth:** exactly 80 capabilities; five native v12 contracts and
+  75 explicit compatibility adapters. Implementation versions are 51 at
+  1.0.0, 28 at 1.1.0, and one macOS Observe preview at 0.1.0. Product and module
+  implementation semver are independent.
+- **Performance:** recorder 22.306 -> 15.925 us/event (28.6%); capability
+  summary 43.324 -> 1.508 us/call (96.5%); unchanged Module Inspector tick
+  13.458 -> 0.474 ms (96.5%). Batched durable commits, immutable compiled Sigma
+  plans, and global per-CVE worker backpressure remain proposals.
+- **Authoritative release evidence:** 1,811 passed / 6 expected host-platform
+  skips / 0 failed, including all three final-performance tests; those
+  regressions and their surrounding group passed a focused 106/106 gate.
+  Compile 346/346;
+  82/82 module files; 64/64 compatibility hooks; 80 discovery; 92 core/module
+  self-tests plus EventBus and 12 expected skips; selfcheck 26/26 direct/batch;
+  Ruff and diff clean. The post-documentation serial rerun is the release count.
+- The first post-documentation run exposed a Windows-only unit-test harness
+  race: its injected third "success" still called the real `os.replace`, the
+  product correctly recovered from a transient scanner lock on a fourth call,
+  and the test's exact-three-calls assertion failed. The retry helper was not
+  weakened. The test now uses a deterministic injected success; 1,000 retry
+  schedules, its focused file, Ruff, and the final serial rerun passed.
+- **Residuals:** the immutable baseline restores complete Windows Firewall
+  policy only; delivery remains at least once; outbox row deletion/whole-DB
+  rollback lacks an independent witness; transport-key coordination uses
+  restart epochs; OCSF/Sigma are constrained; IPC is diagnostic admission; 75
+  contracts are adapters rather than native declarations.
+- Complete record: `analysis/loop/cycle25/summary.md`,
+  `analysis/loop/cycle25/prior_findings.md`, and the three round directories.

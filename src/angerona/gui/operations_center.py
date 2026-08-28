@@ -363,7 +363,30 @@ class OperationsCenterDialog(QDialog):
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         table.horizontalHeader().setStretchLastSection(True)
+        table.setSortingEnabled(True)
         return table
+
+    @staticmethod
+    def _begin_table_refresh(table: QTableWidget) -> tuple[bool, int, Qt.SortOrder]:
+        header = table.horizontalHeader()
+        state = (
+            table.isSortingEnabled(),
+            header.sortIndicatorSection(),
+            header.sortIndicatorOrder(),
+        )
+        table.setUpdatesEnabled(False)
+        table.setSortingEnabled(False)
+        return state
+
+    @staticmethod
+    def _finish_table_refresh(
+        table: QTableWidget, state: tuple[bool, int, Qt.SortOrder]
+    ) -> None:
+        enabled, column, order = state
+        table.setSortingEnabled(enabled)
+        if enabled and column >= 0:
+            table.sortItems(column, order)
+        table.setUpdatesEnabled(True)
 
     def _build_overview(self) -> QWidget:
         page = QWidget()
@@ -774,6 +797,7 @@ class OperationsCenterDialog(QDialog):
     def _refresh_parity(self) -> None:
         report = self.service.capability_parity()
         rows = tuple(report["rows"])
+        table_state = self._begin_table_refresh(self.parity_table)
         self.parity_table.setRowCount(len(rows))
         for row_index, record in enumerate(rows):
             values = (
@@ -784,6 +808,7 @@ class OperationsCenterDialog(QDialog):
             for column, value in enumerate(values):
                 self.parity_table.setItem(
                     row_index, column, QTableWidgetItem(str(value)))
+        self._finish_table_refresh(self.parity_table, table_state)
         counts = report["counts"]
         covered = counts["operational"] + counts["integrated"]
         self.parity_status.setText(
@@ -836,6 +861,7 @@ class OperationsCenterDialog(QDialog):
         status = self.case_filter.currentData() if hasattr(self, "case_filter") else ""
         cases = self.service.cases.list_cases(status=status or None)
         evidence_counts = self.service.cases.evidence_counts()
+        table_state = self._begin_table_refresh(self.case_table)
         self.case_table.setRowCount(len(cases))
         self.hunt_case.clear()
         for row, case in enumerate(cases):
@@ -854,6 +880,7 @@ class OperationsCenterDialog(QDialog):
                 self.case_table.selectRow(row)
         if cases and self.case_table.currentRow() < 0:
             self.case_table.selectRow(0)
+        self._finish_table_refresh(self.case_table, table_state)
 
     def _create_case(self) -> None:
         title = self.case_title.text().strip()
@@ -970,6 +997,7 @@ class OperationsCenterDialog(QDialog):
 
     def _show_hunt_result(self, result: Any) -> None:
         self._hunt_rows = tuple(result.evidence)
+        table_state = self._begin_table_refresh(self.hunt_table)
         self.hunt_table.setRowCount(len(self._hunt_rows))
         for row, evidence in enumerate(self._hunt_rows):
             values = (
@@ -982,7 +1010,11 @@ class OperationsCenterDialog(QDialog):
                 evidence.event_id,
             )
             for column, value in enumerate(values):
-                self.hunt_table.setItem(row, column, QTableWidgetItem(str(value)))
+                item = QTableWidgetItem(str(value))
+                if column == 0:
+                    item.setData(Qt.UserRole, evidence)
+                self.hunt_table.setItem(row, column, item)
+        self._finish_table_refresh(self.hunt_table, table_state)
         self.hunt_status.setText(
             f"{len(self._hunt_rows)} match(es) · scanned {result.scanned} · "
             f"{result.elapsed_ms:.1f} ms" + (" · bounded" if result.truncated else ""))
@@ -990,11 +1022,13 @@ class OperationsCenterDialog(QDialog):
     def _attach_hunt_evidence(self) -> None:
         row = self.hunt_table.currentRow()
         case_id = str(self.hunt_case.currentData() or "")
-        if row < 0 or row >= len(self._hunt_rows) or not case_id:
+        item = self.hunt_table.item(row, 0) if row >= 0 else None
+        evidence = item.data(Qt.UserRole) if item is not None else None
+        if evidence is None or not case_id:
             QMessageBox.information(self, "Attach evidence", "Select a result and a case.")
             return
         try:
-            self.service.attach_evidence(case_id, self._hunt_rows[row])
+            self.service.attach_evidence(case_id, evidence)
             self.refresh_all()
         except Exception as exc:
             QMessageBox.warning(self, "Attach evidence", str(exc))
@@ -1005,6 +1039,7 @@ class OperationsCenterDialog(QDialog):
     def _refresh_assets(self, snapshot: Any | None = None) -> None:
         snapshot = snapshot or self.service.inventory_store.load()
         records = tuple(snapshot.records) if snapshot else ()
+        table_state = self._begin_table_refresh(self.asset_table)
         self.asset_table.setRowCount(len(records))
         now = datetime.now().timestamp()
         for row, record in enumerate(records):
@@ -1019,6 +1054,7 @@ class OperationsCenterDialog(QDialog):
             )
             for column, value in enumerate(values):
                 self.asset_table.setItem(row, column, QTableWidgetItem(value))
+        self._finish_table_refresh(self.asset_table, table_state)
         self.inventory_stamp.setText(
             f"Snapshot: {_stamp(snapshot.created_at)} · {len(records)} record(s)"
             if snapshot else "No snapshot yet")
@@ -1076,6 +1112,7 @@ class OperationsCenterDialog(QDialog):
 
     def _refresh_detections(self) -> None:
         records = self.service.detection_inventory()
+        table_state = self._begin_table_refresh(self.detection_table)
         self.detection_table.setRowCount(len(records))
         for row, record in enumerate(records):
             values = (
@@ -1085,9 +1122,11 @@ class OperationsCenterDialog(QDialog):
             )
             for column, value in enumerate(values):
                 self.detection_table.setItem(row, column, QTableWidgetItem(str(value)))
+        self._finish_table_refresh(self.detection_table, table_state)
 
     def _refresh_audit(self) -> None:
         records = self.service.audit_records(limit=500)
+        table_state = self._begin_table_refresh(self.audit_table)
         self.audit_table.setRowCount(len(records))
         for row, record in enumerate(records):
             entry = record.entry
@@ -1097,6 +1136,7 @@ class OperationsCenterDialog(QDialog):
             )
             for column, value in enumerate(values):
                 self.audit_table.setItem(row, column, QTableWidgetItem(str(value)))
+        self._finish_table_refresh(self.audit_table, table_state)
 
     def _export_audit(self) -> None:
         name, _ = QFileDialog.getSaveFileName(

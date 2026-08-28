@@ -1,8 +1,8 @@
 """ipc_guard.py — Zero-Trust Local IPC Guard (Code: AUTH).
 
 Purpose
-    Enforce zero-trust on AngeronaSuite's local inter-process channel. Every peer
-    that wants to talk to the suite over TCP loopback ``127.0.0.1:65432`` must
+    Provide an authenticated loopback admission primitive and diagnostic probe.
+    Every peer that connects to ``127.0.0.1:65432`` must
     prove possession of a per-install secret via an HMAC-SHA256
     challenge/response. Unsigned or wrongly-signed peers are denied by default and
     logged as a possible local-IPC spoofing / lateral-movement attempt.
@@ -17,9 +17,10 @@ Design
       ``hmac.compare_digest``. Default-deny.
 
 Safety
-    Loopback-only, local secret, read/verify only. This module authenticates
-    callers; it never opens the machine to the network and stores no user
-    passwords (the secret is a machine-generated key).
+    Loopback-only, OS-protected local secret, read/verify only. The current
+    server proves peer possession and then closes; no production command/data
+    consumer is wired through this socket. It must therefore not be described as
+    protecting unrelated Angerona IPC paths.
 
 Drop-in contract: BaseModule subclass + CODE/NAME/state/health_pct/self_test +
 module-level register().
@@ -38,25 +39,73 @@ from angerona.core.module_base import BaseModule, Severity
 
 _HOST = "127.0.0.1"
 _PORT = 65432
+_MAX_CONNECTIONS = 16
+_DENIAL_REPORT_INTERVAL = 30.0
+_SECRET_NAME = "ANGERONA_IPC_AUTH_KEY"
 
 
 def _load_or_create_key(path: Path) -> bytes:
-    try:
-        if path.exists():
-            data = path.read_bytes()
-            if len(data) >= 32:
-                return data[:32]
-        path.parent.mkdir(parents=True, exist_ok=True)
-        key = os.urandom(32)
-        path.write_bytes(key)
+    """Load/create the key in the OS store, migrating one exact legacy file."""
+    from angerona.core.secure_store import read_secret_values, write_secret_map
+
+    data_root = path.parent
+    protected = read_secret_values((_SECRET_NAME,), data_root, strict=True)
+    encoded = protected.get(_SECRET_NAME, "")
+    if len(encoded) == 64:
         try:
-            os.chmod(path, 0o600)   # best-effort; NTFS ACLs differ but dir is per-user
-        except Exception:
+            key = bytes.fromhex(encoded)
+        except ValueError:
             pass
-        return key
-    except Exception:
-        # last resort: ephemeral in-process key (still enforces zero-trust for this run)
-        return os.urandom(32)
+        else:
+            # A prior migration may have committed protected storage but failed
+            # to remove its plaintext source. Never listen until the residue is
+            # either proven identical and removed or explicitly remediated.
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                return key
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or info.st_size != 32
+                or not hmac.compare_digest(path.read_bytes(), key)
+            ):
+                raise RuntimeError(
+                    "plaintext IPC key residue is unsafe or differs from protected storage"
+                )
+            try:
+                path.unlink()
+            except OSError as exc:
+                raise RuntimeError(
+                    "plaintext IPC key residue could not be removed"
+                ) from exc
+            return key
+    if encoded:
+        raise RuntimeError("protected IPC authentication key has an invalid format")
+
+    legacy: bytes | None = None
+    try:
+        info = path.lstat()
+        if path.is_symlink() or not path.is_file() or info.st_size != 32:
+            raise RuntimeError("legacy IPC authentication key is not an exact regular file")
+        legacy = path.read_bytes()
+    except FileNotFoundError:
+        pass
+    key = legacy if legacy is not None else os.urandom(32)
+    write_secret_map({_SECRET_NAME: key.hex()}, data_root)
+    accepted = read_secret_values((_SECRET_NAME,), data_root, strict=True).get(
+        _SECRET_NAME, ""
+    )
+    if not hmac.compare_digest(accepted, key.hex()):
+        raise RuntimeError("OS credential store did not verify the IPC authentication key")
+    if legacy is not None:
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise RuntimeError(
+                "protected IPC key was accepted but the plaintext legacy key could not be removed"
+            ) from exc
+    return key
 
 
 def sign(key: bytes, nonce: bytes) -> str:
@@ -96,6 +145,7 @@ class _IpcGeneration:
         self.accept_thread: threading.Thread | None = None
         self.connections: set[socket.socket] = set()
         self.helpers: set[threading.Thread] = set()
+        self.connection_slots = threading.BoundedSemaphore(_MAX_CONNECTIONS)
 
     def stopping(self) -> bool:
         return self.generation_stop.is_set() or self.helper_stop.is_set()
@@ -142,10 +192,20 @@ class IpcGuardModule(BaseModule):
     CODE = "AUTH"
     NAME = "Zero-Trust Local IPC Guard"
     name = "Zero-Trust Local IPC Guard"
-    description = ("HMAC-SHA256 challenge/response auth for the loopback IPC channel "
-                   "(127.0.0.1:65432); default-deny, logs spoofing attempts.")
+    description = ("Diagnostic HMAC-SHA256 admission probe on 127.0.0.1:65432; "
+                   "authenticates and closes, with no production payload consumer.")
     category = "Integrity"
-    version = "1.0.0"
+    version = "1.1.0"
+    supported_platforms = ("windows", "macos", "linux")
+    capability_mode = "observe"
+    maturity_channel = "preview"
+    capability_inputs = ("loopback-authentication-probe",)
+    capability_outputs = ("diagnostic-peer-decision", "bounded-health-event")
+    capability_permissions = ("loopback-listen", "local-secret-read-write")
+    data_classes = ("local-peer-address", "authentication-result")
+    egress = "none"
+    retention = "bounded-counters-only"
+    response_authority = "none"
 
     def __init__(self) -> None:
         super().__init__()
@@ -156,6 +216,8 @@ class IpcGuardModule(BaseModule):
         self._server_generation: _IpcGeneration | None = None
         self.accepted = 0
         self.denied = 0
+        self._last_denial_emit = 0.0
+        self._suppressed_denials = 0
 
     @property
     def state(self) -> str:
@@ -166,23 +228,54 @@ class IpcGuardModule(BaseModule):
         return self.health
 
     # ── server ───────────────────────────────────────────────────────────────
-    def _serve_conn(self, conn: socket.socket, addr) -> None:
+    def _record_denial(self, addr: object, *, reason: str) -> None:
+        """Count every refusal while rate-limiting attacker-controlled events."""
+        now = time.monotonic()
+        with self.state_lock:
+            self.denied += 1
+            if (
+                self._last_denial_emit > 0
+                and now - self._last_denial_emit < _DENIAL_REPORT_INTERVAL
+            ):
+                self._suppressed_denials += 1
+                return
+            suppressed = self._suppressed_denials
+            self._suppressed_denials = 0
+            self._last_denial_emit = now
+        self.emit(
+            "Zero-trust IPC authentication refused a local peer.",
+            Severity.HIGH,
+            peer=str(addr)[:160],
+            reason=str(reason)[:80],
+            suppressed_since_last=suppressed,
+            response_authorized=False,
+        )
+
+    def _serve_conn(
+        self,
+        conn: socket.socket,
+        addr,
+        *,
+        key: bytes | None = None,
+        emit_denial: bool = True,
+        count_result: bool = True,
+    ) -> None:
         try:
             conn.settimeout(4.0)
             nonce = os.urandom(16).hex().encode("ascii")
             conn.sendall(b"CHALLENGE " + nonce + b"\n")
             data = conn.recv(256).decode("ascii", "ignore").strip()
             sig = data.split(" ", 1)[1] if data.startswith("AUTH ") else ""
-            if verify(self._key, nonce, sig):
+            auth_key = self._key if key is None else bytes(key)
+            if verify(auth_key, nonce, sig):
                 conn.sendall(b"OK\n")
-                with self.state_lock:
-                    self.accepted += 1
+                if count_result:
+                    with self.state_lock:
+                        self.accepted += 1
             else:
                 conn.sendall(b"DENY\n")
-                with self.state_lock:
-                    self.denied += 1
-                self.emit(f"🚫 Zero-trust IPC DENY from {addr} — unsigned/invalid HMAC "
-                          f"(possible local spoofing).", Severity.HIGH, peer=str(addr))
+                if emit_denial:
+                    self._record_denial(addr, reason="invalid-hmac")
         except Exception as exc:
             self.last_error = str(exc)
         finally:
@@ -208,6 +301,7 @@ class IpcGuardModule(BaseModule):
             with generation.lock:
                 generation.connections.discard(conn)
                 generation.helpers.discard(threading.current_thread())
+            generation.connection_slots.release()
 
     def _accept_loop(self, generation: _IpcGeneration) -> None:
         srv = generation.srv
@@ -220,12 +314,20 @@ class IpcGuardModule(BaseModule):
                 continue
             except OSError:
                 break
+            if not generation.connection_slots.acquire(blocking=False):
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                self._record_denial(addr, reason="connection-capacity")
+                continue
             with generation.lock:
                 if generation.stopping():
                     try:
                         conn.close()
                     except OSError:
                         pass
+                    generation.connection_slots.release()
                     break
                 helper = threading.Thread(
                     target=self._serve_generation_conn,
@@ -235,7 +337,21 @@ class IpcGuardModule(BaseModule):
                 )
                 generation.connections.add(conn)
                 generation.helpers.add(helper)
-                helper.start()
+                try:
+                    helper.start()
+                except Exception as exc:
+                    generation.connections.discard(conn)
+                    generation.helpers.discard(helper)
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
+                    generation.connection_slots.release()
+                    self.last_error = str(exc)
+                    self.set_health(40, f"authentication worker unavailable: {exc}")
+                    self._record_denial(addr, reason="worker-start-failure")
+                    generation.helper_stop.set()
+                    break
 
     def run(self) -> None:
         generation = _IpcGeneration(self.generation_stop_event())
@@ -253,12 +369,24 @@ class IpcGuardModule(BaseModule):
 
     def _run_generation(self, generation: _IpcGeneration) -> None:
         from angerona.core.config import Config
-        self._key = _load_or_create_key(Config().data_dir / "ipc_auth.key")
+        try:
+            self._key = _load_or_create_key(Config().data_dir / "ipc_auth.key")
+        except Exception as exc:
+            self.last_error = str(exc)
+            self.set_health(0, f"protected authentication key unavailable: {exc}")
+            self.emit(
+                "AUTH diagnostic probe refused to listen without verified OS-protected key material.",
+                Severity.HIGH,
+                response_authorized=False,
+            )
+            while not generation.stopping():
+                self.sleep(5.0)
+            return
         try:
             srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             srv.bind((_HOST, _PORT))     # loopback only
-            srv.listen(16)
+            srv.listen(_MAX_CONNECTIONS)
             srv.settimeout(1.0)
             with generation.lock:
                 generation.srv = srv
@@ -276,8 +404,13 @@ class IpcGuardModule(BaseModule):
             while not self.stopping:
                 self.sleep(5.0)
             return
-        self.emit(f"AUTH online — zero-trust HMAC guard on {_HOST}:{_PORT} (default-deny).",
-                  Severity.INFO)
+        self.emit(
+            f"AUTH diagnostic admission probe online on {_HOST}:{_PORT}; authenticated "
+            "connections carry no production payload.",
+            Severity.INFO,
+            production_consumer=False,
+            response_authorized=False,
+        )
         accept_thread = threading.Thread(
             target=self._accept_loop,
             args=(generation,),
@@ -286,7 +419,7 @@ class IpcGuardModule(BaseModule):
         )
         generation.accept_thread = accept_thread
         accept_thread.start()
-        while not self.stopping:
+        while not generation.stopping():
             with self.state_lock:
                 a, d = self.accepted, self.denied
             self.set_health(100, f"{a} authorized, {d} denied")
@@ -302,6 +435,7 @@ class IpcGuardModule(BaseModule):
     def self_test(self) -> tuple[bool, str]:
         """Prove HMAC verify (accept valid / reject tampered) AND a real loopback
         challenge/response round-trip on an ephemeral port (valid vs wrong key)."""
+        production_key = self._key
         key = os.urandom(32)
         nonce = os.urandom(16)
         if not verify(key, nonce, sign(key, nonce)):
@@ -316,13 +450,18 @@ class IpcGuardModule(BaseModule):
         srv.listen(4)
         srv.settimeout(3.0)
         port = srv.getsockname()[1]
-        self._key = key
         results = {}
 
         def _once(tag: str):
             try:
                 conn, addr = srv.accept()
-                self._serve_conn(conn, addr)
+                self._serve_conn(
+                    conn,
+                    addr,
+                    key=key,
+                    emit_denial=False,
+                    count_result=False,
+                )
             except Exception as exc:
                 results[tag] = f"srv-err:{exc}"
 
@@ -336,8 +475,10 @@ class IpcGuardModule(BaseModule):
         t2.join(timeout=4.0)
         srv.close()
 
+        if self._key != production_key:
+            return False, "self-test changed the live authentication key"
         if good and not bad:
-            return True, "HMAC + loopback handshake verified (valid OK, wrong-key DENY)"
+            return True, "isolated HMAC + loopback handshake verified (valid OK, wrong-key DENY)"
         return False, f"handshake failed (valid={good}, wrong-key={bad}, {results})"
 
 

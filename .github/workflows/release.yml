@@ -13,7 +13,81 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify-release-source:
+    name: Verify public release source
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag-object: ${{ steps.source.outputs.tag-object }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Require immutable source visible from public main
+        id: source
+        shell: bash
+        env:
+          ANGERONA_EVENT: ${{ github.event_name }}
+          ANGERONA_REF: ${{ github.ref }}
+          ANGERONA_REF_NAME: ${{ github.ref_name }}
+          ANGERONA_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          default_refs="$(git ls-remote --symref origin HEAD refs/heads/main)"
+          [[ "$(printf '%s\n' "$default_refs" | \
+            grep -c $'^ref: refs/heads/main\tHEAD$')" -eq 1 ]]
+          git fetch --no-tags origin \
+            refs/heads/main:refs/remotes/origin/main
+          if [[ "$ANGERONA_EVENT" == "push" ]]; then
+            [[ "$ANGERONA_REF" == refs/tags/v* ]]
+            tag_ref="refs/tags/$ANGERONA_REF_NAME"
+            tag_lines="$(git ls-remote --refs origin "$tag_ref")"
+            [[ "$(printf '%s\n' "$tag_lines" | \
+              awk -v ref="$tag_ref" '$2 == ref { count++ } END { print count+0 }')" \
+              -eq 1 ]]
+            tag_object="$(printf '%s\n' "$tag_lines" | \
+              awk -v ref="$tag_ref" '$2 == ref { print $1 }')"
+            [[ "$tag_object" =~ ^[0-9a-f]{40,64}$ ]]
+            echo "tag-object=$tag_object" >> "$GITHUB_OUTPUT"
+            git fetch --no-tags origin \
+              "refs/tags/$ANGERONA_REF_NAME:refs/tags/$ANGERONA_REF_NAME"
+            [[ "$(git rev-parse "$ANGERONA_REF_NAME^{commit}")" == \
+               "$ANGERONA_SOURCE_SHA" ]]
+            git merge-base --is-ancestor \
+              "$ANGERONA_SOURCE_SHA" refs/remotes/origin/main
+            version="$(python - <<'PY'
+          import pathlib
+          import re
+
+          pyproject = pathlib.Path('pyproject.toml').read_text(encoding='utf-8')
+          package = pathlib.Path('src/angerona/__init__.py').read_text(
+              encoding='utf-8'
+          )
+          project_match = re.search(r'^version = "([0-9]+\.[0-9]+\.[0-9]+)"$', pyproject, re.M)
+          package_match = re.search(r'^__version__ = "([0-9]+\.[0-9]+\.[0-9]+)"$', package, re.M)
+          if project_match is None or package_match is None:
+              raise SystemExit('version declaration is missing')
+          if project_match.group(1) != package_match.group(1):
+              raise SystemExit('package and project versions disagree')
+          print(project_match.group(1))
+          PY
+          )"
+            [[ "$ANGERONA_REF_NAME" == "v$version" ]]
+          else
+            [[ "$ANGERONA_EVENT" == "workflow_dispatch" ]]
+            [[ "$ANGERONA_REF" == "refs/heads/main" ]]
+            [[ "$ANGERONA_SOURCE_SHA" == \
+               "$(git rev-parse refs/remotes/origin/main)" ]]
+            echo "tag-object=$ANGERONA_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
   prepare-windows:
+    needs: verify-release-source
     runs-on: windows-latest
     timeout-minutes: 60
     environment: windows-code-signing
@@ -636,6 +710,7 @@ jobs:
             Angerona-${{ needs.prepare-windows.outputs.artifact-tag }}-win64-migration-setup.exe.sha256
 
   build-posix:
+    needs: verify-release-source
     name: Build ${{ matrix.artifact }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -785,7 +860,7 @@ jobs:
 
   publish-release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [package-windows, build-posix]
+    needs: [verify-release-source, package-windows, build-posix]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -793,6 +868,35 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - name: Re-check tag and public-main ancestry
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          path: source
+      - name: Fail if release source moved or left public main
+        shell: bash
+        working-directory: source
+        env:
+          ANGERONA_REF_NAME: ${{ github.ref_name }}
+          ANGERONA_SOURCE_SHA: ${{ github.sha }}
+          ANGERONA_TAG_OBJECT: ${{ needs.verify-release-source.outputs.tag-object }}
+        run: |
+          set -euo pipefail
+          default_refs="$(git ls-remote --symref origin HEAD refs/heads/main)"
+          [[ "$(printf '%s\n' "$default_refs" | \
+            grep -c $'^ref: refs/heads/main\tHEAD$')" -eq 1 ]]
+          tag_ref="refs/tags/$ANGERONA_REF_NAME"
+          [[ "$(git ls-remote --refs origin "$tag_ref" | \
+            awk -v ref="$tag_ref" '$2 == ref { print $1 }')" == \
+            "$ANGERONA_TAG_OBJECT" ]]
+          git fetch --no-tags origin \
+            refs/heads/main:refs/remotes/origin/main
+          git fetch --no-tags origin \
+            "refs/tags/$ANGERONA_REF_NAME:refs/tags/$ANGERONA_REF_NAME"
+          [[ "$(git rev-parse "$ANGERONA_REF_NAME^{commit}")" == \
+             "$ANGERONA_SOURCE_SHA" ]]
+          git merge-base --is-ancestor \
+            "$ANGERONA_SOURCE_SHA" refs/remotes/origin/main
       - name: Download exact gated Windows assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -827,6 +931,27 @@ jobs:
             Angerona-${{ github.ref_name }}-win64.msix
             Angerona-${{ github.ref_name }}-win64.zip
           sbom-path: Angerona-SBOM.json
+
+      - name: Final immutable tag and default-main check
+        shell: bash
+        working-directory: source
+        env:
+          ANGERONA_REF_NAME: ${{ github.ref_name }}
+          ANGERONA_SOURCE_SHA: ${{ github.sha }}
+          ANGERONA_TAG_OBJECT: ${{ needs.verify-release-source.outputs.tag-object }}
+        run: |
+          set -euo pipefail
+          default_refs="$(git ls-remote --symref origin HEAD refs/heads/main)"
+          [[ "$(printf '%s\n' "$default_refs" | \
+            grep -c $'^ref: refs/heads/main\tHEAD$')" -eq 1 ]]
+          tag_ref="refs/tags/$ANGERONA_REF_NAME"
+          [[ "$(git ls-remote --refs origin "$tag_ref" | \
+            awk -v ref="$tag_ref" '$2 == ref { print $1 }')" == \
+            "$ANGERONA_TAG_OBJECT" ]]
+          git fetch --no-tags origin \
+            refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor \
+            "$ANGERONA_SOURCE_SHA" refs/remotes/origin/main
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1

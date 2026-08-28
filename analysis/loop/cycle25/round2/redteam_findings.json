@@ -1,0 +1,15 @@
+{
+  "cycle": 25,
+  "round": 2,
+  "date": "2026-08-27",
+  "model": "overlapping reliability re-audit; not a unique-vulnerability total",
+  "records": 8,
+  "fixed": 8,
+  "unresolved_code_defects": 0,
+  "residuals": [
+    "at-least-once delivery may duplicate",
+    "row deletion and whole-database rollback lack an independent witness",
+    "transport-key rotation coordination uses restart epochs",
+    "subscriber SLO metrics do not make inline callbacks asynchronous"
+  ]
+}

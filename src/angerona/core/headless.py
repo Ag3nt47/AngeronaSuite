@@ -27,7 +27,7 @@ from angerona.core.eventbus import EventBus
 from angerona.core.module_manager import ModuleManager
 from angerona.core.platforms import current_platform
 from angerona.core.status_report import StatusReporter
-from angerona.core.storage import FlightRecorder
+from angerona.core.storage import AsyncFlightRecorder, FlightRecorder
 
 
 def run_headless() -> int:
@@ -37,8 +37,13 @@ def run_headless() -> int:
     bus = EventBus()
     bus.arm(storage.authority)
 
-    # Same subscriptions app.py wires, minus anything GUI-bound.
-    bus.subscribe(storage.record_bus)
+    # Same authoritative, bounded recorder path as the GUI. Direct SQLite work
+    # in an EventBus callback stalls the publishing sensor even though the bus
+    # mutex is released; the worker callback is only a bounded put_nowait and
+    # preserves overflow through the authenticated DLQ.
+    recorder_worker = AsyncFlightRecorder(storage)
+    recorder_worker.start()
+    bus.subscribe(recorder_worker.submit)
     try:
         from angerona.core.incidents import get_correlator
         bus.subscribe(get_correlator().on_event)
@@ -159,6 +164,19 @@ def run_headless() -> int:
                 pass
         reporter.stop()
         manager.stop_all()
-        storage.close()
+        recorder_drained = False
+        try:
+            recorder_drained = recorder_worker.stop(timeout=3.0)
+        except Exception:
+            pass
+        # Never close SQLite underneath a still-running writer. Process teardown
+        # safely reclaims it if a damaged filesystem exceeds the bounded drain.
+        if recorder_drained:
+            storage.close()
+        else:
+            print(
+                "[Angerona] Recorder drain timed out; storage left open for safe process teardown.",
+                flush=True,
+            )
         print("[Angerona] Headless shutdown complete.", flush=True)
     return 0

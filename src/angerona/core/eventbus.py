@@ -94,6 +94,18 @@ def is_remote_observe_only(event: object) -> bool:
 Subscriber = Callable[[Event], None]
 
 
+@dataclass(frozen=True)
+class SubscriberMetrics:
+    name: str
+    delivery_budget_ms: float
+    deliveries: int
+    failures: int
+    budget_violations: int
+    last_delivery_ms: float
+    max_delivery_ms: float
+    total_delivery_ms: float
+
+
 # ── G3-A: Bus authentication ──────────────────────────────────────────────────
 
 class BusAuthority:
@@ -232,6 +244,7 @@ class EventBus:
         # merely to discover that no event arrived since the previous cycle.
         self._revision: int = 0
         self._priority_revision: int = 0
+        self._subscriber_stats: dict[int, dict[str, object]] = {}
 
     # G3-A: wire in the signing authority
     def arm(self, authority: BusAuthority) -> None:
@@ -249,7 +262,20 @@ class EventBus:
         """Whether newly published events are HMAC authenticated."""
         return self._authority is not None
 
-    def subscribe(self, fn: Subscriber) -> None:
+    def subscribe(self, fn: Subscriber, *, delivery_budget_ms: float = 25.0) -> None:
+        """Register one deterministic, bounded inline callback.
+
+        Callbacks execute in publication order. They must only update bounded
+        memory or enqueue work; filesystem, network and database operations
+        belong on a worker. Per-callback latency/failure counters make contract
+        violations observable through :meth:`subscriber_metrics`.
+        """
+        try:
+            budget = float(delivery_budget_ms)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("delivery_budget_ms must be numeric") from exc
+        if not 0.1 <= budget <= 60_000:
+            raise ValueError("delivery_budget_ms must be between 0.1 and 60000")
         with self._lock:
             # Several modules subscribe from run(), so an operator stop/start or
             # Eco pause/resume used to append the same bound method repeatedly.
@@ -257,6 +283,20 @@ class EventBus:
             # state updates for the rest of the process lifetime.
             if fn not in self._subs:
                 self._subs.append(fn)
+                owner = getattr(fn, "__self__", None)
+                owner_name = type(owner).__name__ if owner is not None else ""
+                callback_name = getattr(fn, "__qualname__", getattr(fn, "__name__", "subscriber"))
+                name = f"{owner_name}.{callback_name}" if owner_name else callback_name
+                self._subscriber_stats[id(fn)] = {
+                    "name": str(name)[:200],
+                    "delivery_budget_ms": budget,
+                    "deliveries": 0,
+                    "failures": 0,
+                    "budget_violations": 0,
+                    "last_delivery_ms": 0.0,
+                    "max_delivery_ms": 0.0,
+                    "total_delivery_ms": 0.0,
+                }
 
     def publish(self, event: Event) -> None:
         # G3-A: sign the event if an authority is registered
@@ -276,13 +316,37 @@ class EventBus:
                 )
             subs = list(self._subs)
 
-        # Notify outside the lock so a slow subscriber can't block publishers.
+        # Notify outside the lock so callbacks cannot hold up ring readers or
+        # other publishers waiting on the mutex. Delivery is intentionally
+        # inline for deterministic response ordering, so every callback must be
+        # an O(1), bounded memory/queue handoff; storage and other I/O use their
+        # dedicated workers in both GUI and headless service graphs.
         for fn in subs:
+            started = time.perf_counter()
+            failed = False
             try:
                 fn(event)
             except Exception:
                 # A misbehaving subscriber must never crash the producer.
-                pass
+                failed = True
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            with self._lock:
+                stats = self._subscriber_stats.get(id(fn))
+                if stats is None:
+                    continue
+                stats["deliveries"] = int(stats["deliveries"]) + 1
+                stats["failures"] = int(stats["failures"]) + int(failed)
+                stats["last_delivery_ms"] = elapsed_ms
+                stats["max_delivery_ms"] = max(float(stats["max_delivery_ms"]), elapsed_ms)
+                stats["total_delivery_ms"] = float(stats["total_delivery_ms"]) + elapsed_ms
+                if elapsed_ms > float(stats["delivery_budget_ms"]):
+                    stats["budget_violations"] = int(stats["budget_violations"]) + 1
+
+    def subscriber_metrics(self) -> tuple[SubscriberMetrics, ...]:
+        """Return bounded inline-delivery SLO evidence for diagnostics/UI."""
+        with self._lock:
+            rows = [SubscriberMetrics(**dict(row)) for row in self._subscriber_stats.values()]
+        return tuple(sorted(rows, key=lambda row: row.name.casefold()))
 
     def recent(self, limit: int = 100) -> List[Event]:
         with self._lock:

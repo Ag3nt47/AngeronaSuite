@@ -152,6 +152,7 @@ class NetworkMonitorModule(BaseModule):
     name = "Network Monitor"
     description = "Watches new outbound connections; alerts on suspicious ports and first-seen external hosts."
     category = "Network"
+    version = "1.1.0"
 
     def __init__(self) -> None:
         super().__init__()
@@ -192,6 +193,40 @@ class NetworkMonitorModule(BaseModule):
         self._drop_older_than(self._known_hosts, host_cutoff)
         self._known_pid_hosts = self._trim_recent(self._known_pid_hosts)
         self._known_hosts = self._trim_recent(self._known_hosts)
+
+    def self_test(self) -> tuple[bool, str]:
+        """Validate endpoint, identity and response gates without network I/O."""
+        connection = {
+            "pid": 7,
+            "laddr": "[2001:db8::1]:53000",
+            "raddr": "[2001:db8::2]:443",
+            "status": "ESTABLISHED",
+            "protocol": "tcp",
+        }
+        denied = _block_remote_contract(
+            "203.0.113.9", corroborated=False, classification="threat-intel-ioc"
+        )
+        allowed = _block_remote_contract(
+            "203.0.113.9", corroborated=True, classification="threat-intel-ioc"
+        )
+        values = {str(index): float(index) for index in range(12)}
+        trimmed = self._trim_recent(values, maximum=5)
+        ok = bool(
+            _split_endpoint("203.0.113.9:443") == ("203.0.113.9", 443)
+            and _split_endpoint("[2001:db8::2]:443") == ("2001:db8::2", 443)
+            and _split_endpoint("203.0.113.9:99999") is None
+            and _native_community_id(connection)
+            and denied == {}
+            and allowed.get("response_authorized") is True
+            and allowed["response_contract"]["targets"]["remote_ips"] == ["203.0.113.9"]
+            and len(trimmed) == 5
+            and min(trimmed.values()) == 7.0
+        )
+        return (
+            ok,
+            "offline IPv4/IPv6, Community ID, bounds, and response gates passed"
+            if ok else "network contract fixture failed",
+        )
 
     def run(self) -> None:
         now0 = time.time()

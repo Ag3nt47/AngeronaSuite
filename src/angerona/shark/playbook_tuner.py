@@ -1,159 +1,151 @@
-"""playbook_tuner.py — Autonomous SOAR Playbook Generation (Component 1).
+"""Fail-closed containment proposal builder.
 
-Triggers on a containment bypass (Judgment VERIFICATION_RESULT: SUCCESS where a
-standard Kill Process ran but the adversarial vector persisted — e.g. a decoupled
-WMI hook or hollowed process). Tasks the local LLM to synthesize a targeted
-netsh / New-NetFirewallRule / WFP containment block, saves it as a scoped
-playbook (playbooks/dynamic_block_<tid>.ps1), wires it into mitigation_gate.ps1,
-then re-arms and re-tests the Judgment pipeline.
-
-SAFETY: generates DEFENSIVE containment (network isolation) only; loopback
-(Ollama :11434 / IPC) is always left reachable, and everything is staged for the
-review-gated mitigation_gate — nothing auto-executes from here.
+Containment bypasses are important evidence, but neither a model response nor a
+repository script is execution authority. Version 12 therefore records a small
+typed network-containment proposal for operator review. It never writes an
+executable file, edits a mitigation gate, changes firewall policy, or marks a
+mitigation verified merely because an inert drill happened to be blocked.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
-import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
-
-from angerona.engines import ollama_client
-
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-MODEL = os.getenv("MODEL_NAME", "llama3:latest")
-
-_SYS = ("Analyze this failed containment timeline and process tree behavior. Generate "
-        "a clean, targeted PowerShell containment block utilizing netsh, "
-        "New-NetFirewallRule, or specific WFP parameters to isolate this execution "
-        "vector. Output ONLY the raw PowerShell — no markdown, fences, or prose.")
+from typing import Any, Mapping
 
 
-def _repo_root() -> Path:
+_TECHNIQUE = re.compile(r"T\d{4}(?:\.\d{3})?\Z")
+_MAX_TIMELINE_BYTES = 64 * 1024
+
+
+def _proposal_root() -> Path:
     from angerona.core.data_paths import data_dir
-    return data_dir()
+
+    root = data_dir() / "proposals" / "containment"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
-def _ollama_block(timeline: dict) -> str | None:
+def _bounded_timeline(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    source = dict(value or {})
+    encoded = json.dumps(
+        source,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=str,
+    ).encode("utf-8")
+    if len(encoded) > _MAX_TIMELINE_BYTES:
+        return {
+            "summary": "timeline omitted because it exceeded the review bound",
+            "original_sha256": hashlib.sha256(encoded).hexdigest(),
+            "original_bytes": len(encoded),
+        }
+    return json.loads(encoded.decode("utf-8"))
+
+
+def _atomic_json(path: Path, document: Mapping[str, Any]) -> None:
+    payload = json.dumps(
+        document, indent=2, sort_keys=True, ensure_ascii=False
+    ).encode("utf-8")
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
     try:
-        result = ollama_client.analyze_telemetry(
-            "Create the defensive containment block requested by the system policy.",
-            json.dumps(timeline, indent=2),
-            MODEL,
-            system=_SYS,
-            host=OLLAMA_HOST,
-            timeout=90,
-            options={"temperature": 0},
-        )
-        if result.get("error"):
-            return None
-        t = re.sub(r"^```[a-zA-Z]*\n?|```$", "", str(result.get("response") or "").strip()).strip()
-        return t or None
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
     except Exception:
-        return None
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
 
-def _fallback_block(technique_id: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9_]", "_", technique_id)
-    return (f"# Targeted containment for {technique_id} (deterministic fallback).\n"
-            f"# Micro-isolate the offending execution vector; loopback stays reachable.\n"
-            f"New-NetFirewallRule -DisplayName 'Angerona-Dyn-{safe}' -Group 'Angerona-SOAR' "
-            f"-Direction Outbound -RemoteAddress Any -Action Block -ErrorAction SilentlyContinue\n"
-            f"New-NetFirewallRule -DisplayName 'Angerona-Dyn-{safe}-Loopback' -Group 'Angerona-SOAR' "
-            f"-Direction Outbound -RemoteAddress 127.0.0.1 -Action Allow -ErrorAction SilentlyContinue\n"
-            f"# netsh alternative (uncomment if WFP cmdlets are unavailable):\n"
-            f"# netsh advfirewall firewall add rule name='Angerona-Dyn-{safe}' dir=out action=block\n")
-
-
-def _verify(technique_id: str) -> str:
-    """Re-arm + re-test through the Judgment verifier."""
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-m", "angerona.shark.verify", technique_id, "--verify"],
-            capture_output=True, text=True, timeout=90)
-        buf = (proc.stdout or "") + "\n" + (proc.stderr or "")
-    except Exception as exc:
-        buf = f"VERIFICATION_RESULT: ERROR ({exc})"
-    for line in buf.splitlines():
-        if "VERIFICATION_RESULT:" in line:
-            return line.split("VERIFICATION_RESULT:", 1)[1].strip().split()[0]
-    return "ERROR"
-
-
-def tune_containment(technique_id: str, timeline: dict | None = None) -> dict:
-    """Generate + stage a scoped SOAR containment playbook for a bypassed
-    technique, wire it into the gate, then re-arm and re-test. Returns a dict
-    including the re-verification result."""
-    root = _repo_root()
-    pb_dir = root / "playbooks"
-    try:
-        pb_dir.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
-    timeline = timeline or {
-        "technique": technique_id,
-        "failed_action": "Kill Process",
-        "note": "Kill Process executed but the vector persisted (decoupled WMI hook / "
-                "hollowed process). Need a network-layer containment block.",
+def tune_containment(
+    technique_id: str, timeline: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Stage one deterministic, non-executable containment proposal."""
+    technique = str(technique_id or "").strip().upper()
+    if _TECHNIQUE.fullmatch(technique) is None:
+        return {
+            "technique": technique[:64],
+            "ok": False,
+            "executed": False,
+            "error": "invalid ATT&CK technique identity",
+        }
+    evidence = _bounded_timeline(timeline)
+    evidence_digest = hashlib.sha256(
+        json.dumps(
+            evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+    ).hexdigest()
+    proposal_id = (
+        f"contain-{technique.casefold().replace('.', '-')}-{evidence_digest[:16]}"
+    )
+    document: dict[str, Any] = {
+        "schema": "angerona.containment-proposal.v12",
+        "proposal_id": proposal_id,
+        "technique_id": technique,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "status": "review-required",
+        "executed": False,
+        "verified": False,
+        "response_authorized": False,
+        "intent": {
+            "kind": "network-containment",
+            "direction": "outbound",
+            "action": "block",
+            "remote_scope": "operator-must-select",
+            "preserve_loopback": True,
+        },
+        "required_gates": [
+            "typed-target-selection",
+            "fresh-host-precondition",
+            "rollback-snapshot",
+            "exact-operator-approval",
+            "postcondition-verification",
+            "independent-defensive-retest",
+        ],
+        "evidence_sha256": evidence_digest,
+        "evidence": evidence,
+        "limitations": [
+            "No firewall rule was created.",
+            "No PowerShell or shell text was generated or executed.",
+            "A later verified response broker must build a closed-catalog plan.",
+        ],
     }
-    # R3-03: require a strict network-only command/parameter allow-list before
-    # staging any model-authored PowerShell for the privileged mitigation gate.
-    block = _ollama_block(timeline)
-    blocked_destructive: list[str] = []
-    if block:
-        try:
-            from angerona.core.cve_fix_advisor import validate_containment_powershell
-            blocked_destructive = validate_containment_powershell(block)
-        except Exception:
-            blocked_destructive = ["scan-unavailable"]
-        if blocked_destructive:
-            block = None
-    used_fallback = block is None
-    if block is None:
-        block = _fallback_block(technique_id)
-    safe = re.sub(r"[^A-Za-z0-9_.]", "_", technique_id)
-    pb = pb_dir / f"dynamic_block_{safe}.ps1"
-    header = (f"# Angerona dynamic SOAR playbook — {technique_id}\n"
-              f"# Generated {time.strftime('%Y-%m-%d %H:%M:%S')} after a containment bypass.\n"
-              f"# Rollback: Remove-NetFirewallRule -Group 'Angerona-SOAR'\n\n")
+    path = _proposal_root() / f"{proposal_id}.json"
     try:
-        from angerona.core.cve_fix_advisor import validate_containment_powershell
-        final_text = header + block
-        final_findings = validate_containment_powershell(final_text)
-        if final_findings:
-            return {"technique": technique_id, "ok": False,
-                    "error": "playbook failed strict validation",
-                    "blocked_destructive": final_findings}
-        fd, tmp_name = tempfile.mkstemp(prefix=f".{pb.name}.", suffix=".tmp",
-                                        dir=str(pb_dir), text=True)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(final_text)
-                fh.flush()
-                os.fsync(fh.fileno())
-            staged = Path(tmp_name).read_text(encoding="utf-8")
-            final_findings = validate_containment_powershell(staged)
-            if final_findings:
-                raise ValueError("staged playbook failed strict validation: "
-                                 + "; ".join(final_findings))
-            os.replace(tmp_name, pb)
-        finally:
-            try:
-                Path(tmp_name).unlink()
-            except FileNotFoundError:
-                pass
+        _atomic_json(path, document)
     except Exception as exc:
-        return {"technique": technique_id, "ok": False, "error": str(exc)}
-    return {"technique": technique_id, "ok": True, "playbook": str(pb),
-            "used_fallback": used_fallback,
-            "blocked_destructive": blocked_destructive,
-            "reverify": _verify(technique_id)}
+        return {
+            "technique": technique,
+            "ok": False,
+            "executed": False,
+            "error": str(exc),
+        }
+    return {
+        "technique": technique,
+        "ok": True,
+        "proposal": str(path),
+        "proposal_id": proposal_id,
+        "review_required": True,
+        "executed": False,
+        "verified": False,
+        "reverify": "NOT_RUN",
+    }
 
 
 if __name__ == "__main__":
-    tid = sys.argv[1] if len(sys.argv) > 1 else "T1055"
-    print(json.dumps(tune_containment(tid), indent=2))
+    import sys
+
+    requested = sys.argv[1] if len(sys.argv) > 1 else "T1055"
+    print(json.dumps(tune_containment(requested), indent=2))

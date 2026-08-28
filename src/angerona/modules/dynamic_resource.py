@@ -59,6 +59,7 @@ class DynamicResourceModule(BaseModule):
         "and returns to NORMAL after COOLDOWN_S seconds of calm."
     )
     category = "System"
+    version = "1.1.0"
 
     @property
     def state(self) -> str:
@@ -71,7 +72,6 @@ class DynamicResourceModule(BaseModule):
     def __init__(self) -> None:
         super().__init__()
         self._elevated        = False
-        self._last_ts         = 0.0          # last bus event timestamp seen
         self._event_times: Deque[float] = deque()
         self._calm_since: float = 0.0        # when rate last dropped below LOW
         self._proc = None                    # psutil.Process handle
@@ -127,10 +127,8 @@ class DynamicResourceModule(BaseModule):
         """Count new bus events into the sliding window."""
         if self._bus is None:
             return
-        for ev in self._bus.recent(100):
-            if ev.ts <= self._last_ts:
-                continue
-            self._last_ts = max(self._last_ts, ev.ts)
+        events, _overflow = self.poll_bus_events()
+        for ev in events:
             self._event_times.append(ev.ts)
 
         # Evict events outside the window

@@ -494,7 +494,10 @@ def _():
     from angerona.modules.posture_hardening import PostureHardening
     ph2 = PostureHardening(data_dir=tempfile.mkdtemp(prefix="angerona_pv_"))
     assert "plan" in ph2.apply_vetted_remediation(apply=False), "posture plan missing"
-    # new vetted actions: correct selection + ALL gated (no real host changes here)
+    # Vetted actions select correctly and remain gated (no real host changes
+    # here). Directory ACL lockdown is deliberately proposal-only until an
+    # exact, locale-independent DACL/owner/inheritance verifier and rollback
+    # contract exist, so an ambiguous directory finding must not auto-select it.
     d = tempfile.mkdtemp(prefix="angerona_dir_")
     cred = {"mitre_id": "T1003", "name": "Credential Access", "detect_message": "lsass dump"}
     dfe = {"mitre_id": "T1562", "category": "defense-evasion", "name": "AMSI bypass"}
@@ -507,12 +510,12 @@ def _():
     if os.name == "nt":
         assert ra.select_action(cred).key == "registry_hardening", "cred→registry"
         assert ra.select_action(dfe).key == "defender_hardening", "defev→defender"
-        assert ra.select_action(dirw).key == "lockdown_acl", "dir→acl"
+        assert ra.select_action(dirw) is None, "directory ACL change must remain proposal-only"
         assert ra.select_action(c2).key == "network_isolation", "c2→network_isolation"
         rh = ra.apply_remediation([cred, dfe, dirw, c2], qdir, apply=True, allow_host=False)
         assert rh["applied"] == 0, f"host actions ran without opt-in: {rh}"
-    return ("quarantine ok; registry/acl/defender/network-isolation select + gate "
-            "correctly; plan ok")
+    return ("quarantine ok; registry/defender/network-isolation select + gate "
+            "correctly; ACL remains proposal-only; plan ok")
 
 
 @phase("Persistence Sweep (autorun classifier + discovery)")

@@ -44,7 +44,7 @@ class BaseModule:
     # as Windows-only until they explicitly opt into another platform.  This is
     # a safety property: an unavailable sensor must not inflate protection.
     supported_platforms = frozenset({"windows"})
-    capability_mode: str = "protect"
+    capability_mode: str = "unknown"
     platform_requirements: tuple[str, ...] = ()
     # Automatic restart is opt-in for overridden self-tests. The central
     # runner separately recognizes this base class's own lifecycle/readiness
@@ -79,9 +79,29 @@ class BaseModule:
         self._first_cycle_complete = threading.Event()
         self._cycle_count: int = 0
         self._last_cycle_completed_at: float = 0.0
+        # EventBus polling uses monotonic publication revisions rather than
+        # timestamps. The bus ring is newest-first and multiple events may
+        # legitimately share a timestamp; timestamp watermarks therefore lose
+        # evidence during bursts. Independent cursors let every module consume
+        # an oldest-first, bounded delta without reimplementing that contract.
+        self._bus_revision: int = 0
+        self._bus_priority_revision: int = 0
+        self._bus_cursor_enrolled: dict[bool, bool] = {False: False, True: False}
+        self._bus_overflow_count: int = 0
+        self._last_reported_overflow_revision: dict[bool, int] = {}
+        self._generation_started_at: float = 0.0
+        self._crash_count: int = 0
+        self._last_crash_at: float = 0.0
 
     # ── Wiring (called by ModuleManager) ────────────────────────────────────
     def bind(self, bus: EventBus) -> None:
+        if self._bus is not None and self._bus is not bus:
+            # Revisions are scoped to one EventBus instance. Rebinding to a new
+            # bus creates a new ordering domain and therefore requires a fresh
+            # explicit enrollment decision by the consumer.
+            self._bus_revision = 0
+            self._bus_priority_revision = 0
+            self._bus_cursor_enrolled = {False: False, True: False}
         self._bus = bus
 
     # ── Health ───────────────────────────────────────────────────────────────
@@ -121,6 +141,7 @@ class BaseModule:
         self._first_cycle_complete.clear()
         self._cycle_count = 0
         self._last_cycle_completed_at = 0.0
+        self._generation_started_at = time.monotonic()
         self._restart_request = None
         thread = threading.Thread(
             target=self._wrapped_run,
@@ -224,7 +245,7 @@ class BaseModule:
         """Monotonic generation identifier, useful for diagnostics/tests."""
         return self._lifecycle_generation
 
-    def sleep(self, seconds: float) -> None:
+    def sleep(self, seconds: float, *, cycle_complete: bool = True) -> None:
         """Interruptible sleep — returns early if the module is stopping.
 
         The wait is scaled by ``self._throttle`` (default 1.0). The Adaptive
@@ -233,10 +254,12 @@ class BaseModule:
         (lower CPU) automatically — in both Eco and normal mode — and relaxes it
         back to 1.0 when things are idle. Modules that use ``self.sleep()`` for
         their loop cadence get this for free."""
-        # Module loops conventionally sleep after completing a poll/baseline.
-        # Publishing that boundary here gives lifecycle orchestration one
-        # uniform first-cycle signal across all scanner implementations.
-        self.mark_cycle_complete()
+        # Most legacy loops sleep after completing a poll/baseline. Sleep-first
+        # loops must pass ``cycle_complete=False`` and explicitly publish the
+        # boundary after their work; otherwise startup could attest readiness
+        # before a sensor had observed anything.
+        if cycle_complete:
+            self.mark_cycle_complete()
         self.generation_stop_event().wait(
             timeout=seconds * getattr(self, "_throttle", 1.0)
         )
@@ -281,6 +304,138 @@ class BaseModule:
         if self._bus is not None:
             self._bus.publish(Event(self.name, message, severity, time.time(), details))
 
+    def seed_bus_cursor(self, *, priority: bool = False) -> int:
+        """Ignore existing history and begin at the bus's current revision.
+
+        Most detectors intentionally inspect bounded retained history on first
+        start. Exporters that must never replay history can call this once after
+        binding. A revision is an ordering token only; it carries no trust or
+        wall-clock meaning.
+        """
+        if self._bus is None:
+            return 0
+        if priority:
+            revision = self._bus.priority_revision()
+            self._bus_priority_revision = revision
+        else:
+            revision = self._bus.revision()
+            self._bus_revision = revision
+        self._bus_cursor_enrolled[priority] = True
+        return revision
+
+    def bus_cursor_enrolled(self, *, priority: bool = False) -> bool:
+        """Whether this instance already chose/committed a cursor origin."""
+        return bool(self._bus_cursor_enrolled.get(priority, False))
+
+    def read_bus_events(
+        self, *, priority: bool = False
+    ) -> tuple[int, list[Event], bool]:
+        """Read, but do not acknowledge, one bounded EventBus delta.
+
+        Durable consumers commit their payloads to an outbox before calling
+        :meth:`commit_bus_cursor`. A failed durable write therefore leaves the
+        delta replayable. Ordinary detectors can use :meth:`poll_bus_events`,
+        which preserves the original immediate-advance behavior.
+        """
+        if self._bus is None:
+            return 0, [], False
+        previous = self._bus_priority_revision if priority else self._bus_revision
+        if priority:
+            revision, newest_first, overflow = self._bus.priority_since(previous)
+        else:
+            revision, newest_first, overflow = self._bus.recent_since(previous)
+        if overflow and self._last_reported_overflow_revision.get(priority) != revision:
+            self._last_reported_overflow_revision[priority] = revision
+            self._bus_overflow_count += 1
+            note = (
+                "EventBus retention overflow; one or more events were unavailable "
+                "to this polling cycle."
+            )
+            if self.health > 60:
+                self.set_health(60, note)
+            elif note not in self.health_note:
+                self.health_note = f"{self.health_note}; {note}".strip("; ")
+            self.emit(
+                "EventBus evidence gap detected; conclusions remain incomplete.",
+                Severity.MEDIUM,
+                finding_code="module.eventbus.retention_overflow",
+                overflow_count=self._bus_overflow_count,
+                priority_lane=priority,
+                response_authorized=False,
+            )
+        return revision, list(reversed(newest_first)), overflow
+
+    def commit_bus_cursor(self, revision: int, *, priority: bool = False) -> None:
+        """Advance one cursor after a consumer reaches a durable disposition."""
+        try:
+            value = max(0, int(revision))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("event revision must be an integer") from exc
+        current = self._bus_priority_revision if priority else self._bus_revision
+        if value < current:
+            raise ValueError("event revision cannot move backwards")
+        if priority:
+            self._bus_priority_revision = value
+        else:
+            self._bus_revision = value
+        self._bus_cursor_enrolled[priority] = True
+
+    def poll_bus_events(self, *, priority: bool = False) -> tuple[list[Event], bool]:
+        """Return and immediately acknowledge one bounded EventBus delta.
+
+        EventBus delta APIs return newest-first for presentation compatibility.
+        Stateful detectors must process the same delta oldest-first, so this
+        helper reverses it and advances a monotonic cursor atomically.
+        ``overflow`` stays explicit: retained events are returned, but absence
+        of a match is no longer complete evidence.
+        """
+        revision, events, overflow = self.read_bus_events(priority=priority)
+        self.commit_bus_cursor(revision, priority=priority)
+        return events, overflow
+
+    def operational_snapshot(self) -> dict[str, object]:
+        """Return a bounded, JSON-safe live contract snapshot for UI and API.
+
+        Every module gets the same lifecycle, freshness, throttle and evidence-
+        loss vocabulary. Consumers can therefore distinguish a live thread from
+        a capability that has actually completed work, and a healthy result from
+        one produced after retained evidence was lost.
+        """
+        now = time.monotonic()
+        thread = self._thread
+        last_age = (
+            max(0.0, now - self._last_cycle_completed_at)
+            if self._last_cycle_completed_at > 0
+            else None
+        )
+        uptime = (
+            max(0.0, now - self._generation_started_at)
+            if self._generation_started_at > 0 and thread is not None and thread.is_alive()
+            else None
+        )
+        return {
+            "schema": "angerona.module-operational.v12",
+            "status": str(self.status),
+            "health": int(self.health),
+            "health_state": self.health_state,
+            "health_note": str(self.health_note)[:1000],
+            "thread_alive": bool(thread is not None and thread.is_alive()),
+            "lifecycle_generation": int(self._lifecycle_generation),
+            "generation_uptime_seconds": uptime,
+            "first_cycle_complete": self.first_cycle_complete,
+            "cycle_count": int(self._cycle_count),
+            "last_cycle_age_seconds": last_age,
+            "throttle_multiplier": float(self._throttle),
+            "throttle_floor": float(self._throttle_floor),
+            "event_revision": int(self._bus_revision),
+            "priority_event_revision": int(self._bus_priority_revision),
+            "event_overflow_count": int(self._bus_overflow_count),
+            "crash_count": int(self._crash_count),
+            "last_crash_age_seconds": (
+                max(0.0, now - self._last_crash_at) if self._last_crash_at > 0 else None
+            ),
+        }
+
     # ── Implement this ──────────────────────────────────────────────────────
     def run(self) -> None:
         raise NotImplementedError
@@ -315,10 +470,22 @@ class BaseModule:
         for attempt in range(_MAX_RESTARTS):
             try:
                 self.run()
-                return   # clean exit — no crash
+                if stop_event.is_set():
+                    return
+                self.status = "error"
+                self.set_health(0, "Module worker returned before stop was requested")
+                self.emit(
+                    "Module worker exited unexpectedly; capability is no longer live.",
+                    Severity.HIGH,
+                    finding_code="module.lifecycle.unexpected_exit",
+                    response_authorized=False,
+                )
+                return
             except Exception as exc:
                 tb = traceback.format_exc()
                 self.last_error = str(exc)
+                self._crash_count += 1
+                self._last_crash_at = time.monotonic()
 
                 if attempt < _MAX_RESTARTS - 1:
                     delay = _RESTART_DELAYS[attempt]

@@ -36,14 +36,21 @@ SUPPORTED_PLATFORMS = ("windows", "macos", "linux")
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import socket
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
+from angerona.core.durable_outbox import (
+    DurableOutbox,
+    OutboxFull,
+    load_or_create_outbox_key,
+)
 from angerona.core.eventbus import Event, REMOTE_OBSERVE_AUTHORITY, Severity
 from angerona.core.module_base import BaseModule
 from angerona.core.privacy import redact_text
@@ -56,6 +63,7 @@ _PORT_ENV   = "ANGERONA_BRIDGE_PORT"    # RECEIVER: LAN port to listen on
 _KEY_ENV    = "ANGERONA_BRIDGE_KEY"     # shared symmetric key (hex or passphrase)
 _BIND_ENV   = "ANGERONA_BRIDGE_BIND"    # RECEIVER: bind addr (default loopback)
 _NODE_ENV   = "ANGERONA_BRIDGE_NODE_ID" # optional privacy-safe display name
+_ALLOW_NONLOOPBACK_ENV = "ANGERONA_BRIDGE_ALLOW_NONLOOPBACK"
 
 _DEFAULT_PORT = 47924
 _SOCK_TIMEOUT = 4.0
@@ -72,6 +80,16 @@ def _shared_key() -> Optional[bytes]:
     bridge.key files are migrated into Angerona's DPAPI store before use.
     """
     raw = os.environ.get(_KEY_ENV)
+    if not raw:
+        try:
+            from angerona.core.data_paths import data_dir
+            from angerona.core.secure_store import read_secret_values
+
+            raw = read_secret_values(
+                (_KEY_ENV,), data_dir(), strict=True
+            ).get(_KEY_ENV)
+        except Exception:
+            raw = None
     if not raw:
         try:
             from angerona.core.data_paths import data_dir
@@ -159,9 +177,39 @@ class RemoteBridge(BaseModule):
     description = ("Secure multi-node telemetry forwarding (SENDER/RECEIVER) with "
                    "mutual authentication and AES-256-GCM encryption. Off by default.")
     category = "Integrity"
-    version = "1.0.0"
+    version = "1.1.0"
     supported_platforms = SUPPORTED_PLATFORMS
-    capability_mode = "respond"
+    capability_mode = "observe"
+    capability_inputs = ("authenticated-high-severity-event", "mutually-authenticated-frame")
+    capability_outputs = ("encrypted-telemetry-frame", "remote-observe-only-event")
+    capability_permissions = ("configured-network-egress", "configured-network-listen")
+    high_risk_permissions = ("configured-network-egress", "configured-network-listen")
+    data_classes = ("redacted-security-finding", "source-node-pseudonym")
+    egress = "optional"
+    retention = "bounded-authenticated-receiver-idempotency-ledger"
+    response_authority = "none"
+    restart_policy = "bounded-three-attempt-backoff-quarantine"
+    loss_behavior = (
+        "bounded-priority-ingress-with-explicit-gap-receipt;"
+        "durable-at-least-once-after-sender-enqueue"
+    )
+    resource_budget = {
+        "worker_model": "bounded-16-connection-helper-pool",
+        "event_delivery": "durable-sender-outbox-with-authenticated-receiver-stored-ack",
+        "startup_cycle_timeout_seconds": 30.0,
+    }
+    settings_schema = {
+        "type": "object",
+        "properties": {
+            "mode": {"type": "string", "enum": ["SENDER", "RECEIVER"]},
+            "peer": {"type": "string", "maxLength": 320},
+            "bind": {"type": "string", "maxLength": 253},
+            "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "node_id": {"type": "string", "maxLength": 64},
+            "allow_nonloopback": {"type": "boolean", "default": False},
+        },
+        "additionalProperties": False,
+    }
     enabled_by_default = False   # never open the network without explicit opt-in
 
     def __init__(self) -> None:
@@ -169,11 +217,21 @@ class RemoteBridge(BaseModule):
         self._mode = (os.environ.get(_MODE_ENV) or "").strip().upper()
         self._key = _shared_key()
         self._srv: Optional[socket.socket] = None
-        self._cursor_ts = 0.0
+        self._inbox: DurableOutbox | None = None
+        self._sender_outbox: DurableOutbox | None = None
+        self._sender_owner = f"remote-bridge-{uuid.uuid4().hex}"
         self.forwarded = 0
         self.received = 0
         self.denied = 0
+        self._denial_lock = threading.RLock()
+        self._denial_last_emit = 0.0
+        self._denial_suppressed = 0
+        self._denial_emit_interval = 10.0
+        self._clock = time.monotonic
         self._connections = threading.BoundedSemaphore(16)
+        self._connection_lock = threading.RLock()
+        self._connection_threads: set[threading.Thread] = set()
+        self._active_connections: set[socket.socket] = set()
         self._crypto_ok = True
         try:
             from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # noqa: F401
@@ -221,9 +279,12 @@ class RemoteBridge(BaseModule):
             return None
         host, _, port = raw.rpartition(":")
         try:
-            return host, int(port)
+            parsed_port = int(port)
         except ValueError:
             return None
+        if not host or not 1 <= parsed_port <= 65535:
+            return None
+        return host, parsed_port
 
     def _run_sender(self) -> None:
         peer = self._peer()
@@ -232,29 +293,83 @@ class RemoteBridge(BaseModule):
             while not self.stopping:
                 self.sleep(10)
             return
-        self.emit(f"Remote Bridge SENDER active — forwarding HIGH/CRITICAL events to "
+        try:
+            self._sender_outbox = self._open_sender_outbox()
+        except Exception as exc:
+            self.last_error = str(exc)
+            self.set_health(30, f"durable sender outbox unavailable: {exc}")
+            self.emit(
+                "Remote Bridge refused sender mode without durable staging.",
+                Severity.HIGH,
+                response_authorized=False,
+            )
+            while not self.stopping:
+                self.sleep(10)
+            return
+        self.emit(f"Remote Bridge SENDER active — durably staging HIGH/CRITICAL events for "
                   f"{peer[0]}:{peer[1]}.", Severity.INFO)
-        while not self.stopping:
-            self.sleep(3)
-            if self._bus is None:
-                continue
-            try:
-                batch = []
-                for ev in reversed(self._bus.recent(50)):   # oldest→newest
-                    if ev.ts <= self._cursor_ts:
-                        continue
-                    if ev.severity < _FORWARD_MIN or ev.module == self.name:
-                        self._cursor_ts = max(self._cursor_ts, ev.ts)
-                        continue
-                    batch.append(ev)
-                for ev in batch:
-                    if not self._forward(peer, ev):
-                        break
-                    self._cursor_ts = max(self._cursor_ts, ev.ts)
-            except Exception as exc:
-                self.set_health(60, f"sender loop error: {exc}")
-                continue
-            self.set_health(100, f"{self.forwarded} events forwarded")
+        self._enroll_sender_cursor_once()
+        try:
+            while not self.stopping:
+                self.sleep(3, cycle_complete=False)
+                if self._bus is None:
+                    self.mark_cycle_complete()
+                    continue
+                try:
+                    self._sender_delivery_cycle(peer)
+                    stats = self._sender_outbox.stats()
+                    if self._bus_overflow_count:
+                        self.set_health(
+                            45,
+                            f"{self._bus_overflow_count} priority ingress gap(s); "
+                            f"{stats.pending + stats.leased} queued",
+                        )
+                    elif stats.dead_letter:
+                        self.set_health(
+                            35,
+                            f"{stats.dead_letter} dead-letter, "
+                            f"{stats.pending + stats.leased} queued",
+                        )
+                    elif stats.pending or stats.leased:
+                        self.set_health(
+                            65,
+                            f"{stats.pending + stats.leased} durably queued; "
+                            f"{self.forwarded} receiver-acknowledged",
+                        )
+                    else:
+                        self.set_health(
+                            100, f"{self.forwarded} receiver-acknowledged from durable staging"
+                        )
+                except OutboxFull as exc:
+                    self.last_error = str(exc)
+                    self.set_health(20, str(exc))
+                    self.emit(
+                        "Remote Bridge sender outbox is full; ingress cursor was not advanced.",
+                        Severity.HIGH,
+                        finding_code="remote_bridge.outbox.capacity_exhausted",
+                        response_authorized=False,
+                    )
+                    # Capacity pressure must never prevent recovery once the
+                    # peer is reachable again. Cursor remains unchanged until
+                    # the unstaged delta is durably committed on a later pass.
+                    try:
+                        self._drain_sender(peer)
+                    except Exception as drain_exc:
+                        self.last_error = f"{exc}; drain failed: {drain_exc}"
+                except Exception as exc:
+                    self.last_error = str(exc)
+                    self.set_health(50, f"sender loop error: {exc}")
+                self.mark_cycle_complete()
+        finally:
+            if self._sender_outbox is not None:
+                self._sender_outbox.close()
+                self._sender_outbox = None
+
+    def _enroll_sender_cursor_once(self) -> int:
+        """Seed only the first sender generation; restarts retain stopped-time events."""
+        if self._bus is not None and not self.bus_cursor_enrolled(priority=True):
+            return self.seed_bus_cursor(priority=True)
+        return self._bus_priority_revision
 
     def _node_id(self) -> str:
         configured = os.environ.get(_NODE_ENV, "").strip()
@@ -264,14 +379,112 @@ class RemoteBridge(BaseModule):
                           hashlib.sha256).hexdigest()[:12]
         return f"node-{digest}"
 
-    def _forward(self, peer: tuple[str, int], ev: Event) -> bool:
-        """Mutually authenticate, encrypt, and send one event. Non-fatal."""
-        payload = json.dumps({
+    def _open_sender_outbox(self) -> DurableOutbox:
+        from angerona.core.data_paths import data_dir
+        root = data_dir() / "outbox"
+        # Local queue integrity has a distinct protected key lifecycle from the
+        # rotatable peer transport credential. Rotating a bridge key must not
+        # strand pending rows or invalidate delivered tombstones.
+        key = load_or_create_outbox_key(root / "remote-bridge-local.key")
+        return DurableOutbox(
+            root / "remote-bridge-sender.sqlite3",
+            key,
+            max_items=50_000,
+            max_bytes=128 * 1024 * 1024,
+            delivered_tombstones=50_000,
+        )
+
+    def _event_document(self, ev: Event) -> tuple[str, dict]:
+        core = {
             "module": ev.module, "message": _redact_text(ev.message),
             "severity": int(ev.severity), "ts": ev.ts,
             "details": _safe_details(ev.details or {}),
             "node_origin": self._node_id(),
-        }).encode("utf-8")
+        }
+        stable_source = str(getattr(ev, "hmac_sig", "") or "").encode("ascii", "ignore")
+        if not stable_source:
+            stable_source = json.dumps(
+                core, sort_keys=True, separators=(",", ":"), default=str
+            ).encode("utf-8")
+        event_id = hashlib.sha256(stable_source).hexdigest()
+        return event_id, {**core, "event_id": event_id}
+
+    def _stage_sender_delta(self) -> tuple[int, bool]:
+        if self._bus is None or self._sender_outbox is None:
+            return 0, False
+        revision, batch, overflow = self.read_bus_events(priority=True)
+        staged = 0
+        for ev in batch:
+            if ev.severity < _FORWARD_MIN or ev.module == self.name:
+                continue
+            event_id, document = self._event_document(ev)
+            staged += int(self._sender_outbox.enqueue(
+                f"rbrg-{event_id}", {"event": document}, now=float(ev.ts)
+            ))
+        if overflow:
+            gap = Event(
+                "Remote Bridge Ingress",
+                "Priority EventBus retention overflow; remote evidence is incomplete.",
+                Severity.HIGH,
+                details={
+                    "finding_code": "remote_bridge.eventbus.capacity_gap",
+                    "priority_revision": revision,
+                    "response_authorized": False,
+                },
+            )
+            gap_id, gap_document = self._event_document(gap)
+            staged += int(self._sender_outbox.enqueue(
+                f"rbrg-gap-{revision}-{gap_id[:24]}", {"event": gap_document}, now=gap.ts
+            ))
+        # Every retained event and any mandatory gap receipt are durable. An
+        # enqueue failure exits before this cursor commit and replays the delta.
+        self.commit_bus_cursor(revision, priority=True)
+        return staged, overflow
+
+    def _sender_delivery_cycle(self, peer: tuple[str, int]) -> tuple[int, bool]:
+        """Free capacity, durably stage the delta, then send the new rows."""
+        self._drain_sender(peer)
+        staged, overflow = self._stage_sender_delta()
+        self._drain_sender(peer)
+        return staged, overflow
+
+    def _drain_sender(self, peer: tuple[str, int]) -> None:
+        if self._sender_outbox is None:
+            return
+        for item in self._sender_outbox.claim(
+            self._sender_owner, limit=100, lease_seconds=30.0
+        ):
+            try:
+                document = item.payload.get("event")
+                if not isinstance(document, dict):
+                    raise ValueError("durable bridge item has no event document")
+                event_id = str(document.get("event_id") or "")
+                if len(event_id) != 64:
+                    raise ValueError("durable bridge item has an invalid event identity")
+                payload = json.dumps(
+                    document, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+                if not self._forward_payload(peer, payload, event_id):
+                    raise OSError("peer did not return an authenticated stored acknowledgment")
+                self._sender_outbox.acknowledge(item.item_id, self._sender_owner)
+            except Exception as exc:
+                self.last_error = str(exc)
+                self._sender_outbox.retry(
+                    item.item_id, self._sender_owner, str(exc)
+                )
+
+    def _forward(self, peer: tuple[str, int], ev: Event) -> bool:
+        """Mutually authenticate, encrypt, and send one event. Non-fatal."""
+        event_id, document = self._event_document(ev)
+        payload = json.dumps(
+            document, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return self._forward_payload(peer, payload, event_id)
+
+    def _forward_payload(
+        self, peer: tuple[str, int], payload: bytes, event_id: str
+    ) -> bool:
+        """Send one durably identified payload and require final stored ACK."""
         try:
             with socket.create_connection(peer, timeout=_SOCK_TIMEOUT) as s:
                 s.settimeout(_SOCK_TIMEOUT)
@@ -297,6 +510,19 @@ class RemoteBridge(BaseModule):
                     return False
                 frame = _encrypt(session, payload)
                 s.sendall(len(frame).to_bytes(4, "big") + frame)
+                stored = self._recv_line(s, 512).split()
+                expected_stored = _proof(
+                    session,
+                    b"stored:" + event_id.encode("ascii"),
+                    server_nonce,
+                    client_nonce,
+                )
+                if not (
+                    len(stored) == 3
+                    and stored[:2] == [_PROTOCOL, "STORED"]
+                    and hmac.compare_digest(expected_stored, stored[2])
+                ):
+                    return False
                 self.forwarded += 1
                 return True
         except (OSError, socket.timeout):
@@ -306,6 +532,75 @@ class RemoteBridge(BaseModule):
         return False
 
     # ── RECEIVER ─────────────────────────────────────────────────────────────
+    def _serve_tracked(self, conn: socket.socket, addr) -> None:
+        """Own one admitted receiver socket until its helper fully exits."""
+        try:
+            self._serve(conn, addr)
+        finally:
+            with self._connection_lock:
+                self._active_connections.discard(conn)
+                self._connection_threads.discard(threading.current_thread())
+            self._connections.release()
+
+    def _start_connection_helper(self, conn: socket.socket, addr) -> None:
+        """Start one bounded helper, restoring capacity if startup fails."""
+        helper = threading.Thread(
+            target=self._serve_tracked,
+            args=(conn, addr),
+            name="RBRG-conn",
+            daemon=True,
+        )
+        with self._connection_lock:
+            self._active_connections.add(conn)
+            self._connection_threads.add(helper)
+        try:
+            helper.start()
+        except Exception:
+            with self._connection_lock:
+                self._active_connections.discard(conn)
+                self._connection_threads.discard(helper)
+            try:
+                conn.close()
+            finally:
+                self._connections.release()
+            raise
+
+    def _retire_receiver(self) -> None:
+        """Close listener/sockets so bounded-time helpers leave their recv calls."""
+        srv = self._srv
+        self._srv = None
+        if srv is not None:
+            try:
+                srv.close()
+            except OSError:
+                pass
+        with self._connection_lock:
+            connections = tuple(self._active_connections)
+        for conn in connections:
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except (AttributeError, OSError):
+                pass
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def _join_connection_helpers(self) -> None:
+        """Wait off the caller thread before closing the shared inbox database."""
+        current = threading.current_thread()
+        while True:
+            with self._connection_lock:
+                helpers = tuple(
+                    helper
+                    for helper in self._connection_threads
+                    if helper is not current
+                )
+            if not helpers:
+                return
+            for helper in helpers:
+                helper.join()
+
     def _run_receiver(self) -> None:
         bind = os.environ.get(_BIND_ENV, "127.0.0.1").strip() or "127.0.0.1"
         try:
@@ -313,6 +608,39 @@ class RemoteBridge(BaseModule):
         except ValueError:
             port = _DEFAULT_PORT
         try:
+            bind_address = ipaddress.ip_address(bind)
+        except ValueError:
+            self.set_health(40, "receiver bind must be a literal IP address")
+            self.emit(
+                "Remote Bridge refused an invalid receiver bind address.",
+                Severity.MEDIUM,
+                response_authorized=False,
+            )
+            while not self.stopping:
+                self.sleep(10)
+            return
+        allow_nonloopback = os.environ.get(
+            _ALLOW_NONLOOPBACK_ENV, ""
+        ).strip().casefold() in {"1", "true", "yes"}
+        if not bind_address.is_loopback and not allow_nonloopback:
+            self.set_health(40, "non-loopback receive was not explicitly approved")
+            self.emit(
+                "Remote Bridge refused to open a routable receiver socket without "
+                "explicit non-loopback approval.",
+                Severity.MEDIUM,
+                response_authorized=False,
+            )
+            while not self.stopping:
+                self.sleep(10)
+            return
+        if not 1 <= port <= 65535:
+            self.set_health(40, "receiver port must be between 1 and 65535")
+            while not self.stopping:
+                self.sleep(10)
+            return
+        srv: socket.socket | None = None
+        try:
+            self._inbox = self._open_receiver_inbox()
             srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             srv.bind((bind, port))
@@ -320,26 +648,62 @@ class RemoteBridge(BaseModule):
             srv.settimeout(1.0)
             self._srv = srv
         except OSError as exc:
+            if srv is not None:
+                try:
+                    srv.close()
+                except OSError:
+                    pass
+            self._retire_receiver()
+            if self._inbox is not None:
+                self._inbox.close()
+                self._inbox = None
             self.set_health(40, f"could not bind {bind}:{port} ({exc})")
             while not self.stopping:
                 self.sleep(5)
             return
         self.emit(f"Remote Bridge RECEIVER active — listening on {bind}:{port} "
                   f"(mutual auth + AES-GCM, default-deny).", Severity.INFO)
-        while not self.stopping:
-            try:
-                conn, addr = srv.accept()
-            except socket.timeout:
-                self.set_health(100, f"{self.received} received, {self.denied} denied")
-                continue
-            except OSError:
-                break
-            if not self._connections.acquire(blocking=False):
-                self.denied += 1
-                conn.close()
-                continue
-            threading.Thread(target=self._serve, args=(conn, addr),
-                             name="RBRG-conn", daemon=True).start()
+        try:
+            while not self.stopping:
+                try:
+                    conn, addr = srv.accept()
+                except socket.timeout:
+                    self.set_health(100, f"{self.received} received, {self.denied} denied")
+                    continue
+                except OSError:
+                    break
+                if self.stopping:
+                    conn.close()
+                    break
+                if not self._connections.acquire(blocking=False):
+                    self.denied += 1
+                    conn.close()
+                    continue
+                try:
+                    self._start_connection_helper(conn, addr)
+                except Exception as exc:
+                    self.last_error = str(exc)
+                    self.set_health(40, f"receiver worker unavailable: {exc}")
+                    break
+        finally:
+            self._retire_receiver()
+            self._join_connection_helpers()
+            if self._inbox is not None:
+                self._inbox.close()
+                self._inbox = None
+
+    def _open_receiver_inbox(self) -> DurableOutbox:
+        from angerona.core.data_paths import data_dir
+
+        root = data_dir() / "outbox"
+        local_key = load_or_create_outbox_key(root / "remote-bridge-local.key")
+        return DurableOutbox(
+            root / "remote-bridge-inbox.sqlite3",
+            local_key,
+            max_items=50_000,
+            max_bytes=64 * 1024 * 1024,
+            delivered_tombstones=50_000,
+        )
 
     def _serve(self, conn: socket.socket, addr) -> None:
         try:
@@ -361,9 +725,7 @@ class RemoteBridge(BaseModule):
                     valid = False
             if not valid:
                 conn.sendall(f"{_PROTOCOL} DENY\n".encode("ascii"))
-                self.denied += 1
-                self.emit(f"Remote Bridge DENY from {addr} — invalid mutual-auth proof.",
-                          Severity.HIGH, peer=str(addr))
+                self._record_auth_denial(addr, "invalid mutual-auth proof")
                 return
             session = _session_key(self._key, server_nonce, client_nonce)
             ack = _proof(session, b"receiver-ok", server_nonce, client_nonce)
@@ -376,7 +738,15 @@ class RemoteBridge(BaseModule):
                 return
             frame = self._recvn(conn, length)
             if frame:
-                self._republish(_decrypt(session, frame), addr)
+                event_id = self._republish(_decrypt(session, frame), addr)
+                if event_id:
+                    stored = _proof(
+                        session,
+                        b"stored:" + event_id.encode("ascii"),
+                        server_nonce,
+                        client_nonce,
+                    )
+                    conn.sendall(f"{_PROTOCOL} STORED {stored}\n".encode("ascii"))
         except Exception as exc:
             self.last_error = str(exc)
         finally:
@@ -384,7 +754,35 @@ class RemoteBridge(BaseModule):
                 conn.close()
             except Exception:
                 pass
-            self._connections.release()
+
+    def _record_auth_denial(self, peer, reason: str) -> None:
+        """Count every denial while emitting only bounded aggregate evidence."""
+        now = self._clock()
+        emit_summary = False
+        suppressed = 0
+        with self._denial_lock:
+            self.denied += 1
+            if (
+                self._denial_last_emit == 0.0
+                or now - self._denial_last_emit >= self._denial_emit_interval
+            ):
+                emit_summary = True
+                suppressed = self._denial_suppressed
+                self._denial_suppressed = 0
+                self._denial_last_emit = now
+            else:
+                self._denial_suppressed += 1
+        if emit_summary:
+            self.emit(
+                "Remote Bridge denied an invalid mutual-auth attempt"
+                + (f" ({suppressed} similar attempt(s) suppressed)." if suppressed else "."),
+                Severity.HIGH,
+                peer=_redact_text(str(peer))[:160],
+                denial_reason=str(reason)[:160],
+                denied_total=self.denied,
+                suppressed_since_last=suppressed,
+                response_authorized=False,
+            )
 
     @staticmethod
     def _recv_line(conn: socket.socket, maximum: int) -> str:
@@ -400,25 +798,43 @@ class RemoteBridge(BaseModule):
 
     @staticmethod
     def _recvn(conn: socket.socket, n: int) -> bytes:
-        buf = b""
+        buf = bytearray()
         while len(buf) < n:
             chunk = conn.recv(n - len(buf))
             if not chunk:
                 break
-            buf += chunk
-        return buf
+            buf.extend(chunk)
+        return bytes(buf)
 
-    def _republish(self, body: bytes, addr) -> None:
+    def _republish(self, body: bytes, addr) -> str:
         """Republish a validated remote event onto the local bus, tagged with its
         origin node so the GUI/triage can tell it apart from local telemetry."""
         try:
             d = json.loads(body.decode("utf-8"))
         except Exception:
             self.denied += 1
-            return
+            return ""
         if not isinstance(d, dict) or self._bus is None:
             self.denied += 1
-            return
+            return ""
+        event_id = str(d.get("event_id") or "").strip().casefold()
+        # Deterministically upgrade authenticated v2 payloads created before
+        # stable IDs were introduced. Receiver mode still has the durable
+        # inbox open before it accepts a socket.
+        if not event_id:
+            event_id = hashlib.sha256(body).hexdigest()
+        if len(event_id) != 64 or any(ch not in "0123456789abcdef" for ch in event_id):
+            self.denied += 1
+            return ""
+        inbox_id = f"remote-{event_id}"
+        if self._inbox is not None and self._inbox.is_delivered(inbox_id):
+            return event_id
+        if self._inbox is not None:
+            self._inbox.enqueue(
+                inbox_id,
+                {"payload_sha256": hashlib.sha256(body).hexdigest()},
+                now=float(d.get("ts") or time.time()),
+            )
         origin = _redact_text(d.get("node_origin") or "remote")[:64] or "remote"
         raw_details = d.get("details")
         details = _safe_details(raw_details if isinstance(raw_details, dict) else {})
@@ -437,6 +853,7 @@ class RemoteBridge(BaseModule):
             "node_origin": origin,
             "source_module": source_module,
             "response_authority": REMOTE_OBSERVE_AUTHORITY,
+            "remote_event_id": event_id,
         })
         try:
             sev = Severity(int(d.get("severity", int(Severity.INFO))))
@@ -447,16 +864,17 @@ class RemoteBridge(BaseModule):
         # able to impersonate two local detectors and satisfy corroboration.
         self._bus.publish(Event(self.name, msg, sev,
                                 time.time(), details))
+        if self._inbox is not None:
+            self._inbox.complete_pending(inbox_id)
         self.received += 1
+        return event_id
 
     def stop(self) -> None:
         super().stop()
-        if self._srv is not None:
-            try:
-                self._srv.close()
-            except Exception:
-                pass
-            self._srv = None
+        # The run thread joins admitted helpers before it closes their shared
+        # inbox.  ``stop`` remains non-blocking while socket closure interrupts
+        # bounded recv calls immediately.
+        self._retire_receiver()
 
     def self_test(self) -> tuple[bool, str]:
         """Verify mutual proofs and an AES-GCM round-trip."""

@@ -40,6 +40,12 @@ _NON_ENVIRONMENT_SECRETS = frozenset({
     # Consumers must read it directly from the OS-protected store so a launcher,
     # parent process, or stale shell can never inject control authority.
     "ANGERONA_JARVIS_CONTROL_TOKEN",
+    # Remote Bridge authentication is network authority. Consumers read it
+    # directly from protected storage and never republish it to child envs.
+    "ANGERONA_BRIDGE_KEY",
+    # Local IPC proof material is authority and must never be inherited by a
+    # child process or left as a plaintext sidecar.
+    "ANGERONA_IPC_AUTH_KEY",
 })
 _MAX_LEGACY_ENV_BYTES = 1024 * 1024
 

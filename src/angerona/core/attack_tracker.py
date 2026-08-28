@@ -18,27 +18,35 @@ from dataclasses import dataclass, field
 from itertools import islice
 from typing import Sequence
 
-# ── 14-tactic order (ATT&CK Enterprise v14) ─────────────────────────────────
+# The catalog is deliberately curated rather than a claim to mirror every
+# Enterprise technique. Vocabulary and export metadata are pinned so a stale
+# label cannot silently masquerade as the current ATT&CK release.
+ATTACK_VERSION = "19.2"
+ATTACK_DOMAIN = "enterprise-attack"
+ATTACK_CATALOG_SCOPE = "curated-enterprise-endpoint"
+
+# ── 15-tactic order (ATT&CK Enterprise v19.2) ──────────────────────────────
 TACTIC_ORDER: list[tuple[str, str]] = [
-    ("TA0043", "Recon"),
-    ("TA0042", "Resource Dev"),
+    ("TA0043", "Reconnaissance"),
+    ("TA0042", "Resource Development"),
     ("TA0001", "Initial Access"),
     ("TA0002", "Execution"),
     ("TA0003", "Persistence"),
-    ("TA0004", "Priv Esc"),
-    ("TA0005", "Def Evasion"),
-    ("TA0006", "Cred Access"),
+    ("TA0004", "Privilege Escalation"),
+    ("TA0005", "Stealth"),
+    ("TA0112", "Defense Impairment"),
+    ("TA0006", "Credential Access"),
     ("TA0007", "Discovery"),
-    ("TA0008", "Lateral Move"),
+    ("TA0008", "Lateral Movement"),
     ("TA0009", "Collection"),
-    ("TA0011", "C2"),
+    ("TA0011", "Command and Control"),
     ("TA0010", "Exfiltration"),
     ("TA0040", "Impact"),
 ]
 
 # ── Curated technique catalog: (tid, short_label, tactic_id, full_name) ─────
-# ~86 high-signal techniques commonly seen in endpoint telemetry.
-# Each technique appears under its PRIMARY tactic only.
+# High-signal techniques commonly seen in endpoint telemetry.
+# Each technique appears under one valid display tactic in the pinned release.
 TECHNIQUE_CATALOG: list[tuple[str, str, str, str]] = [
     # ── TA0043 Reconnaissance ────────────────────────────────────────────────
     ("T1595",     "Active Scan",     "TA0043", "Active Scanning"),
@@ -63,17 +71,16 @@ TECHNIQUE_CATALOG: list[tuple[str, str, str, str]] = [
     ("T1059.003", "Windows CMD",     "TA0002", "Windows Command Shell"),
     ("T1059.005", "VBScript",        "TA0002", "Visual Basic"),
     ("T1047",     "WMI",             "TA0002", "Windows Management Instrumentation"),
-    ("T1053.005", "Sched Task",      "TA0002", "Scheduled Task/Job: Scheduled Task"),
+    ("T1053.005", "Sched Task",      "TA0002", "Scheduled Task"),
     ("T1106",     "Native API",      "TA0002", "Native API"),
     ("T1204",     "User Exec",       "TA0002", "User Execution"),
-    ("T1569.002", "Svc Exec",        "TA0002", "System Services: Service Execution"),
+    ("T1569.002", "Svc Exec",        "TA0002", "Service Execution"),
     ("T1559",     "IPC",             "TA0002", "Inter-Process Communication"),
     # ── TA0003 Persistence ───────────────────────────────────────────────────
     ("T1547.001", "Run Key",         "TA0003", "Registry Run Keys / Startup Folder"),
-    ("T1543.003", "Win Service",     "TA0003", "Create/Modify Windows Service"),
-    ("T1546.003", "WMI Event Sub",   "TA0003", "WMI Event Subscription"),
-    ("T1574.001", "DLL Search",      "TA0003", "DLL Search Order Hijacking"),
-    ("T1505.003", "Web Shell",       "TA0003", "Server Software: Web Shell"),
+    ("T1543.003", "Win Service",     "TA0003", "Windows Service"),
+    ("T1546.003", "WMI Event Sub",   "TA0003", "Windows Management Instrumentation Event Subscription"),
+    ("T1505.003", "Web Shell",       "TA0003", "Web Shell"),
     ("T1136",     "Create Account",  "TA0003", "Create Account"),
     # ── TA0004 Privilege Escalation ──────────────────────────────────────────
     ("T1134",     "Token Manip",     "TA0004", "Access Token Manipulation"),
@@ -81,18 +88,34 @@ TECHNIQUE_CATALOG: list[tuple[str, str, str, str]] = [
     ("T1548.002", "UAC Bypass",      "TA0004", "Bypass User Account Control"),
     ("T1055",     "Proc Inject",     "TA0004", "Process Injection"),
     ("T1068",     "Exploit Vuln",    "TA0004", "Exploitation for Privilege Escalation"),
-    ("T1078.003", "Local Accounts",  "TA0004", "Valid Accounts: Local Accounts"),
-    # ── TA0005 Defense Evasion ───────────────────────────────────────────────
+    ("T1078.003", "Local Accounts",  "TA0004", "Local Accounts"),
+    # ── TA0005 Stealth (formerly Defense Evasion) ───────────────────────────
     ("T1036",     "Masquerade",      "TA0005", "Masquerading"),
     ("T1027",     "Obfuscation",     "TA0005", "Obfuscated Files or Information"),
-    ("T1070.001", "Clear Logs",      "TA0005", "Clear Windows Event Logs"),
     ("T1070.004", "File Delete",     "TA0005", "File Deletion"),
-    ("T1112",     "Mod Registry",    "TA0005", "Modify Registry"),
-    ("T1562.001", "Disable Tools",   "TA0005", "Disable or Modify Tools"),
+    ("T1574.001", "DLL Search",      "TA0005", "DLL"),
     ("T1218",     "Signed Binary",   "TA0005", "System Binary Proxy Execution"),
-    ("T1140",     "Deobfuscate",     "TA0005", "Deobfuscate/Decode Files or Info"),
+    ("T1140",     "Deobfuscate",     "TA0005", "Deobfuscate/Decode Files or Information"),
     ("T1564.001", "Hidden Files",    "TA0005", "Hidden Files and Directories"),
-    ("T1553.004", "Install Cert",    "TA0005", "Install Root Certificate"),
+    # Defense Impairment was introduced when Enterprise v19 split the former
+    # Defense Evasion tactic.  These are current, high-signal endpoint entries.
+    ("T1685",     "Disable Tools",    "TA0112", "Disable or Modify Tools"),
+    ("T1685.001", "Modify Win Log",  "TA0112", "Disable or Modify Windows Event Log"),
+    ("T1685.002", "Modify Cloud Log", "TA0112", "Disable or Modify Cloud Log"),
+    ("T1685.003", "Spoof Tool UI",    "TA0112", "Modify or Spoof Tool UI"),
+    ("T1685.004", "Modify Audit Log", "TA0112", "Disable or Modify Linux Audit System Log"),
+    ("T1685.005", "Clear Win Logs",   "TA0112", "Clear Windows Event Logs"),
+    ("T1685.006", "Clear Unix Logs",  "TA0112", "Clear Linux or Mac System Logs"),
+    ("T1686",     "Modify Firewall",  "TA0112", "Disable or Modify System Firewall"),
+    ("T1686.001", "Cloud Firewall",   "TA0112", "Cloud Firewall"),
+    ("T1686.002", "Network Firewall", "TA0112", "Network Device Firewall"),
+    ("T1686.003", "Win Firewall",     "TA0112", "Windows Host Firewall"),
+    ("T1687",     "Exploit Defense",  "TA0112", "Exploitation for Defense Impairment"),
+    ("T1688",     "Safe Mode Boot",   "TA0112", "Safe Mode Boot"),
+    ("T1689",     "Downgrade",        "TA0112", "Downgrade Attack"),
+    ("T1690",     "No Cmd History",   "TA0112", "Prevent Command History Logging"),
+    ("T1112",     "Mod Registry",     "TA0112", "Modify Registry"),
+    ("T1553.004", "Install Cert",     "TA0112", "Install Root Certificate"),
     # ── TA0006 Credential Access ─────────────────────────────────────────────
     ("T1003.001", "LSASS Dump",      "TA0006", "LSASS Memory"),
     ("T1003.003", "NTDS.dit",        "TA0006", "NTDS"),
@@ -101,7 +124,7 @@ TECHNIQUE_CATALOG: list[tuple[str, str, str, str]] = [
     ("T1558.003", "Kerberoast",      "TA0006", "Kerberoasting"),
     ("T1056.001", "Keylogging",      "TA0006", "Keylogging"),
     ("T1187",     "LLMNR Poison",    "TA0006", "Forced Authentication"),
-    ("T1649",     "Steal Cert",      "TA0006", "Steal or Forge Authentication Certs"),
+    ("T1649",     "Steal Cert",      "TA0006", "Steal or Forge Authentication Certificates"),
     # ── TA0007 Discovery ─────────────────────────────────────────────────────
     ("T1082",     "Sys Info Disc",   "TA0007", "System Information Discovery"),
     ("T1057",     "Process Disc",    "TA0007", "Process Discovery"),
@@ -131,7 +154,7 @@ TECHNIQUE_CATALOG: list[tuple[str, str, str, str]] = [
     # ── TA0011 Command and Control ───────────────────────────────────────────
     ("T1071",     "App Layer Proto", "TA0011", "Application Layer Protocol"),
     ("T1071.004", "DNS C2",          "TA0011", "DNS"),
-    ("T1095",     "Non-Std Port",    "TA0011", "Non-Standard Port"),
+    ("T1095",     "Non-App Proto",   "TA0011", "Non-Application Layer Protocol"),
     ("T1105",     "Ingress Tool",    "TA0011", "Ingress Tool Transfer"),
     ("T1568",     "Dyn Resolution",  "TA0011", "Dynamic Resolution"),
     ("T1573",     "Enc Channel",     "TA0011", "Encrypted Channel"),
@@ -159,6 +182,26 @@ _TACTIC_TO_TECHNIQUES: dict[str, list[str]] = {}
 for _row in TECHNIQUE_CATALOG:
     _TACTIC_TO_TECHNIQUES.setdefault(_row[2], []).append(_row[0])
 
+# ATT&CK v19 replaced several Defense Evasion identities while introducing
+# Defense Impairment. Sensors may still emit the retired IDs during a rolling
+# upgrade, so normalize them at the tracker boundary rather than dropping
+# otherwise valid evidence. Snapshots and exports contain only v19 identities.
+_LEGACY_TID_ALIASES: dict[str, str] = {
+    "T1070.001": "T1685.005",
+    "T1070.002": "T1685.006",
+    "T1562.001": "T1685",
+    "T1562.002": "T1685.001",
+    "T1562.003": "T1690",
+    "T1562.004": "T1686",
+    "T1562.007": "T1686.001",
+    "T1562.008": "T1685.002",
+    "T1562.009": "T1688",
+    "T1562.010": "T1689",
+    "T1562.011": "T1685.003",
+    "T1562.012": "T1685.004",
+    "T1562.013": "T1686.002",
+}
+
 # ── ETW event kind → technique IDs ──────────────────────────────────────────
 # Keys match the 'kind' field set by Angerona's detection modules.
 _ETW_TAG_MAP: dict[str, list[str]] = {
@@ -180,12 +223,14 @@ _ETW_TAG_MAP: dict[str, list[str]] = {
     "token_elevation":     ["T1134", "T1134.001"],
     "uac_bypass":          ["T1548.002"],
     "proc_injection":      ["T1055"],
-    # Defense Evasion
+    # Stealth and Defense Impairment
     "masquerade":          ["T1036"],
-    "log_cleared":         ["T1070.001"],
+    "log_cleared":         ["T1685.005"],
     "file_deleted":        ["T1070.004"],
     "registry_modified":   ["T1112"],
-    "tool_disabled":       ["T1562.001"],
+    "tool_disabled":       ["T1685"],
+    "firewall_disabled":   ["T1686"],
+    "firewall_modified":   ["T1686"],
     "signed_binary_proxy": ["T1218"],
     "hidden_file":         ["T1564.001"],
     "yara_hit":            ["T1027"],
@@ -257,14 +302,14 @@ THREAT_ACTOR_PLAYBOOKS: dict[str, list[str]] = {
     "APT29 (Cozy Bear)": [
         # Spearphishing → persistence → living-off-the-land C2
         "T1566", "T1566.001", "T1078", "T1059.001", "T1053.005",
-        "T1547.001", "T1027", "T1036", "T1070.001", "T1070.004",
-        "T1562.001", "T1003.001", "T1558.003", "T1082", "T1057",
+        "T1547.001", "T1027", "T1036", "T1685.005", "T1070.004",
+        "T1685", "T1003.001", "T1558.003", "T1082", "T1057",
         "T1083", "T1071", "T1071.004", "T1573", "T1568", "T1041",
     ],
     "Wizard Spider (Ryuk)": [
         # BazarLoader → TrickBot → Ryuk ransomware kill chain
         "T1566.001", "T1204", "T1059.001", "T1059.003", "T1047",
-        "T1055", "T1548.002", "T1112", "T1562.001", "T1070.001",
+        "T1055", "T1548.002", "T1112", "T1685", "T1685.005",
         "T1003.001", "T1021.001", "T1021.002", "T1550.002",
         "T1486", "T1490", "T1489",
     ],
@@ -365,13 +410,12 @@ class AttackTracker:
             return
 
         eid = str(getattr(event, "id", "") or getattr(event, "uuid", "") or id(event))
-        for tid in set(tags):
+        normalized = {_LEGACY_TID_ALIASES.get(tid, tid) for tid in tags}
+        record_tids = set(normalized)
+        record_tids.update(tid.split(".")[0] for tid in normalized if "." in tid)
+        for tid in record_tids:
             if tid in self._cells:
                 self._cells[tid].record(eid)
-            # Handle parent technique: "T1059.001" also increments "T1059"
-            parent = tid.split(".")[0]
-            if parent != tid and parent in self._cells:
-                self._cells[parent].record(eid)
 
     # ── snapshot (GUI thread) ────────────────────────────────────────────────
     def snapshot(self) -> dict:
@@ -398,6 +442,9 @@ class AttackTracker:
         top = max(active, key=lambda t: active[t]["heat"]) if active else None
         return {
             "generated": now_str,
+            "attack_version": ATTACK_VERSION,
+            "attack_domain": ATTACK_DOMAIN,
+            "catalog_scope": ATTACK_CATALOG_SCOPE,
             "matrix": matrix,
             "summary": {
                 "techniques_active": len(active),

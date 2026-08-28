@@ -108,7 +108,7 @@ class ComplianceMapperModule(BaseModule):
     description = ("Maps live MITRE ATT&CK detections to NIST 800-53 + DoD STIG "
                    "controls and writes an auditable compliance posture artifact.")
     category = "Compliance"
-    version = "1.0.0"
+    version = "1.1.0"
 
     _INTERVAL = 5 * 60.0      # regenerate artifact every 5 min
 
@@ -116,7 +116,6 @@ class ComplianceMapperModule(BaseModule):
         super().__init__()
         self.state_lock = threading.Lock()
         self._out = _repo_root() / "diagnostics" / "compliance_report.json"
-        self._last_ts = 0.0
         # Keep exactly the newest 2,000 records with O(1) eviction. The former
         # list slice copied all retained references after every saturated drain.
         self._incidents: deque[dict] = deque(maxlen=2000)
@@ -145,10 +144,8 @@ class ComplianceMapperModule(BaseModule):
     def _drain_bus(self) -> None:
         if self._bus is None:
             return
-        for ev in self._bus.recent(100):
-            if ev.ts <= self._last_ts:
-                continue
-            self._last_ts = max(self._last_ts, ev.ts)
+        events, _overflow = self.poll_bus_events()
+        for ev in events:
             tid = self._extract_technique(ev)
             if not tid:
                 continue

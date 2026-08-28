@@ -15,7 +15,7 @@ portfolios—not offensive intrusion or hack-back.
 ![Python](https://img.shields.io/badge/Python-3.10--3.13-3776AB)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-Current version: **v1.11.0**
+Current version: **v1.12.0**
 
 [Master Manual](Angerona_Master_Manual.docx) ·
 [Current capabilities](ANGERONA_CAPABILITIES.md) ·
@@ -76,7 +76,7 @@ identifiers, timestamps, and counts are synthetic.
   certificate pin, nonce/freshness, policy digest, optional mutual Transport
   Layer Security (mTLS), complete IPv4/IPv6 route evidence, and unchanged
   pre/post route context.
-- v1.11.0 also supplies a separately operated **Personal Sentinel reference
+- Introduced in v1.11.0, Angerona supplies a separately operated **Personal Sentinel reference
   authority/server** for mTLS-authenticated Ed25519 receipts, trusted time, and
   monotonic compare-and-swap evidence. It is a reference service operators must
   provision and administer—not a bundled router appliance.
@@ -106,6 +106,30 @@ identifiers, timestamps, and counts are synthetic.
 - Non-destructive Red Team, Shark Attack, and Adversary Combat validation use
   bounded reversible markers—not exploits, credentials, persistence, or remote
   attack infrastructure.
+
+### Adapt safely and inspect details
+
+- **Guided Auto Adapt** offers closed Balanced, Public, and Emergency Lockdown
+  choices. It audits, rejects incomplete evidence, builds an immutable plan, and
+  simulates without writes before an optional, separately confirmed exact-plan
+  apply. Context automation remains proposal-only.
+- The explicitly enrolled recovery baseline is authenticated, host-bound, and
+  non-replaceable. It restores the complete Windows Firewall policy—the only
+  state Host Adaptation mutates—not hardware, services, ports, applications, or
+  network devices. Each apply also receives a pre-change snapshot and a
+  Hash-based Message Authentication Code (HMAC) transaction journal with
+  startup reconciliation and compensation.
+- **Run safe automatic checkup** audits once and simulates every registered
+  profile without writing.
+- All 80 discovered capabilities receive a validated v12 machine-readable
+  contract and a common lifecycle/freshness/loss snapshot. The inventory is
+  explicit: five native contracts and 75 compatibility adapters; product and
+  module implementation versions are independent.
+- Capability Center, Module Inspector, adaptation, alerts, Live Defense,
+  Context Info, CVE, and SOAR surfaces provide typed sorting and bounded
+  clickable details, including governed paths. Alert analysis is limited to two
+  active workers plus six queued exact event identities; SOAR clear is a
+  recoverable archive/restore operation.
 
 ### Assist locally
 
@@ -193,9 +217,11 @@ shipped CO-RE sensor.
 
 For guarded GitHub synchronization, use `push-to-github.bat` and
 `pull-from-github.bat`. Push scans the exact staged patch with a pinned,
-SHA-256-verified Gitleaks binary. Pull scans incoming commits before a
-fast-forward merge and refuses dirty/divergent trees, unsafe remotes, submodule
-recursion, and unreviewed workflow changes.
+SHA-256-verified Gitleaks binary, publishes only explicit non-force refspecs,
+requires a safe fast-forward to the public `main`, verifies both remote SHAs,
+and downloads every local README image to prove the public bytes match. Pull
+scans incoming commits before a fast-forward merge and refuses dirty/divergent
+trees, unsafe remotes, submodule recursion, and unreviewed workflow changes.
 
 Source/development runtime data uses the checkout's sibling `AngeronaData` directory.
 Packaged Windows installs prefer protected `D:\AngeronaData` and use protected
@@ -203,21 +229,22 @@ Packaged Windows installs prefer protected `D:\AngeronaData` and use protected
 
 ## Validation status
 
-The converged v1.11.0 serial validation result is **1,675 collected tests: 1,670
-passed, 5 expected host-capability skips, and 0 failed**. Focused evidence
-already recorded in the Cycle 24 reports includes:
+The authoritative v1.12.0 serial release gate is **1,811 passed, 6 expected
+host-platform skips, and 0 failed**. It includes all three final-performance
+regressions; those tests and their surrounding performance/reliability group
+also passed a focused **106/106** gate.
 
-- Round 2 release remediation: **20 passed**.
-- Round 2 core remediation: **88 passed, 1 expected platform skip**.
-- Round 3 reliability/security paths: **78 passed, 1 expected platform skip**.
-- Changed-file Ruff, Python compilation, release YAML/MSIX XML parsing,
-  PowerShell parsing, and `git diff --check`: recorded clean in their focused
-  gates.
-- Two complete four-image gallery runs: byte-identical for every public
-  screenshot.
+- Product compile: **346/346** Python files.
+- Structure: **82/82** module files imported, **64/64** optional compatibility
+  hooks constructed, and **80** capabilities discovered without duplicate
+  identity.
+- Self-tests: **92** standalone core/module passes, **12** expected
+  inactive/platform skips, plus EventBus passed.
+- Selfcheck: **26/26** directly and through the supported batch launcher.
+- Ruff and diff checks: clean.
 
-Focused counts overlap and are not presented as a substitute for the final
-serial suite or for clean-machine deployment validation.
+Focused groups overlap and are not a clean-machine deployment, privileged-host,
+native Linux/macOS, or independent efficacy proof.
 
 ## Honest limits
 
@@ -239,11 +266,48 @@ serial suite or for clean-machine deployment validation.
 - Identity/session, measured-boot, recovery, process-egress, and RAG provenance
   features remain only as authoritative as their injected producers,
   verifiers, and independently administered evidence.
+- Durable SIEM/Remote delivery is at least once and can duplicate after a
+  crash. Local row HMACs do not independently witness deletion or rollback of
+  the whole SQLite database; transport-key coordination still uses restart
+  epochs.
+- ATT&CK coverage is curated. OCSF 1.8 and Sigma are deliberately constrained
+  mappings/evaluation subsets, not complete upstream implementations.
+- IPC Guard is an authenticated loopback diagnostic admission preview—not a
+  production payload consumer, remote-management channel, or TPM-backed
+  transport.
 - Research is actor-neutral. A technique pattern does not prove a nation,
   agency, sponsor, or individual.
 - No hack-back, remote exploitation, credential theft, arbitrary response
   shell, log deletion/evasion, downloaded executable skill, unverified model,
   or unsigned kernel component is part of the product.
+
+## What changed in v1.12.0
+
+- Added validated v12 capability contracts and operational snapshots to all 80
+  discovered capabilities, plus searchable/sortable/clickable Capability Center
+  and Module Inspector views. The inventory truthfully records five native
+  contracts and 75 compatibility adapters.
+- Added Guided Auto Adapt, explicit immutable Windows Firewall recovery-baseline
+  enrollment, a no-write all-profile checkup, separate exact-plan confirmation,
+  HMAC transaction journaling, startup reconciliation, and circuit breaking.
+- Added typed sortable tables and bounded detail/path views across adaptation,
+  alerts, Live Defense, Context Info, CVE, and SOAR surfaces; bounded alert
+  analysis and made SOAR clearing recoverable.
+- Hardened durable SIEM/Remote delivery, EventBus revision cursors, atomic
+  settings and Intel Sync publication, proposal-only evolution/mitigation,
+  behavioral exact-hash approval, self-integrity, persistence completeness,
+  protected-store IPC custody, and typed process/driver/firewall remediation.
+- Pinned standards scope to ATT&CK 19.2, Navigator 5.3.2/layer 4.5, constrained
+  OCSF 1.8, and a deliberately limited Sigma subset with atomic admission
+  receipts.
+- Applied measured behavior-preserving performance work: recorder handoff
+  improved 28.6%, capability-summary reads 96.5%, and unchanged Module
+  Inspector ticks 96.5%. Durable commit batching, immutable compiled Sigma
+  plans, and a global CVE detail-worker cap remain proposals.
+
+Detailed three-round evidence, upstream comparisons, fixed lineages, and
+residuals are in
+[`analysis/loop/cycle25/summary.md`](analysis/loop/cycle25/summary.md).
 
 ## What changed in v1.11.0
 
@@ -279,8 +343,21 @@ links are in [`analysis/loop/cycle24/summary.md`](analysis/loop/cycle24/summary.
 
 ## Defensive research sources
 
-Cycle 24 translated public guidance into actor-neutral defensive controls. Key
-primary sources include:
+Cycle 25 compared Angerona's local contracts with current upstream defensive
+projects and standards without claiming parity. Key new primary sources include:
+
+- [Velociraptor client monitoring and offline buffering](https://docs.velociraptor.app/docs/clients/monitoring/)
+- [Wazuh stateful/stateless Active Response](https://documentation.wazuh.com/current/user-manual/capabilities/active-response/index.html)
+- [Fleet GitOps policy definitions](https://fleetdm.com/docs/configuration/yaml-files)
+- [osquery configuration and packs](https://osquery.readthedocs.io/en/5.12.1/deployment/configuration/)
+- [Elastic detection-rules validation and testing](https://github.com/elastic/detection-rules)
+- [Velociraptor Artifact Exchange warnings](https://docs.velociraptor.app/docs/artifacts/exchange_reference/)
+- [MITRE ATT&CK version history](https://attack.mitre.org/resources/versions/)
+- [ATT&CK Navigator layer 4.5 format](https://github.com/mitre-attack/attack-navigator/blob/master/layers/spec/v4.5/layerformat.md)
+- [OCSF 1.8 observable schema](https://raw.githubusercontent.com/ocsf/ocsf-schema/1.8.0/objects/observable.json)
+- [Sigma rule specification](https://sigmahq.io/sigma-specification/specification/sigma-rules-specification.html)
+
+Cycle 24's actor-neutral security research also used:
 
 - [CISA AA25-239A: network-device persistence and off-host logging](https://www.cisa.gov/news-events/cybersecurity-advisories/aa25-239a)
 - [CISA AA24-038A: critical-infrastructure tradecraft](https://www.cisa.gov/sites/default/files/2024-03/aa24-038a_csa_prc_state_sponsored_actors_compromise_us_critical_infrastructure_3.pdf)
@@ -298,6 +375,6 @@ is an engineering inference, not an attribution claim.
 MIT licensed. See [LICENSE](LICENSE), [SECURITY.md](SECURITY.md), and
 [SUPPORT.md](SUPPORT.md).
 
-**Final Cycle 24 verification.** Current v1.11.0 passes **1670 tests with 5 intentional platform skips**; static discovery reports **80 modules**.
+**Final Cycle 25 verification.** The authoritative v1.12.0 serial gate passes **1811 tests with 6 intentional platform skips**; static discovery reports **80 modules**.
 
-<!-- ANGERONA_DOC_STATUS tests=1670 skips=5 modules=80 -->
+<!-- ANGERONA_DOC_STATUS tests=1811 skips=6 modules=80 -->

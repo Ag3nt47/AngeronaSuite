@@ -75,7 +75,7 @@ class CounterAgenticModule(BaseModule):
                    "rhythm, discovery→action chains, and anomalous inference-port "
                    "access. Detection-only; no active/offensive response.")
     category = "Detection"
-    version = "1.0.0"
+    version = "1.1.0"
 
     _POLL = 2.5      # governed cadence (Adaptive Resource Governor scales this)
 
@@ -84,7 +84,6 @@ class CounterAgenticModule(BaseModule):
         self.state_lock = threading.Lock()
         # parent_pid -> list[(ts, cmdline)]
         self.timelines: dict[int, list[tuple[float, str]]] = {}
-        self._last_ts = 0.0
         self._alerted: dict[int, float] = {}     # parent_pid -> last alert ts (dedup)
         self._detections = 0
 
@@ -109,10 +108,8 @@ class CounterAgenticModule(BaseModule):
     def _ingest_bus(self) -> None:
         if self._bus is None:
             return
-        for ev in self._bus.recent(100):
-            if ev.ts <= self._last_ts:
-                continue
-            self._last_ts = max(self._last_ts, ev.ts)
+        events, _overflow = self.poll_bus_events()
+        for ev in events:
             if not self._is_proc_event(ev):
                 continue
             d = getattr(ev, "details", {}) or {}

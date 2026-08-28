@@ -3,19 +3,12 @@
 Raises Angerona's secret-at-rest posture from "random file on disk" to
 OS/hardware-bound protection:
 
-1. DPAPI wrapping of the IPC key (implemented)
-   The Zero-Trust IPC Guard (AUTH) stores a per-install HMAC secret at
-   ``<data>/ipc_auth.key``. On its own that file is readable by anything running
-   as the user. HWID wraps it with the Windows Data Protection API
-   (CryptProtectData) so the ciphertext can only be unwrapped by the same
-   user/machine context that Angerona runs under — a copy exfiltrated to another
-   host is useless. We use ``win32crypt`` when pywin32 is present and fall back to
-   a direct ``ctypes`` DPAPI call so no dependency is strictly required.
-
-   SAFETY: HWID never mutates the file AUTH actually reads. It writes a protected
-   sidecar (``ipc_auth.key.dpapi``) and verifies the round-trip, leaving the live
-   key untouched so nothing breaks. ``protect()`` / ``unprotect()`` are exposed so
-   AUTH can adopt DPAPI storage directly in a later change.
+1. OS-protected IPC key storage (implemented)
+   The Zero-Trust IPC diagnostic probe (AUTH) reads its per-install HMAC secret
+   directly from Angerona's OS credential store. On Windows that store uses
+   current-user DPAPI; macOS/Linux use Keychain/Secret Service. HWID verifies or
+   migrates the former exact 32-byte plaintext key and never creates a plaintext
+   live sidecar.
 
 2. TPM 2.0 binding of the DB key (outline)
    ``bind_db_key_to_tpm()`` sketches sealing the ``flight-recorder.db`` encryption
@@ -110,17 +103,16 @@ class HardwareCrypto(BaseModule):
     CODE = "HWID"
     NAME = "Hardware-Rooted Integrity"
     name = "Hardware-Rooted Integrity"
-    description = ("DPAPI-wraps the IPC secret so only this user/host can unwrap it; "
-                   "outlines TPM 2.0 sealing of the flight-recorder DB key.")
+    description = ("Verifies OS-protected IPC key storage and DPAPI primitives; "
+                   "TPM database-key sealing remains an explicit unsupported outline.")
     category = "Integrity"
-    version = "1.0.0"
+    version = "1.1.0"
 
     _ENTROPY = b"Angerona-HWID-v1"   # app-specific secondary entropy for DPAPI
 
     def __init__(self) -> None:
         super().__init__()
         self._ipc_key_path = _data_base() / "ipc_auth.key"
-        self._protected_path = _data_base() / "ipc_auth.key.dpapi"
 
     @property
     def state(self) -> str:
@@ -132,36 +124,28 @@ class HardwareCrypto(BaseModule):
 
     # ── DPAPI wrapping of the IPC key ─────────────────────────────────────────
     def wrap_ipc_key(self) -> tuple[bool, str]:
-        """Create/refresh a DPAPI-protected sidecar of the IPC key and verify the
-        round-trip. Non-destructive: the live key AUTH reads is never modified."""
-        if not _IS_WINDOWS:
-            return False, "DPAPI unavailable (non-Windows host)"
+        """Verify/migrate AUTH key material into the canonical OS store."""
         try:
-            if not self._ipc_key_path.exists():
-                return False, "IPC key not present yet (AUTH creates it on first run)"
-            raw = self._ipc_key_path.read_bytes()
-            blob = protect(raw, self._ENTROPY)
-            if not blob:
-                return False, "CryptProtectData failed (DPAPI returned nothing)"
-            # Verify we can unwrap to the exact original before trusting it.
-            back = unprotect(blob, self._ENTROPY)
-            if back != raw:
-                return False, "DPAPI round-trip mismatch — not writing sidecar"
-            self._protected_path.write_bytes(blob)
-            try:
-                os.chmod(self._protected_path, 0o600)
-            except Exception:
-                pass
-            return True, f"IPC key DPAPI-wrapped ({len(blob)} bytes) — user/host-bound"
+            from angerona.modules.ipc_guard import _load_or_create_key
+
+            key = _load_or_create_key(self._ipc_key_path)
+            if len(key) != 32 or self._ipc_key_path.exists():
+                return False, "IPC key migration did not reach protected-only state"
+            backend = "DPAPI" if _IS_WINDOWS else "OS credential store"
+            return True, f"IPC key verified in {backend}; no plaintext sidecar"
         except Exception as exc:
-            return False, f"wrap failed: {exc}"
+            return False, f"protected-store verification failed: {exc}"
 
     def load_protected_ipc_key(self) -> Optional[bytes]:
-        """Return the DPAPI-unwrapped IPC key, or None. Provided so AUTH can move
-        to protected-at-rest storage without exposing plaintext on disk."""
+        """Return only the exact protected IPC key, or None."""
         try:
-            if self._protected_path.exists():
-                return unprotect(self._protected_path.read_bytes(), self._ENTROPY)
+            from angerona.core.secure_store import read_secret_values
+
+            encoded = read_secret_values(
+                ("ANGERONA_IPC_AUTH_KEY",), _data_base(), strict=True
+            ).get("ANGERONA_IPC_AUTH_KEY", "")
+            if len(encoded) == 64:
+                return bytes.fromhex(encoded)
         except Exception:
             pass
         return None
@@ -191,13 +175,13 @@ class HardwareCrypto(BaseModule):
     # ── Daemon loop ───────────────────────────────────────────────────────────
     def run(self) -> None:
         if not _IS_WINDOWS:
-            self.set_health(60, "DPAPI/TPM are Windows-only — module idle on this host")
+            ok, note = self.wrap_ipc_key()
+            self.set_health(80 if ok else 40, note)
             while not self.stopping:
                 self.sleep(30)
             return
 
-        # One-shot wrap at startup; then idle, re-checking periodically in case
-        # AUTH regenerates its key.
+        # One-shot protected-store verification, then periodic re-check.
         ok, note = self.wrap_ipc_key()
         if ok:
             self.set_health(100, note)
@@ -211,9 +195,8 @@ class HardwareCrypto(BaseModule):
 
         while not self.stopping:
             self.sleep(300)
-            if not self._protected_path.exists() and self._ipc_key_path.exists():
-                ok, note = self.wrap_ipc_key()
-                self.set_health(100 if ok else 70, note)
+            ok, note = self.wrap_ipc_key()
+            self.set_health(100 if ok else 70, note)
 
     def self_test(self) -> tuple[bool, str]:
         """Prove a DPAPI protect→unprotect round-trip on a throwaway secret."""

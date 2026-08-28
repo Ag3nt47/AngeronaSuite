@@ -10,12 +10,14 @@ Everything lives on one screen (mirroring the original Angerona dashboard):
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
 import platform
 import re
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -126,6 +128,59 @@ CATEGORY_AVATAR = {
 
 def _avatar(category: str) -> str:
     return CATEGORY_AVATAR.get(category, CATEGORY_AVATAR["General"])
+
+
+def _capability_contract(module) -> dict:
+    """Return one module's serialisable v12 contract without UI assumptions."""
+    contract = getattr(module, "_angerona_contract", None)
+    if contract is None:
+        return {}
+    try:
+        return contract.as_dict()
+    except Exception:
+        return {}
+
+
+_CAPABILITY_SUMMARY_FIELDS = (
+    "capability_id",
+    "description",
+    "implementation_version",
+    "maturity",
+    "metadata_gaps",
+    "metadata_level",
+    "mode",
+    "response_authority",
+    "supported_platforms",
+)
+
+
+def _capability_summary(module) -> dict:
+    """Read the immutable fields used by live tables without recursive copies.
+
+    ``CapabilityContract.as_dict()`` deliberately builds an independent,
+    serialisable deep copy for exports and the JSON inspector.  Repeating that
+    recursive conversion for every module on every 1.5-second status tick is
+    unnecessary: live tables only read this small immutable projection.
+    """
+    contract = getattr(module, "_angerona_contract", None)
+    if contract is None:
+        return {}
+    try:
+        return {
+            field: getattr(contract, field)
+            for field in _CAPABILITY_SUMMARY_FIELDS
+        }
+    except Exception:
+        return {}
+
+
+def _source_editing_allowed() -> bool:
+    """Live source editing is a development-only, unprivileged capability."""
+    return bool(
+        not getattr(sys, "frozen", False)
+        and os.environ.get("ANGERONA_DEVELOPMENT_MODE", "").strip() == "1"
+        and os.environ.get("ANGERONA_ENFORCE_KEY_ACL", "").strip() != "1"
+    )
 
 
 # Short codes for status-strip chips.  Modules that expose a .CODE class attr
@@ -275,6 +330,184 @@ _SOAR_DISMISSED = "DISMISSED — no host action taken"
 _SOAR_SUBMITTED = "SUBMITTED — Adversary Combat receipt pending"
 _SOAR_EXECUTED = "EXECUTED — verified Adversary Combat receipt"
 _SOAR_RECEIPT_TIMEOUT_SECONDS = 120.0
+
+
+def _event_record_identity(event, bus=None) -> str:
+    """Return a stable presentation identity without trusting timestamps.
+
+    A locally verified EventBus HMAC is the strongest available identity.  A
+    deterministic record fingerprint is used for persisted/legacy events that
+    cannot be verified by this panel; the prefix keeps the weaker provenance
+    explicit instead of presenting an unsigned digest as authentication.
+    """
+    signature = str(getattr(event, "hmac_sig", "") or "").casefold()
+    if (
+        re.fullmatch(r"[0-9a-f]{64}", signature)
+        and bus is not None
+        and getattr(bus, "integrity_enabled", False)
+    ):
+        try:
+            if bus.verify(event):
+                return f"verified:{signature}"
+        except Exception:
+            pass
+    canonical = json.dumps(
+        {
+            "details": getattr(event, "details", {}) or {},
+            "message": str(getattr(event, "message", "")),
+            "module": str(getattr(event, "module", "")),
+            "severity": int(getattr(event, "severity", Severity.INFO)),
+            "ts": float(getattr(event, "ts", 0.0)),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    ).encode("utf-8")
+    return "record:" + hashlib.sha256(canonical).hexdigest()
+
+
+def _event_row_identities(events, bus=None) -> list[str]:
+    """Disambiguate exact duplicate records with a stable ordered ordinal."""
+    counts: dict[str, int] = {}
+    identities: list[str] = []
+    for event in events:
+        base = _event_record_identity(event, bus)
+        ordinal = counts.get(base, 0)
+        counts[base] = ordinal + 1
+        identities.append(f"{base}:{ordinal}")
+    return identities
+
+
+def _is_integrity_alert(event) -> bool:
+    """Fail closed for alerts whose purpose is reporting trust failure."""
+    module = str(getattr(event, "module", "")).casefold()
+    message = str(getattr(event, "message", "")).casefold()
+    details = getattr(event, "details", {}) or {}
+    if "integrity" in module or "tamper" in module:
+        return True
+    if isinstance(details, dict) and any(
+        details.get(key) is True
+        for key in (
+            "integrity_failure", "tamper_detected", "hmac_invalid",
+            "signature_invalid", "ledger_corrupt",
+        )
+    ):
+        return True
+    return any(
+        marker in message
+        for marker in (
+            "integrity verification failed", "hmac verification failed",
+            "signature verification failed", "tamper detected",
+            "ledger corruption",
+        )
+    )
+
+
+def _alert_suppression_scope(event) -> tuple[str, str, str]:
+    """Scope Allow to one detector rule/pattern, never an entire module."""
+    details = getattr(event, "details", {}) or {}
+    rule_id = ""
+    if isinstance(details, dict):
+        for key in ("rule_id", "signature_id", "technique_id", "detection_id"):
+            value = str(details.get(key, "") or "").strip()
+            if value:
+                rule_id = value[:160]
+                break
+    module = str(getattr(event, "module", ""))[:200]
+    if rule_id:
+        return module, f"rule:{rule_id}", f"{module} · rule {rule_id}"
+    digest = hashlib.sha256(
+        str(getattr(event, "message", "")).encode("utf-8", errors="replace")
+    ).hexdigest()
+    return module, f"message:{digest}", f"{module} · this exact message pattern"
+
+
+def _soar_archive_root() -> Path:
+    return _soar_queue_path().parent / "soar_history_archive"
+
+
+def _archive_soar_history() -> Path | None:
+    """Move queue history into a recoverable, all-or-nothing archive folder."""
+    sources = tuple(
+        path for path in (_soar_queue_path(), _soar_queue_state_path())
+        if path.exists()
+    )
+    if not sources:
+        return None
+    root = _soar_archive_root()
+    root.mkdir(parents=True, exist_ok=True)
+    archive = root / (
+        time.strftime("%Y%m%d-%H%M%S", time.gmtime()) + "-" + uuid.uuid4().hex
+    )
+    archive.mkdir(mode=0o700)
+    moved: list[tuple[Path, Path]] = []
+    try:
+        manifest: dict[str, object] = {
+            "archived_at": time.time(),
+            "files": {},
+            "format": "angerona-soar-recoverable-archive-v1",
+        }
+        for source in sources:
+            raw = source.read_bytes()
+            destination = archive / source.name
+            os.replace(source, destination)
+            moved.append((source, destination))
+            manifest["files"][source.name] = {  # type: ignore[index]
+                "bytes": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            }
+        receipt = archive / "archive_receipt.json"
+        with receipt.open("x", encoding="utf-8", newline="\n") as handle:
+            json.dump(manifest, handle, sort_keys=True, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        return archive
+    except Exception as exc:
+        rollback_errors: list[str] = []
+        for source, destination in reversed(moved):
+            try:
+                os.replace(destination, source)
+            except Exception as rollback_exc:
+                rollback_errors.append(str(rollback_exc))
+        message = f"SOAR archive failed: {exc}"
+        if rollback_errors:
+            message += "; rollback also failed: " + "; ".join(rollback_errors)
+        raise RuntimeError(message) from exc
+
+
+def _restore_soar_archive(archive: Path) -> None:
+    """Restore one archive only when it cannot overwrite newer queue data."""
+    archive = Path(archive)
+    if archive.parent != _soar_archive_root() or not archive.is_dir():
+        raise ValueError("SOAR archive path is outside the recoverable archive root")
+    destinations = (_soar_queue_path(), _soar_queue_state_path())
+    if any(path.exists() for path in destinations):
+        raise RuntimeError("new SOAR history exists; refusing to overwrite it")
+    available = tuple(
+        (archive / path.name, path)
+        for path in destinations
+        if (archive / path.name).exists()
+    )
+    if not available:
+        raise RuntimeError("the archive has no recoverable SOAR history")
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for source, destination in available:
+            os.replace(source, destination)
+            moved.append((source, destination))
+    except Exception as exc:
+        rollback_errors: list[str] = []
+        for source, destination in reversed(moved):
+            try:
+                os.replace(destination, source)
+            except Exception as rollback_exc:
+                rollback_errors.append(str(rollback_exc))
+        message = f"SOAR restore failed: {exc}"
+        if rollback_errors:
+            message += "; rollback also failed: " + "; ".join(rollback_errors)
+        raise RuntimeError(message) from exc
 
 
 def _invalidate_soar_queue_cache() -> None:
@@ -1114,15 +1347,22 @@ def _event_path_display(event) -> tuple[str, str]:
 
 
 def _fill_event_table(table: QTableWidget, events: list) -> None:
+    header = table.horizontalHeader()
+    sort_column = header.sortIndicatorSection()
+    sort_order = header.sortIndicatorOrder()
+    sorting = table.isSortingEnabled()
+    table.setSortingEnabled(False)
     table.setRowCount(0)
     for ev in events:
         r = table.rowCount()
         table.insertRow(r)
-        when = time.strftime("%m-%d %H:%M:%S", time.localtime(getattr(ev, "ts", time.time())))
+        event_ts = float(getattr(ev, "ts", time.time()))
+        when = time.strftime("%m-%d %H:%M:%S", time.localtime(event_ts))
         sev = getattr(ev, "severity", Severity.INFO)
-        sev_item = QTableWidgetItem(sev.label if hasattr(sev, "label") else str(sev))
-        sev_item.setForeground(QColor(_sev_color(sev)))
-        table.setItem(r, 0, QTableWidgetItem(when))
+        sev_item = _SeverityItem(sev)
+        time_item = _TimestampItem(event_ts)
+        time_item.setText(when)
+        table.setItem(r, 0, time_item)
         table.setItem(r, 1, sev_item)
         table.setItem(r, 2, QTableWidgetItem(getattr(ev, "module", "")))
         table.setItem(r, 3, QTableWidgetItem(getattr(ev, "message", "")))
@@ -1132,6 +1372,9 @@ def _fill_event_table(table: QTableWidget, events: list) -> None:
             path_item.setToolTip(path_tooltip)
             table.setItem(r, 4, path_item)
         table.item(r, 0).setData(Qt.UserRole, ev)
+    table.setSortingEnabled(sorting)
+    if sorting:
+        table.sortItems(sort_column, sort_order)
 
 
 # ── Alerts / Critical drill-down window ───────────────────────────────────────
@@ -1174,6 +1417,8 @@ class EventsWindow(QDialog):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
+        self.table.sortItems(0, Qt.DescendingOrder)
         # Click a row → open the full Alert detail window (Allow/Block/Analyze/
         # Research), so the Alerts & Critical dashboard boxes expose the same
         # actions as the main Live Alerts feed.
@@ -1237,21 +1482,21 @@ class EventsWindow(QDialog):
 
 # ── Modules status drill-down window ──────────────────────────────────────────
 class ModulesStatusWindow(QDialog):
-    """Shows every module's live status and health at a glance."""
+    """Searchable Capability Center for every discovered module contract."""
 
     def __init__(self, manager, bus, parent=None) -> None:
         super().__init__(parent)
         self.manager, self.bus = manager, bus
-        self.setWindowTitle("Modules — status")
-        self.setMinimumSize(680, 520)
+        self.setWindowTitle("Capability Center — modules")
+        self.setMinimumSize(1040, 620)
         if parent:
             self.setStyleSheet(parent.styleSheet())
         root = QVBoxLayout(self)
         root.addWidget(
             FuturisticHeader(
-                "Modules · Live Status Matrix",
-                "Operational state, health, and category across every discovered "
-                "defensive capability.",
+                "Capability Center · Live Contracts",
+                "Search operational truth, platform coverage, authority, maturity, "
+                "loss state, and implementation versions for all capabilities.",
                 "#22c55e",
                 self,
             )
@@ -1260,14 +1505,45 @@ class ModulesStatusWindow(QDialog):
         self.summary.setStyleSheet("color:#9aa4b2;")
         root.addWidget(self.summary)
 
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Module", "Status", "Health", "Category"])
+        filters = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search name, category, capability ID…")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self._refresh)
+        filters.addWidget(self.search, 2)
+        self.mode_filter = QComboBox()
+        self.mode_filter.addItems(
+            ["All modes", "unknown", "observe", "detect", "protect", "respond"]
+        )
+        self.mode_filter.currentIndexChanged.connect(self._refresh)
+        filters.addWidget(self.mode_filter)
+        self.maturity_filter = QComboBox()
+        self.maturity_filter.addItems(
+            ["All maturity", "stable", "preview", "experimental", "compatibility"]
+        )
+        self.maturity_filter.currentIndexChanged.connect(self._refresh)
+        filters.addWidget(self.maturity_filter)
+        self.status_filter = QComboBox()
+        self.status_filter.addItems(
+            ["All status", "running", "stopped", "unavailable", "error", "restarting"]
+        )
+        self.status_filter.currentIndexChanged.connect(self._refresh)
+        filters.addWidget(self.status_filter)
+        root.addLayout(filters)
+
+        self.table = QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels(
+            ["Module", "Status", "Health", "Mode", "Platforms", "Maturity", "Authority", "Impl."]
+        )
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
         self.table.cellClicked.connect(self._open_module)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context_menu)
         root.addWidget(self.table)
 
         row = QHBoxLayout()
@@ -1288,18 +1564,60 @@ class ModulesStatusWindow(QDialog):
 
     def _refresh(self) -> None:
         mods = sorted(self.manager.modules.items())
+        try:
+            subscriber_metrics = self.bus.subscriber_metrics()
+        except Exception:
+            subscriber_metrics = ()
+        subscriber_failures = sum(item.failures for item in subscriber_metrics)
+        subscriber_slo_violations = sum(
+            item.budget_violations for item in subscriber_metrics
+        )
+        query = self.search.text().strip().casefold()
+        mode_filter = self.mode_filter.currentText()
+        maturity_filter = self.maturity_filter.currentText()
+        status_filter = self.status_filter.currentText()
+        visible: list[tuple[str, object, dict]] = []
+        for name, mod in mods:
+            contract = _capability_summary(mod)
+            haystack = " ".join(
+                (
+                    name,
+                    str(getattr(mod, "category", "")),
+                    str(contract.get("capability_id", "")),
+                    str(contract.get("description", "")),
+                )
+            ).casefold()
+            if query and query not in haystack:
+                continue
+            if mode_filter != "All modes" and contract.get("mode") != mode_filter:
+                continue
+            if maturity_filter != "All maturity" and contract.get("maturity") != maturity_filter:
+                continue
+            if status_filter != "All status" and getattr(mod, "status", "") != status_filter:
+                continue
+            visible.append((name, mod, contract))
         snapshot = tuple(
             (name, getattr(mod, "name", name), getattr(mod, "status", "?"),
              getattr(mod, "health", 0), getattr(mod, "health_state", "off"),
-             getattr(mod, "category", ""))
-            for name, mod in mods
-        )
+             contract.get("mode"), contract.get("maturity"),
+             contract.get("response_authority"), contract.get("implementation_version"),
+             getattr(mod, "_bus_overflow_count", 0))
+            for name, mod, contract in visible
+        ) + (("__subscriber_slo__", subscriber_failures, subscriber_slo_violations),)
         if snapshot == self._last_snapshot:
             return
         self._last_snapshot = snapshot
+        selected = self._selected_module()
+        selected_name = getattr(selected, "name", "") if selected is not None else ""
+        header = self.table.horizontalHeader()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         running = 0
-        for name, mod in mods:
+        overflowed = 0
+        native = 0
+        for name, mod, contract in visible:
             r = self.table.rowCount()
             self.table.insertRow(r)
             status = getattr(mod, "status", "?")
@@ -1314,8 +1632,77 @@ class ModulesStatusWindow(QDialog):
             h_item = QTableWidgetItem(health)
             h_item.setForeground(QColor(HEALTH_COLOR.get(getattr(mod, "health_state", "off"), "#e5e7eb")))
             self.table.setItem(r, 2, h_item)
-            self.table.setItem(r, 3, QTableWidgetItem(getattr(mod, "category", "")))
-        self.summary.setText(f"{running}/{len(mods)} modules running")
+            self.table.setItem(r, 3, QTableWidgetItem(str(contract.get("mode", "legacy"))))
+            self.table.setItem(
+                r, 4, QTableWidgetItem(", ".join(contract.get("supported_platforms", ())))
+            )
+            self.table.setItem(r, 5, QTableWidgetItem(str(contract.get("maturity", "compatibility"))))
+            self.table.setItem(
+                r, 6, QTableWidgetItem(str(contract.get("response_authority", "none")))
+            )
+            self.table.setItem(
+                r, 7, QTableWidgetItem(str(contract.get("implementation_version", "?")))
+            )
+            overflowed += int(getattr(mod, "_bus_overflow_count", 0) > 0)
+            native += int(contract.get("metadata_level") == "native")
+        self.table.setSortingEnabled(True)
+        self.table.sortItems(sort_column, sort_order)
+        if selected_name:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 0)
+                if item is not None and item.data(Qt.UserRole) == selected_name:
+                    self.table.selectRow(row)
+                    break
+        self.summary.setText(
+            f"Showing {len(visible)}/{len(mods)} · {running} running · "
+            f"{native} native contracts · {overflowed} with evidence-loss history · "
+            f"subscriber failures/SLO {subscriber_failures}/{subscriber_slo_violations}"
+        )
+
+    def _selected_module(self):
+        row = self.table.currentRow()
+        item = self.table.item(row, 0) if row >= 0 else None
+        name = item.data(Qt.UserRole) if item is not None else None
+        return self.manager.modules.get(name) if name else None
+
+    def _context_menu(self, position) -> None:
+        item = self.table.itemAt(position)
+        if item is None:
+            return
+        self.table.selectRow(item.row())
+        module = self._selected_module()
+        if module is None:
+            return
+        menu = QMenu(self)
+        inspect_action = menu.addAction("Inspect capability")
+        test_action = menu.addAction("Run safe self-test")
+        restart_action = menu.addAction("Restart module")
+        enabled = self.manager.is_enabled(module.name)
+        toggle_action = menu.addAction("Disable" if enabled else "Enable")
+        menu.addSeparator()
+        copy_action = menu.addAction("Copy capability ID")
+        selected = menu.exec(self.table.viewport().mapToGlobal(position))
+        if selected == inspect_action:
+            self._open_module(item.row(), 0)
+        elif selected == test_action:
+            def _test_inspector():
+                inspector = ModuleInspector(
+                    self.manager, self.bus, module, self.window()
+                )
+                QTimer.singleShot(0, inspector._selftest)
+                return inspector
+
+            _show_nonmodal_from(self.table, _test_inspector, "#22c55e")
+        elif selected == restart_action:
+            module.stop()
+            module.start()
+            self._refresh()
+        elif selected == toggle_action:
+            self.manager.set_enabled(module.name, not enabled)
+            self._refresh()
+        elif selected == copy_action:
+            contract = _capability_contract(module)
+            QGuiApplication.clipboard().setText(str(contract.get("capability_id", module.name)))
 
     def _open_module(self, row: int, _column: int) -> None:
         item = self.table.item(row, 0)
@@ -2160,7 +2547,7 @@ class ModulesPanel(QFrame):
         )
         self._title.clicked.connect(self._open_overview)
         lay.addWidget(self._title)
-        hint = QLabel("Click a row to inspect. Toggle to enable/disable.")
+        hint = QLabel("Click a row to inspect its v12 contract. Toggle to enable/disable.")
         hint.setStyleSheet("color:#6b7280; font-size:11px;")
         lay.addWidget(hint)
 
@@ -2170,15 +2557,27 @@ class ModulesPanel(QFrame):
         self._sort_combo.addItems(["Name", "On/Off", "Status", "Category"])
         self._sort_combo.currentIndexChanged.connect(lambda *_: self._build())
         sort_row.addWidget(self._sort_combo)
+        self._module_search = QLineEdit()
+        self._module_search.setPlaceholderText("Search capabilities…")
+        self._module_search.setClearButtonEnabled(True)
+        self._module_search.textChanged.connect(lambda *_: self._build())
+        sort_row.addWidget(self._module_search, 1)
+        self._mode_combo = QComboBox()
+        self._mode_combo.addItems(
+            ["All modes", "unknown", "observe", "detect", "protect", "respond"]
+        )
+        self._mode_combo.currentIndexChanged.connect(lambda *_: self._build())
+        sort_row.addWidget(self._mode_combo)
         sort_row.addStretch(1)
         lay.addLayout(sort_row)
 
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["On", "Module", "Status", "Category"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["On", "Module", "Status", "Category", "Mode", "Impl."])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSortingEnabled(True)
         self.table.cellClicked.connect(self._on_click)
         lay.addWidget(self.table)
         self._built_count = -1
@@ -2186,6 +2585,24 @@ class ModulesPanel(QFrame):
 
     def _sorted_items(self):
         items = list(self.manager.modules.items())
+        query = self._module_search.text().strip().casefold() if hasattr(self, "_module_search") else ""
+        mode_filter = self._mode_combo.currentText() if hasattr(self, "_mode_combo") else "All modes"
+        if query:
+            items = [
+                item for item in items
+                if query in " ".join(
+                    (
+                        item[0],
+                        str(getattr(item[1], "category", "")),
+                        str(_capability_summary(item[1]).get("capability_id", "")),
+                    )
+                ).casefold()
+            ]
+        if mode_filter != "All modes":
+            items = [
+                item for item in items
+                if _capability_summary(item[1]).get("mode") == mode_filter
+            ]
         mode = self._sort_combo.currentText() if hasattr(self, "_sort_combo") else "Name"
         if mode == "On/Off":
             # enabled first, then by name
@@ -2197,6 +2614,10 @@ class ModulesPanel(QFrame):
         return sorted(items, key=lambda kv: kv[0].lower())
 
     def _build(self) -> None:
+        header = self.table.horizontalHeader()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         for name, mod in self._sorted_items():
             r = self.table.rowCount()
@@ -2207,13 +2628,23 @@ class ModulesPanel(QFrame):
             wrap = QWidget(); wlay = QHBoxLayout(wrap)
             wlay.setAlignment(Qt.AlignCenter); wlay.setContentsMargins(0, 0, 0, 0)
             wlay.addWidget(chk)
+            on_item = QTableWidgetItem("On" if chk.isChecked() else "Off")
+            on_item.setData(Qt.UserRole, name)
+            self.table.setItem(r, 0, on_item)
             self.table.setCellWidget(r, 0, wrap)
             name_item = QTableWidgetItem(f"{_avatar(mod.category)}  {mod.name}")
             name_item.setData(Qt.UserRole, mod.name)
             self.table.setItem(r, 1, name_item)
             self.table.setItem(r, 2, QTableWidgetItem(mod.status))
             self.table.setItem(r, 3, QTableWidgetItem(mod.category))
+            contract = _capability_summary(mod)
+            self.table.setItem(r, 4, QTableWidgetItem(str(contract.get("mode", "legacy"))))
+            self.table.setItem(
+                r, 5, QTableWidgetItem(str(contract.get("implementation_version", mod.version)))
+            )
         self.table.setColumnWidth(0, 36)
+        self.table.setSortingEnabled(True)
+        self.table.sortItems(sort_column, sort_order)
         self._built_count = len(self.manager.modules)
 
     def refresh(self) -> None:
@@ -2221,6 +2652,10 @@ class ModulesPanel(QFrame):
         if self._built_count != len(self.manager.modules):
             self._build()
             return
+        header = self.table.horizontalHeader()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
+        self.table.setSortingEnabled(False)
         self.table.setUpdatesEnabled(False)
         for r in range(self.table.rowCount()):
             name_item = self.table.item(r, 1)
@@ -2238,6 +2673,8 @@ class ModulesPanel(QFrame):
             item.setForeground(QColor(HEALTH_COLOR.get(mod.health_state, "#e5e7eb")))
             self.table.setItem(r, 2, item)
         self.table.setUpdatesEnabled(True)
+        self.table.setSortingEnabled(True)
+        self.table.sortItems(sort_column, sort_order)
 
     def _on_click(self, row: int, col: int) -> None:
         if col == 0:                         # checkbox column — don't open inspector
@@ -2274,6 +2711,10 @@ class ModuleInspector(QDialog):
         self.manager, self.bus, self.module = manager, bus, module
         self._accept_async_results = True
         self._test_worker: threading.Thread | None = None
+        self._cached_bus_revision: int | None = None
+        self._cached_bus_events: list = []
+        self._feed_fingerprint: tuple | None = None
+        self._history_fingerprint: tuple | None = None
         self.setWindowTitle(f"Module — {module.name}")
         self.setMinimumSize(660, 560)
         if parent:
@@ -2289,6 +2730,7 @@ class ModuleInspector(QDialog):
 
         tabs = QTabWidget()
         tabs.addTab(self._overview_tab(),  "Overview")
+        tabs.addTab(self._contract_tab(),  "Contract v12")
         tabs.addTab(self._perf_tab(),      "⚡ Performance")
         tabs.addTab(self._history_tab(),   "📋 History")
         tabs.addTab(self._deps_tab(),      "🔗 Dependencies")
@@ -2319,23 +2761,38 @@ class ModuleInspector(QDialog):
     # ── Tabs ─────────────────────────────────────────────────────────────────
     def _overview_tab(self) -> QWidget:
         w = QWidget(); lay = QVBoxLayout(w)
-        desc = QLabel(self.module.description); desc.setWordWrap(True)
+        desc = QLabel(str(self.module.description)[:4096]); desc.setWordWrap(True)
+        desc.setTextFormat(Qt.PlainText)
         desc.setStyleSheet("color:#cbd5e1;"); lay.addWidget(desc)
-        self.status_lbl = QLabel(""); lay.addWidget(self.status_lbl)
+        self.status_lbl = QLabel(""); self.status_lbl.setTextFormat(Qt.PlainText)
+        lay.addWidget(self.status_lbl)
         self.error_lbl = QLabel(""); self.error_lbl.setWordWrap(True)
+        self.error_lbl.setTextFormat(Qt.PlainText)
         self.error_lbl.setStyleSheet("color:#ef4444;"); lay.addWidget(self.error_lbl)
         controls = QHBoxLayout()
         self.toggle_btn = QPushButton(); self.toggle_btn.clicked.connect(self._toggle)
         restart = QPushButton("Restart module"); restart.clicked.connect(self._restart)
-        selftest = QPushButton("Run self-test"); selftest.clicked.connect(self._selftest)
-        edit_btn = QPushButton("✎ Edit code (Sandbox)")
-        edit_btn.setToolTip("Open this module's .py in the Live-Fire Sandbox to view/edit/"
-                            "hot-reload it (AST-checked, revert + history, warns before apply).")
-        edit_btn.clicked.connect(self._open_in_sandbox)
+        self.selftest_btn = QPushButton("Run self-test")
+        self.selftest_btn.clicked.connect(self._selftest)
         controls.addWidget(self.toggle_btn); controls.addWidget(restart)
-        controls.addWidget(selftest); controls.addWidget(edit_btn); controls.addStretch(1)
+        controls.addWidget(self.selftest_btn)
+        if _source_editing_allowed():
+            edit_btn = QPushButton("Open source sandbox")
+            edit_btn.setToolTip("Development mode only: stage and test source changes in isolation.")
+            edit_btn.clicked.connect(self._open_in_sandbox)
+            controls.addWidget(edit_btn)
+        controls.addStretch(1)
         lay.addLayout(controls)
-        self.test_lbl = QLabel(""); self.test_lbl.setWordWrap(True); lay.addWidget(self.test_lbl)
+        if not _source_editing_allowed():
+            protected = QLabel(
+                "Protected runtime: live source editing is disabled. Install only reviewed, "
+                "signed, staged capability packages."
+            )
+            protected.setWordWrap(True)
+            protected.setStyleSheet("color:#f59e0b; font-size:11px;")
+            lay.addWidget(protected)
+        self.test_lbl = QLabel(""); self.test_lbl.setWordWrap(True)
+        self.test_lbl.setTextFormat(Qt.PlainText); lay.addWidget(self.test_lbl)
         lay.addWidget(_section("This module's recent events  —  click a row for full detail + actions"))
         self.feed = QTableWidget(0, 3)
         self.feed.setHorizontalHeaderLabels(["Time", "Severity", "Message"])
@@ -2343,8 +2800,30 @@ class ModuleInspector(QDialog):
         self.feed.verticalHeader().setVisible(False)
         self.feed.setEditTriggers(QTableWidget.NoEditTriggers)
         self.feed.setSelectionBehavior(QTableWidget.SelectRows)
+        self.feed.setSortingEnabled(True)
         self.feed.cellClicked.connect(self._on_feed_click)
         lay.addWidget(self.feed)
+        return w
+
+    def _contract_tab(self) -> QWidget:
+        """Machine-readable declaration plus live loss/freshness state."""
+        w = QWidget(); lay = QVBoxLayout(w)
+        lay.addWidget(_section("Capability Contract v12"))
+        self._contract_summary = QLabel("")
+        self._contract_summary.setWordWrap(True)
+        self._contract_summary.setTextFormat(Qt.PlainText)
+        lay.addWidget(self._contract_summary)
+        self._contract_body = QPlainTextEdit()
+        self._contract_body.setReadOnly(True)
+        self._contract_body.setFont(QFont("Consolas", 9))
+        contract = _capability_contract(self.module)
+        self._contract_body.setPlainText(json.dumps(contract, indent=2, sort_keys=True))
+        lay.addWidget(self._contract_body, 1)
+        copy_btn = QPushButton("Copy contract JSON")
+        copy_btn.clicked.connect(
+            lambda: QGuiApplication.clipboard().setText(self._contract_body.toPlainText())
+        )
+        lay.addWidget(copy_btn)
         return w
 
     # ── Extra tabs ────────────────────────────────────────────────────────────
@@ -2401,6 +2880,7 @@ class ModuleInspector(QDialog):
         self._hist_table.verticalHeader().setVisible(False)
         self._hist_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._hist_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._hist_table.setSortingEnabled(True)
         self._hist_table.cellClicked.connect(
             lambda r, _: _show_nonmodal_from(
                 self._hist_table,
@@ -2416,11 +2896,28 @@ class ModuleInspector(QDialog):
         lay.addWidget(self._hist_table)
         return w
 
-    def _refresh_history(self) -> None:
+    def _refresh_history(self, snapshot: list | None = None) -> None:
         kw = self._hist_filter.text().lower()
-        events = [e for e in self.bus.recent(1000) if e.module == self.module.name]
+        source = self.bus.recent(1000) if snapshot is None else snapshot
+        events = [e for e in source if e.module == self.module.name]
         if kw:
             events = [e for e in events if kw in e.message.lower()]
+        fingerprint = (kw,) + tuple(
+            (
+                id(event),
+                float(getattr(event, "ts", 0.0)),
+                int(getattr(event, "severity", Severity.INFO)),
+                str(getattr(event, "message", "")),
+            )
+            for event in events
+        )
+        if fingerprint == self._history_fingerprint:
+            return
+        self._history_fingerprint = fingerprint
+        header = self._hist_table.horizontalHeader()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
+        self._hist_table.setSortingEnabled(False)
         self._hist_table.setRowCount(0)
         for e in events:
             r = self._hist_table.rowCount(); self._hist_table.insertRow(r)
@@ -2429,6 +2926,8 @@ class ModuleInspector(QDialog):
             self._hist_table.setItem(r, 0, ts_item)
             self._hist_table.setItem(r, 1, _sev_item(e.severity))
             self._hist_table.setItem(r, 2, QTableWidgetItem(e.message))
+        self._hist_table.setSortingEnabled(True)
+        self._hist_table.sortItems(sort_column, sort_order)
 
     def _deps_tab(self) -> QWidget:
         """Source file path, Python imports, and config fields used."""
@@ -2441,8 +2940,8 @@ class ModuleInspector(QDialog):
         path_lbl.setWordWrap(True)
         lay.addWidget(path_lbl)
 
-        if src_path:
-            open_btn = QPushButton("✎ Open in Sandbox")
+        if src_path and _source_editing_allowed():
+            open_btn = QPushButton("Open source sandbox")
             open_btn.clicked.connect(self._open_in_sandbox)
             lay.addWidget(open_btn)
 
@@ -2603,6 +3102,13 @@ class ModuleInspector(QDialog):
         self._refresh()
 
     def _open_in_sandbox(self) -> None:
+        if not _source_editing_allowed():
+            QMessageBox.warning(
+                self,
+                "Protected runtime",
+                "Source editing is available only in explicit unprivileged development mode.",
+            )
+            return
         try:
             from angerona.gui.sandbox_editor import launch_sandbox_editor
             # Auto-open THIS module's .py so the operator lands straight on its code.
@@ -2613,7 +3119,19 @@ class ModuleInspector(QDialog):
             QMessageBox.warning(self, "Sandbox", f"Could not open the sandbox: {exc}")
 
     def _selftest(self) -> None:
+        if self._test_worker is not None and self._test_worker.is_alive():
+            self.test_lbl.setText("A self-test is already running for this capability.")
+            return
+        lock = getattr(self.module, "_angerona_selftest_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            setattr(self.module, "_angerona_selftest_lock", lock)
+        if not lock.acquire(blocking=False):
+            self.test_lbl.setText("A self-test is already running for this capability.")
+            return
+        self._active_test_lock = lock
         self.test_lbl.setText("Testing…")
+        self.selftest_btn.setEnabled(False)
         self._test_worker = threading.Thread(
             target=self._run_test,
             name=f"ModuleSelfTest-{self.module.name}",
@@ -2624,23 +3142,30 @@ class ModuleInspector(QDialog):
     def _run_test(self) -> None:
         try:
             ok, detail = self.module.self_test()
-            color = "#22c55e" if ok else "#ef4444"
             _emit_if_accepting(
                 self,
                 "_test_done",
-                f"<span style='color:{color}'>"
-                f"{'PASS' if ok else 'FAIL'} — {detail}</span>",
+                f"{'PASS' if ok else 'FAIL'} — {str(detail)[:4000]}",
             )
         except Exception as exc:
             _emit_if_accepting(
                 self,
                 "_test_done",
-                f"<span style='color:#ef4444'>FAIL — {exc}</span>",
+                f"FAIL — {str(exc)[:4000]}",
             )
+        finally:
+            lock = getattr(self, "_active_test_lock", None)
+            if lock is not None:
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass
+                self._active_test_lock = None
 
     def _apply_test_result(self, message: str) -> None:
         if self._accept_async_results:
             self.test_lbl.setText(message)
+            self.selftest_btn.setEnabled(True)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
         self._accept_async_results = False
@@ -2649,29 +3174,92 @@ class ModuleInspector(QDialog):
 
     def _refresh(self) -> None:
         color = HEALTH_COLOR.get(self.module.health_state, "#e5e7eb")
-        note = (f"<br><span style='color:#9aa4b2'>{self.module.health_note}</span>"
-                if self.module.health_note else "")
+        note = f" · {str(self.module.health_note)[:1000]}" if self.module.health_note else ""
         self.status_lbl.setText(
-            f"Status: <b style='color:{color}'>{self.module.status}</b> · "
-            f"health <b style='color:{color}'>{self.module.health}%</b> · "
+            f"Status: {str(self.module.status)[:80]} · "
+            f"health {self.module.health}% · "
             f"{'enabled' if self._enabled() else 'disabled'}" + note)
-        self.error_lbl.setText(f"Last error: {self.module.last_error}" if self.module.last_error else "")
+        self.error_lbl.setText(
+            f"Last error: {str(self.module.last_error)[:2000]}"
+            if self.module.last_error else ""
+        )
         self.toggle_btn.setText("Disable" if self._enabled() else "Enable")
+        try:
+            contract = _capability_summary(self.module)
+            operational = self.module.operational_snapshot()
+            gaps = contract.get("metadata_gaps", [])
+            cycle_age = operational.get("last_cycle_age_seconds")
+            cycle_text = "not yet sampled" if cycle_age is None else f"{float(cycle_age):.1f}s"
+            self._contract_summary.setText(
+                f"{contract.get('capability_id', self.module.name)} · "
+                f"{contract.get('mode', '?')} · {contract.get('maturity', '?')} · "
+                f"authority {contract.get('response_authority', 'none')} · "
+                f"loss count {operational.get('event_overflow_count', 0)} · "
+                f"cycle age {cycle_text}\n"
+                f"Metadata: {contract.get('metadata_level', 'unavailable')}"
+                + (f" · migration gaps: {', '.join(gaps)}" if gaps else " · complete")
+            )
+        except Exception:
+            pass
 
-        events = [e for e in self.bus.recent(300) if e.module == self.module.name][:80]
-        self.feed.setRowCount(0)
-        for e in events:
-            r = self.feed.rowCount(); self.feed.insertRow(r)
-            ts_item = QTableWidgetItem(e.time_str)
-            ts_item.setData(Qt.UserRole, e)   # stash event so a click opens detail
-            self.feed.setItem(r, 0, ts_item)
-            self.feed.setItem(r, 1, _sev_item(e.severity))
-            self.feed.setItem(r, 2, QTableWidgetItem(e.message))
+        # One coherent ring snapshot serves both the event feed and performance
+        # counters. The revision is sampled before copying: a concurrent event
+        # can cause one harmless extra refresh, but cannot be cached under a
+        # newer revision and then missed indefinitely.
+        revision_reader = getattr(self.bus, "revision", None)
+        try:
+            observed_revision = (
+                int(revision_reader()) if callable(revision_reader) else None
+            )
+        except Exception:
+            observed_revision = None
+        if (
+            observed_revision is None
+            or observed_revision != self._cached_bus_revision
+        ):
+            all_ev = self.bus.recent(1000)
+            self._cached_bus_events = list(all_ev)
+            self._cached_bus_revision = observed_revision
+        else:
+            all_ev = self._cached_bus_events
+
+        events = [
+            event
+            for event in all_ev[:300]
+            if getattr(event, "module", "") == self.module.name
+        ][:80]
+        feed_fingerprint = tuple(
+            (
+                id(event),
+                float(getattr(event, "ts", 0.0)),
+                int(getattr(event, "severity", Severity.INFO)),
+                str(getattr(event, "message", "")),
+            )
+            for event in events
+        )
+        if feed_fingerprint != self._feed_fingerprint:
+            self._feed_fingerprint = feed_fingerprint
+            header = self.feed.horizontalHeader()
+            sort_column = header.sortIndicatorSection()
+            sort_order = header.sortIndicatorOrder()
+            self.feed.setUpdatesEnabled(False)
+            self.feed.setSortingEnabled(False)
+            self.feed.setRowCount(0)
+            for event in events:
+                row = self.feed.rowCount()
+                self.feed.insertRow(row)
+                ts_item = QTableWidgetItem(event.time_str)
+                ts_item.setData(Qt.UserRole, event)  # click opens exact event detail
+                self.feed.setItem(row, 0, ts_item)
+                self.feed.setItem(row, 1, _sev_item(event.severity))
+                self.feed.setItem(row, 2, QTableWidgetItem(event.message))
+            self.feed.setSortingEnabled(True)
+            self.feed.sortItems(sort_column, sort_order)
+            self.feed.setUpdatesEnabled(True)
 
         # ── Performance tab refresh ──────────────────────────────────────
         try:
             now = time.time()
-            all_ev = self.bus.recent(1000)
             mod_ev = [e for e in all_ev if e.module == self.module.name]
             rate5  = sum(1 for e in mod_ev if now - e.ts < 300)
             rate60 = sum(1 for e in mod_ev if now - e.ts < 3600)
@@ -2684,7 +3272,8 @@ class ModuleInspector(QDialog):
             self._p_rate5.setText(str(rate5))
             self._p_rate60.setText(str(rate60))
             hcolor = "#22c55e" if health >= 70 else "#f59e0b" if health >= 40 else "#ef4444"
-            self._p_health.setText(f"<span style='color:{hcolor}'>{health}%</span>")
+            self._p_health.setStyleSheet(f"color:{hcolor};")
+            self._p_health.setText(f"{health}%")
             self._p_thread.setText(thread_s)
             self._health_trend.append(health)
             if len(self._health_trend) > 20:
@@ -2703,7 +3292,7 @@ class ModuleInspector(QDialog):
 
         # ── History tab refresh (light — only if tab visible) ────────────
         try:
-            self._refresh_history()
+            self._refresh_history(all_ev)
         except Exception:
             pass
 
@@ -2818,12 +3407,34 @@ class AlertDetailDialog(QDialog):
             self.setStyleSheet(parent.styleSheet())
         lay = QVBoxLayout(self)
 
+        identity = _event_record_identity(
+            event, getattr(panel, "bus", None) if panel is not None else None
+        )
+        authenticity_verified = identity.startswith("verified:")
+        evidence_subtitle = (
+            "Verified EventBus HMAC authenticity, record fingerprint, and "
+            "explicit operator actions"
+            if authenticity_verified
+            else "Deterministic record fingerprint (authenticity not verified) "
+            "and explicit operator actions"
+        )
         lay.addWidget(FuturisticHeader(
             f"{event.severity.label} · {event.module}",
-            "Signed event evidence, cryptographic fingerprint, and explicit operator actions",
+            evidence_subtitle,
             _sev_color(event.severity),
             self,
         ))
+        authenticity = QLabel(
+            "Authenticity: verified by the live EventBus HMAC authority"
+            if authenticity_verified
+            else "Authenticity: not verified; SHA-256 below identifies this record only"
+        )
+        authenticity.setObjectName("alertEvidenceAuthenticity")
+        authenticity.setStyleSheet(
+            "color:#22c55e; font-weight:700;"
+            if authenticity_verified else "color:#f59e0b; font-weight:700;"
+        )
+        lay.addWidget(authenticity)
         ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(event.ts))
         lay.addWidget(QLabel(f"Time: {ts}"))
         # Long alert text slowly scrolls inside a fixed-height box so the whole
@@ -2837,7 +3448,7 @@ class AlertDetailDialog(QDialog):
             msg = QLabel(event.message); msg.setWordWrap(True)
         msg.setStyleSheet("color:#cbd5e1;"); lay.addWidget(msg)
 
-        # Keep the signed JSON as the source of truth, while surfacing the
+        # Keep the full event record visible, while surfacing the
         # affected artifact and process lineage as first-class operator evidence.
         evidence = _event_evidence_context(event)
         evidence_panel = QFrame()
@@ -2873,8 +3484,11 @@ class AlertDetailDialog(QDialog):
         canon = (f"{event.ts}|{event.module}|{int(event.severity)}|{event.message}|"
                  f"{details_json}")
         digest = hashlib.sha256(canon.encode("utf-8")).hexdigest()
-        lay.addWidget(_section("Cryptographic fingerprint (SHA-256)"))
-        hbox = QLineEdit(digest); hbox.setReadOnly(True); lay.addWidget(hbox)
+        lay.addWidget(_section("Deterministic record fingerprint (SHA-256)"))
+        hbox = QLineEdit(digest)
+        hbox.setObjectName("alertRecordFingerprint")
+        hbox.setReadOnly(True)
+        lay.addWidget(hbox)
 
         # Evidence and the full record share all remaining height through a
         # draggable splitter. The evidence side scrolls at small window sizes,
@@ -2902,8 +3516,18 @@ class AlertDetailDialog(QDialog):
         record_layout.addWidget(_section("Full event record"))
         body = QPlainTextEdit(); body.setReadOnly(True)
         body.setMinimumHeight(96)
-        record = {"time": ts, "module": event.module, "severity": event.severity.label,
-                  "message": event.message, "details": event.details, "sha256": digest}
+        record = {
+            "time": ts,
+            "module": event.module,
+            "severity": event.severity.label,
+            "message": event.message,
+            "details": event.details,
+            "authenticity": (
+                "verified_eventbus_hmac"
+                if authenticity_verified else "not_verified"
+            ),
+            "record_sha256": digest,
+        }
         body.setPlainText(json.dumps(record, indent=2, default=str))
         record_layout.addWidget(body, 1)
         details_splitter.addWidget(record_box)
@@ -2944,8 +3568,12 @@ class AlertDetailDialog(QDialog):
     # ── Action handlers (reuse the AlertsPanel logic when available) ──────────
     def _act_allow(self) -> None:
         if self._panel is not None:
-            self._panel._allow_event(self._event)
-            self._action_status.setText(f"✓ Allowed future events from '{self._event.module}'.")
+            changed = self._panel._allow_event(self._event)
+            self._action_status.setText(
+                "A confirmed 15-minute exact-rule suppression is active; "
+                "use Undo Allow in Live Alerts to revoke it."
+                if changed else "No alert suppression was created."
+            )
         else:
             self._action_status.setText("Allow needs the live Alerts panel.")
 
@@ -3064,20 +3692,27 @@ class AlertsPanel(QFrame):
         self._events_worker: threading.Thread | None = None
         self._allow_cloud = allow_cloud is True
         self._events: list = []
+        self._rendered_event_ids: tuple[str, ...] = ()
         self._newest_ts: float = 0.0
         self._last_storage_revision: int = -1
         self._last_gap_rebuild: float = 0.0
         self._events_load_busy = False
         self.events_loaded.connect(self._apply_loaded_events)
-        # Modules the operator has allowed — excluded from future rows.
-        self._suppressed: set[str] = set()
+        # Explicit, short-lived detector-pattern suppressions.  Module-wide and
+        # integrity-alert suppression are deliberately unsupported.
+        self._suppressions: dict[tuple[str, str], float] = {}
+        self._last_suppression: tuple[str, str] | None = None
         # Live "Analyze" deep-triage workers, kept alive across row rebuilds.
         self._analyze_workers: list = []
+        self._analyze_inflight: set[str] = set()
+        self._analyze_queue: list[tuple[object, object, str]] = []
+        self._max_analyze_workers = 2
+        self._max_analyze_queue = 6
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 12, 14, 14)
         self._title = _ClickableSection(
             "Live Alerts  —  click a header to sort · click a row for detail  "
-            "· Allow = suppress future events from this module  "
+            "· Allow = confirm a 15-minute exact-rule suppression  "
             "· Block = confirm + directly suspend a verified process target  "
             "· Analyze = local AI triage (sanitized cloud fallback only if enabled)",
             "Open a full-size newest-first alert evidence window.",
@@ -3129,7 +3764,16 @@ class AlertsPanel(QFrame):
         # Status line for Allow/Block feedback
         self._status = QLabel("")
         self._status.setStyleSheet("color:#94a3b8; font-size:12px; padding:2px 0;")
-        lay.addWidget(self._status)
+        status_row = QHBoxLayout()
+        status_row.addWidget(self._status, 1)
+        self._undo_allow = QPushButton("Undo Allow")
+        self._undo_allow.setToolTip(
+            "Remove the most recent temporary alert-pattern suppression."
+        )
+        self._undo_allow.setEnabled(False)
+        self._undo_allow.clicked.connect(self._undo_last_suppression)
+        status_row.addWidget(self._undo_allow)
+        lay.addLayout(status_row)
 
     def _copy_selected(self) -> None:
         row = self.table.currentRow()
@@ -3224,6 +3868,43 @@ class AlertsPanel(QFrame):
         except Exception as exc:
             self._status.setText(f"Analyze unavailable: {exc}")
             return
+        identity = _event_record_identity(event, self.bus)
+        if identity in self._analyze_inflight:
+            self._status.setText(
+                "Analyze is already running or queued for this exact event."
+            )
+            return
+        if len(self._analyze_workers) >= self._max_analyze_workers:
+            if len(self._analyze_queue) >= self._max_analyze_queue:
+                self._status.setText(
+                    "Analyze queue is full (2 active · 6 queued); try again shortly."
+                )
+                return
+            self._analyze_inflight.add(identity)
+            self._analyze_queue.append((event, btn, identity))
+            if btn is not None:
+                try:
+                    btn.setEnabled(False)
+                    btn.setText("Queued…")
+                except RuntimeError:
+                    pass
+            self._status.setText(
+                f"Analyze queued ({len(self._analyze_queue)}/{self._max_analyze_queue})."
+            )
+            return
+        self._analyze_inflight.add(identity)
+        self._start_analysis(event, btn, identity, AnalysisWorker)
+
+    def _start_analysis(self, event, btn, identity: str, worker_type=None) -> None:
+        """Start one bounded analysis worker; callers own in-flight identity."""
+        if worker_type is None:
+            try:
+                from angerona.core.analysis_worker import AnalysisWorker as worker_type
+            except Exception as exc:
+                self._analyze_inflight.discard(identity)
+                self._reset_analyze_btn(btn)
+                self._status.setText(f"Analyze unavailable: {exc}")
+                return
         if btn is not None:
             try:
                 btn.setEnabled(False)
@@ -3240,7 +3921,7 @@ class AlertsPanel(QFrame):
             "details":        event.message,
             "type":           event.module,
         }
-        worker = AnalysisWorker(
+        worker = worker_type(
             alert,
             allow_cloud=self._allow_cloud,
             parent=self,
@@ -3255,7 +3936,9 @@ class AlertsPanel(QFrame):
         # Retain the worker until Qt confirms run() has returned. Reaping from
         # result_ready/error could delete a native QThread that is still
         # unwinding, which aborts the process on Windows.
-        worker.finished.connect(lambda w=worker: self._reap_worker(w))
+        worker.finished.connect(
+            lambda w=worker, event_id=identity: self._analysis_finished(w, event_id)
+        )
         worker.finished.connect(
             lambda token=loading_token: finish_loading(token)
         )
@@ -3271,12 +3954,17 @@ class AlertsPanel(QFrame):
         except RuntimeError:
             pass   # row was rebuilt mid-analysis — the new button is already fresh
 
-    def _reap_worker(self, worker) -> None:
+    def _analysis_finished(self, worker, identity: str) -> None:
         try:
             self._analyze_workers.remove(worker)
         except ValueError:
             pass
+        self._analyze_inflight.discard(identity)
         worker.deleteLater()
+        if not self._accept_async_results or not self._analyze_queue:
+            return
+        event, btn, queued_identity = self._analyze_queue.pop(0)
+        self._start_analysis(event, btn, queued_identity)
 
     def _on_analyze_done(self, result: dict, btn) -> None:
         self._reset_analyze_btn(btn)
@@ -3291,18 +3979,99 @@ class AlertsPanel(QFrame):
         self._reset_analyze_btn(btn)
         self._status.setText(f"⚠ Analyze failed: {msg}")
 
-    def _allow_event(self, event) -> None:
-        """Suppress future events from this module in the live feed."""
-        self._suppressed.add(event.module)
-        self._status.setText(
-            f"✓ '{event.module}' allowed — future events from this module are hidden. "
-            "Restart or remove from allowlist in Settings to restore."
+    def _allow_event(self, event) -> bool:
+        """Confirm a reversible, expiring exact-rule/pattern suppression."""
+        if _is_integrity_alert(event):
+            self._status.setText(
+                "Integrity alerts cannot be suppressed; investigate the trust failure."
+            )
+            QMessageBox.warning(
+                self.window(),
+                "Integrity alert cannot be allowed",
+                "Angerona never suppresses integrity, signature, HMAC, ledger, or "
+                "tamper failures. Review the evidence and resolve its cause.",
+            )
+            return False
+        module, selector, description = _alert_suppression_scope(event)
+        answer = QMessageBox.question(
+            self.window(),
+            "Temporarily suppress matching alerts",
+            f"Suppress {description} for 15 minutes?\n\n"
+            "This does not trust a process, change detector settings, or suppress "
+            "other alerts from the module. The action is visible here and can be "
+            "undone immediately.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
         )
-        # Force refresh to remove suppressed rows immediately
-        self._newest_ts = 0.0
-        self._last_storage_revision = -1
-        self._events = []
-        self.refresh()
+        if answer != QMessageBox.Yes:
+            return False
+        scope = (module, selector)
+        expires = time.time() + 15 * 60
+        self._suppressions[scope] = expires
+        self._last_suppression = scope
+        self._undo_allow.setEnabled(True)
+        self._publish_suppression_audit("created", scope, expires)
+        self._status.setText(
+            f"Temporary suppression active until "
+            f"{time.strftime('%H:%M:%S', time.localtime(expires))}: {description}. "
+            "Use Undo Allow to restore it now."
+        )
+        self._rebuild_event_rows(self._events, force=True)
+        return True
+
+    def _publish_suppression_audit(
+        self, action: str, scope: tuple[str, str], expires: float
+    ) -> None:
+        if self.bus is None or not hasattr(self.bus, "publish"):
+            return
+        try:
+            from angerona.core.eventbus import Event
+
+            self.bus.publish(Event(
+                "Operator Alert Suppression",
+                f"Temporary alert-pattern suppression {action}",
+                Severity.INFO,
+                details={
+                    "action": action,
+                    "expires_at": expires,
+                    "module": scope[0],
+                    "scope": scope[1],
+                    "reversible": True,
+                },
+            ))
+        except Exception:
+            pass
+
+    def _undo_last_suppression(self) -> None:
+        scope = self._last_suppression
+        if scope is None or scope not in self._suppressions:
+            self._undo_allow.setEnabled(False)
+            self._status.setText("No active temporary suppression to undo.")
+            return
+        expires = self._suppressions.pop(scope)
+        self._publish_suppression_audit("revoked", scope, expires)
+        self._last_suppression = None
+        self._undo_allow.setEnabled(False)
+        self._status.setText(
+            f"Temporary suppression revoked for {scope[0]}; matching alerts are visible."
+        )
+        self._rebuild_event_rows(self._events, force=True)
+
+    def _is_suppressed(self, event, *, now: float | None = None) -> bool:
+        if _is_integrity_alert(event):
+            return False
+        current = time.time() if now is None else float(now)
+        expired = [
+            scope for scope, expiry in self._suppressions.items()
+            if expiry <= current
+        ]
+        for scope in expired:
+            self._suppressions.pop(scope, None)
+            if scope == self._last_suppression:
+                self._last_suppression = None
+                self._undo_allow.setEnabled(False)
+        module, selector, _description = _alert_suppression_scope(event)
+        return self._suppressions.get((module, selector), 0.0) > current
 
     def _block_event(self, event) -> bool:
         """Directly contain a safely-bound process after one confirmation.
@@ -3382,12 +4151,16 @@ class AlertsPanel(QFrame):
         self._status.setText(f"✓ {result}{suffix}")
         return True
 
-    def _insert_row(self, pos: int, e) -> None:
-        if e.module in self._suppressed:
+    def _insert_row(self, pos: int, e, row_identity: str | None = None) -> None:
+        if self._is_suppressed(e):
             return
         self.table.insertRow(pos)
         ts_item = _TimestampItem(e.ts)
         ts_item.setData(Qt.UserRole, e)      # store event for click lookup
+        ts_item.setData(
+            Qt.UserRole + 1,
+            row_identity or _event_record_identity(e, self.bus) + ":0",
+        )
         self.table.setItem(pos, 0, ts_item)
         # node_origin: alerts forwarded by a remote sensor node (Remote Bridge)
         # are tagged so the operator can tell them apart from local telemetry.
@@ -3445,6 +4218,10 @@ class AlertsPanel(QFrame):
         super().closeEvent(event)
 
     def refresh(self) -> None:
+        # Expiry is wall-clock state, independent of ledger revision. Re-render
+        # when a temporary suppression lapses even if no new event arrived.
+        if any(expiry <= time.time() for expiry in self._suppressions.values()):
+            self._rebuild_event_rows(self._events, force=True)
         # The pre-check is an in-memory committed revision. If a writer is busy,
         # keep the current table and retry on the next two-second refresh.
         revision = self.storage.revision()
@@ -3470,60 +4247,41 @@ class AlertsPanel(QFrame):
         self._events_load_busy = False
         if events is None:
             return
-        if not events:
-            self._last_storage_revision = revision
-            return
-        newest_ts = events[0].ts          # storage.recent() returns newest-first
+        self._rebuild_event_rows(events)
+        self._events = list(events)
+        self._newest_ts = float(events[0].ts) if events else 0.0
+        self._last_storage_revision = revision
 
-        # ── fast path: nothing new ──────────────────────────────────────────
-        if newest_ts == self._newest_ts and len(events) == len(self._events):
-            self._last_storage_revision = revision
+    def _rebuild_event_rows(self, events, *, force: bool = False) -> None:
+        """Reconcile by full event identity so equal timestamps cannot drop rows."""
+        visible = [event for event in events if not self._is_suppressed(event)]
+        identities = tuple(_event_row_identities(visible, self.bus))
+        if identities == self._rendered_event_ids and not force:
             return
-
+        previous_ids = set(self._rendered_event_ids)
+        has_new_identity = any(identity not in previous_ids for identity in identities)
         hdr = self.table.horizontalHeader()
         sort_col = hdr.sortIndicatorSection()
         sort_ord = hdr.sortIndicatorOrder()
         previous_scroll = self.table.verticalScrollBar().value()
-
-        prev_ts = self._newest_ts
-        new_events = [e for e in events if e.ts > prev_ts] if prev_ts else events
-        # If our previous newest fell out of the recent(120) window (a burst), we
-        # can't incrementally reconcile — do a widget-freeing full rebuild.
-        gap = bool(prev_ts) and len(new_events) >= len(events)
-
-        # If a burst replaces the full window, avoid rebuilding 360 button
-        # widgets every two seconds. Threat handling remains live on the bus.
-        now = time.monotonic()
-        if gap and now - self._last_gap_rebuild < 5.0:
-            return
-        if gap:
-            self._last_gap_rebuild = now
-
         self.table.setSortingEnabled(False)
         self.table.setUpdatesEnabled(False)
-        if gap or not self._events:
-            # Full rebuild — FREE the old cell widgets first so they don't leak.
-            for r in range(self.table.rowCount()):
-                self._free_row_widgets(r)
-            self.table.setRowCount(0)
-            for e in events:
-                self._insert_row(self.table.rowCount(), e)
-        else:
-            # Incremental: only the genuinely-new events get new widgets (prepended
-            # so the newest ends at row 0), then trim the tail back to the cap.
-            for e in reversed(new_events):
-                self._insert_row(0, e)
-            self._trim_to_cap()
+        # The feed uses QTableWidgetItems rather than per-row widgets, so a
+        # bounded 120-row identity rebuild is predictable and avoids fragile
+        # timestamp/length incremental heuristics.
+        for row in range(self.table.rowCount()):
+            self._free_row_widgets(row)
+        self.table.setRowCount(0)
+        for event, identity in zip(visible, identities):
+            self._insert_row(self.table.rowCount(), event, identity)
+        self._trim_to_cap()
         self.table.setSortingEnabled(True)
         self.table.sortByColumn(sort_col, sort_ord)
         _restore_alert_scroll(
-            self.table, sort_col, sort_ord, previous_scroll, bool(new_events)
+            self.table, sort_col, sort_ord, previous_scroll, has_new_identity
         )
         self.table.setUpdatesEnabled(True)
-
-        self._events = events
-        self._newest_ts = newest_ts
-        self._last_storage_revision = revision
+        self._rendered_event_ids = identities
 
 
 # ── Bottom status strip ───────────────────────────────────────────────────────
@@ -3555,6 +4313,7 @@ class SoarPanel(QFrame):
         self.bus = bus
         self.manager = manager
         self._queue_fingerprint: tuple | None = None
+        self._last_clear_archive: Path | None = None
         # Approval must be acquired in this live UI session. Persisted JSONL is
         # history, not an authorization boundary, so editing it cannot enable
         # Execute after a restart.
@@ -3640,9 +4399,16 @@ class SoarPanel(QFrame):
         self._btn_ai.setStyleSheet("background:#4c1d95;color:#e9d5ff;font-weight:700;")
         self._btn_ai.clicked.connect(self._consult_ai)
         row.addWidget(self._btn_ai)
-        clear = QPushButton("Clear history")
-        clear.clicked.connect(self._clear)
-        row.addWidget(clear)
+        self._btn_clear = QPushButton("Archive & clear history")
+        self._btn_clear.setToolTip(
+            "After confirmation, move queue evidence into a recoverable archive."
+        )
+        self._btn_clear.clicked.connect(self._clear)
+        row.addWidget(self._btn_clear)
+        self._btn_restore_clear = QPushButton("Restore last clear")
+        self._btn_restore_clear.setEnabled(False)
+        self._btn_restore_clear.clicked.connect(self._restore_last_clear)
+        row.addWidget(self._btn_restore_clear)
         lay.addLayout(row)
         self._sync_action_buttons()
 
@@ -4038,20 +4804,77 @@ class SoarPanel(QFrame):
 
         _show_nonmodal_from(self._title, _build, "#f59e0b")
 
-    def _clear(self) -> None:
+    def _clear(self) -> bool:
+        if not _read_soar_queue() and not _soar_queue_state_path().exists():
+            self._status.setText("SOAR history is already empty.")
+            return False
+        answer = QMessageBox.question(
+            self.window(),
+            "Archive and clear SOAR history",
+            "Move the current SOAR queue and review state into a recoverable "
+            "archive, then clear the visible history?\n\nNo evidence is permanently "
+            "deleted. Use Restore last clear before new queue items arrive, or "
+            "recover the timestamped archive from the data directory.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return False
         try:
             with _SOAR_QUEUE_CACHE_LOCK:
-                _soar_queue_path().write_text("", encoding="utf-8")
-                try:
-                    _soar_queue_state_path().unlink()
-                except FileNotFoundError:
-                    pass
+                archive = _archive_soar_history()
                 _invalidate_soar_queue_cache()
-        except Exception:
-            pass
+        except Exception as exc:
+            self._status.setText(f"SOAR history was not cleared: {exc}")
+            QMessageBox.warning(
+                self.window(),
+                "SOAR archive failed",
+                "The queue remains available unless the message below reports a "
+                f"rollback failure.\n\n{exc}",
+            )
+            return False
+        if archive is None:
+            self._status.setText("SOAR history is already empty.")
+            return False
+        self._last_clear_archive = archive
+        self._btn_restore_clear.setEnabled(True)
         self._approved_requests.clear()
         self._queue_fingerprint = None
         self.refresh()
+        self._status.setText(f"SOAR history archived safely at {archive}")
+        return True
+
+    def _restore_last_clear(self) -> bool:
+        archive = self._last_clear_archive
+        if archive is None:
+            self._status.setText("No same-session SOAR archive is available to restore.")
+            return False
+        answer = QMessageBox.question(
+            self.window(),
+            "Restore archived SOAR history",
+            "Restore the most recently archived SOAR queue? This is refused if "
+            "new queue history exists, so no newer evidence can be overwritten.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return False
+        try:
+            with _SOAR_QUEUE_CACHE_LOCK:
+                _restore_soar_archive(archive)
+                _invalidate_soar_queue_cache()
+        except Exception as exc:
+            self._status.setText(f"SOAR archive was not restored: {exc}")
+            QMessageBox.warning(
+                self.window(), "SOAR restore failed", str(exc)
+            )
+            return False
+        self._last_clear_archive = None
+        self._btn_restore_clear.setEnabled(False)
+        self._queue_fingerprint = None
+        self.refresh()
+        self._status.setText("The most recently archived SOAR history was restored.")
+        return True
 
     # ── System context ────────────────────────────────────────────────────────
     def _gather_system_context(self) -> str:
@@ -5037,6 +5860,7 @@ class SettingsDialog(QDialog):
             "def _tab_adversary_combat",
         ),
         "Enterprise": ("src/angerona/gui/pages.py", "def _tab_enterprise"),
+        "Integrations": ("src/angerona/gui/pages.py", "def _tab_integrations"),
         "ARIA": ("src/angerona/gui/pages.py", "def _tab_aria"),
         "Trusted Processes": (
             "src/angerona/gui/pages.py",
@@ -5091,6 +5915,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(_scroll(self._tab_system()),  "System")
         tabs.addTab(_scroll(self._tab_adversary_combat()), "Adversary Combat")
         tabs.addTab(_scroll(self._tab_enterprise()), "Enterprise")
+        tabs.addTab(_scroll(self._tab_integrations()), "Integrations")
         tabs.addTab(_scroll(self._tab_aria()),    "ARIA")
         tabs.addTab(_scroll(self._tab_trusted_processes()), "Trusted Processes")
         tabs.addTab(_scroll(self._tab_mobile()), "Mobile Integration")
@@ -5258,6 +6083,17 @@ class SettingsDialog(QDialog):
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.setChecked(False)
+        for name in ("_siem_raw_chk", "_siem_plaintext_chk", "_bridge_nonloop_chk"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setChecked(False)
+        if hasattr(self, "_siem_host"):
+            self._siem_host.clear()
+        if hasattr(self, "_bridge_mode"):
+            self._bridge_mode.setCurrentIndex(0)
+        if hasattr(self, "_ioc_url"):
+            self._ioc_url.clear()
+            self._ioc_sha256.clear()
         self._select_tab("ARIA")
         self._aria_test_status.setText(
             "Privacy defaults staged: optional cloud, mobile, and remote egress are "
@@ -5299,6 +6135,7 @@ class SettingsDialog(QDialog):
                 item = QTableWidgetItem(value)
                 item.setData(Qt.UserRole, area.title)
                 self._settings_map.setItem(row, column, item)
+        self._settings_map.setSortingEnabled(True)
         header = self._settings_map.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -6235,6 +7072,193 @@ class SettingsDialog(QDialog):
                 f"\n\nCausal snapshot unavailable ({type(exc).__name__})."
             )
 
+    def _tab_integrations(self) -> QWidget:
+        """Canonical, schema-validated interoperability configuration."""
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setSpacing(10)
+
+        intro = QLabel(
+            "All connectors are off until configured. SIEM delivery uses a "
+            "durable retry outbox, Remote Bridge requires a protected 256-bit "
+            "key, and unpinned IOC data remains advisory-only. Restart the "
+            "affected module after Save."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#94a3b8; font-size:11px;")
+        lay.addWidget(intro)
+
+        lay.addWidget(self._section("SIEM / CEF export"))
+        siem = QGridLayout()
+        self._siem_host = QLineEdit(str(getattr(self._cfg, "siem_host", "")))
+        self._siem_host.setPlaceholderText("collector.example.test (blank = off)")
+        self._siem_port = QLineEdit(str(getattr(self._cfg, "siem_port", 6514)))
+        self._siem_port.setFixedWidth(90)
+        self._siem_proto = QComboBox()
+        for label, value in (
+            ("TLS", "tls"),
+            ("TCP (plaintext)", "tcp"),
+            ("UDP (plaintext)", "udp"),
+        ):
+            self._siem_proto.addItem(label, value)
+        index = self._siem_proto.findData(
+            str(getattr(self._cfg, "siem_protocol", "tls")).casefold()
+        )
+        self._siem_proto.setCurrentIndex(max(0, index))
+        self._siem_severity = QComboBox()
+        self._siem_severity.addItems(
+            ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"]
+        )
+        index = self._siem_severity.findText(
+            str(getattr(self._cfg, "siem_min_severity", "MEDIUM")).upper()
+        )
+        self._siem_severity.setCurrentIndex(max(0, index))
+        self._siem_ca = QLineEdit(str(getattr(self._cfg, "siem_ca_file", "")))
+        self._siem_ca.setPlaceholderText("Optional absolute CA bundle path")
+        choose_ca = QPushButton("Browse…")
+
+        def select_ca_file() -> None:
+            selected, _selected_filter = QFileDialog.getOpenFileName(
+                self, "Select SIEM CA bundle", self._siem_ca.text().strip()
+            )
+            if selected:
+                self._siem_ca.setText(selected)
+
+        choose_ca.clicked.connect(select_ca_file)
+        siem.addWidget(QLabel("Collector host:"), 0, 0)
+        siem.addWidget(self._siem_host, 0, 1)
+        siem.addWidget(QLabel("Port:"), 0, 2)
+        siem.addWidget(self._siem_port, 0, 3)
+        siem.addWidget(QLabel("Transport:"), 1, 0)
+        siem.addWidget(self._siem_proto, 1, 1)
+        siem.addWidget(QLabel("Minimum severity:"), 1, 2)
+        siem.addWidget(self._siem_severity, 1, 3)
+        siem.addWidget(QLabel("TLS CA bundle:"), 2, 0)
+        siem.addWidget(self._siem_ca, 2, 1, 1, 2)
+        siem.addWidget(choose_ca, 2, 3)
+        siem.setColumnStretch(1, 1)
+        lay.addLayout(siem)
+        self._siem_plaintext_chk = QCheckBox(
+            "I explicitly approve plaintext TCP/UDP export"
+        )
+        self._siem_plaintext_chk.setChecked(
+            bool(getattr(self._cfg, "siem_allow_plaintext", False))
+        )
+        self._siem_raw_chk = QCheckBox(
+            "Include raw event summaries instead of privacy-redacted summaries"
+        )
+        self._siem_raw_chk.setChecked(
+            bool(getattr(self._cfg, "siem_include_raw", False))
+        )
+        self._siem_raw_chk.setToolTip(
+            "May export local identifiers and paths. Event details are still not exported."
+        )
+        lay.addWidget(self._siem_plaintext_chk)
+        lay.addWidget(self._siem_raw_chk)
+
+        lay.addWidget(self._section("Remote Bridge"))
+        bridge = QGridLayout()
+        self._bridge_mode = QComboBox()
+        for label, value in (
+            ("Off", ""), ("Sender", "SENDER"), ("Receiver", "RECEIVER")
+        ):
+            self._bridge_mode.addItem(label, value)
+        index = self._bridge_mode.findData(
+            str(getattr(self._cfg, "remote_bridge_mode", "")).upper()
+        )
+        self._bridge_mode.setCurrentIndex(max(0, index))
+        self._bridge_peer = QLineEdit(
+            str(getattr(self._cfg, "remote_bridge_peer", ""))
+        )
+        self._bridge_peer.setPlaceholderText("receiver.example.test:47924")
+        self._bridge_bind = QLineEdit(
+            str(getattr(self._cfg, "remote_bridge_bind", "127.0.0.1"))
+        )
+        self._bridge_port = QLineEdit(
+            str(getattr(self._cfg, "remote_bridge_port", 47924))
+        )
+        self._bridge_port.setFixedWidth(90)
+        self._bridge_node = QLineEdit(
+            str(getattr(self._cfg, "remote_bridge_node_id", ""))
+        )
+        self._bridge_node.setPlaceholderText("Optional privacy-safe label")
+        self._bridge_key = QLineEdit()
+        self._bridge_key.setEchoMode(QLineEdit.Password)
+        self._bridge_key.setPlaceholderText(
+            "Leave blank to keep key; paste 64+ hexadecimal characters to replace"
+        )
+        bridge.addWidget(QLabel("Mode:"), 0, 0)
+        bridge.addWidget(self._bridge_mode, 0, 1)
+        bridge.addWidget(QLabel("Peer (sender):"), 0, 2)
+        bridge.addWidget(self._bridge_peer, 0, 3)
+        bridge.addWidget(QLabel("Bind (receiver):"), 1, 0)
+        bridge.addWidget(self._bridge_bind, 1, 1)
+        bridge.addWidget(QLabel("Port:"), 1, 2)
+        bridge.addWidget(self._bridge_port, 1, 3)
+        bridge.addWidget(QLabel("Node label:"), 2, 0)
+        bridge.addWidget(self._bridge_node, 2, 1, 1, 3)
+        bridge.addWidget(QLabel("Shared key:"), 3, 0)
+        bridge.addWidget(self._bridge_key, 3, 1, 1, 3)
+        bridge.setColumnStretch(1, 1)
+        bridge.setColumnStretch(3, 1)
+        lay.addLayout(bridge)
+        self._bridge_nonloop_chk = QCheckBox(
+            "I explicitly approve a non-loopback receiver bind"
+        )
+        self._bridge_nonloop_chk.setChecked(
+            bool(getattr(self._cfg, "remote_bridge_allow_nonloopback", False))
+        )
+        lay.addWidget(self._bridge_nonloop_chk)
+
+        lay.addWidget(self._section("Inbound IOC intelligence"))
+        ioc = QGridLayout()
+        self._ioc_url = QLineEdit(str(getattr(self._cfg, "ioc_feed_url", "")))
+        self._ioc_url.setPlaceholderText("https://… (blank = off)")
+        self._ioc_sha256 = QLineEdit(
+            str(getattr(self._cfg, "ioc_feed_sha256", ""))
+        )
+        self._ioc_sha256.setPlaceholderText(
+            "Optional exact 64-character response SHA-256 pin"
+        )
+        ioc.addWidget(QLabel("Feed URL:"), 0, 0)
+        ioc.addWidget(self._ioc_url, 0, 1)
+        ioc.addWidget(QLabel("Response pin:"), 1, 0)
+        ioc.addWidget(self._ioc_sha256, 1, 1)
+        ioc.setColumnStretch(1, 1)
+        lay.addLayout(ioc)
+
+        details = QPushButton("Explain trust and delivery details")
+        details.clicked.connect(self._show_integration_details)
+        lay.addWidget(details)
+        storage = QLabel(
+            "Durable queues: " + str(self._cfg.data_dir / "outbox")
+            + "\nConnector secrets: operating-system protected credential store"
+        )
+        storage.setTextFormat(Qt.PlainText)
+        storage.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        storage.setWordWrap(True)
+        storage.setStyleSheet(
+            "color:#94a3b8; font-family:Consolas; font-size:10px;"
+        )
+        lay.addWidget(storage)
+        lay.addStretch()
+        return w
+
+    def _show_integration_details(self) -> None:
+        QMessageBox.information(
+            self,
+            "Integration trust and delivery",
+            "SIEM: events are staged in an authenticated, bounded SQLite outbox "
+            "before its EventBus cursor advances. Delivery is at least once; "
+            "stable IDs make duplicates identifiable.\n\n"
+            "Remote Bridge: only HIGH/CRITICAL summaries cross the link. Peers "
+            "prove the protected key, frames use AES-GCM, receivers deduplicate "
+            "stable IDs, and routable listening requires separate approval.\n\n"
+            "IOC feed: the client accepts bounded public HTTPS responses. Without "
+            "a valid exact SHA-256 pin, matches are advisory-only and cannot "
+            "authorize response. Private model chain-of-thought is never exposed.",
+        )
+
     def _tab_aria(self) -> QWidget:
         """ARIA assistant layer — HUD, Overdrive, voice, auto-brief, inbox, research.
         Everything here is local-first, independently optional, and off by default."""
@@ -6422,6 +7446,7 @@ class SettingsDialog(QDialog):
             ("ARIA_IMAP_PASS", "ANGERONA_TEAMS_APP_PASSWORD"),
             self._cfg.data_dir,
         )
+        self._initial_connector_secret_values = dict(protected_secrets)
         self._aria_imap_pass = QLineEdit(
             protected_secrets.get("ARIA_IMAP_PASS", "")
         )
@@ -7303,16 +8328,26 @@ class SettingsDialog(QDialog):
         return self._reset_usb_pin()
 
     def _save(self) -> None:
-        from angerona.core.autostart import enable_autostart as _autostart_enable, \
-            disable_autostart as _autostart_disable
+        """Validate, stage, and commit settings as one compensating transaction."""
+        from angerona.core import autostart as autostart_module
+        from angerona.core import config as config_module
+        from angerona.core.fleet_credentials import (
+            INTERNAL_FLEET_CREDENTIALS_KEY,
+            LEGACY_FLEET_SERVICE_KEY,
+        )
+        from angerona.core.provider_credentials import canonical_updates
+        from angerona.core.secure_store import read_secret_map
 
+        # All widget values are copied into a detached Config first. Nothing
+        # live, persisted, protected, or scheduled changes during validation.
+        candidate = copy.deepcopy(self._cfg)
         if self._fleet_service_chk.isChecked():
             tenant = self._fleet_tenant.text().strip()
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{2,127}", tenant):
                 self._select_tab("Enterprise")
                 QMessageBox.warning(
                     self, "Invalid fleet tenant",
-                    "Use 3-128 letters, numbers, dots, underscores, colons or hyphens."
+                    "Use 3-128 letters, numbers, dots, underscores, colons or hyphens.",
                 )
                 return
             try:
@@ -7323,268 +8358,461 @@ class SettingsDialog(QDialog):
                 self._select_tab("Enterprise")
                 QMessageBox.warning(
                     self, "Invalid fleet port",
-                    "Choose an unused loopback port from 1024 through 65535."
+                    "Choose an unused loopback port from 1024 through 65535.",
                 )
                 return
-
         if self._teams_chk.isChecked() and not self._teams_users.text().strip():
             self._select_tab("ARIA")
             QMessageBox.warning(
                 self, "Teams allowlist required",
-                "Add at least one immutable Teams AAD object ID. The bot "
-                "fails closed when its allowlist is empty.")
+                "Add at least one immutable Teams AAD object ID. The bot fails "
+                "closed when its allowlist is empty.",
+            )
             return
         if self._aria_push_chk.isChecked() and not self._aria_push_url.text().strip():
             self._select_tab("ARIA")
-            QMessageBox.warning(self, "Channel URL required",
-                                "Enter the approved channel/webhook URL or turn push off.")
+            QMessageBox.warning(
+                self, "Channel URL required",
+                "Enter the approved channel/webhook URL or turn push off.",
+            )
             return
         if self._aria_inbox_chk.isChecked() and not (
-                self._aria_imap_host.text().strip() and
-                self._aria_imap_user.text().strip()):
+            self._aria_imap_host.text().strip()
+            and self._aria_imap_user.text().strip()
+        ):
             self._select_tab("ARIA")
-            QMessageBox.warning(self, "Mailbox settings required",
-                                "Enter the IMAP host and mailbox, or turn inbox triage off.")
+            QMessageBox.warning(
+                self, "Mailbox settings required",
+                "Enter the IMAP host and mailbox, or turn inbox triage off.",
+            )
             return
 
-        # The main Save button is authoritative for every settings tab. Only
-        # touch the protected store when a field changed, so unrelated settings
-        # remain editable even when an external credential backend is offline.
-        if self._api_keys_dirty and not self._save_api_keys(notify=False):
-            return
-        self._cfg.ollama_host  = self._ollama_host.text().strip()
-        self._cfg.ollama_model = self._ollama_model.text().strip()
-        self._cfg.github_repo  = self._github_repo.text().strip()
+        candidate.ollama_host = self._ollama_host.text().strip()
+        candidate.ollama_model = self._ollama_model.text().strip()
+        candidate.github_repo = self._github_repo.text().strip()
         theme_key = self._theme_combo.currentData() or self._theme_combo.currentText()
-        self._cfg.theme = theme_key or self._cfg.theme
-        # UI scale mode/value — set BEFORE apply_theme so the restyle below picks
-        # up the new scale immediately (apply_theme recomputes _ui_scale).
-        _sc = self._ui_scale_combo.currentData()
-        if _sc == "auto" or _sc is None:
-            self._cfg.ui_scale_mode = "auto"
+        candidate.theme = theme_key or candidate.theme
+        scale = self._ui_scale_combo.currentData()
+        if scale == "auto" or scale is None:
+            candidate.ui_scale_mode = "auto"
         else:
-            self._cfg.ui_scale_mode = "fixed"
+            candidate.ui_scale_mode = "fixed"
             try:
-                self._cfg.ui_scale_fixed = float(int(_sc)) / 100.0
+                candidate.ui_scale_fixed = float(int(scale)) / 100.0
             except (TypeError, ValueError):
                 pass
-        self._cfg.ui_motion_enabled = self._ui_motion_chk.isChecked()
-        self._cfg.dashboard_mode = str(
-            self._dashboard_mode_combo.currentData() or "classic")
-        self._cfg.holographic_orb_enabled = (
-            self._holographic_orb_chk.isChecked()
+        candidate.ui_motion_enabled = self._ui_motion_chk.isChecked()
+        candidate.dashboard_mode = str(
+            self._dashboard_mode_combo.currentData() or "classic"
         )
-        self._cfg.process_baseline_enabled = (
-            self._process_baseline_chk.isChecked()
-        )
-        if callable(self._apply_theme):
-            try: self._apply_theme(self._cfg.theme)
-            except Exception: pass
-
-        # Integrity / performance toggles — persist AND publish to the env vars
-        # the stdlib layers read, so the change is live this session (not just
-        # after a restart).
-        import os as _os
-        self._cfg.require_signed_aar = self._require_signed_aar_chk.isChecked()
-        if self._cfg.require_signed_aar:
-            _os.environ["ANGERONA_REQUIRE_SIGNED_AAR"] = "1"
-        else:
-            _os.environ.pop("ANGERONA_REQUIRE_SIGNED_AAR", None)
-        self._cfg.entropy_pool_enabled = self._entropy_pool_chk.isChecked()
-        if self._cfg.entropy_pool_enabled:
-            _os.environ["ANGERONA_ENTROPY_POOL"] = "1"
-        else:
-            _os.environ.pop("ANGERONA_ENTROPY_POOL", None)
-
-        # Adversary Combat is a standing authorization policy. Save applies it
-        # live; detector/response loops re-read these fields for every event.
-        self._cfg.adversary_combat_enabled = self._combat_enabled_chk.isChecked()
-        self._cfg.adversary_combat_mode = str(
+        candidate.holographic_orb_enabled = self._holographic_orb_chk.isChecked()
+        candidate.process_baseline_enabled = self._process_baseline_chk.isChecked()
+        candidate.require_signed_aar = self._require_signed_aar_chk.isChecked()
+        candidate.entropy_pool_enabled = self._entropy_pool_chk.isChecked()
+        candidate.adversary_combat_enabled = self._combat_enabled_chk.isChecked()
+        candidate.adversary_combat_mode = str(
             self._combat_mode_combo.currentData() or "maximum"
         )
-        self._cfg.adversary_combat_min_severity = str(
+        candidate.adversary_combat_min_severity = str(
             self._combat_severity_combo.currentData() or "LOW"
         )
-        self._cfg.adversary_combat_block_network = self._combat_block_chk.isChecked()
-        self._cfg.adversary_combat_quarantine_files = (
+        candidate.adversary_combat_block_network = self._combat_block_chk.isChecked()
+        candidate.adversary_combat_quarantine_files = (
             self._combat_quarantine_chk.isChecked()
         )
-        self._cfg.adversary_combat_process_action = str(
+        candidate.adversary_combat_process_action = str(
             self._combat_process_combo.currentData() or "terminate"
         )
-        self._cfg.adversary_combat_isolate_host = (
+        candidate.adversary_combat_isolate_host = (
             self._combat_host_isolation_chk.isChecked()
         )
-        self._cfg.adversary_combat_activate_honeypots = (
+        candidate.adversary_combat_activate_honeypots = (
             self._combat_honeypot_chk.isChecked()
         )
         try:
-            self._cfg.adversary_combat_isolation_threshold = max(
+            candidate.adversary_combat_isolation_threshold = max(
                 1,
                 min(100, int(self._combat_isolation_threshold.text().strip() or "3")),
             )
         except ValueError:
-            self._cfg.adversary_combat_isolation_threshold = 3
-        if self._cfg.adversary_combat_enabled:
-            _os.environ["ANGERONA_ADVERSARY_COMBAT_ENABLED"] = "1"
-            _os.environ["ANGERONA_ADVERSARY_COMBAT_MODE"] = (
-                self._cfg.adversary_combat_mode
-            )
-        else:
-            _os.environ.pop("ANGERONA_ADVERSARY_COMBAT_ENABLED", None)
-            _os.environ.pop("ANGERONA_ADVERSARY_COMBAT_MODE", None)
-
-        want_autostart = self._autostart_chk.isChecked()
-        self._cfg.autostart_enabled = want_autostart
+            candidate.adversary_combat_isolation_threshold = 3
+        candidate.autostart_enabled = self._autostart_chk.isChecked()
+        candidate.eco_mode = self._eco_chk.isChecked()
+        candidate.blackbox_enabled = self._blackbox_chk.isChecked()
+        candidate.deception_user_folders = self._deception_user_folders_chk.isChecked()
+        candidate.mcp_enabled = self._mcp_chk.isChecked()
         try:
-            from angerona.core.autostart import is_enabled as _autostart_is_enabled
-            current_autostart = _autostart_is_enabled()
-            if current_autostart is None or bool(current_autostart) != want_autostart:
-                _autostart_enable() if want_autostart else _autostart_disable()
-        except Exception:
-            pass
-
-        self._cfg.eco_mode         = self._eco_chk.isChecked()
-        self._cfg.blackbox_enabled = self._blackbox_chk.isChecked()
-        self._cfg.deception_user_folders = self._deception_user_folders_chk.isChecked()
-        if self._cfg.deception_user_folders:
-            _os.environ["ANGERONA_USER_FOLDER_DECEPTION"] = "1"
-        else:
-            _os.environ.pop("ANGERONA_USER_FOLDER_DECEPTION", None)
-        self._cfg.mcp_enabled      = self._mcp_chk.isChecked()
-        try:
-            self._cfg.mcp_port = int(self._mcp_port.text().strip() or "47923")
+            candidate.mcp_port = int(self._mcp_port.text().strip() or "47923")
         except ValueError:
             pass
-        self._cfg.ebpf_enabled = self._ebpf_chk.isChecked()
-        self._cfg.fleet_service_enabled = self._fleet_service_chk.isChecked()
-        self._cfg.fleet_tenant_id = self._fleet_tenant.text().strip() or "local"
+        candidate.ebpf_enabled = self._ebpf_chk.isChecked()
+        candidate.fleet_service_enabled = self._fleet_service_chk.isChecked()
+        candidate.fleet_tenant_id = self._fleet_tenant.text().strip() or "local"
         try:
-            self._cfg.fleet_service_port = int(self._fleet_port.text().strip())
+            candidate.fleet_service_port = int(self._fleet_port.text().strip())
         except ValueError:
             pass
-        if self._cfg.fleet_service_enabled:
-            import secrets
-            os.environ.pop("ANGERONA_FLEET_SERVICE_KEY", None)
-            try:
-                from angerona.core.config import write_env_keys
-                from angerona.core.fleet_credentials import (
-                    INTERNAL_FLEET_CREDENTIALS_KEY,
-                    LEGACY_FLEET_SERVICE_KEY,
-                )
-                from angerona.core.secure_store import read_secret_map
+        candidate.siem_host = self._siem_host.text().strip()
+        try:
+            candidate.siem_port = int(self._siem_port.text().strip())
+        except ValueError:
+            candidate.siem_port = 0
+        candidate.siem_protocol = str(self._siem_proto.currentData() or "tls")
+        candidate.siem_min_severity = self._siem_severity.currentText()
+        candidate.siem_allow_plaintext = self._siem_plaintext_chk.isChecked()
+        candidate.siem_ca_file = self._siem_ca.text().strip()
+        candidate.siem_include_raw = self._siem_raw_chk.isChecked()
+        candidate.remote_bridge_mode = str(self._bridge_mode.currentData() or "")
+        candidate.remote_bridge_peer = self._bridge_peer.text().strip()
+        candidate.remote_bridge_bind = self._bridge_bind.text().strip()
+        try:
+            candidate.remote_bridge_port = int(self._bridge_port.text().strip())
+        except ValueError:
+            candidate.remote_bridge_port = 0
+        candidate.remote_bridge_node_id = self._bridge_node.text().strip()
+        candidate.remote_bridge_allow_nonloopback = (
+            self._bridge_nonloop_chk.isChecked()
+        )
+        candidate.ioc_feed_url = self._ioc_url.text().strip()
+        candidate.ioc_feed_sha256 = self._ioc_sha256.text().strip().casefold()
 
-                protected = read_secret_map(self._cfg.data_dir)
-                if not protected.get(INTERNAL_FLEET_CREDENTIALS_KEY) and not (
-                    protected.get(LEGACY_FLEET_SERVICE_KEY)
-                ):
-                    write_env_keys({
-                        LEGACY_FLEET_SERVICE_KEY: secrets.token_urlsafe(48)
-                    })
-                # The protected store, not the process-global environment, is
-                # the only permitted source for first fleet migration.
-                os.environ.pop(LEGACY_FLEET_SERVICE_KEY, None)
-            except Exception as exc:
-                QMessageBox.warning(
-                    self, "Fleet service key unavailable",
-                    "The protected credential store could not create the local "
-                    f"fleet key, so the service remains disabled.\n\n{exc}"
-                )
-                self._cfg.fleet_service_enabled = False
-                return
-
-        # ── ARIA toggles ──
-        self._cfg.aria_enabled          = self._aria_chk.isChecked()
-        self._cfg.perf_governor_enabled = (
-            self._cfg.aria_enabled and self._aria_perf_chk.isChecked())
-        self._cfg.aria_persona          = self._aria_persona_combo.currentText()
-        self._cfg.aria_voice_enabled    = (
-            self._cfg.aria_enabled and self._aria_voice_chk.isChecked())
-        self._cfg.aria_conversation_awareness = (
-            self._cfg.aria_enabled and self._aria_awareness_chk.isChecked())
-        self._cfg.aria_always_listen = (
-            self._cfg.aria_enabled
-            and self._cfg.aria_voice_enabled
-            and self._cfg.aria_conversation_awareness
+        candidate.aria_enabled = self._aria_chk.isChecked()
+        candidate.perf_governor_enabled = (
+            candidate.aria_enabled and self._aria_perf_chk.isChecked()
+        )
+        candidate.aria_persona = self._aria_persona_combo.currentText()
+        candidate.aria_voice_enabled = (
+            candidate.aria_enabled and self._aria_voice_chk.isChecked()
+        )
+        candidate.aria_conversation_awareness = (
+            candidate.aria_enabled and self._aria_awareness_chk.isChecked()
+        )
+        candidate.aria_always_listen = (
+            candidate.aria_enabled
+            and candidate.aria_voice_enabled
+            and candidate.aria_conversation_awareness
             and self._aria_always_listen_chk.isChecked()
         )
         try:
-            self._cfg.aria_follow_up_seconds = max(
-                0, min(60, int(self._aria_follow_up.text().strip() or "12")))
+            candidate.aria_follow_up_seconds = max(
+                0, min(60, int(self._aria_follow_up.text().strip() or "12"))
+            )
         except ValueError:
-            self._cfg.aria_follow_up_seconds = 12
-        self._cfg.aria_hand_controls = (
-            self._cfg.aria_enabled and self._aria_hands_chk.isChecked())
+            candidate.aria_follow_up_seconds = 12
+        candidate.aria_hand_controls = (
+            candidate.aria_enabled and self._aria_hands_chk.isChecked()
+        )
         try:
-            self._cfg.aria_camera_index = max(
-                0, min(16, int(self._aria_camera_index.text().strip() or "0")))
+            candidate.aria_camera_index = max(
+                0, min(16, int(self._aria_camera_index.text().strip() or "0"))
+            )
         except ValueError:
-            self._cfg.aria_camera_index = 0
-        self._cfg.aria_voice_cloud_tts  = (
-            self._cfg.aria_voice_enabled and self._aria_voice_cloud_chk.isChecked())
-        self._cfg.aria_cloud_fallback   = (
-            self._cfg.aria_enabled and self._aria_cloud_fallback_chk.isChecked())
-        self._cfg.alert_analysis_cloud_fallback = (
+            candidate.aria_camera_index = 0
+        candidate.aria_voice_cloud_tts = (
+            candidate.aria_voice_enabled and self._aria_voice_cloud_chk.isChecked()
+        )
+        candidate.aria_cloud_fallback = (
+            candidate.aria_enabled and self._aria_cloud_fallback_chk.isChecked()
+        )
+        candidate.alert_analysis_cloud_fallback = (
             self._alert_analysis_cloud_chk.isChecked()
         )
-        self._cfg.aria_mic_device       = str(self._aria_mic_combo.currentData() or "")
-        self._cfg.aria_push_enabled     = (
-            self._cfg.aria_enabled and self._aria_push_chk.isChecked())
-        self._cfg.aria_push_kind        = self._aria_push_kind.currentText()
-        self._cfg.aria_push_url         = self._aria_push_url.text().strip()
-        self._cfg.aria_inbox_enabled    = (
-            self._cfg.aria_enabled and self._aria_inbox_chk.isChecked())
-        self._cfg.aria_imap_host        = self._aria_imap_host.text().strip()
-        self._cfg.aria_imap_user        = self._aria_imap_user.text().strip()
+        candidate.aria_mic_device = str(self._aria_mic_combo.currentData() or "")
+        candidate.aria_push_enabled = (
+            candidate.aria_enabled and self._aria_push_chk.isChecked()
+        )
+        candidate.aria_push_kind = self._aria_push_kind.currentText()
+        candidate.aria_push_url = self._aria_push_url.text().strip()
+        candidate.aria_inbox_enabled = (
+            candidate.aria_enabled and self._aria_inbox_chk.isChecked()
+        )
+        candidate.aria_imap_host = self._aria_imap_host.text().strip()
+        candidate.aria_imap_user = self._aria_imap_user.text().strip()
         try:
-            self._cfg.aria_inbox_interval_min = max(1, int(self._aria_inbox_interval.text().strip() or "5"))
+            candidate.aria_inbox_interval_min = max(
+                1, int(self._aria_inbox_interval.text().strip() or "5")
+            )
         except ValueError:
             pass
-        # The mailbox password uses the OS protected store, never settings.json.
-        _imap_pw = self._aria_imap_pass.text()
+        candidate.aria_research_egress = (
+            candidate.aria_enabled and self._aria_egress_chk.isChecked()
+        )
+        candidate.teams_bot_enabled = (
+            candidate.aria_enabled and self._teams_chk.isChecked()
+        )
+        candidate.teams_app_id = self._teams_app_id.text().strip()
+        candidate.teams_allowed_users = self._teams_users.text().strip()
+        candidate.teams_bot_skip_auth = False
         try:
-            from angerona.core.config import write_env_keys
-            write_env_keys({"ARIA_IMAP_PASS": _imap_pw})
-        except Exception:
-            pass
-        self._cfg.aria_research_egress  = (
-            self._cfg.aria_enabled and self._aria_egress_chk.isChecked())
-
-        # ── Teams bot ──
-        self._cfg.teams_bot_enabled   = (
-            self._cfg.aria_enabled and self._teams_chk.isChecked())
-        self._cfg.teams_app_id        = self._teams_app_id.text().strip()
-        self._cfg.teams_allowed_users = self._teams_users.text().strip()
-        self._cfg.teams_bot_skip_auth = False
-        try:
-            self._cfg.teams_bot_port  = int(self._teams_port.text().strip() or "3978")
+            candidate.teams_bot_port = int(
+                self._teams_port.text().strip() or "3978"
+            )
         except ValueError:
             pass
-        _teams_pw = self._teams_pw.text()
-        try:                                # empty text deliberately clears it
-            from angerona.core.config import write_env_keys
-            write_env_keys({"ANGERONA_TEAMS_APP_PASSWORD": _teams_pw})
-        except Exception:
-            pass
-
-        self._cfg.mobile_enabled     = self._mob_chk.isChecked()
-        self._cfg.mobile_signal_cli  = self._mob_cli.text().strip()
-        self._cfg.mobile_host_number = self._mob_host.text().strip()
-        self._cfg.mobile_dest_number = self._mob_dest.text().strip()
-        self._save_mobile_pin()
-
-        order = [self._ai_order_list.item(i).data(Qt.UserRole)
-                 for i in range(self._ai_order_list.count())
-                 if self._ai_order_list.item(i).data(Qt.UserRole)]
+        candidate.mobile_enabled = self._mob_chk.isChecked()
+        candidate.mobile_signal_cli = self._mob_cli.text().strip()
+        candidate.mobile_host_number = self._mob_host.text().strip()
+        candidate.mobile_dest_number = self._mob_dest.text().strip()
+        order = [
+            self._ai_order_list.item(index).data(Qt.UserRole)
+            for index in range(self._ai_order_list.count())
+            if self._ai_order_list.item(index).data(Qt.UserRole)
+        ]
         if order:
-            self._cfg.ai_provider_order = order
-            os.environ["ANGERONA_AI_ORDER"] = ",".join(order)
+            candidate.ai_provider_order = order
+
+        bridge_key = self._bridge_key.text().strip()
+        if bridge_key and (
+            len(bridge_key) < 64
+            or len(bridge_key) % 2
+            or re.fullmatch(r"[0-9a-fA-F]+", bridge_key) is None
+        ):
+            QMessageBox.warning(
+                self, "Remote Bridge key refused",
+                "The shared key must contain at least 64 hexadecimal characters "
+                "(32 bytes).",
+            )
+            self._select_tab("Integrations")
+            return
+        mobile_pin = self._mob_pin.text().strip()
+        if mobile_pin and not re.fullmatch(r"\d{4}", mobile_pin):
+            self._select_tab("Mobile Integration")
+            QMessageBox.warning(
+                self, "PIN save failed",
+                "The response PIN must contain exactly 4 digits.",
+            )
+            return
+        try:
+            candidate.validate_integration_settings()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Integration settings refused", str(exc))
+            self._select_tab("Integrations")
+            return
+
+        provider_values = {
+            provider_id: field.text().strip()
+            for provider_id, field in self._key_fields.items()
+        }
+        try:
+            secret_updates = (
+                canonical_updates(provider_values) if self._api_keys_dirty else {}
+            )
+        except (KeyError, ValueError) as exc:
+            self._select_tab("API Keys")
+            QMessageBox.warning(self, "Provider credentials refused", str(exc))
+            return
+        if bridge_key:
+            secret_updates["ANGERONA_BRIDGE_KEY"] = bridge_key.casefold()
+        initial_connectors = getattr(
+            self, "_initial_connector_secret_values", {}
+        )
+        imap_password = self._aria_imap_pass.text()
+        teams_password = self._teams_pw.text()
+        if imap_password != initial_connectors.get("ARIA_IMAP_PASS", ""):
+            secret_updates["ARIA_IMAP_PASS"] = imap_password
+        if teams_password != initial_connectors.get(
+            "ANGERONA_TEAMS_APP_PASSWORD", ""
+        ):
+            secret_updates["ANGERONA_TEAMS_APP_PASSWORD"] = teams_password
+        if mobile_pin:
+            secret_updates.update({
+                "ANGERONA_MOBILE_PIN": mobile_pin,
+                "ANGERONA_MOBILE_PIN_DPAPI": "",
+            })
+
+        protected_before: dict[str, str] | None = None
+        secure_store_touched = bool(
+            secret_updates
+            or candidate.aria_push_url
+            or os.environ.get("ANGERONA_ARIA_PUSH_URL")
+            or candidate.fleet_service_enabled
+        )
+        if secure_store_touched:
+            try:
+                try:
+                    protected_before = read_secret_map(
+                        candidate.data_dir, strict=True
+                    )
+                except TypeError as type_exc:
+                    # Compatibility for an injected/legacy store adapter that
+                    # predates the strict keyword. Production's canonical store
+                    # supports strict reads; still validate the fallback shape.
+                    if "strict" not in str(type_exc):
+                        raise
+                    protected_before = read_secret_map(candidate.data_dir)
+                if not isinstance(protected_before, dict) or any(
+                    not isinstance(name, str) or not isinstance(value, str)
+                    for name, value in protected_before.items()
+                ):
+                    raise RuntimeError(
+                        "protected credential snapshot has an invalid shape"
+                    )
+            except Exception as exc:
+                QMessageBox.warning(
+                    self, "Protected settings unavailable",
+                    "No settings were changed because the existing protected "
+                    f"credential map could not be read safely.\n\n{exc}",
+                )
+                return
+        if candidate.fleet_service_enabled:
+            import secrets
+
+            protected = protected_before or {}
+            if not protected.get(INTERNAL_FLEET_CREDENTIALS_KEY) and not protected.get(
+                LEGACY_FLEET_SERVICE_KEY
+            ):
+                secret_updates[LEGACY_FLEET_SERVICE_KEY] = secrets.token_urlsafe(48)
+
+        settings_path = candidate.settings_path
+        settings_existed = settings_path.exists()
+        try:
+            settings_before = settings_path.read_bytes() if settings_existed else b""
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Settings unavailable",
+                f"The current settings file could not be snapshotted safely.\n\n{exc}",
+            )
+            return
+        config_before = copy.deepcopy(vars(self._cfg))
+        environment_before = dict(os.environ)
+        current_autostart = bool(autostart_module.is_enabled())
+        autostart_requested = (
+            candidate.autostart_enabled
+            != bool(config_before.get("autostart_enabled", current_autostart))
+        )
+        autostart_changed = False
+
+        def _restore_settings_bytes() -> None:
+            if not settings_existed:
+                settings_path.unlink(missing_ok=True)
+                return
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            temp = settings_path.with_name(
+                f".{settings_path.name}.{uuid.uuid4().hex}.rollback"
+            )
+            try:
+                with temp.open("x+b") as handle:
+                    handle.write(settings_before)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temp, settings_path)
+            finally:
+                temp.unlink(missing_ok=True)
 
         try:
-            self._cfg.save()
+            # One protected-map write prevents bridge/provider/mail/mobile/fleet
+            # secrets from landing in different partial generations.
+            if secret_updates:
+                config_module.write_env_keys(secret_updates)
+            candidate.save()
+            # Make the settings persistence failure observable before changing
+            # scheduled startup state or the live Config object.
+            with settings_path.open("r+b") as handle:
+                os.fsync(handle.fileno())
+            if autostart_requested and current_autostart != candidate.autostart_enabled:
+                result = (
+                    autostart_module.enable_autostart()
+                    if candidate.autostart_enabled
+                    else autostart_module.disable_autostart()
+                )
+                if result is not True:
+                    raise RuntimeError("the operating system refused the autostart change")
+                autostart_changed = True
+
+            # Commit the detached object only after both durable settings and
+            # autostart have succeeded.
+            self._cfg.__dict__.clear()
+            self._cfg.__dict__.update(copy.deepcopy(vars(candidate)))
+            for name, enabled in {
+                "ANGERONA_REQUIRE_SIGNED_AAR": candidate.require_signed_aar,
+                "ANGERONA_ENTROPY_POOL": candidate.entropy_pool_enabled,
+                "ANGERONA_ADVERSARY_COMBAT_ENABLED": (
+                    candidate.adversary_combat_enabled
+                ),
+                "ANGERONA_USER_FOLDER_DECEPTION": (
+                    candidate.deception_user_folders
+                ),
+            }.items():
+                if enabled:
+                    os.environ[name] = "1"
+                else:
+                    os.environ.pop(name, None)
+            if candidate.adversary_combat_enabled:
+                os.environ["ANGERONA_ADVERSARY_COMBAT_MODE"] = (
+                    candidate.adversary_combat_mode
+                )
+            else:
+                os.environ.pop("ANGERONA_ADVERSARY_COMBAT_MODE", None)
+            if order:
+                os.environ["ANGERONA_AI_ORDER"] = ",".join(order)
+            os.environ.pop("ANGERONA_FLEET_SERVICE_KEY", None)
+            os.environ.pop(LEGACY_FLEET_SERVICE_KEY, None)
         except Exception as exc:
-            QMessageBox.warning(self, "Settings not saved", str(exc))
+            rollback_errors: list[str] = []
+            try:
+                _restore_settings_bytes()
+            except Exception as rollback_exc:
+                rollback_errors.append(f"settings bytes: {rollback_exc}")
+            if protected_before is not None:
+                try:
+                    restore_names = set(protected_before) | set(secret_updates) | {
+                        "ANGERONA_ARIA_PUSH_URL"
+                    }
+                    config_module.write_env_keys({
+                        name: protected_before.get(name, "")
+                        for name in restore_names
+                    })
+                except Exception as rollback_exc:
+                    rollback_errors.append(
+                        f"protected credentials: {rollback_exc}"
+                    )
+            if autostart_changed:
+                try:
+                    restored = (
+                        autostart_module.enable_autostart()
+                        if current_autostart
+                        else autostart_module.disable_autostart()
+                    )
+                    if restored is not True:
+                        raise RuntimeError("operating system refused restoration")
+                except Exception as rollback_exc:
+                    rollback_errors.append(f"autostart: {rollback_exc}")
+            self._cfg.__dict__.clear()
+            self._cfg.__dict__.update(config_before)
+            os.environ.clear()
+            os.environ.update(environment_before)
+            if rollback_errors:
+                QMessageBox.critical(
+                    self, "Settings rollback incomplete",
+                    "The save failed and one or more original resources could not "
+                    "be restored. Review the listed resources before retrying.\n\n"
+                    f"Save failure: {exc}\nRollback failure: "
+                    + "; ".join(rollback_errors),
+                )
+            else:
+                QMessageBox.warning(
+                    self, "Settings not saved",
+                    "The save failed. The prior config object, settings bytes, "
+                    "protected credentials, environment, and autostart state were "
+                    f"restored.\n\n{exc}",
+                )
             return
+
+        if self._api_keys_dirty:
+            self._initial_key_values = dict(provider_values)
+            self._api_keys_dirty = False
+        self._initial_connector_secret_values = {
+            "ARIA_IMAP_PASS": imap_password,
+            "ANGERONA_TEAMS_APP_PASSWORD": teams_password,
+        }
+        self._bridge_key.clear()
+        if mobile_pin:
+            self._mob_pin.clear()
+        if callable(self._apply_theme):
+            try:
+                self._apply_theme(self._cfg.theme)
+            except Exception:
+                pass
         combat = self._combat_module()
         if combat is not None:
             try:

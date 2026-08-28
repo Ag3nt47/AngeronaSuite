@@ -64,13 +64,16 @@ if errorlevel 1 (
 for /f "usebackq delims=" %%L in (`git rev-parse HEAD`) do set "LOCAL_SHA=%%L"
 for /f "usebackq delims=" %%U in (`git rev-parse "refs/remotes/origin/%BRANCH%"`) do set "REMOTE_SHA=%%U"
 if "%LOCAL_SHA%"=="%REMOTE_SHA%" (
-    echo [PASS] Already up to date.
+    echo [PASS] Current branch exactly matches origin/%BRANCH%.
+    echo [INFO] Pull does not certify public main or README assets; the guarded
+    echo        publisher performs that completion check after every update.
     pause & exit /b 0
 )
 git merge-base --is-ancestor "%REMOTE_SHA%" "%LOCAL_SHA%"
 if not errorlevel 1 (
-    echo [PASS] Local branch already contains every remote commit.
-    pause & exit /b 0
+    echo [INCOMPLETE] Local branch is ahead of GitHub.
+    echo              Run push-to-github.bat to publish and verify exact remote SHAs.
+    pause & exit /b 1
 )
 git merge-base --is-ancestor "%LOCAL_SHA%" "%REMOTE_SHA%"
 if errorlevel 1 (

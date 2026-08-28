@@ -7,10 +7,11 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -48,6 +49,26 @@ _SEVERITY_COLORS = {
     "medium": "#facc15",
     "low": "#60a5fa",
 }
+
+_SEVERITY_SORT_RANK = {
+    "low": 1,
+    "medium": 2,
+    "high": 3,
+    "critical": 4,
+}
+
+
+class _TypedSortItem(QTableWidgetItem):
+    """Display human-readable text while sorting by a typed stable value."""
+
+    def __init__(self, text: str, sort_value: object) -> None:
+        super().__init__(text)
+        self._sort_value = sort_value
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        if isinstance(other, _TypedSortItem):
+            return self._sort_value < other._sort_value
+        return super().__lt__(other)
 
 
 class _InfoPanel(QFrame):
@@ -106,12 +127,12 @@ class AdaptationWorkbench(QDialog):
         heading_row.addWidget(heading)
         heading_row.addWidget(subtitle)
         heading_row.addStretch(1)
-        self.adapt_host_button = QPushButton("ADAPT HOST…")
+        self.adapt_host_button = QPushButton("AUTO ADAPT…")
         self.adapt_host_button.setObjectName("Primary")
         self.adapt_host_button.setToolTip(
             "Choose a safe intent profile, preview it, test it, and adapt this host."
         )
-        self.adapt_host_button.clicked.connect(self._show_adapt_host)
+        self.adapt_host_button.clicked.connect(self._show_auto_adapt)
         heading_row.addWidget(self.adapt_host_button)
         self.busy_label = QLabel("Ready")
         self.busy_label.setStyleSheet("color:#5eead4; font-weight:600;")
@@ -120,11 +141,12 @@ class AdaptationWorkbench(QDialog):
 
         status = QHBoxLayout()
         self.baseline_status = QLabel("Baseline: checking…")
+        self.recovery_status = QLabel("Recovery baseline: checking…")
         self.risk_status = QLabel("Drift risk: —")
         self.context_status = QLabel("Context: not sampled")
         self.breaker_status_label = QLabel("Circuit breaker: checking…")
         for label in (
-            self.baseline_status, self.risk_status,
+            self.baseline_status, self.recovery_status, self.risk_status,
             self.context_status, self.breaker_status_label,
         ):
             label.setStyleSheet(
@@ -180,7 +202,8 @@ class AdaptationWorkbench(QDialog):
         audit_menu.addAction(self._action("Pin selected drift exception…", self._pin_exception))
 
         profile_menu = menu.addMenu("Adapt")
-        profile_menu.addAction(self._action("Open Adapt Host", self._show_adapt_host))
+        profile_menu.addAction(self._action("Guided Auto Adapt…", self._show_auto_adapt))
+        profile_menu.addAction(self._action("Open manual Adapt Host", self._show_adapt_host))
         profile_menu.addSeparator()
         profile_menu.addAction(self._action("Preview selected profile", self._preview_profile))
         profile_menu.addAction(self._action("Simulate selected profile", self._run_sandbox))
@@ -197,6 +220,123 @@ class AdaptationWorkbench(QDialog):
         help_menu.addAction(self._action("What each phase does", self._show_phase_help))
         return menu
 
+    def _show_auto_adapt(self) -> None:
+        """Collect intent once, then automate audit, preview, and sandbox."""
+        if self._busy_task:
+            QMessageBox.information(
+                self,
+                "Adaptation busy",
+                f"{self._busy_task.replace('_', ' ').title()} is still running. "
+                "Finish it before opening a new Auto Adapt request.",
+            )
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Auto Adapt — choose security intent")
+        dialog.setMinimumWidth(620)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(_InfoPanel(
+            "Guided, deterministic Auto Adapt",
+            "Angerona runs a fresh deep audit, builds an immutable closed-catalog plan, "
+            "and tests the projected change without writing. Preview-only is the safe "
+            "default. If apply is selected, one final exact-plan approval is still required.",
+        ))
+        form = QFormLayout()
+        profile = self._profile_combo()
+        form.addRow("Security intent:", profile)
+        apply_after = QCheckBox("Ask to apply after the automatic review")
+        apply_after.setChecked(False)
+        apply_after.setToolTip(
+            "Never applies silently; the final dialog includes exact commands and rollback coverage."
+        )
+        form.addRow("Host change:", apply_after)
+        try:
+            recovery_before = self.service.security_baseline_status()
+        except Exception:
+            recovery_before = {"available": False, "supported": True}
+        capture_recovery = QCheckBox(
+            "Explicitly capture the immutable firewall recovery baseline if missing"
+        )
+        capture_recovery.setChecked(
+            bool(recovery_before.get("supported", True))
+            and not bool(recovery_before.get("available"))
+        )
+        capture_recovery.setEnabled(bool(recovery_before.get("supported", True)))
+        capture_recovery.setToolTip(
+            "This is a permanent, non-replaceable recovery enrollment. It is separate "
+            "from the temporary snapshot created immediately before every apply."
+        )
+        form.addRow("Recovery enrollment:", capture_recovery)
+        layout.addLayout(form)
+        coverage = QLabel(
+            "Automatic phases: deep audit → collector completeness gate → immutable plan → "
+            "no-write sandbox → recommendation. Emergency Lockdown is never auto-applied "
+            "without its separate warning."
+        )
+        coverage.setWordWrap(True)
+        coverage.setTextFormat(Qt.PlainText)
+        layout.addWidget(coverage)
+        buttons = QHBoxLayout()
+        cancel = QPushButton("Cancel")
+        prepare = QPushButton("Prepare automatically")
+        prepare.setObjectName("Primary")
+        cancel.clicked.connect(dialog.reject)
+        prepare.clicked.connect(dialog.accept)
+        buttons.addStretch(1)
+        buttons.addWidget(cancel)
+        buttons.addWidget(prepare)
+        layout.addLayout(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        # A timer or another modal action can begin work while this dialog is
+        # open. Never let an earlier consent screen queue behind that work.
+        if self._busy_task:
+            dialog.reject()
+            QMessageBox.information(
+                self,
+                "Adaptation busy",
+                f"{self._busy_task.replace('_', ' ').title()} started while Auto Adapt "
+                "was open. The request was discarded; review the host again when it finishes.",
+            )
+            return
+        profile_id = str(profile.currentData())
+        # Copy consent into immutable closure values before any worker starts.
+        # Later UI changes or a second dialog can therefore never broaden the
+        # accepted request while its audit is running.
+        apply_requested = bool(apply_after.isChecked())
+        capture_recovery_requested = bool(capture_recovery.isChecked())
+
+        def operation(
+            selected_profile_id: str = profile_id,
+            accepted_apply: bool = apply_requested,
+            accepted_capture: bool = capture_recovery_requested,
+        ) -> dict[str, Any]:
+            report = self.service.audit()
+            current = report.get("current")
+            if not isinstance(current, dict):
+                raise RuntimeError("deep audit did not return a host snapshot")
+            plan = self.service.build_plan(selected_profile_id, current)
+            simulation = self.service.simulate_plan(plan, current)
+            relaxes = self.service._plan_relaxes_current(
+                plan, current.get("firewall") or {}
+            )
+            recovery = self.service.security_baseline_status()
+            if (
+                accepted_apply
+                and accepted_capture
+                and not recovery.get("available")
+            ):
+                recovery = self.service.capture_security_baseline(approved=True)
+            return {
+                "report": report,
+                "plan": plan,
+                "simulation": simulation,
+                "recovery": recovery,
+                "relaxes": relaxes,
+                "apply_requested": accepted_apply,
+            }
+
+        self._run_task("auto_prepare", operation)
+
     def _build_overview_tab(self) -> QWidget:
         page = QWidget()
         outer = QVBoxLayout(page)
@@ -210,7 +350,14 @@ class AdaptationWorkbench(QDialog):
         start_button = QPushButton("Choose an adaptation profile…")
         start_button.setObjectName("Primary")
         start_button.clicked.connect(self._show_adapt_host)
+        auto_button = QPushButton("AUTO ADAPT…")
+        auto_button.setObjectName("Primary")
+        auto_button.clicked.connect(self._show_auto_adapt)
+        checkup_button = QPushButton("Run safe automatic checkup")
+        checkup_button.clicked.connect(self._run_safe_checkup)
         start_layout.addWidget(start_text, 1)
+        start_layout.addWidget(auto_button)
+        start_layout.addWidget(checkup_button)
         start_layout.addWidget(start_button)
         outer.addWidget(start)
         scroll = QScrollArea()
@@ -234,10 +381,10 @@ class AdaptationWorkbench(QDialog):
         layout.addWidget(_InfoPanel(
             "Phase 3 · Context feedback and circuit breakers",
             "Map exact SSIDs, an active VPN, or a Public network category to an intent profile. "
-            "Automation begins in proposal-only mode. Auto-apply requires a separate warning "
-            "confirmation, enforces cooldown and change-rate limits, and locks after repeated "
-            "changes. Dismissing a false positive creates an exception and gently lowers only "
-            "that local drift category's scoring multiplier.",
+            "Context automation is proposal-only: it never mutates the firewall unattended. "
+            "A proposed profile must pass a fresh audit, immutable preview, no-write simulation, "
+            "and exact operator approval. Dismissing a false positive creates an exception and "
+            "gently lowers only that local drift category's scoring multiplier.",
         ))
         layout.addWidget(_InfoPanel(
             "Hard safety boundary",
@@ -263,8 +410,7 @@ class AdaptationWorkbench(QDialog):
         )
 
     # ── Audit ──────────────────────────────────────────────────────────────
-    @staticmethod
-    def _table(columns: list[str]) -> QTableWidget:
+    def _table(self, columns: list[str]) -> QTableWidget:
         table = QTableWidget(0, len(columns))
         table.setHorizontalHeaderLabels(columns)
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -272,7 +418,66 @@ class AdaptationWorkbench(QDialog):
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.setAlternatingRowColors(True)
         table.horizontalHeader().setStretchLastSection(True)
+        table.setSortingEnabled(True)
+        table.setAccessibleDescription(
+            "Click a column heading to sort. Double-click a row for bounded, read-only details."
+        )
+        table.cellDoubleClicked.connect(
+            lambda row, _column, source=table: self._show_table_detail(source, row)
+        )
         return table
+
+    def _show_table_detail(self, table: QTableWidget, row: int) -> None:
+        """Inspect the immutable row payload; double-click never performs an action."""
+        if row < 0 or row >= table.rowCount():
+            return
+        visible: dict[str, str] = {}
+        raw: object = None
+        for column in range(table.columnCount()):
+            header = table.horizontalHeaderItem(column)
+            item = table.item(row, column)
+            label = header.text() if header is not None else f"column_{column + 1}"
+            visible[label] = item.text()[:8192] if item is not None else ""
+            if raw is None and item is not None:
+                candidate = item.data(Qt.UserRole)
+                if candidate is not None:
+                    raw = candidate
+        document: dict[str, Any] = {"display": visible}
+        if isinstance(raw, (dict, list, tuple, str, int, float, bool)) or raw is None:
+            document["record"] = raw
+        else:
+            document["record_id"] = str(raw)[:1000]
+        rendered = json.dumps(document, indent=2, ensure_ascii=False, default=str)
+        if len(rendered) > 128 * 1024:
+            rendered = rendered[: 128 * 1024] + "\n… detail truncated at 128 KiB"
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Read-only row details")
+        dialog.setMinimumSize(680, 460)
+        layout = QVBoxLayout(dialog)
+        note = QLabel(
+            "This is a bounded, read-only explanation. Paths are shown literally and are "
+            "never opened or executed from this view."
+        )
+        note.setWordWrap(True)
+        note.setTextFormat(Qt.PlainText)
+        layout.addWidget(note)
+        body = QPlainTextEdit()
+        body.setReadOnly(True)
+        body.setPlainText(rendered)
+        layout.addWidget(body, 1)
+        controls = QHBoxLayout()
+        copy = QPushButton("Copy details")
+        copy.clicked.connect(
+            lambda: QApplication.clipboard().setText(body.toPlainText())
+        )
+        close = QPushButton("Close")
+        close.clicked.connect(dialog.close)
+        controls.addStretch(1)
+        controls.addWidget(copy)
+        controls.addWidget(close)
+        layout.addLayout(controls)
+        dialog.show()
+        self._row_detail_dialog = dialog
 
     def _build_audit_tab(self) -> QWidget:
         page = QWidget()
@@ -391,9 +596,15 @@ class AdaptationWorkbench(QDialog):
         refresh.clicked.connect(self._refresh_snapshots)
         rollback_button = QPushButton("Roll back selected snapshot…")
         rollback_button.clicked.connect(self._rollback_selected)
+        capture_baseline = QPushButton("Capture immutable host baseline…")
+        capture_baseline.clicked.connect(self._capture_security_baseline)
+        restore_baseline = QPushButton("Restore host baseline…")
+        restore_baseline.clicked.connect(self._restore_security_baseline)
         rb_layout.addWidget(self.snapshot_combo, 1)
         rb_layout.addWidget(refresh)
         rb_layout.addWidget(rollback_button)
+        rb_layout.addWidget(capture_baseline)
+        rb_layout.addWidget(restore_baseline)
         layout.addWidget(rollback)
         return page
 
@@ -433,17 +644,20 @@ class AdaptationWorkbench(QDialog):
         layout.addWidget(_InfoPanel(
             "Trigger-based contexts",
             "Rules use an exact SSID, Windows Public category, or active VPN adapter. Exact SSID "
-            "rules take priority. Proposal-only is the safe default. Auto-apply is persistent "
-            "pre-authorization and should be used only after testing preview and rollback. SSID "
-            "names are context hints, not authenticated network identity; the circuit breaker "
-            "limits spoofing or unstable-link loops.",
+            "rules take priority. Rules are proposal-only: SSIDs and session hints are not "
+            "authenticated liveness proof and cannot safely authorize unattended firewall "
+            "changes. Use Guided Auto Adapt for the one-flow audited preview and exact approval.",
         ))
         state = self.service.state()
         controls = QHBoxLayout()
         self.automation_enabled = QCheckBox("Monitor configured contexts")
         self.automation_enabled.setChecked(bool(state.get("automation_enabled")))
-        self.auto_apply = QCheckBox("Auto-apply matched profile")
-        self.auto_apply.setChecked(bool(state.get("auto_apply")))
+        self.auto_apply = QCheckBox("Unattended apply (disabled — exact review required)")
+        self.auto_apply.setChecked(False)
+        self.auto_apply.setEnabled(False)
+        self.auto_apply.setToolTip(
+            "Context rules propose profiles only; they never mutate the host unattended."
+        )
         self.automation_enabled.toggled.connect(self._automation_changed)
         self.auto_apply.toggled.connect(self._auto_apply_changed)
         evaluate = QPushButton("Evaluate current context now")
@@ -524,9 +738,17 @@ class AdaptationWorkbench(QDialog):
             except Exception as exc:
                 self._task_finished.emit(name, None, exc)
 
-        threading.Thread(
-            target=worker, name=f"HostAdaption-{name}", daemon=True
-        ).start()
+        task = threading.Thread(
+            target=worker, name=f"HostAdaptation-{name}", daemon=True
+        )
+        try:
+            task.start()
+        except Exception as exc:
+            self._busy_task = ""
+            self.busy_label.setText("Worker unavailable")
+            self.audit_button.setEnabled(True)
+            self.footer_detail.setText(str(exc))
+            QMessageBox.warning(self, "Adaptation", str(exc))
 
     def _on_task_finished(self, name: str, result: Any, error: Any) -> None:
         self._busy_task = ""
@@ -559,6 +781,61 @@ class AdaptationWorkbench(QDialog):
             self.footer_detail.setText("Rollback completed and the active profile marker was cleared.")
             self._refresh_snapshots()
             self._refresh_activity()
+        elif name == "auto_prepare":
+            report = dict(result.get("report") or {})
+            plan = result.get("plan")
+            simulation = dict(result.get("simulation") or {})
+            self._display_audit(report)
+            self._display_sandbox(simulation)
+            if isinstance(plan, AdaptationPlan):
+                self._display_plan(plan)
+            gaps = list(report.get("incomplete_collectors") or ())
+            if result.get("apply_requested"):
+                if gaps:
+                    self.footer_detail.setText(
+                        "Auto Adapt prepared a proposal only: incomplete collectors prevent apply ("
+                        + ", ".join(str(item) for item in gaps)
+                        + ")."
+                    )
+                elif not dict(result.get("recovery") or {}).get("available"):
+                    self.footer_detail.setText(
+                        "Auto Adapt prepared a proposal only: explicitly capture the immutable "
+                        "firewall recovery baseline before applying."
+                    )
+                elif result.get("relaxes"):
+                    self.footer_detail.setText(
+                        "Auto Adapt prepared a proposal only: the selected profile would relax "
+                        "the current firewall posture and requires manual review."
+                    )
+                elif isinstance(plan, AdaptationPlan):
+                    QTimer.singleShot(0, self._apply_profile)
+            else:
+                self.footer_detail.setText(
+                    "Auto Adapt completed audit, immutable preview, and no-write simulation; "
+                    "host untouched."
+                )
+        elif name == "safe_checkup":
+            report = dict(result.get("report") or {})
+            self._display_audit(report)
+            simulations = list(result.get("simulations") or ())
+            changed = sum(len(item.get("changes") or ()) for item in simulations)
+            self.footer_detail.setText(
+                f"Safe automatic checkup complete: {len(simulations)} profiles simulated, "
+                f"{changed} projected profile changes, host untouched."
+            )
+        elif name == "capture_security_baseline":
+            self.footer_detail.setText(
+                "Immutable host recovery baseline captured for Windows Firewall policy."
+            )
+            self._refresh_snapshots()
+            self._refresh_activity()
+        elif name == "restore_security_baseline":
+            self.footer_detail.setText(
+                "Host security baseline restored and verified. A pre-restore recovery "
+                f"snapshot remains available: {result.get('pre_restore_snapshot_id', 'unknown')}."
+            )
+            self._refresh_snapshots()
+            self._refresh_activity()
         elif name == "context":
             self._display_context(result)
         self._refresh_status()
@@ -566,6 +843,21 @@ class AdaptationWorkbench(QDialog):
     # ── Audit actions ──────────────────────────────────────────────────────
     def _run_audit(self) -> None:
         self._run_task("audit", self.service.audit)
+
+    def _run_safe_checkup(self) -> None:
+        """Run every non-writing adaptation check in one bounded workflow."""
+        def operation() -> dict[str, Any]:
+            report = self.service.audit()
+            current = report.get("current")
+            if not isinstance(current, dict):
+                raise RuntimeError("deep audit did not return a host snapshot")
+            simulations = [
+                self.service.sandbox(profile.profile_id, current)
+                for profile in self.service.profiles()
+            ]
+            return {"report": report, "simulations": simulations}
+
+        self._run_task("safe_checkup", operation)
 
     def _display_audit(self, report: dict[str, Any]) -> None:
         self._latest_report = report
@@ -575,22 +867,44 @@ class AdaptationWorkbench(QDialog):
         ]
         incomplete = [str(name) for name in report.get("incomplete_collectors") or []]
         coverage_gaps = list(dict.fromkeys(skipped + incomplete))
-        self.findings_table.setRowCount(len(findings))
-        for row, finding in enumerate(findings):
-            values = [
-                finding.get("severity", ""), finding.get("category", ""),
-                finding.get("change", ""), finding.get("key", ""),
-                f"{float(finding.get('score', 0)):.1f}",
-                "EXCLUDED" if finding.get("excluded") else "ACTIVE",
-            ]
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(str(value))
-                item.setData(Qt.UserRole, finding)
-                if column == 0:
-                    item.setForeground(QColor(_SEVERITY_COLORS.get(str(value), "#cbd5e1")))
-                if finding.get("excluded"):
-                    item.setForeground(QColor("#64748b"))
-                self.findings_table.setItem(row, column, item)
+        audit_header = self.findings_table.horizontalHeader()
+        audit_sort_column = audit_header.sortIndicatorSection()
+        audit_sort_order = audit_header.sortIndicatorOrder()
+        self.findings_table.setUpdatesEnabled(False)
+        self.findings_table.setSortingEnabled(False)
+        try:
+            self.findings_table.setRowCount(len(findings))
+            for row, finding in enumerate(findings):
+                values = [
+                    finding.get("severity", ""), finding.get("category", ""),
+                    finding.get("change", ""), finding.get("key", ""),
+                    f"{float(finding.get('score', 0)):.1f}",
+                    "EXCLUDED" if finding.get("excluded") else "ACTIVE",
+                ]
+                for column, value in enumerate(values):
+                    if column == 0:
+                        severity = str(value).strip().casefold()
+                        item = _TypedSortItem(
+                            str(value), _SEVERITY_SORT_RANK.get(severity, 0)
+                        )
+                    elif column == 4:
+                        item = _TypedSortItem(
+                            str(value), float(finding.get("score", 0) or 0)
+                        )
+                    else:
+                        item = QTableWidgetItem(str(value))
+                    item.setData(Qt.UserRole, finding)
+                    if column == 0:
+                        item.setForeground(
+                            QColor(_SEVERITY_COLORS.get(severity, "#cbd5e1"))
+                        )
+                    if finding.get("excluded"):
+                        item.setForeground(QColor("#64748b"))
+                    self.findings_table.setItem(row, column, item)
+        finally:
+            self.findings_table.setSortingEnabled(True)
+            self.findings_table.sortItems(audit_sort_column, audit_sort_order)
+            self.findings_table.setUpdatesEnabled(True)
         if report.get("baseline_exists"):
             summary = (
                 f"Baseline {report.get('baseline_captured_at', 'unknown')} · "
@@ -631,19 +945,20 @@ class AdaptationWorkbench(QDialog):
         if not isinstance(current, dict):
             return
         incomplete = self._latest_report.get("incomplete_collectors") or []
-        coverage_warning = ""
         if incomplete:
-            coverage_warning = (
-                "\n\nWARNING: this capture is incomplete for "
-                f"{', '.join(str(name) for name in incomplete)}. Those collectors will remain "
-                "unscored until you replace this baseline with a complete capture."
+            QMessageBox.warning(
+                self,
+                "Golden baseline refused",
+                "A trusted golden baseline requires complete collectors. Re-run after "
+                "resolving: " + ", ".join(str(name) for name in incomplete),
             )
+            return
         answer = QMessageBox.warning(
             self,
             "Replace golden baseline?",
             "This makes the current reviewed hardware, services, ports, adapters, and firewall "
             "posture the new golden baseline. Existing exceptions remain."
-            + coverage_warning + "\n\nContinue?",
+            "\n\nContinue?",
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Cancel,
         )
@@ -755,7 +1070,18 @@ class AdaptationWorkbench(QDialog):
         lines.extend(f"  - {warning}" for warning in plan.warnings)
         lines.append("  - A rollback snapshot is mandatory before command 1.")
         self.plan_text.setPlainText("\n".join(lines))
-        self.apply_button.setEnabled(True)
+        try:
+            recovery_ready = bool(
+                self.service.security_baseline_status().get("available")
+            )
+        except Exception:
+            recovery_ready = False
+        self.apply_button.setEnabled(recovery_ready)
+        self.apply_button.setToolTip(
+            "Apply this exact plan."
+            if recovery_ready else
+            "Capture the immutable firewall recovery baseline before applying."
+        )
         self.tabs.setCurrentIndex(3)
         self.footer_detail.setText(
             f"Preview ready: {plan.plan_id}. It expires in ten minutes and is bound to current firewall state."
@@ -766,13 +1092,29 @@ class AdaptationWorkbench(QDialog):
         if plan is None:
             QMessageBox.information(self, "Apply profile", "Preview the selected profile first.")
             return
+        try:
+            recovery = self.service.security_baseline_status()
+        except Exception as exc:
+            QMessageBox.warning(self, "Apply profile", str(exc))
+            return
+        if not recovery.get("available"):
+            QMessageBox.information(
+                self,
+                "Recovery baseline required",
+                "Explicitly capture the immutable Windows Firewall recovery baseline "
+                "before applying a profile. This enrollment is never created as a side "
+                "effect of Apply.",
+            )
+            return
         warning = "\n".join(f"• {item}" for item in plan.warnings)
         commands = "\n".join(self.service.command_stack(plan))
         answer = QMessageBox.warning(
             self,
             "Apply adaptation profile?",
             f"Plan: {plan.plan_id}\n\n{warning}\n\nCommands:\n{commands}\n\n"
-            "A Windows Firewall snapshot will be created first. Apply this exact plan?",
+            "The immutable recovery baseline is enrolled. A fresh temporary Windows "
+            "Firewall rollback snapshot and a durable transaction receipt will be created "
+            "before command 1. Apply this exact plan?",
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Cancel,
         )
@@ -799,12 +1141,24 @@ class AdaptationWorkbench(QDialog):
 
     def _display_sandbox(self, result: dict[str, Any]) -> None:
         changes = list(result.get("changes") or [])
-        self.sandbox_table.setRowCount(len(changes))
-        for row, change in enumerate(changes):
-            before = json.dumps(change.get("before"), sort_keys=True, default=str)
-            after = json.dumps(change.get("after"), sort_keys=True, default=str)
-            for column, value in enumerate((change.get("profile", ""), before, after)):
-                self.sandbox_table.setItem(row, column, QTableWidgetItem(str(value)))
+        header = self.sandbox_table.horizontalHeader()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
+        self.sandbox_table.setUpdatesEnabled(False)
+        self.sandbox_table.setSortingEnabled(False)
+        try:
+            self.sandbox_table.setRowCount(len(changes))
+            for row, change in enumerate(changes):
+                before = json.dumps(change.get("before"), sort_keys=True, default=str)
+                after = json.dumps(change.get("after"), sort_keys=True, default=str)
+                for column, value in enumerate((change.get("profile", ""), before, after)):
+                    item = QTableWidgetItem(str(value))
+                    item.setData(Qt.UserRole, change)
+                    self.sandbox_table.setItem(row, column, item)
+        finally:
+            self.sandbox_table.setSortingEnabled(True)
+            self.sandbox_table.sortItems(sort_column, sort_order)
+            self.sandbox_table.setUpdatesEnabled(True)
         text = [
             f"PLAN: {result.get('plan_id')}",
             f"HOST MUTATED: {result.get('host_mutated')}",
@@ -844,6 +1198,62 @@ class AdaptationWorkbench(QDialog):
             ),
         )
 
+    def _capture_security_baseline(self) -> None:
+        try:
+            status = self.service.security_baseline_status()
+        except Exception as exc:
+            QMessageBox.warning(self, "Host security baseline", str(exc))
+            return
+        if status.get("available"):
+            QMessageBox.information(
+                self,
+                "Host security baseline",
+                "The immutable original Windows Firewall baseline already exists and is "
+                "never silently replaced.",
+            )
+            return
+        answer = QMessageBox.warning(
+            self,
+            "Capture immutable host security baseline?",
+            "Capture the current complete Windows Firewall policy as Angerona's permanent "
+            "recovery default for this host?\n\nHardware, services, ports, and network "
+            "context remain observational only and will not be advertised as restorable.",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer == QMessageBox.Yes:
+            self._run_task(
+                "capture_security_baseline",
+                lambda: self.service.capture_security_baseline(approved=True),
+            )
+
+    def _restore_security_baseline(self) -> None:
+        try:
+            status = self.service.security_baseline_status()
+        except Exception as exc:
+            QMessageBox.warning(self, "Host security baseline", str(exc))
+            return
+        if not status.get("available"):
+            QMessageBox.information(
+                self, "Host security baseline", "No restorable host baseline exists yet."
+            )
+            return
+        answer = QMessageBox.warning(
+            self,
+            "Restore host security baseline?",
+            "Replace the complete current Windows Firewall policy with the immutable "
+            f"baseline captured {status.get('captured_at', 'earlier')}?\n\nA fresh "
+            "pre-restore recovery snapshot is captured first, and the restored posture "
+            "must pass its postcondition check.",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer == QMessageBox.Yes:
+            self._run_task(
+                "restore_security_baseline",
+                lambda: self.service.restore_security_baseline(approved=True),
+            )
+
     # ── Exception, automation, and persisted views ─────────────────────────
     def _refresh_exceptions(self, state: dict[str, Any] | None = None) -> None:
         try:
@@ -857,6 +1267,10 @@ class AdaptationWorkbench(QDialog):
             )
             if rows != self._view_signatures.get("exceptions"):
                 self.exceptions_table.setUpdatesEnabled(False)
+                header = self.exceptions_table.horizontalHeader()
+                sort_column = header.sortIndicatorSection()
+                sort_order = header.sortIndicatorOrder()
+                self.exceptions_table.setSortingEnabled(False)
                 try:
                     self.exceptions_table.setRowCount(len(rows))
                     for row, values in enumerate(rows):
@@ -867,6 +1281,8 @@ class AdaptationWorkbench(QDialog):
                             self.exceptions_table.setItem(row, column, cell)
                     self._view_signatures["exceptions"] = rows
                 finally:
+                    self.exceptions_table.setSortingEnabled(True)
+                    self.exceptions_table.sortItems(sort_column, sort_order)
                     self.exceptions_table.setUpdatesEnabled(True)
             current_state = state if state is not None else self.service.state()
             weights = current_state.get("adaptive_weights", {})
@@ -933,25 +1349,15 @@ class AdaptationWorkbench(QDialog):
 
     def _auto_apply_changed(self, checked: bool) -> None:
         if checked:
-            answer = QMessageBox.warning(
-                self,
-                "Arm automatic profile changes?",
-                "A matching context rule may change Windows Firewall without a new click. "
-                "Every change still gets a rollback snapshot and circuit-breaker checks.\n\n"
-                "Test the profile sandbox and rollback first. Arm auto-apply?",
-                QMessageBox.Yes | QMessageBox.Cancel,
-                QMessageBox.Cancel,
+            QMessageBox.information(
+                self, "Proposal-only automation",
+                "Unattended firewall mutation is disabled. Context rules prepare a proposal; "
+                "Guided Auto Adapt provides one audited flow and a final exact-plan approval.",
             )
-            if answer != QMessageBox.Yes:
-                self.auto_apply.blockSignals(True)
-                self.auto_apply.setChecked(False)
-                self.auto_apply.blockSignals(False)
-                return
-            if not self.automation_enabled.isChecked():
-                self.automation_enabled.blockSignals(True)
-                self.automation_enabled.setChecked(True)
-                self.automation_enabled.blockSignals(False)
-        self.service.set_automation(self.automation_enabled.isChecked(), checked)
+        self.auto_apply.blockSignals(True)
+        self.auto_apply.setChecked(False)
+        self.auto_apply.blockSignals(False)
+        self.service.set_automation(self.automation_enabled.isChecked(), False)
         self._refresh_status()
 
     def _trigger_kind_changed(self, *_args) -> None:
@@ -991,6 +1397,10 @@ class AdaptationWorkbench(QDialog):
         if rows == self._view_signatures.get("triggers"):
             return
         self.trigger_table.setUpdatesEnabled(False)
+        header = self.trigger_table.horizontalHeader()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
+        self.trigger_table.setSortingEnabled(False)
         try:
             self.trigger_table.setRowCount(len(rows))
             for row, values in enumerate(rows):
@@ -1001,6 +1411,8 @@ class AdaptationWorkbench(QDialog):
                     self.trigger_table.setItem(row, column, item)
             self._view_signatures["triggers"] = rows
         finally:
+            self.trigger_table.setSortingEnabled(True)
+            self.trigger_table.sortItems(sort_column, sort_order)
             self.trigger_table.setUpdatesEnabled(True)
 
     def _remove_trigger(self) -> None:
@@ -1061,6 +1473,10 @@ class AdaptationWorkbench(QDialog):
             if rows == self._view_signatures.get("activity"):
                 return
             self.activity_table.setUpdatesEnabled(False)
+            header = self.activity_table.horizontalHeader()
+            sort_column = header.sortIndicatorSection()
+            sort_order = header.sortIndicatorOrder()
+            self.activity_table.setSortingEnabled(False)
             try:
                 self.activity_table.setRowCount(len(rows))
                 for row, values in enumerate(rows):
@@ -1068,6 +1484,8 @@ class AdaptationWorkbench(QDialog):
                         self.activity_table.setItem(row, column, QTableWidgetItem(value))
                 self._view_signatures["activity"] = rows
             finally:
+                self.activity_table.setSortingEnabled(True)
+                self.activity_table.sortItems(sort_column, sort_order)
                 self.activity_table.setUpdatesEnabled(True)
         except Exception as exc:
             self.activity_table.setRowCount(1)
@@ -1082,6 +1500,24 @@ class AdaptationWorkbench(QDialog):
             )
         except Exception as exc:
             self.baseline_status.setText(f"Baseline: integrity warning ({exc})")
+        try:
+            recovery = self.service.security_baseline_status()
+            if recovery.get("available"):
+                self.recovery_status.setText(
+                    "Recovery: Firewall · " + str(recovery.get("captured_at") or "captured")
+                )
+                self.recovery_status.setToolTip(
+                    "Restorable: Windows Firewall policy. Observational only: hardware, "
+                    "services, listening ports, and network context."
+                )
+            else:
+                if recovery.get("supported") is False:
+                    self.recovery_status.setText("Recovery: Windows Firewall unsupported")
+                else:
+                    self.recovery_status.setText("Recovery: Firewall baseline not captured")
+                self.recovery_status.setToolTip(str(recovery.get("detail") or ""))
+        except Exception as exc:
+            self.recovery_status.setText(f"Recovery: integrity warning ({exc})")
         if self._latest_report:
             gaps = list(dict.fromkeys(
                 list(self._latest_report.get("skipped_incomplete_collectors") or [])
@@ -1139,8 +1575,9 @@ class AdaptationWorkbench(QDialog):
             "Observation, planning, sandboxing, execution, and rollback are separate stages.\n\n"
             "Plans are immutable, expire after ten minutes, and bind to the current firewall "
             "digest. Apply requires exact-plan approval, a rollback snapshot, a closed command "
-            "catalog, and a closed circuit breaker. Context auto-apply is separate persistent "
-            "pre-authorization. Rollback verifies both manifest and firewall artifact digests.",
+            "catalog, an explicitly enrolled immutable recovery baseline, a durable transaction "
+            "journal, and a closed circuit breaker. Context monitoring is proposal-only. "
+            "Rollback verifies both manifest and firewall artifact digests.",
         )
 
     def _show_phase_help(self) -> None:
@@ -1150,12 +1587,15 @@ class AdaptationWorkbench(QDialog):
             "Phase 1: audit, baseline, drift, exact exceptions, JSON/CSV export.\n\n"
             "Phase 2: intent profiles, exact dry-run commands, no-write sandbox, automatic "
             "snapshot, explicit apply, and one-click rollback.\n\n"
-            "Phase 3: SSID/VPN/Public triggers, proposal-only monitoring, separately armed "
-            "auto-apply, bounded feedback tuning, cooldowns, and a persistent circuit breaker.",
+            "Phase 3: SSID/VPN/Public triggers, proposal-only monitoring, bounded feedback "
+            "tuning, cooldowns, and a persistent circuit breaker.",
         )
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
-        if self._busy_task in {"apply", "rollback"}:
+        if self._busy_task in {
+            "apply", "rollback", "restore_security_baseline",
+            "capture_security_baseline",
+        }:
             QMessageBox.information(
                 self, "Adaptation operation active",
                 "Keep this window open until the host-change or recovery operation finishes."

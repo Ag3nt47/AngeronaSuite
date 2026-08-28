@@ -1,0 +1,17 @@
+{
+  "cycle": 25,
+  "round": 3,
+  "date": "2026-08-28",
+  "model": "final closure checks; not a new unique-vulnerability total",
+  "closure_checks": 12,
+  "open_high_or_critical": 0,
+  "unresolved_code_defects": 0,
+  "accepted_boundaries": [
+    "firewall-only host recovery baseline",
+    "best-effort user-mode remote-session evidence",
+    "SOAR archive digest is not an independent anti-rollback witness",
+    "durable delivery remains at least once",
+    "OCSF and Sigma are constrained implementations",
+    "IPC is a diagnostic admission preview"
+  ]
+}

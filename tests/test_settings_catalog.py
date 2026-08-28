@@ -17,6 +17,8 @@ def test_settings_catalog_has_one_owner_and_routes_common_terms():
     assert resolve_area("performance tuning").title == "System"
     assert resolve_area("Signal phone").title == "Mobile Integration"
     assert resolve_area("fleet RBAC").title == "Enterprise"
+    assert resolve_area("configure SIEM collector").title == "Integrations"
+    assert resolve_area("remote bridge").title == "Integrations"
     assert resolve_area("restore privacy defaults").title == "ARIA"
     assert resolve_area("privacy").title == "ARIA"
     assert resolve_area("voice model").title == "ARIA"

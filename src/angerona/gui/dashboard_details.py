@@ -5,11 +5,13 @@ to the security hot path and never perform response actions automatically.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from typing import Callable
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
+from PySide6.QtGui import QColor, QGuiApplication, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -25,6 +27,44 @@ from PySide6.QtWidgets import (
 )
 
 from angerona.gui.header_controls import motion_allowed
+
+
+def _event_content_fingerprint(event: object) -> str:
+    """Return a canonical identity for every field shown or drilled into."""
+    severity = getattr(event, "severity", 0)
+    try:
+        severity_value: object = int(severity)
+    except (TypeError, ValueError, OverflowError):
+        severity_value = str(severity)
+    record = {
+        "details": getattr(event, "details", {}) or {},
+        "hmac_sig": str(getattr(event, "hmac_sig", "")),
+        "message": str(getattr(event, "message", "")),
+        "module": str(getattr(event, "module", "")),
+        "severity": severity_value,
+        "ts": getattr(event, "ts", 0.0),
+    }
+    try:
+        canonical = json.dumps(
+            record,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+            default=str,
+        )
+    except (TypeError, ValueError, RecursionError):
+        # Malformed third-party detail values must still trigger a refresh and
+        # must never crash the presentation loop.
+        record["details"] = repr(record["details"])[:128 * 1024]
+        canonical = json.dumps(
+            record,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _motion_for(widget: QWidget) -> bool:
@@ -58,8 +98,10 @@ class FuturisticHeader(QFrame):
         layout.setSpacing(3)
         row = QHBoxLayout()
         title_label = QLabel(title)
+        title_label.setTextFormat(Qt.PlainText)
         title_label.setObjectName("PageTitle")
         self.badge = QLabel("● LIVE DETAIL")
+        self.badge.setTextFormat(Qt.PlainText)
         self.badge.setStyleSheet(
             f"color:{accent}; font-size:10px; font-weight:800; letter-spacing:1px;"
         )
@@ -68,6 +110,7 @@ class FuturisticHeader(QFrame):
         row.addWidget(self.badge)
         layout.addLayout(row)
         subtitle_label = QLabel(subtitle)
+        subtitle_label.setTextFormat(Qt.PlainText)
         subtitle_label.setWordWrap(True)
         subtitle_label.setStyleSheet("color:#94a3b8; font-size:11px;")
         layout.addWidget(subtitle_label)
@@ -205,6 +248,15 @@ class FuturisticDetailDialog(QDialog):
         self.metrics.addWidget(tile, 1)
         return tile
 
+    def copy_table_cell(self, table: QTableWidget, row: int, column: int) -> None:
+        """Copy one literal display value without opening or executing it."""
+        item = table.item(row, column)
+        if item is None:
+            return
+        text = str(item.text())[:16_384]
+        QGuiApplication.clipboard().setText(text)
+        self.footer_status.setText(f"Copied exact table value: {text[:160]}")
+
 
 class PulseHistoryGraph(QWidget):
     """Small zero-allocation line graph over System Pulse's retained samples."""
@@ -280,6 +332,10 @@ class SystemPulseDetailDialog(FuturisticDetailDialog):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setSortingEnabled(False)
+        self.table.cellDoubleClicked.connect(
+            lambda row, column: self.copy_table_cell(self.table, row, column)
+        )
         self.content.addWidget(self.table)
         self._last_sample_revision: int | None = None
         self._pulse_rows: dict[str, QTableWidgetItem] = {}
@@ -291,6 +347,7 @@ class SystemPulseDetailDialog(FuturisticDetailDialog):
             value = QTableWidgetItem("--")
             self.table.setItem(row, 1, value)
             self._pulse_rows[name] = value
+        self.table.setSortingEnabled(True)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(900)
@@ -509,6 +566,8 @@ class ModuleResourceDialog(FuturisticDetailDialog):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setSortingEnabled(True)
+        self.table.cellDoubleClicked.connect(self._open_event_detail)
         self.content.addWidget(self.table, 1)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
@@ -523,35 +582,45 @@ class ModuleResourceDialog(FuturisticDetailDialog):
         self.status.set_value(str(snapshot.get("status", "unknown")))
         events = snapshot.get("events") or []
         self.events.set_value(str(len(events)))
-        fingerprint = tuple(
-            (
-                float(getattr(event, "ts", 0.0)),
-                str(getattr(event, "module", "")),
-                int(getattr(event, "severity", 0)),
-                str(getattr(event, "message", "")),
-            )
-            for event in events
-        )
+        fingerprint = tuple(_event_content_fingerprint(event) for event in events)
         if fingerprint == self._events_fingerprint:
             return
         self._events_fingerprint = fingerprint
+        header = self.table.horizontalHeader()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(events))
         for row, event in enumerate(events):
+            time_item = QTableWidgetItem(
+                time.strftime(
+                    "%H:%M:%S",
+                    time.localtime(float(getattr(event, "ts", time.time()))),
+                )
+            )
+            time_item.setData(Qt.UserRole, event)
             self.table.setItem(
                 row,
                 0,
-                QTableWidgetItem(
-                    time.strftime(
-                        "%H:%M:%S",
-                        time.localtime(float(getattr(event, "ts", time.time()))),
-                    )
-                ),
+                time_item,
             )
             severity = getattr(getattr(event, "severity", None), "label", "")
             self.table.setItem(row, 1, QTableWidgetItem(str(severity)))
             self.table.setItem(
                 row, 2, QTableWidgetItem(str(getattr(event, "message", "")))
             )
+        self.table.setSortingEnabled(True)
+        if sort_column >= 0:
+            self.table.sortItems(sort_column, sort_order)
+
+    def _open_event_detail(self, row: int, _column: int) -> None:
+        item = self.table.item(row, 0)
+        event = item.data(Qt.UserRole) if item is not None else None
+        if event is None:
+            return
+        from angerona.gui.pages import AlertDetailDialog, _show_nonmodal
+
+        _show_nonmodal(AlertDetailDialog(event, self))
 
 
 def _rate(value: float) -> str:

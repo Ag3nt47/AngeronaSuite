@@ -542,6 +542,10 @@ class RedTeamConsole(QDialog):
         self.device_findings.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows
         )
+        self.device_findings.setSortingEnabled(True)
+        self.device_findings.cellDoubleClicked.connect(
+            self._show_device_finding_detail
+        )
         self.device_findings.horizontalHeader().setStretchLastSection(True)
         body.addWidget(self.device_findings, 1)
         outer.addLayout(body, 1)
@@ -778,6 +782,11 @@ class RedTeamConsole(QDialog):
         findings = report.get("findings", [])
         if not isinstance(findings, list):
             findings = []
+        header = self.device_findings.horizontalHeader()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
+        self.device_findings.setSortingEnabled(False)
+        self.device_findings.setUpdatesEnabled(False)
         self.device_findings.setRowCount(len(findings))
         for row, finding in enumerate(findings):
             data = finding if isinstance(finding, dict) else {}
@@ -793,7 +802,13 @@ class RedTeamConsole(QDialog):
                     text = json.dumps(value, sort_keys=True)
                 else:
                     text = str(value)
-                self.device_findings.setItem(row, column, QTableWidgetItem(text))
+                cell = QTableWidgetItem(text)
+                cell.setData(Qt.UserRole, data)
+                self.device_findings.setItem(row, column, cell)
+        self.device_findings.setSortingEnabled(True)
+        if sort_column >= 0:
+            self.device_findings.sortItems(sort_column, sort_order)
+        self.device_findings.setUpdatesEnabled(True)
         self.device_findings.resizeRowsToContents()
         summary = report.get("summary")
         if not isinstance(summary, dict):
@@ -805,6 +820,20 @@ class RedTeamConsole(QDialog):
             }
         self.device_lab_log.setPlainText(
             "ASSESSMENT COMPLETE\n" + json.dumps(summary, indent=2, sort_keys=True)
+        )
+
+    def _show_device_finding_detail(self, row: int, _column: int) -> None:
+        cell = self.device_findings.item(row, 0)
+        finding = cell.data(Qt.UserRole) if cell is not None else None
+        if not isinstance(finding, dict):
+            return
+        detail = json.dumps(
+            finding, indent=2, sort_keys=True, ensure_ascii=False, default=str
+        )[:16_384]
+        QMessageBox.information(
+            self,
+            str(finding.get("title") or finding.get("weakness") or "Finding details")[:200],
+            detail,
         )
 
     def _export_device_report(self) -> None:

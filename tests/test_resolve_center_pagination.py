@@ -5,6 +5,7 @@ import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QPushButton
 
 from angerona.core.eventbus import Event, Severity
@@ -75,5 +76,20 @@ def test_resolve_center_shared_actions_follow_selection(monkeypatch) -> None:
         center.table.setCurrentCell(-1, -1)
         center._sync_action_state()
         assert not center._detail_btn.isEnabled()
+    finally:
+        center.close()
+
+
+def test_resolve_center_actions_keep_stable_event_after_sort(monkeypatch) -> None:
+    center, events = _center(monkeypatch, 12)
+    try:
+        center.table.sortItems(3, Qt.SortOrder.AscendingOrder)
+        target_row = next(
+            row
+            for row in range(center.table.rowCount())
+            if center.table.item(row, 3).text() == "unresolved event 7"
+        )
+        center.table.selectRow(target_row)
+        assert center._selected_event() is events[7]
     finally:
         center.close()

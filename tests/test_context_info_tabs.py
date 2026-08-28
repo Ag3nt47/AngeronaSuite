@@ -115,6 +115,7 @@ def test_settings_tabs_open_their_registered_code_in_sandbox(tmp_path: Path) -> 
         "System",
         "Adversary Combat",
         "Enterprise",
+        "Integrations",
         "ARIA",
         "Trusted Processes",
         "Mobile Integration",

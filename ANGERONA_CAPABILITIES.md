@@ -1,9 +1,9 @@
 # Angerona Capabilities
 
-Current status: **v1.11.0**. This is a present-tense capability and boundary
+Current status: **v1.12.0**. This is a present-tense capability and boundary
 summary. Operating detail is in the [Master Manual](Angerona_Master_Manual.docx);
 engineering evidence is in
-[`analysis/loop/cycle24/`](analysis/loop/cycle24/).
+[`analysis/loop/cycle25/`](analysis/loop/cycle25/).
 
 ## Core proposition
 
@@ -13,7 +13,7 @@ security-engineering portfolios. It brings telemetry, detection, correlation,
 investigation, governed response, recovery, local AI, and non-destructive
 validation into one PySide6 desktop application.
 
-The v1.11.0 security model separates four kinds of claims:
+The v1.12.0 security model separates four kinds of claims:
 
 - **Integrated:** a production path is connected to the application and covered
   by its local contract.
@@ -23,6 +23,24 @@ The v1.11.0 security model separates four kinds of claims:
 - **Deployment-dependent:** the repository supplies code and fail-closed
   configuration gates, but cannot create external custody, publisher trust,
   hardware state, or an independent failure domain.
+
+## v12 capability contract and operator surfaces
+
+- Exactly **80** built-in capabilities are present in the reproducible
+  Windows-target inventory. Every capability receives the same validated v12
+  contract and operational lifecycle/freshness/loss snapshot.
+- Contract fields cover implementation version, platform, mode, permissions,
+  inputs/outputs, egress, retention, response authority, dependencies,
+  conflicts, settings, self-test, restart/loss behavior, and resource budget.
+- Contract truth is explicit: **5 native contracts** and **75 compatibility
+  adapters**. Compatibility metadata gaps remain visible. Product version
+  1.12.0 does not imply that every module implementation was independently
+  rewritten or assigned version 12.
+- Current implementation versions are **51 at 1.0.0**, **28 at 1.1.0**, and the
+  macOS Observe preview at **0.1.0**. Product and module semver are independent.
+- Capability Center and Module Inspector provide search, filter, typed sorting,
+  bounded details, source/dependency/path information, and live operational
+  evidence. Contract export remains machine-readable.
 
 ## Endpoint, network, and evidence visibility
 
@@ -37,7 +55,7 @@ The v1.11.0 security model separates four kinds of claims:
 - Community ID v1, OCSF 1.8 mappings, Suricata and Zeek evidence, guarded
   read-only osquery snapshots, cases, causal timelines, Evidence Lattice
   correlation, Telemetry Expectation Contracts, and MITRE ATT&CK mapping.
-- Authenticated local EventBus persistence protects record bytes. v1.11.0's
+- Authenticated local EventBus persistence protects record bytes. The
   **Sensor Provenance Broker** separately authenticates enrolled producer
   identity, exact event schema, sequence continuity, replay state, and loss
   metadata before a fixed-schema consumer can advance trusted state.
@@ -123,7 +141,7 @@ Angerona host
   HTTPS default gateway with ordinary certificate/hostname validation, a leaf
   certificate pin, nonce/freshness, expected policy digest, optional mutual TLS,
   complete IPv4/IPv6 route evidence, and unchanged pre/post route context.
-- v1.11.0 supplies a separately operated **Personal Sentinel reference
+- Introduced in v1.11.0, Angerona supplies a separately operated **Personal Sentinel reference
   authority/server** for mTLS-authenticated requests, Ed25519 response/state
   receipts, trusted time, and monotonic compare-and-swap evidence. The service
   has bounded pre-authentication and authenticated workers, an OS singleton
@@ -140,6 +158,28 @@ Angerona host
   privileged whole-host snapshot rollback. That attacker model requires a
   policy-bound Trusted Platform Module or a separately administered witness
   outside the restorable host.
+
+## Guided Host Adaptation and recovery
+
+- **Guided Auto Adapt** presents the closed Balanced, Public, and Emergency
+  Lockdown profiles with explicit apply and baseline-enrollment choices.
+- The workflow performs one audit, rejects incomplete evidence, constructs an
+  immutable plan, and runs a no-write simulation. Accepted choices are copied
+  immutably before background work. An optional mutation requires a separate
+  confirmation of the exact plan; contextual automation remains proposal-only.
+- The explicitly enrolled recovery baseline is HMAC-authenticated, host-bound,
+  non-replaceable, and required before mutation. It restores the complete
+  Windows Firewall policy, which is the complete mutation scope of Host
+  Adaptation. Hardware, services, ports, applications, and network context are
+  observations, not whole-host rollback state.
+- Every apply also captures a pre-change snapshot. An HMAC transaction journal,
+  exact postcondition verification, compensation, startup reconciliation, and
+  circuit breaker cover interrupted or failed firewall changes.
+- **Run safe automatic checkup** audits once and simulates all registered
+  profiles without writing.
+- Remote-session anti-lockout uses fresh bounded SSH/current-session evidence,
+  Windows Terminal Services enumeration, and common third-party remote-control
+  agent process checks. Unknown or failed evidence cannot authorize a mutation.
 
 ## Governed defensive response
 
@@ -228,6 +268,38 @@ Angerona host
   infrastructure.
 - Maximum Adversary Combat validation exercises detector admission, signed
   response authority, verified closure, Undo/cleanup, and journal integrity.
+- Shared tables sort severity and risk by typed values. Live Defense, alert,
+  Context Info, adaptation, CVE, capability, and governed-path rows open bounded
+  details rather than implying unavailable evidence.
+- Alert analysis is bounded to two active workers and six queued exact event
+  identities. Temporary suppression is exact-rule, confirmed, 15-minute,
+  audited, undoable, and unavailable to integrity alerts.
+- SOAR clear is an atomic recoverable archive/restore operation with a digest
+  manifest. The digest is not represented as an independent signature. CVE
+  detail work is owned, interruption-aware, and nonblocking.
+
+## Delivery, mutation, and standards contracts
+
+- SIEM and Remote Bridge use durable bounded outboxes, revision cursors,
+  drain-stage-drain ordering, explicit gap receipts, leases/retry/dead-letter,
+  persistent idempotency tombstones, and HMAC-authenticated mutable state. The
+  durable queue key is independent of transport-key rotation.
+- Settings and protected credentials use atomic replacement and compensation
+  across exact settings bytes, secure-store values, environment projection,
+  and autostart. Intel Sync uses atomic generation/cancel/status publication.
+- Evolution, mitigation tuning, contextual adaptation, and unapproved
+  behavioral learning remain proposal-only. Behavioral activation requires an
+  exact SHA-256 approval and returns to pending review on hash drift.
+- Process, driver, and direction-specific firewall remediation binds exact
+  identity, return codes, postconditions, and rollback. Ambiguous ACL lockdown
+  is not a production automatic action.
+- The curated standards contract is ATT&CK **19.2** across **15 Enterprise
+  tactics**, Navigator **5.3.2** / layer **4.5**, constrained-preview OCSF
+  **1.8.0**, and a deliberately limited Sigma evaluator with atomic bounded
+  admission/refusal receipts.
+- IPC Guard is a protected-store authenticated loopback diagnostic admission
+  preview. It is not a production payload consumer, remote channel, or
+  TPM-backed transport.
 
 ## Platform contract and module discovery
 
@@ -253,16 +325,17 @@ Angerona host
 
 ## Validation snapshot
 
-- Final converged serial suite: **1,675 collected across 229 files; 1,670
-  passed; 5 expected host-capability skips; 0 failed**.
+- Authoritative serial release suite, including the three final-performance
+  regressions: **1,811 passed; 6 expected host-platform skips; 0 failed**. The
+  added regressions and their surrounding performance/reliability group also
+  passed a focused **106/106** gate.
 - Static platform discovery: **80 Windows / 14 Linux / 13 macOS modules**.
-- Focused Round 2 release remediation: **20 passed**.
-- Focused Round 2 core remediation: **88 passed / 1 expected platform skip**.
-- Focused Round 3 reliability/security paths: **78 passed / 1 expected platform
-  skip**.
-- Changed-file Ruff/compile gates, release YAML/MSIX XML parsing, PowerShell
-  parsing, and diff checks were clean in the recorded focused runs.
-- Paired public-gallery runs produced byte-identical output for all four images.
+- Product compile: **346/346** Python files.
+- Structural gate: **82/82** module files imported, **64/64** optional
+  compatibility hooks constructed, and **80** capabilities discovered.
+- Self-tests: **92** standalone core/module passes, **12** expected
+  inactive/platform skips, plus EventBus passed.
+- Selfcheck: **26/26** direct and batch; Ruff and diff checks clean.
 
 Focused groups overlap. They are not a final-suite total or clean-machine
 publisher/deployment proof.
@@ -281,6 +354,13 @@ publisher/deployment proof.
 - Appraisal and observe-only modules cannot prove truth after Administrator,
   SYSTEM, kernel, firmware, producer, verifier, or external-authority compromise
   inside their declared trust boundary.
+- The immutable Host Adaptation baseline is complete for Windows Firewall
+  policy only; it is not whole-host configuration or disaster recovery.
+- Durable outbox HMACs do not independently witness row deletion or rollback of
+  the entire local database. Delivery is at least once and can duplicate;
+  transport-key coordination still uses restart epochs.
+- The ATT&CK catalog is curated, OCSF/Sigma support is constrained, and IPC
+  Guard is diagnostic admission rather than a production transport.
 - Event-log continuity evidence cannot reconstruct data already erased.
 - In-process admitted extensions retain the suite token; legacy trusted
   PowerShell collectors still have a broad policy surface; path-wide firewall
@@ -295,6 +375,16 @@ publisher/deployment proof.
 
 ## Primary references
 
+- [Velociraptor client monitoring](https://docs.velociraptor.app/docs/clients/monitoring/)
+- [Wazuh Active Response](https://documentation.wazuh.com/current/user-manual/capabilities/active-response/index.html)
+- [Fleet GitOps YAML policies](https://fleetdm.com/docs/configuration/yaml-files)
+- [osquery configuration and packs](https://osquery.readthedocs.io/en/5.12.1/deployment/configuration/)
+- [Elastic detection-rules](https://github.com/elastic/detection-rules)
+- [Velociraptor Artifact Exchange](https://docs.velociraptor.app/docs/artifacts/exchange_reference/)
+- [MITRE ATT&CK version history](https://attack.mitre.org/resources/versions/)
+- [ATT&CK Navigator layer 4.5](https://github.com/mitre-attack/attack-navigator/blob/master/layers/spec/v4.5/layerformat.md)
+- [OCSF 1.8 observables](https://raw.githubusercontent.com/ocsf/ocsf-schema/1.8.0/objects/observable.json)
+- [Sigma rule specification](https://sigmahq.io/sigma-specification/specification/sigma-rules-specification.html)
 - [CISA AA25-239A](https://www.cisa.gov/news-events/cybersecurity-advisories/aa25-239a)
 - [NIST SP 800-207 Zero Trust Architecture](https://csrc.nist.gov/pubs/sp/800/207/final)
 - [MITRE ATT&CK T1070.001 Clear Windows Event Logs](https://attack.mitre.org/techniques/T1070/001/)

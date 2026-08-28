@@ -95,7 +95,7 @@ class MobileResponseBridge(BaseModule):
     description = ("E2EE (Signal) state-gated remote orchestration: posture queries "
                    "and token+PIN-gated containment from the operator's phone.")
     category = "Response"
-    version = "1.0.0"
+    version = "1.1.0"
     # The thread always runs but self-gates on config.mobile_enabled (idles cheaply
     # when off) so flipping the Settings toggle takes effect without a restart.
     enabled_by_default = True
@@ -113,7 +113,6 @@ class MobileResponseBridge(BaseModule):
         # total instead of retaining every full alert line during a flood.
         self._digest: list[str] = []
         self._digest_count = 0
-        self._cursor_ts = 0.0                        # bus read watermark
         self._last_sweep = 0.0
         self._last_digest_flush = 0.0
         self._aria_handler = None                    # optional ARIA chat handler
@@ -210,14 +209,11 @@ class MobileResponseBridge(BaseModule):
         if self._bus is None:
             return
         try:
-            events = self._bus.recent(50)
+            events, _overflow = self.poll_bus_events(priority=True)
         except Exception:
             return
         now = time.time()
         for ev in events:
-            if ev.ts <= self._cursor_ts:
-                continue
-            self._cursor_ts = max(self._cursor_ts, ev.ts)
             if ev.severity < Severity.HIGH or ev.module in ("Console", "Self-Test"):
                 continue
             if self._is_muted(ev.module):

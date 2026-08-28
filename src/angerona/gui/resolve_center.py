@@ -64,6 +64,7 @@ class ResolveCenter(QDialog):
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setAlternatingRowColors(True)
         self.table.setStyleSheet("QTableWidget::item{padding:4px 6px;}")
+        self.table.setSortingEnabled(True)
         self.table.itemSelectionChanged.connect(self._sync_action_state)
         self.table.cellDoubleClicked.connect(lambda *_: self._act_selected(self._detail))
         root.addWidget(self.table, 1)
@@ -180,19 +181,28 @@ class ResolveCenter(QDialog):
         self._previous_btn.setEnabled(self._page > 0)
         self._next_btn.setEnabled(self._page + 1 < page_count)
 
+        header = self.table.horizontalHeader()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
         self.table.setUpdatesEnabled(False)
+        self.table.setSortingEnabled(False)
         self.table.clearContents()
         self.table.setRowCount(len(shown))
         for r, ev in enumerate(shown):
             when = time.strftime("%m-%d %H:%M:%S", time.localtime(getattr(ev, "ts", time.time())))
             sev = getattr(ev, "severity", Severity.INFO)
             sev_name = getattr(sev, "name", str(sev))
-            self.table.setItem(r, 0, QTableWidgetItem(when))
+            time_item = QTableWidgetItem(when)
+            time_item.setData(Qt.UserRole, ev)
+            self.table.setItem(r, 0, time_item)
             sev_it = QTableWidgetItem(sev_name)
             sev_it.setForeground(QColor(_SEV_COLOR.get(sev_name, "#e5e7eb")))
             self.table.setItem(r, 1, sev_it)
             self.table.setItem(r, 2, QTableWidgetItem(str(getattr(ev, "module", ""))))
             self.table.setItem(r, 3, QTableWidgetItem(str(getattr(ev, "message", ""))))
+        self.table.setSortingEnabled(True)
+        if sort_column >= 0:
+            self.table.sortItems(sort_column, sort_order)
         self.table.setUpdatesEnabled(True)
         if shown:
             self.table.selectRow(0)
@@ -208,9 +218,8 @@ class ResolveCenter(QDialog):
 
     def _selected_event(self):
         row = self.table.currentRow()
-        if 0 <= row < len(self._page_events):
-            return self._page_events[row]
-        return None
+        item = self.table.item(row, 0) if row >= 0 else None
+        return item.data(Qt.UserRole) if item is not None else None
 
     def _sync_action_state(self) -> None:
         enabled = self._selected_event() is not None

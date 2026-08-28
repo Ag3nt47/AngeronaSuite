@@ -15,7 +15,7 @@ import re
 import time
 from typing import Final
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout
 
 from angerona.core.privacy import redact_text
@@ -169,6 +169,8 @@ def safe_event_summary(event: object) -> str:
 class LiveDefenseActivityCard(QFrame):
     """Small revision-aware view of sanitized EventBus and module activity."""
 
+    details_requested = Signal()
+
     def __init__(self, bus, manager, parent=None) -> None:
         super().__init__(parent)
         self.bus = bus
@@ -178,13 +180,15 @@ class LiveDefenseActivityCard(QFrame):
         self._render_count = 0
 
         self.setObjectName("Card")
+        self.setCursor(Qt.PointingHandCursor)
         self.setMinimumWidth(145)
         self.setMaximumWidth(390)
         explanation = (
             "Observable operations only: up to five sanitized summaries from a "
             "16-event EventBus window plus coarse module health counts. Raw event "
             "details, local identifiers, secrets, source code, and AI chain-of-"
-            "thought are never displayed."
+            "thought are never displayed. Click for governed event evidence, concise "
+            "decision rationale, and file/artifact paths when a sensor supplied them."
         )
         self.setToolTip(explanation)
         self.setAccessibleName("Live defense activity")
@@ -200,6 +204,7 @@ class LiveDefenseActivityCard(QFrame):
         title.setTextFormat(Qt.PlainText)
         title.setMinimumWidth(0)
         title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        title.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self._state = QLabel("● EVENT BUS")
         self._state.setTextFormat(Qt.PlainText)
         self._state.setMinimumWidth(0)
@@ -207,6 +212,7 @@ class LiveDefenseActivityCard(QFrame):
             "color:#2fe38a; font-size:10px; font-weight:800;"
         )
         self._state.setToolTip(explanation)
+        self._state.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         title_row.addWidget(title)
         title_row.addStretch(1)
         title_row.addWidget(self._state)
@@ -218,6 +224,7 @@ class LiveDefenseActivityCard(QFrame):
         self.summary.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.summary.setStyleSheet("color:#94a3b8; font-size:11px;")
         self.summary.setAccessibleName("Defense module health summary")
+        self.summary.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         root.addWidget(self.summary)
 
         self.rows: list[QLabel] = []
@@ -232,12 +239,18 @@ class LiveDefenseActivityCard(QFrame):
             )
             row.setAccessibleName(f"Sanitized defense activity {index + 1}")
             row.setToolTip(explanation)
+            row.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             row.hide()
             self.rows.append(row)
             root.addWidget(row)
         root.addStretch(1)
 
         self.refresh()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        if event.button() == Qt.LeftButton:
+            self.details_requested.emit()
+        super().mousePressEvent(event)
 
     @staticmethod
     def _module_snapshot(manager) -> tuple[tuple[tuple[int, str, str], ...], int, int, int]:

@@ -296,6 +296,8 @@ class ContextInfoTab(QWidget):
         self.meanings.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.meanings.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.meanings.setMinimumHeight(150)
+        self.meanings.setSortingEnabled(True)
+        self.meanings.cellDoubleClicked.connect(self._show_meaning_detail)
         self.layout.addWidget(self.meanings)
 
         paths_title = QLabel("Related files and locations")
@@ -309,6 +311,8 @@ class ContextInfoTab(QWidget):
         self.paths.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.paths.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.paths.setMinimumHeight(170)
+        self.paths.setSortingEnabled(True)
+        self.paths.cellDoubleClicked.connect(self._copy_path_detail)
         self.layout.addWidget(self.paths)
 
         sandbox_note = QLabel(
@@ -347,6 +351,8 @@ class ContextInfoTab(QWidget):
         else:
             self.loading_spinner.stop()
         self.topic = topic
+        self.meanings.setSortingEnabled(False)
+        self.paths.setSortingEnabled(False)
         if topic is None:
             self.heading.setText("Info unavailable")
             self.overview.setText(
@@ -357,6 +363,8 @@ class ContextInfoTab(QWidget):
             self.workspace = None
             self.open_sandbox.setEnabled(False)
             self.reset_sandbox.setEnabled(False)
+            self.meanings.setSortingEnabled(True)
+            self.paths.setSortingEnabled(True)
             if animate:
                 self._schedule_topic_finish(generation)
             return
@@ -414,6 +422,8 @@ class ContextInfoTab(QWidget):
             self.paths.setItem(row, 0, QTableWidgetItem(kind))
             self.paths.setItem(row, 1, QTableWidgetItem(location))
         self.paths.resizeRowsToContents()
+        self.meanings.setSortingEnabled(True)
+        self.paths.setSortingEnabled(True)
         self.open_sandbox.setEnabled(sandbox_available)
         self.reset_sandbox.setEnabled(sandbox_available)
         self.sandbox_status.setText(sandbox_status)
@@ -422,6 +432,28 @@ class ContextInfoTab(QWidget):
             self.reset_sandbox.setToolTip(sandbox_status)
         if animate:
             self._schedule_topic_finish(generation)
+
+    def _show_meaning_detail(self, row: int, _column: int) -> None:
+        name = self.meanings.item(row, 0)
+        meaning = self.meanings.item(row, 1)
+        if name is None or meaning is None:
+            return
+        QMessageBox.information(
+            self,
+            str(name.text())[:200],
+            str(meaning.text())[:8_000],
+        )
+
+    def _copy_path_detail(self, row: int, _column: int) -> None:
+        kind = self.paths.item(row, 0)
+        location = self.paths.item(row, 1)
+        if location is None:
+            return
+        exact = str(location.text())[:16_384]
+        QGuiApplication.clipboard().setText(exact)
+        self.sandbox_status.setText(
+            f"{str(kind.text()) if kind else 'Location'} copied exactly: {exact}"
+        )
 
     def _schedule_topic_finish(self, generation: int) -> None:
         """Finish only the newest Info refresh on this widget's owned timer."""

@@ -56,11 +56,11 @@ class CloudEscalationModule(BaseModule):
     name = "Cloud CTI Escalation"
     description = "Opt-in: corroborates CRITICAL events with a cloud model (uses your own key)."
     category = "AI"
+    version = "1.1.0"
     enabled_by_default = False
 
     def __init__(self) -> None:
         super().__init__()
-        self._last_ts = 0.0
         self._keys = list(credential_values("gemini"))
 
     def _ask_gemini(self, prompt: str) -> Optional[dict]:
@@ -80,6 +80,31 @@ class CloudEscalationModule(BaseModule):
         except Exception as exc:
             self.last_error = str(exc)
             return None
+
+    def self_test(self) -> tuple[bool, str]:
+        """Exercise parsing and privacy gates without credentials or egress."""
+        parsed = _extract_json(
+            'prefix {"verdict":"SUSPICIOUS","confidence":0.75,'
+            '"justification":"bounded fixture"} suffix'
+        )
+        prompt = _cloud_prompt(
+            "Sensor 10.2.3.4",
+            r"C:\Users\Alice\secret.txt contacted https://example.test?q=token",
+        )
+        ok = bool(
+            parsed
+            and parsed.get("verdict") == "SUSPICIOUS"
+            and _extract_json("not json") is None
+            and "10.2.3.4" not in prompt
+            and "Alice" not in prompt
+            and "example.test" not in prompt
+            and len(prompt) <= 1600
+        )
+        return (
+            ok,
+            "offline JSON contract and identifier-redaction gate passed"
+            if ok else "cloud response parser or redaction contract failed",
+        )
 
     def run(self) -> None:
         _calls: list[float] = []          # recent cloud-call timestamps (rate cap)
@@ -113,12 +138,12 @@ class CloudEscalationModule(BaseModule):
                 continue
             if self._bus is None:
                 continue
-            for ev in self._bus.recent(15):
-                if ev.ts <= self._last_ts or ev.severity < Severity.CRITICAL:
+            events, _overflow = self.poll_bus_events(priority=True)
+            for ev in events:
+                if ev.severity < Severity.CRITICAL:
                     continue
                 if ev.module in (self.name, "AI Triage (Ollama)"):
                     continue
-                self._last_ts = max(self._last_ts, ev.ts)
                 if not is_active_threat(ev):
                     continue
                 now = time.time()

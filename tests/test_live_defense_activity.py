@@ -6,7 +6,8 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from angerona.gui.live_defense_activity import (
@@ -218,3 +219,18 @@ def test_accessibility_copy_states_the_privacy_boundary() -> None:
     assert "16-event" in copy
     assert "raw event details" in copy
     assert "chain-of-thought" in copy
+
+
+def test_card_click_requests_governed_event_details() -> None:
+    _app()
+    card = LiveDefenseActivityCard(_Bus([]), SimpleNamespace(modules={}))
+    requests: list[bool] = []
+    card.details_requested.connect(lambda: requests.append(True))
+    card.resize(320, 180)
+    card.show()
+
+    QTest.mouseClick(card, Qt.LeftButton)
+
+    assert requests == [True]
+    assert card.cursor().shape() == Qt.PointingHandCursor
+    assert "file/artifact paths" in card.toolTip()

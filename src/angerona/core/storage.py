@@ -1060,7 +1060,14 @@ class _BoundedSimpleQueue:
     def put_nowait(self, event: Event) -> None:
         if not self._slots.acquire(blocking=False):
             raise queue.Full
-        self._queue.put(event)
+        try:
+            self._queue.put(event)
+        except Exception:
+            # ``SimpleQueue.put`` is normally infallible apart from allocation
+            # failure.  Preserve the exact capacity gate if an interpreter or
+            # test double does raise so one failed handoff cannot leak a slot.
+            self._slots.release()
+            raise
 
     def get(self, timeout: float | None = None) -> Event:
         event = self._queue.get(timeout=timeout)
@@ -1114,7 +1121,13 @@ class AsyncFlightRecorder:
         if dlq_batch_size < 1:
             raise ValueError("dlq_batch_size must be positive")
         self._recorder = recorder
-        self._queue: queue.Queue[Event] = queue.Queue(maxsize=queue_capacity)
+        # The normal EventBus subscriber path is hotter than the overflow
+        # lane.  It does not use Queue.join(), so retain the same exact bounded
+        # capacity while avoiding queue.Queue's Condition convoy for every
+        # producer handoff.  The worker still drains and persists identical
+        # ordered Event objects, and saturation still falls through to the
+        # authenticated overflow lane.
+        self._queue = _BoundedSimpleQueue(queue_capacity)
         self._overflow_queue = _BoundedSimpleQueue(overflow_queue_capacity)
         self._batch_size = min(int(batch_size), int(queue_capacity))
         self._dlq_batch_size = min(

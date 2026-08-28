@@ -10,10 +10,10 @@ but no longer actually enforces anything.
 
 How
     At arm time it fingerprints a set of critical callables — module, qualname,
-    and a SHA-256 of the function's bytecode (``__code__.co_code``). Every cycle it
-    re-resolves each target and compares: a reassigned function (``mod.fn = evil``)
-    changes identity/qualname, and an in-place bytecode patch changes the code
-    hash. Either is a CRITICAL runtime-tamper signal.
+    the complete marshalled code object, defaults, and closure values. Every
+    cycle it re-resolves each target and compares. Reassignment, constants-only
+    patches, referenced-name changes, and modified defaults/closures all produce
+    a CRITICAL runtime-tamper signal.
 
 Scope / honesty
     This raises the bar against user-mode monkeypatching; it is NOT kernel
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import marshal
 import os
 import subprocess
 import sys
@@ -124,15 +125,78 @@ def _resolve(spec: str):
         return None
 
 
+def _integrity_bytes(value, *, depth: int = 0) -> bytes:
+    """Return a bounded, deterministic representation for callable metadata.
+
+    ``marshal`` is deliberately used for Python code objects because ``co_code``
+    alone omits constants, referenced global names, exception tables, and other
+    execution-relevant fields.  Defaults and closure cells are included too so
+    changing a policy function without changing its bytecode still trips the
+    monitor.  This is a local hash input only; values are never persisted or
+    emitted.
+    """
+    if depth >= 6:
+        return b"<depth-limit>"
+    if value is None or isinstance(value, (bool, int, float, complex, str, bytes)):
+        try:
+            return marshal.dumps(value)[:65536]
+        except (TypeError, ValueError):
+            pass
+    if isinstance(value, tuple):
+        return b"(" + b"|".join(
+            _integrity_bytes(item, depth=depth + 1) for item in value[:128]
+        ) + b")"
+    if isinstance(value, list):
+        return b"[" + b"|".join(
+            _integrity_bytes(item, depth=depth + 1) for item in value[:128]
+        ) + b"]"
+    if isinstance(value, dict):
+        items = []
+        for key in sorted(value, key=lambda item: (type(item).__name__, repr(item)))[:128]:
+            items.append(
+                _integrity_bytes(key, depth=depth + 1)
+                + b"="
+                + _integrity_bytes(value[key], depth=depth + 1)
+            )
+        return b"{" + b"|".join(items) + b"}"
+    if isinstance(value, (set, frozenset)):
+        items = sorted(_integrity_bytes(item, depth=depth + 1) for item in value)
+        return b"<set>" + b"|".join(items[:128])
+    code = getattr(value, "__code__", None)
+    if code is not None:
+        try:
+            return b"<code>" + marshal.dumps(code)[:262144]
+        except (TypeError, ValueError):
+            pass
+    type_id = f"{type(value).__module__}.{type(value).__qualname__}".encode(
+        "utf-8", "backslashreplace"
+    )
+    try:
+        rendered = repr(value).encode("utf-8", "backslashreplace")[:4096]
+    except Exception:
+        rendered = f"<id:{id(value)}>".encode("ascii")
+    return type_id + b":" + rendered
+
+
 def _fingerprint(obj) -> str:
-    """Stable identity of a callable: module + qualname + bytecode hash. A
-    reassignment changes qualname/module; an in-place patch changes the bytecode."""
+    """Stable identity of a callable including all executable code metadata."""
     fn = getattr(obj, "__func__", obj)          # unwrap bound/staticmethods
     mod = getattr(fn, "__module__", "?")
     qual = getattr(fn, "__qualname__", repr(fn))
     code = getattr(fn, "__code__", None)
     if code is not None:
-        digest = hashlib.sha256(bytes(code.co_code)).hexdigest()[:16]
+        hasher = hashlib.sha256()
+        hasher.update(marshal.dumps(code))
+        hasher.update(_integrity_bytes(getattr(fn, "__defaults__", None)))
+        hasher.update(_integrity_bytes(getattr(fn, "__kwdefaults__", None)))
+        closure = getattr(fn, "__closure__", None) or ()
+        for cell in closure[:128]:
+            try:
+                value = cell.cell_contents
+            except ValueError:
+                value = "<empty-cell>"
+            hasher.update(_integrity_bytes(value))
+        digest = hasher.hexdigest()[:24]
     else:
         digest = "no-code"
     return f"{mod}:{qual}:{digest}"
@@ -194,7 +258,7 @@ class SelfIntegrityMonitor(BaseModule):
     description = ("Detects in-memory tampering (monkeypatching) of Angerona's own "
                    "enforcement functions — the third BL-01 vector after terminate/suspend.")
     category = "Integrity"
-    version = "1.0.0"
+    version = "1.1.0"
     enabled_by_default = True
 
     _INTERVAL = 15.0

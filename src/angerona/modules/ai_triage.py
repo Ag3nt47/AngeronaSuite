@@ -40,6 +40,7 @@ class AITriageModule(BaseModule):
     name = "AI Triage (Ollama)"
     description = "Explains and scores serious events using a local LLM (Ollama)."
     category = "AI"
+    version = "1.1.0"
     supported_platforms = SUPPORTED_PLATFORMS
     capability_mode = "detect"
     # Restarting this worker cannot install a model or start the external
@@ -65,7 +66,6 @@ class AITriageModule(BaseModule):
             or "llama3"
         )
         self._config = None
-        self._last_ts = 0.0
         # Circuit breaker — "closed" = normal, "open" = Ollama hung/dead
         self._cb_state = "closed"             # type: str
         self._cb_lock  = threading.Lock()
@@ -259,20 +259,21 @@ class AITriageModule(BaseModule):
     def _run_generation(self) -> None:
         ticks = 0
         while not self.stopping:
-            self.sleep(8)
+            self.sleep(8, cycle_complete=False)
             ticks += 1
             if self.stopping:
                 break
             if ticks % 8 == 0:   # ~every 64s, re-verify the model is usable
                 self._check_health()
             if self._bus is None:
+                self.mark_cycle_complete()
                 continue
-            for ev in self._bus.recent(20):
-                if ev.ts <= self._last_ts or ev.severity < Severity.HIGH:
+            events, _overflow = self.poll_bus_events(priority=True)
+            for ev in events:
+                if ev.severity < Severity.HIGH:
                     continue
                 if ev.module == self.name:
                     continue   # never triage our own output (no feedback loop)
-                self._last_ts = max(self._last_ts, ev.ts)
                 # Practice, passive exposure and suite-health events keep their
                 # evidentiary severity but do not need a heavyweight model call.
                 try:
@@ -305,6 +306,7 @@ class AITriageModule(BaseModule):
                 # If verdict is None because CB is open, the event is already on the
                 # bus being processed by SOAR, attack_tracker, etc.  The CB trip
                 # itself already emitted a HIGH alert — no further action needed.
+            self.mark_cycle_complete()
 
     def _check_health(self) -> None:
         prev = self.health

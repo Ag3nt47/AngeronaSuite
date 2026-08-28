@@ -44,6 +44,7 @@ def test_scan_center_reflows_narrow_controls_without_clipping() -> None:
     assert panel._scroll.verticalScrollBar().maximum() > 0
 
     header = panel.findings.horizontalHeader()
+    assert panel.findings.isSortingEnabled()
     assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.Interactive
     assert sum(panel.findings.columnWidth(index) for index in range(5)) > (
         panel.findings.viewport().width()

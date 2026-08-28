@@ -22,7 +22,8 @@ from typing import Any, Callable, Dict, List
 from angerona.core.capability_manifest import verify_external_module
 from angerona.core.config import Config
 from angerona.core.eventbus import EventBus
-from angerona.core.module_base import BaseModule
+from angerona.core.module_base import BaseModule, Severity
+from angerona.core.module_contract import ContractError, build_capability_contract
 from angerona.core.platforms import (
     availability_for,
     declared_platforms_from_source,
@@ -67,6 +68,7 @@ class ModuleManager:
 
     # ── Discovery ───────────────────────────────────────────────────────────
     def discover(self) -> None:
+        capability_ids: set[str] = set()
         for cls in self._builtin_classes() + self._external_classes():
             try:
                 inst = cls()
@@ -74,6 +76,9 @@ class ModuleManager:
                 self.discovery_errors.append(f"{cls.__module__}.{cls.__name__}: {exc}")
                 continue
             if inst.name in self.modules:
+                self.discovery_errors.append(
+                    f"{cls.__module__}.{cls.__name__}: duplicate module name {inst.name!r}"
+                )
                 continue
             inst.bind(self.bus)
             platform = availability_for(inst, self.platform)
@@ -88,21 +93,44 @@ class ModuleManager:
                     inst.bind_manager(self)
                 except Exception:
                     pass
-            self.modules[inst.name] = inst
             manifest = getattr(cls, "_angerona_manifest", None)
             origin = "external" if manifest is not None else "builtin"
             trust = str(getattr(cls, "_angerona_trust", "release"))
+            capability_id = (
+                manifest.capability_id
+                if manifest is not None
+                else f"angerona.builtin.{cls.__module__.rsplit('.', 1)[-1]}"
+            )
+            if capability_id in capability_ids:
+                self.discovery_errors.append(
+                    f"{cls.__module__}.{cls.__name__}: duplicate capability id {capability_id!r}"
+                )
+                continue
+            try:
+                contract = build_capability_contract(
+                    inst,
+                    capability_id=capability_id,
+                    origin=origin,
+                    trust=trust,
+                    publisher=(manifest.publisher if manifest is not None else "Angerona"),
+                    manifest_permissions=(manifest.permissions if manifest is not None else ()),
+                    manifest_high_risk_permissions=(
+                        manifest.high_risk_permissions if manifest is not None else ()
+                    ),
+                )
+            except ContractError as exc:
+                self.discovery_errors.append(f"{cls.__module__}.{cls.__name__}: {exc}")
+                continue
             setattr(inst, "_angerona_origin", origin)
             setattr(inst, "_angerona_trust", trust)
             setattr(inst, "_angerona_manifest", manifest)
+            setattr(inst, "_angerona_contract", contract)
+            capability_ids.add(capability_id)
+            self.modules[inst.name] = inst
             self.module_trust[inst.name] = {
                 "origin": origin,
                 "trust": trust,
-                "capability_id": (
-                    manifest.capability_id
-                    if manifest is not None
-                    else f"angerona.builtin.{cls.__module__.rsplit('.', 1)[-1]}"
-                ),
+                "capability_id": capability_id,
                 "version": (
                     manifest.version
                     if manifest is not None
@@ -367,7 +395,18 @@ class ModuleManager:
                     0.1,
                     float(getattr(mod, "startup_cycle_timeout", cycle_timeout)),
                 )
-                waiter(timeout=timeout)
+                ready = bool(waiter(timeout=timeout))
+                if not ready:
+                    mod.set_health(
+                        min(int(getattr(mod, "health", 100)), 40),
+                        f"startup cycle did not complete within {timeout:.1f}s",
+                    )
+                    mod.emit(
+                        "Capability startup deadline elapsed before a completed work cycle.",
+                        Severity.MEDIUM,
+                        finding_code="module.lifecycle.startup_timeout",
+                        response_authorized=False,
+                    )
             # Keep adjacent setup work from landing in the same scheduler slice,
             # even when a module completes almost instantly.
             if min_settle > 0:
@@ -398,6 +437,24 @@ class ModuleManager:
         for name in sorted(self.modules):
             mod = self.modules[name]
             trust = dict(self.module_trust.get(name, {}))
+            contract = getattr(mod, "_angerona_contract", None)
+            if contract is None:
+                fallback_id = trust.get("capability_id") or (
+                    f"angerona.runtime.{type(mod).__module__.rsplit('.', 1)[-1]}."
+                    f"{type(mod).__name__.casefold()}"
+                )
+                try:
+                    contract = build_capability_contract(
+                        mod,
+                        capability_id=str(fallback_id),
+                        origin=str(trust.get("origin", "runtime")),
+                        trust=str(trust.get("trust", "unclassified")),
+                        publisher=str(trust.get("publisher", "runtime")),
+                    )
+                    setattr(mod, "_angerona_contract", contract)
+                except ContractError:
+                    contract = None
+            operational = mod.operational_snapshot()
             trust.update(
                 {
                     "name": name,
@@ -405,8 +462,24 @@ class ModuleManager:
                     "status": str(getattr(mod, "status", "unknown")),
                     "health": int(getattr(mod, "health", 0)),
                     "enabled": bool(self.is_enabled(name)),
+                    "operational": operational,
                 }
             )
+            if contract is not None:
+                contract_dict = contract.as_dict()
+                trust.update(
+                    {
+                        "contract": contract_dict,
+                        "contract_schema": contract.schema,
+                        "contract_schema_version": contract.schema_version,
+                        "implementation_version": contract.implementation_version,
+                        "maturity": contract.maturity,
+                        "metadata_level": contract.metadata_level,
+                        "response_authority": contract.response_authority,
+                        "self_test": contract.self_test,
+                        "metadata_gaps": list(contract.metadata_gaps),
+                    }
+                )
             trust.update(availability_for(mod, self.platform).as_dict())
             rows.append(trust)
         return rows

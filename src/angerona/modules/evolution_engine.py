@@ -1,26 +1,25 @@
 """evolution_engine.py — The Evolutionary Loop Engine (EVOL).
 
-A drop-in module that closes the self-hardening loop: when the Judgment gate
-reports a validation bypass (VERIFICATION_RESULT: SUCCESS), this engine studies
-the footprint that got through, asks the local LLM to synthesize a YARA rule for
-it, deploys the rule, and re-verifies — iterating up to 3 times, then escalating
-if it still can't catch the technique.
+A drop-in module that closes the review loop: when the Judgment gate reports a
+validation bypass (VERIFICATION_RESULT: SUCCESS), this engine studies the
+footprint, asks the local LLM to synthesize a YARA candidate, and stages that
+candidate for operator review. Generated content is never activated
+automatically.
 
 Trigger: either call `activate(technique_id)` directly, or let the module do it
-automatically — it subscribes to the event bus and fires on any HIGH event whose
-details carry {"verified": "SUCCESS"} (emitted by Posture Hardening's Judgment
-loop). Heavy work runs on a background thread so the bus/GUI never blocks.
+automatically — it subscribes to the event bus and accepts only a typed,
+single-use receipt issued by Posture Hardening's Judgment loop. Heavy work runs
+on a tracked background thread so the bus/GUI never blocks.
 
-SAFETY: generates DETECTION signatures (YARA) only — never offensive code. The
-re-verification reuses the non-destructive `angerona.shark.verify` probe.
+SAFETY: generates inert DETECTION proposals (YARA) only — never offensive code,
+never activates a generated rule, and never claims an inactive proposal was
+certified.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
-import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
@@ -127,9 +126,10 @@ def _reverse_lines(path: Path, block_size: int = 64 * 1024):
 
 class EvolutionEngine(BaseModule):
     name = "Evolution Engine"
-    description = "Self-hardening loop: turns a verification bypass into an auto-generated YARA signature."
+    description = ("Review-gated hardening: turns a typed Judgment bypass receipt "
+                   "into an inert YARA proposal; never auto-activates it.")
     category = "Resilience"
-    version = "1.0.0"
+    version = "1.1.0"
     enabled_by_default = True
 
     def __init__(self) -> None:
@@ -139,6 +139,7 @@ class EvolutionEngine(BaseModule):
         self.rules_dir = root / "rules"
         self.attack_feed = self.shared_logs / "attack_feed.log"
         self.auto_rule = self.rules_dir / "auto_generated.yar"
+        self.proposals_dir = self.rules_dir / "proposals"
         self.history_path = self.shared_logs / "evolution_history.json"
         self._mgr = None
         self._active: set = set()          # technique_ids currently evolving (no re-entrancy)
@@ -149,6 +150,7 @@ class EvolutionEngine(BaseModule):
         self._rate_warned = False
         self._ollama_fails: list = []      # recent Ollama failure timestamps
         self._ollama_open_until = 0.0      # circuit-breaker cooldown deadline
+        self._workers: set[threading.Thread] = set()
         try:
             self.shared_logs.mkdir(parents=True, exist_ok=True)
             self.rules_dir.mkdir(parents=True, exist_ok=True)
@@ -175,19 +177,52 @@ class EvolutionEngine(BaseModule):
             if is_remote_observe_only(ev):
                 return
             det = getattr(ev, "details", None) or {}
-            if det.get("verified") == "SUCCESS" and det.get("technique"):
-                self.activate(det["technique"])
+            if (
+                getattr(ev, "module", "") != "Posture Hardening"
+                or getattr(ev, "severity", Severity.INFO) != Severity.HIGH
+                or det.get("event_type") != "judgment-bypass-receipt.v1"
+                or det.get("verified") != "SUCCESS"
+            ):
+                return
+            hardening = (
+                getattr(self._mgr, "modules", {}).get("Posture Hardening")
+                if self._mgr is not None else None
+            )
+            consume = getattr(hardening, "consume_judgment_bypass_receipt", None)
+            technique = str(det.get("technique") or "")
+            if not callable(consume) or not consume(
+                str(det.get("receipt_id") or ""),
+                technique,
+                str(det.get("receipt_digest") or ""),
+            ):
+                self.emit(
+                    "Evolution trigger rejected: missing, forged, expired, or replayed "
+                    "Judgment receipt.",
+                    Severity.MEDIUM,
+                    finding_code="evolution.untrusted_trigger",
+                    response_authorized=False,
+                )
+                return
+            self.activate(technique)
         except Exception:
             pass
 
     def run(self) -> None:
-        self.set_health(100, "idle — waiting for a verification bypass")
+        self.set_health(100, "proposal-only — waiting for a typed Judgment bypass")
         # Activation is delivered synchronously by the EventBus subscription in
         # ``bind()``; this module has no periodic work.  The old five-second
         # sleep loop woke 17,280 times/day merely to discover that it was still
         # idle.  Publish readiness once, then park interruptibly until stop().
         self.mark_cycle_complete()
-        self.generation_stop_event().wait()
+        stop_event = self.generation_stop_event()
+        stop_event.wait()
+        gate = getattr(self, "_gate", None)
+        if gate is None:
+            return
+        with gate:
+            workers = tuple(getattr(self, "_workers", ()))
+        for worker in workers:
+            worker.join(timeout=0.25)
 
     # ── 1. activation interface ──────────────────────────────────────────────
     def activate(self, technique_id: str) -> None:
@@ -196,6 +231,8 @@ class EvolutionEngine(BaseModule):
         if not isinstance(technique_id, str) or not _TECHNIQUE_ID.fullmatch(technique_id):
             self.emit("Evolution trigger rejected: invalid ATT&CK technique identifier.",
                       Severity.MEDIUM)
+            return
+        if self.status != "running":
             return
         now = time.time()
         with self._gate:
@@ -219,8 +256,23 @@ class EvolutionEngine(BaseModule):
             self._active.add(technique_id)
             self._last_activation[technique_id] = now
             self._recent.append(now)
-        threading.Thread(target=self._evolve, args=(technique_id,),
-                         name=f"evolve-{technique_id}", daemon=True).start()
+        generation = self.lifecycle_generation
+        stop_event = self.generation_stop_event()
+        worker = threading.Thread(
+            target=self._evolve,
+            args=(technique_id, generation, stop_event),
+            name=f"evolve-{technique_id}",
+            daemon=True,
+        )
+        with self._gate:
+            self._workers.add(worker)
+        try:
+            worker.start()
+        except Exception:
+            with self._gate:
+                self._workers.discard(worker)
+                self._active.discard(technique_id)
+            raise
 
     # ── Ollama circuit breaker (BL-07) ───────────────────────────────────────
     def _ollama_open(self) -> bool:
@@ -315,95 +367,97 @@ class EvolutionEngine(BaseModule):
                 f"    strings:\n        {strings}\n"
                 f"    condition:\n        any of them\n}}\n")
 
-    # ── 4. deployment + 5. re-test loop + 6. persistence ─────────────────────
-    def _deploy(self, rule_text: str) -> bool:
-        """Compile and atomically activate through the YARA scanner.
+    # ── 4. proposal staging + 5. persistence ─────────────────────────────────────
+    def _stage_proposal(
+        self, technique_id: str, rule_text: str, source: str
+    ) -> Path:
+        """Atomically persist an inert JSON review artifact, never a live rule."""
+        self.proposals_dir.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", technique_id)
+        target = self.proposals_dir / f"{safe}-{int(time.time() * 1000)}.json"
+        candidate = target.with_suffix(".candidate")
+        document = {
+            "schema": "angerona.yara-proposal.v1",
+            "technique": technique_id,
+            "source": source,
+            "rule_text": rule_text,
+            "status": "PROPOSED_NOT_ACTIVE",
+            "active_rule_path": str(self.auto_rule),
+            "requires_operator_review": True,
+            "response_authorized": False,
+        }
+        with candidate.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(document, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(candidate, target)
+        return target
 
-        No candidate is persisted when the actual bundled engine rejects it.
-        """
+    def _evolve(
+        self,
+        technique_id: str,
+        generation: int | None = None,
+        stop_event: threading.Event | None = None,
+    ) -> None:
         try:
-            if self._mgr is not None:
-                ys = self._mgr.modules.get("YARA Scanner")
-                if ys is not None and hasattr(ys, "reload_rules"):
-                    return bool(ys.reload_rules(rule_text))
-        except Exception:
-            pass
-        return False
-
-    def _verify(self, technique_id: str) -> str:
-        try:
-            proc = subprocess.run(
-                [sys.executable, "-m", "angerona.shark.verify", technique_id, "--verify"],
-                capture_output=True, text=True, timeout=90)
-            buf = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        except Exception as exc:
-            buf = f"VERIFICATION_RESULT: ERROR ({exc})"
-        for line in buf.splitlines():
-            if "VERIFICATION_RESULT:" in line:
-                return line.split("VERIFICATION_RESULT:", 1)[1].strip().split()[0]
-        return "ERROR"
-
-    def _evolve(self, technique_id: str) -> None:
-        try:
-            self.set_health(40, f"evolving a signature for {technique_id}")
+            if generation is None:
+                generation = self.lifecycle_generation
+            if stop_event is None:
+                stop_event = self.generation_stop_event()
+            self.set_health(70, f"drafting an inert signature proposal for {technique_id}")
             self.emit(f"🧬 Evolution Engine engaged for {technique_id} — synthesizing a "
-                      f"detection signature for the bypassed footprint.", Severity.HIGH,
-                      technique=technique_id)
+                      f"review-only detection proposal for the bypassed footprint.",
+                      Severity.HIGH, technique=technique_id)
             footprint = self._latest_footprint(technique_id)
-            attempts = []
-            certified = False
-            for i in range(1, MAX_ITERATIONS + 1):
-                # Circuit breaker: skip Ollama entirely while it's failing under
-                # load; the deterministic fallback still hardens the signature.
-                rule = None
-                if not self._ollama_open():
-                    rule = self._ollama_yara(footprint)
-                    if not rule:
-                        self._note_ollama_fail()
-                if rule:
-                    source = "ollama"
-                else:
-                    rule = self._fallback_yara(footprint, technique_id, i)
-                    source = "fallback(breaker)" if self._ollama_open() else "fallback"
-                if not self._deploy(rule):
-                    attempts.append({"iteration": i, "result": "REJECTED",
-                                     "rule_excerpt": rule[:400], "source": source})
-                    self.emit(f"Evolution iteration {i} rejected by YARA compile gate.",
-                              Severity.HIGH, technique=technique_id, iteration=i)
-                    continue
-                result = self._verify(technique_id)
-                attempts.append({"iteration": i, "result": result,
-                                 "rule_excerpt": rule[:400], "source": source})
-                self.emit(f"🧬 Iteration {i}/{MAX_ITERATIONS} for {technique_id}: {result}",
-                          Severity.INFO, technique=technique_id, iteration=i, result=result)
-                if result == "BLOCKED":
-                    certified = True
-                    _edr("info", f"[EVOLUTION] Auto-generated YARA rule now BLOCKS {technique_id} "
-                                 f"after {i} iteration(s). Signature deployed to {self.auto_rule}.")
-                    self.emit(f"✅ Evolution success: new signature CATCHES {technique_id} "
-                              f"(iteration {i}).", Severity.INFO, technique=technique_id)
-                    self.set_health(100, "signature evolved & certified")
-                    break
-                time.sleep(1.0)   # brief backoff between tuning rounds
-            if not certified:
-                _edr("critical", f"[EVOLUTION] FAILED to auto-generate a signature that catches "
-                                 f"{technique_id} after {MAX_ITERATIONS} iterations. Manual "
-                                 f"intervention required — the technique remains uncaught.")
-                self.set_health(20, f"could not evolve a rule for {technique_id}")
-                self.emit(f"🛑 CRITICAL: Evolution Engine could not catch {technique_id} after "
-                          f"{MAX_ITERATIONS} tries — manual signature work needed.",
-                          Severity.CRITICAL, technique=technique_id, intervention=True)
-            self._record_history(technique_id, footprint, attempts, certified)
+            rule = None
+            if not self._ollama_open():
+                rule = self._ollama_yara(footprint)
+                if not rule:
+                    self._note_ollama_fail()
+            source = "ollama" if rule else (
+                "fallback(breaker)" if self._ollama_open() else "fallback"
+            )
+            rule = rule or self._fallback_yara(footprint, technique_id, 1)
+            if (
+                stop_event.is_set()
+                or generation != self.lifecycle_generation
+                or self.status != "running"
+            ):
+                return
+            proposal = self._stage_proposal(technique_id, rule, source)
+            attempts = [{
+                "iteration": 1,
+                "result": "PROPOSED_NOT_ACTIVE",
+                "rule_excerpt": rule[:400],
+                "source": source,
+                "proposal_path": str(proposal),
+            }]
+            self._record_history(technique_id, footprint, attempts, False)
+            self.set_health(100, "YARA proposal staged; operator review required")
+            self.emit(
+                f"Evolution staged an inert YARA proposal for {technique_id}; no rule "
+                "was activated or certified.",
+                Severity.MEDIUM,
+                technique=technique_id,
+                proposal_path=str(proposal),
+                executed=False,
+                verified=False,
+                response_authorized=False,
+            )
         except Exception as exc:
             self.last_error = str(exc)
             _edr("error", f"[EVOLUTION] engine error for {technique_id}: {exc}")
         finally:
-            self._active.discard(technique_id)
+            with self._gate:
+                self._active.discard(technique_id)
+                self._workers.discard(threading.current_thread())
 
     def _record_history(self, technique_id, footprint, attempts, certified) -> None:
         entry = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "technique": technique_id,
                  "certified": certified, "iterations": len(attempts),
-                 "rule_path": str(self.auto_rule), "footprint": footprint, "attempts": attempts}
+                 "rule_path": "", "active_rule_unchanged": str(self.auto_rule),
+                 "footprint": footprint, "attempts": attempts}
         try:
             self.shared_logs.mkdir(parents=True, exist_ok=True)
             hist = []
@@ -426,12 +480,13 @@ class EvolutionEngine(BaseModule):
 
             # BL-07 bounds (no real evolving — stub the worker so no Ollama/subprocess).
             e = EvolutionEngine()
-            e._evolve = lambda _tid: None
+            e.status = "running"
+            e._evolve = lambda *_args: None
             for tid in ("T1001", "T1002", "T1003"):
                 e.activate(tid)
             conc_ok = len(e._active) == _MAX_CONCURRENT        # 3rd refused (concurrency cap)
 
-            e2 = EvolutionEngine(); e2._evolve = lambda _tid: None
+            e2 = EvolutionEngine(); e2.status = "running"; e2._evolve = lambda *_args: None
             e2._recent = [time.time()] * _RATE_MAX             # pre-fill the rate window
             e2.activate("T1099")
             rate_ok = "T1099" not in e2._active                # refused by the rate cap

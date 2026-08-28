@@ -16,6 +16,7 @@ import os
 import random
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -68,6 +69,7 @@ class DeceptionModule(BaseModule):
     name = "Active Deception"
     description = "Plants canaries/honeytokens and DYNAMICALLY re-stages fresh traps when one is burned."
     category = "Deception"
+    version = "1.1.0"
 
     def __init__(self) -> None:
         super().__init__()
@@ -96,6 +98,38 @@ class DeceptionModule(BaseModule):
                 self._canaries[str(p)] = p.stat().st_mtime
             except Exception:
                 continue
+
+    def self_test(self) -> tuple[bool, str]:
+        """Plant only inert namespaced fixtures in a disposable directory."""
+        original_base = self._base
+        original_canaries = self._canaries
+        try:
+            with tempfile.TemporaryDirectory(prefix="angerona-deception-selftest-") as temp:
+                root = Path(temp).resolve()
+                self._base = root / "static"
+                self._canaries = {}
+                self._plant()
+                paths = [Path(path).resolve() for path in self._canaries]
+                ok = bool(
+                    len(paths) == len(CANARY_NAMES)
+                    and all(path.parent == self._base.resolve() for path in paths)
+                    and {path.name for path in paths} == set(CANARY_NAMES)
+                    and all(
+                        path.read_text(encoding="utf-8")
+                        == "# Do not modify — security canary.\n"
+                        for path in paths
+                    )
+                )
+        except Exception as exc:
+            return False, f"disposable canary fixture failed: {exc}"
+        finally:
+            self._base = original_base
+            self._canaries = original_canaries
+        return (
+            ok,
+            "disposable secret-free canary lifecycle passed"
+            if ok else "canary path/content contract failed",
+        )
 
     def run(self) -> None:
         self._plant()

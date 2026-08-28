@@ -1,10 +1,11 @@
 {
   "loop": "angerona-improvement",
-  "active_cycle": "cycle23",
-  "focus": "state-grade defensive hardening: SSH, audit-log continuity, untrusted network paths, Personal Sentinel Gateway, live activity, and ARIA Defense Memory",
+  "active_cycle": "cycle25",
+  "release": "1.12.0",
+  "focus": "universal capability contracts, guided firewall adaptation and recovery, durable delivery, bounded clickable evidence, standards truth, and three-round safety/reliability closure",
   "rounds_total": 3,
   "round": 3,
-  "phase": "COMPLETE",
+  "phase": "READY_FOR_PUBLICATION",
   "round_1_status": "COMPLETE",
   "round_2_status": "COMPLETE",
   "round_3_status": "COMPLETE",
@@ -12,47 +13,36 @@
   "web_search_done": true,
   "docs_update_round": 3,
   "docs_update_done": true,
-  "started": "2026-08-26T10:14:08-06:00",
+  "manual_update_done": true,
+  "publication_done": false,
+  "started": "2026-08-27",
+  "updated": "2026-08-28",
   "round_1_results": {
-    "redteam_findings": 9,
-    "fixed": 9,
-    "deferred": 0,
-    "performance_applied": 3,
-    "bugtest": "1,431 passed / 5 expected skips / 0 failed; paired valid-state rollback carried into Round 2"
+    "research": "adversarial review, visionary design, and primary-source upstream comparison complete",
+    "disposition": "all lineages fixed or truthfully scoped"
   },
   "round_2_results": {
-    "redteam_findings": 6,
-    "fixed": 5,
-    "deferred": 1,
-    "performance_applied": 1,
-    "bugtest": "1,455 passed / 5 expected skips / 0 failed; SSH compatibility register hook fixed",
-    "visionary": "No local MVP; separately administered monotonic authority retained as proposed/deferred"
+    "overlapping_reliability_records": 8,
+    "fixed": 8,
+    "focused_qa": "see analysis/loop/cycle25/round2/bugtest_results.md"
   },
   "round_3_results": {
-    "redteam_findings": 1,
-    "fixed": 1,
-    "deferred": 0,
-    "performance_applied": 0,
-    "bugtest": "1,460 passed / 5 expected skips / 0 failed from 1,465 cases across 208 files",
-    "visionary": "Final convergence; no additional local MVP"
+    "closure_checks": 12,
+    "open_high_or_critical": 0,
+    "performance_focused": "106 passed"
   },
   "final_results": {
-    "release": "v1.10.3",
-    "security_findings": 16,
-    "security_findings_fixed": 15,
-    "security_findings_deferred": 1,
-    "deferred_dependency": "Separately administered monotonic high-water service or policy-bound hardware authority; default remains local-authenticity-only",
-    "pytest": "1,460 passed / 5 expected host-capability skips / 0 failed from 1,465 cases across 208 files",
-    "compile": "321/321 product Python files",
-    "module_files": "73/73 imported",
-    "modules": "71/71 discovered",
-    "register_hooks": "58/58 valid",
-    "self_tests": "22/22 core/Shark; 50 module pass / 0 fail / 21 expected skips plus EventBus pass",
-    "selfcheck": "26/26 direct and 26/26 batch",
+    "release": "v1.12.0",
+    "pytest": "1811 passed / 6 expected host-platform skips / 0 failed",
+    "compile": "346/346 product Python files",
+    "module_files": "82/82 imported",
+    "capabilities": "80 discovered / 5 native contracts / 75 compatibility adapters",
+    "register_hooks": "64/64 valid",
+    "self_tests": "92 core/module passed / 12 expected inactive-platform skips plus EventBus passed",
+    "selfcheck": "26/26 direct and batch",
     "ruff": "clean",
-    "documentation_version": "1.10.3",
-    "documentation_record": "analysis/loop/cycle23/summary.md"
+    "documentation_version": "1.12.0",
+    "documentation_record": "analysis/loop/cycle25/summary.md"
   },
-  "completed": "2026-08-26",
-  "notes": "Cycle 23 converged after three rounds. Research and detections are actor-neutral and defensive-only; technique evidence never asserts agency attribution. Shipped client-side gateway attestation is not an appliance/server, router manager, firmware attestor, or independent monotonic authority."
+  "notes": "Cycle 25 converged after three adversarial, visionary, upstream-comparison, remediation, performance, and QA rounds. Host adaptation remains proposal-first and exact-approval gated; its immutable recovery baseline restores complete Windows Firewall policy only. Universal v1.12 contracts do not imply that all 80 implementation modules independently changed semantic version."
 }

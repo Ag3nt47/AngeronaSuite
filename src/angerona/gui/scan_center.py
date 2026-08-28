@@ -183,6 +183,8 @@ class ScanCenterPanel(QFrame):
         self.findings.setWordWrap(True)
         self.findings.setMinimumHeight(150)
         self.findings.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.findings.setSortingEnabled(True)
+        self.findings.cellDoubleClicked.connect(self._show_finding_detail)
         header = self.findings.horizontalHeader()
         header.setMinimumSectionSize(78)
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -514,6 +516,11 @@ class ScanCenterPanel(QFrame):
         self._result = data
         raw_findings = data.get("findings", [])
         findings = raw_findings if isinstance(raw_findings, list) else []
+        header = self.findings.horizontalHeader()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
+        self.findings.setSortingEnabled(False)
+        self.findings.setUpdatesEnabled(False)
         self.findings.setRowCount(len(findings))
         for row, finding in enumerate(findings):
             item = finding if isinstance(finding, dict) else {}
@@ -528,7 +535,13 @@ class ScanCenterPanel(QFrame):
                 text = json.dumps(value, sort_keys=True) if isinstance(
                     value, (dict, list)
                 ) else str(value)
-                self.findings.setItem(row, column, QTableWidgetItem(text))
+                cell = QTableWidgetItem(text)
+                cell.setData(Qt.UserRole, item)
+                self.findings.setItem(row, column, cell)
+        self.findings.setSortingEnabled(True)
+        if sort_column >= 0:
+            self.findings.sortItems(sort_column, sort_order)
+        self.findings.setUpdatesEnabled(True)
         self.findings.resizeRowsToContents()
         self._busy = False
         finish_loading(self._loading_token)
@@ -552,6 +565,20 @@ class ScanCenterPanel(QFrame):
             self.log.setPlainText(summary)
         else:
             self.log.setPlainText(json.dumps(summary, indent=2, sort_keys=True))
+
+    def _show_finding_detail(self, row: int, _column: int) -> None:
+        cell = self.findings.item(row, 0)
+        finding = cell.data(Qt.UserRole) if cell is not None else None
+        if not isinstance(finding, dict):
+            return
+        detail = json.dumps(
+            finding, indent=2, sort_keys=True, ensure_ascii=False, default=str
+        )[:16_384]
+        QMessageBox.information(
+            self,
+            str(finding.get("title") or finding.get("finding") or "Finding details")[:200],
+            detail,
+        )
 
     def _apply_error(self, message: str) -> None:
         if not self._accept_async_results:

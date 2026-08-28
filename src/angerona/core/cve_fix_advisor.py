@@ -27,10 +27,14 @@ import json
 import os
 import platform
 import re
+import stat
 import subprocess
+import tempfile
+import threading
 import time
 import urllib.request
 from pathlib import Path
+from typing import Callable
 
 from angerona.core.url_policy import (
     OLLAMA_SERVICE_POLICY,
@@ -47,6 +51,9 @@ except Exception:  # pragma: no cover
 
 _HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 _MODEL = os.environ.get("ANGERONA_MODEL", "llama3")
+_CVE_ID = re.compile(r"CVE-(?:1999|2[0-9]{3})-[0-9]{4,}")
+_APPLIED_LOCK = threading.RLock()
+_APPLIED_MAX_BYTES = 8 * 1024 * 1024
 
 _SYSTEM_PROMPT = (
     "You are a Windows security remediation engineer. Given a CVE and a host's "
@@ -64,6 +71,80 @@ _SYSTEM_PROMPT = (
 def _repo_root() -> Path:
     from angerona.core.data_paths import data_dir
     return data_dir()
+
+
+def _canonical_cve(value: object) -> str | None:
+    """Return a canonical CVE identifier, rejecting path-like or loose input."""
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip().upper()
+    return candidate if _CVE_ID.fullmatch(candidate) else None
+
+
+def _resolved_staging_dir() -> Path:
+    """Create and attest the proposal directory beneath Angerona's data root."""
+    root = Path(_repo_root()).resolve(strict=False)
+    root.mkdir(parents=True, exist_ok=True)
+    requested = root / "staged_remediation"
+    requested.mkdir(parents=True, exist_ok=True)
+    staged = requested.resolve(strict=True)
+    if staged != requested:
+        raise ValueError("staged remediation directory resolves outside the data root")
+    return staged
+
+
+def _same_regular_proposal(path: Path, script: str) -> bool:
+    """Permit an idempotent retry, but never accept a link or changed artifact."""
+    try:
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+            return False
+        return path.read_text(encoding="utf-8") == script
+    except (OSError, UnicodeError):
+        return False
+
+
+def _stage_proposal(cve: str, script: str, digest: str, *, revert: bool = False) -> Path:
+    """Publish a complete review artifact with exclusive, atomic creation."""
+    staged = _resolved_staging_dir()
+    marker = "-revert" if revert else ""
+    target = staged / f"{cve}{marker}-{digest[:12]}.ps1.txt"
+    if target.resolve(strict=False).parent != staged:
+        raise ValueError("proposal path resolves outside the staging directory")
+    if target.exists() or target.is_symlink():
+        if _same_regular_proposal(target, script):
+            return target
+        raise FileExistsError("proposal path already exists with different or unsafe content")
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".angerona-proposal-", suffix=".tmp", dir=str(staged)
+    )
+    temporary = Path(temporary_name)
+    try:
+        if temporary.resolve(strict=True).parent != staged:
+            raise ValueError("temporary proposal resolves outside the staging directory")
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            descriptor = -1
+            handle.write(script)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            # A hard link exposes the already-complete inode and fails if the
+            # final content-addressed name was claimed concurrently.
+            os.link(temporary, target)
+        except FileExistsError:
+            if not _same_regular_proposal(target, script):
+                raise
+        if target.resolve(strict=True).parent != staged or not _same_regular_proposal(target, script):
+            raise ValueError("published proposal failed staging containment checks")
+        return target
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _applied_path() -> Path:
@@ -266,7 +347,12 @@ def _normalize(cve: str, raw: dict | None) -> dict:
 
 def analyze(cve_rec: dict, timeout: float = 90.0) -> dict:
     """Ask local llama3 whether a scriptable fix exists for this CVE on this host."""
-    cve = (cve_rec.get("cve") or cve_rec.get("cveID") or "").strip()
+    raw_cve = (cve_rec.get("cve") or cve_rec.get("cveID") or "") \
+        if isinstance(cve_rec, dict) else ""
+    cve = _canonical_cve(raw_cve)
+    if cve is None:
+        return {**_normalize("", None),
+                "reason": "Invalid CVE identifier; expected CVE-YYYY-NNNN or longer."}
     if not ollama_available():
         return {**_normalize(cve, None), "reason": "Local AI (Ollama) unavailable — "
                 "start Ollama or use 'Consult AI' for an online analysis."}
@@ -314,24 +400,94 @@ def _run_powershell(script: str, timeout: float = 120.0) -> tuple[int, str]:
     )
 
 
-def _load_applied() -> dict:
+def _read_applied_unlocked() -> dict:
     p = _applied_path()
-    if not p.exists():
+    try:
+        flags = os.O_RDONLY
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(os.fspath(p), flags)
+    except FileNotFoundError:
+        return {}
+    except OSError:
         return {}
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > _APPLIED_MAX_BYTES:
+            return {}
+        chunks: list[bytes] = []
+        remaining = _APPLIED_MAX_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > _APPLIED_MAX_BYTES:
+            return {}
+        decoded = json.loads(raw.decode("utf-8"))
+        return decoded if isinstance(decoded, dict) else {}
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
+    finally:
+        os.close(descriptor)
+
+
+def _load_applied() -> dict:
+    with _APPLIED_LOCK:
+        return _read_applied_unlocked()
+
+
+def _write_applied_unlocked(data: dict) -> None:
+    p = _applied_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.is_symlink() or p.parent.is_symlink():
+        raise OSError("CVE proposal ledger path is redirected")
+    payload = json.dumps(data, indent=2, sort_keys=True).encode("utf-8")
+    if len(payload) > _APPLIED_MAX_BYTES:
+        raise OSError("CVE proposal ledger exceeds its size bound")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".angerona-cve-ledger-", suffix=".tmp", dir=str(p.parent)
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, p)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _save_applied(data: dict) -> None:
-    p = _applied_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    with _APPLIED_LOCK:
+        _write_applied_unlocked(data)
+
+
+def _update_applied(cve: str, update: Callable[[dict], dict]) -> dict:
+    """Atomically update one CVE record without losing concurrent records."""
+    with _APPLIED_LOCK:
+        data = _read_applied_unlocked()
+        current = data.get(cve)
+        record = update(dict(current) if isinstance(current, dict) else {})
+        data[cve] = record
+        _write_applied_unlocked(data)
+        return dict(record)
 
 
 def applied_state(cve: str) -> dict | None:
-    return _load_applied().get((cve or "").strip().upper())
+    canonical = _canonical_cve(cve)
+    return _load_applied().get(canonical) if canonical else None
 
 
 def apply_fix(cve: str, analysis: dict) -> dict:
@@ -341,8 +497,14 @@ def apply_fix(cve: str, analysis: dict) -> dict:
     through ``PowerShellBoundary``. A deny-list scan is useful triage but is
     not an authority boundary for arbitrary model output.
     """
-    cve = (cve or "").strip().upper()
-    script = (analysis or {}).get("fix_script", "").strip()
+    canonical = _canonical_cve(cve)
+    if canonical is None:
+        return {"ok": False, "output":
+                "Invalid CVE identifier; expected CVE-YYYY-NNNN or longer."}
+    cve = canonical
+    if not isinstance(analysis, dict):
+        return {"ok": False, "output": "Invalid remediation analysis."}
+    script = str(analysis.get("fix_script") or "").strip()
     if not script:
         return {"ok": False, "output": "No fix script to apply."}
     danger = scan_powershell(script)
@@ -350,16 +512,15 @@ def apply_fix(cve: str, analysis: dict) -> dict:
         return {"ok": False, "output": "Refused: destructive/high-risk commands "
                 f"in fix ({', '.join(danger)}). Not executed."}
     digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
-    staged_dir = _repo_root() / "staged_remediation"
-    staged_dir.mkdir(parents=True, exist_ok=True)
-    staged_path = staged_dir / f"{cve.replace(':', '_')}-{digest[:12]}.ps1.txt"
-    staged_path.write_text(script, encoding="utf-8")
+    try:
+        staged_path = _stage_proposal(cve, script, digest)
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "output": f"Proposal staging refused: {exc}"}
     out = (
         "Proposal staged for review; it was not executed. Convert approved "
         "steps to registered PowerShellBoundary operations."
     )
-    data = _load_applied()
-    data[cve] = {
+    record = {
         "applied": False,
         "staged": True,
         "executed": False,
@@ -373,7 +534,10 @@ def apply_fix(cve: str, analysis: dict) -> dict:
         "last_output": out[:4000],
         "reverted": False,
     }
-    _save_applied(data)
+    try:
+        _update_applied(cve, lambda _current: record)
+    except OSError as exc:
+        return {"ok": False, "output": f"Proposal ledger update refused: {exc}"}
     return {
         "ok": True, "staged": True, "executed": False,
         "proposal_sha256": digest, "proposal_path": str(staged_path),
@@ -383,7 +547,11 @@ def apply_fix(cve: str, analysis: dict) -> dict:
 
 def revert_fix(cve: str) -> dict:
     """Stage a revert proposal; never execute stored model-generated script."""
-    cve = (cve or "").strip().upper()
+    canonical = _canonical_cve(cve)
+    if canonical is None:
+        return {"ok": False, "output":
+                "Invalid CVE identifier; expected CVE-YYYY-NNNN or longer."}
+    cve = canonical
     data = _load_applied()
     rec = data.get(cve)
     if not rec:
@@ -396,23 +564,28 @@ def revert_fix(cve: str) -> dict:
         return {"ok": False, "output": "Refused: destructive/high-risk commands "
                 f"in revert ({', '.join(danger)}). Not executed."}
     digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
-    staged_dir = _repo_root() / "staged_remediation"
-    staged_dir.mkdir(parents=True, exist_ok=True)
-    staged_path = staged_dir / f"{cve.replace(':', '_')}-revert-{digest[:12]}.ps1.txt"
-    staged_path.write_text(script, encoding="utf-8")
+    try:
+        staged_path = _stage_proposal(cve, script, digest, revert=True)
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "output": f"Revert proposal staging refused: {exc}"}
     out = (
         "Revert proposal staged for review; it was not executed. Convert "
         "approved steps to registered PowerShellBoundary operations."
     )
-    rec["reverted"] = False
-    rec["revert_staged"] = True
-    rec["revert_executed"] = False
-    rec["revert_verified"] = False
-    rec["revert_staged_ts"] = time.time()
-    rec["revert_proposal_sha256"] = digest
-    rec["revert_proposal_path"] = str(staged_path)
-    rec["last_output"] = out[:4000]
-    _save_applied(data)
+    changes = {
+        "reverted": False,
+        "revert_staged": True,
+        "revert_executed": False,
+        "revert_verified": False,
+        "revert_staged_ts": time.time(),
+        "revert_proposal_sha256": digest,
+        "revert_proposal_path": str(staged_path),
+        "last_output": out[:4000],
+    }
+    try:
+        _update_applied(cve, lambda current: {**current, **changes})
+    except OSError as exc:
+        return {"ok": False, "output": f"Proposal ledger update refused: {exc}"}
     return {
         "ok": True, "staged": True, "executed": False,
         "proposal_sha256": digest, "proposal_path": str(staged_path),
@@ -427,12 +600,12 @@ def self_test() -> tuple[bool, str]:
                          '"fix_script":"Set-Service foo -StartupType Disabled",'
                          '"revert_script":"Set-Service foo -StartupType Automatic",'
                          '"reason":""} trailing prose')
-    n = _normalize("CVE-2024-1", good)
-    empty = _normalize("CVE-2024-2", {"fix_available": True, "fix_script": ""})  # no script ⇒ not available
+    n = _normalize("CVE-2024-0001", good)
+    empty = _normalize("CVE-2024-0002", {"fix_available": True, "fix_script": ""})  # no script ⇒ not available
     # A-03: a destructive "fix" must be refused even when the model marks it available.
-    danger = _normalize("CVE-2024-3", {"fix_available": True, "confidence": 0.9,
+    danger = _normalize("CVE-2024-0003", {"fix_available": True, "confidence": 0.9,
                                        "fix_script": "Remove-Item C:\\Windows -Recurse -Force"})
-    weaken = _normalize("CVE-2024-4", {"fix_available": True, "confidence": 0.9,
+    weaken = _normalize("CVE-2024-0004", {"fix_available": True, "confidence": 0.9,
         "fix_script": "Set-ItemProperty -Path 'HKLM:\\x' -Name 'EnableLUA' -Value 0"})
     persist = scan_powershell(
         "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name x -Value y")

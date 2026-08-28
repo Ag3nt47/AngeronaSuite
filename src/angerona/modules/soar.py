@@ -62,6 +62,32 @@ class SOARModule(BaseModule):
         "G3-B: requires 2-signal corroboration and System32 allowlist before auto-act."
     )
     category = "Response"
+    version = "1.1.0"
+    supported_platforms = ("windows",)
+    capability_mode = "respond"
+    capability_inputs = ("authenticated-high-severity-event", "operator-response-policy")
+    capability_outputs = ("typed-process-suspension-request", "response-receipt")
+    capability_permissions = ("process-inspection", "process-suspend")
+    high_risk_permissions = ("process-suspend",)
+    data_classes = ("process-identity", "security-finding", "response-decision")
+    egress = "none"
+    retention = "bounded-memory-correlation-and-local-receipts"
+    response_authority = "typed-response"
+    restart_policy = "bounded-three-attempt-backoff-quarantine"
+    loss_behavior = "priority-revision-gap-degrades-and-never-authorizes"
+    resource_budget = {
+        "worker_model": "single-lifecycle-thread",
+        "event_delivery": "bounded-priority-revision-best-effort",
+        "startup_cycle_timeout_seconds": 30.0,
+    }
+    settings_schema = {
+        "type": "object",
+        "properties": {
+            "auto_contain": {"type": "boolean", "default": False},
+            "active_defense": {"type": "boolean", "default": False},
+        },
+        "additionalProperties": False,
+    }
     enabled_by_default = True
 
     def __init__(self) -> None:
@@ -75,7 +101,7 @@ class SOARModule(BaseModule):
         # Active defense: contain corroborated threats automatically WHEN under
         # attack. On by default (the whole point of an EDR); ANGERONA_ACTIVE_DEFENSE=0
         # to disable and stay recommend-only.
-        self._active_defense = os.environ.get("ANGERONA_ACTIVE_DEFENSE", "1") != "0"
+        self._active_defense = os.environ.get("ANGERONA_ACTIVE_DEFENSE", "0") == "1"
         # G3-B corroboration state: pid → [(ts, module), ...]
         self._pending: dict[int, List[tuple[float, str]]] = {}
         self._high_events: list = []        # (ts, pid, module) for attack detection
@@ -87,6 +113,42 @@ class SOARModule(BaseModule):
     def bind_manager(self, manager) -> None:
         self._manager = manager
 
+    def self_test(self) -> tuple[bool, str]:
+        """Validate corroboration and cursor safety without executing a response."""
+        class _Fixture:
+            def __init__(self, module: str, ts: float = 100.0) -> None:
+                self.module = module
+                self.ts = ts
+                self.hmac_sig = f"sig-{module}"
+
+        original_pending = self._pending
+        original_last = self._last_ts
+        original_seen = self._seen_at_last_ts
+        try:
+            self._pending = {}
+            first = self._add_signal(4242, _Fixture("sensor-a"))
+            repeat = self._add_signal(4242, _Fixture("sensor-a"))
+            corroborated = self._add_signal(4242, _Fixture("sensor-b"))
+            event = _Fixture("cursor-source")
+            unseen_before = self._is_unseen(event)
+            self._advance_cursor(event)
+            unseen_after = self._is_unseen(event)
+            ok = (
+                not first and not repeat and corroborated
+                and unseen_before and not unseen_after
+                and "lsass.exe" in _SYSTEM32_NEVER_CONTAIN
+                and _CORROBORATION_MIN >= 2
+            )
+        finally:
+            self._pending = original_pending
+            self._last_ts = original_last
+            self._seen_at_last_ts = original_seen
+        return (
+            ok,
+            "offline distinct-source corroboration, cursor, and protected-process gates passed"
+            if ok else "SOAR safety fixture failed",
+        )
+
     def run(self) -> None:
         mode = ("AUTO-CONTAIN" if self._auto
                 else "ACTIVE-DEFENSE" if self._active_defense else "RECOMMEND")
@@ -97,13 +159,14 @@ class SOARModule(BaseModule):
             Severity.INFO,
         )
         while not self.stopping:
-            self.sleep(5)
+            self.sleep(5, cycle_complete=False)
             # refresh the flags so the user can flip them without a restart
             self._auto = os.environ.get("ANGERONA_SOAR_AUTOCONTAIN", "0") == "1"
-            self._active_defense = os.environ.get("ANGERONA_ACTIVE_DEFENSE", "1") != "0"
+            self._active_defense = os.environ.get("ANGERONA_ACTIVE_DEFENSE", "0") == "1"
             self.process_pending_once()
             self._purge_stale_pending()
             self._write_stats()
+            self.mark_cycle_complete()
 
     @staticmethod
     def _cursor_key(ev) -> str:

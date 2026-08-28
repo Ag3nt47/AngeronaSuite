@@ -45,6 +45,13 @@ AREAS = (
         "Local evidence", True,
     ),
     SettingsArea(
+        "integrations", "Integrations",
+        "Durable SIEM export, authenticated remote telemetry, and pinned IOC feeds.",
+        ("siem", "cef", "syslog", "remote bridge", "threat intelligence feed",
+         "ioc feed", "collector", "tls export", "durable outbox"),
+        "Optional egress/listener; all connectors are off by default", True,
+    ),
+    SettingsArea(
         "aria", "ARIA",
         "Optional assistant, persona, conversation, hand, microphone, mailbox, Teams and egress controls.",
         ("aria", "microphone", "mic", "voice", "voice model", "speech",

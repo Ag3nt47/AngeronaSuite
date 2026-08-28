@@ -42,7 +42,7 @@ from angerona.gui.dashboard_details import (
 )
 from angerona.gui.pages import (
     AARDialog, AlertsPanel, CommandConsolePanel, DashboardCards, ModuleInspector,
-    ModulesPanel, ResourceStrip, SettingsDialog, SharkMonitorDialog, SoarPanel,
+    EventsWindow, ModulesPanel, ResourceStrip, SettingsDialog, SharkMonitorDialog, SoarPanel,
     StatusStrip,
 )
 from angerona.gui.sandbox_editor import launch_sandbox_editor
@@ -548,6 +548,9 @@ class MainWindow(QMainWindow):
             self._open_system_pulse_details
         )
         self.live_defense_activity = LiveDefenseActivityCard(bus, manager)
+        self.live_defense_activity.details_requested.connect(
+            self._open_live_defense_details
+        )
         if getattr(self, "aria_hud", None) is not None:
             self.aria_hud.details_requested.connect(self._open_aria_details)
             self._console_section = QSplitter(Qt.Horizontal)
@@ -887,6 +890,24 @@ class MainWindow(QMainWindow):
             return dialog
 
         self._reveal_window_from(self.system_pulse, _show, "#38bdf8")
+
+    def _open_live_defense_details(self) -> None:
+        """Open governed evidence details; dashboard summaries remain privacy-safe."""
+        def _show():
+            dialog = EventsWindow(
+                "Live defense activity — evidence and paths",
+                self.bus,
+                self.storage,
+                min_sev=Severity.INFO,
+                window_s=86_400,
+                parent=self,
+            )
+            self._live_defense_detail = dialog
+            dialog.show()
+            dialog.raise_()
+            return dialog
+
+        self._reveal_window_from(self.live_defense_activity, _show, "#22d3ee")
 
     def _open_aria_details(self) -> None:
         hud = getattr(self, "aria_hud", None)
@@ -3723,7 +3744,7 @@ class MainWindow(QMainWindow):
                 self._adaptation_poll_done.emit(None, exc)
 
         threading.Thread(
-            target=_worker, name="HostAdaptionContextMonitor", daemon=True
+            target=_worker, name="HostAdaptationContextMonitor", daemon=True
         ).start()
 
     def _on_adaptation_poll_done(self, result, error) -> None:

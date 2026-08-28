@@ -14,6 +14,15 @@ Before proposing a change:
 5. Keep optional integrations off by default, authenticate peers, bound inputs,
    and require an explicit operator confirmation for state-changing actions.
 
+## Publishing a completed maintainer update
+
+Use `push-to-github.bat` or `python tools/publish_github_update.py`. The guarded
+publisher uses immutable explicit refspecs, permits only a fast-forward of the
+public `main` branch, verifies the resulting remote SHA, and downloads every
+repository-relative README image to prove the public bytes match. It never
+force-pushes or repairs branch divergence automatically. A reported divergence
+requires explicit maintainer review before publication continues.
+
 ## Optional verified developer toolkit
 
 On 64-bit Windows, `tools\bootstrap_github_toolkit.ps1` downloads the exact

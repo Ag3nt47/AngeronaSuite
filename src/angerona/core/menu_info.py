@@ -130,6 +130,16 @@ MENU_INFO: dict[str, tuple[MenuInfoTopic, ...]] = {
             locations=("{data}/settings.json", "{data}/enterprise"),
         ),
         _topic(
+            "settings-integrations", "Integrations",
+            "Configures durable SIEM export, mutually authenticated Remote Bridge telemetry, and inbound pinned IOC intelligence without storing connector secrets in general settings.",
+            (("SIEM outbox", "Stages selected events durably before advancing its EventBus cursor and retries failed delivery."), ("Remote Bridge", "Uses mutual authentication, encrypted frames, stable event IDs, receiver deduplication, and explicit routable-bind consent."), ("IOC feed", "Accepts public HTTPS input; a valid SHA-256 pin is required before intelligence can become response-eligible.")),
+            "src/angerona/gui/pages.py", "src/angerona/core/config.py",
+            "src/angerona/modules/siem_forwarder.py",
+            "src/angerona/modules/remote_bridge.py",
+            "src/angerona/modules/intel_sync.py",
+            locations=("{data}/settings.json", "{data}/outbox", "Operating-system protected credential store"),
+        ),
+        _topic(
             "settings-aria", "ARIA",
             "Configures the optional local-first assistant, voice, conversation, hand controls, inbox, research, notifications, and every related egress consent.",
             (("Assistant", "The HUD and local question/answer layer; off on a fresh install."), ("Voice and awareness", "Opt-in microphone features with visible state and bounded transient context."), ("Cloud fallback", "Separate, default-off consent for sanitized provider requests."), ("Restore privacy defaults", "Stages all optional listeners and egress controls off; Save commits it.")),

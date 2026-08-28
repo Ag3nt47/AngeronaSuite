@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from PySide6.QtCore import Qt, QTimer, QThread, Signal
 from PySide6.QtGui import QColor, QFont
@@ -89,6 +89,7 @@ class _FixWorker(QThread):
 
     def run(self) -> None:
         from angerona.core import cve_fix_advisor
+        analyzed = 0
         fixes = 0
         for cve, rec in self._items:
             if self.isInterruptionRequested():
@@ -100,8 +101,24 @@ class _FixWorker(QThread):
                             "reason": f"analysis error: {exc}"}
             if analysis.get("fix_available"):
                 fixes += 1
+            analyzed += 1
             self.result.emit(cve, analysis)
-        self.done.emit(len(self._items), fixes)
+        self.done.emit(analyzed, fixes)
+
+
+class _AnalysisReviewDialog(QDialog):
+    """Keep a per-row analysis worker alive if its detail dialog is closed."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._analysis_worker: _FixWorker | None = None
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        from angerona.gui.thread_lifecycle import defer_close_until_threads
+
+        if defer_close_until_threads(self, event, (self._analysis_worker,)):
+            return
+        super().closeEvent(event)
 
 
 class ThreatIntelDashboard(QDialog):
@@ -120,6 +137,7 @@ class ThreatIntelDashboard(QDialog):
         self._staged: list = []
         self._fix_cache: dict[str, dict] = {}    # cve → analysis result
         self._worker: _FixWorker | None = None
+        self._detail_workers: dict[str, _FixWorker] = {}
         self._loading_token: str | None = None
         self.setWindowTitle("🛡  Threat Intelligence — CISA KEV Matches")
         self.setMinimumSize(1040, 560)
@@ -205,6 +223,7 @@ class ThreatIntelDashboard(QDialog):
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setSortingEnabled(True)
         self._table.verticalHeader().setVisible(False)
         self._table.horizontalHeader().setSectionResizeMode(
             self._C_REM, QHeaderView.ResizeMode.Stretch)
@@ -248,7 +267,7 @@ class ThreatIntelDashboard(QDialog):
         data = _load_threats()
         matches = data.get("matches", [])
         generated = data.get("generated", "")
-        self._row_recs: dict = {}
+        self._row_recs: dict[str, dict] = {}
         self._matches = matches
         ignore_data = cve_ignore.load()
 
@@ -257,13 +276,17 @@ class ThreatIntelDashboard(QDialog):
         rans_hits = sum(1 for m in matches
                         if str(m.get("ransomware", "")).strip().lower() == "known")
 
+        header = self._table.horizontalHeader()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
         self._table.setUpdatesEnabled(False)
+        self._table.setSortingEnabled(False)
         self._table.setRowCount(len(matches))
 
         for row, rec in enumerate(matches):
             cve = rec.get("cve") or "—"
             ignored = cve_ignore.is_ignored(cve, ignore_data)
-            self._row_recs[row] = (cve, rec)
+            self._row_recs[cve] = rec
 
             def _item(text, color=None, dim=False):
                 it = QTableWidgetItem(str(text or "—"))
@@ -279,7 +302,9 @@ class ThreatIntelDashboard(QDialog):
             due  = str(rec.get("due_date") or "—")
             rans_color = "#ef4444" if rans.strip().lower() == "known" else None
 
-            self._table.setItem(row, self._C_CVE,    _item(cve, "#38bdf8", ignored))
+            cve_item = _item(cve, "#38bdf8", ignored)
+            cve_item.setData(Qt.UserRole, (cve, rec))
+            self._table.setItem(row, self._C_CVE, cve_item)
             self._table.setItem(row, self._C_VENDOR, _item(rec.get("vendor") or "", dim=ignored))
             self._table.setItem(row, self._C_PROD,   _item(rec.get("product") or "", dim=ignored))
             self._table.setItem(row, self._C_MITRE,  _item(rec.get("mitre") or "", dim=ignored))
@@ -292,6 +317,9 @@ class ThreatIntelDashboard(QDialog):
             self._set_fix_cell(row, cve, rec, ignored)
             self._set_action_cell(row, cve, rec, ignored)
 
+        self._table.setSortingEnabled(True)
+        if sort_column >= 0:
+            self._table.sortItems(sort_column, sort_order)
         self._table.setUpdatesEnabled(True)
 
         active, ignored_n = cve_ignore.counts(matches)
@@ -443,15 +471,70 @@ class ThreatIntelDashboard(QDialog):
         self._worker = _FixWorker(active, self)
         self._worker.result.connect(self._on_fix_result)
         self._worker.done.connect(self._on_fix_done)
+        worker = self._worker
+        worker.finished.connect(lambda: self._release_batch_worker(worker))
         self._worker.start()
+
+    def _release_batch_worker(self, worker: _FixWorker) -> None:
+        if self._worker is worker:
+            self._worker = None
+        worker.deleteLater()
+
+    def _start_detail_analysis(
+        self,
+        cve: str,
+        rec: dict,
+        on_result: Callable[[dict], None],
+        on_finished: Callable[[], None] | None = None,
+    ) -> _FixWorker | None:
+        """Start one owned, single-flight per-CVE analysis off the Qt thread."""
+        current = self._detail_workers.get(cve)
+        if current is not None:
+            try:
+                if current.isRunning():
+                    return None
+            except RuntimeError:
+                pass
+            self._detail_workers.pop(cve, None)
+
+        # CVE records originate as JSON. Copy the row before leaving the Qt
+        # thread so a refresh cannot alter the worker's accepted input.
+        record = dict(rec)
+        worker = _FixWorker([(cve, record)], self)
+        self._detail_workers[cve] = worker
+
+        def handle_result(returned_cve: str, analysis: dict) -> None:
+            if returned_cve == cve:
+                on_result(analysis)
+
+        worker.result.connect(handle_result)
+        worker.finished.connect(
+            lambda: self._release_detail_worker(cve, worker)
+        )
+        if on_finished is not None:
+            worker.finished.connect(on_finished)
+        worker.start()
+        return worker
+
+    def _release_detail_worker(self, cve: str, worker: _FixWorker) -> None:
+        if self._detail_workers.get(cve) is worker:
+            self._detail_workers.pop(cve, None)
+        worker.deleteLater()
 
     def _on_fix_result(self, cve: str, analysis: dict) -> None:
         self._fix_cache[cve] = analysis
         # refresh just the affected row's Fix cell
-        for row, (c, rec) in getattr(self, "_row_recs", {}).items():
-            if c == cve:
-                self._set_fix_cell(row, cve, rec, False)
-                break
+        row = self._row_for_cve(cve)
+        rec = getattr(self, "_row_recs", {}).get(cve)
+        if row >= 0 and isinstance(rec, dict):
+            self._set_fix_cell(row, cve, rec, False)
+
+    def _row_for_cve(self, cve: str) -> int:
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, self._C_CVE)
+            if item is not None and item.text() == cve:
+                return row
+        return -1
 
     def _on_fix_done(self, analyzed: int, fixes: int) -> None:
         finish_loading(self._loading_token)
@@ -465,7 +548,8 @@ class ThreatIntelDashboard(QDialog):
         """Let a running batch analysis finish without destroying its QThread."""
         from angerona.gui.thread_lifecycle import defer_close_until_threads
 
-        if defer_close_until_threads(self, event, (self._worker,)):
+        workers = (self._worker, *tuple(self._detail_workers.values()))
+        if defer_close_until_threads(self, event, workers):
             return
         super().closeEvent(event)
 
@@ -543,8 +627,9 @@ class ThreatIntelDashboard(QDialog):
 
     # ── Row detail dialog (adds Ignore/Revert, History, Analyze fix) ─────
     def _on_row_double(self, row: int, _col: int) -> None:
-        entry = getattr(self, "_row_recs", {}).get(row)
-        if entry:
+        item = self._table.item(row, self._C_CVE)
+        entry = item.data(Qt.UserRole) if item is not None else None
+        if isinstance(entry, tuple) and len(entry) == 2:
             self._stage_review(entry[0], entry[1])
 
     def _stage_review(self, cve: str, rec: dict) -> None:
@@ -561,7 +646,9 @@ class ThreatIntelDashboard(QDialog):
         vendor = rec.get("vendor") or ""
         prod   = rec.get("product") or ""
 
-        dlg = QDialog(self); dlg.setWindowTitle(f"Threat detail — {cve}"); dlg.resize(700, 620)
+        dlg = _AnalysisReviewDialog(self)
+        dlg.setWindowTitle(f"Threat detail — {cve}")
+        dlg.resize(700, 620)
         lay = QVBoxLayout(dlg)
         ignored = cve_ignore.is_ignored(cve)
         state_txt = ("🚫 NOT APPLICABLE (temporarily excluded from threat level)"
@@ -628,15 +715,23 @@ class ThreatIntelDashboard(QDialog):
         if cve in self._fix_cache:
             _render_analysis(self._fix_cache[cve])
 
-        def _do_analyze():
-            if not cve_fix_advisor.ollama_available():
-                fix_box.setText("Local AI (Ollama) unavailable. Use 🌐 Consult AI for an online "
-                                "analysis. The CVE remains active until resolved or proven not applicable.")
-                return
+        def _analysis_done() -> None:
+            analyze1.setEnabled(True)
+
+        def _do_analyze() -> None:
             fix_box.setText("🔎 Analyzing with local AI…")
-            QApp = __import__("PySide6.QtWidgets", fromlist=["QApplication"]).QApplication
-            QApp.processEvents()
-            _render_analysis(cve_fix_advisor.analyze(rec))
+            analyze1.setEnabled(False)
+            worker = self._start_detail_analysis(
+                cve, rec, _render_analysis, _analysis_done
+            )
+            if worker is None:
+                fix_box.setText("Analysis for this CVE is already running.")
+                analyze1.setEnabled(True)
+                return
+            dlg._analysis_worker = worker
+            worker.finished.connect(
+                lambda: setattr(dlg, "_analysis_worker", None)
+            )
         analyze1.clicked.connect(_do_analyze)
         apply1.clicked.connect(lambda: (self._apply_fix(cve, self._fix_cache.get(cve, {})),
                                         dlg.accept()))
