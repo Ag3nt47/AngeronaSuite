@@ -3451,11 +3451,14 @@ class MainWindow(QMainWindow):
                 # source is the canonical, digest-pinned Defense Memory marker
                 # may cross that boundary. Live context and arbitrary files do
                 # not enter ``cloud_reference``.
-                cloud_reference = "\n\n".join(
+                # Send at most the single highest-ranked canonical excerpt.
+                # More local hits may ground the local model, but cloud consent
+                # is deliberately narrower and has an independent data bound.
+                cloud_reference = next((
                     rendered
                     for hit, rendered in zip(hits, rendered_hits)
                     if str(hit.source) == DEFENSE_MEMORY_SOURCE
-                )
+                ), "")
         except Exception:
             pass
         p = getattr(self, "_last_posture", {}) or {}

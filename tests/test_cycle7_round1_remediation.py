@@ -166,13 +166,17 @@ def test_isolated_sandbox_uses_disposable_data_and_offline_environment(tmp_path)
     assert "angerona-sandbox-" in output
 
 
-def test_inno_setup_rejects_downgrade_and_persists_monotonic_version():
+def test_inno_setup_delegates_rollback_and_mutation_to_installed_authority():
     script = Path("installer/Angerona.iss").read_text(encoding="utf-8")
 
     assert "function InitializeSetup(): Boolean;" in script
-    assert "ComparePackedVersion(CurrentVersion, HighestVersion) < 0" in script
-    assert "Downgrade blocked:" in script
-    assert "HKLM64, VersionStateKey, VersionStateName" in script
-    assert "RegWriteStringValue(" in script
-    assert "HighestInstalledVersion" in script
+    assert "PrivilegesRequired=lowest" in script
+    assert "CreateAppDir=no" in script
+    assert "CreateUninstallRegKey=no" in script
+    assert "CustodyPreflightOnly" in script
+    assert "if not ShellExec(" in script
+    assert "'runas', PowerShell" in script
+    assert "Install-Angerona-Release.ps1" in script
+    assert "RegWriteStringValue(" not in script
+    assert "HighestInstalledVersion" not in script
     assert "uninsdelete" not in script.lower()

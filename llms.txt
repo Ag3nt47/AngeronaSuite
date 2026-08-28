@@ -1,228 +1,239 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
-Version: 1.10.3
-Date: 2026-08-26
+Version: 1.11.0
+Date: 2026-08-27
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## LATEST (v1.10.3 - Cycle 23 state-grade-pattern defensive hardening)
+## PRODUCT CONTRACT
 
-- Research and detections are actor-neutral. Public CISA, FBI/NSA, NIST,
-  Microsoft, and MITRE reporting is translated into observable SSH, audit-log,
-  tunnel, route, DNS/DHCP, and telemetry-suppression patterns. Do not infer or
-  claim agency/state attribution from these signals.
-- `modules/ssh_surface_guard.py` (`SSHG`) is an observe-only SSH Surface / Key /
-  Tunnel Guard. It baselines bounded Include graphs, configured public-key/CA/
-  principals sources, fingerprints and custody, server/client processes,
-  listeners, fixed OpenSSH event sources, and normalized forwarding grammar.
-  It collects no private keys or credentials, does not retain or publish full
-  command lines or raw endpoints, and never probes or logs in.
-- `modules/audit_log_guard.py` (`ALIG`) observes fixed Windows Security, System,
-  and Sysmon clear/tamper identities, audit-policy/service changes, continuity
-  gaps, record reuse, provider/channel rejection, and authenticated cursor
-  damage. Bounded replay plus staged generation anchors detects clear/refill
-  races without changing or restoring event logs.
-- `modules/network_trust_monitor.py` (`NZTR`) treats every physical Wi-Fi and
-  Ethernet path as untrusted by default and persists tokenized DNS, DHCP, route,
-  gateway, profile, epoch, and path-addition history. Incomplete/overflowed
-  IPv4/IPv6 evidence cannot enroll, advance, or produce a positive gateway label.
-- `core/personal_sentinel_gateway.py` is an explicitly enrolled direct-HTTPS
-  attestation client for one operator-controlled intermediate gateway. It
-  requires platform TLS/hostname validation plus a certificate pin, nonce and
-  freshness, policy digest, peer match, bounded schemas, no proxy/redirect, and
-  unchanged pre/post route context; optional mTLS paths are supported. It is not
-  router discovery/management and contains no router credentials or mutation.
-- Intended topology: `Angerona host -> operator-controlled Personal Sentinel
-  gateway/firewall -> upstream/ISP router -> Internet`. Attestation describes
-  only that exact observed path. It does not trust endpoints, identities,
-  applications, destinations, the upstream router, or gateway firmware.
-- `gui/live_defense_activity.py` adds a five-row sanitized operational card over
-  public EventBus/module state. It never reads Event details, raw telemetry,
-  executing source, hidden AI reasoning, or chain-of-thought.
-- `assets/angerona_defense_memory.json` plus `core/defense_memory.py` provide a
-  strict-schema, bounded, data-only, canonical-SHA-256-pinned reference at
-  `angerona://defense-memory`. ARIA local retrieval uses it for Angerona
-  capability, usage, defensive-measure, and actor-neutral tradecraft questions.
-  It defines no tools/actions. Only selected, bounded, redacted excerpts can
-  cross an already authorized cloud-fallback boundary.
-- `core/independent_high_water.py` defines an injected, privacy-minimal
-  monotonic compare-and-swap contract for audit/network state. No separately
-  administered service or policy-bound TPM authority is bundled. Default state
-  is `local-authenticity-only` with
-  `independent_freshness_verified=false`; the Personal Sentinel compact receipt
-  and in-memory tests are not independent anti-rollback custody.
-- Cycle result: Round 1 fixed 9/9 findings; Round 2 fixed 5/6 and deferred the
-  external high-water authority; Round 3 fixed 1/1. A Round 2 QA compatibility
-  issue added the SSH module's optional `register()` export.
-- Cycle performance: quiescent audit checkpoint work improved 97.6%; measured
-  SSH process enumeration 90.9%; declared-bound network snapshot handling
-  93.3%; and maximum-size per-user SSH token expansion 99.4%. Round 3 applied no
-  optimization because measured candidates did not justify complexity or risk.
-- Final evidence: 1,465 tests across 208 files; **1,460 passed / 5 expected
-  host-capability skips / 0 failed**; compile **321/321**; module imports
-  **73/73**; discovery **71/71**; registration hooks **58/58**; standalone
-  core/Shark self-tests **22/22**; module harness **50 pass / 0 fail / 21
-  expected skips** plus EventBus PASS; direct and batch selfcheck **26/26**;
-  Ruff clean.
-- Not shipped: a Personal Sentinel appliance/server or routing role, firmware or
-  measured-boot attestation, a separately administered monotonic authority,
-  resource-scoped egress leases, and SSH key-to-session provenance.
+Angerona is a local-first defensive EDR/NDR/SOAR and digital-forensics
+workbench with safe ATT&CK validation and a local Ollama assistant. It is for
+home labs, defensive research, learning, purple-team practice, and
+security-engineering portfolios.
 
-## LATEST (v1.10.2 - governed autonomous defense and final improvement loop)
+It is not an independently certified commercial EDR/XDR product. It does not
+claim complete attack coverage, state/agency attribution, fleet parity, router
+or firmware control, tamper-proof user-mode evidence, or externally validated
+efficacy.
 
-- Adversary Combat performs typed, exact-target local containment under signed
-  response contracts. Actions use fsynced intents, an HMAC hash-chain journal,
-  verified postconditions, exact Undo, idempotency, crash recovery, and a
-  mutation circuit breaker.
-- SOAR and manual response surfaces delegate to Combat and reconcile signed
-  receipts. SUBMITTED is not VERIFIED. Queue IDs and exact target identities are
-  bound to the action lifecycle.
-- ARIA requires typed keyboard confirmation for consequential actions. Voice,
-  gesture, callbacks, model output, and retrieved content cannot confirm writes.
-- The governed `aria-defense-llama3` pack verifies exact manifest and Ollama blob
-  identities before activation. Knowledge packs are inert; no downloaded
-  executable skill or runtime installer is accepted.
-- Ollama calls re-attest the loopback listener, process birth, executable path
-  and signature, fixed route, no-proxy/no-redirect policy, and response bounds.
-- Sysmon covers event IDs 1-29 and 255 with an HMAC-authenticated cursor.
-  Community ID v1 and OCSF 1.8 provide cross-sensor identity and data mapping.
-- Source Sandbox is confined and inert. Fleet credentials are finite and
-  secrets remain in protected custody.
-- Final validation: 1,255 pytest passed, 3 intentional skips, 0 failed from
-  1,258 cases across 197 files; compile 308/308; Ruff/import/discovery/duplicate
-  gates passed; 46 module, 20 core/Shark, and 15 ARIA self-tests passed; direct
-  and batch selfcheck passed 26/26; pip-audit found no known vulnerabilities.
-- Combat validation: 128/128 negative controls. Live winning round: 52/52
-  detection, 52/52 response, 13/13 contracts, 13/13 verified closure,
-  resilience PASS, zero active reversible records/rules/probes after cleanup,
-  and intact signed journal.
-- Red-team verdict: no open Critical, High, or Medium release blocker. One
-  non-blocking defense-in-depth Medium remains: retained OS process handle plus
-  bounded executable-file identity lease for path-wide program firewall rules.
+No offensive payload, exploit, credential theft, evasion, remote scan,
+persistence, attack infrastructure, hack-back, log deletion, arbitrary
+response shell, downloaded executable skill, unverified model, or unsigned
+kernel component is a product capability.
 
-## Product contract
+## LATEST: v1.11.0 / Cycle 24
 
-Angerona is a local-first EDR/NDR/SOAR and DFIR workbench with safe MITRE ATT&CK
-validation and a local Ollama assistant. It is intended for home labs,
-defensive research, purple-team practice, learning, and portfolio use.
+### Module and platform facts
 
-It is not an independently certified commercial EDR/XDR product and does not
-claim complete attack coverage, commercial fleet parity, or external efficacy
-validation.
+- Static platform discovery: 80 Windows modules, 14 Linux modules, 13 macOS
+  modules.
+- Windows contract: Protect in elevated user mode; no unsigned kernel driver.
+- Linux contract: Observe plus optional privileged BCC/eBPF supplement. This is
+  not a universally shipped CO-RE kernel sensor.
+- macOS contract: Observe preview; no Endpoint Security or Network Extension
+  enforcement claim.
+- Final converged serial validation: 1,675 collected across 229 files; 1,670
+  passed; 5 expected host-capability skips; 0 failed.
 
-## Platform contract
+### Authenticated evidence and advanced correlation
 
-- Windows: Protect. Full supported user-mode telemetry and governed response;
-  elevation is required for the complete path. No unsigned kernel driver ships.
-- macOS: Observe preview. Privacy-minimized process/flow observation and shared
-  core. No Endpoint Security or Network Extension enforcement claim.
-- Linux: Observe plus optional BCC/eBPF. Rootless process/flow/posture visibility;
-  privileged kernel telemetry is an explicit supplement.
+- `core/sensor_provenance.py` provides strict, bounded,
+  producer-authenticated event envelopes with exact schemas, sequence/replay
+  state, loss metadata, and consumer constraints. EventBus HMAC protects stored
+  bytes; it does not prove in-process producer identity.
+- `modules/ssh_surface_guard.py` (SSHG) is observe-only. It inventories
+  bounded OpenSSH configuration/Include graphs, configured public-key/CA/
+  principals sources, public-key fingerprints and custody, services, listeners,
+  fixed-provider authentication evidence, and normalized forwarding.
+- SSH live ingestion requires the broker-assigned producer
+  `OpenSSH Auth Event Collector`, exact event type, fixed provider/channel/
+  message schema, and loss-aware sequence continuity. Rejected consumer schema
+  does not consume continuity invisibly.
+- SSHG never reads a private key or credential, attempts login, probes a
+  listener, opens a tunnel, changes configuration, or retains/publishes full
+  commands, full command lines, or raw endpoints.
+- `modules/audit_log_guard.py` (ALIG) detects observed clear/tamper identities,
+  audit-policy/logging-service changes, continuity/generation gaps, record
+  reuse, provider/channel rejection, and authenticated cursor damage. It never
+  clears, alters, restores, or reconstructs a Windows log.
+- `modules/temporal_tradecraft_correlator.py` (TTCR) performs bounded,
+  restart-aware ordered correlation for SSH persistence/session/tunnel,
+  network-path drift, and log-clear sequences.
+- `modules/identity_session_guard.py` (IDSG) consumes authenticated structured
+  identity/session evidence for privacy-tokenized LUID/session, device-code,
+  new-device, browser-store, RMM, and privilege-transition analytics. It does
+  not acquire credentials, tokens, browser contents, or tenant sessions.
 
-## Architecture
+### Platform, driver, peripheral, and recovery posture
 
-- `src/angerona/core/`: EventBus, storage, response contracts, ARIA/runbook RAG,
-  model packs, OCSF/Community ID, policy, credentials, secure stores, cases,
-  evidence, interoperability, and platform abstractions.
-- `src/angerona/modules/`: independent `BaseModule` detectors and responders.
-  Current discovery: 71 modules, no duplicate names or non-empty codes. Cycle 23
-  adds Audit Log Integrity Guard, SSH Surface / Key / Tunnel Guard, and
-  Zero-Trust Network Path Monitor.
-- `src/angerona/gui/`: Classic dashboard, Flow Dashboard / Local SOC, Settings,
-  operations, Scan Center, Red Team, ATT&CK, Adversary Combat history/Undo, and
-  Upgrade Console.
-- `src/angerona/shark/`: non-destructive attack simulation and AAR generation.
+- `modules/driver_provenance_guard.py` (DPVG) joins image SHA-256,
+  Authenticode/catalog evidence, blocklist disposition, Hypervisor-Protected
+  Code Integrity, and Secure Boot. It is read-only; overflow and unknown
+  evidence are explicit. On-disk evidence is not claimed as perfect loaded-
+  kernel-image identity.
+- `modules/platform_attestation_guard.py` (PATG) observes local Secure Boot,
+  virtualization-based security, HVCI, boot flags, and TPM presence. Hardware
+  attestation is reported only when an injected verifier accepts a fresh
+  nonce-bound quote. The default collector does not fabricate one.
+- `modules/peripheral_dma_guard.py` (PDMG) observes Kernel DMA/IOMMU,
+  Thunderbolt, USB4, removable-storage, and device-install posture. It does not
+  control devices or prove device firmware. Linux removable absence is complete
+  only when every enumerated flag is a stable no-follow valid zero.
+- `modules/immutable_recovery_guard.py` (IRAG) evaluates externally signed
+  recovery-copy evidence. Quorums are satisfied inside one exact expected
+  revision/archive/manifest cohort; restore tests bind to that cohort.
+  Excessive future timestamps, mixed cohorts, unstable/linked evidence, and
+  unbounded directories fail closed. No restore is performed.
+
+### Network zero trust and Personal Sentinel
+
+- `modules/network_trust_monitor.py` (NZTR) treats every active physical
+  Wi-Fi/Ethernet path as untrusted. Restart-safe privacy tokens represent DNS,
+  DHCP, route, gateway, profile, interface generation, and path additions.
+- `core/personal_sentinel_gateway.py` is the explicitly enrolled direct-HTTPS
+  first-hop client. It requires normal TLS/hostname validation plus a leaf
+  certificate pin, nonce/freshness, expected policy digest, optional mTLS,
+  complete IPv4/IPv6 selected-route evidence, no proxy/redirect, and unchanged
+  pre/post route context.
+- `core/personal_sentinel_authority.py` and
+  `tools/personal_sentinel_server.py` supply a separately operated reference
+  authority/server for mandatory production mTLS, Ed25519 response/state
+  signing, trusted-time receipts, and monotonic compare-and-swap evidence.
+  Admission is bounded; the state has singleton custody, durable sequence
+  floors, and irreversible close semantics.
+- Intended topology: Angerona host -> operator-controlled Personal Sentinel
+  gateway/firewall -> upstream/ISP router -> Internet.
+- Sentinel is not a bundled router/appliance, routing role, management plane,
+  remote command service, or firmware attestor. It performs no router
+  discovery/configuration, credential storage, route change, firewall mutation,
+  or firmware trust. A positive first-hop label grants no endpoint, identity,
+  application, destination, or upstream-router trust.
+- Operators must independently provision the reference service host,
+  certificates, key custody, protected state, enrollment, monitoring, backup,
+  and recovery. Local signed/ACL-protected floors do not resist privileged
+  whole-host snapshot rollback without a TPM or independent witness.
+- `core/process_egress_lease.py` is a process/start/user/destination/path/
+  budget policy broker; `modules/process_egress_guard.py` (PELG) observes its
+  authenticated audit stream. It is not a firewall. Enforcement requires a
+  separately privileged injected adapter and retained OS process/file identity.
+
+### Release trust
+
+- Public Windows first install: signed full-trust x64 MSIX only. Windows must
+  validate the MSIX block map and exact provisioned publisher identity before
+  activation.
+- The release workflow requires an externally configured package name,
+  publisher distinguished name, publisher certificate, and protected signing
+  environments. The repository does not claim Microsoft Store deployment.
+  Enterprise/App Installer policy and clean-VM validation are external gates.
+- Classic Inno Setup is non-public, restricted, and prior-approved-install
+  migration-only. It performs unelevated preflight and delegates UAC/mutation
+  to the protected installed updater. It is not a public release asset or
+  first-install bootstrap.
+- Portable ZIP install is upgrade-only. The installed native verifier checks
+  the exact candidate, payload manifest/catalog, SBOM/provenance digests,
+  threshold authorization, enrolled roots, protected ACL custody, and numeric
+  release version/sequence floor before target mutation.
+- Signer jobs have separate protected environments. A signer response contains
+  only signer ID, statement digest, and signature. The finalizer requires the
+  exact separately supplied canonical 2-of-2 root policy and protected policy
+  SHA-256. Signer artifacts cannot replace authority roots.
+- A local protected rollback floor cannot resist privileged restoration of the
+  whole host. TPM-backed or independently witnessed monotonic state is needed
+  for that attacker model.
+- `modules/release_transparency_guard.py` (RTAG) is runtime observe-only
+  defense in depth. It is not the first-install trust bootstrap.
+
+### ARIA Defense Memory and RAG provenance
+
+- `assets/angerona_defense_memory.json` is Defense Memory v1.1.0 with 18
+  capability, usage, defensive-measure, limit, and actor-neutral tradecraft
+  entries.
+- `core/defense_memory.py` admits it only after stable non-reparse bounded
+  reading, strict duplicate-free schema validation, structural/text limits, and
+  canonical digest verification:
+  sha256:97a7771a9ce38ac66c6889dc90e0d591b64e07c2f169a0cebd7a57c119d67d57
+- Defense Memory is data-only. It defines no tool, action, prompt authority, or
+  executable procedure. Local retrieval can use its admitted content. If a
+  cloud fallback is separately enabled and authorized, at most one
+  highest-ranked canonical Defense Memory excerpt is redacted and eligible.
+- `modules/rag_provenance_guard.py` (RAGP) validates explicitly configured,
+  root-confined, digest-bound future sources and emits inert taint/trust labels.
+  It does not change an index or Defense Memory and needs a caller-owned
+  verifier for signed trust tiers.
+- Local Ollama remains the default. Model output and retrieved text are
+  advisory evidence; they cannot self-authorize a tool or arbitrary PowerShell.
+
+### Live Defense Activity
+
+- `gui/live_defense_activity.py` requests at most 16 recent public EventBus
+  records, displays at most five sanitized summaries, and adds coarse module
+  health.
+- It never reads event details, raw telemetry, source code, executing source,
+  hidden AI reasoning, private chain-of-thought, credentials, local paths,
+  addresses, SSIDs, or interface identities.
+- It is an operational activity surface, not a debugger or reasoning viewer.
+
+## RESPONSE AUTHORITY
+
+Adversary Combat is the governed mutation boundary. Supported exact-target
+classes include block exact remote peer, isolate exact executable, suspend or
+terminate verified process, quarantine exact file, activate bounded deception,
+explicitly isolate host, and undo verified reversible actions.
+
+Contracts bind action, process birth, executable/file identity, peer, lifetime,
+sequence, and escalation. Capability state uses durable epoch/high-water
+continuity. Durable intents, verified postconditions, signed receipts, exact
+Undo, startup recovery, compensation, and mutation circuit breakers make
+effects visible and recoverable.
+
+Protected/system targets, stale process identities, path replacement, ambiguous
+PowerShell semantics, weak cross-entity correlation, and unsigned or malformed
+authority fail closed. Model output, retrieved content, public EventBus text,
+and observe-only module findings never grant response authority by themselves.
+
+## ARCHITECTURE
+
+- `src/angerona/core/`: EventBus, provenance, policy, response contracts,
+  capability authority, file/process leases, trusted time, Sentinel authority,
+  recovery, release authority, ARIA/RAG, evidence, cases, custody, and platform
+  abstractions.
+- `src/angerona/modules/`: independent BaseModule detectors/responders.
+- `src/angerona/gui/`: dashboard, Live Defense Activity, Flow Dashboard /
+  Local SOC, operations, Settings, Scan Center, Red Team, ATT&CK, Combat
+  history/Undo, ARIA, and Upgrade Console.
+- `src/angerona/shark/`: bounded non-destructive simulations and AAR evidence.
 - `src/angerona/telemetry/`: bounded process/network snapshots and normalized
   sensor data.
-- `tools/`: compile, selfcheck, release, validation, and owner-verified helper
-  commands.
-- `analysis/loop/`: red-team, remediation, performance, innovation, and final
+- `tools/`: compile/selfcheck/release/validation helpers and Personal Sentinel
+  reference server.
+- `analysis/loop/`: red-team, remediation, performance, innovation, and
   verification evidence.
 
 Normal flow:
 
-sensor/module -> typed Event -> HMAC EventBus -> recorder/correlation ->
-incident/SOAR -> signed response contract -> Adversary Combat -> durable intent
--> exact action -> verified postcondition -> signed receipt -> Undo/recovery
+sensor -> broker-authenticated typed evidence -> HMAC EventBus -> recorder /
+correlation -> incident / SOAR -> signed response contract -> Adversary Combat
+-> durable intent -> exact action -> verified postcondition -> signed receipt
+-> Undo / recovery
 
-## Response authority
+## DATA, SECRETS, AND EGRESS
 
-Adversary Combat is the governed mutation boundary. A response request names
-only allowed action types and exact identities. Process actions bind PID,
-creation time, and executable. Network actions bind literal peer data and/or an
-exact executable. File actions bind exact validated paths. Host isolation is a
-separate explicit escalation authority and is not inherited from ordinary weak
-signals.
+- Source/development data uses the checkout sibling `AngeronaData`.
+- Packaged Windows data prefers protected `D:\AngeronaData`, with protected
+  `%ProgramData%\Angerona` fallback.
+- macOS uses its application-support area; Linux uses XDG state.
+- Secrets use Windows DPAPI, macOS Keychain, or Linux Secret Service when the
+  protected backend is required.
+- Runtime data, credentials, private signing material, diagnostics, journals,
+  models, evidence, and local state are not source artifacts and must not be
+  committed.
+- Cloud, messaging, SIEM, threat-intelligence, and peer integrations are
+  optional and off by default. Any selected data crossing an enabled connector
+  remains subject to its separate consent/redaction contract.
 
-Supported governed response classes include:
-
-- block exact remote peer;
-- isolate exact executable/program;
-- suspend or terminate verified process;
-- quarantine exact file, including verified cross-volume copy/delete and Undo;
-- activate bounded deception/honeypot response;
-- isolate host under explicit typed escalation policy;
-- undo one or all verified reversible actions.
-
-Protected/system targets, stale process identities, path replacement, ambiguous
-PowerShell semantics, weak cross-entity correlation, and unsigned or malformed
-contracts fail closed.
-
-## Detection and evidence
-
-- Windows: ETW, WMI/CIM, AMSI, WFP, Defender, Security log, Sysmon EIDs 1-29+255.
-- Detections: process lineage, persistence, file integrity, memory injection,
-  LSASS access, shadow-copy tamper, ransomware, C2 cadence, USB, BYOVD posture,
-  deception, YARA/YARA-X, network novelty and peer behavior.
-- Correlation: Evidence Lattice, Telemetry Expectation Contracts, incidents,
-  ATT&CK mapping, Community ID v1, OCSF 1.8, Suricata/Zeek import, guarded
-  osquery snapshots.
-- Evidence integrity: HMAC-signed events and cursors; Combat uses a durable HMAC
-  hash-chain journal with legacy unsigned records distinguished from current
-  signed records.
-
-## ARIA and model packs
-
-- Local Ollama is the default AI path; optional cloud/provider paths require
-  separate explicit consent and protected credentials.
-- ARIA tools are typed and registered. Arbitrary shell is not a tool.
-- Consequential confirmation is accepted only from exact typed keyboard input.
-- Retrieved documents, emails, pages, voice, gestures, model output, and callback
-  text are untrusted evidence, not control authority.
-- `aria-defense-llama3` is an approved local model pack with exact manifest/blob
-  checks. Install/activate/rollback/remove operations are bounded and serialized.
-- Source Sandbox stages inert artifacts. Runtime installers, executable skills,
-  symlinks/reparse escapes, and arbitrary GitHub code imports are refused.
-
-## Operator surfaces
-
-Canonical menu/info sections are Help, Dashboard, Settings, Operations,
-ATT&CK Map, Red Team, and Advanced Console. High-value destinations include:
-
-- Live Alerts, Resolve Center, SOAR Queue, Scan Center, Top Talkers;
-- Flow Dashboard / Local SOC: Overview, Cases, Hunt, Assets, Detection Content,
-  Parity & Interop, Audit;
-- Settings: General, System, Enterprise, ARIA, Trusted Processes, Mobile, API Keys;
-- ATT&CK: Live Heat, Coverage, Top Techniques;
-- Red Team: Run, History, Device Security Lab, Sandbox Editor;
-- Advanced Console: Mobile, AI Sandbox & Models, Watchdog, Telemetry;
-- Host Adaption: audit, baseline, drift, preview, sandbox, apply, rollback,
-  automation, feedback, and activity;
-- Adversary Combat: policy, mode, action history, verified-only filters, Undo
-  selected, Undo all, recovery state, and maximum validation.
-
-## Data and secrets
-
-Windows packaged data prefers protected `D:\AngeronaData`, with protected
-`%ProgramData%\Angerona` fallback. Source/development uses the configured data
-root. macOS uses the application-support area. Linux uses XDG state.
-
-Secrets use Windows DPAPI, macOS Keychain, or Linux Secret Service. Plaintext
-fallback is not accepted when the protected backend is required. Runtime data,
-credentials, diagnostics, journals, models, evidence, and local state are not
-source artifacts and must not be committed.
-
-## Build, run, and validation
+## BUILD, RUN, AND VALIDATION
 
 Windows source:
 
@@ -240,58 +251,114 @@ Development:
     python run_aria_selftests.py
     run-adversary-combat-validation.bat
 
-The Combat validation batch is intentionally defensive. It uses bounded local
-probes, verifies responses and cleanup, and must not be expanded into exploit,
-credential, persistence, remote scanning, or hack-back behavior.
+Current focused Cycle 24 evidence:
 
-## Measured performance evidence
+- Round 2 release remediation: 20 passed.
+- Round 2 core remediation: 88 passed, 1 expected platform skip.
+- Round 3 reliability/security paths: 78 passed, 1 expected platform skip.
+- Round 3 combined high-risk gate: 111 passed, 1 expected platform skip.
+- Round 3 release-boundary gate: 29 passed.
+- Round 3 Linux peripheral gate: 24 passed.
+- Changed-file Ruff/compile, release YAML/MSIX XML, PowerShell parsing, and diff
+  gates passed in recorded focused runs.
+- Paired four-screenshot public-gallery runs were byte-identical.
+- Final converged serial suite: 1,675 collected across 229 files; 1,670 passed;
+  5 expected host-capability skips; 0 failed.
 
-- Runbook RAG: 25.5x real-index speedup; 4.38x synthetic corpus speedup.
-- ETW PID cache: 92.2% lower peak tracked allocation in a 100,000-PID stress.
-- Upgrade Console: about 0.036 ms Qt submission for a simulated 50 ms read;
-  single-flight coalescing prevents timer backlog.
-- Literal loopback validation: 2.16x faster while hostname resolution and
-  listener/process/path attestation remain in force.
-- Ransomware same-directory normalization: 6.91x faster on the 100,000-record
-  correlation benchmark.
-- Network novelty expiry: 1.88x faster in the no-expiry 20,000-entry state case.
+Focused groups overlap and are not a final-suite total. Clean-VM publisher,
+install, upgrade, uninstall, and external-custody acceptance are not proven by
+repository tests.
 
-## Known limits and backlog
+## CYCLE 24 FINDING DISPOSITION
 
-Shipped claims must remain distinct from proposals. Current proposals include:
+- Round 1 opened 10 defects plus 1 informational runtime/deployment boundary.
+- Round 2 re-audited 7 release/integration/lifecycle issues or residuals.
+- All seven Round 2 findings received code remediation and focused regressions.
+- Round 3 opened 4 findings (1 High, 1 Medium, 2 Low); all four received code
+  or documentation remediation and focused regressions.
+- Release first-install trust still requires provisioned Windows publisher and
+  deployment policy; release roots/policy still require protected external
+  custody; privileged whole-host rollback still requires TPM/independent
+  monotonic state.
+- Broker keys, trusted-time/high-water state, recovery evidence, and Sentinel
+  authority state must live outside a restorable monitored-host snapshot when
+  snapshot rollback is in scope.
+- Older architectural residuals remain: in-process admitted-extension authority
+  (A-04), broad legacy PowerShell policy surface (A-06), and the preferred
+  retained OS process/executable-file lease across path-wide firewall mutation
+  (R6-03).
 
-- retained OS process handle and bounded executable-file identity lease for
-  program-wide firewall actions (open defense-in-depth item R6-03);
-- signed segmented Combat journal after forged-prefix and crash-rotation proof;
-- OS-native listener-bound Ollama owner proof before reducing call-time checks;
-- strict signed Sigma 2.1 correlation runtime;
-- YARA-X cost admission and hot-rule rollback;
-- journal-backed ransomware/deception attribution;
-- bounded STIX/TAXII lifecycle;
-- signed Linux CO-RE sensor sidecar;
-- constant-time first-run Sysmon seek and asynchronous initial ARIA index build.
+See `analysis/loop/cycle24/prior_findings.md` and
+`analysis/loop/cycle24/summary.md`.
 
-External acceptance remains for long elevated soak, physical sleep/resume,
-clean-machine install/upgrade/uninstall, publisher signing/notarization, native
-Linux/macOS release execution, fleet-scale throughput, false-positive baselines,
-and independent defensive efficacy testing.
+## PERFORMANCE EVIDENCE
 
-## Explicit non-goals
+- Personal Sentinel canonical unsigned-state reuse: 30.2-39.0% lower measured
+  serialization/signing kernel CPU across 64-4096 nonces; fsync/replace
+  unchanged.
+- Identity replay membership: O(n) to O(1), 410.488 us to 0.060 us at the
+  artificial 4096-event bound; authoritative ordered-window semantics retained.
+- Bounded directory iteration: 0.0242 ms versus 3.3220 ms in a synthetic
+  100,000-row over-budget case and, more importantly, exactly limit+1 rows
+  consumed.
+- Fixed-schema sensor admission added 4.060 us/event in the synthetic 5,000-
+  event benchmark.
+- Two complete public-gallery runs produced byte-identical output.
+- No optimization relaxed cadence, freshness, cryptography, stable reads,
+  completeness, response authority, or fail-closed behavior.
 
-- offensive payloads, exploit creation, credential theft, evasion, remote
-  scanning, attack infrastructure, hack-back, or persistence;
-- arbitrary shell/script response or model-authored host mutation;
-- downloaded executable skills, unverified models, insecure Ollama pulls, or
-  bulk unreviewed community artifacts;
-- unsigned kernel drivers or unsupported claims of ETW-TI protected-process
-  access;
-- automatic weakening of security policy, GPO/MDM reversal, log clearing, or
-  permanent broad containment without explicit retained policy.
+## KNOWN LIMITS / NOT SHIPPED
 
-## Documentation
+- No turnkey Personal Sentinel appliance, router, routing role, router
+  credentials, router discovery/configuration, firewall mutation, remote command
+  plane, or firmware attestation.
+- No automatic process-egress enforcement adapter.
+- No default hardware quote provider/verifier or hardware-rooted recovery/
+  release high-water.
+- No authoritative cloud identity/session collector; IDSG consumes supplied
+  structured evidence.
+- No claim that on-disk driver bytes perfectly identify a currently loaded
+  kernel image.
+- No recovery from logs/evidence already deleted before collection.
+- No public classic Setup first install and no Microsoft Store deployment claim.
+- No independent certification, commercial fleet support, long elevated soak,
+  clean-machine publisher matrix, physical sleep/resume matrix, native
+  Linux/macOS release acceptance, field false-positive baseline, or independent
+  efficacy evaluation.
+
+## PRIMARY DEFENSIVE SOURCES
+
+- CISA AA25-239A:
+  https://www.cisa.gov/news-events/cybersecurity-advisories/aa25-239a
+- CISA AA24-038A:
+  https://www.cisa.gov/sites/default/files/2024-03/aa24-038a_csa_prc_state_sponsored_actors_compromise_us_critical_infrastructure_3.pdf
+- NIST SP 800-207 Zero Trust Architecture:
+  https://csrc.nist.gov/pubs/sp/800/207/final
+- MITRE ATT&CK T1070.001 Clear Windows Event Logs:
+  https://attack.mitre.org/techniques/T1070/001/
+- Microsoft OpenSSH Server configuration for Windows:
+  https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh-server-configuration
+- Microsoft Storm-2372 device-code phishing:
+  https://www.microsoft.com/en-us/security/blog/2025/02/13/storm-2372-conducts-device-code-phishing-campaign/
+- Microsoft Kernel DMA Protection:
+  https://learn.microsoft.com/en-us/windows/security/hardware-security/kernel-dma-protection-for-thunderbolt
+- Microsoft Windows measured boot and health attestation:
+  https://learn.microsoft.com/en-us/windows/security/operating-system-security/system-security/protect-high-value-assets-by-controlling-the-health-of-windows-10-based-devices
+- IETF RFC 9334 RATS:
+  https://datatracker.ietf.org/doc/html/rfc9334
+- NIST FIPS 203 ML-KEM:
+  https://csrc.nist.gov/pubs/fips/203/final
+
+These sources support actor-neutral defensive technique selection. They do not
+prove attribution, product efficacy, or completeness.
+
+## DOCUMENTATION
 
 - Human manual: `Angerona_Master_Manual.docx`
+- Public overview and screenshots: `README.md`
 - Current capability sheet: `ANGERONA_CAPABILITIES.md`
+- Cycle 24 summary: `analysis/loop/cycle24/summary.md`
+- Cycle 24 finding reconciliation:
+  `analysis/loop/cycle24/prior_findings.md`
 - Architecture: `docs/architecture.md`
 - Security policy: `SECURITY.md`
-- Detailed loop evidence: `analysis/loop/`

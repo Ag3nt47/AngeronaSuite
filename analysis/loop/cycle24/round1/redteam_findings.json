@@ -1,0 +1,90 @@
+[
+  {
+    "id": "R1-01",
+    "title": "Supported installers do not enforce externally anchored artifact authenticity",
+    "severity": "HIGH",
+    "component": "Install-Angerona-Release.ps1:69-90,99-113,115-195; installer/Angerona.iss:34-46,57-59,118-149; Verify-Angerona-Release.ps1:9-40; .github/workflows/release.yml:414-429; src/angerona/modules/release_transparency_guard.py:133-159",
+    "status": "OPEN",
+    "recommendation": "Before any target write or launch, stage to a protected non-reparse location and verify an externally pinned publisher identity over the exact bytes; bind the whole setup/archive or every installed executable/evidence file, use stable file identity through execution, and never bootstrap first-install trust from a root carried only inside the candidate bundle."
+  },
+  {
+    "id": "R1-02",
+    "title": "The advertised two-signer release threshold has one CI failure domain",
+    "severity": "MEDIUM",
+    "component": ".github/workflows/release.yml:136-168; tools/build_release_authorization.py:166-188; src/angerona/modules/release_transparency_guard.py:133-140",
+    "status": "OPEN",
+    "recommendation": "Use separate protected signing jobs/environments or HSM/KMS identities that each see only one key and one exact pre-hashed statement; aggregate later, pin the public root outside the candidate bundle, and threshold-sign root rotation."
+  },
+  {
+    "id": "R1-03",
+    "title": "A consumed privileged capability is valid again after authority restart",
+    "severity": "MEDIUM",
+    "component": "src/angerona/core/response_capability.py:251-273,378-391; src/angerona/core/privileged_service.py:275-297",
+    "status": "FIXED",
+    "recommendation": "Persist an authenticated rollback-resistant consumed high-water and bind tokens to an unpredictable service/boot epoch, preferably anchored by a TPM counter or separately administered witness; add restart/replay tests before wiring an executor."
+  },
+  {
+    "id": "R1-04",
+    "title": "The production Sentinel CLI cannot give the monitored host verifier-only receipt authority",
+    "severity": "MEDIUM",
+    "component": "tools/personal_sentinel_server.py:127-143,256-294; src/angerona/core/personal_sentinel_authority.py:180-197,200-272,949-980",
+    "status": "FIXED",
+    "recommendation": "Use an appliance-only Ed25519 response/state private key with a host-held pinned public verifier and a distinct client request keypair; reserve symmetric response mode for explicitly non-independent tests or migration."
+  },
+  {
+    "id": "R1-05",
+    "title": "Sentinel state signatures do not prevent snapshot rollback or cross-process forks",
+    "severity": "MEDIUM",
+    "component": "src/angerona/core/personal_sentinel_authority.py:554-555,575-668,745-801",
+    "status": "FIXED",
+    "recommendation": "Enforce an OS-level singleton, perform state CAS under an interprocess transaction lock, and anchor generation in a TPM NV counter, WORM log, or second independent witness; test two-process forks and old-snapshot restart."
+  },
+  {
+    "id": "R1-06",
+    "title": "TLS handshakes can block the Sentinel server accept loop before worker limits apply",
+    "severity": "MEDIUM",
+    "component": "tools/personal_sentinel_server.py:102-124,164-166,298-309",
+    "status": "FIXED",
+    "recommendation": "Accept raw sockets and perform short-timeout TLS handshakes inside a separately bounded worker or nonblocking loop; bound per-source/pre-auth connections, prefer mandatory mTLS, and test that a stalled ClientHello cannot block another client."
+  },
+  {
+    "id": "R1-07",
+    "title": "Trusted-time appraisal accepts a captured receipt without challenge or durable sequence continuity",
+    "severity": "LOW",
+    "component": "src/angerona/core/trusted_time.py:99-190; src/angerona/core/personal_sentinel_authority.py:980,987-1054",
+    "status": "FIXED",
+    "recommendation": "Require a current unpredictable challenge and persisted external sequence/time floor, compare against monotonic elapsed time, and label detached or unbound receipts historical rather than independently fresh."
+  },
+  {
+    "id": "R1-08",
+    "title": "Recovery assurance can report healthy for mixed revisions and future-dated evidence",
+    "severity": "MEDIUM",
+    "component": "src/angerona/core/recovery_assurance.py:93-126,228-309; src/angerona/modules/immutable_recovery_guard.py:105-147",
+    "status": "OPEN",
+    "recommendation": "Reject excessive future timestamps and satisfy copy/domain/signer/restore/posture quorums inside one exact expected-revision archive/manifest cohort, with restore tests bound to the exact digest exercised."
+  },
+  {
+    "id": "R1-09",
+    "title": "The driver collector silently truncates at 256 and reports complete coverage",
+    "severity": "MEDIUM",
+    "component": "src/angerona/modules/driver_provenance_guard.py:261-320,351-441",
+    "status": "FIXED",
+    "recommendation": "Detect and report overflow or paginate every running driver under a global budget; bind evidence to kernel loaded-module identity and a stable file handle, add a >256 high-sort regression, and use signed hash policy while preserving unknown coverage."
+  },
+  {
+    "id": "R1-10",
+    "title": "Temporal and identity analytics promote EventBus integrity into producer provenance",
+    "severity": "LOW",
+    "component": "src/angerona/core/eventbus.py:8-23,241-265; src/angerona/modules/temporal_tradecraft_correlator.py:169-224; src/angerona/core/temporal_tradecraft.py:96-121,327-347,690-729; src/angerona/modules/identity_session_guard.py:157-204",
+    "status": "FIXED",
+    "recommendation": "Admit analytic evidence through broker-assigned producer IDs and per-sensor sequence/loss records with a fixed producer-to-schema allowlist; treat EventBus HMAC as storage integrity only and downgrade unprovenanced inputs."
+  },
+  {
+    "id": "R1-11",
+    "title": "Several Cycle 24 foundations are not runtime enforcement yet",
+    "severity": "INFO",
+    "component": "src/angerona/core/sensor_provenance.py:1-12; src/angerona/core/privileged_service.py:1-7; src/angerona/modules/process_egress_guard.py:1-5,39-68,96-127; src/angerona/modules/rag_provenance_guard.py:1,24-39,73-81,185-198; src/angerona/core/personal_sentinel_authority.py:946-1055",
+    "status": "OPEN",
+    "recommendation": "Keep these controls labelled prototype or observe-only until protected dependency injection, key custody, transport, lifecycle, end-to-end fail-closed tests, and the required privileged enforcement adapters are deployed; surface unconfigured states prominently."
+  }
+]

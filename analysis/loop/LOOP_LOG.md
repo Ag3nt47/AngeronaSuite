@@ -1813,3 +1813,136 @@ boundaries, and primary-source citations are in
 - Product version remains **v1.10.3**. The canonical Word manual remains under
   the coordinator's separate artifact workflow and was not touched by this
   documentation agent.
+
+## Cycle 24 Round 1 — Red Team (2026-08-26)
+
+- **R1-01 HIGH:** Neither supported Windows installer makes externally anchored artifact authenticity a prerequisite to privileged installation; the optional verifier also reopens a mutable path.
+- **R1-02 MEDIUM:** Both nominally independent release signer secrets and the generated trust root share one workflow runner/script failure domain.
+- **R1-03 MEDIUM:** A consumed privileged response capability is accepted again by a restarted authority using the same secret.
+- **R1-04 MEDIUM:** The production Personal Sentinel CLI uses symmetric HMAC receipt/state signing, so a monitored-host verifier also holds signing authority.
+- **R1-05 MEDIUM:** Signed Sentinel state remains vulnerable to valid-snapshot rollback and process-local locking permits cross-process forks.
+- **R1-06 MEDIUM:** TLS handshake work occurs in the Sentinel accept loop before the handler timeout and bounded worker semaphore, enabling private-LAN availability denial.
+- **R1-07 LOW:** Trusted-time appraisal lacks current-challenge binding and a durable receipt sequence floor, allowing captured-receipt reuse after restart plus clock rollback.
+- **R1-08 MEDIUM:** Recovery assurance can aggregate posture across unrelated revisions and accept future-dated evidence, producing a false healthy result.
+- **R1-09 MEDIUM:** The driver collector selects the first 256 sorted running services and then reports the truncated inventory complete.
+- **R1-10 LOW:** Temporal and identity analytics treat EventBus storage HMAC as producer provenance instead of consuming broker-assigned sensor identities.
+- **R1-11 INFO:** Sensor provenance, capability-only privileged service, external Sentinel freshness, process-egress enforcement, and RAG index admission remain unwired deployment foundations.
+- **Resolved during review (not open):** The peripheral Windows probe now resolves only the trusted absolute PowerShell path and has a regression proving no PATH fallback.
+
+## Cycle 24 Round 1 — Performance (2026-08-26)
+
+- Applied one behavior-preserving driver-collector optimization: push the
+  running-state predicate into CIM and use bounded list appends instead of
+  repeated PowerShell array copying. No scan interval or security control was
+  changed.
+- Alternating enumeration measurements were client **7.0873 s**, filtered
+  **1.5406 s**, client **3.1479 s**, filtered **1.5663 s**; the warm enumeration
+  phase was **50.7% faster**. Authenticode remained the dominant cost at
+  **11.310 s** in component profiling.
+- Cross-scan signature caching was rejected: unchanged bytes can receive a new
+  trust, catalog, revocation, or policy decision. Every service image continues
+  to be hashed and verified on every 15-minute scan.
+- Gates passed: compile, Ruff, **9/9** focused driver tests, module self-test,
+  and a live **194 rows / 193 hashes / 193 valid signatures** evidence check.
+  Full evidence: `analysis/loop/cycle24/round1/performance_summary.md`.
+
+## Round 1 — Innovation (Cycle 24, 2026-08-26)
+
+- Reconciled current 2024–2026 Microsoft, CISA, NSA, NIST, MITRE, IETF,
+  OpenSSH, and vendor primary research against the concurrent Cycle 24 tree.
+  Research is actor-neutral and separates observed tradecraft, established
+  attack classes, and theoretical/lab-only risks.
+- Code-backed foundations now cover identity/session analytics, driver
+  provenance, ordered temporal correlation, peripheral/DMA posture,
+  measured-boot appraisal contracts, process-egress leases, sensor/RAG
+  provenance, release authorization, and a prototype Personal Sentinel
+  authority. Several remain supplied-evidence-only, observe-only, injected, or
+  unwired and are not promoted to release claims.
+- P0 completion work is authoritative identity/source wiring, privileged
+  process-egress enforcement, and remediation of Round 1's Sentinel,
+  capability, recovery, release, driver-completeness, and producer-provenance
+  findings. The highest-value new detectors are ClickFix/user-intent chains,
+  SSH key-to-session plus PQ posture, and loaded-DLL provenance.
+- P1/P2 roadmap: Wi-Fi/IPv6 first-hop attestation v2, WSL/Hyper-V visibility,
+  out-of-band peripheral context, ATT&CK v19 analytic conformance, and a
+  strictly experimental selective call-stack sensor.
+- No product code, public documentation, version, or configuration was changed
+  by the innovation pass. Full ranked proposals, feasibility limits, false-
+  positive constraints, safety boundaries, and authoritative URLs:
+  `analysis/loop/cycle24/round1/innovation_ideas.md`.
+
+## Round 1 — Bug Test (Cycle 24, 2026-08-26)
+
+- QA: **343/343 compile**, selfcheck **26/0** with **60 pass / 0 fail / 21 expected skips**, discovery **80 Windows / 14 Linux / 13 macOS** with no import or duplicate-identity errors; full pytest diagnostic **1,602 passed / 5 failed / 5 skipped**, with four load/scheduling timing artifacts clearing or intermittent in isolation and one expected README count drift (`71 -> 80`) assigned to final docs; **0 product bugs fixed, 0 reproducible product bugs reported**. Full evidence: `analysis/loop/cycle24/round1/qa_summary.md`.
+
+## Round 1 — Remediation (Cycle 24, 2026-08-26)
+
+- Fixed R1-03 through R1-07, R1-09, and R1-10: durable epoch-bound response
+  capabilities; asymmetric Personal Sentinel production roles; OS singleton
+  and pluggable generation floors; bounded pre-auth TLS with mandatory mTLS;
+  challenge/floor-bound trusted time; explicit driver overflow; and broker-
+  provenanced analytic confidence.
+- Gates: **76 focused tests passed**, all changed files compiled, Ruff passed,
+  five applicable self-tests passed, and remediation-path diff checks passed.
+- Full per-finding changes, gates, and external TPM/second-witness residuals:
+  `analysis/loop/cycle24/round1/remediation_summary.md`.
+
+## Cycle 24 Round 2 — Performance (2026-08-26)
+
+- Applied two behavior-preserving optimizations: Personal Sentinel now reuses
+  one exact canonical unsigned-state buffer for its optional generation-floor
+  digest and state signature; identity/session analytics now uses an
+  eviction-synchronized digest set for O(1) replay membership.
+- Sentinel's bounded serialization/signing kernel improved **30.2–39.0%** at
+  64–4,096 retained nonces. Identity duplicate membership improved from
+  **410.488 us to 0.060 us** at the artificial 4,096-event bound. Final signed
+  bytes, fsync/atomic replacement, ordered correlations, and eviction semantics
+  remain unchanged.
+- Temporal write batching, process-egress material reuse, Windows posture-query
+  coalescing, and mtime-based evidence caches were not applied because their
+  crash continuity, cryptographic binding, freshness, or stable-read
+  equivalence was not proven.
+- Gates passed: **27/27** focused tests, **2/2** standalone self-tests, Ruff,
+  and `py_compile`. Full evidence:
+  `analysis/loop/cycle24/round2/performance_summary.md`.
+
+## Cycle 24 Round 2 — Red Team (2026-08-26)
+
+- **R2-01 HIGH:** First-install publisher checking remains inside the candidate Setup; use an OS-enforced signed MSIX/App Installer or mandatory publisher policy as the external trust anchor.
+- **R2-02 MEDIUM:** Separate signer jobs are present, but finalization accepts artifact-carried public keys instead of roots pinned in an independently administered finalizer domain.
+- **R2-03 MEDIUM:** The protected portable updater authenticates exact bytes, publisher, catalog, and attestation but does not enforce the signed release sequence/version against a highest-installed floor.
+- **R2-04 LOW:** SSH live EventBus ingestion selects caller labels without broker provenance and allows unprovenanced input to advance the trusted known-source baseline.
+- **R2-05 LOW:** Production trusted-time composition advances the same receipt floor in the client and appraisal, so a valid receipt fails closed as a regression.
+- **R2-06 MEDIUM:** A closed Personal Sentinel authority can still process state transactions after releasing its singleton lease.
+- **R2-07 LOW:** Linux removable-device posture can report complete absence when some enumerated per-device flags are unreadable.
+- Prior status: six Round 1 findings fully resolved, three partial/deployment-residual, two open; C23-R2-01, A-04, A-06, and R6-03 remain external/architectural residuals.
+
+## Cycle 24 Round 2/3 — Remediation and release boundary (2026-08-27)
+
+- Closed the in-repository Round 2 release, provenance, trusted-time,
+  Sentinel-lifecycle, SSH-baseline, Linux completeness, recovery-cohort, and
+  anti-rollback findings with regression coverage. No offensive payload,
+  credential collection, log erasure/evasion, or destructive autonomous
+  remediation was added.
+- Public Windows first install is now constrained to an OS-validated signed
+  x64 MSIX. Classic Setup is non-public and migration-only; portable ZIPs are
+  upgrade-only and delegate mutation to the verified installed updater.
+  Publisher/root custody, the pinned packaging toolchain, clean-machine
+  validation, and privileged whole-host rollback resistance remain external
+  deployment gates.
+- Final serial validation collected **1,675 tests across 229 files: 1,670
+  passed, 5 expected host-capability skips, and 0 failed**. Ruff passed;
+  compilation passed for **611/611** Python files and **345/345** product files.
+  Selfcheck passed **26/26**; the module harness passed **60/60** with 21
+  expected inactive/platform skips plus EventBus; discovery reported **80
+  Windows / 14 Linux / 13 macOS** modules without errors.
+- Published four fresh v1.11.0 dashboard/feature screenshots. Two independent
+  capture runs were byte-identical. Screenshot QA also found and fixed a Qt
+  alpha-channel ordering defect, now protected by focused theme tests.
+- Updated README, capabilities, governed ARIA memory guidance, launch post,
+  and the 35-page Word manual. The manual was rebuilt from its pristine
+  snapshot with minimal version/capability/install/addendum edits and passed
+  rendered visual plus structural QA.
+- Final evidence: `analysis/loop/cycle24/summary.md`,
+  `analysis/loop/cycle24/round3/qa_summary.md`, and
+  `analysis/loop/cycle24/round3/release_remediation_summary.md`.

@@ -75,6 +75,9 @@ def test_chill_policy_is_network_first_and_names_are_exact() -> None:
         "Watchdog Monitor",
         "Active Response SOAR",
         "SOAR Automation",
+        "Temporal Tradecraft Correlator",
+        "Identity Session Guard",
+        "Process Egress Lease Guard",
     ):
         assert name not in CHILL_PAUSED_MODULES
         assert name not in CHILL_THROTTLE_FLOORS
@@ -86,6 +89,9 @@ def test_chill_policy_is_network_first_and_names_are_exact() -> None:
         "ETW Core Listener",
         "AV Telemetry Bridge",
         "Removable-Media / USB Monitor",
+        "Temporal Tradecraft Correlator",
+        "Identity Session Guard",
+        "Process Egress Lease Guard",
     }.issubset(ModuleManager._NO_STAGGER)
 
 

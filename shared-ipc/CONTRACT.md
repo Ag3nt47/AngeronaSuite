@@ -21,7 +21,8 @@ Sub-paths:
 <data>/ipc/telemetry.ring            raw-telemetry ring buffer (scanner → core)
 <data>/ipc/standdown.cmd             signed graceful stand-down command
 <data>/ipc/scanner.ping              core→scanner self-test ping nonce (plain text)
-<data>/bus.key                       32-byte per-install HMAC key, hex-encoded
+<data>/bus.key                       32-byte stand-down HMAC key, hex-encoded
+<data>/ipc_ring.key                  32-byte telemetry-ring HMAC key, hex-encoded
 ```
 
 ## 1. Heartbeat — `AWDG`, 32 bytes
@@ -56,9 +57,9 @@ Header struct `"<IIIIQQQI"` (44 bytes) padded to **64** bytes, then
 | offset | type | field |
 |--------|------|-------|
 | 0  | u32 | magic `0x41524E47` ("ARNG") |
-| 4  | u32 | version (1) |
+| 4  | u32 | version (**2**) |
 | 8  | u32 | slot_count (default 4096) |
-| 12 | u32 | slot_size (default 512) |
+| 12 | u32 | slot_size (default **2048**) |
 | 16 | u64 | write_seq |
 | 24 | u64 | read_seq |
 | 32 | u64 | drops |
@@ -67,7 +68,14 @@ Header struct `"<IIIIQQQI"` (44 bytes) padded to **64** bytes, then
 
 **Slot** at `64 + (seq % slot_count) * slot_size`:
 - `u32` record length `L`, then `L` bytes of record.
-- Record = `"<HHI"` header `[schema_ver u16, sensor_id u16, seq u32]` + payload.
+- Record = `"<HHQ"` header `[schema_ver u16, sensor_id u16, seq u64]` +
+  payload + a 32-byte HMAC-SHA256 tag.
+- The tag is `HMAC_SHA256(ipc_ring_key, aad || header || payload)`, where
+  `aad = b"Angerona-IPC-Ring-v2\\x00"` and `ipc_ring_key` is the raw 32-byte
+  key decoded from `<data>/ipc_ring.key`.
+- The complete record header, payload, schema, sensor id, and full 64-bit
+  sequence are authenticated before payload decoding. Wrong-key, modified,
+  unsupported-schema, stale, replayed, or out-of-position records fail closed.
 
 Producer (single) increments `write_seq`; on lap (`write_seq - read_seq >=
 slot_count`) it advances `read_seq` (overwrite oldest) and bumps `drops`. Raises

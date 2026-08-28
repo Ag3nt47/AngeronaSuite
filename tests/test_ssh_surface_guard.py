@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 import angerona.core.ssh_surface as ssh
+from angerona.core.sensor_provenance import SensorProvenanceBroker, sign_sensor_event
 import angerona.modules.ssh_surface_guard as ssh_guard_module
 from angerona.core.eventbus import Event, EventBus
 from angerona.modules.ssh_surface_guard import SSHSurfaceGuardModule
@@ -446,21 +447,198 @@ def test_module_self_test_is_cross_platform_and_negative_contract_is_explicit() 
 
 
 def test_retained_bus_callback_is_inert_after_module_stop(tmp_path: Path) -> None:
-    module = SSHSurfaceGuardModule(data_root=tmp_path, master_key=MASTER)
+    now_ns = 4_000_000_000
+    broker = SensorProvenanceBroker(b"P" * 32, clock_ns=lambda: now_ns)
+    credential = broker.provision("OpenSSH Auth Event Collector")
+    module = SSHSurfaceGuardModule(
+        data_root=tmp_path,
+        master_key=MASTER,
+        provenance_broker=broker,
+    )
     module._live_ingest_enabled.set()
+    envelope = sign_sensor_event(
+        credential,
+        sequence=1,
+        reported_loss=0,
+        event_type="angerona.ssh-log-input.v1",
+        issued_monotonic_ns=now_ns,
+        event={
+            "channel": ssh.WINDOWS_OPENSSH_CHANNELS[0][0],
+            "provider": "OpenSSH",
+            "rendered_message": "Accepted password for alice from 198.51.100.2 port 22",
+        },
+    )
     event = Event(
         module="Windows Event Log",
         message="OpenSSH event",
-        details={
-            "provider": "OpenSSH",
-            "event_message": "Accepted password for alice from 198.51.100.2 port 22",
-        },
+        details={"sensor_provenance_envelope": envelope},
     )
     module._on_bus_event(event)
     assert len(module._queued_log_evidence) == 1
     module.stop()
     module._on_bus_event(event)
     assert len(module._queued_log_evidence) == 1
+
+
+def test_live_ssh_ingestion_rejects_spoofed_labels_and_requires_broker_provenance(
+    tmp_path: Path,
+) -> None:
+    now_ns = 5_000_000_000
+    broker = SensorProvenanceBroker(b"B" * 32, clock_ns=lambda: now_ns)
+    module = SSHSurfaceGuardModule(
+        data_root=tmp_path,
+        master_key=MASTER,
+        provenance_broker=broker,
+    )
+    module._live_ingest_enabled.set()
+    raw_line = "Accepted publickey for alice from 198.51.100.7 port 22"
+
+    # Caller-controlled EventBus module/provider labels are not provenance.
+    module._on_bus_event(Event(
+        module="OpenSSH Auth Event Collector",
+        message=raw_line,
+        details={
+            "provider": "OpenSSH",
+            "channel": ssh.WINDOWS_OPENSSH_CHANNELS[0][0],
+            "rendered_message": raw_line,
+        },
+    ))
+    assert not module._known_source_tokens
+    assert not module._queued_log_evidence
+
+    wrong = broker.provision("Spoofed OpenSSH Collector")
+    wrong_envelope = sign_sensor_event(
+        wrong,
+        sequence=1,
+        reported_loss=0,
+        event_type="angerona.ssh-log-input.v1",
+        issued_monotonic_ns=now_ns,
+        event={
+            "channel": ssh.WINDOWS_OPENSSH_CHANNELS[0][0],
+            "provider": "OpenSSH",
+            "rendered_message": raw_line,
+        },
+    )
+    module._on_bus_event(Event(
+        module="OpenSSH Auth Event Collector",
+        message="spoof",
+        details={"sensor_provenance_envelope": wrong_envelope},
+    ))
+    assert not module._known_source_tokens
+    assert not module._queued_log_evidence
+
+    credential = broker.provision("OpenSSH Auth Event Collector")
+    envelope = sign_sensor_event(
+        credential,
+        sequence=1,
+        reported_loss=0,
+        event_type="angerona.ssh-log-input.v1",
+        issued_monotonic_ns=now_ns,
+        event={
+            "channel": ssh.WINDOWS_OPENSSH_CHANNELS[0][0],
+            "provider": "OpenSSH",
+            "rendered_message": raw_line,
+        },
+    )
+    # The outer label is irrelevant; the broker-assigned inner identity wins.
+    module._on_bus_event(Event(
+        module="untrusted outer caller",
+        message="ignored outer body",
+        details={"sensor_provenance_envelope": envelope},
+    ))
+    assert len(module._known_source_tokens) == 1
+    assert len(module._queued_log_evidence) == 1
+
+
+def test_live_ssh_ingestion_rejects_schema_drift_and_provenance_gaps(
+    tmp_path: Path,
+) -> None:
+    now_ns = 6_000_000_000
+    broker = SensorProvenanceBroker(b"C" * 32, clock_ns=lambda: now_ns)
+    credential = broker.provision("OpenSSH Auth Event Collector")
+    module = SSHSurfaceGuardModule(
+        data_root=tmp_path,
+        master_key=MASTER,
+        provenance_broker=broker,
+    )
+    module._live_ingest_enabled.set()
+    line = "Accepted publickey for alice from 198.51.100.9 port 22"
+
+    # Sequence two proves a missing upstream event; it cannot establish a
+    # trusted known-source baseline even though its signature is authentic.
+    gap = sign_sensor_event(
+        credential,
+        sequence=2,
+        reported_loss=0,
+        event_type="angerona.ssh-log-input.v1",
+        issued_monotonic_ns=now_ns,
+        event={
+            "channel": ssh.WINDOWS_OPENSSH_CHANNELS[0][0],
+            "provider": "OpenSSH",
+            "rendered_message": line,
+        },
+    )
+    module._on_bus_event(Event(
+        module="collector",
+        message="event",
+        details={"sensor_provenance_envelope": gap},
+    ))
+    assert not module._known_source_tokens
+    assert not module._queued_log_evidence
+
+
+def test_live_ssh_wrong_type_cannot_silently_consume_continuity(tmp_path: Path) -> None:
+    now_ns = 6_500_000_000
+    broker = SensorProvenanceBroker(b"T" * 32, clock_ns=lambda: now_ns)
+    credential = broker.provision("OpenSSH Auth Event Collector")
+    module = SSHSurfaceGuardModule(
+        data_root=tmp_path,
+        master_key=MASTER,
+        provenance_broker=broker,
+    )
+    module._live_ingest_enabled.set()
+    event = {
+        "channel": ssh.WINDOWS_OPENSSH_CHANNELS[0][0],
+        "provider": "OpenSSH",
+        "rendered_message": "Accepted publickey for alice from 198.51.100.10 port 22",
+    }
+    bad = sign_sensor_event(
+        credential,
+        sequence=1,
+        reported_loss=0,
+        event_type="angerona.unrelated-input.v1",
+        issued_monotonic_ns=now_ns,
+        event=event,
+    )
+    module._on_bus_event(Event(
+        module="collector",
+        message="wrong type",
+        details={"sensor_provenance_envelope": bad},
+    ))
+    after_bad = broker.status(credential.sensor_id)
+    assert after_bad.last_sequence == 0
+    assert after_bad.accepted_events == 0
+
+    good = sign_sensor_event(
+        credential,
+        sequence=2,
+        reported_loss=0,
+        event_type="angerona.ssh-log-input.v1",
+        issued_monotonic_ns=now_ns,
+        event=event,
+    )
+    module._on_bus_event(Event(
+        module="collector",
+        message="good type after rejected sequence",
+        details={"sensor_provenance_envelope": good},
+    ))
+
+    status = broker.status(credential.sensor_id)
+    assert status.last_sequence == 2
+    assert status.observed_gap_total == 1
+    assert status.state == "degraded"
+    assert not module._known_source_tokens
+    assert not module._queued_log_evidence
 
 
 def test_include_graph_digest_and_configured_sources_are_authenticated_without_paths(

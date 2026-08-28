@@ -1,5 +1,11 @@
-; Angerona one-click Windows release installer.
-; Compiled by the pinned GitHub release workflow on windows-latest.
+; Angerona protected migration wrapper.
+; The signed MSIX is the repository-supported public first-install artifact.
+; This non-public package can only delegate to an already installed,
+; protected Angerona upgrade authority. It is not a clean-install path.
+
+#ifndef ApprovedInstallationMigrationOnly
+  #error Classic Setup must be explicitly compiled as approved-installation migration-only
+#endif
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -7,22 +13,30 @@
 #ifndef ArtifactTag
   #define ArtifactTag "dev"
 #endif
+#ifndef PublisherCertificateSha256
+  #define PublisherCertificateSha256 "UNCONFIGURED"
+#endif
 
 [Setup]
 AppId={{6B6931E2-D992-4D4D-90D1-F2FEF5678BD3}
 AppName=Angerona
 AppVersion={#AppVersion}
 AppPublisher=Angerona contributors
-DefaultDirName={autopf}\Angerona
+DefaultDirName={commonpf64}\Angerona
 DefaultGroupName=Angerona
 DisableProgramGroupPage=yes
+DisableDirPage=yes
+DisableReadyPage=yes
 LicenseFile=..\LICENSE
 OutputDir=..
-OutputBaseFilename=Angerona-{#ArtifactTag}-win64-setup
+OutputBaseFilename=Angerona-{#ArtifactTag}-win64-migration-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=admin
+; The wrapper remains unelevated while it authenticates its own publisher and
+; asks the already installed authority to verify custody. Only that protected
+; authority requests elevation, and it repeats custody checks before mutation.
+PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
@@ -30,126 +44,113 @@ UninstallDisplayIcon={app}\Angerona.exe
 CloseApplications=yes
 RestartApplications=no
 SetupLogging=yes
+SignTool=AngeronaSign
+CreateAppDir=no
+CreateUninstallRegKey=no
+Uninstallable=no
+UsePreviousAppDir=no
 
 [Files]
-Source: "..\dist\Angerona\Angerona.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist\Angerona\AngeronaBlackBox.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist\Angerona\release-files.sha256"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist\Angerona\README.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist\Angerona\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist\Angerona\SECURITY.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "..\dist\Angerona\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
-Source: "..\dist\Angerona\playbooks\*"; DestDir: "{app}\playbooks"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
-
-[Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: checkedonce
-Name: "guidedsetup"; Description: "Open Angerona Full Setup after installation"; GroupDescription: "First run:"; Flags: checkedonce
-
-[Icons]
-Name: "{autoprograms}\Angerona"; Filename: "{app}\Angerona.exe"; WorkingDir: "{app}"
-Name: "{autoprograms}\Angerona Full Setup"; Filename: "{app}\Angerona.exe"; Parameters: "--setup"; WorkingDir: "{app}"
-Name: "{autodesktop}\Angerona"; Filename: "{app}\Angerona.exe"; WorkingDir: "{app}"; Tasks: desktopicon
-
-[Run]
-Filename: "{app}\Angerona.exe"; Parameters: "--setup"; Description: "Open Angerona Full Setup"; Flags: postinstall nowait skipifsilent; Tasks: guidedsetup
-Filename: "{app}\Angerona.exe"; Description: "Launch Angerona"; Flags: postinstall nowait skipifsilent; Tasks: not guidedsetup
+; The wrapper contains only the already threshold-authorized portable upgrade
+; archive and checksum. Both are extracted to Setup's temporary directory; no
+; application file is ever copied by Inno Setup.
+Source: "..\Angerona-{#ArtifactTag}-win64.zip"; Flags: dontcopy
+Source: "..\Angerona-{#ArtifactTag}-win64.zip.sha256"; Flags: dontcopy
 
 [Code]
 const
-  VersionStateKey = 'Software\Angerona';
-  VersionStateName = 'HighestInstalledVersion';
-  UninstallStateKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{6B6931E2-D992-4D4D-90D1-F2FEF5678BD3}_is1';
+  PriorAuthorityRelative = 'Angerona\Install-Angerona-Release.ps1';
 
-function TakeVersionPart(var Remaining: String; var Part: Word): Boolean;
+function VerifySetupPublisher(): Boolean;
 var
-  DotAt, Parsed: Integer;
-  Token: String;
+  PowerShell, Parameters: String;
+  ResultCode: Integer;
 begin
-  DotAt := Pos('.', Remaining);
-  if DotAt > 0 then
-  begin
-    Token := Copy(Remaining, 1, DotAt - 1);
-    Delete(Remaining, 1, DotAt);
-  end
-  else
-  begin
-    Token := Remaining;
-    Remaining := '';
-  end;
-  Parsed := StrToIntDef(Token, -1);
-  Result := (Token <> '') and (Parsed >= 0) and (Parsed <= 65535);
-  if Result then
-    Part := Parsed;
+  Result := False;
+  if Length('{#PublisherCertificateSha256}') <> 64 then
+    exit;
+  SetEnvironmentVariable('ANGERONA_SETUP_PATH', ExpandConstant('{srcexe}'));
+  SetEnvironmentVariable(
+    'ANGERONA_EXPECTED_PUBLISHER_SHA256', '{#PublisherCertificateSha256}');
+  PowerShell := ExpandConstant(
+    '{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  Parameters :=
+    '-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command "' +
+    '$s=Get-AuthenticodeSignature -LiteralPath $env:ANGERONA_SETUP_PATH;' +
+    'if($s.Status -ne ''Valid'' -or $null -eq $s.SignerCertificate){exit 10};' +
+    '$h=[Security.Cryptography.SHA256]::Create();try{' +
+    '$a=(($h.ComputeHash($s.SignerCertificate.RawData)|' +
+    'ForEach-Object{$_.ToString(''x2'')})-join '''')' +
+    '}finally{$h.Dispose()};' +
+    'if($a -ine $env:ANGERONA_EXPECTED_PUBLISHER_SHA256){exit 11}"';
+  Result := Exec(
+    PowerShell, Parameters, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and
+    (ResultCode = 0);
+  SetEnvironmentVariable('ANGERONA_SETUP_PATH', '');
+  SetEnvironmentVariable('ANGERONA_EXPECTED_PUBLISHER_SHA256', '');
 end;
 
-function ParseVersion(const Value: String; var Packed: Int64): Boolean;
+function VerifyPriorApprovedInstallation(): Boolean;
 var
-  Remaining: String;
-  Major, Minor, Build, Revision: Word;
+  PowerShell, Installer, Parameters, PriorRoot: String;
+  ResultCode: Integer;
 begin
-  Remaining := Value;
-  Major := 0;
-  Minor := 0;
-  Build := 0;
-  Revision := 0;
-  Result := TakeVersionPart(Remaining, Major);
-  if Result and (Remaining <> '') then
-    Result := TakeVersionPart(Remaining, Minor);
-  if Result and (Remaining <> '') then
-    Result := TakeVersionPart(Remaining, Build);
-  if Result and (Remaining <> '') then
-    Result := TakeVersionPart(Remaining, Revision);
-  Result := Result and (Remaining = '');
-  if Result then
-    Packed := PackVersionComponents(Major, Minor, Build, Revision);
-end;
-
-function ReadHighestInstalledVersion(var Value: String): Boolean;
-begin
-  Result := RegQueryStringValue(HKLM64, VersionStateKey, VersionStateName, Value);
-  if not Result then
-    Result := RegQueryStringValue(HKLM64, UninstallStateKey, 'DisplayVersion', Value);
+  Result := False;
+  PriorRoot := ExpandConstant('{commonpf64}\Angerona');
+  Installer := AddBackslash(PriorRoot) + 'Install-Angerona-Release.ps1';
+  PowerShell := ExpandConstant(
+    '{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  Parameters :=
+    '-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File "' +
+    Installer + '" -CustodyPreflightOnly';
+  Result := Exec(
+    PowerShell, Parameters, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and
+    (ResultCode = 0);
 end;
 
 function InitializeSetup(): Boolean;
-var
-  CurrentText, HighestText: String;
-  CurrentVersion, HighestVersion: Int64;
 begin
   Result := False;
-  CurrentText := '{#AppVersion}';
-  if not ParseVersion(CurrentText, CurrentVersion) then
+  if not VerifySetupPublisher() then
   begin
-    MsgBox('Setup has an invalid release version and cannot continue.', mbCriticalError, MB_OK);
+    MsgBox('Setup publisher verification failed. Use the protected release ' +
+      'verifier and run only the exact Authenticode-signed Angerona Setup.',
+      mbCriticalError, MB_OK);
     exit;
   end;
-  if ReadHighestInstalledVersion(HighestText) then
+  if not VerifyPriorApprovedInstallation() then
   begin
-    if not ParseVersion(HighestText, HighestVersion) then
-    begin
-      MsgBox('The protected Angerona version record is invalid. Setup will fail closed. ' +
-        'Use the separately audited recovery process instead of bypassing this check.',
-        mbCriticalError, MB_OK);
-      exit;
-    end;
-    if ComparePackedVersion(CurrentVersion, HighestVersion) < 0 then
-    begin
-      MsgBox('Downgrade blocked: this Setup is Angerona ' + CurrentText +
-        ', but version ' + HighestText + ' has already been installed.' + #13#10 + #13#10 +
-        'Install an equal or newer signed release. Intentional rollback requires the ' +
-        'separately audited recovery process.', mbCriticalError, MB_OK);
-      exit;
-    end;
+    MsgBox('Migration requires an existing Angerona installation whose protected ' +
+      'upgrade authority, ACL custody, publisher pin, signed native verifier, and ' +
+      'release evidence are intact. Clean installation is supported only by the ' +
+      'signed MSIX.', mbCriticalError, MB_OK);
+    exit;
   end;
   Result := True;
 end;
 
-procedure CurStepChanged(CurStep: TSetupStep);
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  PowerShell, Installer, Archive, Parameters: String;
+  ResultCode: Integer;
 begin
-  if CurStep = ssPostInstall then
-  begin
-    if not RegWriteStringValue(
-      HKLM64, VersionStateKey, VersionStateName, '{#AppVersion}') then
-      RaiseException('Could not persist the protected installed-version record.');
+  Result := '';
+  try
+    ExtractTemporaryFile('Angerona-{#ArtifactTag}-win64.zip');
+    ExtractTemporaryFile('Angerona-{#ArtifactTag}-win64.zip.sha256');
+    PowerShell := ExpandConstant(
+      '{sys}\WindowsPowerShell\v1.0\powershell.exe');
+    Installer := ExpandConstant('{commonpf64}\') + PriorAuthorityRelative;
+    Archive := ExpandConstant('{tmp}\Angerona-{#ArtifactTag}-win64.zip');
+    Parameters := '-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File "' +
+      Installer + '" -ReleaseArchive "' + Archive + '"';
+    if not ShellExec(
+        'runas', PowerShell, Parameters, '', SW_HIDE,
+        ewWaitUntilTerminated, ResultCode) or
+        (ResultCode <> 0) then
+      Result := 'The protected installed upgrade authority rejected this migration. ' +
+        'No Angerona application file was installed by Setup.';
+  except
+    Result := 'Migration preparation failed closed: ' + GetExceptionMessage;
   end;
 end;

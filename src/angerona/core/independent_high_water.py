@@ -27,7 +27,8 @@ SCHEMA = "angerona.independent-high-water.v1"
 ZERO_DIGEST = "0" * 64
 AUDIT_DOMAIN = "audit-log-continuity"
 NETWORK_DOMAIN = "network-trust-baseline"
-_DOMAINS = frozenset({AUDIT_DOMAIN, NETWORK_DOMAIN})
+PLATFORM_DOMAIN = "platform-attestation"
+_DOMAINS = frozenset({AUDIT_DOMAIN, NETWORK_DOMAIN, PLATFORM_DOMAIN})
 _HEX_32 = re.compile(r"^[0-9a-f]{32}$")
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -324,6 +325,7 @@ def advance_high_water(
 __all__ = [
     "AUDIT_DOMAIN",
     "NETWORK_DOMAIN",
+    "PLATFORM_DOMAIN",
     "SCHEMA",
     "ZERO_DIGEST",
     "HighWaterAssessment",

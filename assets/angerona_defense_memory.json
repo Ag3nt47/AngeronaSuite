@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "memory_id": "angerona-defense-memory",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "governance": {
     "classification": "defensive-reference",
     "authority": "read-only",
@@ -214,10 +214,12 @@
         "router attestation",
         "firewall appliance",
         "upstream router",
-        "network isolation"
+        "network isolation",
+        "wifi trust"
       ],
       "guidance": [
         "Place an operator-controlled firewall or router between the host and the less-trusted upstream network when the topology permits.",
+        "Do not trust Wi-Fi merely because it is familiar; use the intermediate personal firewall as one separately verified boundary.",
         "Enroll one explicit private or loopback gateway endpoint with its expected certificate pin and policy digest; do not use discovery or broad trust.",
         "Require normal certificate-chain and hostname validation in addition to pinning, and reject redirects, proxy inheritance, stale attestations, and nonce mismatch.",
         "Use gateway attestation as one layer alongside host firewall policy, endpoint authentication, encrypted protocols, and independent monitoring.",
@@ -386,6 +388,290 @@
         {
           "threat_pattern": "Assurance failure caused by over-trusting one healthy control",
           "defensive_objective": "Expose uncertainty, retain independent verification, and test recovery under the assumption that one layer can fail.",
+          "evidence_grade": "advisory"
+        }
+      ]
+    },
+    {
+      "id": "sensor-response-authority",
+      "title": "Sensor provenance and least-privileged response authority",
+      "summary": "Angerona separates untrusted observations from response authority. Sensor records can be bound to an enrolled broker, monotonic sequence, integrity key, and explicit loss accounting. Consequential requests can use a short-lived single-use capability bound to one action, resource, and parameter set. The privileged service contract rejects unknown operations and remains inert unless a narrow executor and transport are explicitly supplied.",
+      "keywords": [
+        "sensor provenance",
+        "privileged service",
+        "response capability",
+        "least privilege",
+        "single use authorization",
+        "replay defense",
+        "event loss"
+      ],
+      "guidance": [
+        "Treat sensor identity, sequence continuity, and loss accounting as evidence quality inputs before considering a response.",
+        "Bind each response authorization to one exact action, target, parameter set, expiry, and use count.",
+        "Keep observation and privileged execution in separate components with a closed operation list and authenticated transport.",
+        "Reject clock rollback, sequence replay, changed parameters, expired grants, and missing executor evidence.",
+        "Verify a postcondition and retain a receipt after any approved mutation."
+      ],
+      "limits": [
+        "The shipped Python service boundary is a contract and testable reference, not a hardened operating-system service by itself.",
+        "In-memory authority state does not survive a restart unless an independently protected store or witness is integrated.",
+        "Authentication proves which enrolled component produced a record, not that a compromised component observed the world correctly."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "Forged telemetry or confused-deputy response requests",
+          "defensive_objective": "Authenticate source and sequence, narrow authority to an exact operation, and verify the resulting state independently.",
+          "evidence_grade": "corroborated"
+        }
+      ]
+    },
+    {
+      "id": "temporal-identity-correlation",
+      "title": "Temporal tradecraft and identity-session correlation",
+      "summary": "Temporal Tradecraft Correlator evaluates bounded ordered sequences such as SSH key drift, a later session, tunnel evidence, path change, and audit clearing. Identity Session Guard evaluates supplied structured metadata for device-code use, new-device access, session and privilege transitions, remote-management context, and browser credential-store access. Both retain privacy-preserving identifiers and remain observe-only.",
+      "keywords": [
+        "temporal correlation",
+        "identity session",
+        "device code",
+        "new device",
+        "remote management",
+        "privilege transition",
+        "low and slow"
+      ],
+      "guidance": [
+        "Investigate ordered weak signals as one sequence while preserving the time and evidence grade of each contributing observation.",
+        "Require authenticated or corroborated inputs for high-confidence sequence findings and keep restart gaps explicit.",
+        "Review device-code activity with device novelty, session identity, remote-management context, and privilege changes.",
+        "Use opaque stable identifiers for correlation and open governed evidence views only when an analyst needs identity detail.",
+        "Do not convert a behavioral correlation directly into destructive authority; revalidate the live target and policy first."
+      ],
+      "limits": [
+        "The correlator sees only events supplied to its local EventBus window and cannot reconstruct events lost before subscription or across an unprotected restart.",
+        "The identity guard does not collect cloud identity logs or session records on its own.",
+        "A sequence match raises defensive confidence but does not establish attribution or malicious intent."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "Low-noise remote access followed by tunneling, path drift, and evidence suppression",
+          "defensive_objective": "Correlate ordered cross-surface changes and preserve uncertainty instead of waiting for one obvious alert.",
+          "evidence_grade": "corroborated"
+        },
+        {
+          "threat_pattern": "Device authorization abuse and session privilege escalation",
+          "defensive_objective": "Join authorization mode, device novelty, session context, remote tooling, and privilege transitions without retaining raw identities.",
+          "evidence_grade": "sensor-dependent"
+        }
+      ]
+    },
+    {
+      "id": "platform-driver-peripheral",
+      "title": "Platform attestation, driver provenance, and peripheral posture",
+      "summary": "Platform Attestation Guard appraises operating-system reports for Secure Boot, virtualization-based security, code integrity, risky boot flags, and optional nonce-bound hardware quotes. Driver Provenance Guard joins bounded driver image, signer, catalog, blocklist, and platform posture evidence. Peripheral and DMA Posture Guard reports Kernel DMA capability, external-device policy, and removable-media posture with explicit unknown states and no automatic device action.",
+      "keywords": [
+        "measured boot",
+        "secure boot",
+        "hardware quote",
+        "driver provenance",
+        "vulnerable driver",
+        "dma protection",
+        "peripheral security"
+      ],
+      "guidance": [
+        "Distinguish operating-system-reported posture from a fresh hardware-attested quote and label the evidence accordingly.",
+        "Investigate loaded-driver provenance using image hash, signature and catalog status, effective block policy, code integrity, and boot posture together.",
+        "Treat a missing blocklist match as unknown unless the complete effective policy was verified.",
+        "Keep external high-speed peripherals untrusted until policy, authorization, and current platform evidence are reviewed.",
+        "Use firmware configuration, hardware-backed attestation, and operating-system enforcement outside Angerona when stronger assurance is required."
+      ],
+      "limits": [
+        "Default collection is user-mode operating-system evidence and cannot prove that a compromised kernel, hypervisor, firmware layer, or device reported truthfully.",
+        "DMA capability or restrictive policy is not proof that an input-output memory-management unit protected a particular transaction.",
+        "The guards observe and appraise; they do not unload drivers, disable devices, change boot policy, or prove peripheral firmware safe."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "Abuse of a signed but vulnerable driver to weaken security controls",
+          "defensive_objective": "Join effective driver provenance with code-integrity and boot posture, and report incomplete policy coverage as unknown.",
+          "evidence_grade": "sensor-dependent"
+        },
+        {
+          "threat_pattern": "Pre-operating-system, firmware, or direct-memory-access tampering",
+          "defensive_objective": "Require independent hardware evidence where available and avoid upgrading operating-system posture into a hardware trust claim.",
+          "evidence_grade": "advisory"
+        }
+      ]
+    },
+    {
+      "id": "sentinel-time-authority",
+      "title": "Personal Sentinel state and trusted-time authority",
+      "summary": "Personal Sentinel can act as a separately administered witness for monotonic state and trusted time across a pinned private connection. Requests and receipts are bounded, nonce-bound, identity-bound, and rollback-aware. The reference server has no discovery or router-management surface and can require mutually authenticated private transport. A witness improves independence only when its key custody and administration remain separate from the monitored host.",
+      "keywords": [
+        "trusted time",
+        "external witness",
+        "monotonic state",
+        "rollback detection",
+        "clone detection",
+        "private firewall",
+        "mutual authentication"
+      ],
+      "guidance": [
+        "Operate the witness behind the intermediate personal firewall on an explicit private endpoint with no automatic discovery.",
+        "Keep the witness signing authority outside the monitored host and give the host only the verification material it needs.",
+        "Bind each receipt to a fresh challenge, enrolled client identity, prior sequence, current state digest, and bounded validity interval.",
+        "Use operating-system interprocess locking and an external monotonic floor so parallel servers or restored state cannot silently fork history.",
+        "On witness, time, certificate, or sequence failure, mark dependent evidence stale or untrusted rather than accepting cached health."
+      ],
+      "limits": [
+        "A witness with symmetric signing material on the monitored host is not independent against full host compromise.",
+        "Process-local locking alone cannot prevent multiple authority processes from racing.",
+        "A separately protected monotonic counter or second witness is needed to resist restoration of older correctly authenticated authority state."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "Rollback, cloned-host requests, time manipulation, or forked evidence history",
+          "defensive_objective": "Use a separately administered signer, fresh challenges, monotonic sequence, and independent state continuity before accepting host claims.",
+          "evidence_grade": "attested-path"
+        }
+      ]
+    },
+    {
+      "id": "process-egress-leases",
+      "title": "Process-bound egress leases",
+      "summary": "The Process Egress Lease broker narrows outbound authorization to one observed process instance, executable path evidence, user context, purpose, destination name and address, protocol, port, gateway path, time window, connection count, and byte budget. It rejects replay, process reuse, clock rollback, name-to-address drift, path drift, and budget expansion. The dashboard module is an observe-only audit surface unless a privileged network enforcer is separately integrated.",
+      "keywords": [
+        "egress lease",
+        "outbound firewall",
+        "process identity",
+        "destination pinning",
+        "connection budget",
+        "byte budget",
+        "gateway attestation"
+      ],
+      "guidance": [
+        "Default outbound access to denied and issue a narrow short-lived lease only for a reviewed process, purpose, destination, and trusted path.",
+        "Re-observe the process instance and path at use time so process identifiers, executables, users, or gateways cannot be swapped after approval.",
+        "Pin the approved destination name to the observed address set and reject unexpected resolution drift.",
+        "Bound connection count, bytes, duration, protocol, and port, then account for use monotonically.",
+        "Integrate a privileged firewall adapter only through the narrow decision contract and verify that actual traffic enforcement matches the broker decision."
+      ],
+      "limits": [
+        "The included module reports supplied audit records but does not enforce operating-system firewall decisions by itself.",
+        "Actual byte accounting and connection blocking require a privileged platform adapter outside the observe-only dashboard module.",
+        "A compromised administrator or kernel can falsify process and path observers unless they are independently protected."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "Malware or trusted-tool abuse using broad outbound network access",
+          "defensive_objective": "Replace ambient egress with a purpose-bound, process-bound, destination-bound, budgeted lease and independent enforcement evidence.",
+          "evidence_grade": "sensor-dependent"
+        }
+      ]
+    },
+    {
+      "id": "release-recovery-assurance",
+      "title": "Release transparency, rollback resistance, and recovery assurance",
+      "summary": "Release Transparency Guard verifies that an exact artifact, software inventory, build provenance, source revision, builder, version, platform, and monotonic release sequence are bound by multiple enrolled release authorities. The release workflow also publishes platform attestations and a local verifier. Immutable Recovery Assurance Guard evaluates separately signed recovery statements for copy count, failure domains, authority separation, recency, encryption, restoration testing, and immutable, offline, or offsite custody.",
+      "keywords": [
+        "release transparency",
+        "threshold signing",
+        "build provenance",
+        "software inventory",
+        "anti rollback",
+        "immutable backup",
+        "restore testing"
+      ],
+      "guidance": [
+        "Verify the exact installer or executable, software inventory, build provenance, release authorization, source revision, and monotonic version floor before installation.",
+        "Require independent release authorities so aliases for one key cannot satisfy the threshold.",
+        "Pin the initial trust root through an independently verified distribution channel and protect later trust changes separately from application updates.",
+        "Maintain at least three current recovery copies across at least two failure domains and two administrative or signing authorities.",
+        "Require recent integrity verification and restoration evidence, plus at least one immutable, offline, or offsite copy; a writable online mirror does not meet that condition."
+      ],
+      "limits": [
+        "A locally stored first-install trust file can be replaced by a local administrator unless external verification and protected installation controls are used.",
+        "Threshold authorization reduces single-key risk but does not prove the build environment or source was benign.",
+        "The F drive project mirror is a useful online backup but is not automatically immutable, offline, or ransomware-resistant."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "Compromised update channel, build substitution, or signed-version rollback",
+          "defensive_objective": "Bind exact release evidence to independent authorities and a monotonic floor before accepting an update.",
+          "evidence_grade": "corroborated"
+        },
+        {
+          "threat_pattern": "Recovery inhibition or destruction of online backups",
+          "defensive_objective": "Separate custody and failure domains, require immutability or offline storage, and verify restoration rather than copy presence alone.",
+          "evidence_grade": "corroborated"
+        }
+      ]
+    },
+    {
+      "id": "rag-source-provenance",
+      "title": "ARIA and retrieval-source provenance",
+      "summary": "Angerona Defense Memory is a pinned, strict-schema, data-only defensive reference that ARIA can retrieve locally. RAG Provenance Guard validates explicit source manifests for root confinement, canonical digest, optional signature evidence, size bounds, and inert authority before registration. Retrieved text remains untrusted data: it cannot approve a response, register a tool, or become executable merely because it was signed or ranked highly.",
+      "keywords": [
+        "aria memory",
+        "rag provenance",
+        "retrieval security",
+        "source manifest",
+        "data only",
+        "local ai",
+        "knowledge poisoning"
+      ],
+      "guidance": [
+        "Keep the bundled Defense Memory digest pinned and fail closed on schema, path, duplicate-field, size, or content changes.",
+        "Register only root-confined sources whose exact bytes match a reviewed manifest and available publisher evidence.",
+        "Label every excerpt with provenance and keep its authority data-only regardless of signature or retrieval rank.",
+        "Treat instructions embedded in retrieved material as content to analyze, never as authority to change policy or execute an action.",
+        "Keep arbitrary local documents and live telemetry out of optional cloud fallback; only the highest-ranked bounded canonical Defense Memory excerpt may be included."
+      ],
+      "limits": [
+        "A valid source signature proves publisher and integrity, not factual correctness or safety.",
+        "The provenance guard validates supplied manifests but does not automatically register sources in the retrieval index.",
+        "Model output can still be mistaken or manipulated, so deterministic policy and operator confirmation remain the response boundary."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "Retrieval poisoning, authority confusion, or manipulated defensive guidance",
+          "defensive_objective": "Pin source identity and content, preserve data-only authority, and separate model advice from deterministic authorization.",
+          "evidence_grade": "corroborated"
+        }
+      ]
+    },
+    {
+      "id": "emerging-assurance-gaps",
+      "title": "Emerging and theoretical defensive attack surfaces",
+      "summary": "High-assurance planning includes attack surfaces that a user-mode suite cannot fully resolve: firmware and management-mode compromise, malicious peripheral firmware, direct-memory access, time and rollback manipulation, side channels, model or retrieval poisoning, build-system compromise, dependency substitution, and future cryptographic migration. Angerona treats these as architecture and evidence problems, not as claims of complete local detection.",
+      "keywords": [
+        "firmware compromise",
+        "side channel",
+        "supply chain",
+        "cryptographic migration",
+        "model poisoning",
+        "time manipulation",
+        "theoretical attacks"
+      ],
+      "guidance": [
+        "Use hardware-backed boot and device attestation, protected firmware configuration, and out-of-band verification for pre-operating-system trust.",
+        "Reduce peripheral and direct-memory-access exposure through physical control, current firmware, restrictive operating-system policy, and device allowlisting.",
+        "Separate trusted time, rollback floors, release signing, and recovery custody from the monitored host.",
+        "Maintain reproducible build evidence, dependency inventories, independent release authorization, and verified restore paths.",
+        "Inventory long-lived cryptographic dependencies and design algorithm-agile migration before current primitives become unsuitable."
+      ],
+      "limits": [
+        "Software running on the monitored host cannot conclusively prove that every lower layer or external device is trustworthy.",
+        "Side-channel resistance, physical security, firmware assurance, and cryptographic migration require controls outside Angerona.",
+        "Theoretical coverage should guide layered architecture and testing, not inflate module health or create unsupported prevention claims."
+      ],
+      "tradecraft_mappings": [
+        {
+          "threat_pattern": "Compromise below the operating system or outside the endpoint trust boundary",
+          "defensive_objective": "Move critical evidence and authority into independent hardware, network, administrative, and recovery domains.",
+          "evidence_grade": "advisory"
+        },
+        {
+          "threat_pattern": "Future failure of a cryptographic or software-supply-chain assumption",
+          "defensive_objective": "Retain algorithm agility, exact provenance, dependency visibility, multiple authorities, and independently tested recovery.",
           "evidence_grade": "advisory"
         }
       ]

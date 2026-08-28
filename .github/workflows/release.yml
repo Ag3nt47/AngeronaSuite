@@ -13,9 +13,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-windows:
+  prepare-windows:
     runs-on: windows-latest
     timeout-minutes: 60
+    environment: windows-code-signing
+    outputs:
+      artifact-tag: ${{ steps.artifact_name.outputs.tag }}
     permissions:
       contents: read
     steps:
@@ -111,6 +114,15 @@ jobs:
             --hidden-import angerona `
             src/angerona/__main__.py
 
+          pyinstaller --noconfirm --clean --console --onefile `
+            --name AngeronaReleaseVerifier `
+            --distpath "dist/Angerona" `
+            --workpath "build/AngeronaReleaseVerifier" `
+            --specpath "build" `
+            --paths src `
+            --hidden-import angerona.core.update_authority `
+            tools/verify_release_upgrade.py
+
       - name: Verify frozen application contents
         shell: pwsh
         run: |
@@ -128,86 +140,500 @@ jobs:
       - name: Bundle release installer and documentation
         shell: pwsh
         run: |
-          Copy-Item README.md, LICENSE, Install-Angerona-Release.bat, Install-Angerona-Release.ps1 -Destination dist/Angerona/
+          Copy-Item README.md, LICENSE, Install-Angerona-Release.bat, Install-Angerona-Release.ps1, Verify-Angerona-Release.ps1 -Destination dist/Angerona/
           if (Test-Path SECURITY.md) { Copy-Item SECURITY.md -Destination dist/Angerona/ }
           if (Test-Path docs) { Copy-Item docs -Destination dist/Angerona/docs -Recurse }
           if (Test-Path playbooks) { Copy-Item playbooks -Destination dist/Angerona/playbooks -Recurse }
 
-          $releaseFiles = @('Angerona.exe', 'AngeronaBlackBox.exe')
-          $manifest = foreach ($name in $releaseFiles) {
-            $hash = (Get-FileHash -Algorithm SHA256 (Join-Path 'dist/Angerona' $name)).Hash.ToLowerInvariant()
-            "$hash  $name"
-          }
-          $manifest | Set-Content -Encoding ascii "dist/Angerona/release-files.sha256"
-
-      - name: Build single-file Windows Setup
+      - name: Authenticode-sign and prepare immutable release statement
         shell: pwsh
         env:
           ANGERONA_ARTIFACT_TAG: ${{ steps.artifact_name.outputs.tag }}
+          ANGERONA_SOURCE_REVISION: ${{ github.sha }}
+          ANGERONA_WINDOWS_SIGNING_PFX_B64: ${{ secrets.ANGERONA_WINDOWS_SIGNING_PFX_B64 }}
+          ANGERONA_WINDOWS_SIGNING_PASSWORD: ${{ secrets.ANGERONA_WINDOWS_SIGNING_PASSWORD }}
+          ANGERONA_WINDOWS_SIGNING_CERT_SHA256: ${{ secrets.ANGERONA_WINDOWS_SIGNING_CERT_SHA256 }}
+          ANGERONA_INVOCATION_ID: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
         run: |
-          # Do not trust whichever compiler happens to be on the mutable runner
-          # image. Fetch the exact upstream release and bind it to the SHA-256
-          # published in jrsoftware's signed .issig metadata.
+          cyclonedx-py environment --output-format JSON --output-file Angerona-SBOM.json
+          Copy-Item -LiteralPath Angerona-SBOM.json -Destination dist/Angerona/Angerona-SBOM.json
+          $appVersion = $env:ANGERONA_ARTIFACT_TAG -replace '^v', ''
+          if ($appVersion -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') {
+            $appVersion = python -c "from angerona import __version__; print(__version__)"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:ANGERONA_WINDOWS_SIGNING_PFX_B64) -or
+              [string]::IsNullOrWhiteSpace($env:ANGERONA_WINDOWS_SIGNING_PASSWORD) -or
+              $env:ANGERONA_WINDOWS_SIGNING_CERT_SHA256 -notmatch '^[0-9a-fA-F]{64}$') {
+            throw 'The protected Windows publisher certificate, password, and exact SHA-256 are required.'
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'angerona-publisher.pfx'
+          $imported = @()
+          try {
+            [IO.File]::WriteAllBytes(
+              $pfx, [Convert]::FromBase64String($env:ANGERONA_WINDOWS_SIGNING_PFX_B64))
+            $password = ConvertTo-SecureString `
+              $env:ANGERONA_WINDOWS_SIGNING_PASSWORD -AsPlainText -Force
+            $imported = @(Import-PfxCertificate -FilePath $pfx `
+              -CertStoreLocation Cert:\CurrentUser\My -Password $password)
+            $certificate = @($imported | Where-Object { $_.HasPrivateKey })[0]
+            if ($null -eq $certificate) { throw 'The publisher PFX has no private key.' }
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try {
+              $certDigest = (($sha.ComputeHash($certificate.RawData) |
+                ForEach-Object { $_.ToString('x2') }) -join '')
+            } finally { $sha.Dispose() }
+            if ($certDigest -ine $env:ANGERONA_WINDOWS_SIGNING_CERT_SHA256) {
+              throw 'The publisher certificate does not match its exact configured SHA-256.'
+            }
+            $sdkVersion = '10.0.26100.0'
+            $signTool = Join-Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+              "$sdkVersion\x64\signtool.exe"
+            if (-not (Test-Path -LiteralPath $signTool -PathType Leaf)) {
+              throw "Pinned Windows SDK SignTool $sdkVersion is unavailable."
+            }
+            foreach ($file in @(
+                'Angerona.exe', 'AngeronaBlackBox.exe',
+                'AngeronaReleaseVerifier.exe')) {
+              $path = Join-Path 'dist/Angerona' $file
+              & $signTool sign /fd SHA256 /td SHA256 /tr https://timestamp.digicert.com `
+                /sha1 $certificate.Thumbprint $path
+              if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed: $file" }
+              & $signTool verify /pa /all $path
+              if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed: $file" }
+            }
+            $verifier = 'dist/Angerona/Verify-Angerona-Release.ps1'
+            $verifierText = (Get-Content -LiteralPath $verifier -Raw).Replace(
+              '__ANGERONA_PUBLISHER_CERT_SHA256__', $certDigest)
+            if ($verifierText.Contains('__ANGERONA_PUBLISHER_CERT_SHA256__')) {
+              throw 'Release verifier certificate-pin substitution failed.'
+            }
+            Set-Content -LiteralPath $verifier -Encoding utf8 -Value $verifierText
+            Set-Content -LiteralPath 'dist/Angerona/publisher-certificate.sha256' `
+              -Encoding ascii -Value $certDigest
+            $env:PYTHONPATH = 'src'
+            python tools/build_release_authorization.py manifest `
+              --payload-root dist/Angerona `
+              --output dist/Angerona/release-payload-manifest.json
+            if ($LASTEXITCODE -ne 0) { throw 'Canonical payload manifest creation failed.' }
+            $catalog = Join-Path $env:RUNNER_TEMP 'release-payload.cat'
+            New-FileCatalog -Path dist/Angerona -CatalogFilePath $catalog `
+              -CatalogVersion 2.0 | Out-Null
+            & $signTool sign /fd SHA256 /td SHA256 /tr https://timestamp.digicert.com `
+              /sha1 $certificate.Thumbprint $catalog
+            if ($LASTEXITCODE -ne 0) { throw 'Payload catalog signing failed.' }
+            & $signTool verify /pa /all $catalog
+            if ($LASTEXITCODE -ne 0) { throw 'Payload catalog signature verification failed.' }
+            Copy-Item -LiteralPath $catalog -Destination dist/Angerona/release-payload.cat
+            python tools/build_release_authorization.py prepare `
+              --artifact dist/Angerona/Angerona.exe `
+              --sbom dist/Angerona/Angerona-SBOM.json `
+              --payload-manifest dist/Angerona/release-payload-manifest.json `
+              --payload-catalog dist/Angerona/release-payload.cat `
+              --provenance-output dist/Angerona/release-build-provenance.json `
+              --statement-output dist/Angerona/release-statement.json `
+              --version $appVersion --platform windows-x64 `
+              --source-revision $env:ANGERONA_SOURCE_REVISION `
+              --invocation-id $env:ANGERONA_INVOCATION_ID
+            if ($LASTEXITCODE -ne 0) { throw 'Release statement preparation failed.' }
+          } finally {
+            foreach ($certificate in $imported) {
+              Remove-Item -LiteralPath ("Cert:\CurrentUser\My\" + $certificate.Thumbprint) `
+                -Force -ErrorAction SilentlyContinue
+            }
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+          }
+      - name: Upload immutable prepared Windows payload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: prepared-windows-payload
+          if-no-files-found: error
+          path: dist/Angerona
+          retention-days: 3
+
+  sign-release-a:
+    needs: prepare-windows
+    runs-on: windows-latest
+    timeout-minutes: 20
+    environment: release-signer-a
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --require-hashes --no-deps -r requirements-release-hashed.txt
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: prepared-windows-payload
+          path: prepared
+      - name: Sign exact prepared statement as witness A
+        shell: pwsh
+        env:
+          ANGERONA_RELEASE_SIGNER_A: ${{ secrets.ANGERONA_RELEASE_SIGNER_A }}
+          ANGERONA_RELEASE_SIGNER_A_PUBLIC_KEY: ${{ secrets.ANGERONA_RELEASE_SIGNER_A_PUBLIC_KEY }}
+        run: |
+          $env:PYTHONPATH = 'src'
+          python tools/build_release_authorization.py sign `
+            --statement prepared/release-statement.json `
+            --signature-output release-signature-a.json `
+            --signer release-a=ANGERONA_RELEASE_SIGNER_A `
+            --expected-public-key-env ANGERONA_RELEASE_SIGNER_A_PUBLIC_KEY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: witness-release-a
+          path: release-signature-a.json
+          if-no-files-found: error
+
+  sign-release-b:
+    needs: prepare-windows
+    runs-on: windows-latest
+    timeout-minutes: 20
+    environment: release-signer-b
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --require-hashes --no-deps -r requirements-release-hashed.txt
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: prepared-windows-payload
+          path: prepared
+      - name: Sign exact prepared statement as witness B
+        shell: pwsh
+        env:
+          ANGERONA_RELEASE_SIGNER_B: ${{ secrets.ANGERONA_RELEASE_SIGNER_B }}
+          ANGERONA_RELEASE_SIGNER_B_PUBLIC_KEY: ${{ secrets.ANGERONA_RELEASE_SIGNER_B_PUBLIC_KEY }}
+        run: |
+          $env:PYTHONPATH = 'src'
+          python tools/build_release_authorization.py sign `
+            --statement prepared/release-statement.json `
+            --signature-output release-signature-b.json `
+            --signer release-b=ANGERONA_RELEASE_SIGNER_B `
+            --expected-public-key-env ANGERONA_RELEASE_SIGNER_B_PUBLIC_KEY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: witness-release-b
+          path: release-signature-b.json
+          if-no-files-found: error
+
+  finalize-release-authority:
+    needs: [prepare-windows, sign-release-a, sign-release-b]
+    runs-on: windows-latest
+    timeout-minutes: 40
+    environment: release-finalizer
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --require-hashes --no-deps -r requirements-release-hashed.txt
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: prepared-windows-payload
+          path: dist/Angerona
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: witness-release-a
+          path: build/witness-a
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: witness-release-b
+          path: build/witness-b
+      - name: Aggregate against protected threshold root policy
+        shell: pwsh
+        env:
+          ANGERONA_RELEASE_ROOT_POLICY_B64: ${{ secrets.ANGERONA_RELEASE_ROOT_POLICY_B64 }}
+          ANGERONA_RELEASE_ROOT_POLICY_SHA256: ${{ secrets.ANGERONA_RELEASE_ROOT_POLICY_SHA256 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:ANGERONA_RELEASE_ROOT_POLICY_B64) -or
+              $env:ANGERONA_RELEASE_ROOT_POLICY_SHA256 -notmatch '^[0-9a-f]{64}$') {
+            throw 'The protected finalizer root policy and exact SHA-256 are required.'
+          }
+          $rootPolicy = Join-Path $env:RUNNER_TEMP 'release-root-policy.json'
+          try {
+            [IO.File]::WriteAllBytes(
+              $rootPolicy,
+              [Convert]::FromBase64String($env:ANGERONA_RELEASE_ROOT_POLICY_B64))
+            $actualPolicyHash = (
+              Get-FileHash -LiteralPath $rootPolicy -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            if ($actualPolicyHash -cne $env:ANGERONA_RELEASE_ROOT_POLICY_SHA256) {
+              throw 'The finalizer root policy does not match its protected SHA-256.'
+            }
+            $env:PYTHONPATH = 'src'
+            python tools/build_release_authorization.py finalize `
+              --statement dist/Angerona/release-statement.json `
+              --signature build/witness-a/release-signature-a.json `
+              --signature build/witness-b/release-signature-b.json `
+              --authorization-output dist/Angerona/release-authorization.json `
+              --trust-output dist/Angerona/release-trust.json `
+              --root-policy $rootPolicy `
+              --root-policy-sha256 $env:ANGERONA_RELEASE_ROOT_POLICY_SHA256
+            if ($LASTEXITCODE -ne 0) { throw 'Threshold release aggregation failed.' }
+            Remove-Item -LiteralPath dist/Angerona/release-statement.json -Force
+            $releaseFiles = @(
+              'Angerona.exe', 'AngeronaBlackBox.exe',
+              'AngeronaReleaseVerifier.exe', 'Angerona-SBOM.json',
+              'publisher-certificate.sha256', 'release-payload-manifest.json',
+              'release-payload.cat', 'release-build-provenance.json',
+              'release-authorization.json', 'release-trust.json')
+            @($releaseFiles | ForEach-Object {
+              $hash = (Get-FileHash -Algorithm SHA256 (
+                Join-Path 'dist/Angerona' $_)).Hash.ToLowerInvariant()
+              "$hash  $_"
+            }) | Set-Content -Encoding ascii dist/Angerona/release-files.sha256
+          } finally {
+            Remove-Item -LiteralPath $rootPolicy -Force -ErrorAction SilentlyContinue
+          }
+      - name: Upload finalized Windows payload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: finalized-windows-payload
+          if-no-files-found: error
+          path: dist/Angerona
+          retention-days: 3
+
+  package-windows:
+    needs: [prepare-windows, finalize-release-authority]
+    runs-on: windows-latest
+    timeout-minutes: 40
+    environment: windows-code-signing
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --require-hashes --no-deps -r requirements-release-hashed.txt
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: finalized-windows-payload
+          path: dist/Angerona
+      - name: Build, sign, and structurally verify public first-install MSIX
+        shell: pwsh
+        env:
+          ANGERONA_ARTIFACT_TAG: ${{ needs.prepare-windows.outputs.artifact-tag }}
+          ANGERONA_MSIX_PACKAGE_NAME: ${{ vars.ANGERONA_MSIX_PACKAGE_NAME }}
+          ANGERONA_MSIX_PUBLISHER_DN: ${{ vars.ANGERONA_MSIX_PUBLISHER_DN }}
+          ANGERONA_WINDOWS_SIGNING_PFX_B64: ${{ secrets.ANGERONA_WINDOWS_SIGNING_PFX_B64 }}
+          ANGERONA_WINDOWS_SIGNING_PASSWORD: ${{ secrets.ANGERONA_WINDOWS_SIGNING_PASSWORD }}
+          ANGERONA_WINDOWS_SIGNING_CERT_SHA256: ${{ secrets.ANGERONA_WINDOWS_SIGNING_CERT_SHA256 }}
+        run: |
+          function Get-CertificateSha256(
+              [Security.Cryptography.X509Certificates.X509Certificate2]$Certificate) {
+            $digest = [Security.Cryptography.SHA256]::Create()
+            try {
+              return (($digest.ComputeHash($Certificate.RawData) |
+                ForEach-Object { $_.ToString('x2') }) -join '')
+            } finally { $digest.Dispose() }
+          }
+          if ([string]::IsNullOrWhiteSpace($env:ANGERONA_MSIX_PACKAGE_NAME) -or
+              [string]::IsNullOrWhiteSpace($env:ANGERONA_MSIX_PUBLISHER_DN)) {
+            throw 'Exact protected MSIX package Name and Publisher DN are required.'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:ANGERONA_WINDOWS_SIGNING_PFX_B64) -or
+              [string]::IsNullOrWhiteSpace($env:ANGERONA_WINDOWS_SIGNING_PASSWORD) -or
+              $env:ANGERONA_WINDOWS_SIGNING_CERT_SHA256 -notmatch '^[0-9a-fA-F]{64}$') {
+            throw 'The protected Windows publisher identity is required.'
+          }
+          python tools/build_msix_package.py validate-contract `
+            --contract installer/windows-install-contract.json
+          if ($LASTEXITCODE -ne 0) { throw 'Windows installation contract failed.' }
+          $tag = $env:ANGERONA_ARTIFACT_TAG
+          $version = $tag -replace '^v', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') {
+            $version = python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          }
+          $stage = Join-Path $env:RUNNER_TEMP 'angerona-msix-stage'
+          $unpacked = Join-Path $env:RUNNER_TEMP 'angerona-msix-unpacked'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -Path 'dist/Angerona/*' -Destination $stage -Recurse
+          python tools/build_msix_package.py render-manifest `
+            --template installer/msix/AppxManifest.xml.in `
+            --output (Join-Path $stage 'AppxManifest.xml') `
+            --package-name $env:ANGERONA_MSIX_PACKAGE_NAME `
+            --publisher-dn $env:ANGERONA_MSIX_PUBLISHER_DN `
+            --version $version
+          if ($LASTEXITCODE -ne 0) { throw 'Strict AppxManifest rendering failed.' }
+          python tools/build_msix_package.py build-assets `
+            --source assets/icons/angerona_icon_512.png `
+            --output (Join-Path $stage 'Assets')
+          if ($LASTEXITCODE -ne 0) { throw 'Deterministic MSIX asset rendering failed.' }
+
+          $sdkVersion = '10.0.26100.0'
+          $sdkBin = Join-Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+            "$sdkVersion\x64"
+          $makeAppx = Join-Path $sdkBin 'makeappx.exe'
+          $signTool = Join-Path $sdkBin 'signtool.exe'
+          foreach ($tool in @($makeAppx, $signTool)) {
+            if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) {
+              throw "Pinned Windows SDK tool is unavailable: $tool"
+            }
+          }
+
+          $pfx = Join-Path $env:RUNNER_TEMP 'angerona-publisher.pfx'
+          $imported = @()
+          try {
+            [IO.File]::WriteAllBytes(
+              $pfx, [Convert]::FromBase64String($env:ANGERONA_WINDOWS_SIGNING_PFX_B64))
+            $password = ConvertTo-SecureString `
+              $env:ANGERONA_WINDOWS_SIGNING_PASSWORD -AsPlainText -Force
+            $imported = @(Import-PfxCertificate -FilePath $pfx `
+              -CertStoreLocation Cert:\CurrentUser\My -Password $password)
+            $certificate = @($imported | Where-Object { $_.HasPrivateKey })[0]
+            if ($null -eq $certificate) { throw 'The publisher PFX has no private key.' }
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try {
+              $certDigest = (($sha.ComputeHash($certificate.RawData) |
+                ForEach-Object { $_.ToString('x2') }) -join '')
+            } finally { $sha.Dispose() }
+            if ($certDigest -ine $env:ANGERONA_WINDOWS_SIGNING_CERT_SHA256) {
+              throw 'The publisher certificate does not match its exact SHA-256.'
+            }
+            if (-not [String]::Equals(
+                $certificate.Subject, $env:ANGERONA_MSIX_PUBLISHER_DN,
+                [StringComparison]::Ordinal)) {
+              throw 'The certificate Subject does not exactly match the configured MSIX Publisher DN.'
+            }
+            $msix = "Angerona-$tag-win64.msix"
+            & $makeAppx pack /d $stage /p $msix /o
+            if ($LASTEXITCODE -ne 0) { throw 'Pinned MakeAppx package build failed.' }
+            & $signTool sign /fd SHA256 /td SHA256 /tr https://timestamp.digicert.com `
+              /sha1 $certificate.Thumbprint $msix
+            if ($LASTEXITCODE -ne 0) { throw 'MSIX publisher signing failed.' }
+            & $signTool verify /pa /all $msix
+            if ($LASTEXITCODE -ne 0) { throw 'MSIX signature verification failed.' }
+            $signature = Get-AuthenticodeSignature -LiteralPath $msix
+            if ($signature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
+                $null -eq $signature.SignerCertificate -or
+                (Get-CertificateSha256 $signature.SignerCertificate) -ine $certDigest) {
+              throw 'MSIX does not carry the exact enrolled publisher certificate.'
+            }
+
+            New-Item -ItemType Directory -Force -Path $unpacked | Out-Null
+            & $makeAppx unpack /p $msix /d $unpacked /o
+            if ($LASTEXITCODE -ne 0) { throw 'MSIX structural unpack verification failed.' }
+            $sourceFiles = @(Get-ChildItem -LiteralPath $stage -Recurse -File)
+            $sourceNames = @{}
+            foreach ($source in $sourceFiles) {
+              $relative = [IO.Path]::GetRelativePath($stage, $source.FullName)
+              $sourceNames[$relative.ToLowerInvariant()] = $true
+              $destination = Join-Path $unpacked $relative
+              if (-not (Test-Path -LiteralPath $destination -PathType Leaf) -or
+                  (Get-FileHash -LiteralPath $source.FullName -Algorithm SHA256).Hash -ine
+                    (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash) {
+                throw "MSIX payload reconstruction mismatch: $relative"
+              }
+            }
+            $generated = @('appxblockmap.xml', 'appxsignature.p7x', '[content_types].xml')
+            foreach ($file in Get-ChildItem -LiteralPath $unpacked -Recurse -File) {
+              $relative = [IO.Path]::GetRelativePath($unpacked, $file.FullName)
+              if (-not $sourceNames.ContainsKey($relative.ToLowerInvariant()) -and
+                  $relative.ToLowerInvariant() -notin $generated) {
+                throw "Unexpected file in reconstructed MSIX: $relative"
+              }
+            }
+            (Get-FileHash -Algorithm SHA256 $msix).Hash.ToLower() +
+              "  " + $msix | Set-Content -Encoding ascii "$msix.sha256"
+          } finally {
+            foreach ($certificate in $imported) {
+              Remove-Item -LiteralPath (
+                "Cert:\CurrentUser\My\" + $certificate.Thumbprint) `
+                -Force -ErrorAction SilentlyContinue
+            }
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Build protected prior-installation migration Setup (non-public)
+        shell: pwsh
+        env:
+          ANGERONA_ARTIFACT_TAG: ${{ needs.prepare-windows.outputs.artifact-tag }}
+          ANGERONA_WINDOWS_SIGNING_PFX_B64: ${{ secrets.ANGERONA_WINDOWS_SIGNING_PFX_B64 }}
+          ANGERONA_WINDOWS_SIGNING_PASSWORD: ${{ secrets.ANGERONA_WINDOWS_SIGNING_PASSWORD }}
+          ANGERONA_WINDOWS_SIGNING_CERT_SHA256: ${{ secrets.ANGERONA_WINDOWS_SIGNING_CERT_SHA256 }}
+        run: |
+          $zip = "Angerona-$env:ANGERONA_ARTIFACT_TAG-win64.zip"
+          Compress-Archive -Path dist/Angerona/* -DestinationPath $zip
+          (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower() +
+            "  " + $zip | Set-Content -Encoding ascii "$zip.sha256"
           $innoVersion = '6.7.1'
           $innoSha256 = '4d11e8050b6185e0d49bd9e8cc661a7a59f44959a621d31d11033124c4e8a7b0'
           $innoInstaller = Join-Path $env:RUNNER_TEMP "innosetup-$innoVersion.exe"
           $innoDir = Join-Path $env:RUNNER_TEMP "InnoSetup-$innoVersion"
-          Invoke-WebRequest -UseBasicParsing `
-            -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_1/innosetup-6.7.1.exe' `
-            -OutFile $innoInstaller
+          Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_1/innosetup-6.7.1.exe' -OutFile $innoInstaller
           $actualInnoHash = (Get-FileHash -Algorithm SHA256 $innoInstaller).Hash.ToLowerInvariant()
-          if ($actualInnoHash -ne $innoSha256) {
-            throw "Inno Setup compiler hash mismatch: $actualInnoHash"
+          if ($actualInnoHash -ne $innoSha256) { throw 'Inno Setup compiler hash mismatch.' }
+          $install = Start-Process -FilePath $innoInstaller -WindowStyle Hidden -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/CURRENTUSER',"/DIR=$innoDir") -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw 'Verified Inno Setup installation failed.' }
+          $pfx = Join-Path $env:RUNNER_TEMP 'angerona-publisher.pfx'
+          $imported = @()
+          try {
+            if ($env:ANGERONA_WINDOWS_SIGNING_CERT_SHA256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'Exact publisher certificate SHA-256 is required.' }
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:ANGERONA_WINDOWS_SIGNING_PFX_B64))
+            $password = ConvertTo-SecureString $env:ANGERONA_WINDOWS_SIGNING_PASSWORD -AsPlainText -Force
+            $imported = @(Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password)
+            $certificate = @($imported | Where-Object { $_.HasPrivateKey })[0]
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try { $certDigest = (($sha.ComputeHash($certificate.RawData) | ForEach-Object { $_.ToString('x2') }) -join '') } finally { $sha.Dispose() }
+            if ($certDigest -ine $env:ANGERONA_WINDOWS_SIGNING_CERT_SHA256) { throw 'Publisher certificate SHA-256 mismatch.' }
+            $sdkVersion = '10.0.26100.0'
+            $signTool = Join-Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+              "$sdkVersion\x64\signtool.exe"
+            if (-not (Test-Path -LiteralPath $signTool -PathType Leaf)) {
+              throw "Pinned Windows SDK SignTool $sdkVersion is unavailable."
+            }
+            $signCommand = '"' + $signTool + '" sign /fd SHA256 /td SHA256 /tr https://timestamp.digicert.com /sha1 ' + $certificate.Thumbprint + ' $f'
+            $tag = $env:ANGERONA_ARTIFACT_TAG
+            $version = $tag -replace '^v', ''
+            if ($version -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') { $version = '0.0.0' }
+            $compiler = Join-Path $innoDir 'ISCC.exe'
+            python tools/build_msix_package.py validate-contract `
+              --contract installer/windows-install-contract.json
+            if ($LASTEXITCODE -ne 0) { throw 'Windows installation contract failed.' }
+            & $compiler "/SAngeronaSign=$signCommand" `
+              "/DApprovedInstallationMigrationOnly=1" `
+              "/DAppVersion=$version" "/DArtifactTag=$tag" `
+              "/DPublisherCertificateSha256=$certDigest" installer/Angerona.iss
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation/signing failed.' }
+            $setup = "Angerona-$tag-win64-migration-setup.exe"
+            & $signTool verify /pa /all $setup
+            if ($LASTEXITCODE -ne 0) { throw 'Final Setup Authenticode verification failed.' }
+          } finally {
+            foreach ($certificate in $imported) { Remove-Item -LiteralPath ("Cert:\CurrentUser\My\" + $certificate.Thumbprint) -Force -ErrorAction SilentlyContinue }
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
           }
-          $install = Start-Process -FilePath $innoInstaller -WindowStyle Hidden `
-            -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', `
-              '/SP-', '/CURRENTUSER', "/DIR=$innoDir") -Wait -PassThru
-          if ($install.ExitCode -ne 0) {
-            throw "Verified Inno Setup install failed with exit $($install.ExitCode)"
-          }
-
-          $artifactTag = $env:ANGERONA_ARTIFACT_TAG
-          $appVersion = $artifactTag -replace '^v', ''
-          if ($appVersion -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') {
-            $appVersion = '0.0.0'
-          }
-          $compiler = Join-Path $innoDir 'ISCC.exe'
-          if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) {
-            throw "Verified Inno Setup compiler was not installed: $compiler"
-          }
-          & $compiler "/DAppVersion=$appVersion" "/DArtifactTag=$artifactTag" `
-            "installer/Angerona.iss"
-          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit $LASTEXITCODE" }
-          $setup = "Angerona-$artifactTag-win64-setup.exe"
-          if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) {
-            throw "Expected setup artifact was not created: $setup"
-          }
-
-      - name: Create SBOM, package, and checksum
-        shell: pwsh
-        env:
-          ANGERONA_ARTIFACT_TAG: ${{ steps.artifact_name.outputs.tag }}
-        run: |
-          cyclonedx-py environment --output-format JSON --output-file Angerona-SBOM.json
-          $zip = "Angerona-$env:ANGERONA_ARTIFACT_TAG-win64.zip"
-          $setup = "Angerona-$env:ANGERONA_ARTIFACT_TAG-win64-setup.exe"
-          Compress-Archive -Path dist/Angerona/* -DestinationPath $zip
-          (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower() + "  " + $zip |
-            Set-Content -Encoding ascii "$zip.sha256"
-          (Get-FileHash -Algorithm SHA256 $setup).Hash.ToLower() + "  " + $setup |
-            Set-Content -Encoding ascii "$setup.sha256"
-
+          $setup = "Angerona-$env:ANGERONA_ARTIFACT_TAG-win64-migration-setup.exe"
+          (Get-FileHash -Algorithm SHA256 $setup).Hash.ToLower() + "  " + $setup | Set-Content -Encoding ascii "$setup.sha256"
+          Copy-Item -LiteralPath dist/Angerona/Angerona-SBOM.json -Destination Angerona-SBOM.json
+          Copy-Item -LiteralPath dist/Angerona/Verify-Angerona-Release.ps1 -Destination Verify-Angerona-Release.ps1
       - name: Upload gated release assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: angerona-release-assets
           if-no-files-found: error
           path: |
-            Angerona-${{ steps.artifact_name.outputs.tag }}-win64-setup.exe
-            Angerona-${{ steps.artifact_name.outputs.tag }}-win64-setup.exe.sha256
-            Angerona-${{ steps.artifact_name.outputs.tag }}-win64.zip
-            Angerona-${{ steps.artifact_name.outputs.tag }}-win64.zip.sha256
+            Angerona-${{ needs.prepare-windows.outputs.artifact-tag }}-win64.msix
+            Angerona-${{ needs.prepare-windows.outputs.artifact-tag }}-win64.msix.sha256
+            Angerona-${{ needs.prepare-windows.outputs.artifact-tag }}-win64.zip
+            Angerona-${{ needs.prepare-windows.outputs.artifact-tag }}-win64.zip.sha256
             Angerona-SBOM.json
+            Verify-Angerona-Release.ps1
+      - name: Upload restricted migration wrapper (never a public release asset)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: restricted-windows-migration-setup-do-not-publish
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            Angerona-${{ needs.prepare-windows.outputs.artifact-tag }}-win64-migration-setup.exe
+            Angerona-${{ needs.prepare-windows.outputs.artifact-tag }}-win64-migration-setup.exe.sha256
 
   build-posix:
     name: Build ${{ matrix.artifact }}
@@ -222,9 +648,11 @@ jobs:
           - os: ubuntu-24.04
             platform: linux
             artifact: linux-x86_64
+            extension: tar.gz
           - os: macos-15
             platform: macos
             artifact: macos-arm64
+            extension: zip
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -350,13 +778,14 @@ jobs:
           name: angerona-${{ matrix.artifact }}
           if-no-files-found: error
           path: |
-            Angerona-${{ steps.artifact_name.outputs.tag }}-${{ matrix.artifact }}.*
+            Angerona-${{ steps.artifact_name.outputs.tag }}-${{ matrix.artifact }}.${{ matrix.extension }}
+            Angerona-${{ steps.artifact_name.outputs.tag }}-${{ matrix.artifact }}.${{ matrix.extension }}.sha256
             Angerona-SBOM-${{ matrix.artifact }}.json
             Angerona-dependencies-${{ matrix.artifact }}.txt
 
   publish-release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-windows, build-posix]
+    needs: [package-windows, build-posix]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -364,17 +793,29 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - name: Download gated assets
+      - name: Download exact gated Windows assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: angerona-*
-          merge-multiple: true
+          name: angerona-release-assets
+          path: .
+
+      - name: Download exact gated Linux assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: angerona-linux-x86_64
+          path: .
+
+      - name: Download exact gated macOS assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: angerona-macos-arm64
+          path: .
 
       - name: Attest release archive
         uses: actions/attest-build-provenance@78e6cbd37d0ac1a40113c04f2037dacf1ea3f12e # v4
         with:
           subject-path: |
-            Angerona-${{ github.ref_name }}-win64-setup.exe
+            Angerona-${{ github.ref_name }}-win64.msix
             Angerona-${{ github.ref_name }}-win64.zip
             Angerona-${{ github.ref_name }}-linux-x86_64.tar.gz
             Angerona-${{ github.ref_name }}-macos-arm64.zip
@@ -383,7 +824,7 @@ jobs:
         uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
         with:
           subject-path: |
-            Angerona-${{ github.ref_name }}-win64-setup.exe
+            Angerona-${{ github.ref_name }}-win64.msix
             Angerona-${{ github.ref_name }}-win64.zip
           sbom-path: Angerona-SBOM.json
 
@@ -391,7 +832,18 @@ jobs:
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           files: |
-            Angerona-${{ github.ref_name }}-*
-            Angerona-SBOM*.json
-            Angerona-dependencies-*.txt
+            Angerona-${{ github.ref_name }}-win64.msix
+            Angerona-${{ github.ref_name }}-win64.msix.sha256
+            Angerona-${{ github.ref_name }}-win64.zip
+            Angerona-${{ github.ref_name }}-win64.zip.sha256
+            Angerona-${{ github.ref_name }}-linux-x86_64.tar.gz
+            Angerona-${{ github.ref_name }}-linux-x86_64.tar.gz.sha256
+            Angerona-${{ github.ref_name }}-macos-arm64.zip
+            Angerona-${{ github.ref_name }}-macos-arm64.zip.sha256
+            Angerona-SBOM.json
+            Angerona-SBOM-linux-x86_64.json
+            Angerona-SBOM-macos-arm64.json
+            Angerona-dependencies-linux-x86_64.txt
+            Angerona-dependencies-macos-arm64.txt
+            Verify-Angerona-Release.ps1
           generate_release_notes: true

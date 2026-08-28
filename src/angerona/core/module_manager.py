@@ -290,6 +290,14 @@ class ModuleManager:
         "AV Telemetry Bridge",
         "Audit Log Integrity Guard",
         "SSH Surface / Key / Tunnel Guard",
+        # These consumers subscribe to the authenticated EventBus. Starting
+        # them late would create a blind interval precisely where an early SSH,
+        # identity, tunnel, or log-clear sequence could be lost.
+        "Temporal Tradecraft Correlator",
+        "Identity Session Guard",
+        # The lease audit surface is lightweight and is part of the default
+        # deny/attest network boundary, so it comes online with the edge plane.
+        "Process Egress Lease Guard",
         "Removable-Media / USB Monitor",
     }
 

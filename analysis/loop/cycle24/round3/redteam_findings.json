@@ -1,0 +1,26 @@
+[
+  {
+    "id": "R3-01",
+    "severity": "HIGH",
+    "title": "Public classic migration artifact remained a clean-host trust-bootstrap bypass",
+    "status": "FIXED_IN_CODE_DEPLOYMENT_VALIDATION_REQUIRED"
+  },
+  {
+    "id": "R3-02",
+    "severity": "MEDIUM",
+    "title": "Portable protected-custody validation omitted owner and arbitrary file-specific writer checks",
+    "status": "FIXED_IN_CODE"
+  },
+  {
+    "id": "R3-03",
+    "severity": "LOW",
+    "title": "First-readable Linux Thunderbolt domain could mask a less-protected controller",
+    "status": "FIXED_IN_CODE"
+  },
+  {
+    "id": "R3-04",
+    "severity": "LOW",
+    "title": "Public documentation retained obsolete installer, Sentinel, version, and module-count claims",
+    "status": "FIXED_IN_DOCUMENTATION"
+  }
+]

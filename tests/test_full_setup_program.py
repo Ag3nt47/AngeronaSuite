@@ -177,12 +177,14 @@ def test_setup_platform_gates_privileged_sensors() -> None:
     assert isinstance(ebpf, Field)
 
 
-def test_release_installer_and_runtime_expose_dedicated_full_setup() -> None:
+def test_runtime_exposes_full_setup_but_migration_wrapper_never_launches_it() -> None:
     installer = (ROOT / "installer" / "Angerona.iss").read_text(encoding="utf-8")
     entrypoint = (ROOT / "src" / "angerona" / "__main__.py").read_text(encoding="utf-8")
-    assert 'Name: "guidedsetup"' in installer
-    assert 'Angerona Full Setup' in installer
-    assert 'Parameters: "--setup"' in installer
+    assert 'Name: "guidedsetup"' not in installer
+    assert 'Angerona Full Setup' not in installer
+    assert 'Parameters: "--setup"' not in installer
+    assert "CreateAppDir=no" in installer
+    assert "Install-Angerona-Release.ps1" in installer
     assert '"--setup" in sys.argv' in entrypoint
     assert 'arg not in {"--setup", "--chill"}' in entrypoint
 

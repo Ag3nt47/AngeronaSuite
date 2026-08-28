@@ -22,7 +22,7 @@ from typing import Any, Final, Mapping
 SCHEMA_VERSION: Final = 1
 DEFENSE_MEMORY_SOURCE: Final = "angerona://defense-memory"
 BUILTIN_DEFENSE_MEMORY_SHA256: Final = (
-    "sha256:6818e8074cec7d29c94021153b4e410c5210115f463a54d1b82b3593ee99d243"
+    "sha256:97a7771a9ce38ac66c6889dc90e0d591b64e07c2f169a0cebd7a57c119d67d57"
 )
 MAX_FILE_BYTES: Final = 64 * 1024
 MAX_JSON_DEPTH: Final = 6

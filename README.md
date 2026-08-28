@@ -1,10 +1,11 @@
 # Angerona Security Suite
 
-Angerona is a local-first defensive security workbench that combines Endpoint
-Detection and Response (EDR), Network Detection and Response (NDR), Security
-Orchestration, Automation, and Response (SOAR), digital forensics, MITRE ATT&CK
-validation, and a local Ollama-backed assistant in one PySide6 desktop
-application.
+Angerona is a local-first defensive security workbench for Endpoint Detection
+and Response (EDR), Network Detection and Response (NDR), Security
+Orchestration, Automation, and Response (SOAR), digital forensics and incident
+response, MITRE ATT&CK validation, and a local Ollama-backed assistant. It is
+built for defensive learning, home labs, research, and security-engineering
+portfolios—not offensive intrusion or hack-back.
 
 [![CI](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/ci.yml/badge.svg)](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/ci.yml)
 [![Security](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml/badge.svg)](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml)
@@ -14,7 +15,7 @@ application.
 ![Python](https://img.shields.io/badge/Python-3.10--3.13-3776AB)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-Current version: **v1.10.3**
+Current version: **v1.11.0**
 
 [Master Manual](Angerona_Master_Manual.docx) ·
 [Current capabilities](ANGERONA_CAPABILITIES.md) ·
@@ -22,119 +23,152 @@ Current version: **v1.10.3**
 [Security](SECURITY.md) ·
 [Contributing](CONTRIBUTING.md)
 
-## Capability map
+## Dashboard and major features
+
+| Main defensive dashboard | Human-reviewed SOAR queue |
+| --- | --- |
+| [![Angerona v1.11.0 main dashboard](docs/screenshots/angerona-v1.11-dashboard.png)](docs/screenshots/angerona-v1.11-dashboard.png) | [![Angerona v1.11.0 SOAR review](docs/screenshots/angerona-v1.11-soar-review.png)](docs/screenshots/angerona-v1.11-soar-review.png) |
+| Scan Center | ARIA local-first assistant |
+| [![Angerona v1.11.0 Scan Center](docs/screenshots/angerona-v1.11-scan-center.png)](docs/screenshots/angerona-v1.11-scan-center.png) | [![Angerona v1.11.0 ARIA local-first assistant](docs/screenshots/angerona-v1.11-aria-local-first.png)](docs/screenshots/angerona-v1.11-aria-local-first.png) |
+
+These are reproducible public demonstrations. All displayed telemetry,
+identifiers, timestamps, and counts are synthetic.
+
+## What Angerona does
 
 ### Detect and correlate
 
-- Windows ETW, WMI/CIM, AMSI, Windows Filtering Platform (WFP), Defender,
-  Security log, and Sysmon telemetry.
-- The actor-neutral **SSH Surface / Key / Tunnel Guard** inventories bounded
-  OpenSSH configuration and Include graphs, public-key fingerprints, custody,
-  services, listeners, authentication evidence, and normalized forwarding
-  activity. It never collects private keys, probes a listener, or attempts a
-  login.
+- Windows telemetry from Event Tracing for Windows, Windows Management
+  Instrumentation/Common Information Model, Antimalware Scan Interface,
+  Windows Filtering Platform (WFP), Defender, Security logs, Code Integrity,
+  OpenSSH, and Sysmon.
+- Process lineage, persistence, file integrity, memory injection, credential-
+  access indicators, ransomware, shadow-copy tamper, beaconing, removable
+  media, vulnerable-driver posture, deception, YARA/YARA-X, and network
+  behavior detections.
+- The actor-neutral **SSH Surface / Key / Tunnel Guard** observes bounded
+  OpenSSH configuration, public-key fingerprints and custody, services,
+  listeners, fixed-provider authentication evidence, and normalized forwarding
+  activity. Its live path accepts only broker-authenticated, fixed-schema,
+  loss-aware producer evidence. It never retains or publishes full commands or
+  raw endpoints, reads private keys, probes a listener, or attempts a login.
 - The Windows **Audit Log Integrity Guard** detects explicit clear events,
-  audit-policy or logging-service changes, retention and generation gaps,
-  record reuse, and authenticated cursor tampering. It does not clear, restore,
-  or alter Windows logs.
-- The **Zero-Trust Network Path Monitor** treats every active physical Wi-Fi and
-  Ethernet path as untrusted by default and compares tokenized route, gateway,
-  Domain Name System (DNS), Dynamic Host Configuration Protocol (DHCP), profile,
-  and interface-generation evidence across restarts.
-- Process lineage, file integrity, persistence, memory-injection, credential-
-  access, shadow-copy tamper, ransomware, C2 cadence, USB, vulnerable-driver,
-  deception, YARA/YARA-X, and network behavior detections.
-- Evidence Lattice multi-sensor fusion, Telemetry Expectation Contracts, MITRE
-  ATT&CK mapping, incidents, cases, causal timelines, and authenticated local
-  evidence storage.
-- Suricata, Zeek, OCSF, Community ID, guarded read-only osquery snapshots, and
-  privacy-minimized asset/SBOM views.
+  logging/audit-policy changes, continuity gaps, record reuse, and authenticated
+  cursor damage. Recovery assurance groups separately signed evidence by exact
+  revision/archive/manifest cohort. Angerona cannot recreate records that were
+  deleted before collection.
+- The **Temporal Tradecraft Correlator** and **Identity Session Guard** perform
+  bounded, restart-aware correlation over authenticated supplied evidence.
+  They do not collect credentials, browser tokens, or cloud sessions.
+- The **Driver Provenance**, **Platform Attestation**, and **Peripheral and DMA
+  Posture** guards expose signing, catalog, Secure Boot, virtualization-based
+  security, Kernel DMA/IOMMU, Thunderbolt, USB4, and removable-media posture.
+  Missing evidence stays unknown; local operating-system posture is not
+  hardware or firmware proof.
 
-### Contain and recover
+### Treat the network as hostile
 
-- Exact-target network blocks, executable isolation, process suspension or
-  termination, file quarantine, deception, host isolation, and verified rollback.
-- Protected-process and protected-system boundaries, process creation-time and
-  executable revalidation, literal peer binding, signed action contracts, and
-  truthful receipts.
-- Action history, Undo selected, Undo all, startup recovery, mutation-circuit
-  breakers, and explicit recovery-required records when compensation cannot be
-  proven.
+- Every physical Wi-Fi and Ethernet path starts untrusted. Privacy-tokenized
+  route, gateway, Domain Name System, Dynamic Host Configuration Protocol,
+  profile, and interface-generation evidence is compared across restarts.
+- The enrolled Personal Sentinel gateway client can attest one exact private
+  HTTPS first hop with normal certificate/hostname validation, an additional
+  certificate pin, nonce/freshness, policy digest, optional mutual Transport
+  Layer Security (mTLS), complete IPv4/IPv6 route evidence, and unchanged
+  pre/post route context.
+- v1.11.0 also supplies a separately operated **Personal Sentinel reference
+  authority/server** for mTLS-authenticated Ed25519 receipts, trusted time, and
+  monotonic compare-and-swap evidence. It is a reference service operators must
+  provision and administer—not a bundled router appliance.
+- Neither component discovers or configures routers, stores router credentials,
+  changes routes or firewall policy, or proves gateway firmware. A positive
+  first-hop label never grants endpoint, identity, application, destination, or
+  upstream-router trust.
+- The process-egress lease broker and guard bind policy/audit evidence to exact
+  process birth, executable, user, destination, path, and budget. Enforcement
+  still requires a separately privileged injected adapter; the shipped guard
+  does not open, close, redirect, or filter sockets.
 
-### Investigate and validate
+### Contain, recover, and investigate
 
-- Live Alerts, Resolve Center, SOAR Queue, Scan Center, Flow Dashboard / Local SOC,
-  case management, bounded threat hunts, evidence custody, ATT&CK heatmap, Top
-  Talkers, threat intelligence, and forensic exports.
-- A sanitized **Live Defense Activity** dashboard card shows coarse module state
-  and at most five recent public EventBus summaries. It is operational activity,
-  never source code, hidden model reasoning, or chain-of-thought.
-- Non-destructive Red Team and Shark Attack campaigns with After-Action Reports.
-  Simulations use bounded reversible markers rather than exploits or persistence.
-- A repeatable maximum Adversary Combat validation batch proves detection,
-  contract admission, response closure, cleanup, and journal integrity.
+- Exact-target peer blocks, executable isolation, verified process suspension
+  or termination, exact-file quarantine, bounded deception, and explicit host
+  isolation through signed, typed response contracts.
+- Least-privilege checks bind process birth, executable/file identity, peer,
+  action type, and escalation scope. Protected/system targets, stale evidence,
+  and ambiguous requests fail closed.
+- Durable intents, verified postconditions, signed receipts, exact Undo,
+  startup recovery, and mutation circuit breakers make response state visible
+  and reversible where the operating system permits.
+- Live Alerts, Resolve Center, SOAR Queue, Scan Center, Flow Dashboard / Local
+  SOC, cases, hunts, evidence custody, ATT&CK views, threat intelligence, and
+  forensic exports.
+- Non-destructive Red Team, Shark Attack, and Adversary Combat validation use
+  bounded reversible markers—not exploits, credentials, persistence, or remote
+  attack infrastructure.
 
 ### Assist locally
 
-- ARIA local chat and runbook retrieval, local security briefing, typed tools,
-  provider controls, optional voice and gesture navigation, and explicit egress
-  consent for any cloud connector.
-- A governed, strict-schema, canonical-SHA-256-pinned **ARIA Defense Memory**
-  gives local retrieval quick capability, usage, defensive-control, and
-  actor-neutral tradecraft context. It is data-only and cannot define tools or
-  authorize actions; only selected bounded, redacted excerpts are eligible for
-  an already authorized cloud fallback.
-- Approved model/knowledge-pack lifecycle: provenance and digest checks, resource
-  admission, bounded staging, evaluation, activation, rollback, and removal.
-- Model output is advisory evidence unless a separate deterministic control path
-  authorizes a typed action. Arbitrary model-authored PowerShell is inert.
+- ARIA uses local Ollama for chat, runbook retrieval, defensive briefings, and
+  typed tools. Optional cloud paths require separate operator consent.
+- **ARIA Defense Memory v1.1.0** contains 18 bounded capability, usage,
+  defensive-control, and actor-neutral tradecraft entries. It is strict-schema,
+  data-only, and pinned to canonical digest
+  `sha256:97a7771a9ce38ac66c6889dc90e0d591b64e07c2f169a0cebd7a57c119d67d57`.
+  It cannot define a tool or authorize an action. An already authorized cloud
+  fallback can receive at most one highest-ranked canonical, redacted excerpt.
+- **Live Defense Activity** displays at most five sanitized public EventBus
+  summaries and coarse module health. It is not executing source code, a
+  debugger, raw telemetry, hidden model reasoning, or chain-of-thought.
 
-### Personal Sentinel network path
+## Best-fit use cases
 
-The intended defense-in-depth topology is:
-
-`Angerona host -> operator-controlled Personal Sentinel gateway/firewall -> upstream/ISP router -> Internet`
-
-Angerona ships the explicit, fail-closed **attestation client** for one enrolled
-private HTTPS default gateway. Normal certificate and hostname validation,
-certificate pinning, nonce/freshness checks, an expected policy digest, optional
-mutual TLS, complete IPv4/IPv6 route evidence, and unchanged pre/post route
-context can label that exact path `gateway-attested`. The label does not trust an
-endpoint, identity, application, destination, upstream router, or firmware, and
-the client provides no router discovery, credentials, management, routing, or
-firewall mutation.
-
-## Use cases
-
-- Windows home lab or self-hosted endpoint defense.
-- Blue-team and purple-team learning with visible ATT&CK evidence.
-- Local, privacy-conscious investigation and incident-response practice.
-- Defensive monitoring for SSH persistence, log-clearing or continuity loss,
-  and suspicious Wi-Fi/Ethernet infrastructure drift without agency attribution.
-- Detection engineering, response-contract, secure-SDLC, and portfolio work.
-- Research platform for governed local AI, an operator-controlled intermediate
-  firewall, and reversible defensive automation.
+- Advanced Windows home labs and self-hosted defensive workstations.
+- Blue-team, SOC, incident-response, detection-engineering, and ATT&CK learning.
+- Safe purple-team validation of detections, response authority, Undo, and
+  recovery contracts.
+- Defensive monitoring for SSH persistence/tunnels, event-log clearing or
+  continuity loss, identity/session anomalies, and suspicious Wi-Fi/Ethernet
+  path drift without state or agency attribution.
+- Local-AI security research with explicit provenance, data, and action-
+  authority boundaries.
+- Operator-controlled intermediate gateway/firewall experiments using the
+  supplied Personal Sentinel reference contracts and a separately administered
+  compatible host.
 
 ## Platform support
 
-| Platform | Current contract | Boundary |
-| --- | --- | --- |
-| Windows | **Protect** | Full supported telemetry and governed response path; runs elevated in user mode and ships no unsigned kernel driver. |
-| macOS | **Observe preview** | Privacy-minimized process/flow observation and shared core; no Endpoint Security or Network Extension enforcement claim. |
-| Linux | **Observe + optional eBPF** | Rootless process/flow/posture observation; BCC/eBPF is an explicit privileged supplement, not a shipped universal CO-RE sensor. |
+| Platform | Current contract | Static platform discovery |
+| --- | --- | ---: |
+| Windows | **Protect:** supported user-mode telemetry and governed response; elevation is needed for the complete path. | **80 modules** |
+| Linux | **Observe + optional eBPF:** rootless process/flow/posture monitoring; BCC/eBPF is an explicit privileged supplement. | **14 modules** |
+| macOS | **Observe preview:** privacy-minimized shared-core process/flow visibility; no Endpoint Security or Network Extension enforcement claim. | **13 modules** |
+
+Static discovery reports **80 modules** on the primary Windows contract. No
+unsigned kernel driver is shipped.
 
 ## 🚀 One-click Windows install
 
-For a tagged Windows release, download
-`Angerona-<version>-win64-setup.exe` and its adjacent SHA-256 file from
-[Releases](../../releases), verify the digest and GitHub attestation, then
-approve the UAC prompt. Setup installs the application, shortcuts, uninstaller,
-and guided configuration. **No Python or terminal is required.**
+For a tagged public Windows release, download
+`Angerona-<version>-win64.msix` and its adjacent SHA-256 file from
+[Releases](../../releases). Windows must trust the exact provisioned package
+publisher identity and validate the signed MSIX block map before activation.
+No Python or terminal is required.
 
-The portable ZIP remains available through `Install-Angerona-Release.bat` and
-re-verifies its embedded release manifest. The published installer is not
-currently backed by an Authenticode publisher certificate, so Windows may show
-**Unknown Publisher**.
+The repository builds the full-trust x64 MSIX only when the protected package
+name, publisher distinguished name, publisher certificate, and signing policy
+are provisioned. A clean-VM install/upgrade/uninstall matrix remains a release
+acceptance gate; this repository does not claim Microsoft Store deployment.
+
+There is **no public classic Setup first-install path**. The signed Inno wrapper
+is restricted to migration of a prior approved installation, performs only
+unelevated preflight itself, delegates UAC/mutation to the protected installed
+updater, and is not a public release asset. The portable ZIP is also
+upgrade-only: its installed native verifier checks exact payload/catalog
+evidence, protected threshold roots,
+numeric version/sequence floors, and protected path access-control custody
+before target mutation. A privileged whole-host snapshot can still roll back a
+local floor unless a Trusted Platform Module or independent witness anchors it.
 
 For a reviewed Windows source deployment:
 
@@ -152,130 +186,118 @@ python -m pytest -q
 python tools/selfcheck.py
 ```
 
-For guarded GitHub synchronization, use `push-to-github.bat` and
-`pull-from-github.bat`. Push scans the exact staged patch with a pinned,
-SHA-256-verified Gitleaks binary before committing. Pull scans incoming commits
-before a fast-forward merge and refuses dirty trees, divergent history,
-credential-bearing/non-HTTPS remotes, submodule recursion, and unreviewed
-workflow changes.
-
 Linux and macOS release archives use `Install-Angerona-Release.sh`. Source
 installation uses `install-angerona.sh`; Linux also supports a local-user
-headless service. See the Master Manual for platform-specific prerequisites,
-data paths, rollback, and uninstall procedures.
+headless service. Linux kernel telemetry is optional eBPF/BCC—not a universal
+shipped CO-RE sensor.
+
+For guarded GitHub synchronization, use `push-to-github.bat` and
+`pull-from-github.bat`. Push scans the exact staged patch with a pinned,
+SHA-256-verified Gitleaks binary. Pull scans incoming commits before a
+fast-forward merge and refuses dirty/divergent trees, unsafe remotes, submodule
+recursion, and unreviewed workflow changes.
 
 Source/development runtime data uses the checkout's sibling `AngeronaData` directory.
-Packaged Windows installs prefer protected `D:\AngeronaData` and use
-protected `%ProgramData%\Angerona` only when D: is unavailable. Cloud
-integrations are optional and off by default. Public screenshots are generated
-demonstrations: all displayed telemetry, identifiers, timestamps, and counts are
-synthetic.
-
-The optional Personal Sentinel client is enrolled by creating
-`<AngeronaData>/config/personal_sentinel_gateway.json` with schema version 1,
-the exact local `interface_id`, a private-literal HTTPS `endpoint_url`, and the
-expected `certificate_sha256` and `policy_digest`. File absence or rejection
-leaves every path untrusted. A compatible gateway service/appliance is not
-bundled; see the Master Manual before enrollment.
+Packaged Windows installs prefer protected `D:\AngeronaData` and use protected
+`%ProgramData%\Angerona` only when D: is unavailable. Cloud integrations are optional and off by default.
 
 ## Validation status
 
-The current v1.10.3 tree produced the following local evidence on Windows:
+The converged v1.11.0 serial validation result is **1,675 collected tests: 1,670
+passed, 5 expected host-capability skips, and 0 failed**. Focused evidence
+already recorded in the Cycle 24 reports includes:
 
-- 1,465 pytest cases collected across 208 files: **1,460 passed, 5 expected
-  host-capability skips, 0 failed**.
-- **321/321** product Python files compiled; Ruff passed.
-- **73/73** module files imported; native discovery constructed **71/71**
-  modules; all **58/58** zero-argument compatibility hooks were valid.
-- Standalone core/Shark self-tests: **22/22**. Module harness: **50 passed, 0
-  failed, 21 expected skips**, plus the EventBus pipeline passed.
-- Direct and batch selfcheck: **26/26** each.
-- Deterministic Combat negative controls: **128/128**.
-- Auto-contain Red Team launches arm all **13/13** simulation-only detector
-  contracts before the first marker and fail closed if activation cannot be
-  persisted.
-- Live maximum campaign: winning round **52/52 detections, 52/52 responses,
-  13/13 contracts, 13/13 verified closures**, with resilience PASS. Cleanup left
-  zero active reversible actions, zero recovery requirements, zero marker files,
-  zero tagged probe processes, and an intact journal. The preceding round reached
-  100% detection but failed response/closure gates, so the harness rejected it
-  and continued automatically.
+- Round 2 release remediation: **20 passed**.
+- Round 2 core remediation: **88 passed, 1 expected platform skip**.
+- Round 3 reliability/security paths: **78 passed, 1 expected platform skip**.
+- Changed-file Ruff, Python compilation, release YAML/MSIX XML parsing,
+  PowerShell parsing, and `git diff --check`: recorded clean in their focused
+  gates.
+- Two complete four-image gallery runs: byte-identical for every public
+  screenshot.
 
-These results are strong project evidence, not an independent certification or
-a claim of complete attack coverage.
+Focused counts overlap and are not presented as a substitute for the final
+serial suite or for clean-machine deployment validation.
 
 ## Honest limits
 
-- Angerona is an advanced home-lab, learning, and portfolio security suite; it is
-  not yet a drop-in replacement for a commercially supported, independently
-  evaluated, distributed enterprise EDR/XDR platform.
-- Cycle 23 closed 15 of 16 actor-neutral findings. The remaining Medium is an
-  external dependency: filesystem rollback resistance requires a separately
-  administered monotonic high-water service or policy-bound hardware authority.
-  Without one, audit and network state are locally authenticated with a
-  Hash-based Message Authentication Code (HMAC) but report
-  `local-authenticity-only` and `independent_freshness_verified=false`.
-- A separate older non-blocking defense-in-depth Medium remains: path-wide
-  program firewall rules would be stronger with a retained operating-system
-  process handle and bounded executable-file identity lease across the action.
-- Personal Sentinel currently provides only a pinned direct HTTPS attestation
-  client. The gateway appliance/server and routing role, firmware or measured-
-  boot attestation, and independent monotonic authority are not built.
-- Live Defense Activity exposes sanitized public operational summaries, not
-  actively executing source, private AI reasoning, or chain-of-thought.
-- State-grade tradecraft research is actor-neutral. Angerona reports observable
-  technique patterns and makes no agency or state attribution claim.
-- Long elevated soak testing, physical sleep/resume, clean-machine installer and
-  uninstall matrices, publisher signing/notarization, native Linux/macOS artifact
-  acceptance, fleet-scale throughput, false-positive baselines, and third-party
-  efficacy evaluation remain external gates.
-- Optional cloud, messaging, SIEM, threat-intelligence, and peer integrations may
-  transmit selected data only when separately configured and authorized. Local-
-  only operation remains the default.
-- Angerona is user-mode, is not tamper-proof against a compromised
-  Administrator/SYSTEM principal, and ships no production kernel driver.
-- No hack-back, remote exploitation, credential theft, arbitrary response shell,
-  downloaded executable skill, unverified model, or unsigned kernel component is
-  part of the product.
+- Angerona is an advanced home-lab, learning, research, and portfolio suite. It
+  is not an independently certified, commercially supported fleet EDR/XDR and
+  does not claim complete attack coverage.
+- Angerona is user-mode, is not tamper-proof against compromised
+  Administrator/SYSTEM or kernel authority, and ships no production kernel driver.
+- The repository cannot provision a trusted Windows publisher identity,
+  protected GitHub environments, external Ed25519 root custody, enterprise
+  package policy, a Trusted Platform Module floor, or a separate backup/witness
+  failure domain. Those are deployment responsibilities and release gates.
+- Personal Sentinel is a reference authority/server plus an exact enrolled
+  first-hop client—not a router, turnkey appliance, routing role, remote command
+  channel, firmware attestor, or automatic firewall manager.
+- Event-log defenses detect observed clears, gaps, policy/service changes, and
+  signed recovery cohorts; they cannot reconstruct events deleted before
+  collection or guarantee truth after kernel compromise.
+- Identity/session, measured-boot, recovery, process-egress, and RAG provenance
+  features remain only as authoritative as their injected producers,
+  verifiers, and independently administered evidence.
+- Research is actor-neutral. A technique pattern does not prove a nation,
+  agency, sponsor, or individual.
+- No hack-back, remote exploitation, credential theft, arbitrary response
+  shell, log deletion/evasion, downloaded executable skill, unverified model,
+  or unsigned kernel component is part of the product.
 
-## What is current in v1.10.3
+## What changed in v1.11.0
 
-- **State-grade-pattern defensive coverage:** the new SSH, audit-log integrity,
-  and zero-trust physical-network guards translate publicly documented advanced
-  persistence, telemetry suppression, tunneling, and router-path manipulation
-  patterns into local, bounded, observe-only evidence without actor attribution.
-- **Personal Sentinel client boundary:** an explicitly enrolled, pinned HTTPS
-  client can attest one exact intermediate-gateway route. Competing, incomplete,
-  changed, or dual-stack-bypass paths fail closed; endpoints remain untrusted.
-- **Live operational visibility:** the dashboard now includes a redacted,
-  revision-gated activity card for recent public EventBus/module state. It is
-  deliberately not a debugger or a private-reasoning display.
-- **ARIA Defense Memory:** a pinned, strict-schema defensive reference is loaded
-  into local runbook retrieval so ARIA can answer common Angerona capability,
-  usage, control, and tradecraft questions without treating the memory as code.
-- **Continuity hardening:** audit and network state use authenticated paired
-  documents, stable non-reparse reads, fail-closed completeness, revision gates,
-  and an injectable independent-high-water contract. The separately operated
-  authority needed for independent freshness remains deferred.
-- **Governed Adversary Combat and receipt-bound SOAR:** exact-target local
-  response remains constrained by typed policy, signed contracts, durable
-  intent, verified postconditions, exact Undo, and crash-recovery circuits.
-- **App Control and Windows telemetry evidence:** read-only Code Integrity,
-  Security, OpenSSH, Sysmon, ETW, and related evidence retain explicit source
-  completeness and cannot authorize response by themselves.
-- **Measured Cycle 23 performance:** idle audit checkpoint work fell 97.6%; SSH
-  process enumeration fell 90.9% on the measured host; declared-bound network
-  snapshot sanitization fell 93.3%; and bounded per-user SSH token expansion
-  improved 99.4%. Security cadence and freshness/route/anchor checks were not
-  reduced. Round 3 deliberately applied no optimization because the candidates
-  did not justify added complexity.
+- Added authenticated sensor-provenance envelopes, ordered temporal tradecraft
+  correlation, privacy-tokenized identity/session analytics, process-bound
+  egress lease policy/audit, measured-boot appraisal contracts, driver
+  provenance, peripheral/DMA posture, immutable recovery assurance, RAG
+  provenance, and release-transparency/anti-rollback guards.
+- Hardened SSH live evidence with a broker-assigned producer, exact event type,
+  fixed provider/channel schema, and explicit sequence-loss accounting before
+  trusted source state can advance.
+- Added the Personal Sentinel reference authority/server with asymmetric
+  response/state signing, mandatory production mTLS, bounded pre-authentication,
+  irreversible shutdown, OS singleton custody, and separate trusted-time floor
+  namespaces.
+- Replaced the candidate-controlled public classic installer story with an
+  OS-validated signed full-trust x64 MSIX contract. Kept classic Setup only as a
+  prior-install migration wrapper and made portable installation upgrade-only
+  with an installed verifier and rollback floor.
+- Hardened recovery assessment to require one exact current
+  revision/archive/manifest cohort and reject excessive future timestamps,
+  mixed/incomplete Linux removable evidence, unbounded evidence enumeration,
+  and unstable recovery-file reads.
+- Added the sanitized Live Defense Activity card and expanded ARIA Defense
+  Memory to 18 pinned entries with a one-excerpt cloud boundary.
+- Applied bounded performance/reliability improvements: Personal Sentinel state
+  canonicalization was 30.2–39.0% lower CPU in the measured kernel; identity
+  replay membership moved from O(n) to O(1); over-budget directory iteration
+  avoided full materialization; and public gallery capture became reproducible.
 
-Detailed three-round evidence and primary sources are in
-[`analysis/loop/cycle23/summary.md`](analysis/loop/cycle23/summary.md).
+Detailed three-round evidence, fixed findings, deployment residuals, and source
+links are in [`analysis/loop/cycle24/summary.md`](analysis/loop/cycle24/summary.md).
+
+## Defensive research sources
+
+Cycle 24 translated public guidance into actor-neutral defensive controls. Key
+primary sources include:
+
+- [CISA AA25-239A: network-device persistence and off-host logging](https://www.cisa.gov/news-events/cybersecurity-advisories/aa25-239a)
+- [CISA AA24-038A: critical-infrastructure tradecraft](https://www.cisa.gov/sites/default/files/2024-03/aa24-038a_csa_prc_state_sponsored_actors_compromise_us_critical_infrastructure_3.pdf)
+- [NIST SP 800-207: Zero Trust Architecture](https://csrc.nist.gov/pubs/sp/800/207/final)
+- [MITRE ATT&CK T1070.001: Clear Windows Event Logs](https://attack.mitre.org/techniques/T1070/001/)
+- [Microsoft: Storm-2372 device-code phishing](https://www.microsoft.com/en-us/security/blog/2025/02/13/storm-2372-conducts-device-code-phishing-campaign/)
+- [Microsoft: Kernel DMA Protection](https://learn.microsoft.com/en-us/windows/security/hardware-security/kernel-dma-protection-for-thunderbolt)
+- [Microsoft: Windows measured boot and health attestation](https://learn.microsoft.com/en-us/windows/security/operating-system-security/system-security/protect-high-value-assets-by-controlling-the-health-of-windows-10-based-devices)
+- [IETF RFC 9334: Remote ATtestation procedureS architecture](https://datatracker.ietf.org/doc/html/rfc9334)
+- [NIST FIPS 203: ML-KEM](https://csrc.nist.gov/pubs/fips/203/final)
+
+These sources support defensive technique selection. Angerona's control design
+is an engineering inference, not an attribution claim.
 
 MIT licensed. See [LICENSE](LICENSE), [SECURITY.md](SECURITY.md), and
 [SUPPORT.md](SUPPORT.md).
 
-**Final Cycle 23 verification.** Current v1.10.3 passes **1460 tests with 5 intentional platform skips**; static discovery reports **71 modules**.
+**Final Cycle 24 verification.** Current v1.11.0 passes **1670 tests with 5 intentional platform skips**; static discovery reports **80 modules**.
 
-<!-- ANGERONA_DOC_STATUS tests=1460 skips=5 modules=71 -->
+<!-- ANGERONA_DOC_STATUS tests=1670 skips=5 modules=80 -->

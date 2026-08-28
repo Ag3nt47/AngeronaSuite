@@ -1,0 +1,58 @@
+[
+  {
+    "id": "R2-01",
+    "title": "First-install publisher trust is still candidate-controlled",
+    "severity": "HIGH",
+    "component": "installer/Angerona.iss:14-37,79-106,159-171; Verify-Angerona-Release.ps1:69-178; .github/workflows/release.yml:354-395",
+    "status": "FIXED_IN_CODE_DEPLOYMENT_REQUIRED",
+    "recommendation": "Use an OS-enforced signed MSIX/App Installer publisher identity or mandatory WDAC/AppLocker/Smart App Control policy before first execution; retain candidate self-checks only as defense in depth and independently authenticate any classic-Setup verifier."
+  },
+  {
+    "id": "R2-02",
+    "title": "Threshold finalization accepts public roots supplied by signer artifacts",
+    "severity": "MEDIUM",
+    "component": ".github/workflows/release.yml:241-353,354-395; tools/build_release_authorization.py:343-435; Install-Angerona-Release.ps1:198-270,331-359",
+    "status": "FIXED_IN_CODE_PROTECTED_ROOTS_REQUIRED",
+    "recommendation": "Pin enrolled signer public keys in an independently administered finalizer/HSM/KMS policy, carry signatures rather than roots in response artifacts, threshold-authorize key rotation, and condition publisher signing on an externally verified threshold receipt."
+  },
+  {
+    "id": "R2-03",
+    "title": "Portable upgrades do not enforce an authenticated rollback floor",
+    "severity": "MEDIUM",
+    "component": "Install-Angerona-Release.ps1:145-270,273-359,361-411; installer/Angerona.iss:152-203",
+    "status": "FIXED_IN_CODE_EXTERNAL_WITNESS_OPTIONAL",
+    "recommendation": "Validate authorization signatures and numeric release sequence against installed pinned roots and a transactional protected highest-installed floor before mutation; align ZIP and Setup policy and use an external/TPM floor where whole-host rollback is in scope."
+  },
+  {
+    "id": "R2-04",
+    "title": "SSH live ingestion lacks authenticated producer provenance",
+    "severity": "LOW",
+    "component": "src/angerona/modules/ssh_surface_guard.py:277-308,796-813; src/angerona/core/ssh_surface.py:3261-3388; src/angerona/core/eventbus.py:60-68",
+    "status": "FIXED_IN_CODE",
+    "recommendation": "Require broker-assigned producer identity plus a fixed producer/schema allowlist for live SSH evidence, and prevent unprovenanced EventBus text from advancing the trusted known-source baseline."
+  },
+  {
+    "id": "R2-05",
+    "title": "Trusted-time receipt flooring is consumed twice across client and appraisal",
+    "severity": "LOW",
+    "component": "src/angerona/core/personal_sentinel_authority.py:1116-1205,1234-1255; src/angerona/core/trusted_time.py:190-233",
+    "status": "FIXED_IN_CODE",
+    "recommendation": "Advance each receipt exactly once and pass a typed durable-verification result into appraisal, or use explicitly separate named floor domains; add a real production client-to-appraisal composition regression."
+  },
+  {
+    "id": "R2-06",
+    "title": "A closed Sentinel authority remains able to process state transactions",
+    "severity": "MEDIUM",
+    "component": "src/angerona/core/personal_sentinel_authority.py:599-602,713-769,778-789,872-940; tools/personal_sentinel_server.py shutdown lifecycle",
+    "status": "FIXED_IN_CODE",
+    "recommendation": "Make close irreversible, require a live held lease for every state transaction, stop and join request/handshake workers before lease release, and add close/reopen concurrency regressions."
+  },
+  {
+    "id": "R2-07",
+    "title": "Linux removable-device inventory can report complete absence with unreadable entries",
+    "severity": "LOW",
+    "component": "src/angerona/core/peripheral_posture.py:452-474,477-547",
+    "status": "FIXED_IN_CODE",
+    "recommendation": "Report absence only when every enumerated entry yields a stable valid zero; mark mixed valid/unknown reads incomplete while preserving positive presence, and add mixed-read and disappearing-entry tests."
+  }
+]

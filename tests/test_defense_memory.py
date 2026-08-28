@@ -83,6 +83,22 @@ def test_bundled_memory_is_load_once_pinned_bounded_and_data_only() -> None:
             "should I trust Wi-Fi or use an intermediate personal firewall router",
             "Personal Sentinel Gateway intermediate firewall",
         ),
+        (
+            "how does Angerona correlate device code identity sessions and low and slow activity",
+            "Temporal tradecraft and identity-session correlation",
+        ),
+        (
+            "what detects vulnerable drivers measured boot and DMA peripheral posture",
+            "Platform attestation, driver provenance, and peripheral posture",
+        ),
+        (
+            "how do process-bound egress leases constrain outbound firewall traffic",
+            "Process-bound egress leases",
+        ),
+        (
+            "how is ARIA defense memory protected from RAG knowledge poisoning",
+            "ARIA and retrieval-source provenance",
+        ),
     ],
 )
 def test_memory_retrieves_requested_defensive_topics(
@@ -347,3 +363,46 @@ def test_cloud_fallback_receives_only_pinned_memory_excerpts(
     assert "Personal Sentinel Gateway intermediate firewall" not in cloud
     assert len(cloud) < 2500
     assert ASSET.read_text(encoding="utf-8") not in cloud
+
+
+def test_cloud_fallback_caps_defense_memory_to_one_ranked_excerpt(monkeypatch) -> None:
+    class MemoryOnlyRag:
+        def query(self, _question: str, k: int = 3):
+            assert k == 3
+            return [
+                Hit(9.0, DEFENSE_MEMORY_SOURCE, "First", "FIRST_MEMORY_EXCERPT"),
+                Hit(8.0, DEFENSE_MEMORY_SOURCE, "Second", "SECOND_MEMORY_EXCERPT"),
+                Hit(7.0, DEFENSE_MEMORY_SOURCE, "Third", "THIRD_MEMORY_EXCERPT"),
+            ]
+
+    cloud_payloads: list[str] = []
+    monkeypatch.setattr(
+        "angerona.engines.ollama_client.call",
+        lambda *_args, **_kwargs: {"error": "offline"},
+    )
+    monkeypatch.setattr(
+        "angerona.engines.ai_consult.consult_ai",
+        lambda prompt, **_kwargs: cloud_payloads.append(prompt)
+        or {"text": "bounded answer", "provider": "test"},
+    )
+    owner = SimpleNamespace(
+        _aria_rag=MemoryOnlyRag(),
+        _last_posture={"score": 80, "label": "Guarded"},
+        _ARIA_ARCH="LOCAL_ARCHITECTURE_REFERENCE",
+        _ARIA_COACH="LOCAL_COACH_REFERENCE",
+        _aria_context=lambda: "LIVE_TELEMETRY_MUST_STAY_LOCAL",
+        aria_awareness=None,
+        config=SimpleNamespace(
+            aria_persona="aria",
+            ollama_model="llama3",
+            ollama_host=None,
+            ollama_keep_alive="30m",
+            aria_cloud_fallback=True,
+        ),
+    )
+
+    assert "bounded answer" in MainWindow._aria_converse(owner, "What is active?")
+    assert len(cloud_payloads) == 1
+    assert "FIRST_MEMORY_EXCERPT" in cloud_payloads[0]
+    assert "SECOND_MEMORY_EXCERPT" not in cloud_payloads[0]
+    assert "THIRD_MEMORY_EXCERPT" not in cloud_payloads[0]

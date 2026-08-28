@@ -37,7 +37,9 @@ THEMES = {
         "border": "#1b2735", "text": "#d6e2f0", "dim": "#5d6e84",
         "accent": "#1f9cff", "accent2": "#ff7a1a", "font": _CYBER_FONT,
         "radius": "10px",
-        "alt_row": "#ffffff08",      # alternating table row tint
+        # Qt stylesheets parse eight-digit hex as #AARRGGBB, not CSS
+        # #RRGGBBAA. Keep the low-opacity byte first.
+        "alt_row": "#08ffffff",      # alternating table row tint
         "chip_h": "44px",
     },
     "crt": {
@@ -46,7 +48,7 @@ THEMES = {
         "border": "#00b347", "text": "#33ff66", "dim": "#1f8a3a",
         "accent": "#39ff14", "accent2": "#00ff66", "font": _CRT_FONT,
         "radius": "2px",
-        "alt_row": "#00ff0008",
+        "alt_row": "#0800ff00",
         "chip_h": "44px",
     },
     # ── Dark Slate ───────────────────────────────────────────────────────
@@ -60,7 +62,7 @@ THEMES = {
         "border": "#334155", "text": "#f1f5f9", "dim": "#94a3b8",
         "accent": "#38bdf8", "accent2": "#fb923c", "font": _SLATE_FONT,
         "radius": "8px",
-        "alt_row": "#ffffff06",
+        "alt_row": "#06ffffff",
         "chip_h": "44px",
     },
 }
@@ -85,11 +87,19 @@ def clamp_scale(scale: float) -> float:
     return max(0.75, min(1.35, s))
 
 
+def _qt_alpha(color: str, alpha: str) -> str:
+    """Return a Qt-QSS #AARRGGBB tint for a six-digit hex colour."""
+    raw = str(color).strip()
+    if len(raw) == 7 and raw.startswith("#"):
+        return f"#{alpha}{raw[1:]}"
+    return raw
+
+
 def build_qss(name: str = "cyber", accent: str | None = None,
               scale: float = 1.0) -> str:
     p = dict(THEMES.get(name, THEMES["cyber"]))
     # Fill in optional keys that older theme dicts may not have.
-    p.setdefault("alt_row", "#ffffff08")
+    p.setdefault("alt_row", "#08ffffff")
     p.setdefault("chip_h",  "44px")
     if accent:
         p["accent"] = accent
@@ -126,6 +136,11 @@ def build_qss(name: str = "cyber", accent: str | None = None,
     except (TypeError, ValueError):
         chip_px = 44
     chip_h = px(chip_px)
+    accent_15 = _qt_alpha(p["accent"], "15")
+    accent_22 = _qt_alpha(p["accent"], "22")
+    accent_33 = _qt_alpha(p["accent"], "33")
+    accent_44 = _qt_alpha(p["accent"], "44")
+    accent_55 = _qt_alpha(p["accent"], "55")
 
     return f"""
 /* ── Base ─────────────────────────────────────────────────────────────── */
@@ -164,17 +179,17 @@ QTableWidget::item:alternate {{
     background: {p['alt_row']};
 }}
 QTableWidget::item:hover {{
-    background: {p['accent']}15;
+    background: {accent_15};
 }}
 QTableWidget::item:selected {{
-    background: {p['accent']}33;
+    background: {accent_33};
     color: {p['text']};
 }}
 QHeaderView::section {{
     background: {p['panel2']};
     color: {p['dim']};
     border: none;
-    border-bottom: 2px solid {p['accent']}55;
+    border-bottom: 2px solid {accent_55};
     padding: 6px 8px;
     font-weight: 700;
     letter-spacing: 1px;
@@ -219,19 +234,19 @@ QPushButton {{
     color: {p['text']};
 }}
 QPushButton:hover {{
-    background: {p['accent']}22;
+    background: {accent_22};
     border-color: {p['accent']};
 }}
 /* Every button visibly depresses on click: darker fill, label shifts down, and
    the raised bottom edge collapses so it reads as physically pushed in. */
 QPushButton:pressed {{
-    background: {p['accent']}44;
+    background: {accent_44};
     border: 1px solid {p['accent']};
     border-bottom: 0px;
     padding: {pad_btn_p};
 }}
 QPushButton:checked {{
-    background: {p['accent']}33;
+    background: {accent_33};
     border: 1px solid {p['accent']};
 }}
 
@@ -246,7 +261,7 @@ QLineEdit, QComboBox, QPlainTextEdit {{
 QComboBox QAbstractItemView {{
     background: {p['panel']};
     color: {p['text']};
-    selection-background-color: {p['accent']}44;
+    selection-background-color: {accent_44};
 }}
 QCheckBox::indicator {{ width: {ind_wh}; height: {ind_wh}; }}
 QProgressBar {{

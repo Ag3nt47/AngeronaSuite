@@ -20,6 +20,10 @@ from typing import Callable, Iterable, Mapping, Sequence
 
 from angerona.core.eventbus import Event, Severity
 from angerona.core.module_base import BaseModule
+from angerona.core.sensor_provenance import (
+    SensorProvenanceBroker,
+    SensorProvenanceError,
+)
 from angerona.core.ssh_surface import (
     MAX_LOG_BYTES,
     MAX_LOG_LINES,
@@ -70,6 +74,25 @@ _FORWARDING_ACTIVITY_LABELS = frozenset({
     "local-forward", "reverse-forward", "dynamic-forward", "tunnel-device",
     "stdio-forward", "proxy-jump",
 })
+_BROKER_EVENT_TYPE = "angerona.ssh-log-input.v1"
+_BROKER_PRODUCER_LABEL = "OpenSSH Auth Event Collector"
+_BROKER_EVENT_FIELDS = frozenset({"channel", "provider", "rendered_message"})
+_BROKER_CHANNELS = frozenset(channel for channel, _query in WINDOWS_OPENSSH_CHANNELS)
+
+
+def _valid_broker_ssh_event(document: Mapping[str, object]) -> bool:
+    """Validate the complete consumer schema before broker continuity advances."""
+
+    return bool(
+        isinstance(document, Mapping)
+        and frozenset(document) == _BROKER_EVENT_FIELDS
+        and isinstance(document.get("channel"), str)
+        and document.get("channel") in _BROKER_CHANNELS
+        and document.get("provider") == "OpenSSH"
+        and isinstance(document.get("rendered_message"), str)
+        and document["rendered_message"]
+        and len(document["rendered_message"]) <= 8192
+    )
 
 
 class _BoundedLogTail:
@@ -178,6 +201,7 @@ class SSHSurfaceGuardModule(BaseModule):
         key_candidates: Iterable[AuthorizedKeyCandidate] | None = None,
         runtime_collector: Callable[..., SSHRuntimeEvidence] | None = None,
         windows_event_source_factory: Callable[[str], object] | None = None,
+        provenance_broker: SensorProvenanceBroker | None = None,
         monotonic_clock: Callable[[], float] | None = None,
         interval_seconds: float = 30.0,
         platform: str | None = None,
@@ -196,6 +220,7 @@ class SSHSurfaceGuardModule(BaseModule):
         self._windows_event_source_factory = (
             windows_event_source_factory or open_windows_openssh_event_source
         )
+        self._provenance_broker = provenance_broker
         self._monotonic_clock = monotonic_clock or time.monotonic
         self._platform = (platform or sys.platform).casefold()
         self._interval = max(5.0, min(300.0, float(interval_seconds)))
@@ -275,7 +300,14 @@ class SSHSurfaceGuardModule(BaseModule):
         self.emit(message, severity, **self._base_details(**details))
 
     def _on_bus_event(self, event: Event) -> None:
-        """Consume OpenSSH text in memory and retain only tokenized evidence."""
+        """Consume only broker-authenticated, fixed-schema OpenSSH evidence.
+
+        EventBus authentication protects stored bytes, not the identity of the
+        process that supplied them.  The live path therefore fails closed
+        unless the privileged provenance broker authenticates the producer,
+        schema, sequence, and loss-free continuity.  Canonical local log and
+        Windows Event Log collectors do not pass through this adapter.
+        """
         if (
             not self._live_ingest_enabled.is_set()
             or self.stopping
@@ -283,16 +315,25 @@ class SSHSurfaceGuardModule(BaseModule):
         ):
             return
         details = event.details if isinstance(event.details, dict) else {}
-        channel = str(details.get("channel") or details.get("provider") or "")[:256]
-        marker = f"{event.module} {channel}".casefold()
-        if "openssh" not in marker and "sshd" not in marker:
+        envelope = details.get("sensor_provenance_envelope")
+        if envelope is None or self._provenance_broker is None:
             return
-        rendered = str(
-            details.get("rendered_message")
-            or details.get("event_message")
-            or details.get("message")
-            or event.message
-        )[:8192]
+        try:
+            accepted = self._provenance_broker.ingest(
+                envelope,
+                expected_label=_BROKER_PRODUCER_LABEL,
+                expected_event_type=_BROKER_EVENT_TYPE,
+                event_validator=_valid_broker_ssh_event,
+            )
+        except SensorProvenanceError:
+            return
+        document = accepted.event
+        if (
+            accepted.coverage_state != "ready"
+            or not isinstance(document, Mapping)
+        ):
+            return
+        rendered = str(document["rendered_message"])
         privacy_key = self._ensure_security_state()
         analysis = analyze_openssh_logs(
             (rendered,),
