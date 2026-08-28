@@ -5,7 +5,7 @@
   "focus": "universal capability contracts, guided firewall adaptation and recovery, durable delivery, bounded clickable evidence, standards truth, and three-round safety/reliability closure",
   "rounds_total": 3,
   "round": 3,
-  "phase": "READY_FOR_PUBLICATION",
+  "phase": "COMPLETE",
   "round_1_status": "COMPLETE",
   "round_2_status": "COMPLETE",
   "round_3_status": "COMPLETE",
@@ -14,9 +14,10 @@
   "docs_update_round": 3,
   "docs_update_done": true,
   "manual_update_done": true,
-  "publication_done": false,
+  "publication_done": true,
   "started": "2026-08-27",
   "updated": "2026-08-28",
+  "completed": "2026-08-28",
   "round_1_results": {
     "research": "adversarial review, visionary design, and primary-source upstream comparison complete",
     "disposition": "all lineages fixed or truthfully scoped"
