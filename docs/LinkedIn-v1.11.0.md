@@ -52,8 +52,8 @@ appliance; hardware/whole-host rollback resistance still needs separately
 administered infrastructure; and a public Windows build requires a provisioned
 publisher identity plus clean-VM validation.
 
-Code, screenshots, capability map, and engineering evidence:
-https://github.com/Ag3nt47/AngeronaSuite
+Code, screenshots, capability map, and engineering evidence for v1.11.0:
+https://github.com/Ag3nt47/AngeronaSuite/tree/codex/enterprise-cycle7
 
 #CyberSecurity #BlueTeam #DFIR #ZeroTrust #EDR #OpenSource #Python #SecurityEngineering #LocalAI
 
@@ -80,6 +80,6 @@ Final serial validation: **1,670 passed, 5 expected host-capability skips, 0
 failed** from 1,675 collected tests.
 
 See the new dashboard and full engineering record:
-https://github.com/Ag3nt47/AngeronaSuite
+https://github.com/Ag3nt47/AngeronaSuite/tree/codex/enterprise-cycle7
 
 #CyberSecurity #BlueTeam #ZeroTrust #OpenSource #LocalAI
