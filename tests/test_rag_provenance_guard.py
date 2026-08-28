@@ -182,7 +182,11 @@ def test_root_escape_link_and_source_size_bounds(tmp_path: Path) -> None:
         document["sources"][0]["relative_path"] = "linked.md"
         manifest.write_text(json.dumps(document), encoding="utf-8")
         with pytest.raises(RAGProvenanceError, match="link/reparse"):
-            load_rag_provenance_manifest(manifest, source_root=root)
+            load_rag_provenance_manifest(
+                manifest,
+                source_root=root,
+                expected_manifest_sha256=canonical_sha256(document),
+            )
 
     oversized = b"x" * (MAX_SOURCE_BYTES + 1)
     manifest, document = _manifest(root, oversized)

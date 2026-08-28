@@ -1,3 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
 *.bat text eol=crlf
+# This contract is byte-canonical JSON and must not be rewritten by Windows checkouts.
+installer/windows-install-contract.json text eol=lf
