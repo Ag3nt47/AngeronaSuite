@@ -57,6 +57,32 @@ function Test-Protected([string]$Path) {
     return Test-SafeAcl $Path $true
 }
 
+function Resolve-SafeDataRoot([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw "Refusing an empty runtime data root"
+    }
+    try {
+        $fullPath = [IO.Path]::GetFullPath($Path)
+        $volumeRoot = [IO.Path]::GetPathRoot($fullPath)
+    } catch {
+        throw "Refusing an invalid runtime data root"
+    }
+    if ([string]::IsNullOrWhiteSpace($volumeRoot)) {
+        throw "Refusing a runtime data root without a filesystem boundary"
+    }
+    $trimCharacters = [char[]]"\/"
+    $normalizedPath = $fullPath.TrimEnd($trimCharacters)
+    $normalizedVolumeRoot = $volumeRoot.TrimEnd($trimCharacters)
+    if ([string]::Equals(
+        $normalizedPath,
+        $normalizedVolumeRoot,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "Refusing to protect an entire filesystem volume root"
+    }
+    return $fullPath
+}
+
 function Assert-RootNotReparsePoint([string]$Path) {
     $root = Get-Item -LiteralPath $Path -Force
     if ($root.Attributes -band [IO.FileAttributes]::ReparsePoint) {
@@ -80,6 +106,7 @@ function Invoke-Icacls([string[]]$Arguments, [string]$Operation) {
     }
 }
 
+$DataRoot = Resolve-SafeDataRoot $DataRoot
 $custodyMarker = Join-Path $DataRoot ".custody-v1"
 Write-Host "[*] Checking protected runtime data custody..."
 $existed = Test-Path -LiteralPath $DataRoot

@@ -121,6 +121,20 @@ def test_key_custody_uses_valid_separate_icacls_command_forms():
     assert "One-time runtime data migration is required." in custody
 
 
+def test_key_custody_refuses_a_volume_root_before_any_acl_mutation():
+    root = Path(__file__).parents[1]
+    custody = (root / "tools" / "protect-key-custody.ps1").read_text(encoding="utf-8")
+
+    guard_call = "$DataRoot = Resolve-SafeDataRoot $DataRoot"
+    marker_write = '$custodyMarker = Join-Path $DataRoot ".custody-v1"'
+    first_mutation = "Set-Acl -LiteralPath $DataRoot"
+    assert "[IO.Path]::GetFullPath($Path)" in custody
+    assert "[IO.Path]::GetPathRoot($fullPath)" in custody
+    assert "Refusing to protect an entire filesystem volume root" in custody
+    assert custody.index(guard_call) < custody.index(marker_write)
+    assert custody.index(guard_call) < custody.index(first_mutation)
+
+
 def test_sensitive_key_acl_uses_separate_owner_and_dacl_commands(
     tmp_path,
     monkeypatch,
