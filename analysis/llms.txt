@@ -37,13 +37,14 @@ Python package metadata supports 3.10–3.13; the hardened Windows source bootst
 - **Verification:** 2669 passed / 13 intentional
   host-platform skips / 0 failed on the exact v1.12.1 tree. `compileall`, Ruff,
   selfcheck 26/26, workflow-policy, dependency-audit, documentation-drift, and
-  diff gates pass. Guarded publication verified release commit
-  `6fb06498e2ae631913db58f2d12b7489acfa1b9e`, completion commit
-  `06ef4fafe82cd5eccfe3dd51df3ff9abe3a1ea5d`, and all 4/4 README images.
-  Exact-completion CI run 33294618414 then exposed enabled-Administrator plus
-  implicit-owner DACL authority and two mutable/elevated hosted-runner test
-  couplings. All are remediated locally; guarded republication and exact-SHA
-  workflows are pending.
+  diff gates pass. Exact-completion CI run 33294618414 exposed
+  enabled-Administrator plus implicit-owner DACL authority and two
+  mutable/elevated hosted-runner test couplings; all were remediated. Guarded
+  publication verified release commit
+  `96b55f7d7a2305216cc68b804c72dc720ce6c88f`, canonical public `main`
+  parity, a clean worktree, and all 4/4 README images. This terminal record is
+  carried by the required second guarded fast-forward; exact-SHA workflows are
+  checked on GitHub.
 - Evidence map: `analysis/loop/cycles26-30-summary.md`.
 
 ## PRIOR (v1.12.0 — Cycle 25 capability, adaptation, and reliability loop)

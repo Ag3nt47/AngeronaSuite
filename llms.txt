@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.12.1
-Date: 2026-08-29
+Date: 2026-08-30
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -76,12 +76,12 @@ kernel component is a product capability.
 - Terminal release evidence on the exact v1.12.1 tree:
   2669 passed / 13 intentional host-platform
   skips / 0 failed; `compileall`, Ruff, selfcheck 26/26, workflow-policy,
-  dependency-audit, documentation-drift, and diff gates passed. Prior guarded
-  publication verified release commit
-  `6fb06498e2ae631913db58f2d12b7489acfa1b9e`, completion commit
-  `06ef4fafe82cd5eccfe3dd51df3ff9abe3a1ea5d`, and all 4/4 README images.
-  The final runner findings are remediated locally; guarded republication and
-  exact-final-SHA CI/Security assurance are pending.
+  dependency-audit, documentation-drift, and diff gates passed. The final
+  runner findings were remediated, and guarded publication verified release
+  commit `96b55f7d7a2305216cc68b804c72dc720ce6c88f`, canonical public `main`
+  parity, a clean worktree, and all 4/4 README images. This terminal record is
+  carried by the required second guarded fast-forward; exact-final-SHA CI and
+  Security assurance are checked on GitHub.
 - Detailed evidence: `analysis/loop/cycles26-30-summary.md` and
   `analysis/loop/cycle26/` through `analysis/loop/cycle30/`.
 

@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-30
 **Scope:** five three-round, defensive-only hardening loops
-**Release:** 1.12.1 (`READY_FOR_PUBLICATION`; final-SHA runner findings remediated locally)
+**Release:** 1.12.1 (`COMPLETE`; guarded remediation publication verified)
 
 ## Outcome
 
@@ -66,13 +66,13 @@ query/command execution.
 - Python `compileall`, repository-wide Ruff, selfcheck **26/26**,
   workflow-policy validation, dependency audit, documentation-drift validation,
   and `git diff --check`: pass on the release tree.
-- Guarded publication verified remediated release commit
-  `6fb06498e2ae631913db58f2d12b7489acfa1b9e`, completion commit
-  `06ef4fafe82cd5eccfe3dd51df3ff9abe3a1ea5d`, and all **4/4** README images.
-  Exact-completion CI run 33294618414 then exposed enabled-Administrator and
+- Exact-completion CI run 33294618414 exposed enabled-Administrator and
   implicit-owner DACL authority plus two mutable/elevated hosted-runner test
-  couplings; Security
-  assurance run 33294618400 passed. The three findings are remediated locally,
-  the 2669-test serial gate is green, and fresh guarded publication plus
-  exact-final-SHA workflows remain pending. No user-mode defensive patch is
-  proof against every future or privileged attacker.
+  couplings; Security assurance run 33294618400 passed. All three findings were
+  remediated with production fail-closed behavior retained.
+- Guarded publication verified remediated release commit
+  `96b55f7d7a2305216cc68b804c72dc720ce6c88f`, canonical public `main` parity,
+  a clean worktree, and all **4/4** README images. This completion-state record
+  is carried by the required second guarded fast-forward; CI and Security
+  assurance are evaluated on that exact final SHA. No user-mode defensive
+  patch is proof against every future or privileged attacker.

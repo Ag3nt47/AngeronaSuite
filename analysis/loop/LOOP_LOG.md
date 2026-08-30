@@ -3400,3 +3400,18 @@ boundaries, and primary-source citations are in
   tree: **2669 passed / 13 intentional platform skips / 0 failed** in **409.61
   s**. State returns to `READY_FOR_PUBLICATION` pending two guarded
   fast-forwards and fresh exact-final-SHA CI plus Security assurance.
+
+## Final-authority remediation guarded publication
+
+- Reviewed release commit
+  `96b55f7d7a2305216cc68b804c72dc720ce6c88f` contains the exact Windows
+  `OWNER_RIGHTS` seal, hosted-runner-isolated tests, and the terminal green
+  local evidence. The guarded publisher proved the canonical
+  `https://github.com/Ag3nt47/AngeronaSuite.git` origin, fast-forward-only
+  parity between the topic branch and public `main`, a clean worktree, and all
+  **4/4** README images byte-identical.
+- All six Cycle 26–30 records are `COMPLETE` with `publication_done: true`.
+  This terminal record is carried by the required second guarded
+  fast-forward. GitHub CI and Security assurance are evaluated against that
+  exact final completion SHA, not inferred from the local suite or an earlier
+  workflow run.
