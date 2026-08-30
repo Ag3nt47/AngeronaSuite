@@ -129,30 +129,30 @@ def self_test() -> tuple[bool, str]:
     """Verify the self-test primitives themselves in isolation: the dry-run
     resurrection must succeed, and a ping to an absent scanner must fail cleanly
     (no exception)."""
-    import tempfile, shutil
-    prev = os.environ.get("ANGERONA_DATA")
-    prev_diag = os.environ.get("ANGERONA_DIAG_DIR")
-    workdir = tempfile.mkdtemp(prefix="est_selftest_")
-    os.environ["ANGERONA_DATA"] = workdir
-    os.environ["ANGERONA_DIAG_DIR"] = os.path.join(workdir, "diag")
-    try:
-        dr_ok = _dry_run_resurrection()
-        # No scanner running → ping must return False without raising.
-        ping_absent_ok = _ping_scanner("nobody", timeout=0.5) is False
-        # A full run with no live components should report failures, not crash.
-        rep = run_ecosystem_selftest(components=["core"], timeout=0.3)
-        structured_ok = isinstance(rep, dict) and "checks" in rep and rep["passed"] is False
-        ok = dr_ok and ping_absent_ok and structured_ok
-        return ok, ("dry-run resurrection + absent-ping handling + structured report "
-                    "verified" if ok else
-                    f"failed: dry_run={dr_ok} ping_absent={ping_absent_ok} structured={structured_ok}")
-    finally:
-        for k, v in (("ANGERONA_DATA", prev), ("ANGERONA_DIAG_DIR", prev_diag)):
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-        shutil.rmtree(workdir, ignore_errors=True)
+    from angerona.resilience._selftest_environment import run_isolated_selftest
+
+    return run_isolated_selftest(
+        "ecosystem",
+        "est_selftest_",
+        lambda root: {
+            "ANGERONA_DATA": str(root),
+            "ANGERONA_DIAG_DIR": str(root / "diag"),
+        },
+        timeout=20.0,
+    )
+
+
+def _isolated_self_test() -> tuple[bool, str]:
+    dr_ok = _dry_run_resurrection()
+    # No scanner running → ping must return False without raising.
+    ping_absent_ok = _ping_scanner("nobody", timeout=0.5) is False
+    # A full run with no live components should report failures, not crash.
+    rep = run_ecosystem_selftest(components=["core"], timeout=0.3)
+    structured_ok = isinstance(rep, dict) and "checks" in rep and rep["passed"] is False
+    ok = dr_ok and ping_absent_ok and structured_ok
+    return ok, ("dry-run resurrection + absent-ping handling + structured report "
+                "verified" if ok else
+                f"failed: dry_run={dr_ok} ping_absent={ping_absent_ok} structured={structured_ok}")
 
 
 if __name__ == "__main__":

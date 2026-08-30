@@ -31,6 +31,8 @@ private/local addresses are ignored entirely.
 """
 from __future__ import annotations
 
+import ipaddress
+import math
 import os
 import time
 from typing import Dict, Mapping, Set, Tuple
@@ -58,6 +60,11 @@ WEB_PORTS = {80, 443, 8080, 8443}
 # the first day of uptime.
 NOVELTY_WINDOW_S = float(os.environ.get("ANGERONA_NETMON_NOVELTY_WINDOW_MIN", "60")) * 60
 _STATE_MAX = 10_000
+_LOCAL_V4_NETWORKS = tuple(
+    ipaddress.ip_network(value)
+    for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+_LOCAL_V6_NETWORKS = (ipaddress.ip_network("fc00::/7"),)
 
 
 def _block_remote_contract(
@@ -69,13 +76,26 @@ def _block_remote_contract(
     """Bind firewall authority only to an explicitly corroborated IOC."""
     if not corroborated or classification != "threat-intel-ioc":
         return {}
+    candidate = str(ip or "").strip().split("%", 1)[0]
+    try:
+        address = ipaddress.ip_address(candidate)
+    except ValueError:
+        return {}
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    # A remote-block action is meaningful only for one globally routable
+    # unicast address. Poisoned intel must not authorize blocking loopback,
+    # RFC1918/ULA, link-local, multicast, unspecified, or reserved peers.
+    if not address.is_global or address.is_multicast:
+        return {}
+    normalized = str(address)
     return {
         "response_authorized": True,
         "response_classification": classification,
         "response_contract": {
             "version": 1,
             "actions": ["block_remote_ip"],
-            "targets": {"remote_ips": [ip]},
+            "targets": {"remote_ips": [normalized]},
         },
     }
 
@@ -133,32 +153,94 @@ def _snapshot_max_age() -> float | None:
 def _is_local(ip: str) -> bool:
     if not ip:
         return True
-    # Address classification only; this module does not bind here.
-    if ip in ("127.0.0.1", "::1", "0.0.0.0"):  # nosec B104
+    # Parse, canonicalize, and explicitly unwrap IPv4-mapped IPv6 before
+    # classification. Prefix matching treated every ``::`` address as local,
+    # including public ``::ffff:8.8.8.8`` destinations.
+    candidate = str(ip).strip()
+    if "%" in candidate:
+        candidate = candidate.split("%", 1)[0]
+    try:
+        address = ipaddress.ip_address(candidate)
+    except ValueError:
+        # Malformed sensor data cannot safely authorize an external-host claim.
         return True
-    if ip.startswith(("10.", "192.168.", "169.254.", "fe80", "fc", "fd", "::")):
-        return True
-    if ip.startswith("172."):
-        try:
-            second = int(ip.split(".")[1])
-            if 16 <= second <= 31:
-                return True
-        except Exception:
-            pass
-    return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    if isinstance(address, ipaddress.IPv4Address):
+        return bool(
+            address.is_loopback
+            or address.is_link_local
+            or address.is_unspecified
+            or address.is_multicast
+            or address.is_reserved
+            or any(address in network for network in _LOCAL_V4_NETWORKS)
+        )
+    return bool(
+        address.is_loopback
+        or address.is_link_local
+        or address.is_unspecified
+        or address.is_multicast
+        or address.is_reserved
+        or any(address in network for network in _LOCAL_V6_NETWORKS)
+    )
 
 
 class NetworkMonitorModule(BaseModule):
     name = "Network Monitor"
     description = "Watches new outbound connections; alerts on suspicious ports and first-seen external hosts."
     category = "Network"
-    version = "1.1.0"
+    version = "1.12.1"
 
     def __init__(self) -> None:
         super().__init__()
         self._seen: Set[Tuple] = set()
         self._known_hosts: Dict[str, float] = {}  # ip -> last-seen ts (any process)
-        self._known_pid_hosts: Dict[Tuple[int, str], float] = {}
+        self._known_pid_hosts: Dict[Tuple[int, float, str], float] = {}
+
+    @staticmethod
+    def _process_birth(
+        connection: Mapping[str, object],
+        cache: Dict[int, float | None],
+    ) -> float | None:
+        """Resolve a PID-reuse-safe birth time once per process per poll."""
+        raw = (
+            connection.get("process_create_time")
+            or connection.get("pid_create_time")
+            or connection.get("create_time")
+        )
+        try:
+            supplied = float(raw)
+        except (TypeError, ValueError, OverflowError):
+            supplied = 0.0
+        if supplied > 0 and math.isfinite(supplied):
+            return supplied
+        pid = connection.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            return None
+        if pid in cache:
+            return cache[pid]
+        try:
+            import psutil
+
+            observed = float(psutil.Process(pid).create_time())
+            value = observed if observed > 0 and math.isfinite(observed) else None
+        except Exception:
+            value = None
+        cache[pid] = value
+        return value
+
+    @classmethod
+    def _connection_key(
+        cls,
+        connection: Mapping[str, object],
+        cache: Dict[int, float | None],
+    ) -> tuple[object, float | None, object, object]:
+        return (
+            connection.get("pid"),
+            cls._process_birth(connection, cache),
+            connection.get("laddr"),
+            connection.get("raddr"),
+        )
 
     @staticmethod
     def _trim_recent(mapping: Dict, maximum: int = _STATE_MAX) -> Dict:
@@ -204,10 +286,10 @@ class NetworkMonitorModule(BaseModule):
             "protocol": "tcp",
         }
         denied = _block_remote_contract(
-            "203.0.113.9", corroborated=False, classification="threat-intel-ioc"
+            "8.8.8.8", corroborated=False, classification="threat-intel-ioc"
         )
         allowed = _block_remote_contract(
-            "203.0.113.9", corroborated=True, classification="threat-intel-ioc"
+            "8.8.8.8", corroborated=True, classification="threat-intel-ioc"
         )
         values = {str(index): float(index) for index in range(12)}
         trimmed = self._trim_recent(values, maximum=5)
@@ -218,7 +300,7 @@ class NetworkMonitorModule(BaseModule):
             and _native_community_id(connection)
             and denied == {}
             and allowed.get("response_authorized") is True
-            and allowed["response_contract"]["targets"]["remote_ips"] == ["203.0.113.9"]
+            and allowed["response_contract"]["targets"]["remote_ips"] == ["8.8.8.8"]
             and len(trimmed) == 5
             and min(trimmed.values()) == 7.0
         )
@@ -230,8 +312,11 @@ class NetworkMonitorModule(BaseModule):
 
     def run(self) -> None:
         now0 = time.time()
+        birth_cache: Dict[int, float | None] = {}
         for c in list_connections():
-            self._seen.add((c["pid"], c["raddr"]))
+            key = self._connection_key(c, birth_cache)
+            birth = key[1]
+            self._seen.add(key)
             # Seed already-established peers as "known" so a pre-existing,
             # long-running connection doesn't get flagged as novel the
             # moment a second socket to the same host appears after startup.
@@ -242,7 +327,8 @@ class NetworkMonitorModule(BaseModule):
                 ip, _port = remote
                 if not _is_local(ip):
                     self._known_hosts[ip] = now0
-                    self._known_pid_hosts[(c["pid"], ip)] = now0
+                    if isinstance(c.get("pid"), int) and birth is not None:
+                        self._known_pid_hosts[(c["pid"], birth, ip)] = now0
         self.set_health(100, "")
         self.emit("Network monitor active.", Severity.INFO)
 
@@ -257,6 +343,7 @@ class NetworkMonitorModule(BaseModule):
                 else list_connections()
             )
             active_connections: Set[Tuple] = set()
+            birth_cache = {}
             for c in connections:
                 if c["status"] != "ESTABLISHED" or not c["raddr"]:
                     continue
@@ -266,7 +353,8 @@ class NetworkMonitorModule(BaseModule):
                 ip, rport = remote
                 if _is_local(ip):
                     continue
-                key = (c["pid"], c["raddr"])
+                key = self._connection_key(c, birth_cache)
+                birth = key[1]
                 active_connections.add(key)
                 if key in self._seen:
                     continue
@@ -277,6 +365,9 @@ class NetworkMonitorModule(BaseModule):
                 # private event copy so one consumer cannot mutate telemetry
                 # another consumer is concurrently reading.
                 event_details = dict(c)
+                event_details["process_identity_complete"] = birth is not None
+                if birth is not None:
+                    event_details["process_create_time"] = birth
                 # Raw socket snapshots are data, never an authority channel.
                 # Only the trusted correlation branch below may add a response
                 # contract to the emitted detector event.
@@ -295,14 +386,20 @@ class NetworkMonitorModule(BaseModule):
                 now = time.time()
                 last_seen = self._known_hosts.get(ip)
                 is_novel_host = last_seen is None or (now - last_seen) > NOVELTY_WINDOW_S
-                pid_host = (c["pid"], ip)
-                last_pid_seen = self._known_pid_hosts.get(pid_host)
-                is_novel_for_pid = (
-                    last_pid_seen is None or
-                    (now - last_pid_seen) > NOVELTY_WINDOW_S
+                pid_host = (
+                    (c["pid"], birth, ip)
+                    if isinstance(c.get("pid"), int) and birth is not None
+                    else None
+                )
+                last_pid_seen = self._known_pid_hosts.get(pid_host) if pid_host else None
+                is_novel_for_pid = bool(
+                    pid_host is None
+                    or last_pid_seen is None
+                    or (now - last_pid_seen) > NOVELTY_WINDOW_S
                 )
                 self._known_hosts[ip] = now
-                self._known_pid_hosts[pid_host] = now
+                if pid_host is not None:
+                    self._known_pid_hosts[pid_host] = now
 
                 if rport in SUSPICIOUS_PORTS:
                     corroborated = is_ip_flagged(ip)

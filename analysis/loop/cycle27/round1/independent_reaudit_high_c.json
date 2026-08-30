@@ -1,0 +1,34 @@
+[
+  {
+    "id": "C27-R1-C03",
+    "verdict": "REOPENED",
+    "residual_severity": "MEDIUM",
+    "component": "src/angerona/modules/ransomware_heuristics.py:124-134,333-349,401-452",
+    "evidence": "An inert NTFS watched-root junction was followed and redirected content produced complete=true and health=100.",
+    "recommendation": "Enroll and hold a no-follow root identity/generation, enumerate from the held object, revalidate every child before descent, and fail visibly on unapproved redirection."
+  },
+  {
+    "id": "C27-R1-C04",
+    "verdict": "REOPENED",
+    "residual_severity": "HIGH",
+    "component": "src/angerona/modules/remediation_actions.py:590-598,694-732,789-798",
+    "evidence": "A deterministic post-claim live-target swap still reached mocked sc.exe config and returned ok=true; only the later verifier noticed the mismatch.",
+    "recommendation": "Keep the action unavailable until query, verification, mutation, and postcondition share one held SCM service handle and held image-object identity."
+  },
+  {
+    "id": "C27-R1-C13",
+    "verdict": "REOPENED",
+    "residual_severity": "MEDIUM",
+    "component": "src/angerona/modules/smart_deception.py:507-591",
+    "evidence": "A deterministic close-to-rename swap moved a replacement pathname object; repeated restages emitted new incidents and retained an unbounded quarantine file per cycle.",
+    "recommendation": "Rename the held object by handle, add count/byte/age custody limits, and aggregate repeat alerts by logical decoy slot rather than each new file identity."
+  },
+  {
+    "id": "C27-R1-C18",
+    "verdict": "CLOSED",
+    "residual_severity": null,
+    "component": "src/angerona/modules/sys_bridge.py:35-88,138-146,225-250",
+    "evidence": "An ambient poisoned syscall_bridge module first on sys.path was not imported; native coverage stayed unavailable with health=55 and explicit ctypes signatures.",
+    "recommendation": "Retain the sealed-private-broker admission requirement and current truthful degraded fallback."
+  }
+]

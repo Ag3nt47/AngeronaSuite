@@ -1,0 +1,53 @@
+[
+  {
+    "id": "C27-R1-C03",
+    "status": "REMEDIATED_AWAITING_INDEPENDENT_REATTACK",
+    "severity": "MEDIUM",
+    "files": [
+      "src/angerona/modules/ransomware_heuristics.py",
+      "tests/test_cycle27_high_c_sixth_remediation.py",
+      "tests/test_cycle27_high_c_seventh_remediation.py"
+    ],
+    "changes": [
+      "Removed automatic packed-format exclusion: suffix, magic, and unchanged automated receipts are descriptive only and remain entropy candidates.",
+      "Replaced pre-rotation prefix truncation with a keyed bounded-memory reservoir over the complete held directory stream.",
+      "Exposed eligible entries, selected entries, and conservative oldest-unseen epoch age while retaining every existing incomplete-coverage health cap."
+    ],
+    "gates": {
+      "compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "PASS",
+      "focused_and_wider_pytest": "90 passed, 1 skipped",
+      "compatibility_pytest": "44 passed"
+    },
+    "assurance_boundary": "No explicit authenticated archive-approval workflow is shipped, so legitimate high-entropy containers remain visible and may alert. Large-file/content/time/traversal incompleteness remains non-green."
+  },
+  {
+    "id": "C27-R1-C13",
+    "status": "REMEDIATED_AWAITING_INDEPENDENT_REATTACK",
+    "severity": "MEDIUM",
+    "files": [
+      "src/angerona/modules/smart_deception.py",
+      "src/angerona/core/independent_high_water.py",
+      "src/angerona/core/personal_sentinel_authority.py",
+      "src/angerona/core/module_manager.py",
+      "src/angerona/app.py",
+      "src/angerona/core/headless.py",
+      "tests/test_cycle27_high_c_seventh_remediation.py"
+    ],
+    "changes": [
+      "Wired an application-owned authority through normal GUI/headless ModuleManager construction and a bundled-only bind_high_water contract.",
+      "Added smart-deception-custody to the shared independent-high-water domain set and Personal Sentinel default policy.",
+      "Added an authenticated pre-commit transition outbox, OS writer lease, and exact one-step CAS/replay reconciliation for outage and lost-response recovery.",
+      "Kept gaps, forks, identity changes, ambiguous resets, malformed transition evidence, and concurrent writers fail closed with explicit health states."
+    ],
+    "gates": {
+      "compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "PASS",
+      "focused_and_wider_pytest": "90 passed, 1 skipped",
+      "compatibility_pytest": "44 passed"
+    },
+    "assurance_boundary": "The provider remains explicit rather than silently enrolled. Same-host administrators can deny service or mutate local evidence; administrator-resistant preservation still requires separately administered append-only/WORM or kernel/hardware custody."
+  }
+]

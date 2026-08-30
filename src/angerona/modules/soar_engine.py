@@ -30,8 +30,11 @@ during a drill, without changing the real-world default.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
+import secrets
 import sys
 import time
 import zipfile
@@ -56,7 +59,7 @@ class ActiveResponseSOAR(BaseModule):
     name = "Active Response SOAR"
     description = "Opt-in: terminates the offending process and rolls back its file artifact on real CRITICAL alerts."
     category = "Response"
-    version = "1.1.0"
+    version = "1.12.1"
     supported_platforms = ("windows",)
     capability_mode = "respond"
     capability_inputs = ("authenticated-critical-event", "operator-response-scope")
@@ -97,6 +100,8 @@ class ActiveResponseSOAR(BaseModule):
         self._priority_overflow_count = 0
         self._general_cursor = 0
         self._manager = None
+        self._delivery_failures: dict[str, int] = {}
+        self._dead_lettered = 0
 
     def bind_manager(self, manager) -> None:
         self._manager = manager
@@ -157,7 +162,9 @@ class ActiveResponseSOAR(BaseModule):
     def priority_overflow_count(self) -> int:
         return self._priority_overflow_count
 
-    def _pending_security_events(self) -> tuple[list, bool]:
+    def _pending_security_events(
+        self,
+    ) -> tuple[list[tuple[int | None, object]], bool, int | None]:
         """Fetch response evidence without exposing HIGH+ to INFO eviction.
 
         Priority-lane overflow is reported as health degradation only.  It
@@ -166,9 +173,15 @@ class ActiveResponseSOAR(BaseModule):
         the operator's opt-in MEDIUM threshold continues to work.
         """
         bus = self._bus
+        priority_records_since = getattr(bus, "priority_records_since", None)
+        records_since = getattr(bus, "records_since", None)
         priority_since = getattr(bus, "priority_since", None)
         recent_since = getattr(bus, "recent_since", None)
-        if bus is not None and callable(priority_since) and callable(recent_since):
+        if (
+            bus is not None
+            and callable(priority_records_since)
+            and callable(records_since)
+        ):
             bus_id = id(bus)
             if self._priority_bus_id != bus_id:
                 self._priority_bus_id = bus_id
@@ -178,14 +191,12 @@ class ActiveResponseSOAR(BaseModule):
             # the general revision delta so that option keeps its historical
             # behavior; EventBus.recent_since transparently merges retained
             # HIGH/CRITICAL priority evidence after an INFO-ring overflow.
-            general_current, newest_first, _general_overflow = recent_since(
+            _general_current, newest_first, _general_overflow = records_since(
                 self._general_cursor
             )
-            self._general_cursor = general_current
-            priority_current, _priority_events, overflow = priority_since(
+            priority_current, _priority_events, overflow = priority_records_since(
                 self._priority_cursor
             )
-            self._priority_cursor = priority_current
             if overflow:
                 self._priority_overflow_count += 1
                 self.emit(
@@ -197,10 +208,47 @@ class ActiveResponseSOAR(BaseModule):
                     event_type="security_lane_overflow",
                     response_authorized=False,
                 )
-            return list(reversed(newest_first)), False
+            return list(reversed(newest_first)), False, priority_current
+        if bus is not None and callable(priority_since) and callable(recent_since):
+            priority_current, _priority_events, overflow = priority_since(
+                self._priority_cursor
+            )
+            _general_current, newest_first, _general_overflow = recent_since(
+                self._general_cursor
+            )
+            if overflow:
+                self._priority_overflow_count += 1
+            return [(None, event) for event in reversed(newest_first)], True, priority_current
         events = list(reversed(bus.recent(250))) if bus is not None else []
         events.sort(key=lambda event: event.ts)
-        return events, True
+        return [(None, event) for event in events], True, None
+
+    def _process_one_event(self, ev, floor: Severity, process_policy) -> bool:
+        if ev.severity < floor:
+            return False
+        if ev.module in (
+            self.name,
+            "Console",
+            "SOAR Automation",
+            "Active Response SOAR Request",
+        ):
+            return False
+        if is_remote_observe_only(ev):
+            return False
+        if _process_event_allowed(ev, policy=process_policy):
+            return False
+        if event_disposition(ev) not in {"active", "practice"}:
+            return False
+        if not self._event_in_response_scope(ev):
+            return False
+        self._kill_and_rollback(ev)
+        return True
+
+    def _commit_delivery(self, revision: int | None, ev, legacy_cursor: bool) -> None:
+        if legacy_cursor or revision is None:
+            self._advance_cursor(ev)
+        else:
+            self._general_cursor = int(revision)
 
     def process_pending_once(self) -> int:
         """Evaluate one response batch in publication order.
@@ -214,29 +262,47 @@ class ActiveResponseSOAR(BaseModule):
             return 0
         floor = self._min_severity()
         process_policy = _process_policy_snapshot()
-        events, legacy_cursor = self._pending_security_events()
+        events, legacy_cursor, priority_snapshot = self._pending_security_events()
         actions = 0
-        for ev in events:
+        batch_complete = True
+        for revision, ev in events:
             if legacy_cursor and not self._is_unseen(ev):
                 continue
             try:
-                if ev.severity < floor:
-                    continue
-                if ev.module in (self.name, "Console", "SOAR Automation"):
-                    continue
-                if is_remote_observe_only(ev):
-                    continue
-                if _process_event_allowed(ev, policy=process_policy):
-                    continue
-                if event_disposition(ev) not in {"active", "practice"}:
-                    continue
-                if not self._event_in_response_scope(ev):
-                    continue
-                self._kill_and_rollback(ev)
-                actions += 1
-            finally:
-                if legacy_cursor:
-                    self._advance_cursor(ev)
+                actions += int(self._process_one_event(ev, floor, process_policy))
+            except Exception as exc:
+                key = self._cursor_key(ev)
+                attempts = self._delivery_failures.get(key, 0) + 1
+                self._delivery_failures[key] = attempts
+                self.last_error = str(exc)
+                if attempts < 3:
+                    self.set_health(
+                        45,
+                        f"active-response event failed ({attempts}/3); "
+                        f"cursor retained: {exc}",
+                    )
+                    batch_complete = False
+                    break
+                self._delivery_failures.pop(key, None)
+                self._dead_lettered += 1
+                self.set_health(
+                    35,
+                    f"{self._dead_lettered} active-response event(s) dead-lettered",
+                )
+                self.emit(
+                    "Active-response event moved to bounded dead-letter state after "
+                    "three failures; later events remain eligible.",
+                    Severity.HIGH,
+                    event_type="active_soar_delivery_dead_letter",
+                    failed_event_id=key,
+                    response_authorized=False,
+                )
+                self._commit_delivery(revision, ev, legacy_cursor)
+                continue
+            self._delivery_failures.pop(self._cursor_key(ev), None)
+            self._commit_delivery(revision, ev, legacy_cursor)
+        if batch_complete and priority_snapshot is not None:
+            self._priority_cursor = int(priority_snapshot)
         return actions
 
     # ── Response playbook ────────────────────────────────────────────────
@@ -390,12 +456,65 @@ class ActiveResponseSOAR(BaseModule):
             )
             return
 
-        before = self._matching_combat_receipts(combat, ev)
+        bus = self._bus
+        if bus is None or not getattr(bus, "integrity_enabled", False):
+            self.emit(
+                "Refusing Combat delegation without an authenticated EventBus receipt path.",
+                Severity.HIGH,
+                pid=pid if isinstance(pid, int) else None,
+                path=path,
+            )
+            return
+        request_id = secrets.token_hex(16)
+        origin_signature = str(getattr(ev, "hmac_sig", "") or "")
+        origin_digest = origin_signature or hashlib.sha256(
+            json.dumps(
+                {
+                    "module": ev.module,
+                    "message": ev.message,
+                    "severity": int(ev.severity),
+                    "ts": float(ev.ts),
+                    "details": ev.details or {},
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+        request_details = json.loads(
+            json.dumps(ev.details or {}, sort_keys=True, default=str)
+        )
+        request_details.update({
+            "queue_request_id": request_id,
+            "correlation_id": request_id,
+            "origin_event_digest": origin_digest,
+            "origin_module": ev.module,
+            "origin_ts": float(ev.ts),
+        })
+        from angerona.core.eventbus import Event
+
+        request = Event(
+            "Active Response SOAR Request",
+            f"Exact response request for {ev.module} evidence {origin_digest[:16]}.",
+            ev.severity,
+            details=request_details,
+        )
         try:
+            bus.publish(request)
+            signed_request = next(
+                event
+                for event in bus.recent(50)
+                if event.module == "Active Response SOAR Request"
+                and (event.details or {}).get("queue_request_id") == request_id
+                and bus.verify(event)
+            )
             if synchronous:
-                combat._handle(ev)
+                combat._handle(signed_request)
             else:
-                combat._submit(ev)
+                # Production Combat is already an EventBus subscriber. This
+                # explicit submission also supports injected supervisors; its
+                # request-ID dedup makes the production path one-shot.
+                combat._submit(signed_request)
         except Exception as exc:
             self.emit(
                 f"Combat delegation failed safely: {exc}",
@@ -404,26 +523,47 @@ class ActiveResponseSOAR(BaseModule):
                 path=path,
             )
             return
-        receipts = self._matching_combat_receipts(combat, ev)
-        if not synchronous and len(receipts) <= len(before):
+        receipt = self._verified_request_receipt(
+            combat, request_id, request.ts
+        )
+        if not synchronous and receipt is None:
             deadline = time.monotonic() + 3.0
             while time.monotonic() < deadline:
                 time.sleep(0.05)
-                receipts = self._matching_combat_receipts(combat, ev)
-                if len(receipts) > len(before):
+                receipt = self._verified_request_receipt(
+                    combat, request_id, request.ts
+                )
+                if receipt is not None:
                     break
-        applied = receipts[len(before):] if len(receipts) > len(before) else receipts
-        mitigated = bool(applied)
+        receipt_details = (receipt.details or {}) if receipt is not None else {}
+        mitigated = bool(
+            receipt is not None
+            and receipt_details.get("action_succeeded") is True
+            and receipt_details.get("postcondition_verified") is True
+        )
+        action_ids = (
+            list(receipt_details.get("action_ids") or [])
+            if mitigated
+            else []
+        )
 
         elapsed = round(time.time() - t0, 3)
         self.emit(
             f"Exact response for {ev.module} {ev.severity.label} was delegated "
-            f"to Combat: {len(applied)} signed action receipt(s), {elapsed}s.",
+            f"to Combat: {len(action_ids)} request-bound signed action receipt(s), "
+            f"{elapsed}s.",
             Severity.HIGH if mitigated else Severity.MEDIUM,
             pid=pid,
             response_target_path=path,
             mitigated=mitigated,
-            combat_action_ids=[str(row.get("action_id") or "") for row in applied],
+            combat_action_ids=action_ids,
+            queue_request_id=request_id,
+            origin_event_digest=origin_digest,
+            receipt_status=(
+                "verified-applied"
+                if mitigated
+                else "verified-no-action" if receipt is not None else "pending-timeout"
+            ),
             mitigation_seconds=elapsed, trigger_module=ev.module, trigger_ts=ev.ts,
         )
 
@@ -495,23 +635,68 @@ class ActiveResponseSOAR(BaseModule):
         except Exception:
             return None, False
 
-    @staticmethod
-    def _matching_combat_receipts(combat, ev) -> list[dict]:
+    def _verified_request_receipt(
+        self,
+        combat,
+        request_id: str,
+        request_ts: float,
+    ):
+        """Return only a fresh signed receipt for this one random request ID."""
+        bus = self._bus
+        if bus is None or not getattr(bus, "integrity_enabled", False):
+            return None
         try:
-            rows = combat.list_actions(limit=250)
+            rows = combat.list_actions(limit=500)
         except Exception:
-            return []
-        matched = []
-        for row in rows:
-            try:
-                same_ts = abs(float(row.get("trigger_ts")) - float(ev.ts)) < 0.000001
-            except (TypeError, ValueError, OverflowError):
-                same_ts = False
+            rows = []
+        verified_actions = {
+            str(row.get("action_id") or "")
+            for row in rows
             if (
-                same_ts
-                and row.get("trigger_module") == ev.module
+                isinstance(row, dict)
                 and row.get("integrity_status") == "verified"
                 and row.get("status") == "applied"
+                and (row.get("details") or {}).get("postcondition_verified") is True
+            )
+        }
+        for receipt in bus.recent(500):
+            if receipt.module != "Adversary Combat":
+                continue
+            details = receipt.details or {}
+            if (
+                not isinstance(details, dict)
+                or details.get("queue_request_id") != request_id
+                or float(getattr(receipt, "ts", 0.0)) < float(request_ts)
+                or not bus.verify(receipt)
             ):
-                matched.append(row)
-        return matched
+                continue
+            succeeded = details.get("action_succeeded") is True
+            action_ids = details.get("action_ids")
+            actions = details.get("actions")
+            if succeeded:
+                if (
+                    details.get("mitigated") is not True
+                    or details.get("postcondition_verified") is not True
+                    or not isinstance(action_ids, list)
+                    or not action_ids
+                    or not all(
+                        isinstance(value, str)
+                        and value
+                        and value in verified_actions
+                        for value in action_ids
+                    )
+                    or not isinstance(actions, list)
+                    or not actions
+                ):
+                    continue
+            elif not (
+                details.get("action_succeeded") is False
+                and details.get("mitigated") is False
+                and isinstance(action_ids, list)
+                and not action_ids
+                and isinstance(actions, list)
+                and not actions
+            ):
+                continue
+            return receipt
+        return None

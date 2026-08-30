@@ -77,11 +77,18 @@ def build_inventory() -> dict:
                 "retention": contract.get("retention", "undeclared"),
                 "self_test": record["self_test"],
                 "source": record.get("origin", "builtin"),
+                "assurance_score": record["assurance_score"],
+                "assurance_dimensions": list(
+                    (record.get("assurance") or {}).get("dimensions", ())
+                ),
+                "assurance_reasons": list(
+                    (record.get("assurance") or {}).get("reasons", ())
+                ),
             }
         )
     rows.sort(key=lambda row: row["capability_id"])
-    if len(rows) != 80:
-        raise RuntimeError(f"expected 80 built-in capabilities, discovered {len(rows)}")
+    if len(rows) != 81:
+        raise RuntimeError(f"expected 81 built-in capabilities, discovered {len(rows)}")
     identifiers = [row["capability_id"] for row in rows]
     if len(set(identifiers)) != len(identifiers):
         raise RuntimeError("capability inventory contains duplicate identifiers")
@@ -90,7 +97,12 @@ def build_inventory() -> dict:
         "schema": "angerona.release-capability-inventory.v12",
         "contract_schema": CONTRACT_SCHEMA_ID,
         "contract_schema_version": CONTRACT_SCHEMA_VERSION,
+        "assurance_schema": "angerona.capability-assurance.v1",
         "scope": "built-in modules on the Windows target contract",
+        "assurance_snapshot_note": (
+            "Export is read-only and does not start modules; runtime deductions therefore "
+            "describe the intentionally stopped inventory process."
+        ),
         "capability_count": len(rows),
         "native_contract_count": native,
         "compatibility_adapter_count": len(rows) - native,

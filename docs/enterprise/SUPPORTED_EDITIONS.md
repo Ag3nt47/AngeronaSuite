@@ -5,7 +5,10 @@ scope, not a paywall.
 
 ## Community / Standalone
 
-- Supported now on Windows from source; packaged support follows each release.
+- Windows source checkouts provide an unelevated Observe/development profile.
+- Full Windows Protect coverage requires the OS-validated signed MSIX and its
+  protected installed authority; mutable source never requests or accepts an
+  Administrator execution boundary.
 - One host, local data, local operator, offline detection and investigation.
 - Optional integrations remain disabled until explicitly configured.
 - Security fixes are never withheld from this edition.

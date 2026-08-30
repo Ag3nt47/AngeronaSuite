@@ -1,0 +1,52 @@
+[
+  {
+    "id": "C27-R1-C03",
+    "status": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+    "severity": "MEDIUM",
+    "files": [
+      "src/angerona/modules/ransomware_heuristics.py",
+      "tests/test_cycle27_high_c_seventh_independent_reattack.py",
+      "tests/test_cycle27_high_ac_eighth_remediation.py"
+    ],
+    "changes": [
+      "The held directory stream checks deadline and stop state on every yielded entry and closes immediately when interrupted.",
+      "Coverage records deadline/stop truncation and cannot claim complete health.",
+      "An authenticated adjacent transition binds old/new state sequence, epoch, and HMAC before either state or witness replacement.",
+      "Restart repairs only exact old-old, new-old, or new-new transition states, including genesis."
+    ],
+    "gates": {
+      "new_combined_tests": "PASS: 16",
+      "focused_seventh_matrix": "PASS: 40",
+      "affected_wider_matrix": "PASS: 197, 2 expected skips",
+      "compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "PASS"
+    },
+    "assurance_boundary": "Deadline truncation remains honestly incomplete. Strong fair continuation over arbitrarily slow attacker-controlled enumeration requires a platform-specific durable directory cursor."
+  },
+  {
+    "id": "C27-R1-C13",
+    "status": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+    "severity": "MEDIUM",
+    "files": [
+      "src/angerona/modules/smart_deception.py",
+      "tests/test_cycle27_high_c_seventh_independent_reattack.py",
+      "tests/test_cycle27_high_ac_eighth_remediation.py"
+    ],
+    "changes": [
+      "The authenticated genesis intent is durable before SQLite/head/witness first enrollment.",
+      "Startup validates the transition and ledger before demanding local metadata equality.",
+      "Exact SQLite-new/head-old, head-new/witness-old, local-new/remote-old, and remote-new response-lost states repair forward under the writer lease.",
+      "An ambiguous SQLite COMMIT exception retains the intent for restart classification instead of deleting its only proof."
+    ],
+    "gates": {
+      "new_combined_tests": "PASS: 16",
+      "focused_seventh_matrix": "PASS: 40",
+      "affected_wider_matrix": "PASS: 197, 2 expected skips",
+      "compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "PASS"
+    },
+    "assurance_boundary": "The external authority proves monotonic rollback freshness, not remote/WORM preservation of local evidence bytes; same-host denial remains fail-closed and captured evidence remains typed captured_unverified."
+  }
+]

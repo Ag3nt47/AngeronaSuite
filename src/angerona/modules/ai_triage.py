@@ -40,7 +40,7 @@ class AITriageModule(BaseModule):
     name = "AI Triage (Ollama)"
     description = "Explains and scores serious events using a local LLM (Ollama)."
     category = "AI"
-    version = "1.1.0"
+    version = "1.12.1"
     supported_platforms = SUPPORTED_PLATFORMS
     capability_mode = "detect"
     # Restarting this worker cannot install a model or start the external
@@ -66,16 +66,56 @@ class AITriageModule(BaseModule):
             or "llama3"
         )
         self._config = None
+        self._manager = None
+        self._speculative = None
         # Circuit breaker — "closed" = normal, "open" = Ollama hung/dead
         self._cb_state = "closed"             # type: str
         self._cb_lock  = threading.Lock()
         self._recovery_lock = threading.Lock()
         self._recovery_thread: Optional[threading.Thread] = None
+        self._attestation_error = ""
+        self._attestation_receipt = None
 
     def bind_manager(self, manager) -> None:
         """Use the operator's current local-AI settings for readiness checks."""
+        self._manager = manager
         self._config = getattr(manager, "config", None)
         self._sync_config()
+
+    def _bind_speculative_consumer(self):
+        """Resolve and bind the optional pre-warmer after discovery completes."""
+        manager = self._manager
+        candidate = (
+            getattr(manager, "modules", {}).get("Speculative Triage Pre-Warm")
+            if manager is not None
+            else None
+        )
+        binder = getattr(candidate, "bind_consumer", None)
+        if candidate is not None and callable(binder) and binder(self):
+            self._speculative = candidate
+        else:
+            self._speculative = None
+        return self._speculative
+
+    def _consume_speculative_frame(self, event) -> bool:
+        speculative = self._speculative or self._bind_speculative_consumer()
+        consumer = getattr(speculative, "get_primed", None)
+        if not callable(consumer):
+            return False
+        details = event.details or {}
+        try:
+            pid = int(details.get("pid"))
+        except (TypeError, ValueError):
+            return False
+        try:
+            frame = consumer(
+                pid,
+                consumer=self,
+                process_birth=details.get("process_birth"),
+            )
+        except Exception:
+            return False
+        return bool(frame)
 
     def _sync_config(self) -> None:
         """Apply live Settings values without requiring a suite restart."""
@@ -107,6 +147,8 @@ class AITriageModule(BaseModule):
         with self._cb_lock:
             if self._cb_state == "open":
                 return None
+        if not self._attest_model():
+            return None
 
         # BL-03: neutralize attacker-influenced telemetry so embedded instructions
         # are treated as data, not commands.
@@ -157,6 +199,38 @@ class AITriageModule(BaseModule):
                         cb_state="open",
                     )
             return None
+
+    def _attest_model(self) -> bool:
+        """Require a fresh receipt for the exact configured tag before use."""
+        self._sync_config()
+        try:
+            from angerona.modules.ai_model_integrity import (
+                require_fresh_model_attestation,
+            )
+
+            receipt = require_fresh_model_attestation(self._model)
+        except Exception as exc:
+            rendered = str(exc)[:500]
+            self.last_error = rendered
+            self.set_health(
+                20,
+                "configured AI model lacks a fresh approved local attestation: "
+                f"{rendered}",
+            )
+            if rendered != self._attestation_error:
+                self._attestation_error = rendered
+                self.emit(
+                    "AI triage model attestation failed; deterministic defenses "
+                    "remain active and LLM inference is blocked.",
+                    Severity.MEDIUM,
+                    model=self._model,
+                    attestation_error=rendered,
+                )
+            self._attestation_receipt = None
+            return False
+        self._attestation_error = ""
+        self._attestation_receipt = receipt
+        return True
 
     def _ping_ollama(self) -> bool:
         """Check daemon/model availability without loading the model into RAM."""
@@ -221,9 +295,13 @@ class AITriageModule(BaseModule):
                 if recovered:
                     with self._cb_lock:
                         self._cb_state = "closed"
-                    self.set_health(100, "")
+                    self.set_health(
+                        70,
+                        "Ollama recovered; awaiting exact model attestation",
+                    )
                     self.emit(
-                        f"AI circuit breaker CLOSED — Ollama recovered ({self._model}).",
+                        f"AI circuit breaker CLOSED — Ollama recovered ({self._model}); "
+                        "fresh model attestation still required.",
                         Severity.INFO,
                         cb_state="closed",
                     )
@@ -257,6 +335,7 @@ class AITriageModule(BaseModule):
                     self._recovery_thread = None
 
     def _run_generation(self) -> None:
+        self._bind_speculative_consumer()
         ticks = 0
         while not self.stopping:
             self.sleep(8, cycle_complete=False)
@@ -294,6 +373,9 @@ class AITriageModule(BaseModule):
                 # VPN-aware prompt enrichment: pass the originating interface_type so
                 # the model weighs a VPN tunnel against ancestry + destination IP.
                 prompt = f"Event from {ev.module}: {ev.message}"
+                reused_speculative_frame = self._consume_speculative_frame(ev)
+                if reused_speculative_frame:
+                    prompt += "\nA fresh model pre-warm exists for this exact process identity."
                 itype = (ev.details or {}).get("interface_type")
                 if itype:
                     prompt += (f"\nOriginating network interface_type: {itype}. Weigh the "
@@ -302,7 +384,12 @@ class AITriageModule(BaseModule):
                 verdict = self._ask(prompt)
                 if verdict:
                     self.set_health(100, "")
-                    self.emit(f"AI: {verdict}", Severity.INFO, source=ev.module)
+                    self.emit(
+                        f"AI: {verdict}",
+                        Severity.INFO,
+                        source=ev.module,
+                        speculative_frame_reused=reused_speculative_frame,
+                    )
                 # If verdict is None because CB is open, the event is already on the
                 # bus being processed by SOAR, attack_tracker, etc.  The CB trip
                 # itself already emitted a HIGH alert — no further action needed.
@@ -322,8 +409,10 @@ class AITriageModule(BaseModule):
             if prev >= 50 and not cb_open:
                 self.emit("Ollama not reachable / model missing — AI triage idle.", Severity.MEDIUM)
         else:
-            self.set_health(100, "")
-            if prev < 50:
+            attested = self._attest_model()
+            if attested:
+                self.set_health(100, "exact configured model attested for local inference")
+            if attested and prev < 50:
                 self.emit(f"AI triage online ({self._model}).", Severity.INFO)
 
     def self_test(self) -> tuple[bool, str]:
@@ -339,4 +428,9 @@ class AITriageModule(BaseModule):
                 f"Ollama daemon unreachable or configured model "
                 f"'{self._model}' is not installed"
             )
-        return True, f"Ollama ready; model {self._model} installed (not loaded)"
+        if not self._attest_model():
+            return False, (
+                f"Ollama ready, but model {self._model} has no fresh approved "
+                "local attestation"
+            )
+        return True, f"Ollama ready; model {self._model} installed and attested"

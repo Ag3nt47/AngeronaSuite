@@ -1,0 +1,145 @@
+{
+  "schema": "angerona.cycle27.shard-c.post-remediation-independent-verification.v1",
+  "date": "2026-08-28",
+  "scope": [
+    "C27-R1-C09",
+    "C27-R1-C10",
+    "C27-R1-C17",
+    "C27-R1-C19"
+  ],
+  "execution_boundary": {
+    "product_code_edited": false,
+    "existing_tests_edited": false,
+    "host_mutation": false,
+    "live_attack": false,
+    "fixtures": [
+      "temporary authenticated self-healer state",
+      "temporary signed crash snapshot",
+      "in-memory guardrail policy replacement",
+      "in-memory ACL collector state",
+      "fake Sysmon Event Log backend"
+    ]
+  },
+  "verdict": {
+    "closed": 1,
+    "reopened": 3,
+    "high": 2,
+    "medium": 1,
+    "new_red_gates": 4,
+    "release_blocker": true
+  },
+  "findings": [
+    {
+      "id": "C27-R1-C09",
+      "status": "REOPENED",
+      "severity": "MEDIUM",
+      "title": "Older authentic state replay erases retry monotonicity",
+      "test": "tests/test_cycle27_shard_c_post_remediation_independent_verification.py:54",
+      "assertion_line": 82,
+      "product_lines": [
+        "src/angerona/modules/self_healer.py:201-217",
+        "src/angerona/modules/self_healer.py:300-317",
+        "src/angerona/modules/self_healer.py:375-383",
+        "src/angerona/modules/self_healer.py:517-534"
+      ],
+      "observed": {
+        "older_state_authentic": true,
+        "install_key_unchanged": true,
+        "load_accepted": true,
+        "pending_retries_after_replay": 0,
+        "snapshot_immediately_reprocessed": 1
+      },
+      "required": "Bind healer state to an authenticated monotonic generation/high-water outside the replayed state and fail closed on missing, older, or forked state."
+    },
+    {
+      "id": "C27-R1-C10-A",
+      "parent": "C27-R1-C10",
+      "status": "REOPENED",
+      "severity": "HIGH",
+      "title": "Mutable guardrail policy is outside callable integrity coverage",
+      "test": "tests/test_cycle27_shard_c_post_remediation_independent_verification.py:88",
+      "assertion_line": 102,
+      "product_lines": [
+        "src/angerona/engines/ai_guardrail.py:73-97",
+        "src/angerona/modules/self_integrity.py:265-286",
+        "src/angerona/modules/self_integrity.py:373-403"
+      ],
+      "observed": {
+        "blocked_before": true,
+        "allowed_after_policy_replacement": true,
+        "integrity_findings": 0
+      },
+      "required": "Fingerprint or immutably bind security-decision globals in addition to callable code and its explicitly listed dependencies."
+    },
+    {
+      "id": "C27-R1-C10-B",
+      "parent": "C27-R1-C10",
+      "status": "REOPENED",
+      "severity": "HIGH",
+      "title": "ACL posture is not recollected after enrollment",
+      "test": "tests/test_cycle27_shard_c_post_remediation_independent_verification.py:107",
+      "assertion_line": 154,
+      "product_lines": [
+        "src/angerona/modules/self_integrity.py:481-504",
+        "src/angerona/modules/self_integrity.py:505-530"
+      ],
+      "observed": {
+        "enrollment_acl_status": "ok",
+        "later_collector_status": "weak",
+        "collector_calls": 1,
+        "final_health": 100
+      },
+      "required": "Recollect ACL evidence periodically and degrade on changed, weak, unknown, or unavailable evidence."
+    },
+    {
+      "id": "C27-R1-C17",
+      "status": "CLOSED_CLAIMED_BOUNDARY",
+      "severity": null,
+      "product_lines": [
+        "src/angerona/modules/storage_hygiene.py:151-175",
+        "src/angerona/modules/storage_hygiene.py:178-243",
+        "src/angerona/modules/storage_hygiene.py:266-295"
+      ],
+      "observed": "Frozen junction/ordinary-object swaps and author identity gates passed; mutation routes remain retired.",
+      "disclosed_limit": "A wholly inter-check swap-and-restore can affect observation without a portable handle-relative enumeration primitive, but cannot redirect a retired move/delete route."
+    },
+    {
+      "id": "C27-R1-C19",
+      "status": "REOPENED",
+      "severity": "HIGH",
+      "title": "Missing retained delivery can be checkpointed past",
+      "test": "tests/test_cycle27_shard_c_post_remediation_independent_verification.py:199",
+      "assertion_line": 216,
+      "product_lines": [
+        "src/angerona/modules/sysmon_listener.py:682-703",
+        "src/angerona/modules/sysmon_listener.py:714-728",
+        "src/angerona/modules/sysmon_listener.py:902-915"
+      ],
+      "observed": {
+        "retained_range": "1-3",
+        "cursor_before": 1,
+        "missing_record": 2,
+        "delivered_record": 3,
+        "cursor_after": 3,
+        "continuity_state": "verified",
+        "health": 100
+      },
+      "required": "Validate exact first and unit-monotonic subsequent record numbers before emit/checkpoint; gaps must trigger degraded retained replay."
+    }
+  ],
+  "gates": {
+    "frozen_final_independent": "14 passed in 2.54s",
+    "author_post_and_final_remediation": "20 passed in 2.84s",
+    "new_independent": "4 failed in 2.18s",
+    "py_compile_new_test": "PASS",
+    "ruff_new_test": "PASS"
+  },
+  "sha256": {
+    "src/angerona/modules/self_healer.py": "8c61154667824a2d6b1878980d857dd3bf17bb86a5d0b636ffa64bd1b8478bd6",
+    "src/angerona/modules/self_integrity.py": "7c41027ed1f89fa39ae66ddf4aaca9a4ccb934c4db5c6595f42ff9f22b0eb876",
+    "src/angerona/engines/ai_guardrail.py": "6c993f9da1ce630258b71a3de9cda958bc12b57b49008f9a3541a35c25d5c4a0",
+    "src/angerona/modules/storage_hygiene.py": "1aa312ac6f69819074f0921ae402754743027c1adc176e40f82933aaded51a96",
+    "src/angerona/modules/sysmon_listener.py": "e1fcfdb1da3559658a4bff7de30d184000977ca87514b739d335e12277565c97"
+  },
+  "test_file": "tests/test_cycle27_shard_c_post_remediation_independent_verification.py"
+}

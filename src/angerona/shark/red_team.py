@@ -22,8 +22,11 @@ and the After-Action Report honestly records whether a detector noticed.
 from __future__ import annotations
 
 import ctypes
+import copy
+import hashlib
 import os
 import random
+import stat
 import sys
 import threading
 import time
@@ -38,8 +41,14 @@ from angerona.core.practice_scope import (
     register_run,
     unregister_run,
 )
+from angerona.modules.purple_guard import (
+    RedTeamValidationError,
+    RedTeamValidationLease,
+)
 from angerona.shark.run_manifest import (
+    RED_TEAM_COMPREHENSIVE_PLAN,
     build_run_history,
+    expected_red_team_plan,
     preflight_run,
     write_run_history,
 )
@@ -67,12 +76,26 @@ _INTENSITY_ORDER = ["Low", "Medium", "High", "Extreme"]
 
 # Canonical ATT&CK kill-chain order for CAMPAIGN mode (chained, not shuffled).
 _CAMPAIGN_ORDER = [
-    "_step_initial_access", "_step_recon", "_step_credential_access",
-    "_step_privilege_escalation", "_step_defense_evasion", "_step_registry_runkey",
-    "_step_scheduled_task", "_step_wmi_persistence", "_step_lateral_movement",
-    "_step_c2_beacon", "_step_exfil_staging", "_step_ransomware_canary",
-    "_step_data_destruction", "_step_random_processes",
+    "_step_initial_access", "_step_public_facing_app", "_step_recon",
+    "_step_account_discovery", "_step_network_service_discovery",
+    "_step_network_connections_discovery", "_step_software_discovery",
+    "_step_credential_access", "_step_credential_store",
+    "_step_unsecured_credentials", "_step_user_execution",
+    "_step_random_processes", "_step_privilege_escalation",
+    "_step_exploitation_privilege", "_step_registry_runkey",
+    "_step_scheduled_task", "_step_wmi_persistence", "_step_create_account",
+    "_step_web_shell", "_step_dll_side_loading", "_step_defense_evasion",
+    "_step_obfuscated_files", "_step_masquerading", "_step_impair_defenses",
+    "_step_lateral_movement", "_step_remote_desktop", "_step_wmi_lateral",
+    "_step_c2_beacon", "_step_tool_transfer", "_step_protocol_tunneling",
+    "_step_automated_collection", "_step_local_data", "_step_exfil_staging",
+    "_step_exfil_c2", "_step_exfil_web_service", "_step_ransomware_canary",
+    "_step_inhibit_recovery", "_step_data_destruction",
 ]
+
+_COMPREHENSIVE_PROBES = {
+    str(row["key"]): dict(row) for row in RED_TEAM_COMPREHENSIVE_PLAN
+}
 
 
 def _hide_file(path) -> None:
@@ -99,6 +122,8 @@ class RedTeamStep:
     correlation_tokens: List[str] = field(default_factory=list)
     detail: str = ""
     ok: bool = True
+    cycle: int = 0
+    plan_step_id: str = ""
 
 
 class RedTeamEngine:
@@ -112,8 +137,10 @@ class RedTeamEngine:
                  on_event: Optional[Callable[[str], None]] = None) -> None:
         self.data_dir = Path(data_dir)
         self.history_path = self.data_dir / "redteam_history.json"
-        self.documents_dir = (Path(documents_dir) if documents_dir
-                              else self.data_dir / "drill-sandbox")
+        self.default_documents_dir = (
+            Path(documents_dir) if documents_dir else self.data_dir / "drill-sandbox"
+        ).resolve(strict=False)
+        self.documents_dir = self.default_documents_dir
         self._on_event = on_event
         self._thread: Optional[threading.Thread] = None
         self._running = threading.Event()
@@ -124,8 +151,12 @@ class RedTeamEngine:
         self._evidence_lease = False
         self._probe_processes: List[object] = []
         self._owned_artifacts: List[Path] = []
+        self._last_run_target = self.default_documents_dir
+        self._validation_readiness: dict = {}
+        self._validation_lease: RedTeamValidationLease | None = None
         self.run_id = ""
         self.steps: List[RedTeamStep] = []
+        self._active_plan_entry: dict[str, object] | None = None
 
     # ── helpers ──────────────────────────────────────────────────────────────
     def _narrate(self, msg: str) -> None:
@@ -147,6 +178,9 @@ class RedTeamEngine:
             raise _DrillCancelled()
 
     def _record(self, stage, technique, description, ts_start, **kw) -> RedTeamStep:
+        plan_entry = self._active_plan_entry or {}
+        kw.setdefault("cycle", int(plan_entry.get("cycle", 0) or 0))
+        kw.setdefault("plan_step_id", str(plan_entry.get("plan_step_id") or ""))
         step = RedTeamStep(stage=stage, technique=technique, description=description,
                            ts_start=ts_start, ts_end=time.time(), **kw)
         self.steps.append(step)
@@ -159,14 +193,107 @@ class RedTeamEngine:
     def _marker(self, name: str, body: str) -> Path:
         if self._cancel.is_set():
             raise _DrillCancelled()
+        lease = self._validation_lease
+        if type(lease) is RedTeamValidationLease:
+            RedTeamValidationLease.assert_target_identity(
+                lease, run_id=self.run_id
+            )
         self.documents_dir.mkdir(parents=True, exist_ok=True)
         p = self.documents_dir / name
-        # Register the exact destination before the write.  Real-time AV/FIM
-        # can observe a file immediately; provenance must win that race without
-        # ever trusting the suspicious-looking filename itself.
-        register_artifact(p, self.run_id, kind="red-team")
-        self._owned_artifacts.append(p)
-        p.write_text(body, encoding="utf-8")
+        encoded = body.encode("utf-8")
+        descriptor: int | None = None
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                create_file = ctypes.windll.kernel32.CreateFileW
+                create_file.argtypes = [
+                    ctypes.c_wchar_p,
+                    ctypes.c_uint32,
+                    ctypes.c_uint32,
+                    ctypes.c_void_p,
+                    ctypes.c_uint32,
+                    ctypes.c_uint32,
+                    ctypes.c_void_p,
+                ]
+                create_file.restype = ctypes.c_void_p
+                raw_handle = create_file(
+                    str(p),
+                    0x80000000 | 0x40000000 | 0x00010000,
+                    0x1 | 0x2 | 0x4,
+                    None,
+                    1,  # CREATE_NEW
+                    0x00200000,  # FILE_FLAG_OPEN_REPARSE_POINT
+                    None,
+                )
+                invalid = ctypes.c_void_p(-1).value
+                if raw_handle in (None, invalid):
+                    error = int(ctypes.windll.kernel32.GetLastError())
+                    if error in {80, 183} or p.exists():
+                        raise FileExistsError(error, "marker already exists", str(p))
+                    raise OSError(error, "exclusive marker creation failed", str(p))
+                try:
+                    descriptor = msvcrt.open_osfhandle(
+                        int(raw_handle), os.O_RDWR | getattr(os, "O_BINARY", 0)
+                    )
+                except Exception:
+                    ctypes.windll.kernel32.CloseHandle(
+                        ctypes.c_void_p(raw_handle)
+                    )
+                    raise
+            else:
+                descriptor = os.open(p, flags, 0o600)
+            created = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(created.st_mode)
+                or int(getattr(created, "st_nlink", 1)) != 1
+                or bool(getattr(created, "st_file_attributes", 0) & 0x400)
+            ):
+                raise RedTeamValidationError(
+                    "marker creation did not yield one regular single-link file"
+                )
+            # Ownership begins only after exclusive creation proved that this
+            # exact leaf did not pre-exist. Real-time AV/FIM can then resolve
+            # provenance before the first content byte is written, without a
+            # failed O_EXCL attempt ever granting cleanup authority over an
+            # attacker-planted alias.
+            register_artifact(p, self.run_id, kind="red-team")
+            offset = 0
+            while offset < len(encoded):
+                written = os.write(descriptor, encoded[offset:])
+                if written <= 0:
+                    raise OSError("marker write made no progress")
+                offset += written
+            os.fsync(descriptor)
+            after = os.fstat(descriptor)
+            path_stat = p.stat(follow_symlinks=False)
+            if (
+                (created.st_dev, created.st_ino)
+                != (after.st_dev, after.st_ino)
+                or (after.st_dev, after.st_ino)
+                != (path_stat.st_dev, path_stat.st_ino)
+                or int(getattr(after, "st_nlink", 1)) != 1
+                or int(getattr(path_stat, "st_nlink", 1)) != 1
+                or int(after.st_size) != len(encoded)
+            ):
+                raise RedTeamValidationError(
+                    "marker identity changed during exclusive creation"
+                )
+            if type(lease) is RedTeamValidationLease:
+                RedTeamValidationLease.register_artifact_handle(
+                    lease, p, run_id=self.run_id
+                )
+            self._owned_artifacts.append(p)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
         _hide_file(p)
         return p
 
@@ -193,7 +320,7 @@ class RedTeamEngine:
         """
         removed = 0
         try:
-            target = Path(target_dir or self.documents_dir).resolve(strict=False)
+            target = Path(target_dir or self._last_run_target).resolve(strict=False)
         except (OSError, RuntimeError):
             return 0
         tracked = (
@@ -213,6 +340,16 @@ class RedTeamEngine:
                 ):
                     continue
                 seen.add(path)
+                lease = self._validation_lease
+                if type(lease) is RedTeamValidationLease:
+                    if RedTeamValidationLease.remove_registered_artifact(
+                        lease, path, run_id=self.run_id
+                    ):
+                        removed += 1
+                    # Never fall back to pathname-only deletion while an
+                    # evidence lease exists; a failed identity check is a
+                    # refusal, not permission to unlink whatever is there.
+                    continue
                 if path.exists():
                     path.unlink(missing_ok=True)
                     removed += 1
@@ -237,11 +374,25 @@ class RedTeamEngine:
         with self._cleanup_lock:
             self._evidence_lease = True
 
+    def cancel_evidence_hold(self) -> bool:
+        """Cancel a pre-start AAR hold after a refused launch.
+
+        This deliberately does not sweep paths or unregister an older run.  A
+        failed ``start()`` has no new ownership and therefore must not operate
+        on evidence left by a prior run.
+        """
+        with self._cleanup_lock:
+            worker = self._thread
+            if self.is_running or (worker is not None and worker.is_alive()):
+                return False
+            self._evidence_lease = False
+            return True
+
     def evidence_cleanup_scope(self) -> dict:
         """Capture immutable cleanup ownership for the currently completed run."""
         return {
             "run_id": str(self.run_id or ""),
-            "target_dir": Path(self.documents_dir).resolve(strict=False),
+            "target_dir": Path(self._last_run_target).resolve(strict=False),
             "artifact_paths": self._artifact_paths_snapshot(),
         }
 
@@ -316,7 +467,9 @@ class RedTeamEngine:
     # ── control ────────────────────────────────────────────────────────────
     def start(self, jitter_range=(2.0, 7.0), noise_chance=0.25,
               complexity=1, target_dir=None, custom=None,
-              intensity=None, campaign=False) -> bool:
+              intensity=None, campaign=False, comprehensive=False,
+              readiness_receipt: Optional[dict] = None,
+              validation_lease: object | None = None) -> bool:
         """Run a randomized Red Team playbook.
 
         intensity — one of Low/Medium/High/Extreme. When given it drives cycles,
@@ -324,6 +477,9 @@ class RedTeamEngine:
         campaign  — when True the techniques run in a chained ATT&CK kill-chain
           order (recon → access → persist → C2 → exfil → impact) instead of the
           default per-phase shuffle, modelling a coherent operation.
+        comprehensive — add one bounded first-phase pass through the expanded
+          fixed marker catalog. Every added behavior is inert and locally
+          reversible; later phases repeat only the stable base inventory.
         complexity — legacy phase count, used when intensity is not supplied.
         target_dir — where benign markers land. custom = optional benign
           {"name","payload"} technique (written verbatim, NEVER executed).
@@ -331,7 +487,12 @@ class RedTeamEngine:
         if self.is_running or (self._thread is not None and self._thread.is_alive()):
             return False
         self._cancel.clear()
-        candidate_target = target_dir if target_dir is not None else self.documents_dir
+        # A custom target applies to one run only.  Falling back to the mutable
+        # previous ``documents_dir`` made a later default launch silently reuse
+        # an earlier custom path.
+        candidate_target = (
+            target_dir if target_dir is not None else self.default_documents_dir
+        )
         preset = INTENSITY_LEVELS.get(str(intensity)) if intensity else None
         if preset:
             self._complexity = preset["cycles"]
@@ -353,6 +514,8 @@ class RedTeamEngine:
             noise_chance=noise_chance,
             target_dir=candidate_target,
             custom=custom,
+            campaign=bool(campaign),
+            comprehensive=bool(comprehensive),
         )
         if not preflight.accepted:
             self._narrate(
@@ -360,12 +523,39 @@ class RedTeamEngine:
                 + "; ".join(preflight.violations)
             )
             return False
+        resolved_target = Path(candidate_target).resolve(strict=False)
+        proposed_run_id = f"redteam-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+        if readiness_receipt is not None:
+            self._narrate(
+                "Red Team drill refused: legacy caller-supplied readiness receipts "
+                "are not authoritative; acquire a live validation lease."
+            )
+            return False
+        try:
+            if type(validation_lease) is not RedTeamValidationLease:
+                raise RedTeamValidationError(
+                    "an exact live Red Team validation lease is required"
+                )
+            receipt = RedTeamValidationLease.consume_for_run(
+                validation_lease,
+                run_id=proposed_run_id,
+                target=resolved_target,
+                data_root=self.data_dir,
+                run_ttl_seconds=float(
+                    preflight.budget.get("admitted_run_ttl_seconds", 0)
+                ),
+            )
+        except (RedTeamValidationError, OSError, RuntimeError, ValueError) as exc:
+            self._narrate(f"Red Team drill refused: {exc}")
+            return False
         # A completed run may still own a delayed cleanup callback. Cancel it
         # before changing shared run state or creating any marker for this run.
         prior_run_id = str(self.run_id or "")
         prior_artifacts = self._artifact_paths_snapshot()
+        prior_target = Path(self._last_run_target).resolve(strict=False)
         self._cancel_pending_cleanup()
-        self.documents_dir = Path(candidate_target)
+        self.documents_dir = resolved_target
+        self._last_run_target = self.documents_dir
         self._run_contract = preflight
         self._complexity = preflight.cycles
         if not preset:
@@ -373,6 +563,8 @@ class RedTeamEngine:
         jitter_range = preflight.jitter
         noise_chance = preflight.noise_chance
         self._campaign = bool(campaign)
+        self._comprehensive = bool(preflight.comprehensive)
+        self._expected_plan = expected_red_team_plan(preflight.as_dict())
         self._custom = (
             {
                 "name": str(custom["name"]).strip(),
@@ -380,7 +572,9 @@ class RedTeamEngine:
             }
             if preflight.custom is not None else None
         )
-        self.run_id = f"redteam-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+        self.run_id = proposed_run_id
+        self._validation_readiness = receipt
+        self._validation_lease = validation_lease
         register_run(self.run_id, kind="red-team")
         self.steps = []
         self._owned_artifacts = []
@@ -388,7 +582,7 @@ class RedTeamEngine:
         # Crash-orphan prefix globs are deliberately forbidden: the selected
         # target may be Documents and names are not deletion provenance.
         self._sweep_markers(
-            target_dir=self.documents_dir,
+            target_dir=prior_target,
             artifact_paths=prior_artifacts,
         )
         if prior_run_id:
@@ -397,7 +591,22 @@ class RedTeamEngine:
         self._thread = threading.Thread(
             target=self._run_playbook, args=(jitter_range, noise_chance),
             name="RedTeamEngine", daemon=True)
-        self._thread.start()
+        try:
+            self._thread.start()
+        except (RuntimeError, OSError) as exc:
+            self._running.clear()
+            unregister_run(self.run_id)
+            self.documents_dir = self.default_documents_dir
+            try:
+                RedTeamValidationLease.release(validation_lease)
+            except Exception:
+                pass
+            self._validation_lease = None
+            self._narrate(
+                "Red Team drill refused: worker launch failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return False
         return True
 
     def stop_and_clean(self) -> None:
@@ -408,7 +617,7 @@ class RedTeamEngine:
         if worker is not None and worker.is_alive() and worker is not threading.current_thread():
             worker.join(timeout=0.25)
         self._sweep_markers(
-            target_dir=self.documents_dir,
+            target_dir=self._last_run_target,
             artifact_paths=self._artifact_paths_snapshot(),
         )
         self._cleanup_probe_processes()
@@ -424,10 +633,36 @@ class RedTeamEngine:
         cycles = getattr(self, "_complexity", 1)
         custom = getattr(self, "_custom", None)
         campaign = getattr(self, "_campaign", False)
+        comprehensive = getattr(self, "_comprehensive", False)
         self._narrate(f"\U0001F39B️ Intensity: {getattr(self,'_intensity','?')}; "
                       f"{cycles} phase(s); {'CAMPAIGN (chained kill-chain)' if campaign else 'randomized'}; "
+                      f"catalog={'comprehensive' if comprehensive else 'base'}; "
                       f"target={self.documents_dir}" + ("; +1 custom benign technique" if custom else ""))
         cancelled = False
+        plan_by_cycle_key = {
+            (int(row["cycle"]), str(row["key"])): row
+            for row in getattr(self, "_expected_plan", ())
+        }
+        function_plan_keys = {
+            "_step_initial_access": "initial_access",
+            "_step_recon": "discovery",
+            "_step_credential_access": "credential_access",
+            "_step_privilege_escalation": "privilege_escalation",
+            "_step_defense_evasion": "defense_evasion",
+            "_step_registry_runkey": "registry_runkey",
+            "_step_scheduled_task": "scheduled_task",
+            "_step_wmi_persistence": "wmi_persistence",
+            "_step_lateral_movement": "lateral_movement",
+            "_step_c2_beacon": "c2_beacon",
+            "_step_exfil_staging": "exfil_staging",
+            "_step_ransomware_canary": "ransomware_canary",
+            "_step_data_destruction": "data_destruction",
+            "_step_random_processes": "random_processes",
+            "_step_custom": "custom",
+        }
+        function_plan_keys.update({
+            f"_step_{key}": key for key in _COMPREHENSIVE_PROBES
+        })
         try:
             for cycle in range(cycles):
                 if self._cancel.is_set():
@@ -451,6 +686,11 @@ class RedTeamEngine:
                     self._step_data_destruction,
                     self._step_random_processes,
                 ]
+                if comprehensive and cycle == 0:
+                    stage_fns.extend(
+                        getattr(self, f"_step_{key}")
+                        for key in _COMPREHENSIVE_PROBES
+                    )
                 if custom:
                     stage_fns.append(self._step_custom)
                 if random.random() < noise_chance:
@@ -469,19 +709,58 @@ class RedTeamEngine:
                 for fn in stage_fns:
                     if self._cancel.is_set():
                         raise _DrillCancelled()
+                    plan_key = function_plan_keys.get(fn.__name__, "")
+                    if fn.__name__ == "_step_noise":
+                        self._active_plan_entry = {
+                            "cycle": cycle + 1,
+                            "plan_step_id": (
+                                f"RTP1-C{cycle + 1:02d}-NOISE"
+                            ),
+                        }
+                    else:
+                        self._active_plan_entry = plan_by_cycle_key.get(
+                            (cycle + 1, plan_key)
+                        )
+                    before = len(self.steps)
                     try:
                         fn(jitter_range)
                     except _DrillCancelled:
                         raise
                     except Exception as exc:
-                        self._narrate(f"⚠ step error (non-fatal): {exc}")
+                        self._narrate(f"⚠ mandatory step failed: {exc}")
+                        if len(self.steps) == before and self._active_plan_entry:
+                            expected = self._active_plan_entry
+                            self._record(
+                                str(expected.get("stage") or fn.__name__),
+                                str(expected.get("technique") or "failed probe"),
+                                "Mandatory inert simulation step failed before completion.",
+                                time.time(),
+                                detail=f"{type(exc).__name__}: {exc}"[:500],
+                                ok=False,
+                            )
+                    else:
+                        if len(self.steps) == before and self._active_plan_entry:
+                            expected = self._active_plan_entry
+                            self._record(
+                                str(expected.get("stage") or fn.__name__),
+                                str(expected.get("technique") or "missing probe"),
+                                "Mandatory inert simulation step returned without evidence.",
+                                time.time(),
+                                detail="step returned without recording its mandatory result",
+                                ok=False,
+                            )
+                    finally:
+                        self._active_plan_entry = None
                     if self._cancel.is_set():
                         raise _DrillCancelled()
         except _DrillCancelled:
             cancelled = True
         finally:
+            run_target = Path(self.documents_dir).resolve(strict=False)
+            run_artifacts = self._artifact_paths_snapshot()
+            self._last_run_target = run_target
             run_cancelled = cancelled or self._cancel.is_set()
-            self._write_history(
+            recorded_status = self._write_history(
                 status="cancelled" if run_cancelled else "completed"
             )
             n, ok = len(self.steps), sum(1 for s in self.steps if s.ok)
@@ -489,14 +768,14 @@ class RedTeamEngine:
                 self._running.clear()
                 self._narrate(f"Red Team Attack cancelled - {ok}/{n} steps executed; cleaning markers.")
                 self._sweep_markers(
-                    target_dir=self.documents_dir,
-                    artifact_paths=self._artifact_paths_snapshot(),
+                    target_dir=run_target,
+                    artifact_paths=run_artifacts,
                 )
                 self._cleanup_probe_processes()
                 unregister_run(self.run_id)
             else:
                 self._narrate(
-                    f"\U0001F3C1 Red Team Attack complete — {ok}/{n} steps executed. "
+                    f"\U0001F3C1 Red Team Attack {recorded_status} — {ok}/{n} steps executed. "
                     "Generating the After-Action Report (brief settle window)…")
                 self._running.clear()
                 with self._cleanup_lock:
@@ -506,14 +785,17 @@ class RedTeamEngine:
                     try:
                         self._schedule_cleanup(
                             delay,
-                            self.documents_dir,
-                            self._artifact_paths_snapshot(),
+                            run_target,
+                            run_artifacts,
                         )
                     except Exception:
                         self._sweep_markers(
-                            target_dir=self.documents_dir,
-                            artifact_paths=self._artifact_paths_snapshot(),
+                            target_dir=run_target,
+                            artifact_paths=run_artifacts,
                         )
+            # The next launch without a target always returns to the immutable
+            # local sandbox, even after a custom-target exercise.
+            self.documents_dir = self.default_documents_dir
 
     def _step_credential_access(self, jitter_range) -> None:
         self._jitter(*jitter_range, note="Credential Access — drop an inert cred-dump marker")
@@ -542,6 +824,118 @@ class RedTeamEngine:
         self._record("Discovery", "read-only enumeration",
                      f"Enumerated {count} processes read-only.", ts,
                      detail="unmonitored by design")
+
+    def _step_comprehensive_marker(self, key: str, jitter_range) -> None:
+        """Create one fixed ATT&CK-shaped marker without performing the behavior.
+
+        The specification is release-owned immutable data from ``run_manifest``;
+        no operator text becomes a path, technique, or executable input. This is
+        deliberately a detector-contract exercise, not an offensive primitive.
+        """
+        spec = _COMPREHENSIVE_PROBES[key]
+        stage = str(spec["stage"])
+        technique = str(spec["technique"])
+        tactic = str(spec["tactic"])
+        marker_token = str(spec["marker_token"])
+        self._jitter(
+            *jitter_range,
+            note=f"{stage.removesuffix(' (simulated)')} — inert marker contract",
+        )
+        ts = time.time()
+        hexid = uuid.uuid4().hex[:8]
+        readable_stage = stage.removesuffix(" (simulated)")
+        self._narrate(
+            f"▶ STAGE: {readable_stage} [{technique.removesuffix(' marker')}] — "
+            f"writing one fixed INERT marker into {self.documents_dir}. The named "
+            "behavior is not performed: no credential access, persistence API, "
+            "remote host, outbound traffic, security-control change, collection, "
+            "encryption, or deletion occurs."
+        )
+        marker = self._marker(
+            f"_redteam_{marker_token}_{hexid}.txt",
+            "ANGERONA RED TEAM comprehensive drill — fixed inert marker.\n"
+            f"Tactic: {tactic}\nTechnique: {technique}\n"
+            "No named ATT&CK behavior was executed.\n",
+        )
+        self._record(
+            stage,
+            technique,
+            f"Fixed inert {tactic} simulation marker written; no named behavior executed.",
+            ts,
+            artifact_paths=[str(marker)],
+        )
+
+    def _step_public_facing_app(self, jitter_range) -> None:
+        self._step_comprehensive_marker("public_facing_app", jitter_range)
+
+    def _step_user_execution(self, jitter_range) -> None:
+        self._step_comprehensive_marker("user_execution", jitter_range)
+
+    def _step_credential_store(self, jitter_range) -> None:
+        self._step_comprehensive_marker("credential_store", jitter_range)
+
+    def _step_unsecured_credentials(self, jitter_range) -> None:
+        self._step_comprehensive_marker("unsecured_credentials", jitter_range)
+
+    def _step_account_discovery(self, jitter_range) -> None:
+        self._step_comprehensive_marker("account_discovery", jitter_range)
+
+    def _step_network_service_discovery(self, jitter_range) -> None:
+        self._step_comprehensive_marker("network_service_discovery", jitter_range)
+
+    def _step_network_connections_discovery(self, jitter_range) -> None:
+        self._step_comprehensive_marker("network_connections_discovery", jitter_range)
+
+    def _step_software_discovery(self, jitter_range) -> None:
+        self._step_comprehensive_marker("software_discovery", jitter_range)
+
+    def _step_exploitation_privilege(self, jitter_range) -> None:
+        self._step_comprehensive_marker("exploitation_privilege", jitter_range)
+
+    def _step_create_account(self, jitter_range) -> None:
+        self._step_comprehensive_marker("create_account", jitter_range)
+
+    def _step_web_shell(self, jitter_range) -> None:
+        self._step_comprehensive_marker("web_shell", jitter_range)
+
+    def _step_dll_side_loading(self, jitter_range) -> None:
+        self._step_comprehensive_marker("dll_side_loading", jitter_range)
+
+    def _step_obfuscated_files(self, jitter_range) -> None:
+        self._step_comprehensive_marker("obfuscated_files", jitter_range)
+
+    def _step_masquerading(self, jitter_range) -> None:
+        self._step_comprehensive_marker("masquerading", jitter_range)
+
+    def _step_impair_defenses(self, jitter_range) -> None:
+        self._step_comprehensive_marker("impair_defenses", jitter_range)
+
+    def _step_remote_desktop(self, jitter_range) -> None:
+        self._step_comprehensive_marker("remote_desktop", jitter_range)
+
+    def _step_wmi_lateral(self, jitter_range) -> None:
+        self._step_comprehensive_marker("wmi_lateral", jitter_range)
+
+    def _step_tool_transfer(self, jitter_range) -> None:
+        self._step_comprehensive_marker("tool_transfer", jitter_range)
+
+    def _step_protocol_tunneling(self, jitter_range) -> None:
+        self._step_comprehensive_marker("protocol_tunneling", jitter_range)
+
+    def _step_automated_collection(self, jitter_range) -> None:
+        self._step_comprehensive_marker("automated_collection", jitter_range)
+
+    def _step_local_data(self, jitter_range) -> None:
+        self._step_comprehensive_marker("local_data", jitter_range)
+
+    def _step_exfil_c2(self, jitter_range) -> None:
+        self._step_comprehensive_marker("exfil_c2", jitter_range)
+
+    def _step_exfil_web_service(self, jitter_range) -> None:
+        self._step_comprehensive_marker("exfil_web_service", jitter_range)
+
+    def _step_inhibit_recovery(self, jitter_range) -> None:
+        self._step_comprehensive_marker("inhibit_recovery", jitter_range)
 
     def _step_wmi_persistence(self, jitter_range) -> None:
         self._jitter(*jitter_range, note="Persistence — drop an inert WMI-subscription marker")
@@ -590,17 +984,22 @@ class RedTeamEngine:
         name = str(c.get("name", "custom"))
         payload = str(c.get("payload", ""))
         hexid = uuid.uuid4().hex[:8]
-        safe = "".join(ch for ch in name if ch.isalnum() or ch in "-_")[:40] or "custom"
+        # The operator's label is intentionally absent from the filename.  A
+        # label containing e.g. ``lsass_dump`` must not impersonate a standard
+        # T1003 canary through a filename-substring detector.
+        custom_id = uuid.uuid4().hex
+        name_digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
         self._narrate(f"▶ STAGE: Custom [user-defined: {name}] — writing the text you supplied "
                       f"as an INERT marker into {self.documents_dir}. It is written verbatim to a "
                       "file and never executed — this tests whether the defense detects the "
                       "content, nothing runs.")
         p = self._marker(
-            f"_redteam_custom_{safe}_{hexid}.txt",
+            f"_redteam_custom_{custom_id}_{name_digest}_{hexid}.txt",
             f"ANGERONA RED TEAM custom drill marker — INERT, never executed.\n"
             f"Technique: {name}\n---\n{payload}\n")
         self._record("Custom (simulated)", f"user-defined: {name}",
-                     "User-defined benign marker written (content only, never executed).",
+                     "User-defined benign marker written; informational until a "
+                     "reviewed detector contract is explicitly attached.",
                      ts, artifact_paths=[str(p)])
 
     def _step_scheduled_task(self, jitter_range) -> None:
@@ -684,26 +1083,44 @@ class RedTeamEngine:
             if self._cancel.is_set():
                 break
             tag = f"ANGERONA_REDTEAM_{uuid.uuid4().hex[:8]}"
+            proc = None
             try:
+                lease = self._validation_lease
+                if type(lease) is RedTeamValidationLease:
+                    RedTeamValidationLease.enroll_process_challenge(
+                        lease, token=tag, run_id=self.run_id
+                    )
                 register_process(tag, self.run_id, kind="red-team")
                 flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 proc = subprocess.Popen(  # noqa: S603 - fixed interpreter, inert sleep
                     [sys.executable, "-c", "import time; time.sleep(30)", tag],
                     creationflags=flags,
                 )
+                if type(lease) is RedTeamValidationLease:
+                    RedTeamValidationLease.bind_process_challenge(
+                        lease, token=tag, pid=int(proc.pid), run_id=self.run_id
+                    )
                 self._probe_processes.append(proc)
                 spawned += 1
                 pids.append(int(proc.pid))
                 tokens.append(tag)
                 register_process(tag, self.run_id, pid=int(proc.pid), kind="red-team")
             except Exception:
-                pass
+                if proc is not None:
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=1.0)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
             if self._cancel.wait(0.2):
                 break
         self._record("Benign Execution (simulated)", "T1059 tagged spawns",
                      f"Spawned {spawned} bounded red-team-tagged idle process(es).", ts,
                      pid=(pids[0] if pids else None), pids=pids,
-                     correlation_tokens=tokens)
+                     correlation_tokens=tokens, ok=(spawned == n and n > 0))
 
     def _step_initial_access(self, jitter_range) -> None:
         self._jitter(*jitter_range, note="Initial Access — inert phishing-attachment marker")
@@ -750,7 +1167,7 @@ class RedTeamEngine:
         self._record("Data Destruction (simulated)", "T1485 marker",
                      "Inert wiper-named marker written.", ts, artifact_paths=[str(p)])
 
-    def _write_history(self, status: str = "completed") -> None:
+    def _write_history(self, status: str = "completed") -> str:
         try:
             payload = build_run_history(
                 kind="red_team",
@@ -760,17 +1177,23 @@ class RedTeamEngine:
                 preflight=self._run_contract,
                 status=status,
             )
+            if self._validation_readiness:
+                payload["validation_readiness"] = copy.deepcopy(
+                    self._validation_readiness
+                )
             signed = write_run_history(self.history_path, payload)
             if not signed:
                 self._narrate(
                     "⚠ Red Team ground-truth history was written without an "
                     "install-key HMAC; strict AAR generation will refuse it."
                 )
+            return str(payload.get("status") or "incomplete")
         except Exception as exc:
             self._narrate(
                 f"⚠ Red Team ground-truth history could not be secured: "
                 f"{type(exc).__name__}"
             )
+            return "history-failed"
 
 
 REDTEAM_STAGE_CATEGORY = {
@@ -789,6 +1212,11 @@ REDTEAM_STAGE_CATEGORY = {
     "Data Destruction (simulated)": "detection",
     "Benign Execution (simulated)": "detection",
     "Noise Injection": "resilience",
+    "Custom (simulated)": "informational",
+    **{
+        str(row["stage"]): str(row["category"])
+        for row in RED_TEAM_COMPREHENSIVE_PLAN
+    },
 }
 
 
@@ -808,5 +1236,14 @@ def self_test() -> tuple[bool, str]:
     ordered = sorted(sample, key=lambda n: rank.get(n, 99))
     order_ok = ordered == ["_step_initial_access", "_step_recon", "_step_ransomware_canary"]
     ok = presets_ok and escalating and not missing and order_ok
-    return ok, (f"intensity presets ok, {len(_CAMPAIGN_ORDER)} chained techniques, kill-chain order verified"
+    catalog_ok = (
+        len(_COMPREHENSIVE_PROBES) == len(RED_TEAM_COMPREHENSIVE_PLAN)
+        and all(
+            callable(getattr(RedTeamEngine, f"_step_{key}", None))
+            for key in _COMPREHENSIVE_PROBES
+        )
+    )
+    ok = ok and catalog_ok
+    return ok, (f"intensity presets ok, {len(_CAMPAIGN_ORDER)} chained techniques, "
+                f"{len(_COMPREHENSIVE_PROBES)} comprehensive inert probes, kill-chain order verified"
                 if ok else f"failed: presets={presets_ok} escalate={escalating} missing={missing} order={order_ok}")

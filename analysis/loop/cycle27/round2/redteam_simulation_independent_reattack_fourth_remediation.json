@@ -1,0 +1,204 @@
+{
+  "schema": "angerona.redteam-simulation-independent-reattack.v5",
+  "cycle": 27,
+  "round": 2,
+  "date": "2026-08-28",
+  "disposition": "REOPENED",
+  "scope": {
+    "read_only_product_review": true,
+    "inert_temp_fixtures_only": true,
+    "real_exploitation": false,
+    "credential_access": false,
+    "persistence": false,
+    "network_attack": false,
+    "host_targeting": false,
+    "host_security_control_mutation": false
+  },
+  "prior_claims": [
+    {
+      "id": "RTS-R3-01",
+      "direct_regression": "CLOSED",
+      "control_disposition": "PARTIAL",
+      "residuals": ["RTS-R4-06", "RTS-R4-07"]
+    },
+    {
+      "id": "RTS-R3-02",
+      "direct_regression": "CLOSED",
+      "control_disposition": "REOPENED",
+      "residuals": ["RTS-R4-04"]
+    },
+    {
+      "id": "RTS-R3-03",
+      "direct_regression": "CLOSED",
+      "control_disposition": "REOPENED",
+      "residuals": ["RTS-R4-01"]
+    },
+    {
+      "id": "RTS-R3-04",
+      "direct_regression": "CLOSED",
+      "control_disposition": "REOPENED",
+      "residuals": ["RTS-R4-02"]
+    },
+    {
+      "id": "RTS-R3-05",
+      "direct_regression": "CLOSED",
+      "control_disposition": "REOPENED",
+      "residuals": ["RTS-R4-03"]
+    },
+    {
+      "id": "RTS-R3-06",
+      "direct_regression": "CLOSED",
+      "control_disposition": "REOPENED",
+      "residuals": ["RTS-R4-05"]
+    },
+    {
+      "id": "RTS-R3-07",
+      "direct_regression": "CLOSED",
+      "control_disposition": "PARTIAL",
+      "residuals": ["RTS-R4-06"]
+    }
+  ],
+  "findings": [
+    {
+      "id": "RTS-R4-01",
+      "title": "T1059 readiness omits its source sensor and any publisher of the live tuple can manufacture 100%",
+      "severity": "HIGH",
+      "status": "REOPENED",
+      "component": "src/angerona/modules/purple_guard.py:946-1054,1847-1857,2087-2189,2362-2497",
+      "reproduction": {
+        "advertised_steps_executed": 14,
+        "readiness_policy_count": 13,
+        "process_monitor_present": false,
+        "genuine_simulation_validation": "12/13",
+        "after_arbitrary_live_tuple_publisher": "13/13",
+        "signed_rate_after": 1.0
+      },
+      "recommendation": "Require an exact running Process Monitor producer/generation/cursor/first-cycle receipt at readiness and mint T1059 proof only at its canonical OS-observation site with a run-bound source receipt."
+    },
+    {
+      "id": "RTS-R4-02",
+      "title": "Public FIM scan attester remains a native signing oracle",
+      "severity": "MEDIUM",
+      "status": "REOPENED",
+      "component": "src/angerona/modules/purple_guard.py:1539-1624; src/angerona/modules/file_integrity.py:775-798",
+      "reproduction": {
+        "public_attester_returned_receipt": true,
+        "receipt_verified_as_native": true,
+        "fim_snapshot_observed_marker": false
+      },
+      "recommendation": "Move signing into an isolated measured FIM/verifier process and bind one-use receipts to a private worker channel, scan generation, baseline/change token, stable object identity, and event sequence."
+    },
+    {
+      "id": "RTS-R4-03",
+      "title": "Mutable module globals bypass the captured verifier dispatch",
+      "severity": "MEDIUM",
+      "status": "REOPENED",
+      "component": "src/angerona/modules/purple_guard.py:1498-1536; src/angerona/shark/aar_report.py:1240-1248,1311-1319",
+      "reproduction": {
+        "class_method_changed": false,
+        "module_global_changed": true,
+        "receipt_free_event_accepted": true
+      },
+      "recommendation": "Perform scoring in a separate restricted process with a measured verifier image and inaccessible key; return a signed result over exact history and ledger digests."
+    },
+    {
+      "id": "RTS-R4-04",
+      "title": "Cleanup releases marker custody before unlink and can delete a replacement file",
+      "severity": "MEDIUM",
+      "status": "REOPENED",
+      "component": "src/angerona/modules/purple_guard.py:885-919",
+      "reproduction": {
+        "cleanup_returned_success": true,
+        "enrolled_marker_survived_renamed": true,
+        "replacement_file_deleted": true
+      },
+      "recommendation": "Delete or quarantine through the still-held object/parent authority with a final file-ID check; never close custody and then unlink a reopened pathname."
+    },
+    {
+      "id": "RTS-R4-05",
+      "title": "Current-file report head can be rolled back into a signed fork and frozen handoff is not immutable authority",
+      "severity": "MEDIUM",
+      "status": "REOPENED",
+      "component": "src/angerona/shark/aar_report.py:917-1150; src/angerona/gui/main_window.py:2310-2351",
+      "reproduction": {
+        "second_sequence": 2,
+        "third_sequence_after_rollback": 2,
+        "same_predecessor": true,
+        "different_signed_heads": true,
+        "object_setattr_changed_frozen_text": true
+      },
+      "recommendation": "Serialize writers, retain an authenticated append-only head journal with a monotonic witness, and verify signed handoff bytes/text digest immediately before display and action."
+    },
+    {
+      "id": "RTS-R4-06",
+      "title": "Accepted 4235-second campaign exceeds the AAR fixed 3600-second evidence query",
+      "severity": "MEDIUM",
+      "status": "REOPENED",
+      "component": "src/angerona/shark/run_manifest.py:381-456; src/angerona/shark/aar_report.py:1197-1205,1289-1297",
+      "reproduction": {
+        "preflight_accepted": true,
+        "admitted_ttl_seconds": 4235,
+        "realized_rows": 64,
+        "history_status": "completed",
+        "last_detection_offset_seconds": 3666.1,
+        "query_window_seconds": 3600,
+        "late_signed_event_returned": false
+      },
+      "recommendation": "Derive the evidence horizon from the authenticated run budget, actual step end, settle reserve, and bounded per-step detector deadline; reject a shorter caller/default window."
+    },
+    {
+      "id": "RTS-R4-07",
+      "title": "Zero-step incomplete histories bypass the planned-denominator report",
+      "severity": "LOW",
+      "status": "REOPENED",
+      "component": "src/angerona/shark/aar_report.py:1221-1233",
+      "reproduction": {
+        "history_status": "incomplete",
+        "aar_result": "Last run recorded zero steps — nothing to report.",
+        "signed_report_written": false
+      },
+      "recommendation": "Authenticate the Red Team history first and persist the expected planned denominator with null rates and exact missing IDs even when zero steps were realized."
+    }
+  ],
+  "gates": {
+    "direct_fourth_remediation_regressions": {
+      "passed": 8,
+      "failed": 0
+    },
+    "contract_adversarial_variants": {
+      "passed": 6,
+      "failed": 0,
+      "variants": ["missing", "failed", "duplicate", "mismatched", "unexpected", "reordered_campaign"]
+    },
+    "full_advertised_step_run": {
+      "steps_executed": 14,
+      "expected_steps": 14,
+      "history_status": "completed"
+    },
+    "focused_and_wider_suite": {
+      "passed": 112,
+      "failed": 0,
+      "seconds": 22.38
+    },
+    "compile": "PASS",
+    "ruff": "PASS",
+    "headless_selfcheck": {
+      "passed": 26,
+      "failed": 0
+    },
+    "module_selftests": {
+      "passed": 65,
+      "failed": 0,
+      "expected_skips": 17
+    }
+  },
+  "severity_counts": {
+    "CRITICAL": 0,
+    "HIGH": 1,
+    "MEDIUM": 5,
+    "LOW": 1,
+    "INFO": 0
+  },
+  "release_blocking": true,
+  "independent_remediation_required": true
+}

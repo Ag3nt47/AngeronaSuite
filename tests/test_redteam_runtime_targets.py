@@ -3,9 +3,12 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from angerona.core.eventbus import BusAuthority, EventBus
+from angerona.core.storage import FlightRecorder
 from angerona.modules import purple_guard
 from angerona.shark.red_team import RedTeamEngine, RedTeamStep
 
@@ -97,9 +100,11 @@ def test_purple_guard_detects_registered_custom_target_only(tmp_path: Path) -> N
                 "path": str(marker),
                 "artifact_path": str(marker),
                 "mitre": "T1003",
-                "drill_target": str(custom_target.resolve()),
-                "detector_policy": "reviewed-redteam-candidate",
-                "response_authorized": True,
+                    "drill_target": str(custom_target.resolve()),
+                    "detector_policy": "reviewed-redteam-candidate",
+                    "evidence_type": "simulation_contract_validation",
+                    "detector_verdict": "positive",
+                    "response_authorized": True,
                 "response_contract": {
                     "version": 1,
                     "actions": ["quarantine_file"],
@@ -187,12 +192,29 @@ def test_purple_guard_propagates_safe_practice_and_process_lineage(
     assert emitted[1]["step_id"] == "DSTEP-ABC123"
 
 
-def test_rapid_rerun_cancels_stale_cleanup_before_new_markers(
+def test_rapid_rerun_cancels_stale_cleanup_without_deleting_unheld_markers(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     target = tmp_path / "target"
     target.mkdir()
-    engine = RedTeamEngine(tmp_path / "data", documents_dir=target)
+    data_root = tmp_path / "data"
+    monkeypatch.setattr(
+        BusAuthority,
+        "_key_path",
+        staticmethod(lambda: data_root / "bus.key"),
+    )
+    bus = EventBus()
+    recorder = FlightRecorder(data_root / "flight-recorder.db")
+    bus.arm(recorder.authority)
+    bus.subscribe(recorder.record_bus, delivery_budget_ms=60_000)
+    guard = purple_guard.PurpleGuard(data_root)
+    guard.bind(bus)
+    manager = SimpleNamespace(modules={guard.name: guard}, bus=bus)
+    lease = purple_guard.acquire_redteam_validation_lease(
+        manager, bus, recorder, data_root, target, timeout=3
+    )
+    engine = RedTeamEngine(data_root, documents_dir=target)
     old_marker = target / "_redteam_lsass_dump_old.txt"
     old_marker.write_text("old run", encoding="utf-8")
     engine.steps = [
@@ -215,14 +237,27 @@ def test_rapid_rerun_cancels_stale_cleanup_before_new_markers(
         engine._running.clear()
 
     engine._run_playbook = fake_playbook  # type: ignore[method-assign]
-    assert engine.start(jitter_range=(0.0, 0.0), noise_chance=0.0, complexity=1)
-    assert created.wait(1.0)
-    assert engine._thread is not None
-    engine._thread.join(1.0)
-    time.sleep(0.15)
+    try:
+        assert engine.start(
+            jitter_range=(0.0, 0.0),
+            noise_chance=0.0,
+            complexity=1,
+            validation_lease=lease,
+        )
+        assert created.wait(1.0)
+        assert engine._thread is not None
+        engine._thread.join(1.0)
+        time.sleep(0.15)
 
-    assert not old_marker.exists(), "the new-run pre-clean should remove prior markers"
-    assert new_marker.exists(), "a prior run's delayed cleanup must not touch the new run"
+        assert old_marker.exists(), (
+            "an unheld prior pathname must survive rather than granting the new "
+            "lease deletion authority"
+        )
+        assert new_marker.exists(), "a prior run's delayed cleanup must not touch the new run"
+    finally:
+        lease.release()
+        guard.stop()
+        recorder.close()
 
 
 def test_redteam_cleanup_never_deletes_name_only_lookalikes(tmp_path: Path) -> None:

@@ -1,0 +1,68 @@
+[
+  {
+    "id": "C27-R1-C03",
+    "title": "Automatic packed-format pseudo-review and pre-rotation truncation leave deterministic ransomware gaps",
+    "status": "REOPENED_PARTIAL",
+    "severity": "MEDIUM",
+    "original_scope_status": "RESOLVED",
+    "component": "src/angerona/modules/ransomware_heuristics.py:246-285,1652-1694,1743-1758,1841-1871,1943-1950,2002-2018",
+    "evidence": [
+      "Valid authenticated state rollback and key+state deletion while the enrolled witness survived were refused; coherent replacement of every local authority remained explicitly capped at health 90.",
+      "A suffix-only entropy-8 .zip and deterministic 50-percent alternating encryption were scored by the new fixed-window path.",
+      "A new entropy-8 .zip beginning with four ZIP magic bytes produced no candidates or alerts. Its first cycle reported unproved_exclusions=1 and health 75; one automatic unchanged cycle cleared the uncertainty and returned complete=true at the module's maximum local-authority health 90.",
+      "A ten-entry inert directory stream with limit five selected only f00-f04 for epochs 0 through 11. _fair_directory_entries truncates before sorting and rotation, so f05-f09 can never enter the rotation set.",
+      "Large-file range misses, content-budget exhaustion, and traversal truncation remain honestly below health 100."
+    ],
+    "controls_held": [
+      "Bounded recursive no-reparse traversal and exact object/ancestry holds.",
+      "Full-file streaming through 8 MiB and non-green unpredictable range proofs above 8 MiB.",
+      "Fixed-window strided entropy scoring and authenticated changed/missing transitions.",
+      "Local high-water rollback/deletion refusal and an explicit software-only freshness cap."
+    ],
+    "recommendation": "Require bounded structural validation and authenticated operator/policy approval before a new high-entropy container can become excluded; an unchanged automated tick is not review. Rotate before truncation using a durable per-directory continuation/journal cursor or bounded selection over the complete namespace, persist restart-safe progress, and expose oldest-unseen age while retaining all existing incomplete-coverage caps.",
+    "attack_results": {
+      "authenticated_state_rollback": "CAUGHT",
+      "key_state_deletion_with_witness": "CAUGHT",
+      "coherent_all_local_authority_replacement": "DISCLOSED_HEALTH_90_BOUNDARY",
+      "suffix_only_zip_disguise": "CAUGHT",
+      "four_byte_magic_zip_disguise": "MISSED_NO_ALERT_HEALTH_90_AFTER_ONE_UNCHANGED_TICK",
+      "fifty_percent_strided_encryption": "CAUGHT",
+      "pre_rotation_directory_tail": "PERMANENTLY_STARVED_HEALTH_NON_GREEN",
+      "large_file_and_byte_budget_misses": "HONESTLY_INCOMPLETE"
+    }
+  },
+  {
+    "id": "C27-R1-C13",
+    "title": "Independent custody freshness is not production-wired and has no safe local-ahead replay",
+    "status": "REOPENED_PARTIAL",
+    "severity": "MEDIUM",
+    "original_scope_status": "RESOLVED",
+    "component": "src/angerona/core/module_manager.py:84-113; src/angerona/modules/smart_deception.py:104,283-329,783-869,1122-1401,1440-1459,1888-2024,2292-2349,2419-2420; src/angerona/core/personal_sentinel_authority.py:62,409-412,526-575",
+    "evidence": [
+      "Post-completion hard-link mutation remained possible in an unprotected inert source fixture, but capture was typed captured_unverified, refresh failed, durable topology uncertainty remained, and health was 65.",
+      "Independent-authority regressions refused complete local deletion and coherent rollback as local-behind; local-only substitution remained explicitly health 70 with prior_history_may_have_been_erased=1.",
+      "ModuleManager discovers SmartDeception via cls(), its constructor and register() both default high_water=None, and no production binder or factory injects an IndependentHighWater.",
+      "The module's smart-deception-custody domain is absent from Personal Sentinel's default allowed domains, so the shipped authority rejects it unless separately customized.",
+      "An inert authority outage after a locally durable event produced provisional-offline. After authority recovery, restart classified the same authenticated local state local-ahead and remained recovery-required because no exact pending CAS replay exists."
+    ],
+    "controls_held": [
+      "Original bounded honeytoken read, exclusive restage, and bounded dedup controls remain fixed.",
+      "Local chain/witness rollback, deletion, digest mutation, capacity, eviction, and same-sequence race paths remain fail-closed or non-green.",
+      "Required Windows ACLs are applied and verified before packaged capture succeeds.",
+      "Userspace evidence is typed captured_unverified and topology uncertainty is durable.",
+      "Software-only authority and absent WORM replication are explicitly capped below green/high assurance."
+    ],
+    "recommendation": "Wire a reviewed authority provider through ModuleManager and enroll the smart-deception-custody domain in the configured authority policy. Add a durable two-phase external-transition outbox and restart reconciliation that retries only an exact one-step local-ahead CAS whose predecessor matches the authenticated remote head; refuse forks, gaps, identity changes, and ambiguous resets. Retain captured_unverified, ACL proof, conservative health caps, terminal reserve, and durable topology/loss events.",
+    "attack_results": {
+      "post_final_hardlink_mutation": "NOT_PREVENTED_CAPTURED_UNVERIFIED_HEALTH_65",
+      "independent_total_local_deletion": "CAUGHT_LOCAL_BEHIND",
+      "independent_coherent_local_rollback": "CAUGHT_LOCAL_BEHIND",
+      "local_only_total_authority_substitution": "DISCLOSED_HEALTH_70_BOUNDARY",
+      "normal_product_authority_injection": "UNREACHABLE",
+      "default_personal_sentinel_domain": "NOT_ENROLLED",
+      "external_outage_before_advance": "PERSISTENT_LOCAL_AHEAD_SAFE_OUTAGE",
+      "capacity_topology_crash_and_race_regressions": "HELD"
+    },
+    "assurance_boundary": "Same-host administrator-resistant evidence preservation remains impossible with local userspace files alone. The module now discloses that limit; actual preservation requires production-wired independent monotonic authority and separately administered append-only/WORM or kernel-sealed custody."
+  }
+]

@@ -79,6 +79,35 @@ def _clear_data_path_caches() -> None:
         pass
 
 
+def _drain_qt_deferred_deletes() -> None:
+    """Deliver only Qt deletions that the completed test already requested.
+
+    QApplication and its top-level widgets are process-global native state.
+    Closing every top-level here would make this fixture an owner of objects it
+    did not create, including windows whose close handlers still coordinate
+    worker shutdown.  Likewise, a general ``processEvents()`` pass can dispatch
+    their timers and queued worker callbacks in the middle of teardown.
+
+    ``deleteLater()`` is the one operation that does need an explicit boundary
+    under pytest because there is no continuously running Qt event loop.  Two
+    targeted passes also cover a destructor that queues another deferred delete
+    without dispatching unrelated Qt work.
+    """
+
+    try:
+        from PySide6.QtCore import QCoreApplication, QEvent
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        return
+
+    app = QApplication.instance()
+    if app is None:
+        return
+
+    for _ in range(2):
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 @pytest.fixture(autouse=True)
 def isolate_angerona_runtime(request: pytest.FixtureRequest, monkeypatch):
     """Give every test an independent runtime, diagnostics, and temp root."""
@@ -95,4 +124,5 @@ def isolate_angerona_runtime(request: pytest.FixtureRequest, monkeypatch):
     try:
         yield
     finally:
+        _drain_qt_deferred_deletes()
         _clear_data_path_caches()

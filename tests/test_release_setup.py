@@ -252,24 +252,15 @@ def test_release_workflow_never_publishes_or_attests_classic_setup() -> None:
     parsed = yaml.safe_load(text)
 
     assert isinstance(parsed, dict)
-    setup = (
-        "Angerona-${{ needs.prepare-windows.outputs.artifact-tag }}-"
-        "win64-migration-setup.exe"
+    jobs = parsed["jobs"]
+    prepare = yaml.safe_dump(jobs["prepare-windows"], sort_keys=True)
+    packager = yaml.safe_dump(jobs["package-windows"], sort_keys=True)
+    finalizer = yaml.safe_dump(
+        jobs["finalize-release-authority"], sort_keys=True
     )
-    msix = "Angerona-${{ needs.prepare-windows.outputs.artifact-tag }}-win64.msix"
-    assert "innosetup-6.7.1.exe" in text
-    assert "Get-FileHash -Algorithm SHA256 $innoInstaller" in text
-    assert "Join-Path $innoDir 'ISCC.exe'" in text
-    assert "Get-Command ISCC.exe" not in text
-    assert text.count(setup) >= 2
-    assert f"{setup}.sha256" in text
-    assert text.count(msix) >= 2
-    assert f"{msix}.sha256" in text
+    publisher = yaml.safe_dump(jobs["publish-release"], sort_keys=True)
+
     assert 'ANGERONA_ARTIFACT_TAG: ${{ steps.artifact_name.outputs.tag }}' in text
-    assert (
-        '$setup = "Angerona-$env:ANGERONA_ARTIFACT_TAG-'
-        'win64-migration-setup.exe"'
-    ) in text
     assert "Attest release archive" in text
     assert "Attest software bill of materials" in text
     assert "Verify-Angerona-Release.ps1" in text
@@ -277,71 +268,64 @@ def test_release_workflow_never_publishes_or_attests_classic_setup() -> None:
     verifier_text = (ROOT / "Verify-Angerona-Release.ps1").read_text(encoding="utf-8")
     assert "@('.msix', '.exe', '.zip')" in verifier_text
     assert "tools/build_release_authorization.py" in text
-    assert "ANGERONA_RELEASE_SIGNER_A" in text
-    assert "ANGERONA_RELEASE_SIGNER_B" in text
-    signer_a = text.split("  sign-release-a:", 1)[1].split("  sign-release-b:", 1)[0]
-    signer_b = text.split("  sign-release-b:", 1)[1].split(
-        "  finalize-release-authority:", 1
-    )[0]
-    finalizer = text.split("  finalize-release-authority:", 1)[1].split(
-        "  package-windows:", 1
-    )[0]
-    packager = text.split("  package-windows:", 1)[1].split("  build-posix:", 1)[0]
-    assert "environment: release-signer-a" in signer_a
-    assert "ANGERONA_RELEASE_SIGNER_A" in signer_a
-    assert "ANGERONA_RELEASE_SIGNER_B" not in signer_a
-    assert "ANGERONA_RELEASE_SIGNER_A_PUBLIC_KEY" in signer_a
-    assert "environment: release-signer-b" in signer_b
-    assert "ANGERONA_RELEASE_SIGNER_B" in signer_b
-    assert "ANGERONA_RELEASE_SIGNER_A" not in signer_b
-    assert "ANGERONA_RELEASE_SIGNER_B_PUBLIC_KEY" in signer_b
-    assert "ANGERONA_RELEASE_SIGNER_A" not in finalizer
-    assert "ANGERONA_RELEASE_SIGNER_B" not in finalizer
-    assert "environment: release-finalizer" in finalizer
-    assert "ANGERONA_RELEASE_ROOT_POLICY_B64" in finalizer
-    assert "ANGERONA_RELEASE_ROOT_POLICY_SHA256" in finalizer
-    assert "--root-policy-sha256" in finalizer
-    assert "environment: windows-code-signing" in packager
-    assert "environment: windows-code-signing" in text
-    assert "ANGERONA_WINDOWS_SIGNING_PFX_B64" in text
-    assert "ANGERONA_WINDOWS_SIGNING_CERT_SHA256" in text
-    assert "signtool.exe" in text
+    assert "sign-release-a:" not in text
+    assert "sign-release-b:" not in text
+    assert "ANGERONA_RELEASE_SIGNER_A" not in text
+    assert "ANGERONA_RELEASE_SIGNER_B" not in text
+    assert "ANGERONA_RELEASE_ROOT_POLICY_B64" not in text
+    assert "ANGERONA_RELEASE_ROOT_POLICY_SHA256" not in text
+    assert "permissions: {}" in finalizer
+    assert "actions/checkout" not in finalizer
+    assert "actions/download-artifact" not in finalizer
+    assert "secrets." not in finalizer
+    assert "exit 1" in finalizer
+    assert jobs["finalize-release-authority"]["needs"] == "package-windows"
+    assert "prepared-release-signing-request" in text
+    assert "prepared-windows-publisher-request" in packager
+    assert "finalized-windows-release-assets" in publisher
+    assert "prepared-windows-publisher-request" not in publisher
+    assert jobs["package-windows"]["needs"] == "prepare-windows"
+    assert "finalize-release-authority" in jobs["publish-release"]["needs"]
+    for forbidden in (
+        "environment: windows-code-signing",
+        "ANGERONA_WINDOWS_SIGNING_PFX_B64",
+        "ANGERONA_WINDOWS_SIGNING_PASSWORD",
+        "ANGERONA_WINDOWS_SIGNING_CERT_SHA256",
+        "Import-PfxCertificate",
+        "signtool.exe",
+        "secrets.",
+        "innosetup-6.7.1.exe",
+        "win64-migration-setup",
+    ):
+        assert forbidden not in text
     assert "makeappx.exe" in text
     assert "10.0.26100.0" in text
     assert "ANGERONA_MSIX_PACKAGE_NAME" in text
     assert "ANGERONA_MSIX_PUBLISHER_DN" in text
     assert "Windows installation contract" in text
-    assert "ApprovedInstallationMigrationOnly=1" in text
-    assert "restricted-windows-migration-setup-do-not-publish" in text
-    assert "retention-days: 1" in text
-    public_assets = text.split("      - name: Upload gated release assets", 1)[1].split(
-        "      - name: Upload restricted migration wrapper", 1
-    )[0]
-    restricted_assets = text.split(
-        "      - name: Upload restricted migration wrapper", 1
-    )[1].split("  build-posix:", 1)[0]
-    publisher = text.split("  publish-release:", 1)[1]
-    assert "win64-migration-setup" not in public_assets
-    assert "win64-migration-setup" in restricted_assets
+    assert "-win64-unsigned.msix" in packager
+    assert "-win64-unsigned.zip" in packager
+    assert "windows-publisher-request.sha256" in packager
     assert "win64-migration-setup" not in publisher
     assert "Angerona-${{ github.ref_name }}-*" not in publisher
     assert "pattern: angerona-*" not in publisher
     assert "merge-multiple: true" not in publisher
     for artifact_name in (
-        "angerona-release-assets",
+        "finalized-windows-release-assets",
         "angerona-linux-x86_64",
         "angerona-macos-arm64",
     ):
-        assert f"name: {artifact_name}" in publisher
+        assert artifact_name in publisher
     assert "win64-migration-setup" not in text.split(
         "      - name: Attest release archive", 1
     )[1]
-    assert "AngeronaReleaseVerifier.exe" in text
+    assert "--name AngeronaReleaseVerifier" in text
     assert "release-payload-manifest.json" in text
     assert "release-payload.cat" in text
     assert "release-build-provenance.json" in text
-    assert "release-authorization.json" in text
-    assert "release-trust.json" in text
+    assert "release-payload-unsigned.cat" in prepare
+    assert "release-authorization.json" not in finalizer
+    assert "release-trust.json" not in finalizer
     assert text.count("id: artifact_name") == 2
     assert "tools/release_artifact_tag.py" in text
 

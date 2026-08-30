@@ -1,0 +1,306 @@
+{
+  "schema": "angerona.independent-hostile-reattack.v1",
+  "date": "2026-08-28",
+  "scope": [
+    "C27-R1-A01",
+    "C27-R1-A16",
+    "C27-R1-C03",
+    "C27-R1-C13"
+  ],
+  "overall_verdict": "REOPENED_PARTIAL",
+  "product_code_edited": false,
+  "committed": false,
+  "published": false,
+  "inert_fixtures_only": true,
+  "verdicts": [
+    {
+      "id": "C27-R1-A01",
+      "verdict": "REOPENED_PARTIAL",
+      "severity": "MEDIUM"
+    },
+    {
+      "id": "C27-R1-A16",
+      "verdict": "REOPENED_PARTIAL",
+      "severity": "HIGH"
+    },
+    {
+      "id": "C27-R1-C03",
+      "verdict": "REOPENED_PARTIAL",
+      "severity": "MEDIUM"
+    },
+    {
+      "id": "C27-R1-C13",
+      "verdict": "REOPENED_PARTIAL",
+      "severity": "MEDIUM"
+    }
+  ],
+  "findings": [
+    {
+      "id": "C27-R1-A01-R8-01",
+      "parent": "C27-R1-A01",
+      "severity": "MEDIUM",
+      "title": "Undo terminal durability loss leaves the current process armed",
+      "source": [
+        "src/angerona/modules/adversary_combat.py:4827",
+        "src/angerona/modules/adversary_combat.py:4863",
+        "src/angerona/modules/adversary_combat.py:4870"
+      ],
+      "gate": "test_a01_failed_undo_terminal_must_open_current_process_mutation_circuit",
+      "observation": {
+        "effect_reported_success": true,
+        "result_ok": false,
+        "journal_tail": "undo_intent",
+        "mutation_blocked": false,
+        "health": 100
+      }
+    },
+    {
+      "id": "C27-R1-A01-R8-02",
+      "parent": "C27-R1-A01",
+      "severity": "LOW",
+      "title": "Restart orphan undo crosses its host effect without pinned journal custody",
+      "source": [
+        "src/angerona/modules/adversary_combat.py:3986",
+        "src/angerona/modules/adversary_combat.py:4020",
+        "src/angerona/modules/adversary_combat.py:4059",
+        "src/angerona/modules/adversary_combat.py:4081"
+      ],
+      "gate": "test_a01_restart_orphan_undo_keeps_journal_pinned_through_effect",
+      "observation": {
+        "active_journal_session_at_effect": false,
+        "canonical_unlink_succeeded": true,
+        "eventual_fail_closed": true
+      }
+    },
+    {
+      "id": "C27-R1-A01-R8-03",
+      "parent": "C27-R1-A01",
+      "severity": "LOW",
+      "title": "Authenticated fractional numeric authority fields are coerced and accepted",
+      "source": [
+        "src/angerona/modules/adversary_combat.py:1815",
+        "src/angerona/modules/adversary_combat.py:1824",
+        "src/angerona/modules/adversary_combat.py:2486"
+      ],
+      "gate": "test_a01_authenticated_anchor_numeric_fields_require_exact_integer_types",
+      "observation": {
+        "reconcile": true,
+        "mutation_blocked": false,
+        "health": 100
+      }
+    },
+    {
+      "id": "C27-R1-A16-R8-01",
+      "parent": "C27-R1-A16",
+      "severity": "HIGH",
+      "title": "Cursor-new and missing unacknowledged outbox is accepted as healthy acknowledgement",
+      "source": [
+        "src/angerona/modules/etw_listener.py:2075",
+        "src/angerona/modules/etw_listener.py:2194",
+        "src/angerona/modules/etw_listener.py:2273",
+        "src/angerona/modules/etw_listener.py:2454"
+      ],
+      "gate": "test_a16_missing_unacknowledged_outbox_must_not_be_silent_and_green",
+      "observation": {
+        "prepared_records": [4, 5, 6],
+        "restart_replay": [],
+        "restart_cursor": 6,
+        "restart_gap": "",
+        "restart_health": 100
+      }
+    },
+    {
+      "id": "C27-R1-A16-R8-02",
+      "parent": "C27-R1-A16",
+      "severity": "LOW",
+      "title": "Acknowledgement unlinks a mutable pathname instead of the verified object",
+      "source": [
+        "src/angerona/modules/etw_listener.py:2150",
+        "src/angerona/modules/etw_listener.py:2170"
+      ],
+      "gate": "test_a16_ack_unlink_must_be_bound_to_the_verified_outbox_object",
+      "observation": {
+        "ack_returned_success": true,
+        "verified_object_survived_under_alternate_name": true,
+        "replacement_deleted": true
+      }
+    },
+    {
+      "id": "C27-R1-C03-R8-01",
+      "parent": "C27-R1-C03",
+      "severity": "MEDIUM",
+      "title": "Deadline and stop are checked only after hostile iterator next returns",
+      "source": [
+        "src/angerona/modules/ransomware_heuristics.py:1883",
+        "src/angerona/modules/ransomware_heuristics.py:2009",
+        "src/angerona/modules/ransomware_heuristics.py:2015"
+      ],
+      "gates": [
+        "test_c03_deadline_and_stop_are_checked_before_requesting_next_entry",
+        "test_c03_hostile_next_cannot_overrun_the_declared_deadline"
+      ],
+      "observation": {
+        "entry_produced_when_stop_already_true": 1,
+        "deadline_seconds": 0.25,
+        "simulated_next_seconds": 10.0,
+        "iterator_closed": true,
+        "coverage_non_green": true,
+        "honestly_disclosed_platform_limit": true
+      }
+    },
+    {
+      "id": "C27-R1-C03-R8-02",
+      "parent": "C27-R1-C03",
+      "severity": "MEDIUM",
+      "title": "Genesis transition follows durable key creation and can strand authority",
+      "source": [
+        "src/angerona/modules/ransomware_heuristics.py:836",
+        "src/angerona/modules/ransomware_heuristics.py:871"
+      ],
+      "gate": "test_c03_genesis_intent_failure_does_not_strand_key_only_authority",
+      "observation": {
+        "state_key_exists": true,
+        "enrollment_key_exists": true,
+        "state_exists": false,
+        "witness_exists": false,
+        "transition_exists": false,
+        "restart_error": "durable content-state authority is incomplete"
+      }
+    },
+    {
+      "id": "C27-R1-C03-R8-03",
+      "parent": "C27-R1-C03",
+      "severity": "MEDIUM",
+      "title": "Deep state JSON escapes as RecursionError",
+      "source": [
+        "src/angerona/modules/ransomware_heuristics.py:911",
+        "src/angerona/modules/ransomware_heuristics.py:923",
+        "src/angerona/modules/ransomware_heuristics.py:929"
+      ],
+      "gate": "test_c03_deep_authority_json_must_not_escape_as_recursion_error[state-4000]",
+      "observation": {
+        "payload_bytes": 8000,
+        "nesting_depth": 4000,
+        "exception": "RecursionError"
+      }
+    },
+    {
+      "id": "C27-R1-C03-R8-04",
+      "parent": "C27-R1-C03",
+      "severity": "MEDIUM",
+      "title": "Stale writer can overwrite a competing adjacent authenticated commit",
+      "source": [
+        "src/angerona/modules/ransomware_heuristics.py:1151",
+        "src/angerona/modules/ransomware_heuristics.py:1188"
+      ],
+      "gate": "test_c03_stale_writer_cannot_overwrite_a_competing_adjacent_commit",
+      "observation": {
+        "stale_writer_error": false,
+        "winner_sequence": 1,
+        "first_writer_receipt_survived": false,
+        "stale_writer_receipt_survived": true
+      }
+    },
+    {
+      "id": "C27-R1-C13-R8-01",
+      "parent": "C27-R1-C13",
+      "severity": "MEDIUM",
+      "title": "Default local-only genesis crash after key creation is unrecoverable",
+      "source": [
+        "src/angerona/modules/smart_deception.py:291",
+        "src/angerona/modules/smart_deception.py:1492",
+        "src/angerona/modules/smart_deception.py:1689"
+      ],
+      "gate": "test_c13_local_only_genesis_crash_after_key_is_restart_recoverable",
+      "observation": {
+        "high_water_configured": false,
+        "key_exists": true,
+        "sqlite_exists": false,
+        "transition_exists": false,
+        "restart_error": "custody authority bundle is incomplete"
+      }
+    },
+    {
+      "id": "C27-R1-C13-R8-02",
+      "parent": "C27-R1-C13",
+      "severity": "MEDIUM",
+      "title": "Deep pending-transition JSON escapes as RecursionError",
+      "source": [
+        "src/angerona/modules/smart_deception.py:947",
+        "src/angerona/modules/smart_deception.py:971",
+        "src/angerona/modules/smart_deception.py:972"
+      ],
+      "gate": "test_c13_deep_authority_json_must_not_escape_as_recursion_error[transition-4000]",
+      "observation": {
+        "payload_bytes": 8000,
+        "nesting_depth": 4000,
+        "exception": "RecursionError"
+      }
+    },
+    {
+      "id": "C27-R1-C13-R8-03",
+      "parent": "C27-R1-C13",
+      "severity": "MEDIUM",
+      "title": "Custody head and SQLite ledger allocate or materialize before bounds",
+      "source": [
+        "src/angerona/modules/smart_deception.py:1552",
+        "src/angerona/modules/smart_deception.py:1713"
+      ],
+      "gates": [
+        "test_c13_head_reader_rejects_oversize_before_json_allocation",
+        "test_c13_ledger_authentication_does_not_materialize_all_rows"
+      ],
+      "observation": {
+        "head_probe_bytes": 8388608,
+        "head_traced_peak_bytes": 16791619,
+        "sqlite_rows": 50000,
+        "sqlite_file_bytes": 12087296,
+        "sqlite_elapsed_seconds": 4.0806,
+        "sqlite_traced_peak_bytes": 29391861
+      }
+    }
+  ],
+  "closures": [
+    {
+      "id": "C27-R1-A01-CLOSE-01",
+      "status": "HELD",
+      "summary": "Protected authority depth, duplicate, oversize, huge integer, and non-finite input fail closed; normal operator undo retains journal custody."
+    },
+    {
+      "id": "C27-R1-A16-CLOSE-01",
+      "status": "HELD",
+      "summary": "Present authenticated batches replay below health 100; reordered exact acknowledgement is rejected and retained."
+    },
+    {
+      "id": "C27-R1-C03-CLOSE-01",
+      "status": "HELD",
+      "summary": "Ordinary adjacent state/witness crash states recover; witness-ahead is rejected; interrupted iteration closes and reports incomplete."
+    },
+    {
+      "id": "C27-R1-C13-CLOSE-01",
+      "status": "HELD_WITH_CONFIGURED_AUTHORITY",
+      "summary": "Configured-authority genesis, SQLite/head/witness adjacency, outage, ambiguous commit, and lost CAS response recover; gaps and forks reject."
+    }
+  ],
+  "validation": {
+    "author_eighth_matrix": {
+      "path": "tests/test_cycle27_high_ac_eighth_remediation.py",
+      "passed": 16,
+      "failed": 0
+    },
+    "independent_matrix": {
+      "path": "tests/test_cycle27_high_ac_eighth_independent_reattack.py",
+      "passed": 8,
+      "failed": 14,
+      "failure_semantics": "intentional red gates for reopened residuals"
+    },
+    "py_compile": "PASS",
+    "ruff": "PASS",
+    "full_suite_repeated": false
+  },
+  "artifacts": [
+    "tests/test_cycle27_high_ac_eighth_independent_reattack.py",
+    "analysis/loop/cycle27/round1/independent_reattack_high_ac_eighth.md",
+    "analysis/loop/cycle27/round1/independent_reattack_high_ac_eighth.json"
+  ]
+}

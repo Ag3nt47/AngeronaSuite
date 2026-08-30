@@ -1,0 +1,52 @@
+[
+  {
+    "id": "C27-R1-C03",
+    "status": "REMEDIATED_AWAITING_INDEPENDENT_REATTACK",
+    "files": [
+      "src/angerona/modules/ransomware_heuristics.py",
+      "tests/test_cycle27_high_c_fifth_remediation.py"
+    ],
+    "changes": [
+      "Removed mutable last-write time as entropy admission authority.",
+      "Added exact held full-file streaming through 8 MiB and identity-keyed unpredictable multi-range proofs above that bound.",
+      "Bound offsets, lengths, bytes, digest, identity, size, generation and ancestry through publication.",
+      "Added a 64 MiB per-root read budget with explicit incomplete/exhausted coverage and non-green health.",
+      "Added bounded HMAC-authenticated durable identity/path/content receipts with fail-visible continuity loss."
+    ],
+    "fourth_attack_regressions": [
+      "header-preserving high-entropy tail",
+      "old restored mtime",
+      "same-inode restored-metadata swap",
+      "large-file range evidence",
+      "content budget exhaustion",
+      "durable state deletion"
+    ],
+    "assurance_boundary": "Large files use representative ranges and are therefore explicitly incomplete below health 100; authenticated local receipts do not replace a current held reread."
+  },
+  {
+    "id": "C27-R1-C13",
+    "status": "REMEDIATED_AWAITING_INDEPENDENT_REATTACK",
+    "files": [
+      "src/angerona/modules/smart_deception.py",
+      "tests/test_cycle27_high_c_fifth_remediation.py"
+    ],
+    "changes": [
+      "Added authenticated durable pending-loss, refusal, continuity-loss, alias, topology and two-phase eviction events.",
+      "Reconstructs latched degradation, loss, aliases, topology uncertainty, refusals, evictions and pending transitions across restart.",
+      "Added a separately keyed local high-water witness outside the create-on-missing custody bundle.",
+      "Rejects partial/main authority deletion and paired database/head rollback behind the enrolled witness.",
+      "Reserves and exposes terminal ledger capacity before capture and source retirement.",
+      "Performs full digest/link reconciliation at publication and permanently discloses the unavoidable userspace hard-link topology race."
+    ],
+    "fourth_attack_regressions": [
+      "source alias restart",
+      "pending crash restart",
+      "authenticated eviction restart",
+      "post-final-fstat hard-link race",
+      "main authority deletion",
+      "paired database/head rollback",
+      "ledger capture-capacity exhaustion"
+    ],
+    "assurance_boundary": "The local witness detects ordinary bundle deletion and paired rollback but is not a TPM/remote monotonic authority; clean local custody is intentionally capped below health 100."
+  }
+]

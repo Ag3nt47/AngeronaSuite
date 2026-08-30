@@ -1,0 +1,220 @@
+{
+  "schema": 1,
+  "date": "2026-08-28",
+  "scope": [
+    "C27-R1-C09",
+    "C27-R1-C10",
+    "C27-R1-C17",
+    "C27-R1-C19"
+  ],
+  "execution_boundary": {
+    "fixtures": "inert temporary files, authenticated fixture state, fake Event Log backend, temporary link or junction objects",
+    "live_attack": false,
+    "host_mutation": false,
+    "product_code_edited": false,
+    "existing_tests_edited": false,
+    "committed": false,
+    "published": false
+  },
+  "verdict": {
+    "C27-R1-C09": "REOPENED",
+    "C27-R1-C10": "REOPENED",
+    "C27-R1-C17": "REOPENED",
+    "C27-R1-C19": "REOPENED"
+  },
+  "reproduced_breaks": [
+    {
+      "id": "C27-R1-C09-RA1",
+      "parent": "C27-R1-C09",
+      "severity": "MEDIUM",
+      "title": "Wall-clock rollback defeats the durable retry cap",
+      "status": "REPRODUCED",
+      "gate": "test_c09_wall_clock_rollback_cannot_expand_retry_beyond_bound",
+      "test_line": 116,
+      "product_lines": [
+        "src/angerona/modules/self_healer.py:229",
+        "src/angerona/modules/self_healer.py:421",
+        "src/angerona/modules/self_healer.py:455"
+      ],
+      "observed": "A normal five-second retry persisted at wall time 1000 becomes 1005 seconds away after a restart at wall time zero, exceeding the configured 300-second maximum."
+    },
+    {
+      "id": "C27-R1-C09-RA2",
+      "parent": "C27-R1-C09",
+      "severity": "MEDIUM",
+      "title": "Trusted source validation is not bound to the later open",
+      "status": "REPRODUCED",
+      "gate": "test_c09_validated_source_identity_swap_cannot_escape_source_root",
+      "test_line": 136,
+      "product_lines": [
+        "src/angerona/modules/self_healer.py:564",
+        "src/angerona/modules/self_healer.py:575",
+        "src/angerona/modules/self_healer.py:592",
+        "src/angerona/modules/self_healer.py:600"
+      ],
+      "observed": "After validation, the in-root pathname was replaced by an out-of-root hard-link; the separate trusted-source reader accepted and ingested the swapped object."
+    },
+    {
+      "id": "C27-R1-C09-RA3",
+      "parent": "C27-R1-C09",
+      "severity": "LOW",
+      "title": "Snapshot coverage return type breaks Boolean compatibility",
+      "status": "REPRODUCED_BY_UNCHANGED_GATE",
+      "gate": "tests/test_cycle4_round3_state_bounds.py::test_heal_snapshot_scan_is_bounded_to_current_regular_candidates",
+      "product_lines": [
+        "src/angerona/modules/self_healer.py:306",
+        "src/angerona/modules/self_healer.py:322"
+      ],
+      "observed": "The complete state is returned as the truthy string 'complete' instead of legacy Boolean False, so existing overflow consumers misclassify a complete scan."
+    },
+    {
+      "id": "C27-R1-C10-RA1",
+      "parent": "C27-R1-C10",
+      "severity": "HIGH",
+      "title": "A direct threat decision dependency is outside integrity coverage",
+      "status": "REPRODUCED",
+      "gate": "test_c10_unlisted_security_dependency_monkeypatch_is_detected",
+      "test_line": 152,
+      "product_lines": [
+        "src/angerona/modules/self_integrity.py:153",
+        "src/angerona/modules/self_integrity.py:163",
+        "src/angerona/modules/self_integrity.py:372",
+        "src/angerona/core/threat.py:209"
+      ],
+      "observed": "Replacing is_active_threat with an always-false callable suppresses threat classification while the integrity check reports no tamper."
+    },
+    {
+      "id": "C27-R1-C10-RA2",
+      "parent": "C27-R1-C10",
+      "severity": "MEDIUM",
+      "title": "Unknown ACL evidence state falls through to health 100",
+      "status": "REPRODUCED",
+      "gate": "test_c10_unknown_acl_collector_state_cannot_score_full_health",
+      "test_line": 166,
+      "product_lines": [
+        "src/angerona/modules/self_integrity.py:454",
+        "src/angerona/modules/self_integrity.py:463"
+      ],
+      "observed": "With verified callable coverage, status collector-crashed is not treated as a collection failure and returns full health."
+    },
+    {
+      "id": "C27-R1-C17-RA1",
+      "parent": "C27-R1-C17",
+      "severity": "MEDIUM",
+      "title": "Source object swap can produce false-green spill inspection",
+      "status": "REPRODUCED",
+      "gate": "test_c17_source_object_swap_cannot_turn_reparse_collection_green",
+      "test_line": 282,
+      "product_lines": [
+        "src/angerona/modules/storage_hygiene.py:169",
+        "src/angerona/modules/storage_hygiene.py:184",
+        "src/angerona/modules/storage_hygiene.py:189",
+        "src/angerona/modules/storage_hygiene.py:355"
+      ],
+      "observed": "The already-scanned source was replaced by a junction before enumeration; inspection followed the redirected empty target and reported clean."
+    },
+    {
+      "id": "C27-R1-C19-RA1",
+      "parent": "C27-R1-C19",
+      "severity": "MEDIUM",
+      "title": "Older authenticated cursor replay defeats the live monotonic witness",
+      "status": "REPRODUCED",
+      "gate": "test_c19_authenticated_cursor_rollback_is_not_accepted_in_process",
+      "test_line": 340,
+      "product_lines": [
+        "src/angerona/modules/sysmon_listener.py:464",
+        "src/angerona/modules/sysmon_listener.py:468",
+        "src/angerona/modules/sysmon_listener.py:470",
+        "src/angerona/modules/sysmon_listener.py:519"
+      ],
+      "observed": "After durably reaching record 2 and sequence 2, replaying the valid record-1/sequence-1 file is accepted without an authentication rejection."
+    },
+    {
+      "id": "C27-R1-C19-RA2",
+      "parent": "C27-R1-C19",
+      "severity": "HIGH",
+      "title": "Changed generation can be rebound while new lower records are skipped",
+      "status": "REPRODUCED",
+      "gate": "test_c19_same_range_refill_with_unchanged_cursor_record_forces_gap_replay",
+      "test_line": 363,
+      "product_lines": [
+        "src/angerona/modules/sysmon_listener.py:820",
+        "src/angerona/modules/sysmon_listener.py:822",
+        "src/angerona/modules/sysmon_listener.py:833",
+        "src/angerona/modules/sysmon_listener.py:835"
+      ],
+      "observed": "A same-range clear/refill changed records 1 and 2 but preserved cursor record 3; the listener rebound generation at cursor 3 and selected replay_from 4 instead of replaying retained records."
+    },
+    {
+      "id": "C27-R1-C19-RA3",
+      "parent": "C27-R1-C19",
+      "severity": "HIGH",
+      "title": "Exact event anchors truncate security-relevant content",
+      "status": "REPRODUCED",
+      "gate": "test_c19_exact_record_anchor_covers_security_data_after_four_kibibytes",
+      "test_line": 373,
+      "product_lines": [
+        "src/angerona/modules/sysmon_listener.py:433",
+        "src/angerona/modules/sysmon_listener.py:443",
+        "src/angerona/modules/sysmon_listener.py:447"
+      ],
+      "observed": "Two records whose executable data differs only after the first 4096 characters receive identical record digests."
+    }
+  ],
+  "held_controls": [
+    {
+      "finding": "C27-R1-C09",
+      "gate": "test_c09_retry_and_dead_letter_tamper_is_rejected",
+      "result": "PASS"
+    },
+    {
+      "finding": "C27-R1-C09",
+      "gate": "test_c09_bounded_deep_state_cannot_escape_fail_closed_loader",
+      "result": "PASS"
+    },
+    {
+      "finding": "C27-R1-C10",
+      "gate": "test_c10_approved_manifest_remains_distinct_from_live_tofu",
+      "result": "PASS"
+    },
+    {
+      "finding": "C27-R1-C17",
+      "gate": "test_c17_environment_cannot_redirect_os_authoritative_windows_source",
+      "result": "PASS"
+    },
+    {
+      "finding": "C27-R1-C17",
+      "gate": "test_c17_hardlink_spill_cannot_reactivate_retired_mutation",
+      "result": "PASS"
+    },
+    {
+      "finding": "C27-R1-C19",
+      "gate": "test_c19_bounded_deep_cursor_cannot_escape_fail_closed_loader",
+      "result": "PASS"
+    }
+  ],
+  "gates": {
+    "independent_hostile_pytest": {
+      "passed": 6,
+      "failed": 8,
+      "status": "RED_AS_EXPECTED"
+    },
+    "original_final_remediation_pytest": {
+      "passed": 11,
+      "failed": 0
+    },
+    "broader_unchanged_focused_pytest": {
+      "passed": 43,
+      "failed": 1,
+      "failure": "tests/test_cycle4_round3_state_bounds.py::test_heal_snapshot_scan_is_bounded_to_current_regular_candidates"
+    },
+    "module_self_tests": {
+      "passed": 4,
+      "failed": 0
+    },
+    "py_compile": "PASS",
+    "ruff": "PASS"
+  },
+  "test_file": "tests/test_cycle27_shard_c_final_independent_reattack.py",
+  "product_files_modified": []
+}

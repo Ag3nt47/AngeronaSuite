@@ -154,8 +154,9 @@ def test_chill_forces_ollama_immediate_release(monkeypatch) -> None:
     assert module._model == "operator-model:latest"
     assert effective_keep_alive("30m") == "30m"
     module._ping_ollama = lambda: True
+    module._attest_model = lambda: True
     ok, detail = module.self_test()
-    assert ok and "operator-model:latest" in detail and "not loaded" in detail
+    assert ok and "operator-model:latest" in detail and "attested" in detail
     module._ping_ollama = lambda: False
     ok, detail = module.self_test()
     assert not ok and "not installed" in detail

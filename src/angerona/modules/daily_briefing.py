@@ -17,6 +17,8 @@ module-level register().
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import os
 import time
 import urllib.request
@@ -24,6 +26,7 @@ from collections import Counter
 from pathlib import Path
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.atomic_io import replace_with_retry
 from angerona.core.url_policy import (
     OLLAMA_SERVICE_POLICY,
     local_service_url,
@@ -42,6 +45,12 @@ _SYSTEM_PROMPT = (
     "health evidence and must never by itself be called an active attack. No "
     "markdown headers."
 )
+_WINDOW_LIMIT = 10_000
+_CURSOR_SCHEMA = 1
+_CURSOR_HMAC = "hmac_sha256"
+_CURSOR_DOMAIN = b"Angerona-Daily-Briefing-v1"
+_MAX_CURSOR_BYTES = 16 * 1024
+_MAX_BRIEFING_BYTES = 256 * 1024
 
 
 def _shared_logs() -> Path:
@@ -138,7 +147,9 @@ class DailyBriefingModule(BaseModule):
     description = ("Compiles a daily plain-English security briefing (alert volume, top "
                    "techniques, incidents, containment) via local AI with a deterministic fallback.")
     category = "Reporting"
-    version = "1.0.0"
+    adaptive_throttle_allowed = True
+    adaptive_throttle_max = 4.0
+    version = "1.12.1"
 
     def __init__(self) -> None:
         super().__init__()
@@ -150,6 +161,136 @@ class DailyBriefingModule(BaseModule):
             self._interval_s = 24 * 3600
         self._last_run = 0.0
         self._count = 0
+        self._recorder = None
+        self._cursor_status = "not-loaded"
+        self._cursor_path_override: Path | None = None
+        self._cursor_key_override: bytes | None = None
+        self._last_coverage_complete = False
+
+    def bind_recorder(self, recorder) -> None:
+        self._recorder = recorder
+
+    @property
+    def _cursor_path(self) -> Path:
+        return self._cursor_path_override or (_shared_logs() / "daily_briefing.cursor.json")
+
+    def _cursor_key(self) -> bytes | None:
+        key = self._cursor_key_override
+        if key is None:
+            try:
+                from angerona.core.data_paths import data_dir
+
+                key = bytes.fromhex(
+                    (data_dir() / "bus.key").read_text(encoding="ascii").strip()
+                )
+            except (OSError, ValueError):
+                return None
+        if len(key) != 32:
+            return None
+        return hmac.new(key, _CURSOR_DOMAIN, hashlib.sha256).digest()
+
+    @staticmethod
+    def _cursor_body(value: dict) -> bytes:
+        unsigned = {key: item for key, item in value.items() if key != _CURSOR_HMAC}
+        return json.dumps(
+            unsigned,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+
+    def _load_cursor(self) -> tuple[float, int, str] | None:
+        key = self._cursor_key()
+        if key is None:
+            self._cursor_status = "key-unavailable"
+            return None
+        try:
+            raw = self._cursor_path.read_bytes()
+        except FileNotFoundError:
+            self._cursor_status = "new"
+            return None
+        except OSError:
+            self._cursor_status = "unreadable"
+            return None
+        try:
+            if len(raw) > _MAX_CURSOR_BYTES:
+                raise ValueError("cursor exceeds byte limit")
+            value = json.loads(raw.decode("utf-8"))
+            if not isinstance(value, dict) or set(value) != {
+                "schema",
+                "last_success_ts",
+                "sequence",
+                "report_digest",
+                _CURSOR_HMAC,
+            }:
+                raise ValueError("cursor schema mismatch")
+            last_success = float(value["last_success_ts"])
+            sequence = int(value["sequence"])
+            report_digest = str(value["report_digest"])
+            supplied = str(value[_CURSOR_HMAC])
+            if (
+                value["schema"] != _CURSOR_SCHEMA
+                or not 0 <= last_success <= time.time() + 300
+                or sequence < 1
+                or len(report_digest) != 64
+                or len(supplied) != 64
+            ):
+                raise ValueError("cursor fields invalid")
+            int(report_digest, 16)
+            expected = hmac.new(
+                key, self._cursor_body(value), hashlib.sha256
+            ).hexdigest()
+            if not hmac.compare_digest(supplied, expected):
+                raise ValueError("cursor authentication failed")
+        except (TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+            self._cursor_status = "invalid"
+            return None
+        self._cursor_status = "ok"
+        return last_success, sequence, report_digest
+
+    @staticmethod
+    def _atomic_write(path: Path, payload: bytes) -> None:
+        if len(payload) > _MAX_BRIEFING_BYTES:
+            raise ValueError("briefing artifact exceeds byte limit")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+        try:
+            with temporary.open("xb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            replace_with_retry(temporary, path)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _save_cursor(self, end_ts: float, sequence: int, report_digest: str) -> None:
+        if self._cursor_status not in {"new", "ok"}:
+            raise RuntimeError(
+                f"refusing to overwrite {self._cursor_status} briefing cursor"
+            )
+        key = self._cursor_key()
+        if key is None:
+            self._cursor_status = "key-unavailable"
+            raise RuntimeError("briefing cursor key unavailable")
+        document = {
+            "schema": _CURSOR_SCHEMA,
+            "last_success_ts": float(end_ts),
+            "sequence": int(sequence),
+            "report_digest": report_digest,
+        }
+        document[_CURSOR_HMAC] = hmac.new(
+            key, self._cursor_body(document), hashlib.sha256
+        ).hexdigest()
+        self._atomic_write(
+            self._cursor_path,
+            json.dumps(document, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            ),
+        )
+        self._cursor_status = "ok"
 
     @property
     def state(self) -> str:
@@ -164,10 +305,18 @@ class DailyBriefingModule(BaseModule):
                   Severity.INFO)
         # Give the suite a moment to accumulate events before the first briefing.
         self.sleep(min(60.0, self._interval_s))
+        self._load_cursor()
+        if self._cursor_status not in {"new", "ok"}:
+            self.set_health(30, f"briefing cursor {self._cursor_status}")
         while not self.stopping:
             try:
                 self._make_briefing()
-                self.set_health(100, f"{self._count} briefing(s) generated")
+                health = 100 if self._last_coverage_complete else 70
+                self.set_health(
+                    health,
+                    f"{self._count} briefing(s) durably generated; "
+                    f"coverage={'complete' if self._last_coverage_complete else 'bounded/incomplete'}",
+                )
             except Exception as exc:
                 self.last_error = str(exc)
                 self.set_health(70, f"briefing error: {exc}")
@@ -177,9 +326,40 @@ class DailyBriefingModule(BaseModule):
                 self.sleep(5.0)
                 waited += 5.0
 
-    def _gather(self) -> tuple[dict, dict, list]:
-        events = list(self._bus.recent(500)) if self._bus is not None else []
+    def _gather(
+        self, start_ts: float | None = None, end_ts: float | None = None
+    ) -> tuple[dict, dict, list]:
+        end_ts = time.time() if end_ts is None else float(end_ts)
+        start_ts = end_ts - self._interval_s if start_ts is None else float(start_ts)
+        recorder = self._recorder
+        if recorder is not None and hasattr(recorder, "bounded_events_in_window"):
+            events, total = recorder.bounded_events_in_window(
+                start_ts, end_ts, limit=_WINDOW_LIMIT
+            )
+            source = "flight-recorder"
+            omitted = max(0, int(total) - len(events))
+            complete = omitted == 0
+        else:
+            recent = list(self._bus.recent(500)) if self._bus is not None else []
+            events = [
+                event
+                for event in recent
+                if start_ts <= float(getattr(event, "ts", 0.0)) <= end_ts
+            ]
+            total = len(events)
+            omitted = None
+            complete = False
+            source = "eventbus-fallback"
         summary = _summarize_events(events)
+        summary["window"] = {
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+            "source": source,
+            "events_returned": len(events),
+            "events_total": total,
+            "events_omitted": omitted,
+            "complete": complete,
+        }
         remediation = _read_remediation()
         incidents: list = []
         try:
@@ -212,7 +392,15 @@ class DailyBriefingModule(BaseModule):
             return None
 
     def _make_briefing(self) -> None:
-        summary, remediation, incidents = self._gather()
+        now = time.time()
+        cursor = self._load_cursor()
+        if self._cursor_status not in {"new", "ok"}:
+            raise RuntimeError(f"briefing cursor {self._cursor_status}")
+        start_ts = cursor[0] if cursor is not None else now - self._interval_s
+        sequence = (cursor[1] + 1) if cursor is not None else 1
+        if start_ts > now:
+            raise RuntimeError("briefing interval cursor is in the future")
+        summary, remediation, incidents = self._gather(start_ts, now)
         facts = json.dumps({
             "events": summary, "remediation": remediation,
             "incidents": [{"actor": i.get("actor"), "pid": i.get("pid"),
@@ -220,27 +408,55 @@ class DailyBriefingModule(BaseModule):
                            "progress_pct": i.get("progress_pct")}
                           for i in incidents[:5]],
         }, indent=2)
-        text = self._ask_ollama(facts)
+        try:
+            from angerona.engines.ai_guardrail import neutralize_telemetry
+
+            guarded_facts = neutralize_telemetry(facts)
+        except Exception:
+            guarded_facts = facts
+        text = self._ask_ollama(guarded_facts)
         source = "AI"
         if not text:
             text = _heuristic_briefing(summary, remediation, incidents)
             source = "rules"
-        self._count += 1
+        text = str(text).replace("\x00", "")[:4000]
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
         full = f"[{stamp}] Security Briefing ({source})\n\n{text}\n"
         sev = (Severity.HIGH if summary.get("active_by_severity", {}).get("CRITICAL")
                else Severity.INFO)
-        self.emit(f"📋 Daily briefing ready ({source}): {text[:180]}", sev,
-                  briefing=text, source=source, events=summary.get("total", 0))
-        try:
-            root = _shared_logs(); root.mkdir(parents=True, exist_ok=True)
-            (root / "daily_briefing.txt").write_text(full, encoding="utf-8")
-            (root / "daily_briefing.json").write_text(json.dumps({
-                "generated": stamp, "source": source, "text": text,
-                "summary": summary, "remediation": remediation,
-            }, indent=2, default=str), encoding="utf-8")
-        except Exception:
-            pass
+        root = _shared_logs()
+        report = {
+            "schema": 2,
+            "generated": stamp,
+            "generated_ts": now,
+            "sequence": sequence,
+            "source": source,
+            "narrative_authority": "advisory-only",
+            "text": text,
+            "summary": summary,
+            "remediation": remediation,
+        }
+        report_bytes = json.dumps(
+            report, indent=2, sort_keys=True, default=str
+        ).encode("utf-8")
+        report_digest = hashlib.sha256(report_bytes).hexdigest()
+        self._atomic_write(root / "daily_briefing.txt", full.encode("utf-8"))
+        self._atomic_write(root / "daily_briefing.json", report_bytes)
+        self._save_cursor(now, sequence, report_digest)
+        self._count += 1
+        self._last_run = now
+        self._last_coverage_complete = bool(summary["window"]["complete"])
+        self.emit(
+            f"📋 Daily briefing ready ({source}): {text[:180]}",
+            sev,
+            briefing=text,
+            source=source,
+            events=summary.get("total", 0),
+            window=dict(summary["window"]),
+            report_path=str(root / "daily_briefing.json"),
+            report_digest=report_digest,
+            sequence=sequence,
+        )
 
     def self_test(self) -> tuple[bool, str]:
         """Offline: verify the summary + deterministic briefing without Ollama."""

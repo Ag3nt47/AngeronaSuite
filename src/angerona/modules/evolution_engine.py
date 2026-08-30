@@ -20,11 +20,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import threading
 import time
 from pathlib import Path
 
 from angerona.engines import ollama_client
+from angerona.core.atomic_io import replace_with_retry
 from angerona.shark.run_manifest import (
     DrillHistoryIntegrityError,
     load_verified_history,
@@ -129,7 +131,9 @@ class EvolutionEngine(BaseModule):
     description = ("Review-gated hardening: turns a typed Judgment bypass receipt "
                    "into an inert YARA proposal; never auto-activates it.")
     category = "Resilience"
-    version = "1.1.0"
+    adaptive_throttle_allowed = True
+    adaptive_throttle_max = 2.0
+    version = "1.12.1"
     enabled_by_default = True
 
     def __init__(self) -> None:
@@ -151,6 +155,8 @@ class EvolutionEngine(BaseModule):
         self._ollama_fails: list = []      # recent Ollama failure timestamps
         self._ollama_open_until = 0.0      # circuit-breaker cooldown deadline
         self._workers: set[threading.Thread] = set()
+        self._history_lock = threading.RLock()
+        self._failed_techniques: dict[str, str] = {}
         try:
             self.shared_logs.mkdir(parents=True, exist_ok=True)
             self.rules_dir.mkdir(parents=True, exist_ok=True)
@@ -434,7 +440,8 @@ class EvolutionEngine(BaseModule):
                 "proposal_path": str(proposal),
             }]
             self._record_history(technique_id, footprint, attempts, False)
-            self.set_health(100, "YARA proposal staged; operator review required")
+            with self._gate:
+                self._failed_techniques.pop(technique_id, None)
             self.emit(
                 f"Evolution staged an inert YARA proposal for {technique_id}; no rule "
                 "was activated or certified.",
@@ -447,29 +454,75 @@ class EvolutionEngine(BaseModule):
             )
         except Exception as exc:
             self.last_error = str(exc)
+            with self._gate:
+                self._failed_techniques[technique_id] = str(exc)[:500]
             _edr("error", f"[EVOLUTION] engine error for {technique_id}: {exc}")
         finally:
             with self._gate:
                 self._active.discard(technique_id)
                 self._workers.discard(threading.current_thread())
+                active_count = len(self._active)
+                failures = dict(self._failed_techniques)
+            if active_count:
+                self.set_health(
+                    70,
+                    f"{active_count} review-only proposal worker(s) still active",
+                )
+            elif failures:
+                failed = ", ".join(sorted(failures))
+                self.set_health(
+                    40,
+                    f"proposal history/staging failed for: {failed}; review required",
+                )
+            else:
+                self.set_health(100, "YARA proposal staged; operator review required")
 
     def _record_history(self, technique_id, footprint, attempts, certified) -> None:
         entry = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "technique": technique_id,
                  "certified": certified, "iterations": len(attempts),
                  "rule_path": "", "active_rule_unchanged": str(self.auto_rule),
                  "footprint": footprint, "attempts": attempts}
-        try:
+        candidate: Path | None = None
+        with self._history_lock:
             self.shared_logs.mkdir(parents=True, exist_ok=True)
             hist = []
             if self.history_path.exists():
                 try:
                     hist = json.loads(self.history_path.read_text(encoding="utf-8"))
-                except Exception:
-                    hist = []
+                except Exception as exc:
+                    raise RuntimeError(
+                        "existing evolution history is unreadable; refusing to overwrite it"
+                    ) from exc
+                if not isinstance(hist, list):
+                    raise RuntimeError(
+                        "existing evolution history is not a JSON list; refusing to overwrite it"
+                    )
             hist.append(entry)
-            self.history_path.write_text(json.dumps(hist, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+            candidate = self.history_path.with_name(
+                f".{self.history_path.name}.{secrets.token_hex(8)}.tmp"
+            )
+            try:
+                with candidate.open("x", encoding="utf-8", newline="\n") as handle:
+                    json.dump(hist, handle, indent=2)
+                    handle.write("\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                replace_with_retry(candidate, self.history_path)
+                if os.name != "nt":
+                    descriptor = os.open(
+                        self.history_path.parent,
+                        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+                    )
+                    try:
+                        os.fsync(descriptor)
+                    finally:
+                        os.close(descriptor)
+            finally:
+                if candidate is not None:
+                    try:
+                        candidate.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
     def self_test(self) -> tuple[bool, str]:
         # Isolated: exercise the fallback YARA synthesis + history write, no subprocess.

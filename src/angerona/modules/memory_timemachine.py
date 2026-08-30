@@ -46,7 +46,7 @@ except Exception:  # pragma: no cover - psutil is a suite dependency
 from angerona.core.module_base import BaseModule, Severity
 
 # ── RING geometry (SPSC mmap) ────────────────────────────────────────────────
-_MAGIC = b"MTM1"
+_MAGIC = b"MTM2"
 _HEADER = 32                # magic(4) + cap(4) + head(8) + tail(8) + reserved(8)
 _SLOT = 512                 # fixed slot size (4-byte length prefix + payload)
 _SLOTS = 4096               # ~2 MB backing file
@@ -71,9 +71,18 @@ class _SpscRing:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with open(path, "wb") as f:
                     f.write(b"\x00" * self._size)
+                try:
+                    path.chmod(0o600)
+                except OSError:
+                    pass
             self._f = open(path, "r+b")
             self._mm = mmap.mmap(self._f.fileno(), self._size)
             if new or self._mm[0:4] != _MAGIC:
+                # MTM1 stored raw strings in slots.  A format change must erase
+                # the complete mapping, not just replace the header, otherwise
+                # credentials from an old environment/cmdline observation can
+                # remain recoverable in unused slots after an upgrade.
+                self._mm[:] = b"\x00" * self._size
                 struct.pack_into("<4sIQQQ", self._mm, 0, _MAGIC, slots, 0, 0, 0)
 
     def _head(self) -> int:
@@ -85,13 +94,17 @@ class _SpscRing:
     def push(self, payload: bytes) -> bool:
         body = payload[: _SLOT - 4]
         head, tail = self._head(), self._tail()
+        admitted_without_loss = True
         if head - tail >= self._slots:           # full → drop oldest (producer side)
             struct.pack_into("<Q", self._mm, 16, tail + 1)
+            overwrites = struct.unpack_from("<Q", self._mm, 24)[0]
+            struct.pack_into("<Q", self._mm, 24, overwrites + 1)
+            admitted_without_loss = False
         off = _HEADER + (head % self._slots) * _SLOT
         struct.pack_into("<I", self._mm, off, len(body))
         self._mm[off + 4: off + 4 + len(body)] = body
         struct.pack_into("<Q", self._mm, 8, head + 1)   # publish last
-        return True
+        return admitted_without_loss
 
     def pop(self) -> bytes | None:
         head, tail = self._head(), self._tail()
@@ -105,6 +118,9 @@ class _SpscRing:
 
     def depth(self) -> int:
         return max(0, self._head() - self._tail())
+
+    def overwrite_count(self) -> int:
+        return struct.unpack_from("<Q", self._mm, 24)[0]
 
     def close(self) -> None:
         try:
@@ -120,11 +136,14 @@ class MemoryTimeMachineModule(BaseModule):
     description = ("SPSC mmap ring + per-PID sliding hash cache; forwards only the "
                    "delta slice of newly-observed process strings to the LLM queue.")
     category = "Performance"
-    version = "1.0.0"
+    version = "1.12.1"
 
     _WINDOW = 4096          # sliding hash-cache size per PID
     _MAX_PIDS = 256         # cap tracked processes (LRU)
     _CARVE_INTERVAL = 6.0   # seconds between carve sweeps
+    _MAX_DELTA_STRINGS = 256
+    _MAX_DELTA_BYTES = 128 * 1024
+    _MAX_STRING_BYTES = 4096
 
     def __init__(self) -> None:
         super().__init__()
@@ -135,6 +154,14 @@ class MemoryTimeMachineModule(BaseModule):
         self._ring: _SpscRing | None = None
         self._seen = 0
         self._forwarded = 0
+        self._queue_drops = 0
+        self._queue_highwater = 0
+        self._ring_overwrites = 0
+        self._collector_failures = 0
+        self._payload_truncations = 0
+        self._last_delivery_failure_at = 0.0
+        self._delivery_incomplete = False
+        self._last_sweep_collector_failures = 0
 
     # ── drop-in contract shims ───────────────────────────────────────────────
     @property
@@ -160,6 +187,8 @@ class MemoryTimeMachineModule(BaseModule):
             for tok in (info.get("cmdline") or []):
                 out.append(str(tok))
         except Exception:
+            self._collector_failures += 1
+            self._last_sweep_collector_failures += 1
             return out
         # CRASH FIX: psutil.Process.open_files() triggers a Windows ACCESS VIOLATION
         # (an uncatchable C-level fault that kills the ENTIRE process — no Python
@@ -182,9 +211,11 @@ class MemoryTimeMachineModule(BaseModule):
                     out += [f.path for f in val]
                 elif getter == "connections":
                     out += [f"{c.laddr}->{c.raddr}" for c in val if c.raddr]
-                else:  # environ
-                    out += [f"{k}={v}" for k, v in val.items()]
+                else:  # environ — names only; values may contain credentials.
+                    out += [f"ENV_KEY:{str(k)[:128]}" for k in val]
             except Exception:
+                self._collector_failures += 1
+                self._last_sweep_collector_failures += 1
                 continue
         # keep only printable runs >= 4 chars
         carved: list[str] = []
@@ -204,29 +235,102 @@ class MemoryTimeMachineModule(BaseModule):
                 self._caches.move_to_end(pid)
             return self._caches[pid], self._cache_sets[pid]
 
-    def delta_for(self, pid: int, strings: list[str]) -> list[str]:
+    @staticmethod
+    def _string_fingerprint(value: str) -> bytes:
+        return hashlib.blake2b(
+            value.encode("utf-8", "ignore"),
+            digest_size=8,
+            person=b"Angerona-MTM-v1",
+        ).digest()
+
+    def delta_for(
+        self, pid: int, strings: list[str], *, commit: bool = True
+    ) -> list[str]:
         """Return only strings not already in this PID's sliding window, and
-        register them. This is the >80% token-reduction hot path."""
+        optionally register them.
+
+        ``commit=False`` is the delivery-safe preview used by ``_sweep``.  The
+        hashes are committed only after the downstream queue accepts a chunk,
+        so backpressure cannot silently turn undelivered observations into
+        "already seen" data.
+        """
         window, seen = self._cache_for(pid)
         delta: list[str] = []
-        for s in strings:
-            h = hashlib.blake2b(s.encode("utf-8", "ignore"), digest_size=8).digest()
-            self._seen += 1
-            if h in seen:
-                continue
-            if len(window) == window.maxlen:
-                seen.discard(window[0])      # evict oldest hash as window slides
-            window.append(h)
-            seen.add(h)
-            delta.append(s)
+        with self.state_lock:
+            candidate_window = deque(window, maxlen=window.maxlen)
+            candidate_seen = set(seen)
+            for s in strings:
+                h = self._string_fingerprint(s)
+                self._seen += 1
+                if h in candidate_seen:
+                    continue
+                if len(candidate_window) == candidate_window.maxlen:
+                    candidate_seen.discard(candidate_window[0])
+                candidate_window.append(h)
+                candidate_seen.add(h)
+                delta.append(s)
+            if commit:
+                window.clear()
+                window.extend(candidate_window)
+                seen.clear()
+                seen.update(candidate_seen)
         return delta
+
+    def _commit_delta(self, pid: int, strings: list[str]) -> None:
+        """Commit an already-admitted delta without double-counting it."""
+        window, seen = self._cache_for(pid)
+        with self.state_lock:
+            for value in strings:
+                fingerprint = self._string_fingerprint(value)
+                if fingerprint in seen:
+                    continue
+                if len(window) == window.maxlen:
+                    seen.discard(window[0])
+                window.append(fingerprint)
+                seen.add(fingerprint)
+
+    def _bounded_delta(self, values: list[str]) -> list[list[str]]:
+        """Bound individual and aggregate work-queue payloads."""
+        chunks: list[list[str]] = []
+        current: list[str] = []
+        current_bytes = 0
+        for value in values:
+            raw = value.encode("utf-8", "ignore")
+            if len(raw) > self._MAX_STRING_BYTES:
+                digest = hashlib.sha256(raw).hexdigest()
+                suffix = f"...[truncated sha256={digest}]"
+                suffix_bytes = suffix.encode("ascii")
+                prefix = raw[: max(0, self._MAX_STRING_BYTES - len(suffix_bytes))]
+                value = prefix.decode("utf-8", "ignore") + suffix
+                raw = value.encode("utf-8", "ignore")
+                self._payload_truncations += 1
+            size = len(raw)
+            if current and (
+                len(current) >= self._MAX_DELTA_STRINGS
+                or current_bytes + size > self._MAX_DELTA_BYTES
+            ):
+                chunks.append(current)
+                current = []
+                current_bytes = 0
+            current.append(value)
+            current_bytes += size
+        if current:
+            chunks.append(current)
+        return chunks
 
     def stats(self) -> dict:
         reduction = (1 - self._forwarded / self._seen) * 100 if self._seen else 0.0
         return {"strings_seen": self._seen, "forwarded": self._forwarded,
                 "reduction_pct": round(reduction, 1),
                 "ring_depth": self._ring.depth() if self._ring else 0,
-                "queue_depth": self.delta_queue.qsize()}
+                "queue_depth": self.delta_queue.qsize(),
+                "queue_drops": self._queue_drops,
+                "queue_highwater": self._queue_highwater,
+                "ring_overwrites": self._ring_overwrites,
+                "collector_failures": self._collector_failures,
+                "payload_truncations": self._payload_truncations,
+                "delivery_incomplete": self._delivery_incomplete,
+                "ring_available": self._ring is not None}
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def run(self) -> None:
@@ -234,6 +338,7 @@ class MemoryTimeMachineModule(BaseModule):
         ring_path = Config().data_dir / "telemetry_ringbuffer.mmap"
         try:
             self._ring = _SpscRing(ring_path)
+            self._ring_overwrites = self._ring.overwrite_count()
         except Exception as exc:
             self.set_health(40, f"ring unavailable: {exc}")
         if psutil is None:
@@ -247,6 +352,7 @@ class MemoryTimeMachineModule(BaseModule):
 
     def _sweep(self) -> None:
         batch = 0
+        self._last_sweep_collector_failures = 0
         # Process.connections() performs an OS connection-table query for every
         # PID. On Windows that repeated the same expensive system enumeration
         # hundreds of times per sweep. Take one equivalent inet snapshot and
@@ -258,37 +364,91 @@ class MemoryTimeMachineModule(BaseModule):
             all_connections = psutil.net_connections(kind="inet")
             if any(c.pid is None for c in all_connections):
                 connections_by_pid = None
+                self._collector_failures += 1
+                self._last_sweep_collector_failures += 1
             else:
                 for conn in all_connections:
                     connections_by_pid.setdefault(int(conn.pid), []).append(conn)
         except Exception:
             connections_by_pid = None
-        for proc in psutil.process_iter(["pid"]):
-            if self.stopping:
-                break
-            pid = proc.info["pid"]
-            proc_connections = (None if connections_by_pid is None
-                                else connections_by_pid.get(pid, ()))
-            strings = self._process_strings(proc, proc_connections)
-            if not strings:
-                continue
-            delta = self.delta_for(pid, strings)
-            if not delta:
-                continue
-            self._forwarded += len(delta)
-            batch += len(delta)
-            payload = {"pid": pid, "delta": delta, "ts": time.time()}
-            # producer side of the SPSC ring + the in-proc Ollama work queue
-            if self._ring is not None:
-                for s in delta:
-                    self._ring.push(f"{pid}\t{s}".encode("utf-8", "ignore"))
-            try:
-                self.delta_queue.put_nowait(payload)
-            except queue.Full:
-                pass
+            self._collector_failures += 1
+            self._last_sweep_collector_failures += 1
+        try:
+            processes = psutil.process_iter(["pid"])
+            for proc in processes:
+                if self.stopping:
+                    break
+                try:
+                    pid = int(proc.info["pid"])
+                except Exception:
+                    self._collector_failures += 1
+                    self._last_sweep_collector_failures += 1
+                    continue
+                proc_connections = (None if connections_by_pid is None
+                                    else connections_by_pid.get(pid, ()))
+                strings = self._process_strings(proc, proc_connections)
+                if not strings:
+                    continue
+                delta = self.delta_for(pid, strings, commit=False)
+                if not delta:
+                    continue
+                for admitted in self._bounded_delta(delta):
+                    payload = {"pid": pid, "delta": admitted, "ts": time.time()}
+                    try:
+                        self.delta_queue.put_nowait(payload)
+                    except queue.Full:
+                        self._queue_drops += len(admitted)
+                        self._delivery_incomplete = True
+                        self._last_delivery_failure_at = time.time()
+                        continue
+
+                    # Delivery is authoritative: commit dedup state only after
+                    # queue admission. The mmap receives pseudonymous receipts,
+                    # never the source strings themselves.
+                    self._commit_delta(pid, admitted)
+                    self._forwarded += len(admitted)
+                    batch += len(admitted)
+                    if self._ring is not None:
+                        for value in admitted:
+                            receipt = hashlib.blake2b(
+                                value.encode("utf-8", "ignore"),
+                                digest_size=16,
+                                person=b"Angerona-MTM-v1",
+                            ).hexdigest()
+                            if not self._ring.push(f"{pid}\t{receipt}".encode("ascii")):
+                                self._last_delivery_failure_at = time.time()
+                        self._ring_overwrites = self._ring.overwrite_count()
+                    self._queue_highwater = max(
+                        self._queue_highwater, self.delta_queue.qsize()
+                    )
+        except Exception:
+            self._collector_failures += 1
+            self._last_sweep_collector_failures += 1
         st = self.stats()
-        note = f"{st['reduction_pct']}% dedup, {st['strings_seen']} seen"
-        self.set_health(100 if st["reduction_pct"] >= 0 else 80, note)
+        health = 100
+        reasons: list[str] = []
+        if self._ring is None:
+            health = min(health, 40)
+            reasons.append("ring unavailable")
+        if self._delivery_incomplete:
+            health = min(health, 55)
+            reasons.append(f"{self._queue_drops} queue admissions refused; retry required")
+        if self._ring_overwrites:
+            health = min(health, 70)
+            reasons.append(f"{self._ring_overwrites} ring records overwritten")
+        if self._last_sweep_collector_failures:
+            health = min(health, 65)
+            reasons.append(
+                f"{self._last_sweep_collector_failures} collector gaps this sweep"
+            )
+        if self._payload_truncations:
+            health = min(health, 80)
+            reasons.append(f"{self._payload_truncations} bounded payloads")
+        note = (
+            f"{st['reduction_pct']}% dedup, {st['strings_seen']} seen"
+            + ("; " + "; ".join(reasons) if reasons else "; complete delivery")
+        )
+        self.set_health(health, note)
         if batch:
             self.emit(f"Forwarded {batch} NEW strings (dedup {st['reduction_pct']}%).",
                       Severity.INFO, **st)

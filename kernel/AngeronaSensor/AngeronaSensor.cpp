@@ -36,6 +36,9 @@
 static ANGERONA_EVENT  g_Ring[ANGERONA_RING_SIZE]  = {};
 static volatile LONG   g_WriteIndex                 = 0;
 static volatile LONG   g_ReadIndex                  = 0;
+static volatile LONG64 g_NextSequence               = 0;
+static volatile LONG64 g_DroppedEvents              = 0;
+static ULONGLONG       g_InstanceId                 = 0;
 static KSPIN_LOCK      g_RingLock;
 
 /* ── Device / symlink objects ───────────────────────────────────────────────── */
@@ -60,7 +63,8 @@ static VOID AngeronaSensorImageNotify(
 );
 
 static VOID RingPush(PANGERONA_EVENT pEvent);
-static ULONG RingDrain(PANGERONA_EVENT pOut, ULONG MaxEvents);
+static ULONG RingDrain(PANGERONA_EVENT pOut, ULONG MaxEvents,
+                       PULONGLONG DroppedEvents, PULONGLONG WriteSequence);
 
 /* ── DriverEntry ────────────────────────────────────────────────────────────── */
 NTSTATUS DriverEntry(
@@ -77,6 +81,9 @@ NTSTATUS DriverEntry(
     BOOLEAN           imgCbSet   = FALSE;
 
     KeInitializeSpinLock(&g_RingLock);
+    g_InstanceId = KeQueryInterruptTime()
+                   ^ (ULONGLONG)(ULONG_PTR)DriverObject
+                   ^ (ULONGLONG)(ULONG_PTR)RegistryPath;
 
     /* Create device object */
     status = IoCreateDevice(
@@ -167,22 +174,39 @@ NTSTATUS AngeronaSensorDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
             status = STATUS_BUFFER_TOO_SMALL; break;
         }
         PANGERONA_VERSION ver = (PANGERONA_VERSION)Irp->AssociatedIrp.SystemBuffer;
-        ver->Major = 1; ver->Minor = 0; ver->Build = 0;
+        ver->Major = 2; ver->Minor = 0; ver->Build = 0;
         RtlCopyMemory(ver->Tag, "ANGRSENS", 8);
+        ver->ProtocolVersion = ANGERONA_PROTOCOL_VERSION;
+        ver->Capabilities = ANGERONA_REQUIRED_CAPS;
+        ver->InstanceId = g_InstanceId;
+        ver->WriteSequence = (ULONGLONG)InterlockedCompareExchange64(
+            &g_NextSequence, 0, 0);
+        ver->DroppedEvents = (ULONGLONG)InterlockedCompareExchange64(
+            &g_DroppedEvents, 0, 0);
+        ver->Heartbeat100ns = KeQueryInterruptTime();
         info = sizeof(ANGERONA_VERSION);
         break;
     }
 
     case IOCTL_ANGERONA_GET_EVENTS: {
         /* Caller allocates buffer for N events; we drain as many as fit. */
-        ULONG maxEvents = (outLen - FIELD_OFFSET(ANGERONA_EVENTS_BUFFER, Events))
-                          / sizeof(ANGERONA_EVENT);
+        const ULONG headerSize = FIELD_OFFSET(ANGERONA_EVENTS_BUFFER, Events);
+        if (outLen < headerSize) {
+            status = STATUS_BUFFER_TOO_SMALL; break;
+        }
+        ULONG maxEvents = (outLen - headerSize) / sizeof(ANGERONA_EVENT);
         if (maxEvents == 0) { status = STATUS_BUFFER_TOO_SMALL; break; }
         PANGERONA_EVENTS_BUFFER buf = (PANGERONA_EVENTS_BUFFER)Irp->AssociatedIrp.SystemBuffer;
-        ULONG count = RingDrain(buf->Events, maxEvents);
+        ULONGLONG dropped = 0;
+        ULONGLONG writeSequence = 0;
+        ULONG count = RingDrain(
+            buf->Events, maxEvents, &dropped, &writeSequence);
         buf->EventCount = count;
-        info = FIELD_OFFSET(ANGERONA_EVENTS_BUFFER, Events)
-               + count * sizeof(ANGERONA_EVENT);
+        buf->ProtocolVersion = ANGERONA_PROTOCOL_VERSION;
+        buf->InstanceId = g_InstanceId;
+        buf->DroppedEvents = dropped;
+        buf->WriteSequence = writeSequence;
+        info = headerSize + count * sizeof(ANGERONA_EVENT);
         break;
     }
 
@@ -272,16 +296,20 @@ static VOID RingPush(PANGERONA_EVENT pEvent)
 {
     KIRQL oldIrql;
     KeAcquireSpinLock(&g_RingLock, &oldIrql);
+    pEvent->Sequence = (ULONGLONG)(++g_NextSequence);
     LONG wi = g_WriteIndex % ANGERONA_RING_SIZE;
     RtlCopyMemory(&g_Ring[wi], pEvent, sizeof(ANGERONA_EVENT));
     g_WriteIndex++;
     /* If ring is full, advance read index (oldest overwritten) */
-    if ((g_WriteIndex - g_ReadIndex) > ANGERONA_RING_SIZE)
+    if ((g_WriteIndex - g_ReadIndex) > ANGERONA_RING_SIZE) {
         g_ReadIndex = g_WriteIndex - ANGERONA_RING_SIZE;
+        g_DroppedEvents++;
+    }
     KeReleaseSpinLock(&g_RingLock, oldIrql);
 }
 
-static ULONG RingDrain(PANGERONA_EVENT pOut, ULONG MaxEvents)
+static ULONG RingDrain(PANGERONA_EVENT pOut, ULONG MaxEvents,
+                       PULONGLONG DroppedEvents, PULONGLONG WriteSequence)
 {
     KIRQL oldIrql;
     KeAcquireSpinLock(&g_RingLock, &oldIrql);
@@ -292,6 +320,8 @@ static ULONG RingDrain(PANGERONA_EVENT pOut, ULONG MaxEvents)
         RtlCopyMemory(&pOut[i], &g_Ring[ri], sizeof(ANGERONA_EVENT));
     }
     g_ReadIndex += (LONG)count;
+    *DroppedEvents = (ULONGLONG)g_DroppedEvents;
+    *WriteSequence = (ULONGLONG)g_NextSequence;
     KeReleaseSpinLock(&g_RingLock, oldIrql);
     return count;
 }

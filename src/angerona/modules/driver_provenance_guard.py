@@ -1,20 +1,27 @@
 """Read-only driver provenance and BYOVD posture guard.
 
 The guard joins image hash, Authenticode/catalog evidence, a bounded local
-blocklist disposition, HVCI, and Secure Boot state.  Missing evidence is
-``unknown`` rather than safe.  This module cannot unload, disable, quarantine,
-delete, or otherwise control a driver.
+blocklist disposition, HVCI, and Secure Boot state. A configured service path
+is explicitly an unbound disk sample: only a trusted kernel load receipt may
+bind it to a loaded image. Missing evidence is ``unknown`` rather than safe.
+This module cannot unload, disable, quarantine, delete, or otherwise control a
+driver.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
+import hmac
 import json
 import math
 import re
+import secrets
 import sys
+import threading
 import time
-from dataclasses import asdict, dataclass
-from typing import Mapping, Protocol
+from dataclasses import asdict, dataclass, replace
+from typing import Callable, Mapping, Protocol
 
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.privilege import trusted_powershell_path
@@ -26,19 +33,22 @@ from angerona.modules.platform_attestation_guard import (
 )
 
 
-SCHEMA = "angerona.driver-provenance-evidence.v1"
+SCHEMA = "angerona.driver-provenance-evidence.v2"
 MAX_DRIVERS = 256
 MAX_OUTPUT_BYTES = 512 * 1024
 MAX_DRIVER_BYTES = 128 * 1024 * 1024
 _HEX_40_OR_64 = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
-_EVIDENCE_KEYS = frozenset(
+_EVIDENCE_REQUIRED_KEYS = frozenset(
     {
         "schema",
         "driver_token",
         "image_sha256",
         "image_size",
         "load_state",
+        "binding_state",
+        "binding_source",
+        "binding_receipt_sha256",
         "signer_status",
         "signer_thumbprint",
         "catalog_status",
@@ -49,7 +59,36 @@ _EVIDENCE_KEYS = frozenset(
         "observed_at",
     }
 )
+_EVIDENCE_KEYS = _EVIDENCE_REQUIRED_KEYS | {"binding_receipt"}
+_LOAD_RECEIPT_SCHEMA = "angerona.driver-load-receipt.v1"
+_LOAD_RECEIPT_KEYS = frozenset(
+    {
+        "schema",
+        "receipt_id",
+        "authority_id",
+        "host_id",
+        "install_id",
+        "boot_id",
+        "load_generation",
+        "driver_token",
+        "object_identity",
+        "image_base",
+        "image_size",
+        "image_sha256",
+        "load_state",
+        "code_integrity_disposition",
+        "issued_at",
+        "expires_at",
+        "signature_ed25519",
+    }
+)
 SUPPORTED_PLATFORMS = ("windows",)
+_MAX_REPLAY_AUTHORITIES = 256
+_MAX_RECEIPTS_PER_AUTHORITY = 8192
+_RECEIPT_REPLAY_LOCK = threading.Lock()
+_CONSUMED_LOAD_RECEIPTS: dict[
+    tuple[str, str, str, str], dict[str, float]
+] = {}
 
 
 class DriverEvidenceRejected(ValueError):
@@ -62,6 +101,251 @@ def _optional_bool(value: object, field: str) -> bool | None:
     raise DriverEvidenceRejected(f"{field} must be boolean or null")
 
 
+def _finite_timestamp(value: object, field: str) -> float:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+        or not 0.0 <= float(value) <= 32_503_680_000.0
+    ):
+        raise DriverEvidenceRejected(f"{field} is invalid")
+    return float(value)
+
+
+@dataclass(frozen=True)
+class DriverLoadReceipt:
+    """One signed observation from an explicitly enrolled kernel authority."""
+
+    schema: str
+    receipt_id: str
+    authority_id: str
+    host_id: str
+    install_id: str
+    boot_id: str
+    load_generation: int
+    driver_token: str
+    object_identity: str
+    image_base: int
+    image_size: int
+    image_sha256: str
+    load_state: str
+    code_integrity_disposition: str
+    issued_at: float
+    expires_at: float
+    signature_ed25519: str
+
+    def __post_init__(self) -> None:
+        if self.schema != _LOAD_RECEIPT_SCHEMA:
+            raise DriverEvidenceRejected("driver load receipt schema is invalid")
+        for field in (
+            "receipt_id", "authority_id", "host_id", "install_id", "boot_id",
+            "driver_token", "object_identity", "image_sha256",
+        ):
+            value = getattr(self, field)
+            if not isinstance(value, str) or not _HEX_64.fullmatch(value):
+                raise DriverEvidenceRejected(f"driver load receipt {field} is invalid")
+        if (
+            type(self.load_generation) is not int
+            or not 1 <= self.load_generation < 2**63
+            or type(self.image_base) is not int
+            or not 0 <= self.image_base < 2**64
+            or type(self.image_size) is not int
+            or not 1 <= self.image_size <= MAX_DRIVER_BYTES
+        ):
+            raise DriverEvidenceRejected("driver load receipt object range is invalid")
+        if self.load_state not in {"running", "stopped"}:
+            raise DriverEvidenceRejected("driver load receipt state is invalid")
+        if self.code_integrity_disposition not in {
+            "trusted", "untrusted", "unknown"
+        }:
+            raise DriverEvidenceRejected(
+                "driver load receipt Code Integrity disposition is invalid"
+            )
+        issued = _finite_timestamp(self.issued_at, "driver load receipt issued_at")
+        expires = _finite_timestamp(self.expires_at, "driver load receipt expires_at")
+        if not issued < expires or expires - issued > 300.0:
+            raise DriverEvidenceRejected("driver load receipt lifetime is invalid")
+        try:
+            signature = base64.b64decode(
+                self.signature_ed25519.encode("ascii"), validate=True
+            )
+        except (UnicodeError, ValueError, binascii.Error) as exc:
+            raise DriverEvidenceRejected(
+                "driver load receipt signature is invalid"
+            ) from exc
+        if len(signature) != 64:
+            raise DriverEvidenceRejected("driver load receipt signature is invalid")
+
+    def unsigned_dict(self) -> dict[str, object]:
+        body = asdict(self)
+        body.pop("signature_ed25519", None)
+        return body
+
+    def signing_bytes(self) -> bytes:
+        return json.dumps(
+            self.unsigned_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+
+    def digest(self) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                asdict(self),
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+
+    @classmethod
+    def issue(cls, private_key: object, **claims: object) -> "DriverLoadReceipt":
+        """Create a receipt for an issuer fixture/adapter; trust stays verifier-side."""
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+                Ed25519PrivateKey,
+            )
+        except Exception as exc:  # pragma: no cover - dependency contract
+            raise DriverEvidenceRejected("Ed25519 support is unavailable") from exc
+        if not isinstance(private_key, Ed25519PrivateKey):
+            raise DriverEvidenceRejected("driver load receipt issuer is invalid")
+        values = dict(claims)
+        values.setdefault("schema", _LOAD_RECEIPT_SCHEMA)
+        values.setdefault("receipt_id", secrets.token_hex(32))
+        values["signature_ed25519"] = base64.b64encode(b"\0" * 64).decode("ascii")
+        provisional = cls(**values)  # type: ignore[arg-type]
+        signature = private_key.sign(provisional.signing_bytes())
+        return replace(
+            provisional,
+            signature_ed25519=base64.b64encode(signature).decode("ascii"),
+        )
+
+
+def parse_driver_load_receipt(value: Mapping[str, object]) -> DriverLoadReceipt:
+    if not isinstance(value, Mapping) or set(value) != _LOAD_RECEIPT_KEYS:
+        raise DriverEvidenceRejected("driver load receipt contract is invalid")
+    try:
+        return DriverLoadReceipt(**dict(value))
+    except TypeError as exc:
+        raise DriverEvidenceRejected("driver load receipt contract is invalid") from exc
+
+
+class DriverLoadReceiptVerifier:
+    """Verify freshness/binding against one enrolled Ed25519 kernel authority."""
+
+    def __init__(
+        self,
+        public_key: object,
+        *,
+        authority_id: str,
+        host_id: str,
+        install_id: str,
+        boot_id: str,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+                Ed25519PublicKey,
+            )
+        except Exception as exc:  # pragma: no cover - dependency contract
+            raise DriverEvidenceRejected("Ed25519 support is unavailable") from exc
+        if isinstance(public_key, bytes):
+            try:
+                public_key = Ed25519PublicKey.from_public_bytes(public_key)
+            except ValueError as exc:
+                raise DriverEvidenceRejected(
+                    "driver load receipt public key is invalid"
+                ) from exc
+        if not isinstance(public_key, Ed25519PublicKey):
+            raise DriverEvidenceRejected("driver load receipt public key is invalid")
+        for label, value in {
+            "authority_id": authority_id,
+            "host_id": host_id,
+            "install_id": install_id,
+            "boot_id": boot_id,
+        }.items():
+            if not isinstance(value, str) or not _HEX_64.fullmatch(value):
+                raise DriverEvidenceRejected(f"driver load verifier {label} is invalid")
+        if not callable(clock):
+            raise DriverEvidenceRejected("driver load verifier clock is invalid")
+        self._public_key = public_key
+        self._authority_id = authority_id
+        self._host_id = host_id
+        self._install_id = install_id
+        self._boot_id = boot_id
+        self._clock = clock
+
+    def _consume_once(self, receipt: DriverLoadReceipt, now: float) -> bool:
+        """Atomically consume a receipt across every verifier in its trust domain."""
+        domain = (
+            self._authority_id,
+            self._host_id,
+            self._install_id,
+            self._boot_id,
+        )
+        with _RECEIPT_REPLAY_LOCK:
+            for authority, consumed in tuple(_CONSUMED_LOAD_RECEIPTS.items()):
+                expired = tuple(
+                    receipt_id
+                    for receipt_id, expires_at in consumed.items()
+                    if expires_at + 5.0 < now
+                )
+                for receipt_id in expired:
+                    consumed.pop(receipt_id, None)
+                if not consumed and authority != domain:
+                    _CONSUMED_LOAD_RECEIPTS.pop(authority, None)
+            consumed = _CONSUMED_LOAD_RECEIPTS.get(domain)
+            if consumed is None:
+                if len(_CONSUMED_LOAD_RECEIPTS) >= _MAX_REPLAY_AUTHORITIES:
+                    return False
+                consumed = {}
+                _CONSUMED_LOAD_RECEIPTS[domain] = consumed
+            if receipt.receipt_id in consumed:
+                return False
+            if len(consumed) >= _MAX_RECEIPTS_PER_AUTHORITY:
+                return False
+            consumed[receipt.receipt_id] = float(receipt.expires_at)
+        return True
+
+    def verify(
+        self, evidence: "DriverProvenanceEvidence", receipt: DriverLoadReceipt
+    ) -> bool:
+        if not isinstance(receipt, DriverLoadReceipt):
+            return False
+        try:
+            now = float(self._clock())
+        except Exception:
+            return False
+        if (
+            not math.isfinite(now)
+            or receipt.authority_id != self._authority_id
+            or receipt.host_id != self._host_id
+            or receipt.install_id != self._install_id
+            or receipt.boot_id != self._boot_id
+            or receipt.driver_token != evidence.driver_token
+            or receipt.image_sha256 != evidence.image_sha256
+            or receipt.image_size != evidence.image_size
+            or receipt.load_state != evidence.load_state
+            or receipt.code_integrity_disposition != "trusted"
+            or evidence.binding_receipt_sha256 != receipt.digest()
+            or not receipt.issued_at - 5.0
+            <= float(evidence.observed_at)
+            <= receipt.expires_at + 5.0
+            or not receipt.issued_at - 5.0 <= now <= receipt.expires_at
+            or now - receipt.issued_at > 300.0
+        ):
+            return False
+        try:
+            signature = base64.b64decode(
+                receipt.signature_ed25519.encode("ascii"), validate=True
+            )
+            self._public_key.verify(signature, receipt.signing_bytes())
+        except Exception:
+            return False
+        return self._consume_once(receipt, now)
+
+
 @dataclass(frozen=True)
 class DriverProvenanceEvidence:
     schema: str
@@ -69,6 +353,9 @@ class DriverProvenanceEvidence:
     image_sha256: str | None
     image_size: int | None
     load_state: str
+    binding_state: str
+    binding_source: str
+    binding_receipt_sha256: str | None
     signer_status: str
     signer_thumbprint: str | None
     catalog_status: str
@@ -77,6 +364,7 @@ class DriverProvenanceEvidence:
     hvci_enabled: bool | None
     secure_boot: bool | None
     observed_at: float
+    binding_receipt: DriverLoadReceipt | None = None
 
     def __post_init__(self) -> None:
         if self.schema != SCHEMA:
@@ -93,6 +381,54 @@ class DriverProvenanceEvidence:
             raise DriverEvidenceRejected("driver image size is invalid")
         if self.load_state not in {"running", "stopped", "unknown"}:
             raise DriverEvidenceRejected("driver load state is invalid")
+        if self.binding_state not in {
+            "loaded-image-bound",
+            "configured-path-sample-unbound",
+            "unknown",
+        }:
+            raise DriverEvidenceRejected("driver binding state is invalid")
+        if self.binding_source not in {
+            "kernel-load-receipt",
+            "configured-service-path",
+            "unavailable",
+        }:
+            raise DriverEvidenceRejected("driver binding source is invalid")
+        if self.binding_receipt_sha256 is not None and (
+            not isinstance(self.binding_receipt_sha256, str)
+            or not _HEX_64.fullmatch(self.binding_receipt_sha256)
+        ):
+            raise DriverEvidenceRejected("driver binding receipt is invalid")
+        if self.binding_receipt is not None and not isinstance(
+            self.binding_receipt, DriverLoadReceipt
+        ):
+            raise DriverEvidenceRejected("typed driver binding receipt is invalid")
+        if self.binding_receipt is not None and (
+            self.binding_receipt_sha256 is None
+            or not hmac.compare_digest(
+                self.binding_receipt_sha256, self.binding_receipt.digest()
+            )
+        ):
+            raise DriverEvidenceRejected(
+                "typed driver binding receipt digest does not match"
+            )
+        if self.binding_state == "loaded-image-bound":
+            if (
+                self.binding_source != "kernel-load-receipt"
+                or self.binding_receipt_sha256 is None
+                or self.load_state == "unknown"
+            ):
+                raise DriverEvidenceRejected(
+                    "loaded-image binding lacks a trusted load receipt"
+                )
+        elif (
+            self.binding_receipt_sha256 is not None
+            or self.binding_receipt is not None
+            or self.binding_source == "kernel-load-receipt"
+            or self.load_state != "unknown"
+        ):
+            raise DriverEvidenceRejected(
+                "unbound disk evidence cannot claim an exact load state"
+            )
         if self.signer_status not in {"trusted", "untrusted", "unknown"}:
             raise DriverEvidenceRejected("driver signer status is invalid")
         if self.signer_thumbprint is not None and (
@@ -149,15 +485,37 @@ class DriverProvenanceEvidence:
 
         body = asdict(self)
         body.pop("observed_at", None)
+        receipt = body.pop("binding_receipt", None)
+        body.pop("binding_receipt_sha256", None)
+        if isinstance(receipt, dict):
+            body["binding_authority_posture"] = {
+                key: receipt.get(key)
+                for key in (
+                    "authority_id", "host_id", "install_id", "boot_id",
+                    "load_generation", "driver_token", "object_identity",
+                    "image_base", "image_size", "image_sha256", "load_state",
+                    "code_integrity_disposition",
+                )
+            }
         return hashlib.sha256(
             json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
 
 
 def parse_driver_evidence(value: Mapping[str, object]) -> DriverProvenanceEvidence:
-    if not isinstance(value, Mapping) or set(value) != _EVIDENCE_KEYS:
+    if not isinstance(value, Mapping) or set(value) not in {
+        _EVIDENCE_REQUIRED_KEYS,
+        _EVIDENCE_KEYS,
+    }:
         raise DriverEvidenceRejected("driver evidence schema is invalid")
     document = dict(value)
+    raw_receipt = document.get("binding_receipt")
+    if raw_receipt is not None:
+        if not isinstance(raw_receipt, Mapping):
+            raise DriverEvidenceRejected("typed driver binding receipt is invalid")
+        document["binding_receipt"] = parse_driver_load_receipt(raw_receipt)
+    else:
+        document["binding_receipt"] = None
     for field in ("hvci_enabled", "secure_boot"):
         document[field] = _optional_bool(document[field], field)
     try:
@@ -194,11 +552,26 @@ class DriverProvenanceAssessment:
 
 def assess_driver_provenance(
     evidence: DriverProvenanceEvidence,
+    receipt_verifier: DriverLoadReceiptVerifier | None = None,
 ) -> DriverProvenanceAssessment:
     if not isinstance(evidence, DriverProvenanceEvidence):
         raise TypeError("driver provenance evidence contract is invalid")
     risks: list[str] = []
     unknown: list[str] = []
+    claimed_loaded_binding = evidence.binding_state == "loaded-image-bound"
+    loaded_image_bound = False
+    if (
+        claimed_loaded_binding
+        and receipt_verifier is not None
+        and evidence.binding_receipt is not None
+    ):
+        loaded_image_bound = receipt_verifier.verify(
+            evidence, evidence.binding_receipt
+        )
+    if not loaded_image_bound:
+        unknown.append("loaded_image_binding")
+        if claimed_loaded_binding:
+            unknown.append("load_receipt_authentication")
     if evidence.load_state == "unknown":
         unknown.append("load_state")
     if evidence.image_sha256 is None:
@@ -206,13 +579,21 @@ def assess_driver_provenance(
     if evidence.image_size is None:
         unknown.append("image_size")
     if evidence.signer_status == "untrusted":
-        risks.append("loaded-driver-signature-untrusted")
+        risks.append(
+            "loaded-driver-signature-untrusted"
+            if loaded_image_bound
+            else "configured-path-signature-untrusted"
+        )
     elif evidence.signer_status == "unknown":
         unknown.append("signer_status")
     elif evidence.signer_thumbprint is None:
         unknown.append("signer_thumbprint")
     if evidence.catalog_status == "untrusted":
-        risks.append("loaded-driver-catalog-untrusted")
+        risks.append(
+            "loaded-driver-catalog-untrusted"
+            if loaded_image_bound
+            else "configured-path-catalog-untrusted"
+        )
     elif evidence.catalog_status == "unknown":
         unknown.append("catalog_status")
     if evidence.blocklist_status == "listed":
@@ -227,8 +608,12 @@ def assess_driver_provenance(
         risks.append("secure-boot-disabled")
     elif evidence.secure_boot is None:
         unknown.append("secure_boot")
-    evidence_complete = not unknown
-    if "known-vulnerable-driver-listed" in risks and evidence.load_state == "running":
+    evidence_complete = not unknown and loaded_image_bound
+    if (
+        "known-vulnerable-driver-listed" in risks
+        and loaded_image_bound
+        and evidence.load_state == "running"
+    ):
         state, severity = "critical-loaded-blocklisted-driver", "critical"
     elif risks:
         state, severity = "driver-provenance-risk", "high"
@@ -261,7 +646,7 @@ class DriverEvidenceProvider(Protocol):
 
 
 class WindowsDriverEvidenceProvider:
-    """Collect bounded loaded-driver metadata through a fixed PowerShell query."""
+    """Collect bounded, unbound configured-path samples through PowerShell."""
 
     def __init__(self, posture_provider: BootPostureProvider | None = None) -> None:
         self._posture_provider = posture_provider or WindowsBootPostureProvider()
@@ -457,7 +842,10 @@ foreach ($driver in $drivers) {
                     driver_token=token,
                     image_sha256=image_hash,
                     image_size=size,
-                    load_state="running",
+                    load_state="unknown",
+                    binding_state="configured-path-sample-unbound",
+                    binding_source="configured-service-path",
+                    binding_receipt_sha256=None,
                     signer_status=signer_status,
                     signer_thumbprint=thumbprint,
                     catalog_status=catalog_status,
@@ -474,7 +862,7 @@ foreach ($driver in $drivers) {
             (
                 "driver-inventory-truncated"
                 if truncated
-                else "bounded-loaded-driver-inventory"
+                else "bounded-configured-driver-path-inventory-unbound"
             ),
             total_count,
             truncated,
@@ -486,11 +874,12 @@ class DriverProvenanceGuard(BaseModule):
     NAME = "Driver Provenance Guard"
     name = "Driver Provenance Guard"
     description = (
-        "Joins loaded-driver hash, signer/catalog evidence, blocklist disposition, "
-        "HVCI, and Secure Boot state without changing driver state."
+        "Joins bounded configured-path samples with signer/catalog, blocklist, "
+        "HVCI, and Secure Boot evidence; loaded-image proof requires a trusted "
+        "kernel load receipt."
     )
     category = "Integrity"
-    version = "1.0.0"
+    version = "1.12.1"
     supported_platforms = frozenset(SUPPORTED_PLATFORMS)
     capability_mode = "observe"
     platform_requirements = (
@@ -499,9 +888,19 @@ class DriverProvenanceGuard(BaseModule):
     )
     _INTERVAL = 900.0
 
-    def __init__(self, provider: DriverEvidenceProvider | None = None) -> None:
+    def __init__(
+        self,
+        provider: DriverEvidenceProvider | None = None,
+        *,
+        receipt_verifier: DriverLoadReceiptVerifier | None = None,
+    ) -> None:
         super().__init__()
         self._provider = provider or WindowsDriverEvidenceProvider()
+        if receipt_verifier is not None and not isinstance(
+            receipt_verifier, DriverLoadReceiptVerifier
+        ):
+            raise DriverEvidenceRejected("driver load receipt verifier is invalid")
+        self._receipt_verifier = receipt_verifier
         self._last_digests: dict[str, str] = {}
         self._last_collection_digest = ""
 
@@ -511,6 +910,45 @@ class DriverProvenanceGuard(BaseModule):
             raise DriverEvidenceRejected("driver evidence provider contract is invalid")
         if len(collection.evidence) > MAX_DRIVERS:
             raise DriverEvidenceRejected("driver evidence exceeded its record bound")
+        if (
+            not isinstance(collection.evidence, tuple)
+            or type(collection.complete) is not bool
+            or not isinstance(collection.reason, str)
+            or not collection.reason
+            or type(collection.truncated) is not bool
+            or (
+                collection.total_count is not None
+                and (
+                    type(collection.total_count) is not int
+                    or not 0 <= collection.total_count <= 65_536
+                )
+            )
+        ):
+            raise DriverEvidenceRejected("driver collection metadata is invalid")
+        inconsistency = ""
+        if collection.complete and not collection.evidence:
+            inconsistency = "driver-inventory-empty-cannot-prove-coverage"
+        elif collection.complete and collection.truncated:
+            inconsistency = "driver-inventory-complete-truncated-conflict"
+        elif (
+            collection.complete
+            and collection.total_count is not None
+            and collection.total_count != len(collection.evidence)
+        ):
+            inconsistency = "driver-inventory-count-mismatch"
+        elif collection.truncated and (
+            collection.total_count is None
+            or collection.total_count <= len(collection.evidence)
+        ):
+            inconsistency = "driver-inventory-truncation-mismatch"
+        if inconsistency:
+            collection = DriverCollection(
+                collection.evidence,
+                False,
+                inconsistency,
+                collection.total_count,
+                collection.truncated,
+            )
         if not collection.complete:
             self.set_health(20, collection.reason)
             self.emit(
@@ -538,7 +976,7 @@ class DriverProvenanceGuard(BaseModule):
         for evidence in collection.evidence:
             if not isinstance(evidence, DriverProvenanceEvidence):
                 raise DriverEvidenceRejected("driver evidence provider returned an invalid record")
-            result = assess_driver_provenance(evidence)
+            result = assess_driver_provenance(evidence, self._receipt_verifier)
             assessments.append(result)
             posture_digest = evidence.posture_digest()
             current_digests[evidence.driver_token] = posture_digest
@@ -560,6 +998,8 @@ class DriverProvenanceGuard(BaseModule):
                     "known-vulnerable-driver-listed",
                     "loaded-driver-signature-untrusted",
                     "loaded-driver-catalog-untrusted",
+                    "configured-path-signature-untrusted",
+                    "configured-path-catalog-untrusted",
                 }
             ):
                 continue
@@ -574,6 +1014,8 @@ class DriverProvenanceGuard(BaseModule):
                 severity,
                 **result.event_details(evidence.driver_token),
                 blocklist_source=evidence.blocklist_source,
+                binding_state=evidence.binding_state,
+                binding_source=evidence.binding_source,
                 user_mode_observation=True,
                 attribution="not-assessed",
                 mitre_tags=["T1068", "T1562.001"],
@@ -581,7 +1023,7 @@ class DriverProvenanceGuard(BaseModule):
         disappeared = set(self._last_digests) - set(current_digests)
         if disappeared:
             self.emit(
-                "Loaded-driver evidence set changed",
+                "Driver provenance evidence set changed",
                 Severity.MEDIUM,
                 schema="angerona.driver-provenance-set.v1",
                 disappeared_count=len(disappeared),
@@ -619,7 +1061,7 @@ class DriverProvenanceGuard(BaseModule):
             )
         self._last_digests = current_digests
         self._last_collection_digest = collection_digest
-        if collection.complete:
+        if collection.complete and assessments:
             note = "driver provenance verified" if worst == 100 else "driver evidence requires review"
             self.set_health(worst, note)
         return tuple(assessments)
@@ -635,12 +1077,44 @@ class DriverProvenanceGuard(BaseModule):
             self.sleep(self._INTERVAL)
 
     def self_test(self) -> tuple[bool, str]:
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+                Ed25519PrivateKey,
+            )
+        except Exception as exc:
+            return False, f"Ed25519 verifier unavailable: {type(exc).__name__}"
+        private_key = Ed25519PrivateKey.generate()
+        now = time.time()
+        authority_id = "1" * 64
+        host_id = "2" * 64
+        install_id = "3" * 64
+        boot_id = "4" * 64
+        receipt = DriverLoadReceipt.issue(
+            private_key,
+            authority_id=authority_id,
+            host_id=host_id,
+            install_id=install_id,
+            boot_id=boot_id,
+            load_generation=1,
+            driver_token="a" * 64,
+            object_identity="5" * 64,
+            image_base=0x100000,
+            image_size=4096,
+            image_sha256="b" * 64,
+            load_state="running",
+            code_integrity_disposition="trusted",
+            issued_at=now,
+            expires_at=now + 60.0,
+        )
         fixture = DriverProvenanceEvidence(
             schema=SCHEMA,
             driver_token="a" * 64,
             image_sha256="b" * 64,
             image_size=4096,
             load_state="running",
+            binding_state="loaded-image-bound",
+            binding_source="kernel-load-receipt",
+            binding_receipt_sha256=receipt.digest(),
             signer_status="trusted",
             signer_thumbprint="c" * 40,
             catalog_status="trusted",
@@ -648,9 +1122,18 @@ class DriverProvenanceGuard(BaseModule):
             blocklist_source="local-hash-policy",
             hvci_enabled=True,
             secure_boot=True,
-            observed_at=1_800_000_000.0,
+            observed_at=now,
+            binding_receipt=receipt,
         )
-        result = assess_driver_provenance(fixture)
+        verifier = DriverLoadReceiptVerifier(
+            private_key.public_key(),
+            authority_id=authority_id,
+            host_id=host_id,
+            install_id=install_id,
+            boot_id=boot_id,
+            clock=lambda: now,
+        )
+        result = assess_driver_provenance(fixture, verifier)
         if result.state != "provenance-verified" or result.response_authorized:
             return False, "driver evidence join failed its observe-only contract"
         return True, "hash/signer/catalog/blocklist/HVCI/boot evidence join passed offline"
@@ -667,10 +1150,13 @@ __all__ = [
     "DriverProvenanceAssessment",
     "DriverProvenanceEvidence",
     "DriverProvenanceGuard",
+    "DriverLoadReceipt",
+    "DriverLoadReceiptVerifier",
     "MAX_DRIVERS",
     "SCHEMA",
     "WindowsDriverEvidenceProvider",
     "assess_driver_provenance",
     "parse_driver_evidence",
+    "parse_driver_load_receipt",
     "register",
 ]

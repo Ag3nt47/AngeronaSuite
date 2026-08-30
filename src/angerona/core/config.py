@@ -20,6 +20,7 @@ from typing import Dict
 
 _ARIA_PUSH_URL_KEY = "ANGERONA_ARIA_PUSH_URL"
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_SIGNAL_IDENTITY = re.compile(r"\+[1-9][0-9]{7,14}\Z")
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -136,6 +137,8 @@ class Config:
     # ── Mobile Response Bridge (Signal / signal-cli) — opt-in, default off ──
     mobile_enabled: bool = False
     mobile_signal_cli: str = ""                   # path to the signal-cli binary
+    mobile_signal_cli_sha256: str = ""            # exact executable digest pin
+    mobile_signal_cli_publisher: str = ""         # exact Authenticode subject pin
     mobile_host_number: str = ""                  # this machine's registered Signal number
     mobile_dest_number: str = ""                  # operator's destination phone number
     # ── Linux eBPF kernel sensor — optional privileged supplement ──────────
@@ -275,6 +278,8 @@ class Config:
                 raise ValueError(f"{name} contains invalid or excessive text")
             return text
 
+        self.validate_mobile_settings()
+
         self.siem_host = bounded("SIEM host", self.siem_host, 253)
         if self.siem_host and (
             any(character.isspace() for character in self.siem_host)
@@ -353,6 +358,66 @@ class Config:
         if self.ioc_feed_sha256 and not self.ioc_feed_url:
             raise ValueError("IOC feed pin requires an IOC feed URL")
 
+    def validate_mobile_settings(self) -> None:
+        """Fail closed on incomplete or ambiguous Mobile Bridge authority."""
+
+        def bounded(name: str, value: object, limit: int) -> str:
+            text = _bounded_setting(value, "", limit)
+            if text != str(value if value is not None else "").strip():
+                raise ValueError(f"{name} contains invalid or excessive text")
+            return text
+
+        self.mobile_signal_cli = bounded(
+            "signal-cli path", self.mobile_signal_cli, 32767
+        )
+        self.mobile_signal_cli_sha256 = bounded(
+            "signal-cli SHA-256", self.mobile_signal_cli_sha256, 64
+        ).casefold()
+        self.mobile_signal_cli_publisher = bounded(
+            "signal-cli publisher", self.mobile_signal_cli_publisher, 512
+        )
+        self.mobile_host_number = bounded(
+            "Signal host number", self.mobile_host_number, 32
+        )
+        self.mobile_dest_number = bounded(
+            "Signal destination number", self.mobile_dest_number, 32
+        )
+        if self.mobile_signal_cli_sha256 and not _SHA256.fullmatch(
+            self.mobile_signal_cli_sha256
+        ):
+            raise ValueError(
+                "signal-cli SHA-256 must contain exactly 64 hexadecimal characters"
+            )
+        for label, number in (
+            ("host", self.mobile_host_number),
+            ("destination", self.mobile_dest_number),
+        ):
+            if number and not _SIGNAL_IDENTITY.fullmatch(number):
+                raise ValueError(
+                    f"Signal {label} number must use canonical E.164 form (for example +13035550100)"
+                )
+        if self.mobile_host_number and self.mobile_host_number == self.mobile_dest_number:
+            raise ValueError("Signal host and destination numbers must be different")
+        if self.mobile_enabled:
+            missing = [
+                label
+                for label, value in (
+                    ("absolute signal-cli path", self.mobile_signal_cli),
+                    ("signal-cli SHA-256 pin", self.mobile_signal_cli_sha256),
+                    ("exact Authenticode publisher", self.mobile_signal_cli_publisher),
+                    ("Signal host number", self.mobile_host_number),
+                    ("Signal destination number", self.mobile_dest_number),
+                )
+                if not value
+            ]
+            if missing:
+                raise ValueError(
+                    "Mobile Response Bridge cannot be enabled until these fields are set: "
+                    + ", ".join(missing)
+                )
+            if not _SHA256.fullmatch(self.mobile_signal_cli_sha256):
+                raise ValueError("Mobile Response Bridge requires an exact signal-cli SHA-256 pin")
+
     def publish_integration_environment(self) -> None:
         """Publish validated, non-secret connector settings to legacy modules."""
         self.validate_integration_settings()
@@ -410,9 +475,26 @@ class Config:
                     data, "deception_user_folders", cfg.deception_user_folders)
                 cfg.mobile_enabled = _bool_setting(
                     data, "mobile_enabled", cfg.mobile_enabled)
-                cfg.mobile_signal_cli = data.get("mobile_signal_cli", cfg.mobile_signal_cli)
-                cfg.mobile_host_number = data.get("mobile_host_number", cfg.mobile_host_number)
-                cfg.mobile_dest_number = data.get("mobile_dest_number", cfg.mobile_dest_number)
+                cfg.mobile_signal_cli = _bounded_setting(
+                    data.get("mobile_signal_cli"), "", 32767
+                )
+                requested_mobile_digest = _bounded_setting(
+                    data.get("mobile_signal_cli_sha256"), "", 64
+                ).casefold()
+                cfg.mobile_signal_cli_sha256 = (
+                    requested_mobile_digest
+                    if _SHA256.fullmatch(requested_mobile_digest)
+                    else ""
+                )
+                cfg.mobile_signal_cli_publisher = _bounded_setting(
+                    data.get("mobile_signal_cli_publisher"), "", 512
+                )
+                cfg.mobile_host_number = _bounded_setting(
+                    data.get("mobile_host_number"), "", 32
+                )
+                cfg.mobile_dest_number = _bounded_setting(
+                    data.get("mobile_dest_number"), "", 32
+                )
                 cfg.ebpf_enabled = _bool_setting(
                     data, "ebpf_enabled", cfg.ebpf_enabled)
                 cfg.ai_provider_order = data.get("ai_provider_order", cfg.ai_provider_order)
@@ -724,6 +806,25 @@ class Config:
             cfg.aria_research_egress = False
             cfg.teams_bot_enabled = False
         try:
+            cfg.validate_mobile_settings()
+        except ValueError:
+            # Older settings could enable the bridge without executable pins.
+            # Preserve well-formed values for operator repair, but remove all
+            # remote authority. Malformed values fall back to empty defaults.
+            cfg.mobile_enabled = False
+            try:
+                cfg.validate_mobile_settings()
+            except ValueError:
+                defaults = cls(data_dir=cfg.data_dir)
+                for name in (
+                    "mobile_signal_cli",
+                    "mobile_signal_cli_sha256",
+                    "mobile_signal_cli_publisher",
+                    "mobile_host_number",
+                    "mobile_dest_number",
+                ):
+                    setattr(cfg, name, getattr(defaults, name))
+        try:
             cfg.publish_integration_environment()
         except ValueError:
             # A hand-edited invalid integration block is never inherited as
@@ -769,6 +870,8 @@ class Config:
                     "deception_user_folders": self.deception_user_folders,
                     "mobile_enabled":     self.mobile_enabled,
                     "mobile_signal_cli":  self.mobile_signal_cli,
+                    "mobile_signal_cli_sha256": self.mobile_signal_cli_sha256,
+                    "mobile_signal_cli_publisher": self.mobile_signal_cli_publisher,
                     "mobile_host_number": self.mobile_host_number,
                     "mobile_dest_number": self.mobile_dest_number,
                     "ebpf_enabled":       self.ebpf_enabled,

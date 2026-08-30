@@ -1,0 +1,158 @@
+{
+  "schema": "angerona.redteam-simulation-independent-reattack.v1",
+  "cycle": 27,
+  "round": 2,
+  "date": "2026-08-28",
+  "disposition": "REOPENED",
+  "scope": "isolated benign markers, synthetic authenticated events, temporary ledgers, and in-process boundary doubles only",
+  "host_or_network_attack_performed": false,
+  "baseline": {
+    "scenario": "13 policies present; Purple Guard stopped; Process Monitor observations only",
+    "policy_count": 13,
+    "raw_observations": 13,
+    "native_analytic_catches": 0,
+    "simulation_contract_validations": 0,
+    "compatible_analytic_catches": 0,
+    "misses": 13,
+    "inflated_credit": false
+  },
+  "legitimate_gated_campaign": {
+    "denominator": 13,
+    "simulation_contract_validations": 13,
+    "native_analytic_catches": 0,
+    "result": "PASS",
+    "interpretation": "pipeline canaries only; not real-attack coverage"
+  },
+  "gates": {
+    "focused_pytest": {
+      "passed": 72,
+      "failed": 0,
+      "seconds": 13.59
+    },
+    "compiled_files": {
+      "passed": 352,
+      "failed": 0
+    },
+    "ruff": "PASS",
+    "purple_guard_self_test": "PASS",
+    "red_team_self_test": "PASS",
+    "module_self_tests": {
+      "passed": 65,
+      "failed": 0,
+      "expected_skips": 17
+    },
+    "headless_selfcheck": {
+      "passed": 25,
+      "failed": 1,
+      "failure": "T1543.003 claims removed disable_driver_service action",
+      "classification": "outside Red Team repair; reported to C04 remediation owner"
+    },
+    "info_flood_events": 1000,
+    "info_flood_result": "PASS"
+  },
+  "reopened_findings": [
+    {
+      "id": "RTS-R01",
+      "severity": "HIGH",
+      "title": "Recorder readiness proves an echo shape, not durable root-bound storage",
+      "evidence": {
+        "ring_only_recorder_lease_acquired": true,
+        "ring_only_database_existed": false,
+        "revision_before": 0,
+        "revision_after": 0,
+        "foreign_root_real_recorder_lease_acquired": true
+      },
+      "references": [
+        "src/angerona/modules/purple_guard.py:655",
+        "src/angerona/modules/purple_guard.py:674",
+        "src/angerona/modules/purple_guard.py:706",
+        "src/angerona/modules/purple_guard.py:717"
+      ]
+    },
+    {
+      "id": "RTS-R02",
+      "severity": "HIGH",
+      "title": "Readiness receipt is caller data that the engine re-signs, rebinds, and replays",
+      "evidence": {
+        "target_a_receipt_started_target_b": true,
+        "mismatched_history_hmac_verified": true,
+        "replay_after_release_accepted": true,
+        "guard_status_during_replay": "stopped",
+        "reused_recorder_nonce": true,
+        "replay_history_hmac_verified": true
+      },
+      "references": [
+        "src/angerona/shark/red_team.py:338",
+        "src/angerona/shark/red_team.py:393",
+        "src/angerona/shark/red_team.py:401",
+        "src/angerona/shark/red_team.py:402",
+        "src/angerona/shark/red_team.py:426"
+      ]
+    },
+    {
+      "id": "RTS-R03",
+      "severity": "HIGH",
+      "title": "Production AAR accepts structural and foreign-root recorders",
+      "evidence": {
+        "structural_fake_recorder_native_credit": "1/1",
+        "structural_fake_event_hmac": "not-a-real-hmac",
+        "foreign_root_real_recorder_native_credit": "1/1"
+      },
+      "references": [
+        "src/angerona/shark/aar_report.py:165",
+        "src/angerona/shark/aar_report.py:984",
+        "src/angerona/shark/aar_report.py:1018",
+        "src/angerona/shark/aar_report.py:1027"
+      ]
+    },
+    {
+      "id": "RTS-R04",
+      "severity": "HIGH",
+      "title": "Detector credit trusts producer strings and severity rather than authenticated capability identity",
+      "evidence": {
+        "unregistered_medium_producer_native_credit": "1/1",
+        "spoofed_purple_producer_simulation_credit": "1/1"
+      },
+      "references": [
+        "src/angerona/shark/aar_report.py:211",
+        "src/angerona/shark/aar_report.py:222"
+      ]
+    },
+    {
+      "id": "RTS-R05",
+      "severity": "MEDIUM",
+      "title": "Raw telemetry classification is inconsistent across event_type and evidence_type",
+      "evidence": {
+        "raw_info_native_credit": false,
+        "medium_event_type_raw_telemetry_native_credit": true,
+        "medium_event_type_process_creation_native_credit": true,
+        "medium_evidence_type_raw_telemetry_native_credit": false
+      },
+      "references": [
+        "src/angerona/shark/aar_report.py:222"
+      ]
+    }
+  ],
+  "closed_checks": {
+    "raw_info_no_analytic_credit": true,
+    "simulator_self_no_credit": true,
+    "failed_response_no_credit": true,
+    "response_only_no_credit": true,
+    "invalid_real_ledger_hmac_no_credit": true,
+    "custom_probe_noncolliding_and_informational": true,
+    "fake_or_subclass_guard_rejected": true,
+    "guard_data_root_mismatch_rejected": true,
+    "both_gui_paths_acquire_readiness": true,
+    "auto_remediate_independence": true,
+    "engine_start_false_checked": true,
+    "explicit_recorder_selected_over_ambient_config": true,
+    "taxonomy_split_present": true,
+    "temporary_guard_state_restore_happy_path": true
+  },
+  "summary": {
+    "high_reopened": 4,
+    "medium_reopened": 1,
+    "total_reopened": 5,
+    "release_blocking": true
+  }
+}

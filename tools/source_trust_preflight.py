@@ -1,4 +1,4 @@
-"""Fail-closed structural trust checks for Angerona's elevated source launcher.
+"""Fail-closed structural checks for Angerona's unelevated source launcher.
 
 This does not claim that an editable checkout is equivalent to a signed release.
 It prevents common path-redirection attacks while preserving source development.
@@ -44,7 +44,7 @@ def validate_source_root(root: Path, interpreter: Path | None = None) -> tuple[b
             get_type.argtypes = [ctypes.c_wchar_p]
             get_type.restype = ctypes.c_uint
             if get_type(str(drive)) != 3:
-                return False, "elevated source checkout must reside on a fixed local volume"
+                return False, "source checkout must reside on a fixed local volume"
         return True, "source trust preflight passed"
     except Exception as exc:
         return False, f"source trust preflight failed: {exc}"

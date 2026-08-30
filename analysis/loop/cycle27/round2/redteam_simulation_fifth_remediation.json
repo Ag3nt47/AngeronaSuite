@@ -1,0 +1,86 @@
+{
+  "schema": "angerona.redteam-simulation-remediation.v5",
+  "cycle": 27,
+  "round": 2,
+  "date": "2026-08-28",
+  "disposition": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+  "scope": {
+    "inert_temp_fixtures_only": true,
+    "real_exploitation": false,
+    "credential_access": false,
+    "persistence": false,
+    "network_attack": false,
+    "host_targeting": false,
+    "host_security_control_mutation": false,
+    "publication": false
+  },
+  "findings": [
+    {
+      "id": "RTS-R4-01",
+      "status": "FIXED",
+      "control": "exact temporary-or-managed Process Monitor readiness plus challenge-bound native source receipt required for T1059",
+      "regression": "arbitrary tuple publisher has no source proof while genuine Process Monitor OS observation produces the only promotable receipt"
+    },
+    {
+      "id": "RTS-R4-02",
+      "status": "FIXED",
+      "control": "public FIM attester retired; exact object/generation/code-site capability binds custody, content, change and serial",
+      "regression": "former public attester returns no receipt and genuine FIM classification remains verifiable"
+    },
+    {
+      "id": "RTS-R4-03",
+      "status": "FIXED",
+      "control": "per-lease issuer-owned verifier dispatch with no mutable module-global callable aliases",
+      "regression": "reintroducing or replacing the former module-global alias cannot admit receipt-free evidence"
+    },
+    {
+      "id": "RTS-R4-04",
+      "status": "FIXED",
+      "control": "Windows exact-handle disposition and POSIX unpredictable verified custody rename retain object authority through deletion",
+      "regression": "same-path replacement survives and cleanup refuses rather than deleting it"
+    },
+    {
+      "id": "RTS-R4-05",
+      "status": "FIXED",
+      "control": "OS writer lease, fsynced authenticated append-only byte-bundle journal, highest-head reconciliation and byte-verified GUI handoff",
+      "regression": "fixed-file rollback advances to sequence 3 from report 2 and mutated handoff text is rejected"
+    },
+    {
+      "id": "RTS-R4-06",
+      "status": "FIXED",
+      "control": "authenticated admitted-run TTL is the minimum Red Team query horizon under the 4500-second cap",
+      "regression": "4235-second admitted campaign cannot be truncated by the legacy 3600-second default"
+    },
+    {
+      "id": "RTS-R4-07",
+      "status": "FIXED",
+      "control": "authenticated zero-step Red Team failures persist the complete planned denominator with score withheld",
+      "regression": "signed JSON reports 13 detection contracts, 14 planned verdicts and null rates"
+    }
+  ],
+  "gates": {
+    "direct_adversarial_regressions": {
+      "passed": 6,
+      "failed": 0,
+      "findings_covered": 7
+    },
+    "focused_and_wider_suites": {
+      "passed": 126,
+      "failed": 0
+    },
+    "compile": "PASS",
+    "ruff": "PASS",
+    "diff_check": "PASS",
+    "headless_selfcheck": {
+      "passed": 26,
+      "failed": 0
+    },
+    "module_selftests": {
+      "passed": 65,
+      "failed": 0,
+      "expected_skips": 17
+    }
+  },
+  "residual_boundary": "Same-process native code is not a memory-isolation boundary, and total rollback of all local journal state requires a separately administered monotonic witness. These results validate inert local simulation evidence only.",
+  "independent_reattack_required": true
+}

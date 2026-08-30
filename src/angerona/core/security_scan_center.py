@@ -18,6 +18,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,8 @@ MAX_SCAN_SECONDS = 120.0
 MAX_DEFENDER_SCAN_SECONDS = 30.0 * 60.0
 MAX_FINDINGS = 256
 MAX_ERRORS = 32
+MAX_SCAN_DIRECTORY_ENTRIES = 50_000
+MAX_SCAN_DIRECTORIES = 20_000
 MAX_CONNECTIONS = 2_048
 MAX_INTERFACES = 64
 MAX_INTERFACE_ADDRESSES = 256
@@ -57,6 +60,23 @@ _HIGH_RISK_PORTS = {
 }
 _DEVELOPMENT_PORTS = {3000, 5000, 8000, 8080, 8888}
 _SAFE_PROCESS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,79}$")
+
+
+class _UnsafeScanPath(OSError):
+    """An opened object could not be proven to remain inside the selected root."""
+
+
+@dataclass
+class _TraversalState:
+    """Mutable, scan-local accounting shared with the traversal generator."""
+
+    entries_seen: int = 0
+    directories_seen: int = 0
+    directories_discovered: int = 0
+    limited: bool = False
+    timed_out: bool = False
+    cancelled: bool = False
+    limit_reason: str = ""
 
 
 ProgressCallback = Callable[["ScanProgress"], None]
@@ -192,6 +212,221 @@ def _finding_id(prefix: str, *parts: object) -> str:
     return f"{prefix}.{hashlib.sha256(body.encode('utf-8')).hexdigest()[:16]}"
 
 
+@lru_cache(maxsize=1)
+def _windows_final_path_api() -> tuple[Any, Any, Any] | None:
+    """Initialize the immutable Windows handle-path API once per process."""
+    try:
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        function = ctypes.WinDLL("kernel32", use_last_error=True).GetFinalPathNameByHandleW
+        function.argtypes = (
+            wintypes.HANDLE,
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+        )
+        function.restype = wintypes.DWORD
+        return ctypes, msvcrt, function
+    except (AttributeError, ImportError, OSError, RuntimeError, ValueError):
+        return None
+
+
+def _final_path_for_handle(file_descriptor: int) -> Path | None:
+    """Return the OS-resolved path for an already-open file handle."""
+    if os.name == "nt":
+        try:
+            api = _windows_final_path_api()
+            if api is None:
+                return None
+            ctypes, msvcrt, function = api
+            # Ordinary paths avoid a 64 KiB allocation per scanned file.  The
+            # API reports the required size when the small buffer is not
+            # enough, so long paths retain the same 32,768-character ceiling.
+            buffer = ctypes.create_unicode_buffer(1_024)
+            count = function(msvcrt.get_osfhandle(file_descriptor), buffer, len(buffer), 0)
+            if not count:
+                return None
+            if count >= len(buffer):
+                if count >= 32_768:
+                    return None
+                buffer = ctypes.create_unicode_buffer(count + 1)
+                count = function(
+                    msvcrt.get_osfhandle(file_descriptor), buffer, len(buffer), 0
+                )
+                if not count or count >= len(buffer):
+                    return None
+            rendered = buffer.value
+            if rendered.startswith("\\\\?\\UNC\\"):
+                rendered = "\\\\" + rendered[8:]
+            elif rendered.startswith("\\\\?\\"):
+                rendered = rendered[4:]
+            return Path(rendered)
+        except (OSError, RuntimeError, ValueError):
+            return None
+    descriptor_link = Path("/proc/self/fd") / str(file_descriptor)
+    try:
+        rendered = os.readlink(descriptor_link)
+        if rendered.endswith(" (deleted)"):
+            return None
+        return Path(rendered).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+
+
+def _handle_is_within_root(
+    file_descriptor: int, normalized_root: str, *, root_is_file: bool
+) -> bool:
+    final_path = _final_path_for_handle(file_descriptor)
+    if final_path is None:
+        return False
+    try:
+        final = os.path.normcase(os.path.abspath(os.fspath(final_path)))
+        if root_is_file:
+            return final == normalized_root
+        return os.path.commonpath((final, normalized_root)) == normalized_root
+    except (OSError, ValueError):
+        return False
+
+
+def _stat_is_reparse_or_link(info: os.stat_result) -> bool:
+    """Classify one no-follow stat result without another pathname lookup."""
+    return bool(
+        stat.S_ISLNK(info.st_mode)
+        or getattr(info, "st_file_attributes", 0) & _REPARSE_POINT
+    )
+
+
+def _root_identity_matches(root: Path, expected: os.stat_result) -> bool:
+    try:
+        current = root.stat(follow_symlinks=False)
+        return (
+            current.st_dev == expected.st_dev
+            and current.st_ino == expected.st_ino
+            and not _stat_is_reparse_or_link(current)
+        )
+    except OSError:
+        return False
+
+
+def _read_scoped_file(
+    root: Path,
+    root_identity: os.stat_result,
+    candidate: Path,
+    file_limit: int,
+    total_remaining: int,
+    normalized_root: str,
+    *,
+    root_is_file: bool,
+    cancellation: ScanCancellationToken | None,
+    deadline: float,
+    monotonic: Callable[[], float],
+) -> tuple[bytes | None, os.stat_result, str | None]:
+    """Read one handle-bound snapshot or reject it before needless I/O.
+
+    The returned disposition is ``oversize`` or ``budget`` when a stable
+    descriptor-bound size proves the object cannot be scanned.  Both cases are
+    revalidated before returning, so the fast path does not trade away any of
+    the identity or mutation checks used by a full read.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+
+    def stop_reason() -> str | None:
+        if cancellation is not None and cancellation.cancelled:
+            return "cancelled"
+        if monotonic() >= deadline:
+            return "timed-out"
+        return None
+
+    stopped = stop_reason()
+    if stopped is not None:
+        return None, root_identity, stopped
+    if os.name != "nt" and not no_follow:
+        raise _UnsafeScanPath("no-follow-open-unavailable")
+    if not _root_identity_matches(root, root_identity):
+        raise _UnsafeScanPath("selected-root-identity-changed")
+    try:
+        descriptor = os.open(candidate, flags | no_follow)
+    except OSError as exc:
+        if _is_reparse_or_link(candidate):
+            raise _UnsafeScanPath("candidate-became-link-or-reparse-point") from exc
+        raise
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise _UnsafeScanPath("opened-object-is-not-regular")
+        if before.st_dev != root_identity.st_dev:
+            raise _UnsafeScanPath("opened-object-left-selected-volume")
+        # A pathname inside the selected root is not proof that the underlying
+        # file object originated there: a same-volume hard link can alias an
+        # otherwise unselected object.  Until Angerona has a handle-bound
+        # file-ID/parent-chain proof for the active platform, accept only an
+        # exact single-link regular file and do so before reading one byte.
+        if int(getattr(before, "st_nlink", 0)) != 1:
+            raise _UnsafeScanPath("opened-object-link-provenance-unavailable")
+        if not _handle_is_within_root(
+            descriptor, normalized_root, root_is_file=root_is_file
+        ):
+            raise _UnsafeScanPath("opened-object-left-selected-root")
+
+        disposition: str | None = stop_reason()
+        if disposition is None and before.st_size > file_limit:
+            disposition = "oversize"
+        elif disposition is None and before.st_size > total_remaining:
+            disposition = "budget"
+
+        if disposition is None:
+            # Read at most one proof byte beyond the tighter active bound.
+            # Stable regular files normally allocate exactly once; the extra
+            # byte preserves growth/odd-filesystem detection before scanning.
+            read_limit = min(file_limit, total_remaining)
+            chunks: list[bytes] = []
+            remaining = read_limit + 1
+            while remaining > 0:
+                disposition = stop_reason()
+                if disposition is not None:
+                    break
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                disposition = stop_reason()
+                if disposition is not None:
+                    break
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            content: bytes | None = (
+                b"".join(chunks) if disposition is None else None
+            )
+        else:
+            content = None
+        after = os.fstat(descriptor)
+        if not _root_identity_matches(root, root_identity):
+            raise _UnsafeScanPath("selected-root-identity-changed")
+        if (
+            before.st_dev != after.st_dev
+            or before.st_ino != after.st_ino
+            or before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+        ):
+            raise _UnsafeScanPath("opened-object-changed-during-read")
+        if content is not None:
+            if len(content) > file_limit:
+                disposition = "oversize"
+                content = None
+            elif len(content) > total_remaining:
+                disposition = "budget"
+                content = None
+        stopped = stop_reason()
+        if stopped is not None:
+            disposition = stopped
+            content = None
+        return content, after, disposition
+    finally:
+        os.close(descriptor)
+
+
 class SecurityScanCenter:
     """GUI-neutral local defensive scanner with strict resource limits."""
 
@@ -201,6 +436,8 @@ class SecurityScanCenter:
         max_files: int = MAX_SCAN_FILES,
         max_total_bytes: int = MAX_SCAN_BYTES,
         max_file_bytes: int = MAX_FILE_BYTES,
+        max_directory_entries: int = MAX_SCAN_DIRECTORY_ENTRIES,
+        max_directories: int = MAX_SCAN_DIRECTORIES,
         max_duration_seconds: float = MAX_SCAN_SECONDS,
         defender_timeout_seconds: float = MAX_DEFENDER_SCAN_SECONDS,
         psutil_module: Any | None = None,
@@ -217,6 +454,14 @@ class SecurityScanCenter:
         self.max_files = _bounded_int(max_files, MAX_SCAN_FILES, "max_files")
         self.max_total_bytes = _bounded_int(max_total_bytes, MAX_SCAN_BYTES, "max_total_bytes")
         self.max_file_bytes = _bounded_int(max_file_bytes, MAX_FILE_BYTES, "max_file_bytes")
+        self.max_directory_entries = _bounded_int(
+            max_directory_entries,
+            MAX_SCAN_DIRECTORY_ENTRIES,
+            "max_directory_entries",
+        )
+        self.max_directories = _bounded_int(
+            max_directories, MAX_SCAN_DIRECTORIES, "max_directories"
+        )
         duration = float(max_duration_seconds)
         if not 0 < duration <= MAX_SCAN_SECONDS:
             raise ValueError("max_duration_seconds is outside its allowed range")
@@ -465,22 +710,72 @@ class SecurityScanCenter:
         self._enforce_usb_authorization(target)
         return target
 
-    @staticmethod
-    def _iter_local_files(root: Path) -> Iterator[tuple[Path, Path]]:
+    def _iter_local_files(
+        self,
+        root: Path,
+        *,
+        cancellation: ScanCancellationToken | None = None,
+        deadline: float | None = None,
+        traversal: _TraversalState | None = None,
+    ) -> Iterator[tuple[Path, Path]]:
+        """Yield local files while bounding even file-free traversal work."""
+        state = traversal if traversal is not None else _TraversalState()
+
+        def should_stop() -> bool:
+            if self._cancelled(cancellation):
+                state.cancelled = True
+                return True
+            if deadline is not None and self._monotonic() >= deadline:
+                state.timed_out = True
+                return True
+            return False
+
+        if should_stop():
+            return
         if root.is_file():
             yield root, Path(root.name)
             return
         stack = [root]
+        state.directories_discovered = 1
         while stack:
+            if should_stop():
+                return
+            if state.directories_seen >= self.max_directories:
+                state.limited = True
+                state.limit_reason = "directory-limit"
+                return
             current = stack.pop()
+            state.directories_seen += 1
             try:
                 with os.scandir(current) as entries:
-                    for entry in entries:
+                    iterator = iter(entries)
+                    while True:
+                        if should_stop():
+                            return
+                        if state.entries_seen >= self.max_directory_entries:
+                            state.limited = True
+                            state.limit_reason = "directory-entry-limit"
+                            return
+                        try:
+                            entry = next(iterator)
+                        except StopIteration:
+                            break
+                        # ``next()`` itself may be slow on a filesystem. Account
+                        # for that elapsed time before inspecting the returned
+                        # entry or adding more work to the queue.
+                        if should_stop():
+                            return
+                        state.entries_seen += 1
                         path = Path(entry.path)
                         try:
                             if entry.is_symlink() or _is_reparse_or_link(path):
                                 continue
                             if entry.is_dir(follow_symlinks=False):
+                                if state.directories_discovered >= self.max_directories:
+                                    state.limited = True
+                                    state.limit_reason = "directory-queue-limit"
+                                    return
+                                state.directories_discovered += 1
                                 stack.append(path)
                             elif entry.is_file(follow_symlinks=False):
                                 yield path, path.relative_to(root)
@@ -566,6 +861,7 @@ class SecurityScanCenter:
         """Scan one selected local path without following links or leaving its root."""
         operation = "local_path_scan"
         started = self._wall_clock()
+        deadline = self._monotonic() + self.max_duration_seconds
         try:
             root = self._validated_local_target(path)
         except ValueError as exc:
@@ -573,16 +869,32 @@ class SecurityScanCenter:
                 operation, started, status="rejected", supported=True, executed=False,
                 summary=str(exc), errors=("invalid-local-scope",),
             )
+        try:
+            root_identity = root.stat(follow_symlinks=False)
+            normalized_root = os.path.normcase(os.path.abspath(os.fspath(root)))
+            root_is_file = stat.S_ISREG(root_identity.st_mode)
+        except (OSError, ValueError):
+            return self._result(
+                operation, started, status="rejected", supported=True, executed=False,
+                summary="selected scan root changed during validation",
+                errors=("invalid-local-scope",),
+            )
         scanner, yara_status = self._make_yara_scanner()
-        deadline = self._monotonic() + self.max_duration_seconds
         findings: list[ScanFinding] = []
         errors: list[str] = []
         files = 0
         scanned_bytes = 0
         skipped_oversize = 0
         skipped_budget = 0
+        unsafe_scope_skips = 0
         timed_out = False
-        for candidate, relative in self._iter_local_files(root):
+        traversal = _TraversalState()
+        for candidate, relative in self._iter_local_files(
+            root,
+            cancellation=cancellation,
+            deadline=deadline,
+            traversal=traversal,
+        ):
             if self._cancelled(cancellation):
                 break
             if self._monotonic() >= deadline:
@@ -591,28 +903,54 @@ class SecurityScanCenter:
             if files >= self.max_files:
                 break
             try:
-                info = candidate.stat(follow_symlinks=False)
-                if not stat.S_ISREG(info.st_mode):
-                    continue
-                if info.st_size > self.max_file_bytes:
+                content, info, disposition = _read_scoped_file(
+                    root,
+                    root_identity,
+                    candidate,
+                    self.max_file_bytes,
+                    self.max_total_bytes - scanned_bytes,
+                    normalized_root,
+                    root_is_file=root_is_file,
+                    cancellation=cancellation,
+                    deadline=deadline,
+                    monotonic=self._monotonic,
+                )
+                if disposition == "cancelled":
+                    break
+                if disposition == "timed-out":
+                    timed_out = True
+                    break
+                if disposition == "oversize":
                     skipped_oversize += 1
                     continue
-                if scanned_bytes + info.st_size > self.max_total_bytes:
+                if disposition == "budget":
                     skipped_budget += 1
                     break
-                with candidate.open("rb") as stream:
-                    header = stream.read(4096)
+                if content is None:
+                    raise _UnsafeScanPath("validated-content-snapshot-missing")
                 files += 1
-                scanned_bytes += info.st_size
+                scanned_bytes += len(content)
                 if len(findings) < MAX_FINDINGS:
                     findings.extend(
-                        self._metadata_findings(candidate, relative, info.st_mode, header)[
+                        self._metadata_findings(candidate, relative, info.st_mode, content[:4096])[
                             : MAX_FINDINGS - len(findings)
                         ]
                     )
                 if scanner is not None and len(findings) < MAX_FINDINGS:
+                    if self._cancelled(cancellation):
+                        break
+                    if self._monotonic() >= deadline:
+                        timed_out = True
+                        break
                     try:
-                        result = scanner.scan_file(str(candidate))
+                        # Scan the already validated, bounded snapshot. Reopening
+                        # by pathname would reintroduce a link/reparse swap race.
+                        result = scanner.scan(content)
+                        if self._cancelled(cancellation):
+                            break
+                        if self._monotonic() >= deadline:
+                            timed_out = True
+                            break
                         for match in tuple(getattr(result, "matching_rules", ()))[:32]:
                             rule = re.sub(r"[^A-Za-z0-9_.-]", "_", str(match.identifier))[:80]
                             findings.append(ScanFinding(
@@ -632,6 +970,10 @@ class SecurityScanCenter:
                     except Exception as exc:
                         if len(errors) < MAX_ERRORS:
                             errors.append(f"yara-file-scan:{type(exc).__name__}")
+            except _UnsafeScanPath as exc:
+                unsafe_scope_skips += 1
+                if len(errors) < MAX_ERRORS:
+                    errors.append(f"unsafe-file-scope:{exc}")
             except OSError as exc:
                 if len(errors) < MAX_ERRORS:
                     errors.append(f"unreadable-file:{type(exc).__name__}")
@@ -640,10 +982,17 @@ class SecurityScanCenter:
                     progress,
                     ScanProgress("scanning", files, self.max_files, "Selected local content"),
                 )
-        cancelled = self._cancelled(cancellation)
+            if self._cancelled(cancellation):
+                break
+            if self._monotonic() >= deadline:
+                timed_out = True
+                break
+        timed_out = timed_out or traversal.timed_out or self._monotonic() >= deadline
+        cancelled = traversal.cancelled or self._cancelled(cancellation)
         limited = (
             files >= self.max_files or scanned_bytes >= self.max_total_bytes
-            or skipped_budget > 0 or len(findings) >= MAX_FINDINGS or timed_out
+            or skipped_oversize > 0 or skipped_budget > 0 or unsafe_scope_skips > 0
+            or len(findings) >= MAX_FINDINGS or timed_out or traversal.limited
         )
         status = "cancelled" if cancelled else "limited" if limited else "completed"
         self._notify(progress, ScanProgress(status, files, self.max_files, "Scan finished"))
@@ -659,12 +1008,23 @@ class SecurityScanCenter:
                 "bytes_scanned": scanned_bytes,
                 "oversize_files_skipped": skipped_oversize,
                 "budget_skips": skipped_budget,
+                "unsafe_scope_skips": unsafe_scope_skips,
+                "directory_entries_seen": traversal.entries_seen,
+                "directories_seen": traversal.directories_seen,
+                "directories_discovered": traversal.directories_discovered,
                 "file_limit": self.max_files,
                 "byte_limit": self.max_total_bytes,
                 "per_file_limit": self.max_file_bytes,
+                "directory_entry_limit": self.max_directory_entries,
+                "directory_limit": self.max_directories,
+                "traversal_limit_reason": traversal.limit_reason,
                 "finding_limit": MAX_FINDINGS,
                 "duration_limit_seconds": self.max_duration_seconds,
                 "timed_out": timed_out,
+                "deadline_enforcement": (
+                    "cooperative; a blocking platform read or YARA call is marked late after "
+                    "it returns and is never reported completed"
+                ),
                 "yara_status": yara_status,
             },
             errors=errors,

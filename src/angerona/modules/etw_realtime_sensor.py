@@ -42,6 +42,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 from angerona.core.module_base import BaseModule, Severity
@@ -143,6 +144,11 @@ class ETWProcessSensor:
         self._cache = _PidNameCache()
         self._running = False
         self._events_seen = 0
+        self._parse_failures = 0
+        self._callback_failures = 0
+        self._last_event_monotonic = 0.0
+        self._started_monotonic = 0.0
+        self._loss_count = 0
         self.last_error: str = ""
 
     def _info(self, m: str) -> None:
@@ -209,6 +215,7 @@ class ETWProcessSensor:
                 "ts":          time.time(),
             }
         except Exception as e:
+            self._parse_failures += 1
             self._warn(f"parse error: {e}")
             return None
 
@@ -226,8 +233,10 @@ class ETWProcessSensor:
             evt = self._parse(data)
             if evt:
                 self._events_seen += 1
+                self._last_event_monotonic = time.monotonic()
                 self.on_event(evt)
         except Exception as e:
+            self._callback_failures += 1
             self._warn(f"callback error: {e}")
 
     # ── lifecycle ────────────────────────────────────────────────────────────
@@ -252,30 +261,113 @@ class ETWProcessSensor:
             )
             self._job.start()
             self._running = True
+            self._started_monotonic = time.monotonic()
+            receipt = self.status_receipt()
+            if not receipt.live:
+                raise RuntimeError(receipt.reason or "ETW consumer did not become live")
             self._info("Real-time process-creation ETW session started "
                        "(Kernel-Process). Polling blind spot closed.")
             return True
         except Exception as e:
             self._warn(f"failed to start ETW session: {e}. Polling sensors remain active.")
+            try:
+                if self._job is not None:
+                    self._job.stop()
+            except Exception:
+                pass
+            self._running = False
             self._job = None
             return False
 
     def stop(self) -> None:
-        if self._job and self._running:
+        if self._job:
             try:
                 self._job.stop()
             except Exception as e:
                 self._warn(f"stop error: {e}")
         self._running = False
+        self._job = None
         self._info(f"ETW session stopped. Events seen: {self._events_seen}")
 
     @property
     def running(self) -> bool:
-        return self._running
+        return self.status_receipt().live
 
     @property
     def events_seen(self) -> int:
         return self._events_seen
+
+    def status_receipt(self) -> "ETWSessionReceipt":
+        """Actively query the kernel session and its real consumer thread."""
+        job = self._job
+        if job is None or not self._running:
+            return ETWSessionReceipt(
+                "ended", False, self._events_seen, self._loss_count,
+                self._parse_failures, self._callback_failures,
+                self._last_event_monotonic, self.last_error or "session is not attached",
+            )
+        try:
+            consumer = getattr(job, "consumer", None)
+            thread = getattr(consumer, "process_thread", None)
+            end_capture = getattr(consumer, "end_capture", None)
+            thread_alive = bool(thread is not None and thread.is_alive())
+            ended = bool(end_capture is not None and end_capture.is_set())
+            if not bool(getattr(job, "running", False)) or not thread_alive or ended:
+                self._running = False
+                reason = "ETW consumer thread/session ended unexpectedly"
+                self._warn(reason)
+                return ETWSessionReceipt(
+                    "ended", False, self._events_seen, self._loss_count,
+                    self._parse_failures, self._callback_failures,
+                    self._last_event_monotonic, reason,
+                )
+            properties = job.query()
+            losses = sum(
+                max(0, int(getattr(properties, field, 0)))
+                for field in ("EventsLost", "LogBuffersLost", "RealTimeBuffersLost")
+            )
+            self._loss_count = max(self._loss_count, losses)
+            if self._loss_count:
+                state = "lossy"
+                reason = f"ETW reported {self._loss_count} lost event/buffer unit(s)"
+            elif self._parse_failures or self._callback_failures:
+                state = "callback-error"
+                reason = (
+                    f"parse_failures={self._parse_failures}, "
+                    f"callback_failures={self._callback_failures}"
+                )
+            elif self._events_seen:
+                state = "flowing"
+                reason = "consumer thread and kernel session query are live"
+            else:
+                state = "idle-proven"
+                reason = "consumer thread live; kernel session query succeeded while idle"
+            return ETWSessionReceipt(
+                state, True, self._events_seen, self._loss_count,
+                self._parse_failures, self._callback_failures,
+                self._last_event_monotonic, reason,
+            )
+        except Exception as exc:
+            self._running = False
+            reason = f"ETW liveness query failed: {exc}"
+            self._warn(reason)
+            return ETWSessionReceipt(
+                "error", False, self._events_seen, self._loss_count,
+                self._parse_failures, self._callback_failures,
+                self._last_event_monotonic, reason[:500],
+            )
+
+
+@dataclass(frozen=True)
+class ETWSessionReceipt:
+    state: str
+    live: bool
+    events_seen: int
+    loss_count: int
+    parse_failures: int
+    callback_failures: int
+    last_event_monotonic: float
+    reason: str
 
 
 # ── Angerona module wrapper ───────────────────────────────────────────────────
@@ -287,7 +379,7 @@ class EtwRealtimeSensorModule(BaseModule):
                    "ETW provider (pywintrace); closes the polling blind spot. "
                    "Requires elevation; defers to polling sensors when unavailable.")
     category = "Telemetry"
-    version = "1.0.0"
+    version = "1.12.1"
 
     # How often the run-loop wakes to refresh health while the ETW session
     # streams events asynchronously on its own thread.
@@ -297,6 +389,9 @@ class EtwRealtimeSensorModule(BaseModule):
         super().__init__()
         self._sensor: Optional[ETWProcessSensor] = None
         self._last_seen = 0
+        self._restart_attempts = 0
+        self._next_restart_at = 0.0
+        self._continuity_gaps = 0
 
     # Mirror etw_listener.py's exposed surface.
     @property
@@ -357,12 +452,54 @@ class EtwRealtimeSensorModule(BaseModule):
         try:
             while not self.stopping:
                 self.sleep(self._HEALTH_POLL)
-                seen = self._sensor.events_seen
-                if self._sensor.running:
-                    self.set_health(100, f"{seen} process events captured")
+                receipt = self._sensor.status_receipt()
+                seen = receipt.events_seen
+                if receipt.live and receipt.loss_count == 0 and not (
+                    receipt.parse_failures or receipt.callback_failures
+                ):
+                    health = 100 if self._continuity_gaps == 0 else 75
+                    gap = (
+                        ""
+                        if self._continuity_gaps == 0
+                        else f"; {self._continuity_gaps} prior continuity gap(s)"
+                    )
+                    self.set_health(
+                        health,
+                        f"{receipt.state}: {seen} process events captured; "
+                        f"{receipt.reason}{gap}",
+                    )
+                    self._restart_attempts = 0
+                elif receipt.live:
+                    self._continuity_gaps += int(
+                        receipt.loss_count > 0 and self._continuity_gaps == 0
+                    )
+                    self.set_health(
+                        35 if receipt.loss_count else 60,
+                        f"{receipt.state}: {receipt.reason}; events={seen}",
+                    )
                 else:
-                    # Session dropped underneath us.
-                    self.set_health(40, self._sensor.last_error or "ETW session ended unexpectedly")
+                    self.set_health(20, receipt.reason)
+                    now = time.monotonic()
+                    if self._restart_attempts < 3 and now >= self._next_restart_at:
+                        self._continuity_gaps += 1
+                        self._restart_attempts += 1
+                        try:
+                            self._sensor.stop()
+                        except Exception:
+                            pass
+                        replacement = ETWProcessSensor(self._on_event, logger=None)
+                        if replacement.start():
+                            self._sensor = replacement
+                            self.set_health(
+                                70,
+                                "ETW session restarted; prior delivery continuity "
+                                "gap remains visible",
+                            )
+                        else:
+                            self._next_restart_at = now + min(
+                                60.0, 5.0 * (2 ** (self._restart_attempts - 1))
+                            )
+                            self.last_error = replacement.last_error
                 self._last_seen = seen
         finally:
             self._sensor.stop()

@@ -85,6 +85,32 @@ _SEVERITY = {
 _DEGRADED_STATES = frozenset({"degraded", "critical", "failed"})
 
 
+class _ActivityRow(QLabel):
+    """One exact, keyboard-accessible EventBus summary row."""
+
+    clicked = Signal(int)
+
+    def __init__(self, index: int) -> None:
+        super().__init__("")
+        self.row_index = index
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self.row_index)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.clicked.emit(self.row_index)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 def _redact_local_identifiers(value: str) -> str:
     """Apply the dashboard's stricter local-identity display boundary."""
     text = _QUOTED_PATH.sub("[LOCAL_PATH]", value)
@@ -170,6 +196,7 @@ class LiveDefenseActivityCard(QFrame):
     """Small revision-aware view of sanitized EventBus and module activity."""
 
     details_requested = Signal()
+    event_details_requested = Signal(object)
 
     def __init__(self, bus, manager, parent=None) -> None:
         super().__init__(parent)
@@ -178,6 +205,7 @@ class LiveDefenseActivityCard(QFrame):
         self._last_bus_revision: object = _UNSET
         self._last_module_snapshot: object = _UNSET
         self._render_count = 0
+        self._display_events: list[object] = []
 
         self.setObjectName("Card")
         self.setCursor(Qt.PointingHandCursor)
@@ -227,9 +255,9 @@ class LiveDefenseActivityCard(QFrame):
         self.summary.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         root.addWidget(self.summary)
 
-        self.rows: list[QLabel] = []
+        self.rows: list[_ActivityRow] = []
         for index in range(MAX_DISPLAY_ROWS):
-            row = QLabel("")
+            row = _ActivityRow(index)
             row.setTextFormat(Qt.PlainText)
             row.setWordWrap(False)
             row.setMinimumWidth(0)
@@ -239,7 +267,7 @@ class LiveDefenseActivityCard(QFrame):
             )
             row.setAccessibleName(f"Sanitized defense activity {index + 1}")
             row.setToolTip(explanation)
-            row.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            row.clicked.connect(self._request_event_details)
             row.hide()
             self.rows.append(row)
             root.addWidget(row)
@@ -251,6 +279,12 @@ class LiveDefenseActivityCard(QFrame):
         if event.button() == Qt.LeftButton:
             self.details_requested.emit()
         super().mousePressEvent(event)
+
+    def _request_event_details(self, index: int) -> None:
+        if 0 <= index < len(self._display_events):
+            self.event_details_requested.emit(self._display_events[index])
+            return
+        self.details_requested.emit()
 
     @staticmethod
     def _module_snapshot(manager) -> tuple[tuple[tuple[int, str, str], ...], int, int, int]:
@@ -288,11 +322,12 @@ class LiveDefenseActivityCard(QFrame):
     def _render_events(self) -> None:
         try:
             recent = self.bus.recent(MAX_RECENT_REQUEST)
-            summaries = [
-                safe_event_summary(event)
-                for event in islice(iter(recent), MAX_DISPLAY_ROWS)
-            ]
+            self._display_events = list(
+                islice(iter(recent), MAX_DISPLAY_ROWS)
+            )
+            summaries = [safe_event_summary(event) for event in self._display_events]
         except Exception:
+            self._display_events = []
             summaries = ["--:--:--  EVENT     EventBus activity unavailable"]
         if not summaries:
             summaries = ["--:--:--  IDLE      Waiting for observable activity"]

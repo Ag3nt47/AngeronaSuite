@@ -41,9 +41,13 @@ class AARCorrelationTests(unittest.TestCase):
              "artifact_paths": [r"D:\drill\two.txt"]},
         ]}
         catch = Event("FIM", "exact", Severity.HIGH, ts=102.0,
-                      details={"path": r"D:\drill\one.txt"})
+                      details={"path": r"D:\drill\one.txt",
+                               "evidence_type": "native_analytic_detection",
+                               "detector_verdict": "positive"})
         unrelated = Event("FIM", "late repeated path", Severity.HIGH, ts=112.0,
-                          details={"path": r"D:\drill\one.txt"})
+                          details={"path": r"D:\drill\one.txt",
+                                   "evidence_type": "native_analytic_detection",
+                                   "detector_verdict": "positive"})
         wrong_remediation = Event("Active Response SOAR", "other", Severity.HIGH,
                                   ts=103.0, details={"trigger_ts": 999.0})
         remediation = Event("Active Response SOAR", "rolled back", Severity.HIGH,

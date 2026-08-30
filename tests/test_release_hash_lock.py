@@ -112,19 +112,18 @@ def test_windows_pip_bootstrap_is_exact_hash_locked_and_ordered() -> None:
     assert digest in main_lock
     assert f"{pin}\n" in constraints
 
-    batch_launchers = (
-        (ROOT / "start-angerona.bat").read_text(encoding="utf-8"),
-        (ROOT / "Install-Angerona.bat").read_text(encoding="utf-8"),
+    launcher = (ROOT / "start-angerona.bat").read_text(encoding="utf-8")
+    bootstrap_install = launcher.index(
+        "--require-hashes --no-deps -r requirements-bootstrap-pip.txt"
     )
-    for launcher in batch_launchers:
-        bootstrap_install = launcher.index(
-            "--require-hashes --no-deps -r requirements-bootstrap-pip.txt"
-        )
-        dependency_install = launcher.index(
-            "--require-hashes --no-deps -r requirements-release-hashed.txt"
-        )
-        assert bootstrap_install < dependency_install
-        assert "pip install --upgrade" not in launcher.casefold()
+    dependency_install = launcher.index(
+        "--require-hashes --no-deps -r requirements-release-hashed.txt"
+    )
+    assert bootstrap_install < dependency_install
+    assert "pip install --upgrade" not in launcher.casefold()
+
+    installer = (ROOT / "Install-Angerona.bat").read_text(encoding="utf-8")
+    assert 'call "%~dp0start-angerona.bat" --source-setup' in installer
 
     repair = (ROOT / "Repair-Angerona-Python.ps1").read_text(encoding="utf-8")
     bootstrap_install = repair.rindex(
@@ -146,24 +145,24 @@ def test_windows_pip_bootstrap_is_exact_hash_locked_and_ordered() -> None:
     assert "--require-hashes --no-deps" in workflow
 
 
-def test_release_workflow_pins_and_hash_verifies_inno_compiler() -> None:
+def test_release_workflow_does_not_build_candidate_controlled_inno_setup() -> None:
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"
     )
 
-    assert "innosetup-6.7.1.exe" in workflow
-    assert "4d11e8050b6185e0d49bd9e8cc661a7a59f44959a621d31d11033124c4e8a7b0" in workflow
-    assert "Get-FileHash -Algorithm SHA256 $innoInstaller" in workflow
-    assert "$actualInnoHash -ne $innoSha256" in workflow
-    assert "Join-Path $innoDir 'ISCC.exe'" in workflow
-    assert "Get-Command ISCC.exe" not in workflow
+    for forbidden in (
+        "innosetup-6.7.1.exe",
+        "Get-FileHash -Algorithm SHA256 $innoInstaller",
+        "Join-Path $innoDir 'ISCC.exe'",
+        "win64-migration-setup",
+    ):
+        assert forbidden not in workflow
+    assert "prepared-windows-publisher-request" in workflow
+    assert "finalized-windows-release-assets" in workflow
 
 
-@pytest.mark.parametrize("launcher", ["start-angerona.bat", "Install-Angerona.bat"])
-def test_elevated_source_bootstrap_has_no_unhashed_dependency_path(
-    launcher: str,
-) -> None:
-    text = (ROOT / launcher).read_text(encoding="utf-8")
+def test_unelevated_source_bootstrap_has_no_unhashed_dependency_path() -> None:
+    text = (ROOT / "start-angerona.bat").read_text(encoding="utf-8")
 
     assert "--require-hashes --no-deps -r requirements-release-hashed.txt" in text
     assert "--no-build-isolation --no-deps -e ." in text
@@ -176,12 +175,19 @@ def test_elevated_source_bootstrap_has_no_unhashed_dependency_path(
     assert "sysconfig.get_platform() == 'win-amd64'" in text
 
 
-def test_hardened_installer_bootstraps_exact_lock_python() -> None:
-    text = (ROOT / "Install-Angerona.bat").read_text(encoding="utf-8")
+def test_source_installer_is_an_unelevated_exact_setup_delegate() -> None:
+    installer = (ROOT / "Install-Angerona.bat").read_text(encoding="utf-8")
+    launcher = (ROOT / "start-angerona.bat").read_text(encoding="utf-8")
 
-    assert "Python.Python.3.12" in text
-    assert "Python.Python.3.10" not in text
-    assert "refusing an unhashed install" in text
+    assert 'call "%~dp0start-angerona.bat" --source-setup' in installer
+    assert "--require-hashes --no-deps -r requirements-release-hashed.txt" in launcher
+    assert "sys.version_info[:2] == (3, 12)" in launcher
+    assert "sysconfig.get_platform() == 'win-amd64'" in launcher
+    for text in (installer, launcher):
+        lowered = text.casefold()
+        assert "-verb runas" not in lowered
+        assert "net.exe\" session" not in lowered
+        assert "--scope machine" not in lowered
 
 
 def test_posix_manifest_rejects_a_one_byte_wheel_mutation(tmp_path: Path) -> None:

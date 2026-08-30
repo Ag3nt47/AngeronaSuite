@@ -14,15 +14,14 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import sqlite3
-import sys
 import threading
 import time
 from contextlib import closing
 from pathlib import Path
 
-from angerona.core.win import run_hidden
 from angerona.engines import ollama_client
 
 # ── AngeronaSuite integration, with a standalone fallback for testing ────────
@@ -93,7 +92,26 @@ CREATE TABLE IF NOT EXISTS remediation_hashes (
     script_path TEXT,
     stamped_epoch INTEGER
 );
+CREATE TABLE IF NOT EXISTS posture_evidence (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    last_trusted_epoch INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    verdict_count INTEGER NOT NULL
+);
 """
+_TECHNIQUE_ID = re.compile(r"^(?:T\d{4}(?:\.\d{3})?|RT-[A-Z0-9][A-Z0-9_.-]{0,63})$")
+
+
+def _safe_technique_id(value: object) -> str:
+    """Return one path-safe identifier without trusting report text."""
+    raw = str(value or "").strip().upper()
+    first = raw.split(maxsplit=1)[0] if raw else ""
+    if _TECHNIQUE_ID.fullmatch(first):
+        return first
+    # Preserve an actionable but unrecognized finding under a deterministic,
+    # non-reversible identifier. Free text never becomes a path component.
+    digest = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:20]
+    return f"RT-{digest.upper()}"
 
 
 def _default_data_dir() -> Path:
@@ -129,7 +147,7 @@ class PostureHardening(BaseModule):
     name = "Posture Hardening"
     description = "Self-healing loop: turns red-team SUCCESS into staged, review-gated OS hardening."
     category = "SOAR"
-    version = "1.1.0"
+    version = "1.12.1"
     enabled_by_default = True
 
     def __init__(self, data_dir=None) -> None:
@@ -154,6 +172,7 @@ class PostureHardening(BaseModule):
         self._judgment_receipt_lock = threading.RLock()
         self._judgment_receipts: dict[str, tuple[str, str, float]] = {}
         self._init_db()
+        self._recompute_health()
 
     def bind_manager(self, manager) -> None:
         """Receive sibling-module access for bounded practice verification."""
@@ -212,6 +231,7 @@ class PostureHardening(BaseModule):
 
     def record_weakness(self, mitre_id, name, severity, remediation_path=None,
                         source="host") -> None:
+        mitre_id = _safe_technique_id(mitre_id)
         with closing(sqlite3.connect(self.db_path)) as c, c:
             c.execute(
                 "INSERT INTO system_weaknesses(mitre_technique_id,technique_name,severity,"
@@ -222,6 +242,26 @@ class PostureHardening(BaseModule):
                 "source=excluded.source",
                 (mitre_id, name, severity, int(time.time()), "VULNERABLE",
                  remediation_path, source))
+
+    def _record_trusted_evidence(self, source: str, verdict_count: int) -> None:
+        bounded_source = str(source or "unknown").strip()[:64] or "unknown"
+        count = max(0, min(int(verdict_count), 1_000_000))
+        with closing(sqlite3.connect(self.db_path)) as c, c:
+            c.execute(
+                "INSERT INTO posture_evidence(singleton,last_trusted_epoch,source,"
+                "verdict_count) VALUES(1,?,?,?) ON CONFLICT(singleton) DO UPDATE SET "
+                "last_trusted_epoch=excluded.last_trusted_epoch,source=excluded.source,"
+                "verdict_count=excluded.verdict_count",
+                (int(time.time()), bounded_source, count),
+            )
+
+    def _trusted_evidence(self) -> tuple[int, str, int] | None:
+        with closing(sqlite3.connect(self.db_path)) as c:
+            row = c.execute(
+                "SELECT last_trusted_epoch,source,verdict_count FROM posture_evidence "
+                "WHERE singleton=1"
+            ).fetchone()
+        return (int(row[0]), str(row[1]), int(row[2])) if row else None
 
     def weaknesses(self, status=None, source=None) -> list[dict]:
         q = ("SELECT mitre_technique_id,technique_name,severity,last_tested_epoch,"
@@ -240,6 +280,7 @@ class PostureHardening(BaseModule):
         return [dict(zip(keys, r)) for r in rows]
 
     def mark_patched(self, mitre_id) -> None:
+        mitre_id = _safe_technique_id(mitre_id)
         with closing(sqlite3.connect(self.db_path)) as c, c:
             c.execute("UPDATE system_weaknesses SET status='PATCHED' WHERE mitre_technique_id=?", (mitre_id,))
         self._recompute_health()
@@ -257,6 +298,7 @@ class PostureHardening(BaseModule):
         """Record the SHA-256 of a freshly written remediation script. Called by
         every code path that writes a staged script, so the stored digest always
         reflects the exact bytes we intend to run later."""
+        mitre_id = _safe_technique_id(mitre_id)
         try:
             digest = self._sha256_file(path)
         except Exception as exc:
@@ -273,6 +315,7 @@ class PostureHardening(BaseModule):
 
     def _stored_hash(self, mitre_id: str):
         """The SHA-256 stamped for a technique's staged script, or None."""
+        mitre_id = _safe_technique_id(mitre_id)
         with closing(sqlite3.connect(self.db_path)) as c, c:
             row = c.execute("SELECT sha256 FROM remediation_hashes WHERE mitre_technique_id=?",
                             (mitre_id,)).fetchone()
@@ -281,6 +324,7 @@ class PostureHardening(BaseModule):
     def _verify_hash(self, mitre_id: str, path: str) -> tuple[bool, str]:
         """Re-hash the on-disk script and compare to the stamped digest. Returns
         (ok, detail). Missing stamp or any mismatch is treated as tampering."""
+        mitre_id = _safe_technique_id(mitre_id)
         with closing(sqlite3.connect(self.db_path)) as c, c:
             row = c.execute(
                 "SELECT sha256 FROM remediation_hashes WHERE mitre_technique_id=?",
@@ -375,6 +419,7 @@ class PostureHardening(BaseModule):
         # Anti-poisoning: prove the AAR is authentic before trusting its verdicts.
         if not self._aar_trusted(session, path):
             return []
+        self._record_trusted_evidence("shark", len(session.get("rounds", [])))
         new = []
         for r in session.get("rounds", []):
             verdict = str(r.get("verdict", "")).upper()
@@ -382,7 +427,11 @@ class PostureHardening(BaseModule):
                       r.get("first_strike") is False
             if verdict != "SUCCESS" and not low_det:
                 continue
-            mitre = r.get("mitre") or r.get("mitre_technique_id") or r.get("technique", "T0000")
+            mitre = _safe_technique_id(
+                r.get("mitre")
+                or r.get("mitre_technique_id")
+                or r.get("technique", "T0000")
+            )
             key = (mitre, r.get("attempts", [{}])[-1].get("attack_epoch") if r.get("attempts") else 0)
             if key in self._seen:
                 continue
@@ -397,8 +446,8 @@ class PostureHardening(BaseModule):
                       Severity.HIGH, mitre=mitre, remediation=rpath,
                       source="shark", finding_kind="practice_gap",
                       practice_run_id=str(session.get("run_id") or ""))
+        self._recompute_health()
         if new:
-            self._recompute_health()
             # Opt-in active patching: after a drill records weaknesses, apply the
             # VETTED, reversible remediation library automatically. Default OFF —
             # set ANGERONA_AUTO_REMEDIATE=1 to enable real host changes.
@@ -423,6 +472,7 @@ class PostureHardening(BaseModule):
         # Anti-poisoning: prove the AAR is authentic before trusting its verdicts.
         if not self._aar_trusted(report, path):
             return []
+        self._record_trusted_evidence("redteam", len(report.get("verdicts", [])))
         from angerona.core import drill_resolution
         new = []
         verified = 0
@@ -442,7 +492,9 @@ class PostureHardening(BaseModule):
             if v.get("category") != "detection":
                 continue
             tech = str(v.get("technique", "")).strip()
-            mitre = tech.split()[0] if tech[:1].upper() == "T" else ("RT-" + str(v.get("stage", "?")))
+            mitre = _safe_technique_id(
+                tech if tech[:1].upper() == "T" else v.get("stage", "?")
+            )
             closure = lifecycle.get(mitre.casefold(), {})
             contract_proof = (
                 v.get("finding_resolved") is True
@@ -546,8 +598,7 @@ class PostureHardening(BaseModule):
                       remediation="purple-guard-candidate", source="redteam",
                       finding_kind="practice_gap", practice_run_id=run_id,
                       gap_kind=gap_kind)
-        if new or verified:
-            self._recompute_health()
+        self._recompute_health()
         if new:
             # Opt-in active patching: after a drill records weaknesses, apply the
             # VETTED, reversible remediation library automatically. Default OFF —
@@ -757,19 +808,47 @@ class PostureHardening(BaseModule):
 
     def _recompute_health(self) -> None:
         vuln = len(self.weaknesses("VULNERABLE"))
-        if vuln == 0:
-            self.set_health(100, "posture clean")
-        else:
+        if vuln:
             # any open weakness forces the module below 50 (orange/red strip)
             self.set_health(max(5, 45 - vuln * 5), f"{vuln} unremediated weakness(es)")
+            return
+        evidence = self._trusted_evidence()
+        if evidence is None:
+            self.set_health(
+                55,
+                "No trusted posture report has been ingested; a clean posture "
+                "cannot be established from missing evidence.",
+            )
+            return
+        observed_at, source, verdict_count = evidence
+        try:
+            max_age = max(
+                1.0,
+                float(os.environ.get("ANGERONA_POSTURE_EVIDENCE_MAX_AGE_HOURS", "24")),
+            ) * 3600.0
+        except (TypeError, ValueError):
+            max_age = 24.0 * 3600.0
+        age = max(0.0, time.time() - observed_at)
+        if age > max_age:
+            self.set_health(
+                75,
+                f"Last trusted {source} posture evidence is stale "
+                f"({age / 3600.0:.1f}h old; {verdict_count} verdicts).",
+            )
+            return
+        self.set_health(
+            100,
+            f"posture clean from trusted {source} evidence ({verdict_count} verdicts)",
+        )
 
     # ── 3. DETERMINISTIC LOCAL LLM ORCHESTRATION ─────────────────────────────
     def _generate_remediation(self, mitre, name, severity, round_obj) -> str:
+        mitre = _safe_technique_id(mitre)
         payload = json.dumps({"mitre_technique_id": mitre, "technique_name": name,
                               "severity": severity, "objective": round_obj.get("objective", ""),
                               "target_module": round_obj.get("target", "")}, indent=2)
         script = _ollama(_SYS_REMEDIATE, payload)
-        out = self.remediations / f"{mitre}.advisory.md"
+        out = self._advisory_path(mitre)
         if not script:
             script = (
                 f"Ollama unavailable. Review the {mitre} ({name}) coverage gap and "
@@ -790,7 +869,8 @@ class PostureHardening(BaseModule):
         """Instant, Ollama-free stub written at drill time. The real remediation
         is generated lazily by generate_remediation() when the user clicks
         'Attempt Fix' — so a drill never blocks on / contends for the LLM/VRAM."""
-        out = self.remediations / f"{mitre}.advisory.md"
+        mitre = _safe_technique_id(mitre)
+        out = self._advisory_path(mitre)
         if not out.exists():
             out.write_text(
                 f"# INERT ADVISORY PLACEHOLDER\n\n{mitre} ({name}) — click "
@@ -798,6 +878,15 @@ class PostureHardening(BaseModule):
                 encoding="utf-8")
         self._stamp_hash(mitre, str(out))
         return str(out)
+
+    def _advisory_path(self, technique_id: object) -> Path:
+        """Resolve a validated filename inside the dedicated advisory root."""
+        safe = _safe_technique_id(technique_id)
+        root = self.remediations.resolve(strict=False)
+        path = (root / f"{safe}.advisory.md").resolve(strict=False)
+        if path.parent != root:
+            raise ValueError("remediation advisory path escaped its storage root")
+        return path
 
     def generate_remediation(self, mitre_id: str, timeout: int = 45) -> dict:
         """On-demand: ask Ollama (temperature 0) for a real remediation for a
@@ -901,32 +990,42 @@ class PostureHardening(BaseModule):
 
     # ── JUDGMENT LOOP (Continuous Verification Gate) ─────────────────────────
     def verify_mitigation(self, technique_id: str, settle: float = 40.0) -> dict:
-        """Re-run the Red Team verification for `technique_id` (hidden subprocess)
-        and act on the result:
-          VERIFICATION_RESULT: BLOCKED → certify the mitigation (edr_logger.info,
-            mark PATCHED, health/matrix returns to certified),
-          VERIFICATION_RESULT: SUCCESS → the mutated attack bypassed the fix
-            (edr_logger.error operational alert)."""
-        cmd = [sys.executable, "-m", "angerona.shark.verify",
-               technique_id, "--verify", "--settle", str(settle)]
+        """Run an inert canary and require an authentic, source-bound receipt.
+
+        A BLOCKED canary is detection evidence only. It cannot mark an open
+        weakness patched because this path neither installs nor verifies a host
+        remediation postcondition.
+        """
         try:
-            proc = run_hidden(cmd, capture_output=True, text=True, timeout=settle + 30)
-            buf = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            from angerona.core.judgment_gate import run_judgment_verification
+
+            judgment = run_judgment_verification(
+                technique_id,
+                settle=settle,
+            )
+            result = judgment.outcome
+            receipt = judgment.receipt
         except Exception as exc:
-            buf = f"VERIFICATION_RESULT: ERROR ({exc})"
-        result = "ERROR"
-        for line in buf.splitlines():
-            if "VERIFICATION_RESULT:" in line:
-                result = line.split("VERIFICATION_RESULT:", 1)[1].strip().split()[0]
-                break
+            self.last_error = str(exc)
+            result = "ERROR"
+            receipt = None
 
         if result == "BLOCKED":
-            _edr("info", f"[JUDGMENT] Mitigation for {technique_id} CERTIFIED — Red Team "
-                         f"verification was BLOCKED. Path signed off.")
-            self._certified.add(technique_id)
-            self.mark_patched(technique_id)          # also recomputes health
-            self.emit(f"✅ CERTIFIED: mitigation for {technique_id} verified — Red Team attack "
-                      f"BLOCKED.", Severity.INFO, technique=technique_id, verified="BLOCKED")
+            _edr(
+                "info",
+                f"[JUDGMENT] Inert canary for {technique_id} was BLOCKED; "
+                "no remediation was installed or certified.",
+            )
+            self.emit(
+                f"Interception canary for {technique_id} was BLOCKED; the open "
+                "weakness remains pending a typed remediation postcondition.",
+                Severity.INFO,
+                technique=technique_id,
+                verified="BLOCKED",
+                installed=False,
+                patched=False,
+                receipt_schema=(receipt or {}).get("schema"),
+            )
         elif result == "SUCCESS":
             _edr("error", f"[JUDGMENT] Mitigation for {technique_id} FAILED verification — the "
                           f"mutated Red Team payload STILL bypassed the staged fix. Operator "
@@ -962,7 +1061,13 @@ class PostureHardening(BaseModule):
         else:
             self.emit(f"Judgment gate could not verify {technique_id} ({result}).",
                       Severity.LOW, technique=technique_id, verified=result)
-        return {"technique": technique_id, "result": result}
+        return {
+            "technique": technique_id,
+            "result": result,
+            "interception_verified": result == "BLOCKED",
+            "patched": False,
+            "receipt": receipt,
+        }
 
     def execute_custom_patch(self, raw_input: str, mode: str) -> dict:
         """Convert custom text into an inert review artifact; never execute it."""

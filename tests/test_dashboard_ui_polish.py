@@ -40,6 +40,16 @@ def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
+def _close_pulse_card(card: SystemPulseCard) -> None:
+    """Keep the Qt wrapper GUI-owned until its sampler has stopped."""
+
+    worker = card._sample_worker
+    card.close()
+    # The production collector bounds its slowest Wi-Fi probe at 1.5 seconds.
+    worker.join(timeout=2.5)
+    assert not worker.is_alive()
+
+
 @pytest.fixture(autouse=True)
 def _enable_os_motion_for_animation_contracts(monkeypatch) -> None:
     """Make animation contracts independent of the CI runner's OS preference."""
@@ -449,7 +459,7 @@ def test_system_pulse_card_and_human_readable_units() -> None:
     assert "2.0 MB/s" in card._network.text()
     assert _memory(3 * 1024 ** 3) == "3.0 GB"
     assert _rate(1024) == "1.0 KB/s"
-    card.close()
+    _close_pulse_card(card)
 
 
 def test_system_pulse_click_and_history_power_expanded_detail() -> None:
@@ -483,7 +493,7 @@ def test_system_pulse_click_and_history_power_expanded_detail() -> None:
     assert detail.available.value.text() == "4.0 GB"
     assert detail.graph._samples
     detail.close()
-    card.close()
+    _close_pulse_card(card)
 
 
 def test_clickable_section_routes_real_dialog_through_owner_reveal() -> None:

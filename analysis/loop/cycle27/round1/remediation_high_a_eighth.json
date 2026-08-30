@@ -1,0 +1,58 @@
+[
+  {
+    "original_id": "C27-R1-A01",
+    "status": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+    "residuals_addressed": [
+      "deep protected recovery-anchor JSON escaped reconciliation as RecursionError",
+      "deep recovery-witness JSON escaped reconciliation as RecursionError",
+      "operator undo required one pinned journal custody interval through host compensation"
+    ],
+    "implementation": [
+      "bounded duplicate-free protected-authority JSON parsing converts resource, recursion, decode, parse, and numeric failures to JournalIntegrityError",
+      "the current undo path retains receipt lock, OS writer lease, capacity reserve, and one descriptor-pinned journal session through intent, compensation, postcondition, and terminal phase"
+    ],
+    "files": [
+      "src/angerona/modules/adversary_combat.py",
+      "tests/test_cycle27_high_a_seventh_reattack.py",
+      "tests/test_cycle27_high_ac_eighth_remediation.py"
+    ],
+    "gates": {
+      "new_combined_tests": "PASS: 16",
+      "focused_seventh_matrix": "PASS: 40",
+      "affected_wider_matrix": "PASS: 197, 2 expected skips",
+      "py_compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "PASS"
+    },
+    "remaining_boundary": "Whole-host rollback of every local authority object and signing identity needs TPM monotonic state or an independent witness; privileged POSIX unlink cannot be kernel-denied by this userspace descriptor contract."
+  },
+  {
+    "original_id": "C27-R1-A16",
+    "status": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+    "residuals_addressed": [
+      "cursor commit could precede EventBus publication and permanently skip a prepared batch",
+      "cursor commit failure after batch preparation needed restart-safe replay"
+    ],
+    "implementation": [
+      "an authenticated bounded outbox is committed before cursor advancement",
+      "stable generation-record-anchor identities bind every pending event",
+      "restart replays unacknowledged events and health remains below 100",
+      "run removes the outbox only after all EventBus publications return successfully"
+    ],
+    "files": [
+      "src/angerona/modules/etw_listener.py",
+      "tests/test_cycle27_high_a_seventh_reattack.py",
+      "tests/test_cycle27_round1_high_a.py",
+      "tests/test_cycle27_high_ac_eighth_remediation.py"
+    ],
+    "gates": {
+      "new_combined_tests": "PASS: 16",
+      "focused_seventh_matrix": "PASS: 40",
+      "affected_wider_matrix": "PASS: 197, 2 expected skips",
+      "py_compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "PASS"
+    },
+    "remaining_boundary": "The acknowledgement proves in-process EventBus publication, not durable processing by every downstream consumer; end-to-end sinks retain their own acknowledgement responsibility."
+  }
+]

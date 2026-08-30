@@ -146,6 +146,7 @@ class _IpcGeneration:
         self.connections: set[socket.socket] = set()
         self.helpers: set[threading.Thread] = set()
         self.connection_slots = threading.BoundedSemaphore(_MAX_CONNECTIONS)
+        self.fatal_error = ""
 
     def stopping(self) -> bool:
         return self.generation_stop.is_set() or self.helper_stop.is_set()
@@ -195,7 +196,7 @@ class IpcGuardModule(BaseModule):
     description = ("Diagnostic HMAC-SHA256 admission probe on 127.0.0.1:65432; "
                    "authenticates and closes, with no production payload consumer.")
     category = "Integrity"
-    version = "1.1.0"
+    version = "1.12.1"
     supported_platforms = ("windows", "macos", "linux")
     capability_mode = "observe"
     maturity_channel = "preview"
@@ -312,7 +313,10 @@ class IpcGuardModule(BaseModule):
                 conn, addr = srv.accept()
             except socket.timeout:
                 continue
-            except OSError:
+            except OSError as exc:
+                if not generation.stopping():
+                    generation.fatal_error = f"listener accept failed: {exc}"
+                    generation.helper_stop.set()
                 break
             if not generation.connection_slots.acquire(blocking=False):
                 try:
@@ -350,6 +354,7 @@ class IpcGuardModule(BaseModule):
                     self.last_error = str(exc)
                     self.set_health(40, f"authentication worker unavailable: {exc}")
                     self._record_denial(addr, reason="worker-start-failure")
+                    generation.fatal_error = f"authentication worker unavailable: {exc}"
                     generation.helper_stop.set()
                     break
 
@@ -418,12 +423,45 @@ class IpcGuardModule(BaseModule):
             daemon=True,
         )
         generation.accept_thread = accept_thread
-        accept_thread.start()
+        try:
+            accept_thread.start()
+        except Exception as exc:
+            generation.fatal_error = f"listener worker could not start: {exc}"
+            self.set_health(20, generation.fatal_error)
+            raise RuntimeError(generation.fatal_error) from exc
+        try:
+            bound_port = int(srv.getsockname()[1])
+            live_probe = authenticate(self._key, _HOST, bound_port, timeout=2.0)
+        except Exception as exc:
+            live_probe = False
+            generation.fatal_error = f"listener health probe failed: {exc}"
+        if not live_probe:
+            if not generation.fatal_error:
+                generation.fatal_error = "listener health probe was not authenticated"
+            generation.helper_stop.set()
+            self.set_health(20, generation.fatal_error)
+            raise RuntimeError(generation.fatal_error)
         while not generation.stopping():
+            if generation.fatal_error:
+                self.last_error = generation.fatal_error
+                self.set_health(20, generation.fatal_error)
+                raise RuntimeError(generation.fatal_error)
+            if not accept_thread.is_alive():
+                generation.fatal_error = "listener accept worker exited unexpectedly"
+                self.last_error = generation.fatal_error
+                self.set_health(20, generation.fatal_error)
+                raise RuntimeError(generation.fatal_error)
             with self.state_lock:
                 a, d = self.accepted, self.denied
-            self.set_health(100, f"{a} authorized, {d} denied")
+            self.set_health(
+                100,
+                f"authenticated live listener; {a} authorized, {d} denied",
+            )
             self.sleep(5.0)
+        if generation.fatal_error and not generation.generation_stop.is_set():
+            self.last_error = generation.fatal_error
+            self.set_health(20, generation.fatal_error)
+            raise RuntimeError(generation.fatal_error)
 
     def stop(self) -> None:
         super().stop()

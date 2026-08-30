@@ -33,6 +33,7 @@ from angerona.core.atomic_io import replace_with_retry
 from angerona.core.file_lease import ExclusiveFileLease
 from angerona.core.independent_high_water import (
     AUDIT_DOMAIN,
+    CUSTODY_DOMAIN,
     NETWORK_DOMAIN,
     PLATFORM_DOMAIN,
     SCHEMA as HIGH_WATER_SCHEMA,
@@ -61,7 +62,9 @@ MAX_RESPONSE_BYTES = 32 * 1024
 MAX_NONCES = 4096
 MAX_DOMAINS = 16
 MAX_SIGNATURE_CHARS = 1024
-DEFAULT_ALLOWED_DOMAINS = frozenset({AUDIT_DOMAIN, NETWORK_DOMAIN, PLATFORM_DOMAIN})
+DEFAULT_ALLOWED_DOMAINS = frozenset(
+    {AUDIT_DOMAIN, CUSTODY_DOMAIN, NETWORK_DOMAIN, PLATFORM_DOMAIN}
+)
 TRANSPORT_RESPONSE_FLOOR_NAMESPACE = "angerona.sentinel.transport-response.v1"
 TRUSTED_TIME_APPRAISAL_FLOOR_NAMESPACE = (
     "angerona.sentinel.trusted-time-appraisal.v1"

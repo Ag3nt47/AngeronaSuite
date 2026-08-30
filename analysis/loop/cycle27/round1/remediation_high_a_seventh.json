@@ -1,0 +1,57 @@
+[
+  {
+    "original_id": "C27-R1-A01",
+    "status": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+    "residuals_addressed": [
+      "witness deletion followed by authenticated schema-1 anchor and journal replay",
+      "journal removal after the final reread but before irreversible mutation",
+      "between-read and append pathname replacement writing to an alternate object",
+      "unbounded pre-authentication journal bytes, lines, records, JSON depth, and schema"
+    ],
+    "implementation": [
+      "runtime rejects schema-1 recovery authority unconditionally and never recreates its witness",
+      "one descriptor-pinned canonical journal object spans verified read, append, host effect, postcondition, and terminal receipt",
+      "Windows mutation custody denies delete/replace while every platform verifies exact object and parent topology",
+      "strict bounded duplicate-free JSON parsing and per-record field contracts fail closed on resource or schema errors"
+    ],
+    "regressions": [
+      "deleted-witness legacy snapshot replay",
+      "deep unsigned JSON prefix",
+      "journal byte budget",
+      "between-read/append swap",
+      "post-final-read removal",
+      "delete attempt at inert irreversible effect boundary"
+    ],
+    "gates": {
+      "new_tests": "PASS: 6 A01 cases across 7 parametrized executions",
+      "affected_suite": "PASS: included in 99 passed",
+      "py_compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "PASS"
+    },
+    "remaining_boundary": "Complete schema-2 local-state/signing-identity rollback requires TPM monotonic state or an external witness; POSIX cannot promise Windows-style kernel deny-delete against a privileged unlink."
+  },
+  {
+    "original_id": "C27-R1-A16",
+    "status": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+    "residuals_addressed": [
+      "authority-witness deletion followed by authenticated schema-1 anchor/cursor/high-water/channel rollback"
+    ],
+    "implementation": [
+      "runtime rejects schema-1 Security authority unconditionally",
+      "no witness is created and no legacy authority is rewritten by the running sensor"
+    ],
+    "regressions": [
+      "deleted-authority-witness legacy snapshot replay",
+      "pre-witness legacy authority requires explicit enrollment/recovery"
+    ],
+    "gates": {
+      "new_tests": "PASS: 1 dedicated A16 replay plus 2 updated legacy expectations",
+      "affected_suite": "PASS: included in 99 passed",
+      "py_compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "PASS"
+    },
+    "remaining_boundary": "Complete rollback of the schema-2 channel, cursor, high-water, anchor, witness, and stable signing identity requires TPM monotonic state or an independent witness."
+  }
+]

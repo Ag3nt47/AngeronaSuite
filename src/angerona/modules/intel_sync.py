@@ -33,8 +33,6 @@ import json
 import os
 import platform
 import re
-import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -331,7 +329,7 @@ class IntelSyncModule(BaseModule):
     description = ("Correlates the CISA KEV catalog against this host's OS + running "
                    "services; stages review-gated remediation, never auto-applies.")
     category = "Threat Intel"
-    version = "1.1.0"
+    version = "1.12.1"
 
     _INTERVAL = 6 * 3600.0     # re-sync every 6h
 
@@ -463,20 +461,14 @@ class IntelSyncModule(BaseModule):
         return m.group(0) if m else "T1190"
 
     def _judgment_verify(self, technique_id: str) -> str:
-        """Task the Judgment module to run ONE mock footprint test of this
-        technique and prove the local EDR/NDR can intercept it before the rule is
-        promoted to active. Returns BLOCKED / SUCCESS / ERROR."""
+        """Run one isolated canary and accept only an authentic exact receipt."""
         try:
-            proc = subprocess.run(
-                [sys.executable, "-m", "angerona.shark.verify", technique_id, "--verify"],
-                capture_output=True, text=True, timeout=120)
-            buf = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            from angerona.core.judgment_gate import run_judgment_verification
+
+            return run_judgment_verification(technique_id).outcome
         except Exception as exc:
+            self.last_error = str(exc)
             return f"ERROR ({exc})"
-        for line in buf.splitlines():
-            if "VERIFICATION_RESULT:" in line:
-                return line.split("VERIFICATION_RESULT:", 1)[1].strip().split()[0]
-        return "ERROR"
 
     def _refresh_iocs(self) -> None:
         """Ingest an external STIX/TAXII (or simple JSON) IOC feed into the shared
@@ -563,10 +555,22 @@ class IntelSyncModule(BaseModule):
             result.update({"technique": tid, "verification": verdict, "promoted": promoted})
             with self.state_lock:
                 rec["verified"] = verdict
-                rec["active"] = promoted
+                # This module never installs a rule. A blocked inert canary is
+                # useful detection evidence, but cannot truthfully activate or
+                # promote a control.
+                rec["active"] = False
             if promoted:
-                self.emit(f"{cve_id}/{tid} intercept PROVEN (Judgment BLOCKED) - detection "
-                          f"rule promoted to active.", Severity.INFO, cve=cve_id, technique=tid)
+                result["promoted"] = False
+                result["interception_verified"] = True
+                self.emit(
+                    f"{cve_id}/{tid} inert interception canary was BLOCKED; no "
+                    "detection rule was installed or promoted.",
+                    Severity.INFO,
+                    cve=cve_id,
+                    technique=tid,
+                    installed=False,
+                    promoted=False,
+                )
             else:
                 self.emit(f"{cve_id}/{tid} verification returned {verdict} - rule NOT promoted "
                           f"(suite could not prove interception).", Severity.HIGH,

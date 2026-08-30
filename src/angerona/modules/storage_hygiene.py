@@ -5,19 +5,17 @@ Purpose
     data root from ``ANGERONA_DATA`` (falling back to this installation's
     ``runtime-data`` directory on D:). Stray data can still land at the old
     default location if something writes there before the env is applied. SHYG
-    detects that spill and migrates it to the configured root, so nothing keeps
-    accumulating on C:.
+    detects that spill and produces a reviewed relocation proposal.
 
 Behaviour (safe by default)
     * DETECT + ALERT (default): finds Angerona data sitting at the default C:
       location while the configured root is elsewhere, and raises an event. It
       does NOT move anything unless auto-migration is enabled.
-    * MIGRATE (opt-in): set ``ANGERONA_STORAGE_AUTOMIGRATE=1`` to have SHYG move
-      the stray items to the configured root automatically (collision-safe:
-      existing names are preserved with a timestamp suffix, never overwritten).
-    * PURGE (operator-gated): ``purge_stray(confirm=True)`` deletes the residual
-      C: spill directory. It is NEVER called automatically — destructive removal
-      always requires an explicit, confirmed operator action.
+    * MIGRATE (retired): the former privileged pathname move is rejected because
+      cross-platform handle-bound execution cannot be proven race-free. Dry-run
+      proposals remain available for reviewed, unelevated external execution.
+    * PURGE (retired): ``purge_stray`` retains a safe compatibility surface but
+      never deletes a pathname.
 
 The legacy C: path is treated only as a spill source and is never the normal
 default for this installation.
@@ -30,6 +28,7 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import sys
 import threading
 import time
 from pathlib import Path
@@ -39,10 +38,19 @@ from angerona.core.module_base import BaseModule, Severity
 
 
 def default_c_location() -> Path:
-    """Legacy per-user spill location checked for collision-safe migration:
-    ``%LOCALAPPDATA%\\Angerona`` (or ~/Angerona off-Windows)."""
-    base = os.environ.get("LOCALAPPDATA", str(Path.home()))
-    return Path(base) / "Angerona"
+    """Return the legacy spill root from an OS identity authority.
+
+    Environment variables are deliberately excluded: an elevated launch can
+    inherit attacker-controlled ``LOCALAPPDATA``/``HOME`` values and turn a
+    hygiene pass into a privileged pathname operation on arbitrary content.
+    """
+    if sys.platform == "win32":
+        from angerona.core.privilege import _windows_known_folder
+
+        return _windows_known_folder(0x1C) / "Angerona"  # CSIDL_LOCAL_APPDATA
+    import pwd
+
+    return Path(pwd.getpwuid(os.getuid()).pw_dir) / "Angerona"
 
 
 def canonical_root() -> Path:
@@ -140,17 +148,104 @@ def _migration_safety_error(source: Path, dest: Path) -> str | None:
     return None
 
 
-def find_stray(source: Path, dest: Path) -> bool:
-    """True if `source` exists, differs from `dest`, and actually holds data."""
-    if (not source.exists() or not source.is_dir()
-            or _is_link_or_reparse(source)):
-        return False
-    if _same_path(source, dest):
-        return False
+def _directory_identity(info: os.stat_result) -> tuple[int, ...]:
+    """Stable metadata used to reject a root replaced during assessment."""
+    return (
+        int(info.st_dev),
+        int(info.st_ino),
+        int(info.st_mode),
+        int(info.st_mtime_ns),
+        int(getattr(info, "st_file_attributes", 0) or 0),
+    )
+
+
+def _root_still_bound(source: Path, expected: tuple[int, ...]) -> tuple[bool, str]:
     try:
-        return any(source.iterdir())
-    except Exception:
-        return False
+        current = source.lstat()
+    except OSError as exc:
+        return False, f"legacy spill root identity unavailable: {exc}"
+    attributes = int(getattr(current, "st_file_attributes", 0) or 0)
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    if stat.S_ISLNK(current.st_mode) or bool(attributes & reparse):
+        return False, "legacy spill root became a link or reparse point"
+    if not stat.S_ISDIR(current.st_mode):
+        return False, "legacy spill root is no longer a directory"
+    if _directory_identity(current) != expected:
+        return False, "legacy spill root object changed during inspection"
+    return True, ""
+
+
+def inspect_stray(source: Path, dest: Path) -> dict[str, object]:
+    """Return a fail-closed, non-mutating assessment of the spill root.
+
+    ``clean`` is reported only after the fixed OS-derived source can be
+    inspected.  Permission failures, special files and reparse points remain
+    distinct from absence so the monitor cannot turn collection failure green.
+    """
+    result: dict[str, object] = {
+        "status": "unavailable",
+        "source": str(source),
+        "dest": str(dest),
+        "items": [],
+        "reason": "inspection not completed",
+    }
+    if _same_path(source, dest):
+        result.update(status="same-root", reason="source and destination are identical")
+        return result
+    try:
+        info = source.lstat()
+    except FileNotFoundError:
+        result.update(status="clean", reason="legacy spill root does not exist")
+        return result
+    except OSError as exc:
+        result["reason"] = f"legacy spill root metadata unavailable: {exc}"
+        return result
+    attributes = getattr(info, "st_file_attributes", 0)
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    if stat.S_ISLNK(info.st_mode) or bool(attributes & reparse):
+        result.update(status="unsafe", reason="legacy spill root is a link or reparse point")
+        return result
+    if not stat.S_ISDIR(info.st_mode):
+        result.update(status="unsafe", reason="legacy spill root is not a directory")
+        return result
+    source_identity = _directory_identity(info)
+    safety_error = _migration_safety_error(source, dest)
+    if safety_error:
+        result.update(status="unsafe", reason=safety_error)
+        return result
+    still_bound, reason = _root_still_bound(source, source_identity)
+    if not still_bound:
+        result.update(status="unsafe", reason=reason)
+        return result
+    try:
+        items: list[str] = []
+        with os.scandir(source) as entries:
+            for entry in entries:
+                if len(items) >= 1000:
+                    result.update(
+                        status="unavailable",
+                        reason="legacy spill root exceeds bounded enumeration coverage",
+                    )
+                    return result
+                items.append(entry.name)
+    except OSError as exc:
+        result["reason"] = f"legacy spill root enumeration unavailable: {exc}"
+        return result
+    still_bound, reason = _root_still_bound(source, source_identity)
+    if not still_bound:
+        result.update(status="unsafe", reason=reason)
+        return result
+    result["items"] = items[:1000]
+    if items:
+        result.update(status="stray", reason=f"{len(items)} spill item(s) present")
+    else:
+        result.update(status="clean", reason="legacy spill root is empty")
+    return result
+
+
+def find_stray(source: Path, dest: Path) -> bool:
+    """Compatibility predicate; callers needing health must use inspect_stray."""
+    return inspect_stray(source, dest)["status"] == "stray"
 
 
 def _collision_safe_dest(dest_dir: Path, name: str) -> Path:
@@ -169,37 +264,34 @@ def _collision_safe_dest(dest_dir: Path, name: str) -> Path:
 
 
 def migrate_stray(source: Path, dest: Path, dry_run: bool = False) -> dict:
-    """Move every item from `source` into `dest` (collision-safe). Returns a
-    report dict: {moved: [...], errors: [...], dry_run: bool}. Never overwrites."""
+    """Propose spill moves without performing privileged pathname mutation.
+
+    The former ``shutil.move`` implementation could not bind validation to the
+    subsequently opened objects across every supported platform.  Execution is
+    therefore retired; a reviewed, unelevated, handle-safe external workflow
+    may consume a dry-run proposal.
+    """
     report: dict = {"moved": [], "errors": [], "dry_run": dry_run,
                     "source": str(source), "dest": str(dest)}
-    if source.exists() and source.is_dir() and not _same_path(source, dest):
-        safety_error = _migration_safety_error(source, dest)
-        if safety_error:
-            report["errors"].append(f"unsafe migration refused: {safety_error}")
-            return report
-    if not find_stray(source, dest):
+    assessment = inspect_stray(source, dest)
+    status = str(assessment["status"])
+    if status in {"unsafe", "unavailable"}:
+        report["errors"].append(
+            f"unsafe migration refused: {assessment['reason']}"
+        )
         return report
-    try:
-        dest.mkdir(parents=True, exist_ok=True)
-    except Exception as exc:
-        report["errors"].append(f"cannot create dest {dest}: {exc}")
+    if status != "stray":
         return report
-    for item in list(source.iterdir()):
-        # Recheck immediately before each move. This narrows the opportunity for
-        # an unprivileged writer to swap an item after the initial tree scan.
-        if _tree_has_reparse(item):
-            report["errors"].append(
-                f"{item}: unsafe item appeared during migration; left in place"
-            )
-            continue
+    if not dry_run:
+        report["errors"].append(
+            "automatic storage mutation retired: reviewed unelevated "
+            "handle-safe external execution is required"
+        )
+        return report
+    for name in assessment["items"]:
+        item = source / str(name)
         target = _collision_safe_dest(dest, item.name)
-        try:
-            if not dry_run:
-                shutil.move(str(item), str(target))
-            report["moved"].append({"from": str(item), "to": str(target)})
-        except Exception as exc:
-            report["errors"].append(f"{item}: {exc}")
+        report["moved"].append({"from": str(item), "to": str(target)})
     return report
 
 
@@ -208,10 +300,10 @@ class StorageHygieneModule(BaseModule):
     NAME = "Storage Hygiene Enforcer"
     name = "Storage Hygiene Enforcer"
     description = ("Detects Angerona data spilled to the default C: location and "
-                   "keeps it on the configured data root. Detect+alert by default; "
-                   "opt-in auto-migrate; operator-gated purge.")
+                   "proposes relocation to the configured root. Privileged pathname "
+                   "migration/purge is retired until handle-safe execution is available.")
     category = "Maintenance"
-    version = "1.0.0"
+    version = "1.12.1"
 
     _INTERVAL = 15 * 60.0     # re-check every 15 min
 
@@ -235,34 +327,53 @@ class StorageHygieneModule(BaseModule):
 
     # ── operator-gated destructive purge (never auto-called) ─────────────────
     def purge_stray(self, confirm: bool = False) -> dict:
-        """Delete the residual C: spill directory. Requires confirm=True. This is
-        destructive and is only ever invoked by an explicit operator action."""
-        source = default_c_location()
-        dest = canonical_root()
-        if _same_path(source, dest):
+        """Refuse legacy pathname deletion; retained as an explicit safe API."""
+        try:
+            source = default_c_location()
+            dest = canonical_root()
+        except Exception as exc:
+            return {"ok": False, "error": f"path authority unavailable: {exc}"}
+        assessment = inspect_stray(source, dest)
+        status = str(assessment["status"])
+        if status == "same-root":
             return {"ok": False, "error": "C: location is the canonical root — refusing to purge"}
-        if not source.exists():
+        if status in {"unsafe", "unavailable"}:
+            return {
+                "ok": False,
+                "error": f"unsafe purge refused: {assessment['reason']}",
+            }
+        if status == "clean":
             return {"ok": True, "purged": False, "note": "nothing to purge"}
         if not confirm:
             return {"ok": False, "error": "purge requires confirm=True (operator confirmation)"}
-        safety_error = _migration_safety_error(source, dest)
-        if safety_error:
-            return {"ok": False, "error": f"unsafe purge refused: {safety_error}"}
-        try:
-            shutil.rmtree(source)
-            self.emit(f"Storage hygiene: operator-confirmed purge of stray C: data at {source}.",
-                      Severity.MEDIUM, purged=str(source))
-            return {"ok": True, "purged": True, "path": str(source)}
-        except Exception as exc:
-            self.last_error = str(exc)
-            return {"ok": False, "error": str(exc)}
+        return {
+            "ok": False,
+            "error": (
+                "unsafe purge retired: reviewed unelevated handle-safe external "
+                "execution is required"
+            ),
+            "path": str(source),
+        }
 
     # ── one hygiene pass ─────────────────────────────────────────────────────
     def _pass(self) -> None:
-        source = default_c_location()
-        dest = canonical_root()
+        try:
+            source = default_c_location()
+            dest = canonical_root()
+        except Exception as exc:
+            self.last_error = str(exc)
+            self.set_health(30, f"storage path authority unavailable: {exc}")
+            self.emit(
+                f"Storage hygiene cannot resolve an OS-authoritative spill path: {exc}",
+                Severity.HIGH,
+                disposition="health",
+                collection_status="unavailable",
+            )
+            return
 
-        if _same_path(source, dest):
+        assessment = inspect_stray(source, dest)
+        status = str(assessment["status"])
+        if status == "same-root":
             # An explicit legacy override points back to C:; never auto-delete.
             if not self._advised_unset:
                 self._advised_unset = True
@@ -272,31 +383,46 @@ class StorageHygieneModule(BaseModule):
             self.set_health(70, "data root explicitly points to legacy C: location")
             return
 
-        if not find_stray(source, dest):
+        if status in {"unsafe", "unavailable"}:
+            reason = str(assessment["reason"])
+            self.emit(
+                f"Storage hygiene inspection is {status}: {reason}",
+                Severity.HIGH,
+                disposition="health",
+                collection_status=status,
+                source=str(source),
+                dest=str(dest),
+            )
+            self.set_health(30, f"spill inspection {status}: {reason}")
+            return
+
+        if status == "clean":
             self.set_health(100, "no stray C: data — clean")
             return
 
         # There IS stray data on C: while the configured root is elsewhere.
         if self._automigrate_enabled():
             report = migrate_stray(source, dest)
-            moved = len(report["moved"])
-            errs = len(report["errors"])
-            self._migrations += moved
-            sev = Severity.MEDIUM if errs else Severity.INFO
-            self.emit(f"Storage hygiene: migrated {moved} stray item(s) from {source} to the "
-                      f"configured root{f' ({errs} error(s))' if errs else ''}.",
-                      sev, moved=moved, errors=report["errors"][:5], dest=str(dest))
-            self.set_health(100 if not errs else 70,
-                            f"migrated {moved} item(s)" + (f", {errs} error(s)" if errs else ""))
+            proposed = len(assessment["items"])
+            self.emit(
+                "Storage hygiene automatic mutation is retired; "
+                f"{proposed} item(s) require a reviewed unelevated handle-safe workflow.",
+                Severity.MEDIUM,
+                proposed=proposed,
+                errors=report["errors"][:5],
+                source=str(source),
+                dest=str(dest),
+            )
+            self.set_health(60, f"{proposed} stray item(s); automatic mutation retired")
         else:
             # Detect + alert only (safe default).
             try:
-                items = [p.name for p in source.iterdir()]
-            except Exception:
+                items = list(assessment["items"])
+            except Exception:  # pragma: no cover - bounded engine output
                 items = []
             self.emit(f"Storage hygiene: {len(items)} Angerona item(s) found on C: at {source} "
-                      f"while the configured root is {dest}. Set ANGERONA_STORAGE_AUTOMIGRATE=1 to "
-                      f"auto-relocate, or call purge_stray(confirm=True) after review.",
+                      f"while the configured root is {dest}. Generate a dry-run relocation "
+                      "proposal and execute it only through a reviewed unelevated handle-safe workflow.",
                       Severity.MEDIUM, stray_items=items[:20], source=str(source), dest=str(dest))
             self.set_health(75, f"{len(items)} stray C: item(s) awaiting migration/review")
 
@@ -313,8 +439,7 @@ class StorageHygieneModule(BaseModule):
             self.sleep(self._INTERVAL)
 
     def self_test(self) -> tuple[bool, str]:
-        """Offline, sandboxed: verify stray detection, collision-safe migration,
-        and same-path no-op — without touching any real C:/data location."""
+        """Verify detection/proposal and that execution/deletion remain retired."""
         import tempfile
         base = Path(tempfile.mkdtemp(prefix="shyg_selftest_"))
         try:
@@ -333,19 +458,19 @@ class StorageHygieneModule(BaseModule):
             dry_ok = len(dry["moved"]) == 2 and src.exists() and any(src.iterdir())
 
             report = migrate_stray(src, dst)
-            moved_ok = len(report["moved"]) == 2 and not report["errors"]
-            # original dest file preserved (not overwritten), spill copy present
+            retired = report["moved"] == [] and bool(report["errors"])
+            # Source/destination remain byte-for-byte untouched.
             preserved = (dst / "cache.log").read_text(encoding="utf-8") == "existing"
-            spill_present = any(p.name.startswith("cache.spilled-") for p in dst.iterdir())
-            src_drained = not any(src.iterdir())
+            spill_present = (src / "cache.log").read_text(encoding="utf-8") == "stray"
+            src_preserved = len(list(src.iterdir())) == 2
 
             noop = migrate_stray(dst, dst)          # same path → no action
             noop_ok = noop["moved"] == []
 
-            ok = all([detected, dry_ok, moved_ok, preserved, spill_present, src_drained, noop_ok])
-            return (ok, "detect + collision-safe migrate + same-path no-op verified (sandboxed)"
-                    if ok else f"failed: detected={detected} dry_ok={dry_ok} moved_ok={moved_ok} "
-                               f"preserved={preserved} spill={spill_present} drained={src_drained} "
+            ok = all([detected, dry_ok, retired, preserved, spill_present, src_preserved, noop_ok])
+            return (ok, "detect + dry-run proposal + retired mutation verified (sandboxed)"
+                    if ok else f"failed: detected={detected} dry_ok={dry_ok} retired={retired} "
+                               f"preserved={preserved} spill={spill_present} src={src_preserved} "
                                f"noop_ok={noop_ok}")
         finally:
             shutil.rmtree(base, ignore_errors=True)

@@ -65,7 +65,7 @@ class ReleaseTransparencyGuardModule(BaseModule):
         "payload manifest/catalog, SBOM, provenance, builder, and rollback sequence."
     )
     category = "Supply Chain"
-    version = "1.1.0"
+    version = "1.12.1"
     supported_platforms = frozenset(SUPPORTED_PLATFORMS)
     capability_mode = "observe"
     platform_requirements = (

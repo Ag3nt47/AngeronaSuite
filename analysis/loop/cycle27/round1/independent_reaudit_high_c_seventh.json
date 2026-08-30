@@ -1,0 +1,64 @@
+[
+  {
+    "id": "C27-R1-C03",
+    "title": "Fair ransomware selection exceeds its deadline and split state/witness commits cannot recover",
+    "status": "REOPENED_PARTIAL",
+    "severity": "MEDIUM",
+    "original_scope_status": "RESOLVED",
+    "component": "src/angerona/modules/ransomware_heuristics.py:745-751,851-895,1691-1719,1735-1736,1812-1817,1946-1958",
+    "evidence": [
+      "A high-entropy ZIP-magic polyglot remained a candidate and emitted a HIGH entropy event on both its new and automatic-unchanged cycles.",
+      "A fixed keyed reservoir selected the exact same set from forward and reverse adversarial enumeration orders; the prior fixed-prefix bias is closed.",
+      "With a 250 ms declared budget and an inert stream advancing monotonic time by 100 ms per entry, the reservoir consumed all 100 entries before the next deadline check and reported at least 10 seconds elapsed.",
+      "An interruption after authenticated state replacement but before witness replacement left authentic adjacent generations that every restart refused as a rollback; no pending pair-transition repair exists.",
+      "Wider rollback, deletion, range, byte-budget, ancestry, transition, and truthful-health regressions passed."
+    ],
+    "controls_held": [
+      "Suffix, magic, and unchanged observations never grant entropy exclusion authority.",
+      "Reservoir choice is independent of filesystem enumeration order and remains O(limit) in memory.",
+      "Exact object/ancestry holds, full bounded reads, representative-range disclosure, and transition alerts remain intact.",
+      "Incomplete scans and local-only freshness remain explicitly below full health."
+    ],
+    "recommendation": "Check deadline and stop state during metadata enumeration and persist an authenticated handle-relative continuation or bounded segmented reservoir so every tick has a hard liveness bound without restoring prefix starvation. Add an authenticated one-step state/witness transition journal and repair only exact adjacent generations; refuse gaps, forks, deletions, and ambiguous pairs.",
+    "attack_results": {
+      "suffix_magic_unchanged_exclusion": "CAUGHT_TWO_HIGH_ENTROPY_EVENTS",
+      "adversarial_directory_order": "HELD_IDENTICAL_SELECTION",
+      "full_stream_time_budget": "BYPASSED_ALL_100_ENTRIES_CONSUMED_AFTER_DEADLINE",
+      "state_then_witness_crash": "FAIL_CLOSED_PERMANENT_RECOVERY_REQUIRED",
+      "prior_receipt_content_and_ancestry_regressions": "HELD_OR_HONESTLY_INCOMPLETE"
+    }
+  },
+  {
+    "id": "C27-R1-C13",
+    "title": "Smart Deception transition outbox does not span first enrollment or local metadata crash windows",
+    "status": "REOPENED_PARTIAL",
+    "severity": "MEDIUM",
+    "original_scope_status": "RESOLVED",
+    "component": "src/angerona/modules/smart_deception.py:1157-1186,1644-1764,1804-1910; src/angerona/core/module_manager.py:190-208; src/angerona/core/personal_sentinel_authority.py:65-67",
+    "evidence": [
+      "Bundled-only ModuleManager binding, application/headless provider parameters, and the exact default smart-deception-custody domain are present.",
+      "Normal local-ahead replay, committed-but-response-lost reconciliation, remote fork refusal, and Windows second-writer exclusion passed.",
+      "A first-enrollment failure before outbox creation left SQLite, local head, and local witness present while remote and outbox were absent; restart refused migration-required and could not finish exact genesis enrollment.",
+      "A failure immediately after SQLite COMMIT left an authenticated event and pending transition with the remote at the exact predecessor; restart refused ledger/head mismatch before consulting the outbox.",
+      "The analogous head-new/witness-old state is rejected by the same pre-reconciliation ordering. All outcomes remain fail-closed and do not claim WORM custody."
+    ],
+    "controls_held": [
+      "Authenticated byte-bounded single-link outbox and exact predecessor/new-state CAS validation.",
+      "Transient authority outage replay, lost-response readback, installation/fork/gap refusal, and OS writer lease.",
+      "Required ACL proof, terminal capacity reserve, durable loss/topology state, and typed captured_unverified results.",
+      "Independent freshness is capped at health 95 because evidence bytes remain local and non-WORM."
+    ],
+    "recommendation": "Persist an authenticated genesis intent before first local enrollment and reconcile the outbox before demanding ledger/head/witness equality. Under the same writer lease, accept only exact finite adjacent states (no commit, SQLite-new/head-old, head-new/witness-old, fully local-new/remote-old, or remote-new response lost), repairing or advancing only when every authenticated installation/domain/sequence/digest/HMAC/predecessor field matches; keep all gaps and ambiguity fail-closed.",
+    "attack_results": {
+      "production_provider_injection": "HELD_BUNDLED_ONLY",
+      "default_authority_domain": "HELD",
+      "transient_local_ahead_and_lost_response": "RECOVERED_EXACT_CAS",
+      "remote_fork_gap": "CAUGHT",
+      "windows_concurrent_writer": "CAUGHT",
+      "first_enrollment_pre_outbox_crash": "FAIL_CLOSED_PERMANENT_RECOVERY_REQUIRED",
+      "sqlite_commit_pre_head_crash": "FAIL_CLOSED_PERMANENT_RECOVERY_REQUIRED",
+      "post_final_local_mutation_boundary": "CAPTURED_UNVERIFIED_AND_NON_WORM_DISCLOSED"
+    },
+    "assurance_boundary": "A separately administered authority proves monotonic rollback freshness, not local byte immutability. The new residuals are recoverability defects; they do not change the disclosed same-host administrator or remote-WORM boundary."
+  }
+]

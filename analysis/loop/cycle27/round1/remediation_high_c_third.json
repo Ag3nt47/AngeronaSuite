@@ -1,0 +1,43 @@
+[
+  {
+    "id": "C27-R1-C03",
+    "verdict": "REMEDIATED",
+    "severity_before": "MEDIUM",
+    "component": "src/angerona/modules/ransomware_heuristics.py:697-829,1143-1217",
+    "changes": [
+      "Hold every reviewed no-follow ancestor through decision and publication",
+      "Re-read the exact held file generation and compare sample length and SHA-256",
+      "Compute entropy only from the revalidated current held bytes",
+      "Make every stale ancestry/content/identity receipt coverage- and health-visible"
+    ],
+    "hostile_regressions": [
+      "same inode low-to-high overwrite with restored size and mtime",
+      "same inode high-to-low overwrite with restored size and mtime",
+      "nested junction to same-file-ID hard link in false-negative direction",
+      "nested junction to same-file-ID hard link in false-positive direction"
+    ],
+    "result": "No stale sample was scored or published; every reproduced mismatch returned an error and prevented complete/100 coverage."
+  },
+  {
+    "id": "C27-R1-C13",
+    "verdict": "REMEDIATED",
+    "severity_before": "MEDIUM",
+    "component": "src/angerona/modules/smart_deception.py:680-958,986-1174,1339-1430,1665-1700",
+    "changes": [
+      "Protected-key HMAC-chained append-only custody ledger and separate authenticated high-water",
+      "Exact inventory reconciliation against expected name, root/file identity, size, and digest",
+      "Fail-visible missing, injected, substituted, rolled-back, retention-evicted, and pending-crash evidence",
+      "Capacity refusal retains unresolved legitimate evidence instead of evicting it",
+      "Final source identity/link observations and conservative late-alias degradation",
+      "Hard 4096-event ledger bound with fail-closed saturation"
+    ],
+    "hostile_regressions": [
+      "delete genuine evidence then inject self-consistent replacement",
+      "inject newer self-consistent records under retention pressure",
+      "create source hard link after evidence copy but before retirement",
+      "restart-style pending object recovery",
+      "ledger rollback against the authenticated high-water"
+    ],
+    "result": "Foreign or missing evidence cannot establish a healthy baseline or evict genuine custody; late aliases, crash recovery, intentional eviction, and rollback remain explicitly below 100 health."
+  }
+]

@@ -212,23 +212,17 @@ def record_selftest_failure(name: str, detail: str, component: str = "core") -> 
 def self_test() -> tuple[bool, str]:
     """Verify each dump writes atomically and reads back with the right shape.
     Runs in an isolated temp diagnostics dir so it never pollutes the real one."""
-    import tempfile
-    _prev = os.environ.get("ANGERONA_DIAG_DIR")
-    os.environ["ANGERONA_DIAG_DIR"] = tempfile.mkdtemp(prefix="diag_selftest_")
-    try:
-        return _self_test_body()
-    finally:
-        try:
-            import shutil
-            shutil.rmtree(os.environ["ANGERONA_DIAG_DIR"], ignore_errors=True)
-        finally:
-            if _prev is None:
-                os.environ.pop("ANGERONA_DIAG_DIR", None)
-            else:
-                os.environ["ANGERONA_DIAG_DIR"] = _prev
+    from angerona.resilience._selftest_environment import run_isolated_selftest
+
+    return run_isolated_selftest(
+        "diagnostics",
+        "diag_selftest_",
+        lambda root: {"ANGERONA_DIAG_DIR": str(root)},
+        timeout=15.0,
+    )
 
 
-def _self_test_body() -> tuple[bool, str]:
+def _isolated_self_test() -> tuple[bool, str]:
     comp = "selftest"
     s = write_status(comp, "testing", {"marker": "unit"})
     td = write_thread_dump(comp)

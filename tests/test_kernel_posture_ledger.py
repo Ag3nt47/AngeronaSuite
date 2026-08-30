@@ -28,6 +28,13 @@ def _healthy(driver_hash="a"):
         "code_integrity_log": True,
         "driver_count": 200,
         "driver_set_sha256": driver_hash,
+        "driver_collection_status": "complete",
+        "driver_namespace_total": 250,
+        "driver_enumerated": 250,
+        "driver_skipped": 0,
+        "driver_truncated": False,
+        "driver_collection_errors": [],
+        "driver_collected_at": 1000.0,
     }
 
 

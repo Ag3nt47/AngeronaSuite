@@ -96,6 +96,50 @@ def test_setup_validation_fails_closed_for_incomplete_connectors() -> None:
     assert any("Signal bridge" in error for error in validate_setup(values))
 
 
+def test_setup_exposes_and_validates_optional_signal_cli_trust_pins() -> None:
+    mobile = next(step for step in STEPS if step.title == "Signal mobile bridge")
+    fields_by_key = {field.key: field for field in mobile.fields}
+
+    digest_field = fields_by_key["mobile_signal_cli_sha256"]
+    publisher_field = fields_by_key["mobile_signal_cli_publisher"]
+    assert digest_field.kind == publisher_field.kind == "text"
+    assert digest_field.maximum == 64
+    assert publisher_field.maximum == 512
+
+    values = _default_values()
+    assert values["mobile_signal_cli_sha256"] == ""
+    assert values["mobile_signal_cli_publisher"] == ""
+    assert validate_setup(values) == []
+
+    values["mobile_signal_cli_sha256"] = "AB" * 32
+    values["mobile_signal_cli_publisher"] = "  CN=Approved Signal CLI  "
+    normalized = normalize_setup_values(values)
+    assert normalized["mobile_signal_cli_sha256"] == "ab" * 32
+    assert normalized["mobile_signal_cli_publisher"] == "CN=Approved Signal CLI"
+    assert validate_setup(values) == []
+
+    values["mobile_signal_cli_sha256"] = "not-a-digest"
+    assert any("SHA-256 pin" in error for error in validate_setup(values))
+
+
+def test_enabled_signal_bridge_requires_both_executable_trust_pins() -> None:
+    values = _default_values()
+    values.update({
+        "mobile_enabled": True,
+        "mobile_signal_cli": "C:/Tools/signal-cli.exe",
+        "mobile_host_number": "+13035550100",
+        "mobile_dest_number": "+13035550101",
+    })
+
+    errors = validate_setup(values)
+    assert any("signal-cli SHA-256 pin" in error for error in errors)
+    assert any("exact Authenticode publisher" in error for error in errors)
+
+    values["mobile_signal_cli_sha256"] = "A" * 64
+    values["mobile_signal_cli_publisher"] = "CN=Approved Signal CLI"
+    assert validate_setup(values) == []
+
+
 def test_setup_requires_protected_credentials_for_enabled_connectors() -> None:
     values = _default_values()
     values.update({

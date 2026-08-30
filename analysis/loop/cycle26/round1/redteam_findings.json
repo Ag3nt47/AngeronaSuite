@@ -1,0 +1,65 @@
+{
+  "cycle": 26,
+  "round": 1,
+  "date": "2026-08-28",
+  "scope": "defensive-only theoretical hardening",
+  "status": "CONFIRMED_PENDING_REMEDIATION",
+  "findings": [
+    {
+      "id": "C26-R1-A01",
+      "severity": "HIGH",
+      "title": "Privileged source install executes candidate-controlled checkout before an authenticated release boundary",
+      "component": "Install-Angerona.bat:38-124; start-angerona.bat:122-267; run.bat:1-5; README.md:197-203; docs/enterprise/SUPPORTED_EDITIONS.md:8",
+      "status": "FIXED",
+      "required_fix": "Remove the source checkout as privileged first-install authority; permit privileged first install only through the OS-validated signed MSIX release path and keep development setup non-elevated."
+    },
+    {
+      "id": "C26-R1-A02",
+      "severity": "HIGH",
+      "title": "Recursive installer ACL and owner changes can traverse descendant reparse points",
+      "component": "Install-Angerona.bat:183-196",
+      "status": "FIXED",
+      "required_fix": "Remove the unsafe privileged source-tree hardening path; no recursive ACL mutation may follow a checkout-controlled link or conceal partial failure."
+    },
+    {
+      "id": "C26-R1-A03",
+      "severity": "HIGH",
+      "title": "Elevated source installer accepts and executes user-writable per-user Python runtimes",
+      "component": "Install-Angerona.bat:66-124,212-235; start-angerona.bat:153-210,277-292",
+      "status": "FIXED",
+      "required_fix": "Never execute a user-writable interpreter at high integrity; route privileged installation through the signed MSIX boundary and keep source/developer execution unelevated."
+    },
+    {
+      "id": "C26-R1-A04",
+      "severity": "MEDIUM",
+      "title": "Threshold release signer jobs execute repository-controlled code while exportable signing keys are present",
+      "component": ".github/workflows/release.yml:327-451",
+      "status": "FIXED",
+      "required_fix": "Move signing behind immutable independently maintained code or a non-exportable HSM/KMS boundary that accepts only a canonical statement digest; candidate repository code must not share a process or workspace with signer credentials."
+    },
+    {
+      "id": "C26-R1-B01",
+      "severity": "MEDIUM",
+      "title": "Concurrent resilience self-tests can delete live diagnostics and corrupt environment routing",
+      "component": "src/angerona/resilience/diagnostics.py:216-228; src/angerona/resilience/supervisor.py:861-950",
+      "status": "FIXED",
+      "required_fix": "Capture and validate exact temporary roots, restore every prior environment value exactly, and serialize any unavoidable process-environment mutation with deterministic concurrency tests."
+    },
+    {
+      "id": "C26-R1-B02",
+      "severity": "MEDIUM",
+      "title": "Security Scan Center path validation can be bypassed by file, directory, or root link/reparse swaps",
+      "component": "src/angerona/core/security_scan_center.py:441-490,585-615",
+      "status": "FIXED",
+      "required_fix": "Bind validation and bounded reads to no-follow handles, preserve selected-root and volume identity, and never reopen a validated target by pathname for YARA."
+    },
+    {
+      "id": "C26-R1-B03",
+      "severity": "MEDIUM",
+      "title": "Combined Scan Center runs can display Complete while the requested Defender component failed",
+      "component": "src/angerona/gui/scan_center.py:371-431,512-567",
+      "status": "FIXED",
+      "required_fix": "Aggregate every requested component status and bounded error; report Complete only when all requested scanners completed, preserving partial and cancellation states."
+    }
+  ]
+}

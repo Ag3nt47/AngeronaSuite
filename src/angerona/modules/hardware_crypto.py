@@ -106,7 +106,7 @@ class HardwareCrypto(BaseModule):
     description = ("Verifies OS-protected IPC key storage and DPAPI primitives; "
                    "TPM database-key sealing remains an explicit unsupported outline.")
     category = "Integrity"
-    version = "1.1.0"
+    version = "1.12.1"
 
     _ENTROPY = b"Angerona-HWID-v1"   # app-specific secondary entropy for DPAPI
 
@@ -172,6 +172,25 @@ class HardwareCrypto(BaseModule):
         # TPM2_RH_OWNER, seal db_key under a PCR policy, and persist the blob.
         return False, "TPM present; sealing routine is an outline pending hardware review"
 
+    def _set_combined_health(
+        self,
+        ipc_ok: bool,
+        ipc_note: str,
+        tpm_ok: bool,
+        tpm_note: str,
+    ) -> None:
+        if not ipc_ok:
+            self.set_health(40, f"IPC protected-store check failed: {ipc_note}")
+            return
+        if not tpm_ok:
+            self.set_health(
+                75,
+                f"IPC protected storage verified, but database-key TPM binding "
+                f"is not active: {tpm_note}",
+            )
+            return
+        self.set_health(100, f"{ipc_note}; {tpm_note}")
+
     # ── Daemon loop ───────────────────────────────────────────────────────────
     def run(self) -> None:
         if not _IS_WINDOWS:
@@ -183,20 +202,19 @@ class HardwareCrypto(BaseModule):
 
         # One-shot protected-store verification, then periodic re-check.
         ok, note = self.wrap_ipc_key()
+        tpm_ok, tpm_note = self.bind_db_key_to_tpm(b"")   # probe availability only
+        self._set_combined_health(ok, note, tpm_ok, tpm_note)
         if ok:
-            self.set_health(100, note)
             self.emit(f"HWID: {note}.", Severity.INFO)
         else:
-            self.set_health(70, note)
             self.emit(f"HWID: IPC key not yet hardware-wrapped — {note}.", Severity.INFO)
-
-        tpm_ok, tpm_note = self.bind_db_key_to_tpm(b"")   # probe availability only
         self.emit(f"HWID TPM status: {tpm_note}.", Severity.INFO)
 
         while not self.stopping:
             self.sleep(300)
             ok, note = self.wrap_ipc_key()
-            self.set_health(100 if ok else 70, note)
+            tpm_ok, tpm_note = self.bind_db_key_to_tpm(b"")
+            self._set_combined_health(ok, note, tpm_ok, tpm_note)
 
     def self_test(self) -> tuple[bool, str]:
         """Prove a DPAPI protect→unprotect round-trip on a throwaway secret."""

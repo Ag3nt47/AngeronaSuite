@@ -1,0 +1,20 @@
+[
+  {
+    "id": "C27-R1-C03",
+    "verdict": "REOPENED",
+    "residual_severity": "MEDIUM",
+    "component": "src/angerona/modules/ransomware_heuristics.py:69-72,783-820,1015-1030,1086-1124",
+    "evidence": "At the real scan/evaluate boundary, bytes after the public first-64-KiB sample of a 4-MiB file were replaced on the same inode, size and nanosecond mtime were restored, and current whole-file entropy reached 7.9770 above the 7.9 threshold. The fixed prefix receipt remained valid, no event was emitted, and complete=true/health=100. A wholly random file with a restored mtime older than the 120-second admission window was visited but likewise produced no candidate, skip, error, or health deduction.",
+    "existing_mitigations": "The exact selected prefix, file identity, root identity, size, modification generation, and every reviewed ancestor are revalidated and held through publication. Prefix mutation, root/directory/junction substitution, final-object replacement, sampled-length mismatch, and a pre-existing writable memory map are rejected or fail-visible; traversal and state remain bounded.",
+    "recommendation": "Use identity-bound durable Windows change evidence rather than mutable mtime as sole admission authority. Authenticate bounded start/middle/end and identity-keyed unpredictable ranges (or the full bounded file), disclose incomplete content coverage below 100, and add header-preserving/strided encryption plus pre-discovery timestomp regressions."
+  },
+  {
+    "id": "C27-R1-C13",
+    "verdict": "REOPENED",
+    "residual_severity": "MEDIUM",
+    "component": "src/angerona/modules/smart_deception.py:271-276,686-745,839-924,1003-1118,1152-1210,1374-1393,1653-1686",
+    "evidence": "Authenticated commit/evidence checks work, but source-alias residue, pending-crash loss, and authenticated eviction degradation all reset to health 100 after restart because only the active evidence map is reconstructed. Windows allowed an evidence hard link while the held audit descriptor was open; creating it immediately after the final fstat let the audit return true and the alias mutate evidence while health stayed 100 until the next 300-second audit. Deleting evidence+key+DB+head re-enrolled sequence zero at health 100, and paired DB/head rollback accepted sequence one after sequence two. A valid 4096-event ledger also refreshed at health 100 with zero remaining capture capacity; the next incident was deleted with no evidence and only then downgraded health.",
+    "existing_mitigations": "Isolated row/HMAC/sequence/ledger rollback, missing/foreign/substituted evidence, persistent evidence aliases or digest drift, root replacement/reparse, and unsafe pending objects fail closed. Evidence is copied into a distinct bounded, fsynced, digest-verified inode; ordinary retention and dedup state are bounded.",
+    "recommendation": "Persist and authenticate every continuity-loss, pending cleanup, alias uncertainty, refused capture, and eviction outcome and reconstruct a latched degraded state after restart. Enforce a namespace that denies hard-link creation or retain a conservative durable degradation where race-free topology proof is unavailable. Separate local authenticity from externally monotonic freshness, no-follow/object-bind the custody bundle, refuse health 100 on missing/re-enrolled authority, and add preflight capacity plus authenticated checkpoint/rollover semantics before source retirement."
+  }
+]

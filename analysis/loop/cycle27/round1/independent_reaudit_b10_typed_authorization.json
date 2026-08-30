@@ -1,0 +1,89 @@
+{
+  "finding": "C27-R1-B10",
+  "title": "Mobile typed authorization holds, but mutation completion and signed-receipt truth are not atomic",
+  "status": "REOPENED_PARTIAL",
+  "severity": "MEDIUM",
+  "date": "2026-08-28",
+  "scope": "src/angerona/modules/mobile_bridge.py typed state-change authorization and its Combat/EventBus completion boundaries",
+  "unauthenticated_remote_mutation_found": false,
+  "controls_held": [
+    "All seven mutator forms rejected missing, stale, future-dated, and replayed transport identities in a 28-case independent matrix.",
+    "Admin nonce sender binding, monotonic expiry, first-use consumption, PIN verification, and five-attempt/900-second lockout held.",
+    "Admin nonces remain inside the ECO_ON/ECO_OFF/LOCKDOWN domain and cannot authorize alert-token commands.",
+    "Alert tokens are 256-bit random values and held their stored sender, action-set, expiry, and single-use boundaries.",
+    "KILL/SUSPEND/ROLLBACK share the typed alert authorization gate; the downstream exact source/target and consumer receipt checks remain present.",
+    "With a stable armed EventBus, mobile change receipt events carry verifiable HMAC signatures."
+  ],
+  "attack_results": {
+    "mutator_transport_matrix": "CAUGHT_28_OF_28",
+    "admin_sender_expiry_reuse": "CAUGHT",
+    "admin_action_confusion": "ADMIN_DOMAIN_SCOPED_NO_PRIVILEGE_ESCALATION_REPRODUCED",
+    "pin_bruteforce_lockout": "CAUGHT_AFTER_5_FAILURES_FOR_900_SECONDS",
+    "alert_token_entropy": "HELD_256_UNIQUE_256_BIT_TOKENS",
+    "alert_sender_action_expiry_single_use": "CAUGHT",
+    "eco_apply_and_rollback_failure": "REPRODUCED_SIGNED_REJECTION_WITH_MODULE_AND_GOVERNOR_DRIFT",
+    "bus_authority_loss_after_precheck": "REPRODUCED_UNSIGNED_APPLIED_RECEIPT_DESCRIBED_AS_SIGNED",
+    "combat_completion_after_bridge_timeout": "REPRODUCED_LIVE_DIRECTIVE_AFTER_SIGNED_NO_HOST_ACTION_REJECTION"
+  },
+  "residuals": [
+    {
+      "id": "C27-R1-B10-R1",
+      "title": "ECO rollback can fail while a signed receipt claims no cadence change",
+      "severity": "MEDIUM",
+      "component": "src/angerona/modules/mobile_bridge.py:1539-1592",
+      "evidence": "A setter mutated to 6.0 and raised; its compensating setter also raised. The HMAC-valid receipt said rejected/no change, the target remained 6.0, and a governor initially at 4.0 was changed to the hard-coded fallback 1.0 because prior_governor is captured only after module apply succeeds.",
+      "impact": "Monitoring/resource cadence can be partially changed while authoritative operator evidence reports the opposite.",
+      "recommendation": "Snapshot before mutation, serialize the transition, postverify every target, verify every compensation, and emit an exact signed partial/rollback_failed terminal state with red health whenever atomic restoration cannot be proven."
+    },
+    {
+      "id": "C27-R1-B10-R2",
+      "title": "A timed-out Combat directive can mutate the host after a signed rejection",
+      "severity": "MEDIUM",
+      "component": "src/angerona/modules/mobile_bridge.py:1777-1801,1821-1833,1864-1893; src/angerona/modules/adversary_combat.py:1168-1224,1500-1607",
+      "evidence": "The bridge publishes the live directive, waits three seconds, then records rejected/no action without cancelling or changing the admitted request. A later exact verified Combat row still satisfies _receipt_ids.",
+      "impact": "LOCKDOWN, KILL, or SUSPEND can occur after the operator was told no host/process action occurred.",
+      "recommendation": "Use a durable request-ID state machine with authenticated admission and terminal receipts. Report timeout as PENDING and reconcile exactly once; cancellation must be a pre-mutation compare-and-set, never an inference from timeout."
+    },
+    {
+      "id": "C27-R1-B10-R3",
+      "title": "Receipt authority loss between authorization and publication is not detected",
+      "severity": "LOW",
+      "component": "src/angerona/modules/mobile_bridge.py:1306-1345,1347-1373,1536-1940; src/angerona/core/module_base.py:718-720; src/angerona/core/eventbus.py:250-263,301-305",
+      "evidence": "Inert mid-transaction authority loss allowed ECO to apply and produced an empty-HMAC mobile_change_receipt while the response text called its random ID a signed receipt.",
+      "impact": "An in-process integrity fault can remove authoritative audit evidence without changing the operator-facing claim.",
+      "recommendation": "Commit and reverify the exact receipt under a stable authority epoch before calling it signed; compensate reversible operations on failure and preserve irreversible operations as PENDING until their durable consumer receipt reconciles."
+    }
+  ],
+  "assurance_boundary": "No unauthenticated remote action path was reproduced. The remaining issues occur after a valid authorization or an in-process bus-integrity fault and affect atomicity, late completion, and evidence truthfulness.",
+  "dedicated_test": "tests/test_cycle27_b10_independent_reattack.py",
+  "focused_validation": [
+    {
+      "command": "python -m pytest -q tests/test_cycle27_b10_independent_reattack.py",
+      "result": "33 passed"
+    },
+    {
+      "command": "python -m pytest -q tests/test_cycle29_mobile_typed_authorization.py tests/test_soar_mobile_response_boundaries.py tests/test_adversary_combat_boundaries.py",
+      "result": "23 passed"
+    },
+    {
+      "command": "wider mobile/Combat compatibility set",
+      "result": "75 passed"
+    },
+    {
+      "command": "python -m py_compile (Mobile Bridge, Combat, EventBus, BaseModule, reattack test)",
+      "result": "passed"
+    },
+    {
+      "command": "python -m ruff check src/angerona/modules/mobile_bridge.py tests/test_cycle27_b10_independent_reattack.py",
+      "result": "passed"
+    },
+    {
+      "command": "MobileResponseBridge().self_test()",
+      "result": "passed: disabled (opt-in)"
+    },
+    {
+      "command": "JSON parse and targeted git diff --check",
+      "result": "passed"
+    }
+  ]
+}

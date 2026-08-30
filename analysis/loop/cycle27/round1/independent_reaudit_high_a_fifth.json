@@ -1,0 +1,70 @@
+[
+  {
+    "original_id": "C27-R1-A01",
+    "verdict": "REOPENED_PARTIAL",
+    "residual_severity": "MEDIUM",
+    "components": [
+      "src/angerona/modules/adversary_combat.py:826",
+      "src/angerona/modules/adversary_combat.py:1513-1535",
+      "src/angerona/modules/adversary_combat.py:1649-1715",
+      "src/angerona/modules/adversary_combat.py:1789-1798",
+      "src/angerona/modules/adversary_combat.py:1909-2003"
+    ],
+    "controls_verified": [
+      "Paired journal and protected-anchor deletion or rollback is rejected while the schema-2 signing-key witness survives.",
+      "An older copied witness, journal-key substitution, and a malformed but correctly HMACed witness all fail closed at health 0.",
+      "An interruption before protected-anchor advance or before witness advance leaves a detectable mismatch and restarts blocked.",
+      "Complete terminal schema validation, selected disposition/reason binding, process-monotonic expiry, restart challenge invalidation, and one-time consumption remain effective."
+    ],
+    "residuals": [
+      {
+        "severity": "MEDIUM",
+        "title": "Replayable schema-1 migration overwrites the newer recovery witness",
+        "evidence": "After an uncertain irreversible intent/orphan advanced schema-2 state, restoring a copied HMAC-valid schema-1 anchor plus its matching empty journal while leaving the advanced witness untouched made migration overwrite that witness. Reconcile returned true with mutation_blocked=false, pending={}, and no journal error."
+      },
+      {
+        "severity": "LOW",
+        "title": "Cross-instance journal writers can both report success over a duplicate sequence",
+        "evidence": "Two instances synchronized after reading the same empty tail both returned successfully after appending different sequence-1 intents. Restart rejected line 2, blocked mutation, and reported health 0."
+      },
+      {
+        "severity": "LOW",
+        "title": "The action journal follows a planted hard link",
+        "evidence": "A two-link receipt path was accepted and _journal_intent appended 620 bytes of signed JSON to the unrelated linked temporary file. The witness path's single-link/no-reparse custody is not applied to the journal."
+      }
+    ],
+    "architectural_boundary": "Restoring journal, protected anchor, and recovery witness together while retaining the stable signing key is accepted. This disclosed all-local-state rollback cannot be solved by another same-host HMAC and requires TPM monotonic state or an external append-only witness.",
+    "exploitability_boundary": "The schema replay requires a copied authentic pre-upgrade anchor/journal snapshot and privileged restore access to protected local state, but no current signing key, witness edit, HMAC forgery, or human recovery decision. The writer and hard-link residuals require a duplicate owner or state-root write access and fail closed on restart, which limits them to LOW.",
+    "recommendation": "Reject schema-1 anchors whenever a newer witness or upgrade marker exists; bind a monotonic minimum-schema floor outside the rollback set or require explicit recovery. Serialize journal/anchor/witness transactions with a state-root OS lease and final reread. Use descriptor-pinned, no-follow, single-link regular-file custody for journal reads and appends."
+  },
+  {
+    "original_id": "C27-R1-A16",
+    "verdict": "REOPENED_PARTIAL",
+    "residual_severity": "HIGH",
+    "components": [
+      "src/angerona/modules/etw_listener.py:147-240",
+      "src/angerona/modules/etw_listener.py:509-763",
+      "src/angerona/modules/etw_listener.py:940-1579",
+      "src/angerona/modules/etw_listener.py:1581-1822",
+      "src/angerona/modules/etw_listener.py:1834-2135"
+    ],
+    "controls_verified": [
+      "Every tested native/consumed field and all 4096 allowed insertion strings affect the full length-delimited record identity; content after character 4096 and insertion 65 no longer collide.",
+      "Exact insertion, per-record byte, retained-record, and elapsed-time limits accept the boundary and fail incomplete immediately above it.",
+      "Live cursor, high-water, protected-anchor, and authority-witness loss is visible on the same poll at health 45.",
+      "Copied-witness replay, cursor-signing-key substitution, malformed valid-HMAC witness values, and commit interruptions after high-water, cursor, or anchor writes remain fail-incomplete and replay records.",
+      "The state-root process/OS writer lease blocks a live competing process, releases after process crash, rejects a multi-link lease object, and leaves a valid chain under the dedicated two-writer race.",
+      "Restoring cursor, high-water, protected anchor, and channel while the newer authority witness survives is rejected at health 45."
+    ],
+    "residuals": [
+      {
+        "severity": "HIGH",
+        "title": "Replayable schema-1 migration overwrites the current Security authority witness",
+        "evidence": "After records 4-6 advanced schema-2 state to cursor sequence 2, restoring a copied HMAC-valid schema-1 anchor with its matching cursor/high-water/channel at record 3 while leaving the advanced witness untouched made migration replace the witness. Restart emitted no events, retained gap='', loaded cursor sequence 1/bookmark 3, and reported health 100."
+      }
+    ],
+    "architectural_boundary": "Restoring the channel and every local durable object, including cursor, high-water, protected anchor, authority witness, and stable signing identity, is accepted at health 100. The UI/note explicitly limits assurance to the local signing-identity witness boundary; TPM NV or an independent witness is required for whole-host rollback proof.",
+    "exploitability_boundary": "The schema replay needs a copied authentic legacy anchor/cursor/high-water/channel snapshot and privileged restore/control of Security telemetry, but it does not need the current cursor key, a forged HMAC, a new approval, or any edit to the surviving newer witness. That preserves HIGH severity for the original telemetry-erasure threat model.",
+    "recommendation": "Make the accepted schema floor monotonic and never auto-migrate schema 1 over an existing authority witness. Anchor upgrade completion outside the rollback set or require explicit audited recovery enrollment. Preserve the complete record identity, honest bounds, live durable verification, transaction order/final reread, and state-root writer lease."
+  }
+]

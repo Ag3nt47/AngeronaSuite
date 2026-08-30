@@ -1,0 +1,29 @@
+[
+  {
+    "id": "C27-R1-C03",
+    "verdict": "REOPENED",
+    "residual_severity": "MEDIUM",
+    "component": "src/angerona/modules/ransomware_heuristics.py:623-725,1014-1081",
+    "evidence": "After exact sampling released its handle, the same NTFS inode was overwritten and its size and timestamp restored. The stored SHA-256 no longer matched current bytes, but evaluation returned zero errors, emitted no alert for current entropy 7.9971, and the full tick retained complete=true and health=100. A nested junction to a hard link of the same file ID also passed the root/file identity checks and produced a stale-content alert through an out-of-scope pathname.",
+    "existing_mitigations": "Pre-existing root reparses, enrolled-root replacement, whole-root post-enumeration junction swaps, different-ID file/directory substitution, traversal budgets, and gross handle leaks were independently rejected or absent.",
+    "recommendation": "Hold the exact sampled file and every reviewed ancestor through decision/publication, open components relative to held parents, and recompute/compare sample length and SHA-256 from that held generation before using entropy. Any ancestry/content/identity mismatch must invalidate coverage and health."
+  },
+  {
+    "id": "C27-R1-C04",
+    "verdict": "CLOSED",
+    "residual_severity": null,
+    "component": "src/angerona/modules/remediation_actions.py:616-682,1526-1549,1642-1681",
+    "evidence": "DisableDriverServiceAction has no SCM, registry, command, or subprocess sink; it is absent from ACTIONS and present only in PROPOSAL_ONLY_ACTIONS. Direct, transactional, rollback, and verification entry points all fail closed and cannot retain success fields.",
+    "existing_mitigations": "Typed authority remains useful for operator review but cannot grant execution through the remediation dispatcher.",
+    "recommendation": "Retain proposal-only isolation until one held SCM service handle and held image identity span approval, mutation, postcondition, and rollback; correct the stale REAL source comment for clarity."
+  },
+  {
+    "id": "C27-R1-C13",
+    "verdict": "REOPENED",
+    "residual_severity": "MEDIUM",
+    "component": "src/angerona/modules/smart_deception.py:65,695-834,878-1001,1261-1291",
+    "evidence": "Deleting a real evidence file yielded an empty healthy inventory; replacing it with a different self-consistent digest-named inode was also accepted at health 100. Eight forged newer records caused normal retention to prune the genuine record while health stayed 100. Separately, a hard link created after source-copy verification survived retirement with alias_residue=0, custody_degraded=false, and health=100.",
+    "existing_mitigations": "Protected production data-root ACLs reduce write access; independent evidence copies resist pre-existing source aliases; persistent evidence link/digest drift, quarantine-root replacement, unknown crash objects, cap overflow, and dedup overflow are fail-visible; dedup remains capped at 256.",
+    "recommendation": "Use an authenticated append-only custody ledger and independent anti-rollback high-water for expected evidence identity/digest/link receipts; reject missing, unexpected, substituted, or rolled-back records. Revalidate/enumerate source hard-link topology at final retirement and add durable crash-stage recovery for bounded pending objects."
+  }
+]

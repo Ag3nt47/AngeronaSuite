@@ -1,0 +1,111 @@
+[
+  {
+    "original_id": "C27-R1-A02",
+    "status": "FIXED_PENDING_INDEPENDENT_REATTACK",
+    "implementation": [
+      "authenticated retained-tail cache with exact file fingerprint, terminal-byte, and recovery-anchor validation",
+      "O(1) journal append plus commit/undo indexes",
+      "complete reconciliation and undo selection without truncated control windows",
+      "worst-case mutation and undo terminal-capacity reservation before any host effect"
+    ],
+    "regressions": [
+      "undo selection after 5001 completed actions",
+      "capacity refusal before effect",
+      "steady-state append performs no full-journal read"
+    ],
+    "gates": {
+      "dedicated_tests": "PASS: included in 13 passed",
+      "affected_suite": "PASS: included in 144 passed, 1 skipped",
+      "py_compile": "PASS",
+      "ruff": "PASS"
+    }
+  },
+  {
+    "original_id": "C27-R1-A03",
+    "status": "FIXED_PENDING_INDEPENDENT_REATTACK",
+    "implementation": [
+      "single-link enrollment and post-move verification",
+      "destination handle and topology custody retained through terminal commit",
+      "source and destination link counts included in signed evidence",
+      "post-move uncertainty creates explicit orphan and undo terminal evidence"
+    ],
+    "regressions": [
+      "pre-existing hardlink rejection",
+      "custody through commit",
+      "post-move alias signal rolls back without success"
+    ],
+    "gates": {
+      "dedicated_tests": "PASS: included in 13 passed",
+      "affected_suite": "PASS: included in 144 passed, 1 skipped",
+      "py_compile": "PASS",
+      "ruff": "PASS"
+    }
+  },
+  {
+    "original_id": "C27-R1-A07",
+    "status": "FIXED_PENDING_INDEPENDENT_REATTACK",
+    "implementation": [
+      "authenticated native-event record cursor and digest anchor",
+      "durable stage-before-publish outbox with checkpoint-before-ack ordering",
+      "retained first-run replay plus stable restart deduplication",
+      "durable continuity-gap evidence for rollback, clear, tamper, and read failure",
+      "bounded durable PowerShell fallback continuity"
+    ],
+    "regressions": [
+      "retained first-run replay",
+      "restart deduplication",
+      "pending outbox replay",
+      "tampered cursor refusal",
+      "PowerShell fallback restart continuity"
+    ],
+    "gates": {
+      "dedicated_tests": "PASS: included in 13 passed",
+      "affected_suite": "PASS: included in 144 passed, 1 skipped",
+      "py_compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "PASS"
+    }
+  },
+  {
+    "original_id": "C27-R1-A13",
+    "status": "FIXED_PENDING_INDEPENDENT_REATTACK",
+    "implementation": [
+      "deception claims limited to observed file mutation and deletion",
+      "read visibility explicitly false unless a separate OS audit source is configured",
+      "canary and SOAR text no longer imply access/read telemetry"
+    ],
+    "regressions": [
+      "former any-access wording absent",
+      "read-observer boundary present in user-visible and evidence text"
+    ],
+    "gates": {
+      "dedicated_tests": "PASS: included in 13 passed",
+      "affected_suite": "PASS: included in 144 passed, 1 skipped",
+      "py_compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "PASS"
+    }
+  },
+  {
+    "original_id": "C27-R1-A14",
+    "status": "FIXED_PENDING_INDEPENDENT_REATTACK",
+    "implementation": [
+      "schema-v2 live-object binding contract",
+      "kernel-load receipt required for loaded-image-bound claims",
+      "configured service paths represented as unbound samples with unknown load state",
+      "unbound evidence cannot reach provenance-verified"
+    ],
+    "regressions": [
+      "contradictory binding claims rejected",
+      "unbound path cannot claim kernel load state",
+      "unbound path cannot claim verified provenance"
+    ],
+    "gates": {
+      "dedicated_tests": "PASS: included in 13 passed",
+      "affected_suite": "PASS: included in 144 passed, 1 skipped",
+      "py_compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "PASS"
+    }
+  }
+]

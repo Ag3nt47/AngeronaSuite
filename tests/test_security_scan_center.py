@@ -46,10 +46,13 @@ class _FakeYaraScanner:
     def fast_scan(self, value):
         assert value is True
 
-    def scan_file(self, path):
-        self.paths.append(path)
-        matches = [SimpleNamespace(identifier="Test_Malware")] if path.endswith("sample.exe") else []
+    def scan(self, content):
+        assert isinstance(content, bytes)
+        matches = [SimpleNamespace(identifier="Test_Malware")] if content.startswith(b"MZ") else []
         return SimpleNamespace(matching_rules=matches)
+
+    def scan_file(self, _path):
+        raise AssertionError("Scan Center must never reopen validated content by pathname")
 
 
 class _FakeYara:
@@ -145,6 +148,133 @@ def test_scan_path_never_follows_a_symlink(
 
     assert result.metrics["files_scanned"] == 0
     assert not result.findings
+
+
+def test_scan_path_rejects_a_file_swapped_to_an_outside_link_before_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    (resources / "rules.yar").write_text("rule Test { condition: true }", encoding="utf-8")
+    monkeypatch.setattr(scan_module, "resource_root", lambda: resources)
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    candidate = selected / "inside.exe"
+    candidate.write_bytes(b"MZ inside")
+    outside = tmp_path / "outside.exe"
+    outside.write_bytes(b"MZ outside secret")
+    center = _center()
+
+    def swapped(_root, **_kwargs):
+        candidate.unlink()
+        try:
+            candidate.symlink_to(outside)
+        except OSError:
+            pytest.skip("symlinks are unavailable for this test account")
+        yield candidate, Path("inside.exe")
+
+    monkeypatch.setattr(center, "_iter_local_files", swapped)
+    result = center.scan_path(selected)
+
+    assert result.status == "limited"
+    assert result.metrics["files_scanned"] == 0
+    assert result.metrics["unsafe_scope_skips"] == 1
+    assert any(error.startswith("unsafe-file-scope:") for error in result.errors)
+    assert "outside secret" not in json.dumps(result.to_dict())
+
+
+def test_scan_path_rejects_stable_over_budget_file_before_content_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    (selected / "over-budget.bin").write_bytes(b"x" * 4096)
+    center = SecurityScanCenter(
+        max_files=10,
+        max_total_bytes=1024,
+        max_file_bytes=8192,
+        max_duration_seconds=10,
+        yara_module=object(),
+    )
+    monkeypatch.setattr(center, "_make_yara_scanner", lambda: (None, "unavailable"))
+    reads: list[int] = []
+    real_read = scan_module.os.read
+
+    def observed_read(descriptor: int, count: int) -> bytes:
+        reads.append(count)
+        return real_read(descriptor, count)
+
+    monkeypatch.setattr(scan_module.os, "read", observed_read)
+    result = center.scan_path(selected)
+
+    assert result.status == "limited"
+    assert result.metrics["files_scanned"] == 0
+    assert result.metrics["bytes_scanned"] == 0
+    assert result.metrics["budget_skips"] == 1
+    assert reads == []
+
+
+def test_scan_path_rejects_stable_oversize_file_before_content_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    (selected / "oversize.bin").write_bytes(b"x" * 4096)
+    center = SecurityScanCenter(
+        max_files=10,
+        max_total_bytes=8192,
+        max_file_bytes=1024,
+        max_duration_seconds=10,
+        yara_module=object(),
+    )
+    monkeypatch.setattr(center, "_make_yara_scanner", lambda: (None, "unavailable"))
+    reads: list[int] = []
+    real_read = scan_module.os.read
+
+    def observed_read(descriptor: int, count: int) -> bytes:
+        reads.append(count)
+        return real_read(descriptor, count)
+
+    monkeypatch.setattr(scan_module.os, "read", observed_read)
+    result = center.scan_path(selected)
+
+    assert result.status == "limited"
+    assert result.metrics["files_scanned"] == 0
+    assert result.metrics["bytes_scanned"] == 0
+    assert result.metrics["oversize_files_skipped"] == 1
+    assert reads == []
+
+
+def test_scan_path_revalidates_root_identity_on_budget_fast_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    (selected / "over-budget.bin").write_bytes(b"x" * 4096)
+    center = SecurityScanCenter(
+        max_files=10,
+        max_total_bytes=1024,
+        max_file_bytes=8192,
+        max_duration_seconds=10,
+    )
+    monkeypatch.setattr(center, "_make_yara_scanner", lambda: (None, "unavailable"))
+    matches = iter((True, False))
+    calls = 0
+
+    def root_identity_matches(*_args) -> bool:
+        nonlocal calls
+        calls += 1
+        return next(matches)
+
+    monkeypatch.setattr(scan_module, "_root_identity_matches", root_identity_matches)
+    result = center.scan_path(selected)
+
+    assert calls == 2
+    assert result.status == "limited"
+    assert result.metrics["files_scanned"] == 0
+    assert result.metrics["budget_skips"] == 0
+    assert result.metrics["unsafe_scope_skips"] == 1
+    assert "unsafe-file-scope:selected-root-identity-changed" in result.errors
 
 
 def test_scan_rejects_remote_missing_and_link_roots(tmp_path: Path) -> None:

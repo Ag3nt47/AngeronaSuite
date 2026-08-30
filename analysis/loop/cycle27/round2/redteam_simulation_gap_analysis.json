@@ -1,0 +1,95 @@
+{
+  "schema": "angerona.redteam-gap-analysis.v1",
+  "cycle": 27,
+  "round": 2,
+  "date": "2026-08-28",
+  "scope": {
+    "inert_only": true,
+    "host_mutation": false,
+    "network_attack": false,
+    "real_exploitation": false,
+    "publication": false
+  },
+  "reproductions": [
+    {
+      "variant": "policy_armed_detector_stopped",
+      "cycles": 1,
+      "campaign": true,
+      "jitter_seconds": [0.0, 0.0],
+      "noise_chance": 1.0,
+      "policy_active": 13,
+      "purple_guard_running": false,
+      "process_monitor_running": true,
+      "steps_total": 15,
+      "detection_steps": 13,
+      "caught": 1,
+      "missed": 12,
+      "coverage_percent": 7.7,
+      "only_catch": {
+        "technique": "T1059",
+        "module": "Process Monitor",
+        "severity": "INFO",
+        "evidence_type": "raw_process_creation_telemetry",
+        "latency_seconds": 1.167
+      }
+    },
+    {
+      "variant": "native_fim_process_control",
+      "detection_steps": 13,
+      "caught": 13,
+      "coverage_percent": 100.0,
+      "evidence": "12 generic FIM file-created MEDIUM events plus one raw Process Monitor INFO event",
+      "latency_range_seconds": [1.183, 1.227]
+    },
+    {
+      "variant": "purple_validation_process_control",
+      "policy_active": 13,
+      "detection_steps": 13,
+      "caught": 13,
+      "coverage_percent": 100.0,
+      "evidence": "12 Purple Guard HIGH events plus T1059 raw INFO with Purple verification",
+      "file_latency_range_seconds": [0.222, 0.265]
+    }
+  ],
+  "probe_results": [
+    {"stage": "Initial Access", "technique": "T1566.001", "category": "detection", "caught": false, "expected": ["Purple Remediation Guard", "File Integrity Monitor"]},
+    {"stage": "Discovery", "technique": "T1057/T1082 read-only", "category": "unmonitored", "caught": false, "expected": []},
+    {"stage": "Credential Access", "technique": "T1003", "category": "detection", "caught": false, "expected": ["Purple Remediation Guard", "File Integrity Monitor"]},
+    {"stage": "Privilege Escalation", "technique": "T1548.002", "category": "detection", "caught": false, "expected": ["Purple Remediation Guard", "File Integrity Monitor"]},
+    {"stage": "Defense Evasion", "technique": "T1070", "category": "detection", "caught": false, "expected": ["Purple Remediation Guard", "File Integrity Monitor"]},
+    {"stage": "Registry Run Key", "technique": "T1547.001", "category": "detection", "caught": false, "expected": ["Purple Remediation Guard", "File Integrity Monitor"]},
+    {"stage": "Scheduled Task", "technique": "T1053.005", "category": "detection", "caught": false, "expected": ["Purple Remediation Guard", "File Integrity Monitor"]},
+    {"stage": "WMI Persistence", "technique": "T1546.003", "category": "detection", "caught": false, "expected": ["Purple Remediation Guard", "File Integrity Monitor"]},
+    {"stage": "Lateral Movement", "technique": "T1021.002", "category": "detection", "caught": false, "expected": ["Purple Remediation Guard", "File Integrity Monitor"]},
+    {"stage": "Command & Control", "technique": "T1071", "category": "detection", "caught": false, "expected": ["Purple Remediation Guard", "File Integrity Monitor"]},
+    {"stage": "Exfil Staging", "technique": "T1074", "category": "detection", "caught": false, "expected": ["Purple Remediation Guard", "File Integrity Monitor"]},
+    {"stage": "Ransomware Impact", "technique": "T1486", "category": "detection", "caught": false, "expected": ["Purple Remediation Guard", "File Integrity Monitor"]},
+    {"stage": "Data Destruction", "technique": "T1485", "category": "detection", "caught": false, "expected": ["Purple Remediation Guard", "File Integrity Monitor"]},
+    {"stage": "Benign Execution", "technique": "T1059", "category": "detection", "caught": true, "actual_module": "Process Monitor", "actual_severity": "INFO", "expected": ["Purple Remediation Guard", "Process Monitor or ETW telemetry"]},
+    {"stage": "Noise Injection", "technique": "benign negative control", "category": "resilience", "caught": false, "expected": []}
+  ],
+  "self_credit_probes": [
+    {"module": "Console", "severity": "INFO", "credited": false},
+    {"module": "Red Team Attack Engine", "severity": "INFO", "credited": true},
+    {"module": "Shark Attack Engine", "severity": "INFO", "credited": true},
+    {"module": "Process Monitor", "severity": "INFO", "credited": true},
+    {"module": "Active Response SOAR", "severity": "INFO", "mitigated": false, "credited": true}
+  ],
+  "custom_probe_classification": {
+    "ordinary_custom_marker": null,
+    "custom_name_with_lsass_dump_token": ["T1003", "credential-access marker"]
+  },
+  "findings": [
+    {"id": "RTS-01", "severity": "critical", "title": "Policy presence is presented as detector readiness", "source": "src/angerona/gui/main_window.py:1788", "status": "open"},
+    {"id": "RTS-02", "severity": "high", "title": "Detection pack is coupled to Auto-contain", "source": "src/angerona/gui/main_window.py:1788", "status": "open"},
+    {"id": "RTS-03", "severity": "critical", "title": "AAR lacks positive detector evidence and permits simulator self-credit", "source": "src/angerona/shark/aar_report.py:271", "status": "open"},
+    {"id": "RTS-04", "severity": "high", "title": "AAR conflates observation, analytic detection, simulation validation, and response", "source": "src/angerona/shark/aar_report.py:274", "status": "open"},
+    {"id": "RTS-05", "severity": "high", "title": "Engine start and target registration failures do not gate AAR flow", "source": "src/angerona/gui/main_window.py:1777", "status": "open"},
+    {"id": "RTS-06", "severity": "high", "title": "Custom probes have no explicit expected-evidence contract and can collide with standard tokens", "source": "src/angerona/modules/purple_guard.py:249", "status": "open"},
+    {"id": "RTS-07", "severity": "medium", "title": "T1059 promotion uses recent(500) rather than a loss-aware cursor", "source": "src/angerona/modules/purple_guard.py:397", "status": "open"},
+    {"id": "RTS-08", "severity": "medium", "title": "Explicit AAR data root can read Config.load() ledger instead", "source": "src/angerona/shark/aar_report.py:700", "status": "open"},
+    {"id": "RTS-09", "severity": "medium", "title": "Marker-name coverage is not real-world technique efficacy", "source": "src/angerona/shark/red_team.py:1", "status": "open"}
+  ],
+  "recommended_order": ["RTS-01", "RTS-02", "RTS-05", "RTS-03", "RTS-04", "RTS-06", "RTS-07", "RTS-08", "RTS-09"],
+  "product_code_changed": false
+}

@@ -264,10 +264,34 @@ STEPS: tuple[Step, ...] = (
     ),
     Step(
         "Signal mobile bridge",
-        "Optional Signal-based operator chat and response channel.",
+        "Optional Signal-based operator chat and response channel. Enabling it "
+        "requires exact executable identity pins so an unapproved signal-cli "
+        "binary cannot inherit response authority.",
         (
             Field("check", "mobile_enabled", "Enable the Signal mobile bridge"),
             Field("text", "mobile_signal_cli", "signal-cli executable path"),
+            Field(
+                "text",
+                "mobile_signal_cli_sha256",
+                "Exact signal-cli SHA-256",
+                "64 hexadecimal characters",
+                note=(
+                    "Pin the digest of the approved executable. Leave blank while "
+                    "the bridge is disabled."
+                ),
+                maximum=64,
+            ),
+            Field(
+                "text",
+                "mobile_signal_cli_publisher",
+                "Exact Authenticode publisher subject",
+                "CN=Approved Publisher",
+                note=(
+                    "Pin the complete signer certificate Subject exactly as audited. "
+                    "Leave blank while the bridge is disabled."
+                ),
+                maximum=512,
+            ),
             Field("text", "mobile_host_number", "This device's registered Signal number"),
             Field("text", "mobile_dest_number", "Approved operator Signal number"),
             Field("password_env", "ANGERONA_MOBILE_PIN", "Four-digit response PIN",
@@ -465,8 +489,9 @@ def normalize_setup_values(values: dict[str, object]) -> dict[str, object]:
         ]
     for key in ("ollama_host", "ollama_model", "ollama_keep_alive", "accent",
                 "aria_imap_host", "aria_imap_user", "teams_app_id",
-                "teams_allowed_users", "mobile_signal_cli", "mobile_host_number",
-                "mobile_dest_number", "fleet_tenant_id", "github_repo",
+                "teams_allowed_users", "mobile_signal_cli",
+                "mobile_signal_cli_sha256", "mobile_signal_cli_publisher",
+                "mobile_host_number", "mobile_dest_number", "fleet_tenant_id", "github_repo",
                 "adversary_combat_mode", "adversary_combat_min_severity",
                 "adversary_combat_process_action", "siem_host", "siem_protocol",
                 "siem_min_severity", "siem_ca_file", "remote_bridge_mode",
@@ -474,6 +499,10 @@ def normalize_setup_values(values: dict[str, object]) -> dict[str, object]:
                 "ioc_feed_url", "ioc_feed_sha256"):
         if key in normalized:
             normalized[key] = str(normalized[key]).strip()
+    if "mobile_signal_cli_sha256" in normalized:
+        normalized["mobile_signal_cli_sha256"] = str(
+            normalized["mobile_signal_cli_sha256"]
+        ).casefold()
     return normalized
 
 
@@ -575,12 +604,36 @@ def validate_setup(values: dict[str, object]) -> list[str]:
         errors.append("Mailbox triage requires both an IMAP host and account.")
     if values.get("teams_bot_enabled") and not str(values.get("teams_allowed_users", "")).strip():
         errors.append("The Teams bot requires at least one immutable AAD object ID.")
-    if values.get("mobile_enabled") and not (
-        str(values.get("mobile_signal_cli", "")).strip()
-        and str(values.get("mobile_host_number", "")).strip()
-        and str(values.get("mobile_dest_number", "")).strip()
+    mobile_digest = str(values.get("mobile_signal_cli_sha256", ""))
+    mobile_publisher = str(values.get("mobile_signal_cli_publisher", ""))
+    if mobile_digest and not re.fullmatch(r"[0-9a-f]{64}", mobile_digest):
+        errors.append(
+            "The signal-cli SHA-256 pin must contain exactly 64 hexadecimal characters."
+        )
+    if mobile_publisher and (
+        len(mobile_publisher) > 512
+        or any(ord(character) < 32 for character in mobile_publisher)
     ):
-        errors.append("The Signal bridge requires signal-cli and both approved phone numbers.")
+        errors.append(
+            "The signal-cli publisher pin must be an exact certificate Subject "
+            "of at most 512 printable characters."
+        )
+    if values.get("mobile_enabled"):
+        missing_mobile = [
+            label
+            for label, value in (
+                ("signal-cli path", values.get("mobile_signal_cli", "")),
+                ("signal-cli SHA-256 pin", mobile_digest),
+                ("exact Authenticode publisher", mobile_publisher),
+                ("host number", values.get("mobile_host_number", "")),
+                ("approved operator number", values.get("mobile_dest_number", "")),
+            )
+            if not str(value).strip()
+        ]
+        if missing_mobile:
+            errors.append(
+                "The Signal bridge requires " + ", ".join(missing_mobile) + "."
+            )
     tenant = str(values.get("fleet_tenant_id", ""))
     if values.get("fleet_service_enabled") and not re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9._:-]{2,127}", tenant
@@ -831,6 +884,8 @@ if _HAVE_QT:
                     current = ",".join(current)
                 widget = QLineEdit(str(current))
                 widget.setPlaceholderText(field.placeholder or "Leave blank to keep the protected value")
+                if field.kind == "text" and field.maximum < 65535:
+                    widget.setMaxLength(int(field.maximum))
                 if field.kind in SECRET_KINDS or field.kind == "secret_config":
                     widget.setEchoMode(QLineEdit.Password)
                 return widget

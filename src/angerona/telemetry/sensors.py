@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import dataclass
 from typing import Dict, Iterable, List
 
 # ── Shared snapshot cache ─────────────────────────────────────────────────────
@@ -37,7 +38,43 @@ except Exception:
 _proc_cache_lock = threading.Lock()
 _conn_cache_lock = threading.Lock()
 _proc_cache: tuple[float, List[Dict]] = (0.0, [])
-_conn_cache: tuple[float, List[Dict]] = (0.0, [])
+_conn_cache: tuple[float, "ConnectionSnapshot | None"] = (0.0, None)
+
+
+@dataclass(frozen=True)
+class ConnectionSnapshot:
+    """Bounded connection inventory plus explicit collection coverage."""
+
+    connections: tuple[Dict, ...]
+    collected_at: float
+    complete: bool
+    enumerated: int
+    skipped: int
+    error: str = ""
+
+
+class ConnectionList(list[Dict]):
+    """List-compatible snapshot carrying a typed completeness receipt."""
+
+    def __init__(self, receipt: ConnectionSnapshot):
+        super().__init__(dict(item) for item in receipt.connections)
+        self.receipt = receipt
+
+    @property
+    def complete(self) -> bool:
+        return self.receipt.complete
+
+    @property
+    def collected_at(self) -> float:
+        return self.receipt.collected_at
+
+    @property
+    def skipped(self) -> int:
+        return self.receipt.skipped
+
+    @property
+    def error(self) -> str:
+        return self.receipt.error
 
 
 def list_processes(max_age: float | None = None) -> List[Dict]:
@@ -76,11 +113,13 @@ def list_processes(max_age: float | None = None) -> List[Dict]:
         return out
 
 
-def list_connections(max_age: float | None = None) -> List[Dict]:
-    """Active TCP/UDP connections with owning pid.
+def connection_snapshot(max_age: float | None = None) -> ConnectionSnapshot:
+    """Return active TCP/UDP connections and a fail-closed coverage receipt.
 
     Cached for a short window (see :func:`list_processes`); pass ``max_age=0``
-    to force a fresh scan.
+    to force a fresh scan. Import/enumeration/per-row failures are represented
+    in ``complete`` and ``error`` instead of being indistinguishable from a
+    genuinely empty host connection table.
     """
     global _conn_cache
     ttl = _CACHE_TTL if max_age is None else max_age
@@ -88,22 +127,52 @@ def list_connections(max_age: float | None = None) -> List[Dict]:
         now = time.time()
         if ttl > 0:
             ts, cached = _conn_cache
-            if ts > 0.0 and (now - ts) < ttl:
+            if ts > 0.0 and cached is not None and (now - ts) < ttl:
                 return cached
         try:
             import psutil
-        except Exception:
-            return []
+        except Exception as exc:
+            receipt = ConnectionSnapshot(
+                (), now, False, 0, 0, f"psutil unavailable: {exc}"[:500]
+            )
+            _conn_cache = (now, receipt)
+            return receipt
         out: List[Dict] = []
-        for c in psutil.net_connections(kind="inet"):
+        skipped = 0
+        try:
+            rows = tuple(psutil.net_connections(kind="inet"))
+        except Exception as exc:
+            receipt = ConnectionSnapshot(
+                (), now, False, 0, 0, f"connection enumeration failed: {exc}"[:500]
+            )
+            _conn_cache = (now, receipt)
+            return receipt
+        enumerated = 0
+        for c in rows:
+            enumerated += 1
             try:
                 laddr = f"{c.laddr.ip}:{c.laddr.port}" if c.laddr else ""
                 raddr = f"{c.raddr.ip}:{c.raddr.port}" if c.raddr else ""
                 out.append({"pid": c.pid, "status": c.status, "laddr": laddr, "raddr": raddr})
             except Exception:
+                skipped += 1
                 continue
-        _conn_cache = (now, out)
-        return out
+        collected = time.time()
+        receipt = ConnectionSnapshot(
+            tuple(out),
+            collected,
+            skipped == 0,
+            enumerated,
+            skipped,
+            f"{skipped} connection row(s) could not be normalized" if skipped else "",
+        )
+        _conn_cache = (collected, receipt)
+        return receipt
+
+
+def list_connections(max_age: float | None = None) -> List[Dict]:
+    """List-compatible connection snapshot with a ``receipt`` attribute."""
+    return ConnectionList(connection_snapshot(max_age=max_age))
 
 
 class KernelSensor:

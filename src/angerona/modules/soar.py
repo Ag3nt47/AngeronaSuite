@@ -62,7 +62,7 @@ class SOARModule(BaseModule):
         "G3-B: requires 2-signal corroboration and System32 allowlist before auto-act."
     )
     category = "Response"
-    version = "1.1.0"
+    version = "1.12.1"
     supported_platforms = ("windows",)
     capability_mode = "respond"
     capability_inputs = ("authenticated-high-severity-event", "operator-response-policy")
@@ -102,13 +102,17 @@ class SOARModule(BaseModule):
         # attack. On by default (the whole point of an EDR); ANGERONA_ACTIVE_DEFENSE=0
         # to disable and stay recommend-only.
         self._active_defense = os.environ.get("ANGERONA_ACTIVE_DEFENSE", "0") == "1"
-        # G3-B corroboration state: pid → [(ts, module), ...]
-        self._pending: dict[int, List[tuple[float, str]]] = {}
+        # G3-B corroboration state is bound to one exact process generation.
+        # A PID alone is reusable and must never let signals for a dead process
+        # authorize a response against a later process that inherited the PID.
+        self._pending: dict[tuple[int, int, str], List[tuple[float, str]]] = {}
         self._high_events: list = []        # (ts, pid, module) for attack detection
         self._under_attack_until = 0.0
         self._contained = 0                 # remediations actually taken
         self._attempts = 0
         self._manager = None
+        self._delivery_failures: dict[str, int] = {}
+        self._dead_lettered = 0
 
     def bind_manager(self, manager) -> None:
         self._manager = manager
@@ -126,9 +130,17 @@ class SOARModule(BaseModule):
         original_seen = self._seen_at_last_ts
         try:
             self._pending = {}
-            first = self._add_signal(4242, _Fixture("sensor-a"))
-            repeat = self._add_signal(4242, _Fixture("sensor-a"))
-            corroborated = self._add_signal(4242, _Fixture("sensor-b"))
+            sensor_a = _Fixture("sensor-a")
+            sensor_b = _Fixture("sensor-b")
+            for fixture in (sensor_a, sensor_b):
+                fixture.details = {
+                    "pid": 4242,
+                    "process_create_time": 100.25,
+                    "exe": os.path.abspath("self-test.exe"),
+                }
+            first = self._add_signal(4242, sensor_a)
+            repeat = self._add_signal(4242, sensor_a)
+            corroborated = self._add_signal(4242, sensor_b)
             event = _Fixture("cursor-source")
             unseen_before = self._is_unseen(event)
             self._advance_cursor(event)
@@ -193,7 +205,7 @@ class SOARModule(BaseModule):
     def priority_overflow_count(self) -> int:
         return self._priority_overflow_count
 
-    def _pending_security_events(self) -> tuple[list, bool]:
+    def _pending_security_events(self) -> tuple[list[tuple[int | None, object]], bool]:
         """Fetch serious events from the dedicated bounded revision lane.
 
         The boolean is true when the EventBus does not expose the priority API
@@ -201,16 +213,16 @@ class SOARModule(BaseModule):
         health only: it never synthesizes evidence or authorizes containment.
         """
         bus = self._bus
+        priority_records_since = getattr(bus, "priority_records_since", None)
         priority_since = getattr(bus, "priority_since", None)
-        if bus is not None and callable(priority_since):
+        if bus is not None and callable(priority_records_since):
             bus_id = id(bus)
             if self._priority_bus_id != bus_id:
                 self._priority_bus_id = bus_id
                 self._priority_cursor = 0
-            current, newest_first, overflow = priority_since(
+            _current, newest_first, overflow = priority_records_since(
                 self._priority_cursor
             )
-            self._priority_cursor = current
             if overflow:
                 self._priority_overflow_count += 1
                 self.emit(
@@ -223,9 +235,37 @@ class SOARModule(BaseModule):
                     response_authorized=False,
                 )
             return list(reversed(newest_first)), False
+        if bus is not None and callable(priority_since):
+            _current, newest_first, overflow = priority_since(self._priority_cursor)
+            if overflow:
+                self._priority_overflow_count += 1
+            return [(None, event) for event in reversed(newest_first)], True
         events = list(reversed(bus.recent(250))) if bus is not None else []
         events.sort(key=lambda event: event.ts)
-        return events, True
+        return [(None, event) for event in events], True
+
+    def _process_one_event(self, ev, process_policy) -> bool:
+        if ev.severity < Severity.HIGH:
+            return False
+        if ev.module in (self.name, "Console", "Active Response SOAR Request"):
+            return False
+        if is_remote_observe_only(ev):
+            return False
+        if _process_event_allowed(ev, policy=process_policy):
+            return False
+        disposition = event_disposition(ev)
+        if disposition not in {"active", "practice"}:
+            return False
+        if disposition == "active":
+            self._track_attack(ev)
+        self._run_playbook(ev)
+        return True
+
+    def _commit_delivery(self, revision: int | None, ev, legacy_cursor: bool) -> None:
+        if legacy_cursor or revision is None:
+            self._advance_cursor(ev)
+        else:
+            self._priority_cursor = int(revision)
 
     def process_pending_once(self) -> int:
         """Evaluate the bounded alert batch oldest-first without dropping bursts."""
@@ -234,30 +274,40 @@ class SOARModule(BaseModule):
         process_policy = _process_policy_snapshot()
         events, legacy_cursor = self._pending_security_events()
         handled = 0
-        for ev in events:
+        for revision, ev in events:
             if legacy_cursor and not self._is_unseen(ev):
                 continue
             try:
-                if ev.severity < Severity.HIGH:
-                    continue
-                if ev.module in (self.name, "Console"):
-                    continue
-                if is_remote_observe_only(ev):
-                    continue
-                if _process_event_allowed(ev, policy=process_policy):
-                    continue
-                disposition = event_disposition(ev)
-                if disposition not in {"active", "practice"}:
-                    continue
-                # Trusted inert practice still exercises the real playbook, but
-                # it must never arm the global UNDER ATTACK state.
-                if disposition == "active":
-                    self._track_attack(ev)
-                self._run_playbook(ev)
-                handled += 1
-            finally:
-                if legacy_cursor:
-                    self._advance_cursor(ev)
+                handled += int(self._process_one_event(ev, process_policy))
+            except Exception as exc:
+                key = self._cursor_key(ev)
+                attempts = self._delivery_failures.get(key, 0) + 1
+                self._delivery_failures[key] = attempts
+                self.last_error = str(exc)
+                if attempts < 3:
+                    self.set_health(
+                        45,
+                        f"SOAR event delivery failed ({attempts}/3); cursor retained: {exc}",
+                    )
+                    break
+                self._delivery_failures.pop(key, None)
+                self._dead_lettered += 1
+                self.set_health(
+                    35,
+                    f"{self._dead_lettered} SOAR event(s) dead-lettered after 3 failures",
+                )
+                self.emit(
+                    "SOAR event moved to bounded dead-letter state after repeated "
+                    "processing failure; later events remain eligible.",
+                    Severity.HIGH,
+                    event_type="soar_delivery_dead_letter",
+                    failed_event_id=key,
+                    response_authorized=False,
+                )
+                self._commit_delivery(revision, ev, legacy_cursor)
+                continue
+            self._delivery_failures.pop(self._cursor_key(ev), None)
+            self._commit_delivery(revision, ev, legacy_cursor)
         return handled
 
     # ── Playbooks ────────────────────────────────────────────────────────────
@@ -325,7 +375,7 @@ class SOARModule(BaseModule):
                 else:
                     self.emit(
                         f"Playbook[contain]: PENDING corroboration for pid {pid} "
-                        f"({self._signal_count(pid)}/{_CORROBORATION_MIN} signals, "
+                        f"({self._signal_count(pid, ev)}/{_CORROBORATION_MIN} signals, "
                         f"window={_CORROBORATION_WINDOW_S}s). "
                         f"Trigger: {ev.module} — {ev.message[:60]}",
                         Severity.MEDIUM, pid=pid,
@@ -358,40 +408,64 @@ class SOARModule(BaseModule):
         except Exception:
             return False
 
+    @staticmethod
+    def _signal_identity(pid: int, ev) -> tuple[int, int, str] | None:
+        """Return a stable exact-process key from authenticated event evidence."""
+        details = getattr(ev, "details", None)
+        if not isinstance(details, dict) or details.get("pid") != pid:
+            return None
+        raw_exe = details.get("exe") or details.get("process_path") or details.get("image")
+        try:
+            created_us = int(round(float(details.get("process_create_time")) * 1_000_000))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if pid <= 0 or created_us <= 0 or not isinstance(raw_exe, str) or not raw_exe:
+            return None
+        try:
+            executable = os.path.normcase(str(Path(raw_exe).resolve(strict=False)))
+        except (OSError, RuntimeError, ValueError):
+            return None
+        return pid, created_us, executable
+
     def _add_signal(self, pid: int, ev) -> bool:
-        """Record a signal for *pid*.  Returns True when corroboration threshold
-        is reached (≥ _CORROBORATION_MIN distinct modules in the window)."""
+        """Corroborate one exact process generation across distinct modules."""
         now = time.time()
-        if pid not in self._pending:
-            self._pending[pid] = []
-        self._pending[pid].append((now, ev.module))
+        identity = self._signal_identity(pid, ev)
+        if identity is None:
+            return False
+        if identity not in self._pending:
+            self._pending[identity] = []
+        self._pending[identity].append((now, ev.module))
         # Count distinct source modules within the window
         in_window = [
-            (ts, mod) for ts, mod in self._pending[pid]
+            (ts, mod) for ts, mod in self._pending[identity]
             if now - ts <= _CORROBORATION_WINDOW_S
         ]
         distinct_modules = {mod for _, mod in in_window}
         if len(distinct_modules) >= _CORROBORATION_MIN:
-            del self._pending[pid]   # consumed — reset for next incident
+            del self._pending[identity]   # consumed — reset for this generation
             return True
         return False
 
-    def _signal_count(self, pid: int) -> int:
+    def _signal_count(self, pid: int, ev=None) -> int:
         now = time.time()
+        identity = self._signal_identity(pid, ev) if ev is not None else None
+        if identity is None:
+            return 0
         return len({
-            mod for ts, mod in self._pending.get(pid, [])
+            mod for ts, mod in self._pending.get(identity, [])
             if now - ts <= _CORROBORATION_WINDOW_S
         })
 
     def _purge_stale_pending(self) -> None:
         now = time.time()
-        for pid in list(self._pending):
-            self._pending[pid] = [
-                (ts, mod) for ts, mod in self._pending[pid]
+        for identity in list(self._pending):
+            self._pending[identity] = [
+                (ts, mod) for ts, mod in self._pending[identity]
                 if now - ts <= _CORROBORATION_WINDOW_S
             ]
-            if not self._pending[pid]:
-                del self._pending[pid]
+            if not self._pending[identity]:
+                del self._pending[identity]
 
     def _contain(self, pid: int, ev) -> None:
         """Delegate exact-target containment to the journaled Combat sink.

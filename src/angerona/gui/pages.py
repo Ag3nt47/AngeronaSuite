@@ -12,25 +12,30 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import hmac
 import json
 import os
 import platform
 import re
+import stat
 import subprocess
 import sys
 import threading
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 from PySide6.QtCore import QRegularExpression, Qt, QTimer, Signal
 from PySide6.QtGui import (QAction, QColor, QFont, QGuiApplication, QKeySequence,
-                           QRegularExpressionValidator, QShortcut, QTextCursor)
+                           QRegularExpressionValidator, QShortcut, QTextCursor,
+                           QTextFormat)
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFileDialog, QGridLayout, QFrame, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
     QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QTextEdit,
 )
 
 HELP_TEXT_SHORT = (
@@ -71,6 +76,7 @@ SECURITY NOTES
 """
 
 from angerona import __version__
+from angerona.core.capability_assurance import assess_capability
 from angerona.core.eventbus import Severity
 from angerona.core.threat import active_threat_events, threat_label
 from angerona.gui.animations import begin_loading, finish_loading
@@ -174,6 +180,91 @@ def _capability_summary(module) -> dict:
         return {}
 
 
+_PERCENT_SORT_ROLE = Qt.UserRole + 31
+
+
+class _PercentTableItem(QTableWidgetItem):
+    """Display a percentage while sorting by its numeric value."""
+
+    def __init__(self, score: int | None) -> None:
+        self.score = -1 if score is None else max(0, min(100, int(score)))
+        super().__init__("—" if score is None else f"{self.score}%")
+        self.setData(_PERCENT_SORT_ROLE, self.score)
+
+    def __lt__(self, other) -> bool:
+        if isinstance(other, _PercentTableItem):
+            return self.score < other.score
+        return super().__lt__(other)
+
+
+def _assurance_color(score: int) -> str:
+    if score >= 100:
+        return "#22c55e"
+    if score >= 90:
+        return "#38bdf8"
+    if score >= 70:
+        return "#f59e0b"
+    if score >= 50:
+        return "#f97316"
+    return "#ef4444"
+
+
+def _manager_enabled(manager, module) -> bool:
+    try:
+        return bool(manager.is_enabled(module.name))
+    except Exception:
+        return bool(getattr(module, "enabled_by_default", False))
+
+
+def _fast_assurance_operational(
+    module, health_summary: tuple[str, int, str],
+) -> dict[str, object]:
+    """Build a non-blocking live assurance input from already-read health."""
+    status, health, health_state = health_summary
+    thread = getattr(module, "_thread", None)
+    try:
+        thread_alive = bool(thread is not None and thread.is_alive())
+    except Exception:
+        thread_alive = False
+    return {
+        "status": status,
+        "health": health,
+        "health_state": health_state,
+        "thread_alive": thread_alive,
+        "first_cycle_complete": bool(getattr(module, "first_cycle_complete", False)),
+        "event_overflow_count": int(getattr(module, "_bus_overflow_count", 0)),
+        "crash_count": int(getattr(module, "_crash_count", 0)),
+    }
+
+
+def _module_assurance(manager, module, operational=None):
+    return assess_capability(
+        module,
+        contract=getattr(module, "_angerona_contract", None),
+        operational=operational,
+        platform=getattr(manager, "platform", None),
+        enabled=_manager_enabled(manager, module),
+    )
+
+
+def _assurance_tooltip(assurance) -> str:
+    lines = [
+        f"Assurance {assurance.score}% — weakest verified dimension; not attack coverage."
+    ]
+    for item in assurance.reasons[:12]:
+        location = (
+            f" [{item.source_path}:{item.source_line}]"
+            if item.source_path and item.source_line
+            else " [source unavailable]"
+        )
+        lines.append(f"• {item.reason}{location}")
+    if len(assurance.reasons) > 12:
+        lines.append(f"• …and {len(assurance.reasons) - 12} more; click for all evidence.")
+    if not assurance.reasons:
+        lines.append("Click to inspect the five scored dimensions and their meaning.")
+    return "\n".join(lines)
+
+
 def _source_editing_allowed() -> bool:
     """Live source editing is a development-only, unprivileged capability."""
     return bool(
@@ -181,6 +272,155 @@ def _source_editing_allowed() -> bool:
         and os.environ.get("ANGERONA_DEVELOPMENT_MODE", "").strip() == "1"
         and os.environ.get("ANGERONA_ENFORCE_KEY_ACL", "").strip() != "1"
     )
+
+
+_HEALTH_SOURCE_MAX_BYTES = 512 * 1024
+_HEALTH_SOURCE_MAX_LINES = 20_000
+_HEALTH_SOURCE_CONTEXT = 24
+_ANGERONA_REPOSITORY_URL = "https://github.com/Ag3nt47/AngeronaSuite"
+
+
+def _source_checkout_root() -> Path | None:
+    """Return the exact current checkout root, not a packaged-path guess."""
+    if getattr(sys, "frozen", False):
+        return None
+    try:
+        this_file = Path(__file__).resolve(strict=True)
+        root = this_file.parents[3]
+        expected = root / "src" / "angerona" / "gui" / "pages.py"
+        if not (root / ".git").exists():
+            return None
+        if expected.resolve(strict=True) != this_file:
+            return None
+        return root
+    except (IndexError, OSError, RuntimeError):
+        return None
+
+
+def _trusted_repository_source(relative_path: object) -> Path | None:
+    """Resolve one evidence path without accepting absolute/external paths."""
+    root = _source_checkout_root()
+    if root is None or not isinstance(relative_path, str):
+        return None
+    normalized = relative_path.replace("\\", "/")
+    if not normalized.startswith("src/angerona/"):
+        return None
+    relative = Path(normalized)
+    if relative.is_absolute() or ".." in relative.parts:
+        return None
+    try:
+        candidate = root.joinpath(relative).resolve(strict=True)
+        candidate.relative_to(root)
+        if not candidate.is_file() or candidate.suffix.casefold() != ".py":
+            return None
+        # Reject descendant links/junctions.  The checkout root itself may be
+        # a managed worktree junction, but evidence must not traverse another
+        # redirect after entering that root.
+        current = root
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                return None
+            is_junction = getattr(current, "is_junction", None)
+            if callable(is_junction) and is_junction():
+                return None
+        return candidate
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _repository_relative_source(path: object) -> str:
+    """Return a safe repository-relative source name or an empty string."""
+    root = _source_checkout_root()
+    if root is None:
+        return ""
+    try:
+        candidate = Path(os.fspath(path)).resolve(strict=True)
+        relative = candidate.relative_to(root).as_posix()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return ""
+    return relative if _trusted_repository_source(relative) == candidate else ""
+
+
+def _read_trusted_source(
+    relative_path: object,
+    expected_sha256: object = None,
+) -> tuple[str | None, str | None]:
+    """Read a bounded regular source file, returning text or a safe reason."""
+    candidate = _trusted_repository_source(relative_path)
+    if candidate is None:
+        return None, "Source is unavailable or outside the trusted Angerona checkout."
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd: int | None = None
+    try:
+        fd = os.open(candidate, flags)
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            return None, "The source evidence target is not a regular file."
+        if metadata.st_size > _HEALTH_SOURCE_MAX_BYTES:
+            return None, (
+                f"Source exceeds the {_HEALTH_SOURCE_MAX_BYTES // 1024} KiB "
+                "read-only evidence limit."
+            )
+        chunks: list[bytes] = []
+        remaining = _HEALTH_SOURCE_MAX_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > _HEALTH_SOURCE_MAX_BYTES:
+            return None, "Source changed or exceeded the bounded read limit."
+        if expected_sha256 is not None:
+            expected_digest = str(expected_sha256).casefold()
+            if not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+                return None, "Verified source digest is unavailable for this health evidence."
+            if hashlib.sha256(raw).hexdigest() != expected_digest:
+                return None, "Source changed after this health evidence was recorded."
+        # Revalidate the pathname after the descriptor-bound read.  This keeps
+        # a concurrent replacement from being presented as current evidence.
+        if _trusted_repository_source(relative_path) != candidate:
+            return None, "Source identity changed while evidence was being read."
+        return raw.decode("utf-8", errors="replace"), None
+    except (OSError, RuntimeError):
+        return None, "Source could not be read safely from the trusted checkout."
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _health_source_context(
+    relative_path: object, source_line: object, source_sha256: object = None,
+) -> tuple[str | None, int | None, str | None]:
+    """Return numbered bounded context and its zero-based highlighted block."""
+    try:
+        line_number = int(source_line)
+    except (TypeError, ValueError):
+        return None, None, "No exact source line was recorded for this health state."
+    if line_number < 1 or line_number > _HEALTH_SOURCE_MAX_LINES:
+        return None, None, "The recorded source line is outside the bounded display range."
+    if not re.fullmatch(r"[0-9a-f]{64}", str(source_sha256 or "").casefold()):
+        return None, None, "Verified source digest is unavailable for this health evidence."
+    source, error = _read_trusted_source(relative_path, source_sha256)
+    if source is None:
+        return None, None, error
+    lines = source.splitlines()
+    if len(lines) > _HEALTH_SOURCE_MAX_LINES:
+        return None, None, "Source contains too many lines for the read-only evidence view."
+    if line_number > len(lines):
+        return None, None, "The recorded line no longer exists in the checked-out source."
+    start = max(1, line_number - _HEALTH_SOURCE_CONTEXT)
+    end = min(len(lines), line_number + _HEALTH_SOURCE_CONTEXT)
+    rendered = "\n".join(
+        f"{number:6d} | {lines[number - 1]}"
+        for number in range(start, end + 1)
+    )
+    return rendered, line_number - start, None
 
 
 # Short codes for status-strip chips.  Modules that expose a .CODE class attr
@@ -1529,11 +1769,20 @@ class ModulesStatusWindow(QDialog):
         )
         self.status_filter.currentIndexChanged.connect(self._refresh)
         filters.addWidget(self.status_filter)
+        self.assurance_filter = QComboBox()
+        self.assurance_filter.addItems(
+            ["All assurance", "Below 100%", "100%", "Below 70%"]
+        )
+        self.assurance_filter.currentIndexChanged.connect(self._refresh)
+        filters.addWidget(self.assurance_filter)
         root.addLayout(filters)
 
-        self.table = QTableWidget(0, 8)
+        self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels(
-            ["Module", "Status", "Health", "Mode", "Platforms", "Maturity", "Authority", "Impl."]
+            [
+                "Module", "Status", "Health", "Assurance", "Mode", "Platforms",
+                "Maturity", "Authority", "Impl.",
+            ]
         )
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
@@ -1576,7 +1825,8 @@ class ModulesStatusWindow(QDialog):
         mode_filter = self.mode_filter.currentText()
         maturity_filter = self.maturity_filter.currentText()
         status_filter = self.status_filter.currentText()
-        visible: list[tuple[str, object, dict]] = []
+        assurance_filter = self.assurance_filter.currentText()
+        visible: list[tuple[str, object, dict, tuple[str, int, str], object]] = []
         for name, mod in mods:
             contract = _capability_summary(mod)
             haystack = " ".join(
@@ -1593,16 +1843,30 @@ class ModulesStatusWindow(QDialog):
                 continue
             if maturity_filter != "All maturity" and contract.get("maturity") != maturity_filter:
                 continue
-            if status_filter != "All status" and getattr(mod, "status", "") != status_filter:
+            health_summary = mod.health_summary()
+            if status_filter != "All status" and health_summary[0] != status_filter:
                 continue
-            visible.append((name, mod, contract))
+            assurance = _module_assurance(
+                self.manager,
+                mod,
+                _fast_assurance_operational(mod, health_summary),
+            )
+            if assurance_filter == "Below 100%" and assurance.score >= 100:
+                continue
+            if assurance_filter == "100%" and assurance.score != 100:
+                continue
+            if assurance_filter == "Below 70%" and assurance.score >= 70:
+                continue
+            visible.append((name, mod, contract, health_summary, assurance))
         snapshot = tuple(
-            (name, getattr(mod, "name", name), getattr(mod, "status", "?"),
-             getattr(mod, "health", 0), getattr(mod, "health_state", "off"),
+            (name, getattr(mod, "name", name), health_summary[0],
+             health_summary[1], health_summary[2],
+             assurance.score,
+             tuple((item.dimension, item.score, item.state) for item in assurance.dimensions),
              contract.get("mode"), contract.get("maturity"),
              contract.get("response_authority"), contract.get("implementation_version"),
              getattr(mod, "_bus_overflow_count", 0))
-            for name, mod, contract in visible
+            for name, mod, contract, health_summary, assurance in visible
         ) + (("__subscriber_slo__", subscriber_failures, subscriber_slo_violations),)
         if snapshot == self._last_snapshot:
             return
@@ -1617,10 +1881,11 @@ class ModulesStatusWindow(QDialog):
         running = 0
         overflowed = 0
         native = 0
-        for name, mod, contract in visible:
+        sub_full_assurance = 0
+        for name, mod, contract, health_summary, assurance in visible:
             r = self.table.rowCount()
             self.table.insertRow(r)
-            status = getattr(mod, "status", "?")
+            status, health_value, health_state = health_summary
             running += (status == "running")
             name_item = QTableWidgetItem(getattr(mod, "name", name))
             name_item.setData(Qt.UserRole, name)
@@ -1628,23 +1893,28 @@ class ModulesStatusWindow(QDialog):
             st_item = QTableWidgetItem(status)
             st_item.setForeground(QColor(STATUS_COLOR.get(status, "#e5e7eb")))
             self.table.setItem(r, 1, st_item)
-            health = f"{getattr(mod, 'health', 0)}%" if status == "running" else "—"
-            h_item = QTableWidgetItem(health)
-            h_item.setForeground(QColor(HEALTH_COLOR.get(getattr(mod, "health_state", "off"), "#e5e7eb")))
+            h_item = _PercentTableItem(health_value if status == "running" else None)
+            h_item.setForeground(QColor(HEALTH_COLOR.get(health_state, "#e5e7eb")))
             self.table.setItem(r, 2, h_item)
-            self.table.setItem(r, 3, QTableWidgetItem(str(contract.get("mode", "legacy"))))
+            assurance_item = _PercentTableItem(assurance.score)
+            assurance_item.setForeground(QColor(_assurance_color(assurance.score)))
+            assurance_item.setToolTip(_assurance_tooltip(assurance))
+            assurance_item.setData(Qt.UserRole, assurance.as_dict())
+            self.table.setItem(r, 3, assurance_item)
+            self.table.setItem(r, 4, QTableWidgetItem(str(contract.get("mode", "legacy"))))
             self.table.setItem(
-                r, 4, QTableWidgetItem(", ".join(contract.get("supported_platforms", ())))
+                r, 5, QTableWidgetItem(", ".join(contract.get("supported_platforms", ())))
             )
-            self.table.setItem(r, 5, QTableWidgetItem(str(contract.get("maturity", "compatibility"))))
+            self.table.setItem(r, 6, QTableWidgetItem(str(contract.get("maturity", "compatibility"))))
             self.table.setItem(
-                r, 6, QTableWidgetItem(str(contract.get("response_authority", "none")))
+                r, 7, QTableWidgetItem(str(contract.get("response_authority", "none")))
             )
             self.table.setItem(
-                r, 7, QTableWidgetItem(str(contract.get("implementation_version", "?")))
+                r, 8, QTableWidgetItem(str(contract.get("implementation_version", "?")))
             )
             overflowed += int(getattr(mod, "_bus_overflow_count", 0) > 0)
             native += int(contract.get("metadata_level") == "native")
+            sub_full_assurance += int(assurance.score < 100)
         self.table.setSortingEnabled(True)
         self.table.sortItems(sort_column, sort_order)
         if selected_name:
@@ -1655,7 +1925,8 @@ class ModulesStatusWindow(QDialog):
                     break
         self.summary.setText(
             f"Showing {len(visible)}/{len(mods)} · {running} running · "
-            f"{native} native contracts · {overflowed} with evidence-loss history · "
+            f"{native} native contracts · {sub_full_assurance} below 100% assurance · "
+            f"{overflowed} with evidence-loss history · "
             f"subscriber failures/SLO {subscriber_failures}/{subscriber_slo_violations}"
         )
 
@@ -1675,6 +1946,7 @@ class ModulesStatusWindow(QDialog):
             return
         menu = QMenu(self)
         inspect_action = menu.addAction("Inspect capability")
+        assurance_action = menu.addAction("Explain assurance score")
         test_action = menu.addAction("Run safe self-test")
         restart_action = menu.addAction("Restart module")
         enabled = self.manager.is_enabled(module.name)
@@ -1684,6 +1956,8 @@ class ModulesStatusWindow(QDialog):
         selected = menu.exec(self.table.viewport().mapToGlobal(position))
         if selected == inspect_action:
             self._open_module(item.row(), 0)
+        elif selected == assurance_action:
+            self._open_module(item.row(), 3)
         elif selected == test_action:
             def _test_inspector():
                 inspector = ModuleInspector(
@@ -1704,12 +1978,59 @@ class ModulesStatusWindow(QDialog):
             contract = _capability_contract(module)
             QGuiApplication.clipboard().setText(str(contract.get("capability_id", module.name)))
 
-    def _open_module(self, row: int, _column: int) -> None:
+    def _open_module(self, row: int, column: int) -> None:
         item = self.table.item(row, 0)
         name = item.data(Qt.UserRole) if item is not None else None
         module = self.manager.modules.get(name) if name else None
         if module is None:
             return
+        if column in {2, 3}:
+            try:
+                operational = module.operational_snapshot()
+            except Exception:
+                operational = {
+                    "status": "snapshot-error",
+                    "health": 0,
+                    "health_note": "Module operational snapshot is unavailable.",
+                    "health_evidence": None,
+                }
+            if column == 2:
+                try:
+                    health = max(0, min(100, int(operational.get("health", 0))))
+                except (TypeError, ValueError):
+                    health = 0
+                if health < 100:
+                    evidence = operational.get("health_evidence")
+                    if not isinstance(evidence, dict):
+                        evidence = {
+                            "reason": str(
+                                operational.get("health_note")
+                                or f"Module reports {health}% health without a diagnostic reason."
+                            )[:1000],
+                            "source_state": "unavailable",
+                            "source_path": None,
+                            "source_line": None,
+                            "source_sha256": None,
+                            "source_provenance": "unavailable",
+                        }
+                    _show_nonmodal_from(
+                        self.table,
+                        lambda: ModuleHealthEvidenceDialog(
+                            module.name, evidence, self.window()
+                        ),
+                        "#ef4444",
+                    )
+                    return
+            else:
+                assurance = _module_assurance(self.manager, module, operational)
+                _show_nonmodal_from(
+                    self.table,
+                    lambda: ModuleAssuranceDialog(
+                        module.name, assurance, self.window()
+                    ),
+                    _assurance_color(assurance.score),
+                )
+                return
         _show_nonmodal_from(
             self.table,
             lambda: ModuleInspector(
@@ -2554,7 +2875,7 @@ class ModulesPanel(QFrame):
         sort_row = QHBoxLayout()
         sort_row.addWidget(QLabel("Sort by:"))
         self._sort_combo = QComboBox()
-        self._sort_combo.addItems(["Name", "On/Off", "Status", "Category"])
+        self._sort_combo.addItems(["Name", "On/Off", "Status", "Assurance", "Category"])
         self._sort_combo.currentIndexChanged.connect(lambda *_: self._build())
         sort_row.addWidget(self._sort_combo)
         self._module_search = QLineEdit()
@@ -2571,8 +2892,10 @@ class ModulesPanel(QFrame):
         sort_row.addStretch(1)
         lay.addLayout(sort_row)
 
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["On", "Module", "Status", "Category", "Mode", "Impl."])
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(
+            ["On", "Module", "Status", "Assurance", "Category", "Mode", "Impl."]
+        )
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -2609,6 +2932,17 @@ class ModulesPanel(QFrame):
             return sorted(items, key=lambda kv: (not self.manager.is_enabled(kv[0]), kv[0].lower()))
         if mode == "Status":
             return sorted(items, key=lambda kv: (getattr(kv[1], "status", ""), kv[0].lower()))
+        if mode == "Assurance":
+            def assurance_key(item):
+                health_summary = item[1].health_summary()
+                score = _module_assurance(
+                    self.manager,
+                    item[1],
+                    _fast_assurance_operational(item[1], health_summary),
+                ).score
+                return (score, item[0].lower())
+
+            return sorted(items, key=assurance_key)
         if mode == "Category":
             return sorted(items, key=lambda kv: (getattr(kv[1], "category", ""), kv[0].lower()))
         return sorted(items, key=lambda kv: kv[0].lower())
@@ -2635,12 +2969,24 @@ class ModulesPanel(QFrame):
             name_item = QTableWidgetItem(f"{_avatar(mod.category)}  {mod.name}")
             name_item.setData(Qt.UserRole, mod.name)
             self.table.setItem(r, 1, name_item)
-            self.table.setItem(r, 2, QTableWidgetItem(mod.status))
-            self.table.setItem(r, 3, QTableWidgetItem(mod.category))
+            health_summary = mod.health_summary()
+            status, health, health_state = health_summary
+            status_text = f"{status} {health}%" if status == "running" else status
+            status_item = QTableWidgetItem(status_text)
+            status_item.setForeground(QColor(HEALTH_COLOR.get(health_state, "#e5e7eb")))
+            self.table.setItem(r, 2, status_item)
+            assurance = _module_assurance(
+                self.manager, mod, _fast_assurance_operational(mod, health_summary)
+            )
+            assurance_item = _PercentTableItem(assurance.score)
+            assurance_item.setForeground(QColor(_assurance_color(assurance.score)))
+            assurance_item.setToolTip(_assurance_tooltip(assurance))
+            self.table.setItem(r, 3, assurance_item)
+            self.table.setItem(r, 4, QTableWidgetItem(mod.category))
             contract = _capability_summary(mod)
-            self.table.setItem(r, 4, QTableWidgetItem(str(contract.get("mode", "legacy"))))
+            self.table.setItem(r, 5, QTableWidgetItem(str(contract.get("mode", "legacy"))))
             self.table.setItem(
-                r, 5, QTableWidgetItem(str(contract.get("implementation_version", mod.version)))
+                r, 6, QTableWidgetItem(str(contract.get("implementation_version", mod.version)))
             )
         self.table.setColumnWidth(0, 36)
         self.table.setSortingEnabled(True)
@@ -2664,14 +3010,24 @@ class ModulesPanel(QFrame):
             mod = self.manager.modules.get(name_item.data(Qt.UserRole))
             if not mod:
                 continue
-            txt = (f"{mod.status} {mod.health}%"
-                   if mod.status == "running" else mod.status)
+            health_summary = mod.health_summary()
+            status, health, health_state = health_summary
+            txt = f"{status} {health}%" if status == "running" else status
             existing = self.table.item(r, 2)
-            if existing and existing.text() == txt:
-                continue                     # no change — avoid creating a new item
-            item = QTableWidgetItem(txt)
-            item.setForeground(QColor(HEALTH_COLOR.get(mod.health_state, "#e5e7eb")))
-            self.table.setItem(r, 2, item)
+            if not existing or existing.text() != txt:
+                item = QTableWidgetItem(txt)
+                item.setForeground(QColor(HEALTH_COLOR.get(health_state, "#e5e7eb")))
+                self.table.setItem(r, 2, item)
+            assurance = _module_assurance(
+                self.manager, mod, _fast_assurance_operational(mod, health_summary)
+            )
+            current_assurance = self.table.item(r, 3)
+            rendered = f"{assurance.score}%"
+            if not current_assurance or current_assurance.text() != rendered:
+                assurance_item = _PercentTableItem(assurance.score)
+                assurance_item.setForeground(QColor(_assurance_color(assurance.score)))
+                assurance_item.setToolTip(_assurance_tooltip(assurance))
+                self.table.setItem(r, 3, assurance_item)
         self.table.setUpdatesEnabled(True)
         self.table.setSortingEnabled(True)
         self.table.sortItems(sort_column, sort_order)
@@ -2684,6 +3040,20 @@ class ModulesPanel(QFrame):
             return
         mod = self.manager.modules.get(name_item.data(Qt.UserRole))
         if mod:
+            if col == 3:
+                try:
+                    operational = mod.operational_snapshot()
+                except Exception:
+                    operational = {"status": "snapshot-error", "health": 0}
+                assurance = _module_assurance(self.manager, mod, operational)
+                _show_nonmodal_from(
+                    self.table,
+                    lambda: ModuleAssuranceDialog(
+                        mod.name, assurance, self.window()
+                    ),
+                    _assurance_color(assurance.score),
+                )
+                return
             _show_nonmodal_from(
                 self.table,
                 lambda: ModuleInspector(
@@ -2703,6 +3073,311 @@ class ModulesPanel(QFrame):
 
 
 # ── Module inspector ─────────────────────────────────────────────────────────
+class ModuleHealthEvidenceDialog(QDialog):
+    """Read-only explanation and exact source context for degraded health."""
+
+    def __init__(
+        self,
+        module_name: str,
+        evidence: object,
+        parent=None,
+        *,
+        evidence_label: str = "Health",
+    ) -> None:
+        super().__init__(parent)
+        label = str(evidence_label or "Evidence")[:80]
+        self.setWindowTitle(f"{str(module_name)[:160]} — {label} evidence")
+        self.setMinimumSize(760, 540)
+        if parent:
+            self.setStyleSheet(parent.styleSheet())
+        layout = QVBoxLayout(self)
+
+        record = dict(evidence) if isinstance(evidence, dict) else {}
+        reason = str(record.get("reason") or "Degraded health reason is unavailable")[:1000]
+        reason_label = QLabel(reason)
+        reason_label.setObjectName("moduleHealthEvidenceReason")
+        reason_label.setTextFormat(Qt.PlainText)
+        reason_label.setWordWrap(True)
+        reason_label.setStyleSheet(
+            "color:#fecaca; background:#3f1016; border:1px solid #ef4444; "
+            "border-radius:6px; padding:10px;"
+        )
+        layout.addWidget(reason_label)
+
+        state = str(record.get("source_state") or "unavailable")[:80]
+        provenance = str(record.get("source_provenance") or "unverified-callsite")[:80]
+        relative = record.get("source_path")
+        line = record.get("source_line")
+        source_sha256 = record.get("source_sha256")
+        trusted = _trusted_repository_source(relative)
+        trusted_provenance = provenance in {
+            "verified-loaded-implementation",
+            "verified-loaded-declaration",
+        }
+        if (
+            state == "available"
+            and trusted_provenance
+            and trusted is not None
+        ):
+            relative_text = str(relative)
+            try:
+                line_number = max(1, int(line))
+            except (TypeError, ValueError):
+                line_number = 1
+            location = QLabel(
+                f"Verified implementation source: {relative_text}:{line_number}"
+            )
+            location.setObjectName("moduleHealthEvidenceLocation")
+            location.setTextFormat(Qt.PlainText)
+            location.setWordWrap(True)
+            location.setStyleSheet("color:#93c5fd; font-family:Consolas;")
+            layout.addWidget(location)
+
+            source_url = (
+                f"{_ANGERONA_REPOSITORY_URL}/blob/main/"
+                f"{quote(relative_text, safe='/')}#L{line_number}"
+            )
+            link = QLabel(
+                f'<a href="{source_url}">Open this exact file and line on GitHub</a>'
+            )
+            link.setObjectName("moduleHealthEvidenceRepositoryLink")
+            link.setOpenExternalLinks(True)
+            link.setTextInteractionFlags(Qt.TextBrowserInteraction)
+            layout.addWidget(link)
+        elif state == "untrusted-external":
+            unavailable = QLabel(
+                "Source path withheld: this in-process callsite was not proven "
+                "to be a declared function of the loaded Angerona module."
+            )
+            unavailable.setObjectName("moduleHealthEvidenceUnavailable")
+            unavailable.setWordWrap(True)
+            unavailable.setStyleSheet("color:#f59e0b;")
+            layout.addWidget(unavailable)
+        else:
+            unavailable = QLabel(
+                "Source unavailable in this packaged or source-less runtime. "
+                "No local path has been invented."
+            )
+            unavailable.setObjectName("moduleHealthEvidenceUnavailable")
+            unavailable.setWordWrap(True)
+            unavailable.setStyleSheet("color:#f59e0b;")
+            layout.addWidget(unavailable)
+
+        self.source_view = QPlainTextEdit()
+        self.source_view.setObjectName("moduleHealthEvidenceSource")
+        self.source_view.setReadOnly(True)
+        self.source_view.setFont(QFont("Consolas", 9))
+        self.highlighted_source_line: int | None = None
+        self.highlighted_block_index: int | None = None
+        if state == "available" and trusted_provenance:
+            context, block_index, error = _health_source_context(
+                relative, line, source_sha256
+            )
+        elif state == "untrusted-external":
+            context, block_index, error = (
+                None,
+                None,
+                "Source context withheld because this callsite was not proven as "
+                "loaded Angerona implementation code.",
+            )
+        else:
+            context, block_index, error = (
+                None,
+                None,
+                "Source context is unavailable in this packaged or source-less runtime.",
+            )
+        if (
+            state == "available"
+            and trusted_provenance
+            and context is not None
+            and block_index is not None
+        ):
+            self.source_view.setPlainText(context)
+            block = self.source_view.document().findBlockByNumber(block_index)
+            cursor = QTextCursor(block)
+            selection = QTextEdit.ExtraSelection()
+            selection.cursor = cursor
+            selection.format.setBackground(QColor("#991b1b"))
+            selection.format.setForeground(QColor("#fff7ed"))
+            selection.format.setProperty(QTextFormat.FullWidthSelection, True)
+            self.source_view.setExtraSelections([selection])
+            self.source_view.setTextCursor(cursor)
+            self.source_view.centerCursor()
+            self.highlighted_source_line = int(line)
+            self.highlighted_block_index = block_index
+        else:
+            self.source_view.setPlainText(error or "Source context is unavailable.")
+        layout.addWidget(self.source_view, 1)
+
+        close = QPushButton("Close")
+        close.clicked.connect(self.close)
+        layout.addWidget(close)
+
+
+class ModuleAssuranceDialog(QDialog):
+    """Explain a capability's weakest-dimension assurance and every deduction."""
+
+    def __init__(self, module_name: str, assurance: object, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"{str(module_name)[:160]} — Capability assurance")
+        self.setMinimumSize(940, 650)
+        if parent:
+            self.setStyleSheet(parent.styleSheet())
+        layout = QVBoxLayout(self)
+        if hasattr(assurance, "as_dict"):
+            record = assurance.as_dict()
+        elif isinstance(assurance, dict):
+            record = dict(assurance)
+        else:
+            record = {}
+        score = max(0, min(100, int(record.get("score", 0) or 0)))
+        self.assurance_record = record
+        self.reasons = [
+            dict(item) for item in record.get("reasons", ()) if isinstance(item, dict)
+        ]
+
+        summary = QLabel(
+            f"Assurance: {score}% · {record.get('interpretation', '')}"
+        )
+        summary.setObjectName("moduleAssuranceSummary")
+        summary.setTextFormat(Qt.PlainText)
+        summary.setWordWrap(True)
+        summary.setStyleSheet(
+            f"color:{_assurance_color(score)}; background:#111827; "
+            "border:1px solid #334155; border-radius:6px; padding:10px;"
+        )
+        layout.addWidget(summary)
+
+        explanation = QLabel(
+            "The overall value is the lowest dimension, never an average. A high value "
+            "does not prove exploit immunity; it means the listed implementation, host, "
+            "runtime, continuity, and verification evidence currently has no shown deduction."
+        )
+        explanation.setWordWrap(True)
+        explanation.setStyleSheet("color:#cbd5e1;")
+        layout.addWidget(explanation)
+
+        layout.addWidget(_section("Scored dimensions — click any row for its meaning"))
+        self.dimension_table = QTableWidget(0, 4)
+        self.dimension_table.setHorizontalHeaderLabels(
+            ["Dimension", "Score", "State", "What was measured"]
+        )
+        self.dimension_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.dimension_table.verticalHeader().setVisible(False)
+        self.dimension_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.dimension_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.dimension_table.setSortingEnabled(True)
+        for dimension in record.get("dimensions", ()):
+            if not isinstance(dimension, dict):
+                continue
+            row = self.dimension_table.rowCount()
+            self.dimension_table.insertRow(row)
+            label = QTableWidgetItem(str(dimension.get("label", "Unknown")))
+            label.setData(Qt.UserRole, dict(dimension))
+            self.dimension_table.setItem(row, 0, label)
+            dim_score = max(0, min(100, int(dimension.get("score", 0) or 0)))
+            score_item = _PercentTableItem(dim_score)
+            score_item.setForeground(QColor(_assurance_color(dim_score)))
+            self.dimension_table.setItem(row, 1, score_item)
+            self.dimension_table.setItem(
+                row, 2, QTableWidgetItem(str(dimension.get("state", "unknown")))
+            )
+            self.dimension_table.setItem(
+                row, 3, QTableWidgetItem(str(dimension.get("explanation", "")))
+            )
+        self.dimension_table.cellClicked.connect(self._show_dimension)
+        self.dimension_table.setFixedHeight(190)
+        layout.addWidget(self.dimension_table)
+
+        self.dimension_detail = QLabel(
+            "Select a dimension to display its exact definition and current state."
+        )
+        self.dimension_detail.setObjectName("moduleAssuranceDimensionDetail")
+        self.dimension_detail.setTextFormat(Qt.PlainText)
+        self.dimension_detail.setWordWrap(True)
+        self.dimension_detail.setStyleSheet(
+            "color:#bfdbfe; background:#0f172a; border:1px solid #1e3a8a; padding:8px;"
+        )
+        layout.addWidget(self.dimension_detail)
+
+        layout.addWidget(
+            _section("Every deduction — click a row for exact path, line, and red source context")
+        )
+        self.reason_table = QTableWidget(0, 4)
+        self.reason_table.setHorizontalHeaderLabels(
+            ["Dimension", "Score", "Why less than 100%", "Source"]
+        )
+        self.reason_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.reason_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.reason_table.verticalHeader().setVisible(False)
+        self.reason_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.reason_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.reason_table.setSortingEnabled(True)
+        for reason in self.reasons:
+            row = self.reason_table.rowCount()
+            self.reason_table.insertRow(row)
+            dimension_item = QTableWidgetItem(str(reason.get("dimension", "unknown")))
+            dimension_item.setData(Qt.UserRole, reason)
+            self.reason_table.setItem(row, 0, dimension_item)
+            reason_score = max(
+                0, min(100, int(reason.get("dimension_score", score) or 0))
+            )
+            score_item = _PercentTableItem(reason_score)
+            score_item.setForeground(QColor(_assurance_color(reason_score)))
+            self.reason_table.setItem(row, 1, score_item)
+            why = QTableWidgetItem(str(reason.get("reason", "Reason unavailable")))
+            why.setToolTip(str(reason.get("remediation", "")))
+            self.reason_table.setItem(row, 2, why)
+            path = reason.get("source_path")
+            line = reason.get("source_line")
+            source = f"{path}:{line}" if path and line else "source unavailable"
+            self.reason_table.setItem(row, 3, QTableWidgetItem(source))
+        if not self.reasons:
+            self.reason_table.insertRow(0)
+            none = QTableWidgetItem("No deductions")
+            none.setData(Qt.UserRole, None)
+            self.reason_table.setItem(0, 0, none)
+            self.reason_table.setItem(0, 2, QTableWidgetItem(
+                "All five presently observed assurance dimensions score 100%."
+            ))
+        self.reason_table.cellClicked.connect(self._open_reason)
+        layout.addWidget(self.reason_table, 1)
+
+        close = QPushButton("Close")
+        close.clicked.connect(self.close)
+        layout.addWidget(close)
+
+    def _show_dimension(self, row: int, _column: int) -> None:
+        item = self.dimension_table.item(row, 0)
+        dimension = item.data(Qt.UserRole) if item is not None else None
+        if not isinstance(dimension, dict):
+            return
+        self.dimension_detail.setText(
+            f"{dimension.get('label', 'Dimension')} · "
+            f"{dimension.get('score', 0)}% · {dimension.get('state', 'unknown')}\n"
+            f"{dimension.get('explanation', '')}"
+        )
+
+    def _open_reason(self, row: int, _column: int) -> None:
+        item = self.reason_table.item(row, 0)
+        reason = item.data(Qt.UserRole) if item is not None else None
+        if not isinstance(reason, dict):
+            self.dimension_detail.setText(
+                "No assurance deduction exists to open for this capability."
+            )
+            return
+        _show_nonmodal_from(
+            self.reason_table,
+            lambda: ModuleHealthEvidenceDialog(
+                self.windowTitle().split(" — ", 1)[0],
+                reason,
+                self.window(),
+                evidence_label="Assurance",
+            ),
+            "#ef4444",
+        )
+
+
 class ModuleInspector(QDialog):
     _test_done = Signal(str)
 
@@ -2715,6 +3390,9 @@ class ModuleInspector(QDialog):
         self._cached_bus_events: list = []
         self._feed_fingerprint: tuple | None = None
         self._history_fingerprint: tuple | None = None
+        self._health_evidence_fingerprint: tuple | None = None
+        self._assurance_fingerprint: tuple | None = None
+        self._current_assurance = None
         self.setWindowTitle(f"Module — {module.name}")
         self.setMinimumSize(660, 560)
         if parent:
@@ -2730,6 +3408,7 @@ class ModuleInspector(QDialog):
 
         tabs = QTabWidget()
         tabs.addTab(self._overview_tab(),  "Overview")
+        tabs.addTab(self._assurance_tab(), "Assurance")
         tabs.addTab(self._contract_tab(),  "Contract v12")
         tabs.addTab(self._perf_tab(),      "⚡ Performance")
         tabs.addTab(self._history_tab(),   "📋 History")
@@ -2766,6 +3445,21 @@ class ModuleInspector(QDialog):
         desc.setStyleSheet("color:#cbd5e1;"); lay.addWidget(desc)
         self.status_lbl = QLabel(""); self.status_lbl.setTextFormat(Qt.PlainText)
         lay.addWidget(self.status_lbl)
+        self.health_evidence_btn = QPushButton("")
+        self.health_evidence_btn.setObjectName("ModuleHealthEvidenceButton")
+        self.health_evidence_btn.setToolTip(
+            "Open the exact reason, trusted local source path, and highlighted callsite."
+        )
+        self.health_evidence_btn.clicked.connect(self._open_health_evidence)
+        self.health_evidence_btn.hide()
+        lay.addWidget(self.health_evidence_btn)
+        self.assurance_btn = QPushButton("Inspect capability assurance…")
+        self.assurance_btn.setObjectName("ModuleAssuranceButton")
+        self.assurance_btn.setToolTip(
+            "Explain every scored dimension and open exact red-highlighted source evidence."
+        )
+        self.assurance_btn.clicked.connect(self._open_assurance)
+        lay.addWidget(self.assurance_btn)
         self.error_lbl = QLabel(""); self.error_lbl.setWordWrap(True)
         self.error_lbl.setTextFormat(Qt.PlainText)
         self.error_lbl.setStyleSheet("color:#ef4444;"); lay.addWidget(self.error_lbl)
@@ -2803,6 +3497,44 @@ class ModuleInspector(QDialog):
         self.feed.setSortingEnabled(True)
         self.feed.cellClicked.connect(self._on_feed_click)
         lay.addWidget(self.feed)
+        return w
+
+    def _assurance_tab(self) -> QWidget:
+        """Weakest-dimension score with every line item drillable."""
+        w = QWidget(); lay = QVBoxLayout(w)
+        lay.addWidget(_section("Capability Assurance Ledger v1"))
+        self._assurance_summary = QLabel("")
+        self._assurance_summary.setTextFormat(Qt.PlainText)
+        self._assurance_summary.setWordWrap(True)
+        lay.addWidget(self._assurance_summary)
+        caveat = QLabel(
+            "This is implementation/runtime assurance, not attack coverage or a guarantee. "
+            "The lowest dimension is the score so strong metadata cannot hide a stopped "
+            "sensor, evidence loss, or shallow verification."
+        )
+        caveat.setWordWrap(True)
+        caveat.setStyleSheet("color:#94a3b8;")
+        lay.addWidget(caveat)
+        self._assurance_dimensions = QTableWidget(0, 4)
+        self._assurance_dimensions.setHorizontalHeaderLabels(
+            ["Dimension", "Score", "State", "Explanation"]
+        )
+        self._assurance_dimensions.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.Stretch
+        )
+        self._assurance_dimensions.verticalHeader().setVisible(False)
+        self._assurance_dimensions.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._assurance_dimensions.setSelectionBehavior(QTableWidget.SelectRows)
+        self._assurance_dimensions.setSortingEnabled(True)
+        self._assurance_dimensions.cellClicked.connect(
+            lambda _row, _column: self._open_assurance()
+        )
+        lay.addWidget(self._assurance_dimensions, 1)
+        self._assurance_open_btn = QPushButton(
+            "Open every deduction, file path, GitHub line, and red source highlight"
+        )
+        self._assurance_open_btn.clicked.connect(self._open_assurance)
+        lay.addWidget(self._assurance_open_btn)
         return w
 
     def _contract_tab(self) -> QWidget:
@@ -2935,7 +3667,8 @@ class ModuleInspector(QDialog):
         lay.addWidget(_section("Module source"))
 
         src_path = self._find_module_src()
-        path_lbl = QLabel(src_path or "(source file not found)")
+        source_label = _repository_relative_source(src_path)
+        path_lbl = QLabel(source_label or "(trusted source file not found)")
         path_lbl.setStyleSheet("color:#93c5fd; font-family:Consolas;")
         path_lbl.setWordWrap(True)
         lay.addWidget(path_lbl)
@@ -2971,27 +3704,25 @@ class ModuleInspector(QDialog):
         return w
 
     def _find_module_src(self) -> str:
-        """Locate the .py file for self.module (inspect.getfile fallback)."""
+        """Locate only a trusted, bounded-checkout source for this module."""
         try:
             import inspect
-            return inspect.getfile(type(self.module))
+            candidate = inspect.getfile(type(self.module))
+            relative = _repository_relative_source(candidate)
+            trusted = _trusted_repository_source(relative)
+            return str(trusted) if trusted is not None else ""
         except Exception:
-            pass
-        try:
-            mod_name = type(self.module).__module__.split(".")[-1]
-            cands = list(Path(__file__).resolve().parents[1].rglob(f"{mod_name}.py"))
-            if cands:
-                return str(cands[0])
-        except Exception:
-            pass
-        return ""
+            return ""
 
     def _parse_imports(self, src_path: str) -> str:
         if not src_path:
             return "(source unavailable)"
         try:
             import ast as _ast
-            src = Path(src_path).read_text(encoding="utf-8", errors="replace")
+            relative = _repository_relative_source(src_path)
+            src, error = _read_trusted_source(relative)
+            if src is None:
+                return f"(source unavailable: {error})"
             tree = _ast.parse(src)
             lines = []
             for node in _ast.walk(tree):
@@ -3118,6 +3849,132 @@ class ModuleInspector(QDialog):
         except Exception as exc:
             QMessageBox.warning(self, "Sandbox", f"Could not open the sandbox: {exc}")
 
+    def _current_health_evidence(
+        self, operational: dict[str, object] | None = None,
+    ) -> dict[str, object] | None:
+        """Return evidence derived only from one operational snapshot."""
+        if operational is None:
+            try:
+                operational = self.module.operational_snapshot()
+            except Exception:
+                operational = {
+                    "health": 0,
+                    "health_note": "Module operational snapshot is unavailable.",
+                    "health_evidence": None,
+                }
+        try:
+            health = max(0, min(100, int(operational.get("health", 0))))
+        except (TypeError, ValueError):
+            health = 0
+        if health >= 100:
+            return None
+        evidence = operational.get("health_evidence")
+        if isinstance(evidence, dict):
+            return dict(evidence)
+        reason = str(operational.get("health_note") or "").strip()[:1000]
+        if not reason:
+            reason = f"Module reported {health}% health without a diagnostic reason."
+        return {
+            "reason": reason,
+            "source_state": "unavailable",
+            "source_path": None,
+            "source_line": None,
+            "source_sha256": None,
+            "source_provenance": "unavailable",
+        }
+
+    def _open_health_evidence(self) -> None:
+        evidence = self._current_health_evidence()
+        if evidence is None:
+            return
+        _show_nonmodal_from(
+            self.health_evidence_btn,
+            lambda: ModuleHealthEvidenceDialog(
+                self.module.name, evidence, self.window()
+            ),
+            "#ef4444",
+        )
+
+    def _open_assurance(self) -> None:
+        assurance = self._current_assurance
+        if assurance is None:
+            try:
+                operational = self.module.operational_snapshot()
+            except Exception:
+                operational = {
+                    "status": "snapshot-error",
+                    "health": 0,
+                    "health_note": "Module operational snapshot is unavailable.",
+                }
+            assurance = _module_assurance(self.manager, self.module, operational)
+        _show_nonmodal_from(
+            self.assurance_btn,
+            lambda: ModuleAssuranceDialog(
+                self.module.name, assurance, self.window()
+            ),
+            _assurance_color(assurance.score),
+        )
+
+    def _refresh_assurance(self, operational: dict[str, object]) -> None:
+        assurance = _module_assurance(self.manager, self.module, operational)
+        fingerprint = (
+            assurance.score,
+            tuple(
+                (item.dimension, item.score, item.state, item.explanation)
+                for item in assurance.dimensions
+            ),
+            tuple(
+                (
+                    item.code,
+                    item.dimension_score,
+                    item.reason,
+                    item.source_path,
+                    item.source_line,
+                    item.source_sha256,
+                )
+                for item in assurance.reasons
+            ),
+        )
+        self._current_assurance = assurance
+        if fingerprint == self._assurance_fingerprint:
+            return
+        self._assurance_fingerprint = fingerprint
+        color = _assurance_color(assurance.score)
+        reason_count = len(assurance.reasons)
+        self.assurance_btn.setText(
+            f"Assurance {assurance.score}% — inspect {reason_count} "
+            f"deduction{'s' if reason_count != 1 else ''}, paths, and lines"
+        )
+        self.assurance_btn.setStyleSheet(f"color:{color};")
+        self.assurance_btn.setToolTip(_assurance_tooltip(assurance))
+        self._assurance_summary.setText(
+            f"{assurance.score}% · {reason_count} current deduction"
+            f"{'s' if reason_count != 1 else ''}\n{assurance.interpretation}"
+        )
+        self._assurance_summary.setStyleSheet(f"color:{color};")
+        header = self._assurance_dimensions.horizontalHeader()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
+        self._assurance_dimensions.setSortingEnabled(False)
+        self._assurance_dimensions.setRowCount(0)
+        for dimension in assurance.dimensions:
+            row = self._assurance_dimensions.rowCount()
+            self._assurance_dimensions.insertRow(row)
+            label = QTableWidgetItem(dimension.label)
+            label.setToolTip("Click to open all evidence for this assurance score.")
+            self._assurance_dimensions.setItem(row, 0, label)
+            score_item = _PercentTableItem(dimension.score)
+            score_item.setForeground(QColor(_assurance_color(dimension.score)))
+            self._assurance_dimensions.setItem(row, 1, score_item)
+            self._assurance_dimensions.setItem(
+                row, 2, QTableWidgetItem(dimension.state)
+            )
+            explanation = QTableWidgetItem(dimension.explanation)
+            explanation.setToolTip(dimension.explanation)
+            self._assurance_dimensions.setItem(row, 3, explanation)
+        self._assurance_dimensions.setSortingEnabled(True)
+        self._assurance_dimensions.sortItems(sort_column, sort_order)
+
     def _selftest(self) -> None:
         if self._test_worker is not None and self._test_worker.is_alive():
             self.test_lbl.setText("A self-test is already running for this capability.")
@@ -3173,12 +4030,58 @@ class ModuleInspector(QDialog):
         super().closeEvent(event)
 
     def _refresh(self) -> None:
-        color = HEALTH_COLOR.get(self.module.health_state, "#e5e7eb")
-        note = f" · {str(self.module.health_note)[:1000]}" if self.module.health_note else ""
+        try:
+            operational = self.module.operational_snapshot()
+        except Exception:
+            operational = {
+                "status": "snapshot-error",
+                "health": 0,
+                "health_state": "failed",
+                "health_note": "Module operational snapshot is unavailable.",
+                "health_evidence": None,
+            }
+        health_state = str(operational.get("health_state", "failed"))
+        try:
+            health_value = max(0, min(100, int(operational.get("health", 0))))
+        except (TypeError, ValueError):
+            health_value = 0
+        health_note = str(operational.get("health_note") or "")[:1000]
+        status = str(operational.get("status", "snapshot-error"))[:80]
+        color = HEALTH_COLOR.get(health_state, "#e5e7eb")
+        note = f" · {health_note}" if health_note else ""
         self.status_lbl.setText(
-            f"Status: {str(self.module.status)[:80]} · "
-            f"health {self.module.health}% · "
+            f"Status: {status} · "
+            f"health {health_value}% · "
             f"{'enabled' if self._enabled() else 'disabled'}" + note)
+        self.status_lbl.setStyleSheet(f"color:{color};")
+        evidence = self._current_health_evidence(operational)
+        evidence_fingerprint = (
+            health_value,
+            str(evidence.get("reason") or "") if evidence is not None else "",
+            evidence.get("source_state") if evidence is not None else None,
+            evidence.get("source_path") if evidence is not None else None,
+            evidence.get("source_line") if evidence is not None else None,
+            evidence.get("source_sha256") if evidence is not None else None,
+            evidence.get("source_provenance") if evidence is not None else None,
+        ) if evidence is not None else None
+        if evidence_fingerprint != self._health_evidence_fingerprint:
+            self._health_evidence_fingerprint = evidence_fingerprint
+            if evidence is None:
+                self.health_evidence_btn.hide()
+            else:
+                reason = str(evidence.get("reason") or "Degraded health")[:240]
+                source_path = evidence.get("source_path")
+                source_line = evidence.get("source_line")
+                location = (
+                    f" · {source_path}:{source_line}"
+                    if source_path and source_line
+                    else " · source unavailable"
+                )
+                self.health_evidence_btn.setText(
+                    f"Why health is {health_value}%: {reason}{location}"
+                )
+                self.health_evidence_btn.show()
+        self._refresh_assurance(operational)
         self.error_lbl.setText(
             f"Last error: {str(self.module.last_error)[:2000]}"
             if self.module.last_error else ""
@@ -3186,7 +4089,6 @@ class ModuleInspector(QDialog):
         self.toggle_btn.setText("Disable" if self._enabled() else "Enable")
         try:
             contract = _capability_summary(self.module)
-            operational = self.module.operational_snapshot()
             gaps = contract.get("metadata_gaps", [])
             cycle_age = operational.get("last_cycle_age_seconds")
             cycle_text = "not yet sampled" if cycle_age is None else f"{float(cycle_age):.1f}s"
@@ -5610,6 +6512,151 @@ class SharkMonitorDialog(QDialog):
 
 
 # ── Shark Attack — After-Action Report (dialog) ───────────────────────────────
+
+
+def _load_verified_aar_text(
+    data_dir: Path,
+    *,
+    basename: str,
+    expected_kind: str,
+    expected_run_id: str = "",
+    expected_report_sha256: str = "",
+    expected_head_sha256: str = "",
+    expected_sequence: int = 0,
+) -> str:
+    """Load one identity-held AAR pair bound to the review window.
+
+    A valid older HMAC is still valid history, not permission to replace the
+    newer report already opened by this dialog.  The expected run and JSON-byte
+    digest therefore become immutable refresh high-water marks.
+    """
+    from angerona.core import report_attest
+
+    root = Path(data_dir).resolve(strict=False)
+    json_path = root / f"{basename}.json"
+    text_path = root / f"{basename}.txt"
+    head_path = root / f"{basename}.head.json"
+
+    def read_member(path: Path) -> bytes:
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(path, flags)
+            before = os.fstat(descriptor)
+            path_stat = path.stat(follow_symlinks=False)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or not stat.S_ISREG(path_stat.st_mode)
+                or bool(getattr(before, "st_file_attributes", 0) & 0x400)
+                or bool(getattr(path_stat, "st_file_attributes", 0) & 0x400)
+                or int(getattr(before, "st_nlink", 1)) != 1
+                or int(getattr(path_stat, "st_nlink", 1)) != 1
+                or (before.st_dev, before.st_ino)
+                != (path_stat.st_dev, path_stat.st_ino)
+                or not 0 < before.st_size <= 16 * 1024 * 1024
+            ):
+                raise ValueError(
+                    f"persisted report file has an unsafe identity: {path.name}"
+                )
+            remaining = int(before.st_size)
+            chunks: list[bytes] = []
+            while remaining:
+                chunk = os.read(descriptor, min(128 * 1024, remaining))
+                if not chunk:
+                    raise ValueError(
+                        f"persisted report file changed during read: {path.name}"
+                    )
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            after = os.fstat(descriptor)
+            final_path = path.stat(follow_symlinks=False)
+            if (
+                (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                or (after.st_dev, after.st_ino)
+                != (final_path.st_dev, final_path.st_ino)
+                or int(getattr(after, "st_nlink", 1)) != 1
+                or int(getattr(final_path, "st_nlink", 1)) != 1
+            ):
+                raise ValueError(
+                    f"persisted report file identity changed during read: {path.name}"
+                )
+            return b"".join(chunks)
+        except OSError as exc:
+            raise ValueError(
+                f"authenticated persisted report file is unavailable: {path.name}"
+            ) from exc
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+    try:
+        raw_json = read_member(json_path)
+        payload = json.loads(raw_json.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("persisted report metadata is unreadable") from exc
+    if not isinstance(payload, dict) or report_attest.verify(payload) != "ok":
+        raise ValueError("persisted report HMAC is missing or invalid")
+    if (
+        payload.get("report_basename") != basename
+        or payload.get("report_kind") != expected_kind
+        or not str(payload.get("run_id") or "").strip()
+    ):
+        raise ValueError("persisted report identity does not match this review window")
+    run_id = str(payload.get("run_id") or "")
+    raw_json_digest = hashlib.sha256(raw_json).hexdigest()
+    if expected_run_id and not hmac.compare_digest(run_id, str(expected_run_id)):
+        raise ValueError("persisted report run is older or different from this review window")
+    if expected_report_sha256 and (
+        not re.fullmatch(r"[0-9a-f]{64}", str(expected_report_sha256).casefold())
+        or not hmac.compare_digest(
+            raw_json_digest, str(expected_report_sha256).casefold()
+        )
+    ):
+        raise ValueError("persisted report metadata was replaced after this review opened")
+    if head_path.exists() or expected_head_sha256:
+        try:
+            raw_head = read_member(head_path)
+            head = json.loads(raw_head.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("persisted report head is unreadable") from exc
+        if not isinstance(head, dict) or report_attest.verify(head) != "ok":
+            raise ValueError("persisted report head HMAC is missing or invalid")
+        if (
+            head.get("schema") not in {
+                "angerona.aar-report-head.v1",
+                "angerona.aar-report-head.v2",
+            }
+            or head.get("report_basename") != basename
+            or head.get("report_kind") != expected_kind
+            or head.get("run_id") != run_id
+            or head.get("report_json_sha256") != raw_json_digest
+        ):
+            raise ValueError("persisted report pair does not match its authenticated head")
+        head_digest = hashlib.sha256(raw_head).hexdigest()
+        if expected_head_sha256 and not hmac.compare_digest(
+            head_digest, str(expected_head_sha256).casefold()
+        ):
+            raise ValueError("persisted report head was replaced after this review opened")
+        if expected_sequence and int(head.get("sequence", 0)) != int(expected_sequence):
+            raise ValueError("persisted report head sequence changed after review opened")
+    raw_text = read_member(text_path)
+    supplied_digest = str(payload.get("report_text_sha256") or "")
+    actual_digest = hashlib.sha256(raw_text).hexdigest()
+    if not re.fullmatch(r"[0-9a-f]{64}", supplied_digest) or not hmac.compare_digest(
+        supplied_digest,
+        actual_digest,
+    ):
+        raise ValueError("persisted report text does not match its authenticated metadata")
+    try:
+        return raw_text.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("persisted report text is not valid UTF-8") from exc
+
+
 class AARDialog(QDialog):
     """Read-only review window for a completed Shark Attack drill. Shows the
     same formatted report that's printed to the terminal (see
@@ -5630,6 +6677,13 @@ class AARDialog(QDialog):
         self._on_clean = on_clean
         self._redteam = bool(redteam)
         self._report_binding = report_binding
+        initial_binding = report_binding if isinstance(report_binding, dict) else {}
+        self._expected_report_run_id = str(initial_binding.get("run_id") or "")
+        self._expected_report_sha256 = str(initial_binding.get("sha256") or "")
+        self._expected_head_sha256 = str(
+            initial_binding.get("head_sha256") or ""
+        )
+        self._expected_report_sequence = int(initial_binding.get("sequence") or 0)
         self._fix_done.connect(self._show_fix_result)
         self._apply_done.connect(lambda t: self.body.appendPlainText("\n" + t))
         self._fix_progress.connect(self._on_fix_progress)
@@ -5651,7 +6705,10 @@ class AARDialog(QDialog):
         lay.addWidget(self.body)
 
         row = QHBoxLayout()
-        refresh = QPushButton("Re-run report"); refresh.setObjectName("Primary")
+        refresh = QPushButton(
+            "Reload verified report" if self._redteam else "Re-run report"
+        )
+        refresh.setObjectName("Primary")
         refresh.clicked.connect(self.refresh)
         row.addWidget(refresh)
         row.addStretch(1)
@@ -5801,19 +6858,61 @@ class AARDialog(QDialog):
         self.body.setPlainText(text)
 
     def refresh(self) -> None:
-        from angerona.shark.aar_report import generate_aar
-        self.body.setPlainText("Re-evaluating against the flight-recorder ledger…")
+        self.body.setPlainText(
+            "Loading the authenticated persisted report…"
+            if self._redteam
+            else "Re-evaluating against the flight-recorder ledger…"
+        )
         try:
             if self._redteam:
-                from angerona.shark.red_team import REDTEAM_STAGE_CATEGORY
-                text = generate_aar(
-                    self.data_dir, settle_seconds=0, history_name="redteam_history.json",
-                    stage_category=REDTEAM_STAGE_CATEGORY, title="RED TEAM ATTACK",
-                    report_basename="redteam_aar")
+                # The one-use Red Team validation lease is deliberately revoked
+                # after the original AAR. Post-lease refresh must never rescore
+                # ledger rows without those live authorities; reload the text
+                # whose digest is covered by the attested JSON instead.
+                binding = (
+                    self._report_binding
+                    if isinstance(self._report_binding, dict)
+                    else {}
+                )
+                expected_run_id = str(
+                    getattr(self, "_expected_report_run_id", "")
+                    or binding.get("run_id")
+                    or ""
+                )
+                expected_report_sha256 = str(
+                    getattr(self, "_expected_report_sha256", "")
+                    or binding.get("sha256")
+                    or ""
+                )
+                expected_head_sha256 = str(
+                    getattr(self, "_expected_head_sha256", "")
+                    or binding.get("head_sha256")
+                    or ""
+                )
+                expected_sequence = int(
+                    getattr(self, "_expected_report_sequence", 0)
+                    or binding.get("sequence")
+                    or 0
+                )
+                text = _load_verified_aar_text(
+                    self.data_dir,
+                    basename="redteam_aar",
+                    expected_kind="red_team",
+                    expected_run_id=expected_run_id,
+                    expected_report_sha256=expected_report_sha256,
+                    expected_head_sha256=expected_head_sha256,
+                    expected_sequence=expected_sequence,
+                )
             else:
+                from angerona.shark.aar_report import generate_aar
+
                 text = generate_aar(self.data_dir, settle_seconds=0)
         except Exception as exc:
-            text = f"Could not generate report: {exc}"
+            text = (
+                f"Could not load authenticated report: {exc}"
+                if self._redteam
+                else f"Could not generate report: {exc}"
+            )
         self.body.setPlainText(text)
         if self._report_binding is not None and not text.startswith("Could not"):
             path = Path(self.data_dir) / (
@@ -5822,11 +6921,59 @@ class AARDialog(QDialog):
             try:
                 raw = path.read_bytes()
                 payload = json.loads(raw.decode("utf-8"))
-                self._report_binding.update({
-                    "run_id": str(payload.get("run_id") or ""),
-                    "sha256": hashlib.sha256(raw).hexdigest(),
-                    "error": "",
-                })
+                current_run_id = str(payload.get("run_id") or "")
+                current_sha256 = hashlib.sha256(raw).hexdigest()
+                head_path = Path(self.data_dir) / "redteam_aar.head.json"
+                current_head_sha256 = ""
+                current_sequence = 0
+                if head_path.is_file() and not head_path.is_symlink():
+                    raw_head = head_path.read_bytes()
+                    head_payload = json.loads(raw_head.decode("utf-8"))
+                    current_head_sha256 = hashlib.sha256(raw_head).hexdigest()
+                    current_sequence = int(head_payload.get("sequence", 0))
+                pinned_run_id = str(
+                    getattr(self, "_expected_report_run_id", "") or ""
+                )
+                pinned_sha256 = str(
+                    getattr(self, "_expected_report_sha256", "") or ""
+                )
+                pinned_head_sha256 = str(
+                    getattr(self, "_expected_head_sha256", "") or ""
+                )
+                pinned_sequence = int(
+                    getattr(self, "_expected_report_sequence", 0) or 0
+                )
+                if not pinned_run_id and not pinned_sha256:
+                    # A compatibility-created dialog without an opening
+                    # binding may establish it exactly once. It is immutable
+                    # after this successful authenticated load.
+                    self._expected_report_run_id = current_run_id
+                    self._expected_report_sha256 = current_sha256
+                    self._expected_head_sha256 = current_head_sha256
+                    self._expected_report_sequence = current_sequence
+                    self._report_binding.update({
+                        "run_id": current_run_id,
+                        "sha256": current_sha256,
+                        "error": "",
+                        "head_sha256": current_head_sha256,
+                        "sequence": current_sequence,
+                    })
+                elif (
+                    current_run_id != pinned_run_id
+                    or not hmac.compare_digest(current_sha256, pinned_sha256)
+                    or (
+                        pinned_head_sha256
+                        and not hmac.compare_digest(
+                            current_head_sha256, pinned_head_sha256
+                        )
+                    )
+                    or (pinned_sequence and current_sequence != pinned_sequence)
+                ):
+                    raise ValueError(
+                        "persisted report changed after the review binding was established"
+                    )
+                else:
+                    self._report_binding["error"] = ""
             except (OSError, UnicodeDecodeError, ValueError, TypeError) as exc:
                 self._report_binding["error"] = str(exc)
 
@@ -8020,8 +9167,9 @@ class SettingsDialog(QDialog):
 
         warn = QLabel(
             "⚠  Requires signal-cli installed and a registered Signal phone number. "
-            "Commands received are rate-limited and PIN-gated. The PIN is stored "
-            "in the operating-system protected credential store — never in plain text."
+            "The executable must match both an exact SHA-256 and Authenticode subject. "
+            "Commands are rate-limited and PIN-gated; the PIN stays in the operating-"
+            "system protected credential store — never in plain text."
         )
         warn.setWordWrap(True)
         warn.setStyleSheet("color: #f59e0b; font-size: 11px;")
@@ -8030,23 +9178,39 @@ class SettingsDialog(QDialog):
         grid = QGridLayout(); grid.setColumnStretch(1, 1)
         grid.addWidget(QLabel("signal-cli path:"), 0, 0)
         self._mob_cli = QLineEdit(getattr(self._cfg, "mobile_signal_cli", ""))
-        self._mob_cli.setPlaceholderText("/usr/local/bin/signal-cli")
+        self._mob_cli.setPlaceholderText("C:\\Program Files\\signal-cli\\signal-cli.exe")
         grid.addWidget(self._mob_cli, 0, 1)
         self._mob_browse = QPushButton("Browse…")
         self._mob_browse.clicked.connect(self._browse_signal_cli)
         grid.addWidget(self._mob_browse, 0, 2)
 
-        grid.addWidget(QLabel("Host number (this machine):"), 1, 0)
+        grid.addWidget(QLabel("Executable SHA-256 pin:"), 1, 0)
+        self._mob_sha256 = QLineEdit(
+            getattr(self._cfg, "mobile_signal_cli_sha256", "")
+        )
+        self._mob_sha256.setMaxLength(64)
+        self._mob_sha256.setPlaceholderText("64 lowercase hexadecimal characters")
+        grid.addWidget(self._mob_sha256, 1, 1, 1, 2)
+
+        grid.addWidget(QLabel("Authenticode subject pin:"), 2, 0)
+        self._mob_publisher = QLineEdit(
+            getattr(self._cfg, "mobile_signal_cli_publisher", "")
+        )
+        self._mob_publisher.setMaxLength(512)
+        self._mob_publisher.setPlaceholderText("Exact signer certificate Subject")
+        grid.addWidget(self._mob_publisher, 2, 1, 1, 2)
+
+        grid.addWidget(QLabel("Host number (this machine):"), 3, 0)
         self._mob_host = QLineEdit(getattr(self._cfg, "mobile_host_number", ""))
         self._mob_host.setPlaceholderText("+15551234567")
-        grid.addWidget(self._mob_host, 1, 1, 1, 2)
+        grid.addWidget(self._mob_host, 3, 1, 1, 2)
 
-        grid.addWidget(QLabel("Operator destination #:"), 2, 0)
+        grid.addWidget(QLabel("Operator destination #:"), 4, 0)
         self._mob_dest = QLineEdit(getattr(self._cfg, "mobile_dest_number", ""))
         self._mob_dest.setPlaceholderText("+15557654321")
-        grid.addWidget(self._mob_dest, 2, 1, 1, 2)
+        grid.addWidget(self._mob_dest, 4, 1, 1, 2)
 
-        grid.addWidget(QLabel("Hardware PIN (4-digit):"), 3, 0)
+        grid.addWidget(QLabel("Hardware PIN (4-digit):"), 5, 0)
         self._mob_pin = QLineEdit()
         self._mob_pin.setEchoMode(QLineEdit.Password)
         self._mob_pin.setMaxLength(4)
@@ -8056,7 +9220,7 @@ class SettingsDialog(QDialog):
             self._mob_pin.setValidator(QIntValidator(0, 9999, self._mob_pin))
         except Exception:
             pass
-        grid.addWidget(self._mob_pin, 3, 1, 1, 2)
+        grid.addWidget(self._mob_pin, 5, 1, 1, 2)
         lay.addLayout(grid)
 
         note = QLabel(
@@ -8066,8 +9230,15 @@ class SettingsDialog(QDialog):
         note.setWordWrap(True); note.setStyleSheet("color: #94a3b8; font-size: 11px;")
         lay.addWidget(note)
 
-        self._mob_fields = [self._mob_cli, self._mob_browse, self._mob_host,
-                            self._mob_dest, self._mob_pin]
+        self._mob_fields = [
+            self._mob_cli,
+            self._mob_browse,
+            self._mob_sha256,
+            self._mob_publisher,
+            self._mob_host,
+            self._mob_dest,
+            self._mob_pin,
+        ]
         def _lock(on: bool) -> None:
             for f in self._mob_fields:
                 f.setEnabled(on)
@@ -8551,6 +9722,10 @@ class SettingsDialog(QDialog):
             pass
         candidate.mobile_enabled = self._mob_chk.isChecked()
         candidate.mobile_signal_cli = self._mob_cli.text().strip()
+        candidate.mobile_signal_cli_sha256 = (
+            self._mob_sha256.text().strip().casefold()
+        )
+        candidate.mobile_signal_cli_publisher = self._mob_publisher.text().strip()
         candidate.mobile_host_number = self._mob_host.text().strip()
         candidate.mobile_dest_number = self._mob_dest.text().strip()
         order = [
@@ -8581,6 +9756,12 @@ class SettingsDialog(QDialog):
                 self, "PIN save failed",
                 "The response PIN must contain exactly 4 digits.",
             )
+            return
+        try:
+            candidate.validate_mobile_settings()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Mobile Bridge settings refused", str(exc))
+            self._select_tab("Mobile Integration")
             return
         try:
             candidate.validate_integration_settings()

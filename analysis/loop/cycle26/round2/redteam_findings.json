@@ -1,0 +1,105 @@
+{
+  "cycle": 26,
+  "round": 2,
+  "date": "2026-08-28",
+  "scope": "defensive-only theoretical hardening",
+  "status": "CONFIRMED_PENDING_REMEDIATION",
+  "findings": [
+    {
+      "id": "C26-R2-A01",
+      "severity": "HIGH",
+      "title": "Exportable Windows publisher PFX enters candidate-controlled release builders",
+      "component": ".github/workflows/release.yml:222-317,369-502 (pre-remediation revision)",
+      "status": "FIXED",
+      "required_fix": "Remove every exportable Windows publisher private-key secret and signing operation from repository-controlled jobs. Permit candidate jobs to produce only explicitly unsigned payloads, packages, canonical digests, and untrusted signing requests; keep publication blocked until an independently maintained OIDC-bound, non-exportable release and publisher authority returns exact finalized assets."
+    },
+    {
+      "id": "C26-R2-B01",
+      "severity": "HIGH",
+      "title": "Defender host remediation lacks state custody and can emit a false applied receipt",
+      "component": "src/angerona/modules/remediation_actions.py:450-477,892-913 (pre-remediation revision)",
+      "status": "FIXED",
+      "required_fix": "Do not add a risky mutation broker without exact prior-state and rollback custody. Keep the Defender action proposal-only and outside the executable action catalog, prove host-apply approval cannot invoke a subprocess or emit an applied/verified receipt, and require an exact successful apply record before generic verification."
+    },
+    {
+      "id": "C26-R2-C01",
+      "severity": "HIGH",
+      "title": "A caller-controlled frozen flag is accepted as installed Windows elevation authority",
+      "component": "src/angerona/__main__.py:58-62; src/angerona/core/privilege.py:466-505; src/angerona/core/data_paths.py:422-455,507-510; installer/windows-install-contract.json:1",
+      "status": "FIXED",
+      "required_fix": "Replace sys.frozen as an authority decision with a fail-closed Windows installed-authority proof before UAC and repeat it after elevation. Accept only the exact externally pinned MSIX package identity/publisher, or the separately supported protected portable-upgrade authority after exact executable publisher, owner/DACL, non-reparse, threshold-authorization, and rollback-floor verification. Unpackaged, unpinned, user-writable, or unverifiable frozen executables must not request or retain Administrator execution."
+    },
+    {
+      "id": "C26-R2-C02",
+      "severity": "MEDIUM",
+      "title": "Release policy accepts alternate secret and failed-dependency bypass syntax",
+      "component": "tools/validate_workflow_policy.py:39-49,71-78,83-146; tests/test_cycle26_release_signing_boundary.py:22-56,93-106",
+      "status": "FIXED",
+      "required_fix": "Parse workflow YAML and GitHub expressions fail closed rather than relying on dot-notation and literal substrings. Forbid every secrets-context access and secrets: inherit in repository release jobs, reject or immutable-SHA-allowlist job-level reusable workflows, validate exact needs edges structurally, and reject every status-function or continue-on-error form that can run publication after a failed authority. Add inert mutations for bracketed/dynamic secrets, reusable workflow calls, inherited secrets, !cancelled()/failure() conditions, and expression-valued continue-on-error."
+    },
+    {
+      "id": "C26-R2-D01",
+      "severity": "MEDIUM",
+      "title": "Selected-root scan scope accepts hard links to objects outside the root",
+      "component": "src/angerona/core/security_scan_center.py:263-377,746-887",
+      "status": "FIXED",
+      "required_fix": "Define and enforce object provenance rather than only the final pathname alias. Retain a selected-root directory handle, enumerate/open descendants relative to that handle, and reject multiply linked files unless an object-bound Windows file-ID/parent-chain proof establishes the selected-root object relationship. If a safe proof is unavailable, skip the file with an explicit limited result; retain hard-link negative tests on the same volume."
+    },
+    {
+      "id": "C26-R2-D02",
+      "severity": "MEDIUM",
+      "title": "Directory-only trees bypass Scan Center duration and traversal budgets",
+      "component": "src/angerona/core/security_scan_center.py:655-677,774-859",
+      "status": "FIXED",
+      "required_fix": "Move cancellation/deadline checks and a bounded directory-entry counter into the traversal itself. Bound queued directories and every scandir entry, return limited/timed_out truthfully even when no regular file is yielded, and add hostile empty-tree, wide-tree, slow-iterator, and cancellation regressions."
+    },
+    {
+      "id": "C26-R2-D03",
+      "severity": "MEDIUM",
+      "title": "Process-global self-test routing still diverts live resilience workers",
+      "component": "src/angerona/resilience/_selftest_environment.py:41-77; src/angerona/resilience/diagnostics.py:40-72,212-241; src/angerona/resilience/manager.py:381-467; src/angerona/resilience/scanner.py:320-363; src/angerona/resilience/selftest.py:51-78,128-151; src/angerona/resilience/supervisor.py:856-946",
+      "status": "FIXED",
+      "required_fix": "Stop changing process-global routing for in-process self-tests. Inject immutable data/diagnostic roots into test instances or run the complete self-test in a separately custodied child process. Quiesce and join every test-owned thread/process before cleanup, place root creation and variables(root) inside exception-safe custody, and delete through an object-bound owned-directory primitive. Add a regression proving an ordinary live writer remains on its original root throughout a concurrent self-test."
+    },
+    {
+      "id": "C26-R2-D04",
+      "severity": "LOW",
+      "title": "Health evidence treats forgeable code filename metadata as trusted provenance",
+      "component": "src/angerona/core/module_base.py:80-114,191-231; src/angerona/gui/pages.py:2847-2950",
+      "status": "FIXED",
+      "required_fix": "Do not label frame.f_code.co_filename as trusted source evidence by pathname alone. Bind built-in module implementation provenance at authenticated discovery/load time to a canonical file identity and digest, distinguish a declared/debug callsite from verified implementation provenance, and make external/in-process extension evidence explicitly untrusted. Add a compiled-code co_filename forgery regression."
+    },
+    {
+      "id": "C26-R2-D05",
+      "severity": "LOW",
+      "title": "Module Inspector can hide or mislabel degradation across mixed health snapshots",
+      "component": "src/angerona/core/module_base.py:525-568; src/angerona/gui/pages.py:3380-3405,3473-3509",
+      "status": "FIXED",
+      "required_fix": "Make the operational snapshot the sole source for the health value, reason, evidence visibility, status text, and health state during one refresh. Never gate snapshot evidence on a second live module.health read; protect status transitions with the same snapshot discipline and add deterministic 100-to-degraded and degraded-to-100 interleaving tests."
+    },
+    {
+      "id": "C26-R2-D06",
+      "severity": "MEDIUM",
+      "title": "Defender proposal-only policy loses to generic executable action matching",
+      "component": "src/angerona/modules/remediation_actions.py:465-486,803-854,909-940",
+      "status": "FIXED",
+      "required_fix": "Make explicit deny/proposal-only classifications dominant before any generic executable matcher. Use typed weakness/action schemas instead of overlapping free-text/path heuristics, reject ambiguous multi-match records, and prove that Defender/T1562 records containing paths, IPs, PIDs, or misleading text can never reach quarantine, firewall, process, registry, or service mutation."
+    },
+    {
+      "id": "C26-R2-D07",
+      "severity": "MEDIUM",
+      "title": "Failed compensation is recorded as rolled back and apply exceptions skip compensation",
+      "component": "src/angerona/modules/remediation_actions.py:499-548,939-967",
+      "status": "FIXED",
+      "required_fix": "Give each action a transaction record before its first mutation, compensate every partial-success and exception path, and emit distinct apply_failed, rolled_back, rollback_failed, and recovery_required outcomes. Never log rolled_back unless compensation returned exact success; retain failed records for the operator and trip a mutation circuit when state is unknown. Add second-step timeout and rollback-failure injection tests."
+    },
+    {
+      "id": "C26-R2-D08",
+      "severity": "HIGH",
+      "title": "Legacy quarantine actions move and verify mutable pathnames instead of the detected file object",
+      "component": "src/angerona/modules/remediation_actions.py:44-53,168-193,576-621",
+      "status": "FIXED",
+      "required_fix": "Replace both legacy quarantine actions with the existing pinned-file quarantine discipline: require sensor-bound volume/file identity plus digest, retain no-follow parent and source handles through a create-new destination move, verify the exact moved bytes/object, and bind rollback to an authenticated record. Reject junction, reparse, hard-link, parent-swap, destination-preclaim, wrong-object, and cross-volume mismatch cases before issuing a verified receipt."
+    }
+  ]
+}

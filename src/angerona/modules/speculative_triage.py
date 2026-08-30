@@ -29,6 +29,7 @@ import os
 import queue
 import threading
 import time
+import weakref
 
 from angerona.core.module_base import BaseModule, Severity
 from angerona.engines import ollama_client
@@ -50,11 +51,13 @@ class SpeculativeTriageModule(BaseModule):
     description = ("Detects high-risk early markers and pre-streams a snapshot to "
                    "Ollama so the final triage verdict returns with no cold start.")
     category = "Performance"
-    version = "1.0.0"
+    version = "1.12.1"
 
     _MAX_INFLIGHT = 2          # concurrent prewarm workers
     _COOLDOWN = 8.0            # per-PID re-prewarm cooldown (s)
+    _FRAME_MAX_AGE = 30.0      # never reuse context across a stale/PID-reuse window
     _KEEP_ALIVE = "10m"        # keep the model resident between frames
+    _KEEP_ALIVE_SECONDS = 600.0
     _WORKER_IDLE_POLL = 0.1    # prompt stop response while the queue is idle
 
     def __init__(self) -> None:
@@ -65,7 +68,12 @@ class SpeculativeTriageModule(BaseModule):
         self._last_prewarm: dict[int, float] = {}
         self._last_cooldown_cleanup = 0.0
         self._workers: list[threading.Thread] = []
+        self._consumer_ref: weakref.ReferenceType | None = None
+        self._subscription_ready = False
+        self._last_warm_succeeded: bool | None = None
+        self._last_success_at = 0.0
         self.prewarms = 0
+        self.successful_prewarms = 0
         self.hits = 0
 
     @property
@@ -118,11 +126,67 @@ class SpeculativeTriageModule(BaseModule):
         except queue.Full:
             return False
 
-    def get_primed(self, pid: int) -> dict | None:
-        """Step-3 hook: reuse the warm frame for `pid` if one exists."""
+    def bind_consumer(self, consumer: object) -> bool:
+        """Bind the one production triage consumer this optimization serves.
+
+        A health score for speculative work is meaningful only when the real AI
+        triage path can consume it.  Bind by exact built-in type and shared bus;
+        a look-alike extension cannot make this module report production reuse.
+        """
+        consumer_type = type(consumer)
+        valid = (
+            consumer_type.__module__ == "angerona.modules.ai_triage"
+            and consumer_type.__name__ == "AITriageModule"
+            and getattr(consumer, "name", "") == "AI Triage (Ollama)"
+            and self._bus is not None
+            and getattr(consumer, "_bus", None) is self._bus
+        )
         with self.state_lock:
-            frame = self._primed.get(pid)
-        if frame:
+            self._consumer_ref = weakref.ref(consumer) if valid else None
+        return valid
+
+    def _consumer_ready(self) -> bool:
+        with self.state_lock:
+            consumer = self._consumer_ref() if self._consumer_ref is not None else None
+        return bool(
+            consumer is not None
+            and getattr(consumer, "_bus", None) is self._bus
+            and getattr(consumer, "status", "") == "running"
+        )
+
+    @staticmethod
+    def _birth_identity(value: object) -> str:
+        if value is None or value == "":
+            return ""
+        try:
+            return f"{float(value):.6f}"
+        except (TypeError, ValueError):
+            return str(value).strip()
+
+    def get_primed(
+        self,
+        pid: int,
+        *,
+        consumer: object | None = None,
+        process_birth: object = None,
+    ) -> dict | None:
+        """Consume one fresh, successfully warmed frame for an exact process.
+
+        Frames are one-shot.  Failed warms, stale frames, unbound callers and a
+        mismatched process-birth identity never receive reusable context.
+        """
+        now = time.time()
+        with self.state_lock:
+            bound = self._consumer_ref() if self._consumer_ref is not None else None
+            frame = self._primed.pop(pid, None) if consumer is bound else None
+            if frame is None:
+                return None
+            fresh = 0.0 <= now - float(frame.get("ts", 0.0)) <= self._FRAME_MAX_AGE
+            same_birth = self._birth_identity(process_birth) == self._birth_identity(
+                frame.get("process_birth")
+            )
+            if not bool(frame.get("warmed")) or not fresh or not same_birth:
+                return None
             self.hits += 1
         return frame
 
@@ -137,8 +201,18 @@ class SpeculativeTriageModule(BaseModule):
     def _prewarm(self, marker: dict) -> None:
         prompt = self._snapshot(marker)
         pid = marker.get("pid") or -1
-        primed = {"prompt": prompt, "ts": time.time(), "warmed": False}
+        primed = {
+            "prompt": prompt,
+            "ts": time.time(),
+            "warmed": False,
+            "process_birth": (marker.get("details") or {}).get("process_birth"),
+        }
         try:
+            from angerona.modules.ai_model_integrity import (
+                require_fresh_model_attestation,
+            )
+
+            require_fresh_model_attestation(_MODEL)
             result = ollama_client.analyze_telemetry(
                 "Pre-warm the local model for a possible endpoint triage. Return one token.",
                 prompt,
@@ -156,12 +230,48 @@ class SpeculativeTriageModule(BaseModule):
         with self.state_lock:
             self._primed[pid] = primed
             self.prewarms += 1
+            self._last_warm_succeeded = bool(primed["warmed"])
+            if primed["warmed"]:
+                self.successful_prewarms += 1
+                self._last_success_at = time.time()
             if len(self._primed) > 256:      # bound the cache
                 oldest = min(self._primed, key=lambda k: self._primed[k]["ts"])
                 self._primed.pop(oldest, None)
-        self.emit(f"Pre-warmed triage frame for pid {pid} "
-                  f"({'model resident' if primed['warmed'] else 'queued (Ollama offline)'}).",
-                  Severity.INFO, pid=pid, warmed=primed["warmed"])
+        self.emit(
+            f"Pre-warmed triage frame for pid {pid} "
+            f"({'model resident' if primed['warmed'] else 'not reusable (Ollama offline)'}).",
+            Severity.INFO if primed["warmed"] else Severity.MEDIUM,
+            pid=pid,
+            warmed=primed["warmed"],
+        )
+
+    def _update_health(self) -> None:
+        with self.state_lock:
+            last_warm_succeeded = self._last_warm_succeeded
+            successes = self.successful_prewarms
+            prewarms = self.prewarms
+            last_success_at = self._last_success_at
+        if not self._subscription_ready:
+            self.set_health(35, "event-bus subscription unavailable; no early markers observed")
+            return
+        if not self._consumer_ready():
+            self.set_health(60, "production AI-triage consumer is not running/bound")
+            return
+        if last_warm_succeeded is False:
+            self.set_health(40, f"latest model pre-warm failed: {self.last_error or 'unknown error'}")
+            return
+        if successes == 0:
+            self.set_health(85, "consumer ready; awaiting first successful model pre-warm")
+            return
+        age = max(0.0, time.time() - last_success_at)
+        if age > self._KEEP_ALIVE_SECONDS:
+            self.set_health(75, f"last successful model pre-warm is stale ({round(age)}s old)")
+            return
+        hit_rate = (self.hits / prewarms * 100) if prewarms else 0.0
+        self.set_health(
+            100,
+            f"{successes}/{prewarms} successful prewarms, {round(hit_rate, 1)}% reused",
+        )
 
     def _worker(
         self,
@@ -191,8 +301,9 @@ class SpeculativeTriageModule(BaseModule):
         if self._bus is not None:
             try:
                 self._bus.subscribe(self._on_event)
+                self._subscription_ready = True
             except Exception:
-                pass
+                self._subscription_ready = False
         workers: list[threading.Thread] = []
         for _ in range(self._MAX_INFLIGHT):
             t = threading.Thread(
@@ -209,8 +320,7 @@ class SpeculativeTriageModule(BaseModule):
         self.emit("SPEC online — speculatively pre-warming the triage model.", Severity.INFO)
         try:
             while not stop_event.is_set():
-                hit_rate = (self.hits / self.prewarms * 100) if self.prewarms else 0.0
-                self.set_health(100, f"{self.prewarms} prewarms, {round(hit_rate,1)}% reused")
+                self._update_health()
                 self.sleep(5.0)
         finally:
             helper_stop.set()

@@ -57,16 +57,14 @@ def test_forensics_distinguishes_pid_reuse_and_bounds_history(monkeypatch):
     assert len(module._captured) <= forensics._CAPTURE_MAX + 1
 
 
-def test_heal_seen_set_tracks_only_current_snapshot_names(tmp_path):
+def test_heal_snapshot_scan_is_bounded_to_current_regular_candidates(tmp_path):
     from angerona.modules.self_healer import SelfHealer
 
     module = SelfHealer()
-    module._seen = {"already-pruned.json", "keep.json"}
     (tmp_path / "keep.json").write_text("{}", encoding="utf-8")
     (tmp_path / "new.json").write_text("{}", encoding="utf-8")
-    module._snapshot_dir_stamp = None
 
-    new = module._new_snapshots(tmp_path)
+    candidates, overflow = module._snapshot_candidates(tmp_path)
 
-    assert [path.name for path in new] == ["new.json"]
-    assert module._seen == {"keep.json", "new.json"}
+    assert [path.name for path in candidates] == ["keep.json", "new.json"]
+    assert overflow is False

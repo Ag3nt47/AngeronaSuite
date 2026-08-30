@@ -15,14 +15,20 @@ default is a dry-run PLAN so you can see exactly what would change first.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import math
 import os
 import re
-import shutil
-import subprocess
+import threading
 import time
-from pathlib import Path
+import weakref
+from dataclasses import asdict, dataclass
+from pathlib import Path, PureWindowsPath
+from typing import Callable, Mapping
 
-from angerona.core.win import run_hidden, NO_WINDOW
+from angerona.core.win import run_hidden
 
 try:
     import psutil as _psutil
@@ -54,28 +60,29 @@ def _first_path_in(weakness: dict) -> str | None:
 
 
 def _first_ip_in(weakness: dict) -> str | None:
-    """Best-effort extraction of a routable remote IP a weakness refers to
-    (the C2 / exfil peer). Loopback, unspecified, and link-local are ignored —
-    we never firewall-block those."""
+    """Return one explicit globally routable peer, never a display-text guess."""
     import ipaddress
-    import re
-    cands = []
-    for k in ("remote_ip", "raddr", "ip", "dst", "peer"):
-        if weakness.get(k):
-            cands.append(str(weakness[k]))
-    blob = " ".join(str(weakness.get(k, "")) for k in
-                    ("detect_message", "name", "message", "raddr"))
-    cands += re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", blob)
-    for c in cands:
-        c = c.split(":")[0].strip()  # strip :port if present
-        try:
-            ip = ipaddress.ip_address(c)
-        except ValueError:
-            continue
-        if ip.is_loopback or ip.is_unspecified or ip.is_link_local:
-            continue
-        return str(ip)
-    return None
+
+    values = [
+        str(weakness[key]).strip()
+        for key in ("remote_ip", "raddr")
+        if weakness.get(key) is not None
+    ]
+    if len(values) != 1:
+        return None
+    candidate = values[0]
+    # Host:port text is ambiguous for IPv6 and is not an exact target contract.
+    try:
+        address = ipaddress.ip_address(candidate)
+    except ValueError:
+        return None
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    # Never automatically propose blocking local/private, multicast, reserved,
+    # documentation, or other infrastructure-like address classes.
+    if not address.is_global or address.is_multicast:
+        return None
+    return str(address)
 
 
 class RemediationAction:
@@ -83,6 +90,7 @@ class RemediationAction:
     title = "base"
     reversible = True
     host_level = False        # True = changes the OS (registry/services); gated by opt-in
+    durable_transaction = False
 
     def matches(self, weakness: dict) -> bool:
         return False
@@ -90,8 +98,40 @@ class RemediationAction:
     def apply(self, weakness: dict, quarantine_dir: Path) -> dict:
         raise NotImplementedError
 
+    def begin_transaction(self, weakness: dict, quarantine_dir: Path) -> dict:
+        """Create the retained record before an executable action can mutate.
+
+        Actions with multi-step compensation data may extend this record before
+        their first external call.  The generic runner always has a record to
+        audit and pass to rollback, even when ``apply`` raises.
+        """
+        del weakness, quarantine_dir
+        return {
+            "action": self.key,
+            "transaction_state": "prepared",
+            "mutation_started": False,
+            "compensation_ready": False,
+        }
+
+    def apply_transactional(
+        self, weakness: dict, quarantine_dir: Path, transaction: dict
+    ) -> dict:
+        """Run a legacy single-step action inside a retained transaction."""
+        transaction["mutation_started"] = True
+        transaction["transaction_state"] = "mutation_started"
+        result = self.apply(weakness, quarantine_dir)
+        if not isinstance(result, dict):
+            raise TypeError("remediation action returned a non-dict record")
+        transaction.update(result)
+        return transaction
+
     def rollback(self, record: dict) -> dict:
         return {"ok": False, "error": "not reversible"}
+
+    def verify_rollback(self, record: dict) -> bool:
+        """Prove the exact retained pre-state was restored."""
+        del record
+        return False
 
     def verify(self, weakness: dict, record: dict) -> bool:
         # Every registered mutation must prove its own exact postcondition.
@@ -164,117 +204,483 @@ def _no_such_process(exc: Exception) -> bool:
     return bool(cls) and isinstance(exc, cls)
 
 
-# ── 1. Quarantine a flagged file (SAFE, reversible, no OS state) ─────────────
+# ── 1. Legacy file quarantine (PROPOSAL ONLY) ───────────────────────────────
 class QuarantineFileAction(RemediationAction):
     key = "quarantine_file"
-    title = "Quarantine the flagged file"
-    reversible = True
+    title = "Review exact-object quarantine for the flagged file"
+    proposal_only = True
+    executable = False
+    proposal_reason = (
+        "Automatic legacy path quarantine is disabled: a pathname does not bind "
+        "the detected file object. Use the exact-object response broker with "
+        "sensor-bound volume/file identity, digest, and authenticated rollback custody."
+    )
+    reversible = False
     host_level = False
 
     def matches(self, weakness: dict) -> bool:
-        p = _first_path_in(weakness)
-        return bool(p) and Path(p).is_file()
+        return bool(_first_path_in(weakness))
 
     def apply(self, weakness: dict, quarantine_dir: Path) -> dict:
-        src = Path(_first_path_in(weakness))
-        quarantine_dir.mkdir(parents=True, exist_ok=True)
-        dst = quarantine_dir / f"{int(time.time())}_{src.name}.quarantine"
-        shutil.move(str(src), str(dst))
-        return {"ok": True, "action": self.key, "original": str(src), "quarantined": str(dst)}
-
-    def rollback(self, record: dict) -> dict:
-        try:
-            shutil.move(record["quarantined"], record["original"])
-            return {"ok": True}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
-
-    def verify(self, weakness: dict, record: dict) -> bool:
-        return not Path(record["original"]).exists() and Path(record["quarantined"]).exists()
-
-
-# ── 2. Disable a vulnerable driver's service (REAL, host-level, reversible) ──
-class DisableDriverServiceAction(RemediationAction):
-    key = "disable_driver_service"
-    title = "Disable the vulnerable driver's service (BYOVD)"
-    reversible = True
-    host_level = True
-
-    def _svc(self, weakness: dict) -> str | None:
-        drv = weakness.get("driver") or ""
-        if not drv:
-            p = _first_path_in(weakness) or ""
-            if p.lower().endswith(".sys"):
-                drv = Path(p).name
-        return Path(drv).stem or None if drv else None
-
-    def matches(self, weakness: dict) -> bool:
-        return os.name == "nt" and bool(self._svc(weakness))
-
-    def apply(self, weakness: dict, quarantine_dir: Path) -> dict:
-        del quarantine_dir
-        svc = self._svc(weakness)
-        prior = run_hidden(["sc", "qc", svc], capture_output=True, text=True, timeout=15)
-        prior_text = str(prior.stdout or "")
-        match = re.search(r"START_TYPE\s*:\s*([0-4])", prior_text, re.IGNORECASE)
-        prior_modes = {"0": "boot", "1": "system", "2": "auto", "3": "demand", "4": "disabled"}
-        if prior.returncode != 0 or match is None:
-            return {
-                "ok": False,
-                "action": self.key,
-                "service": svc,
-                "error": "could not prove prior driver start mode",
-                "rc": prior.returncode,
-            }
-        prior_mode = prior_modes[match.group(1)]
-        changed = run_hidden(
-            ["sc", "config", svc, "start=", "disabled"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
+        del weakness, quarantine_dir
         return {
-            "ok": changed.returncode == 0,
+            "ok": False,
             "action": self.key,
-            "service": svc,
-            "prior_start": prior_mode,
-            "prior_qc": prior_text[:400],
-            "rc": changed.returncode,
-            "stderr": str(changed.stderr or "")[:300],
+            "proposal_only": True,
+            "executable": False,
+            "reason": self.proposal_reason,
         }
 
     def rollback(self, record: dict) -> dict:
-        try:
-            prior = record.get("prior_start")
-            if prior not in {"boot", "system", "auto", "demand", "disabled"}:
-                return {"ok": False, "error": "prior driver start mode is unavailable"}
-            result = run_hidden(
-                ["sc", "config", record["service"], "start=", prior],
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            return {"ok": result.returncode == 0, "rc": result.returncode}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+        del record
+        return {"ok": False, "proposal_only": True, "reason": self.proposal_reason}
 
     def verify(self, weakness: dict, record: dict) -> bool:
-        del weakness
-        if not record.get("ok"):
+        del weakness, record
+        return False
+
+
+# ── 2. Disable a vulnerable driver's service (REAL, host-level, reversible) ──
+_BYOVD_SCHEMA = "angerona.byovd-service-target.v1"
+_BYOVD_APPROVAL_SCHEMA = "angerona.byovd-disable-approval.v1"
+_BYOVD_HEX64 = re.compile(r"[0-9a-f]{64}")
+_BYOVD_THUMBPRINT = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+_BYOVD_SERVICE = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+_BYOVD_TOKEN = re.compile(r"[A-Za-z0-9:._-]{8,256}")
+_BYOVD_ID = re.compile(r"[A-Za-z0-9_.:-]{8,128}")
+_CRITICAL_DRIVER_SERVICES = frozenset(
+    {
+        "acpi",
+        "afd",
+        "bindflt",
+        "bootvid",
+        "cng",
+        "disk",
+        "dxgkrnl",
+        "fileinfo",
+        "fltmgr",
+        "ksecdd",
+        "mountmgr",
+        "mup",
+        "ndis",
+        "netbt",
+        "ntfs",
+        "partmgr",
+        "pci",
+        "refs",
+        "spaceport",
+        "storahci",
+        "storport",
+        "tcpip",
+        "tdx",
+        "volmgr",
+        "volsnap",
+        "wdf01000",
+        "win32k",
+    }
+)
+
+
+@dataclass(frozen=True)
+class ByovdPolicyEntry:
+    """One immutable exact-hash/signer authorization policy entry."""
+
+    policy_id: str
+    image_sha256: str
+    signer_thumbprints: tuple[str, ...]
+    service_names: tuple[str, ...]
+    valid_until: float
+
+    def __post_init__(self) -> None:
+        if not _BYOVD_ID.fullmatch(self.policy_id):
+            raise ValueError("BYOVD policy ID is invalid")
+        if not _BYOVD_HEX64.fullmatch(self.image_sha256):
+            raise ValueError("BYOVD policy image hash is invalid")
+        if (
+            type(self.signer_thumbprints) is not tuple
+            or not self.signer_thumbprints
+            or len(self.signer_thumbprints) > 16
+            or any(
+                not isinstance(value, str)
+                or not _BYOVD_THUMBPRINT.fullmatch(value)
+                for value in self.signer_thumbprints
+            )
+        ):
+            raise ValueError("BYOVD policy signer pin set is invalid")
+        if (
+            type(self.service_names) is not tuple
+            or not self.service_names
+            or len(self.service_names) > 32
+            or any(
+                not isinstance(value, str) or not _BYOVD_SERVICE.fullmatch(value)
+                for value in self.service_names
+            )
+            or any(value.casefold() in _CRITICAL_DRIVER_SERVICES for value in self.service_names)
+        ):
+            raise ValueError("BYOVD policy service allow-list is invalid")
+        if not math.isfinite(self.valid_until) or self.valid_until <= 0:
+            raise ValueError("BYOVD policy expiry is invalid")
+
+
+@dataclass(frozen=True)
+class ByovdServiceTarget:
+    """Live typed evidence for one exact Windows driver-service object."""
+
+    schema: str
+    service_name: str
+    service_type: int
+    service_object_id: str
+    start_type: int
+    image_path: str
+    image_identity: str
+    image_sha256: str
+    signer_status: str
+    signer_thumbprint: str
+    observed_at: float
+
+    def __post_init__(self) -> None:
+        if self.schema != _BYOVD_SCHEMA:
+            raise ValueError("BYOVD target schema is invalid")
+        if not isinstance(self.service_name, str) or not _BYOVD_SERVICE.fullmatch(
+            self.service_name
+        ):
+            raise ValueError("BYOVD target service name is invalid")
+        if self.service_name.casefold() in _CRITICAL_DRIVER_SERVICES:
+            raise ValueError("critical driver services cannot be disabled")
+        if type(self.service_type) is not int or self.service_type not in {1, 2}:
+            raise ValueError("target is not an exact kernel/filesystem driver service")
+        if not isinstance(self.service_object_id, str) or not _BYOVD_TOKEN.fullmatch(
+            self.service_object_id
+        ):
+            raise ValueError("BYOVD service object identity is invalid")
+        if type(self.start_type) is not int or self.start_type not in {0, 1, 2, 3, 4}:
+            raise ValueError("BYOVD service start type is invalid")
+        if (
+            not isinstance(self.image_path, str)
+            or len(self.image_path) > 32_767
+            or not PureWindowsPath(self.image_path).is_absolute()
+        ):
+            raise ValueError("BYOVD image path must be an exact absolute Windows path")
+        if not isinstance(self.image_identity, str) or not _BYOVD_TOKEN.fullmatch(
+            self.image_identity
+        ):
+            raise ValueError("BYOVD image object identity is invalid")
+        if not isinstance(self.image_sha256, str) or not _BYOVD_HEX64.fullmatch(
+            self.image_sha256
+        ):
+            raise ValueError("BYOVD image digest is invalid")
+        if self.signer_status != "valid":
+            raise ValueError("BYOVD image signature is not valid")
+        if not isinstance(
+            self.signer_thumbprint, str
+        ) or not _BYOVD_THUMBPRINT.fullmatch(self.signer_thumbprint):
+            raise ValueError("BYOVD signer thumbprint is invalid")
+        if not math.isfinite(self.observed_at) or self.observed_at < 0:
+            raise ValueError("BYOVD observation time is invalid")
+
+
+@dataclass(frozen=True)
+class ByovdDisableApproval:
+    """Authenticated, expiring operator approval for one target digest."""
+
+    schema: str
+    target: ByovdServiceTarget
+    policy_id: str
+    target_sha256: str
+    approval_id: str
+    approved_at: float
+    expires_at: float
+    authenticator: str
+
+
+def _byovd_target_digest(target: ByovdServiceTarget) -> str:
+    encoded = json.dumps(
+        asdict(target), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _byovd_same_live_identity(
+    expected: ByovdServiceTarget,
+    current: ByovdServiceTarget,
+    *,
+    expected_start_type: int | None = None,
+) -> bool:
+    expected_value = asdict(expected)
+    current_value = asdict(current)
+    expected_value.pop("observed_at")
+    current_value.pop("observed_at")
+    if expected_start_type is not None:
+        expected_value["start_type"] = expected_start_type
+    return hmac.compare_digest(
+        json.dumps(
+            expected_value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8"),
+        json.dumps(
+            current_value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8"),
+    )
+
+
+class ByovdResponseAuthority:
+    """Mint/verify exact BYOVD response approvals behind a trusted observer.
+
+    The observer must collect live service-registry type/object identity, opened
+    image identity/hash and Authenticode signer evidence.  This authority adds
+    immutable hash/signer/service policy pins, freshness, exact operator digest
+    confirmation, authentication and single-use claiming.  An absent authority
+    disables the response action completely.
+    """
+
+    def __init__(
+        self,
+        key: bytes,
+        policies: tuple[ByovdPolicyEntry, ...],
+        observer: Callable[[str], ByovdServiceTarget],
+        *,
+        clock: Callable[[], float] = time.time,
+        max_evidence_age_s: float = 30.0,
+    ) -> None:
+        if not isinstance(key, bytes) or len(key) < 32:
+            raise ValueError("BYOVD response authority key must be at least 32 bytes")
+        if not policies or len(policies) > 1024:
+            raise ValueError("BYOVD response policy must be bounded and non-empty")
+        policy_map = {item.policy_id: item for item in policies}
+        if len(policy_map) != len(policies):
+            raise ValueError("duplicate BYOVD response policy ID")
+        if not callable(observer) or not callable(clock):
+            raise TypeError("BYOVD observer and clock must be callable")
+        if not math.isfinite(max_evidence_age_s) or not 1 <= max_evidence_age_s <= 300:
+            raise ValueError("BYOVD evidence freshness bound is invalid")
+        self._key = bytes(key)
+        self._policies: Mapping[str, ByovdPolicyEntry] = policy_map
+        self._observer = observer
+        self._clock = clock
+        self._max_evidence_age_s = float(max_evidence_age_s)
+        self._claimed: set[str] = set()
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def target_digest(target: ByovdServiceTarget) -> str:
+        if type(target) is not ByovdServiceTarget:
+            raise TypeError("an exact BYOVD target is required")
+        return _byovd_target_digest(target)
+
+    def _now(self) -> float:
+        value = float(self._clock())
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("BYOVD authority time is invalid")
+        return value
+
+    def _policy_for(
+        self, target: ByovdServiceTarget, policy_id: str, now: float
+    ) -> ByovdPolicyEntry:
+        policy = self._policies.get(policy_id)
+        if policy is None or now >= policy.valid_until:
+            raise PermissionError("BYOVD hash/signer policy is unavailable or expired")
+        if (
+            not hmac.compare_digest(target.image_sha256, policy.image_sha256)
+            or target.signer_thumbprint not in policy.signer_thumbprints
+            or target.service_name.casefold()
+            not in {name.casefold() for name in policy.service_names}
+        ):
+            raise PermissionError("BYOVD target does not match pinned hash/signer/service policy")
+        return policy
+
+    def _observe(self, service_name: str, now: float) -> ByovdServiceTarget:
+        if not _BYOVD_SERVICE.fullmatch(service_name):
+            raise ValueError("BYOVD service name is invalid")
+        if service_name.casefold() in _CRITICAL_DRIVER_SERVICES:
+            raise PermissionError("critical driver services cannot be disabled")
+        target = self._observer(service_name)
+        if type(target) is not ByovdServiceTarget:
+            raise TypeError("BYOVD observer returned an invalid target contract")
+        if target.service_name.casefold() != service_name.casefold():
+            raise ValueError("BYOVD observer returned another service")
+        age = now - target.observed_at
+        if not -2.0 <= age <= self._max_evidence_age_s:
+            raise PermissionError("BYOVD target evidence is stale or future-dated")
+        return target
+
+    def prepare(
+        self, service_name: str, policy_id: str
+    ) -> tuple[ByovdServiceTarget, str]:
+        """Return fresh typed evidence and the digest an operator must approve."""
+        now = self._now()
+        target = self._observe(service_name, now)
+        self._policy_for(target, policy_id, now)
+        return target, _byovd_target_digest(target)
+
+    def approve(
+        self,
+        target: ByovdServiceTarget,
+        *,
+        policy_id: str,
+        approval_id: str,
+        approved_target_sha256: str,
+        ttl_s: float = 60.0,
+    ) -> ByovdDisableApproval:
+        """Mint only after the operator echoes the exact displayed target digest."""
+        if type(target) is not ByovdServiceTarget:
+            raise TypeError("an exact BYOVD target is required")
+        if not _BYOVD_ID.fullmatch(approval_id):
+            raise ValueError("BYOVD approval ID is invalid")
+        if not math.isfinite(ttl_s) or not 5 <= ttl_s <= 120:
+            raise ValueError("BYOVD approval lifetime is invalid")
+        now = self._now()
+        live = self._observe(target.service_name, now)
+        if not _byovd_same_live_identity(target, live):
+            raise PermissionError("BYOVD target changed before approval")
+        self._policy_for(live, policy_id, now)
+        digest = _byovd_target_digest(target)
+        if (
+            not _BYOVD_HEX64.fullmatch(approved_target_sha256)
+            or not hmac.compare_digest(digest, approved_target_sha256)
+        ):
+            raise PermissionError("operator approval is not bound to the exact BYOVD target")
+        core = {
+            "schema": _BYOVD_APPROVAL_SCHEMA,
+            "target": asdict(target),
+            "policy_id": policy_id,
+            "target_sha256": digest,
+            "approval_id": approval_id,
+            "approved_at": now,
+            "expires_at": now + float(ttl_s),
+        }
+        authenticator = hmac.new(
+            self._key,
+            json.dumps(core, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return ByovdDisableApproval(
+            **{**core, "target": target}, authenticator=authenticator
+        )
+
+    def _approval_authentic(self, approval: ByovdDisableApproval, now: float) -> bool:
+        if type(approval) is not ByovdDisableApproval:
             return False
+        if type(approval.target) is not ByovdServiceTarget:
+            return False
+        core = asdict(approval)
+        authenticator = core.pop("authenticator", "")
+        expected = hmac.new(
+            self._key,
+            json.dumps(core, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return (
+            approval.schema == _BYOVD_APPROVAL_SCHEMA
+            and _BYOVD_HEX64.fullmatch(approval.target_sha256) is not None
+            and hmac.compare_digest(approval.target_sha256, _byovd_target_digest(approval.target))
+            and hmac.compare_digest(str(authenticator), expected)
+            and approval.approved_at <= now < approval.expires_at
+            and 0 < approval.expires_at - approval.approved_at <= 120
+        )
+
+    def verify(self, approval: ByovdDisableApproval) -> bool:
         try:
-            result = run_hidden(
-                ["sc", "qc", record["service"]],
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            match = re.search(
-                r"START_TYPE\s*:\s*([0-4])", str(result.stdout or ""), re.IGNORECASE
-            )
-            return result.returncode == 0 and match is not None and match.group(1) == "4"
+            now = self._now()
+            if not self._approval_authentic(approval, now):
+                return False
+            self._policy_for(approval.target, approval.policy_id, now)
+            live = self._observe(approval.target.service_name, now)
+            return _byovd_same_live_identity(approval.target, live)
         except Exception:
             return False
+
+    def claim(self, approval: ByovdDisableApproval) -> bool:
+        """Atomically consume one still-live exact approval immediately pre-mutation."""
+        if not self.verify(approval):
+            return False
+        with self._lock:
+            if approval.approval_id in self._claimed:
+                return False
+            self._claimed.add(approval.approval_id)
+            return True
+
+    def live_identity_matches(
+        self,
+        target: ByovdServiceTarget,
+        *,
+        expected_start_type: int,
+    ) -> bool:
+        try:
+            now = self._now()
+            live = self._observe(target.service_name, now)
+            return _byovd_same_live_identity(
+                target, live, expected_start_type=expected_start_type
+            )
+        except Exception:
+            return False
+
+
+class DisableDriverServiceAction(RemediationAction):
+    key = "disable_driver_service"
+    title = "Review vulnerable driver service disablement (BYOVD)"
+    proposal_reason = (
+        "Automatic BYOVD service mutation is unavailable: even an authenticated "
+        "exact-target approval, query, ChangeServiceConfigW, and postcondition "
+        "proof must share one held SCM service handle and a held image-object identity."
+    )
+    reversible = False
+    host_level = True
+    durable_transaction = False
+
+    def __init__(self, authority: ByovdResponseAuthority | None = None) -> None:
+        self._authority = authority
+
+    @staticmethod
+    def _approval(weakness: dict) -> ByovdDisableApproval | None:
+        value = weakness.get("byovd_disable_approval")
+        return value if type(value) is ByovdDisableApproval else None
+
+    def matches(self, weakness: dict) -> bool:
+        # Typed records may receive an operator-visible proposal.  This matcher
+        # cannot grant execution authority because this action is intentionally
+        # absent from ACTIONS.
+        return self._approval(weakness) is not None
+
+    def begin_transaction(self, weakness: dict, quarantine_dir: Path) -> dict:
+        del weakness, quarantine_dir
+        raise PermissionError(self.proposal_reason)
+
+    def apply_transactional(
+        self, weakness: dict, quarantine_dir: Path, transaction: dict
+    ) -> dict:
+        del weakness, quarantine_dir
+        transaction.update(
+            {
+                "ok": False,
+                "changed": False,
+                "proposal_only": True,
+                "mutation_started": False,
+                "error": self.proposal_reason,
+            }
+        )
+        return transaction
+
+    def apply(self, weakness: dict, quarantine_dir: Path) -> dict:
+        del weakness, quarantine_dir
+        return {
+            "ok": False,
+            "action": self.key,
+            "changed": False,
+            "proposal_only": True,
+            "mutation_started": False,
+            "error": self.proposal_reason,
+        }
+
+    def rollback(self, record: dict) -> dict:
+        del record
+        return {"ok": False, "proposal_only": True, "error": self.proposal_reason}
+
+    def verify_rollback(self, record: dict) -> bool:
+        del record
+        return False
+
+    def verify(self, weakness: dict, record: dict) -> bool:
+        del weakness, record
+        return False
 
 
 def _hay(weakness: dict) -> str:
@@ -283,92 +689,338 @@ def _hay(weakness: dict) -> str:
                      "detect_message")).lower()
 
 
+_MITRE_ID = re.compile(r"T[0-9]{4}(?:\.[0-9]{3})?", re.IGNORECASE)
+
+
+def _exact_mitre_id(weakness: dict) -> str | None:
+    """Return one exact ATT&CK identifier, refusing conflicting/free-text IDs."""
+    values = []
+    for key in ("mitre_id", "mitre"):
+        value = weakness.get(key)
+        if value is None:
+            continue
+        candidate = str(value).strip().upper()
+        if _MITRE_ID.fullmatch(candidate) is None:
+            return None
+        values.append(candidate)
+    if not values or len(set(values)) != 1:
+        return None
+    return values[0]
+
+
+@dataclass(frozen=True)
+class _RegistryControl:
+    control_id: str
+    techniques: frozenset[str]
+    subkey: str
+    value_name: str
+    dword: int
+    why: str
+
+
+def _exact_control_id(weakness: dict) -> str | None:
+    values = []
+    for key in ("control_id", "security_control", "remediation_control"):
+        value = weakness.get(key)
+        if value is not None:
+            values.append(str(value).strip().casefold())
+    if not values:
+        return None
+    if not values[0] or len(set(values)) != 1:
+        return ""
+    return values[0]
+
+
 # ── 3. Registry hardening (REAL, host-level, reversible) ────────────────────
 class RegistryHardeningAction(RemediationAction):
     key = "registry_hardening"
     title = "Apply a vetted registry hardening"
     reversible = True
     host_level = True
+    durable_transaction = True
 
-    # Vetted allow-list: (match substrings) -> (subkey, value_name, dword, why).
-    # Model/logic only SELECTS from this table; it never authors registry paths.
-    _TABLE = [
-        (("t1003", "credential", "lsass", "mimikatz"),
-         (r"SYSTEM\CurrentControlSet\Control\Lsa", "RunAsPPL", 1,
-          "Run LSASS as a Protected Process (blocks credential dumping)")),
-        (("wdigest", "t1003", "credential"),
-         (r"SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest",
-          "UseLogonCredential", 0, "Disable WDigest cleartext credential caching")),
-        # T1562.011: Defense evasion — script-block logging disabled specifically
-        # (NOT bare "t1562" — that MITRE ID also covers AMSI bypass, which must
-        # route to DefenderHardeningAction, not this registry fix).
-        (("t1562.011", "script block", "powershell logging", "scriptblock"),
-         (r"SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging",
-          "EnableScriptBlockLogging", 1, "Re-enable PowerShell script-block logging")),
-        # T1055: Process injection — prohibit remote code execution via IFEO silent exits
-        (("t1055", "process injection", "inject", "hollowing"),
-         (r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options",
-          "MitigationOptions", 0x100, "Set process-injection mitigation flag")),
-        # T1548: UAC bypass — re-assert UAC consent prompt for all apps
-        (("t1548", "uac bypass", "bypassuac", "elevation"),
-         (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
-          "ConsentPromptBehaviorAdmin", 2,
-          "Restore UAC to 'Prompt for consent on secure desktop'")),
-        # T1547: Persistence via ASEP — ensure autorun is audit-logged
-        (("t1547", "autorun", "persistence", "run key"),
-         (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer",
-          "NoDriveTypeAutoRun", 0xFF, "Disable autorun on all drive types")),
-        # T1112: Registry modification — enable registry auditing via advanced audit
-        (("t1112", "registry modification", "regmod"),
-         (r"SYSTEM\CurrentControlSet\Control\Lsa", "auditbaseobjects", 1,
-          "Enable base-object auditing for registry change detection")),
-    ]
+    # Exact typed allow-list.  Free text never selects a registry target.  When
+    # one technique maps to multiple controls (T1003.001), an explicit control
+    # ID is required and ambiguity remains manual-review only.
+    _CONTROLS = (
+        _RegistryControl(
+            "windows.lsass.run_as_ppl",
+            frozenset({"T1003.001"}),
+            r"SYSTEM\CurrentControlSet\Control\Lsa",
+            "RunAsPPL",
+            1,
+            "Run LSASS as a Protected Process (blocks credential dumping)",
+        ),
+        _RegistryControl(
+            "windows.wdigest.disable_cleartext",
+            frozenset({"T1003.001"}),
+            r"SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest",
+            "UseLogonCredential",
+            0,
+            "Disable WDigest cleartext credential caching",
+        ),
+        _RegistryControl(
+            "windows.powershell.script_block_logging",
+            frozenset({"T1562.011"}),
+            r"SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging",
+            "EnableScriptBlockLogging",
+            1,
+            "Re-enable PowerShell script-block logging",
+        ),
+        _RegistryControl(
+            "windows.process_injection.mitigation",
+            frozenset({"T1055"}),
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options",
+            "MitigationOptions",
+            0x100,
+            "Set process-injection mitigation flag",
+        ),
+        _RegistryControl(
+            "windows.uac.secure_desktop_consent",
+            frozenset({"T1548.002"}),
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
+            "ConsentPromptBehaviorAdmin",
+            2,
+            "Restore UAC to 'Prompt for consent on secure desktop'",
+        ),
+        _RegistryControl(
+            "windows.autorun.disable_all_drives",
+            frozenset({"T1547.001"}),
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer",
+            "NoDriveTypeAutoRun",
+            0xFF,
+            "Disable autorun on all drive types",
+        ),
+        _RegistryControl(
+            "windows.registry.base_object_auditing",
+            frozenset({"T1112"}),
+            r"SYSTEM\CurrentControlSet\Control\Lsa",
+            "auditbaseobjects",
+            1,
+            "Enable base-object auditing for registry change detection",
+        ),
+    )
+
+    def _candidates(self, w: dict) -> tuple[_RegistryControl, ...]:
+        technique = _exact_mitre_id(w)
+        control_id = _exact_control_id(w)
+        if technique is None or control_id == "":
+            return ()
+        candidates = tuple(
+            control for control in self._CONTROLS if technique in control.techniques
+        )
+        if control_id is not None:
+            candidates = tuple(
+                control for control in candidates if control.control_id == control_id
+            )
+        return candidates
 
     def _entry(self, w: dict):
-        h = _hay(w)
-        return next((e for subs, e in self._TABLE if any(s in h for s in subs)), None)
+        candidates = self._candidates(w)
+        if len(candidates) != 1:
+            return None
+        control = candidates[0]
+        return control.subkey, control.value_name, control.dword, control.why
 
     def matches(self, w: dict) -> bool:
-        return os.name == "nt" and self._entry(w) is not None
+        return os.name == "nt" and len(self._candidates(w)) == 1
 
-    def apply(self, w: dict, quarantine_dir: Path) -> dict:
+    @staticmethod
+    def _read_state(subkey: str, value_name: str) -> tuple[bool, object, int | None]:
         import winreg
-        subkey, name, value, why = self._entry(w)
-        prior = None
+
         try:
-            k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, subkey, 0, winreg.KEY_READ)
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE, subkey, 0, winreg.KEY_READ
+            )
             try:
-                prior, _ = winreg.QueryValueEx(k, name)
+                value, value_type = winreg.QueryValueEx(key, value_name)
             finally:
-                winreg.CloseKey(k)
+                winreg.CloseKey(key)
+            return True, value, int(value_type)
         except FileNotFoundError:
-            prior = None
-        k = winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, subkey, 0, winreg.KEY_SET_VALUE)
+            return False, None, None
+
+    @staticmethod
+    def _state_matches(
+        observed: tuple[bool, object, int | None],
+        *,
+        present: bool,
+        value: object,
+        value_type: int | None,
+    ) -> bool:
+        actual_present, actual_value, actual_type = observed
+        if actual_present is not present:
+            return False
+        if not present:
+            return True
+        return actual_type == value_type and actual_value == value
+
+    def begin_transaction(self, w: dict, quarantine_dir: Path) -> dict:
+        del quarantine_dir
+        import winreg
+
+        candidates = self._candidates(w)
+        if len(candidates) != 1:
+            raise ValueError("exactly one typed registry control is required")
+        control = candidates[0]
+        prior_present, prior, prior_type = self._read_state(
+            control.subkey, control.value_name
+        )
+        if prior_present and (
+            prior_type != winreg.REG_DWORD or not isinstance(prior, int)
+        ):
+            raise ValueError("registry prior state is not an exact DWORD")
+        return {
+            "ok": False,
+            "action": self.key,
+            "technique": _exact_mitre_id(w),
+            "control_id": control.control_id,
+            "subkey": control.subkey,
+            "name": control.value_name,
+            "prior_present": prior_present,
+            "prior": prior,
+            "prior_type": prior_type,
+            "new": int(control.dword),
+            "why": control.why,
+            "transaction_state": "prepared",
+            "mutation_started": False,
+            "compensation_ready": True,
+        }
+
+    def apply_transactional(
+        self, w: dict, quarantine_dir: Path, transaction: dict
+    ) -> dict:
+        del w, quarantine_dir
+        import winreg
+
+        live = self._read_state(transaction["subkey"], transaction["name"])
+        if not self._state_matches(
+            live,
+            present=bool(transaction.get("prior_present")),
+            value=transaction.get("prior"),
+            value_type=transaction.get("prior_type"),
+        ):
+            transaction.update({
+                "ok": False,
+                "external_conflict": True,
+                "transaction_state": "external_conflict",
+                "mutation_started": False,
+                "error": "registry state changed after review; mutation refused",
+            })
+            return transaction
+        transaction["mutation_started"] = True
+        transaction["transaction_state"] = "mutation_started"
+        k = winreg.CreateKeyEx(
+            winreg.HKEY_LOCAL_MACHINE,
+            transaction["subkey"],
+            0,
+            winreg.KEY_SET_VALUE,
+        )
         try:
-            winreg.SetValueEx(k, name, 0, winreg.REG_DWORD, int(value))
+            winreg.SetValueEx(
+                k,
+                transaction["name"],
+                0,
+                winreg.REG_DWORD,
+                int(transaction["new"]),
+            )
         finally:
             winreg.CloseKey(k)
-        return {"ok": True, "action": self.key, "subkey": subkey, "name": name,
-                "prior": prior, "new": int(value), "why": why}
+        after = self._read_state(transaction["subkey"], transaction["name"])
+        transaction["ok"] = self._state_matches(
+            after,
+            present=True,
+            value=int(transaction["new"]),
+            value_type=winreg.REG_DWORD,
+        )
+        transaction["external_conflict"] = False
+        transaction["transaction_state"] = (
+            "applied" if transaction["ok"] else "postcondition_failed"
+        )
+        return transaction
+
+    def apply(self, w: dict, quarantine_dir: Path) -> dict:
+        try:
+            transaction = self.begin_transaction(w, quarantine_dir)
+        except Exception as exc:
+            return {"ok": False, "action": self.key, "error": str(exc)}
+        return self.apply_transactional(w, quarantine_dir, transaction)
 
     def rollback(self, record: dict) -> dict:
         import winreg
         try:
+            live = self._read_state(record["subkey"], record["name"])
+            if not self._state_matches(
+                live,
+                present=True,
+                value=int(record["new"]),
+                value_type=winreg.REG_DWORD,
+            ):
+                return {
+                    "ok": False,
+                    "external_conflict": True,
+                    "error": (
+                        "registry state no longer equals Angerona's committed "
+                        "postcondition; stale rollback refused"
+                    ),
+                }
             k = winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, record["subkey"], 0,
                                    winreg.KEY_SET_VALUE)
             try:
-                if record.get("prior") is None:
+                if not record.get("prior_present"):
                     try:
                         winreg.DeleteValue(k, record["name"])
                     except FileNotFoundError:
                         pass
                 else:
-                    winreg.SetValueEx(k, record["name"], 0, winreg.REG_DWORD, int(record["prior"]))
+                    if record.get("prior_type") != winreg.REG_DWORD:
+                        return {"ok": False, "error": "invalid retained registry type"}
+                    winreg.SetValueEx(
+                        k,
+                        record["name"],
+                        0,
+                        winreg.REG_DWORD,
+                        int(record["prior"]),
+                    )
             finally:
                 winreg.CloseKey(k)
-            return {"ok": True}
+            verified = self._state_matches(
+                self._read_state(record["subkey"], record["name"]),
+                present=bool(record.get("prior_present")),
+                value=record.get("prior"),
+                value_type=record.get("prior_type"),
+            )
+            return {"ok": verified, "external_conflict": False}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    def verify_rollback(self, record: dict) -> bool:
+        import winreg
+
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE, record["subkey"], 0, winreg.KEY_READ
+            )
+            try:
+                try:
+                    value, value_type = winreg.QueryValueEx(key, record["name"])
+                    present = True
+                except FileNotFoundError:
+                    value, value_type, present = None, None, False
+            finally:
+                winreg.CloseKey(key)
+        except FileNotFoundError:
+            value, value_type, present = None, None, False
+        except Exception:
+            return False
+        if not record.get("prior_present"):
+            return present is False
+        return (
+            present
+            and value_type == record.get("prior_type")
+            and value == record.get("prior")
+        )
 
     def verify(self, w: dict, record: dict) -> bool:
         import winreg
@@ -447,34 +1099,53 @@ class LockdownAclAction(RemediationAction):
             return {"ok": False, "error": str(exc)}
 
 
-# ── 5. Re-assert the Windows Defender baseline (REAL; not undo-able) ─────────
+# ── 5. Windows Defender baseline (PROPOSAL ONLY) ─────────────────────────
 class DefenderHardeningAction(RemediationAction):
     key = "defender_hardening"
-    title = "Re-assert Windows Defender baseline (real-time + cloud)"
-    reversible = False        # turning protection back ON is not something to revert
+    title = "Review and restore the Windows Defender baseline"
+    proposal_only = True
+    executable = False
+    proposal_reason = (
+        "Automatic Defender preference mutation is disabled: the current response "
+        "catalog cannot retain and verify the exact prior state of every affected "
+        "preference or guarantee rollback. Review the host's managed security policy "
+        "and use an independently authorized administration channel."
+    )
+    reversible = False
     host_level = True
 
     def matches(self, w: dict) -> bool:
-        h = _hay(w)
-        return os.name == "nt" and any(s in h for s in
-                                       ("defense-evasion", "defender", "t1562", "amsi", "realtime"))
+        technique = _exact_mitre_id(w)
+        # T1562.011 is the exact script-block-logging control handled by the
+        # registry catalog.  It must never be swallowed by broad T1562 text.
+        if technique == "T1562.011":
+            return False
+        if technique == "T1562" or (
+            technique is not None and technique.startswith("T1562.")
+        ):
+            return True
+        return _exact_control_id(w) in {
+            "windows.defender.baseline",
+            "windows.amsi.integrity",
+        }
 
     def apply(self, w: dict, quarantine_dir: Path) -> dict:
-        ps = ("Set-MpPreference -DisableRealtimeMonitoring $false -MAPSReporting Advanced "
-              "-SubmitSamplesConsent SendAllSamples -ErrorAction SilentlyContinue")
-        r = run_hidden(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
-                       capture_output=True, text=True, timeout=30)
-        return {"ok": r.returncode == 0, "action": self.key, "rc": r.returncode,
-                "stderr": (r.stderr or "")[:300]}
+        del w, quarantine_dir
+        return {
+            "ok": False,
+            "action": self.key,
+            "proposal_only": True,
+            "executable": False,
+            "reason": self.proposal_reason,
+        }
+
+    def rollback(self, record: dict) -> dict:
+        del record
+        return {"ok": False, "proposal_only": True, "reason": self.proposal_reason}
 
     def verify(self, w: dict, record: dict) -> bool:
-        try:
-            r = run_hidden(["powershell", "-NoProfile", "-Command",
-                            "(Get-MpPreference).DisableRealtimeMonitoring"],
-                           capture_output=True, text=True, timeout=20)
-            return "False" in (r.stdout or "")
-        except Exception:
-            return False
+        del w, record
+        return False
 
 
 # ── 6. Network isolation — block a malicious remote IP (REAL, reversible) ────
@@ -483,20 +1154,63 @@ class NetworkIsolationAction(RemediationAction):
     title = "Block a malicious remote IP at the host firewall"
     reversible = True
     host_level = True
+    durable_transaction = True
+    proposal_only = True
+    executable = False
+    proposal_reason = (
+        "Automatic weakness-row firewall mutation is disabled. Use the typed "
+        "response broker with an authenticated, single-use capability bound to "
+        "one exact globally routable peer and a separately verified rollback."
+    )
 
     def matches(self, w: dict) -> bool:
         return os.name == "nt" and _first_ip_in(w) is not None
 
-    def apply(self, w: dict, quarantine_dir: Path) -> dict:
+    def begin_transaction(self, w: dict, quarantine_dir: Path) -> dict:
         del quarantine_dir
         ip = _first_ip_in(w)
+        if ip is None:
+            raise ValueError("a validated remote IP is required for network isolation")
         rule = f"Angerona-Block-{ip}-{time.time_ns()}"
+        rules = {direction: f"{rule}-{direction}" for direction in ("out", "in")}
+        for name in rules.values():
+            result = run_hidden(
+                ["netsh", "advfirewall", "firewall", "show", "rule", f"name={name}"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if result.returncode == 0 or name.casefold() in str(
+                result.stdout or ""
+            ).casefold():
+                raise RuntimeError("generated firewall compensation identity already exists")
+        return {
+            "ok": False,
+            "action": self.key,
+            "ip": ip,
+            "rule": rule,
+            "rules": rules,
+            "attempted_rules": {},
+            "returncodes": {},
+            "transaction_state": "prepared",
+            "mutation_started": False,
+            "compensation_ready": True,
+        }
+
+    def apply_transactional(
+        self, w: dict, quarantine_dir: Path, transaction: dict
+    ) -> dict:
+        del w, quarantine_dir
+        ip = transaction["ip"]
         # Outbound + inbound block scoped to this one remote IP. Fully reversible
         # (delete the named rule). netsh is deterministic — nothing model-authored.
-        rules: dict[str, str] = {}
-        results: dict[str, int] = {}
         for direction in ("out", "in"):
-            named = f"{rule}-{direction}"
+            named = transaction["rules"][direction]
+            # A timeout does not prove the command had no effect. Retain the
+            # exact rule identity before dispatch so compensation can delete it.
+            transaction["attempted_rules"][direction] = named
+            transaction["mutation_started"] = True
+            transaction["transaction_state"] = "mutation_started"
             result = run_hidden(
                 [
                     "netsh", "advfirewall", "firewall", "add", "rule",
@@ -507,20 +1221,23 @@ class NetworkIsolationAction(RemediationAction):
                 text=True,
                 timeout=15,
             )
-            rules[direction] = named
-            results[direction] = result.returncode
-        return {
-            "ok": all(code == 0 for code in results.values()) and len(results) == 2,
-            "action": self.key,
-            "ip": ip,
-            "rule": rule,
-            "rules": rules,
-            "returncodes": results,
-        }
+            transaction["returncodes"][direction] = result.returncode
+        transaction["ok"] = (
+            all(code == 0 for code in transaction["returncodes"].values())
+            and len(transaction["returncodes"]) == 2
+        )
+        return transaction
+
+    def apply(self, w: dict, quarantine_dir: Path) -> dict:
+        try:
+            transaction = self.begin_transaction(w, quarantine_dir)
+        except Exception as exc:
+            return {"ok": False, "action": self.key, "error": str(exc)}
+        return self.apply_transactional(w, quarantine_dir, transaction)
 
     def rollback(self, record: dict) -> dict:
         try:
-            rules = record.get("rules") or {
+            rules = record.get("attempted_rules") or record.get("rules") or {
                 "legacy": record.get("rule", "")
             }
             results = []
@@ -537,6 +1254,33 @@ class NetworkIsolationAction(RemediationAction):
             return {"ok": bool(results) and all(code == 0 for code in results), "returncodes": results}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    def verify_rollback(self, record: dict) -> bool:
+        rules = record.get("rules")
+        if not isinstance(rules, dict) or set(rules) != {"in", "out"}:
+            return False
+        try:
+            for name in rules.values():
+                result = run_hidden(
+                    [
+                        "netsh",
+                        "advfirewall",
+                        "firewall",
+                        "show",
+                        "rule",
+                        f"name={name}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if result.returncode == 0 or name.casefold() in str(
+                    result.stdout or ""
+                ).casefold():
+                    return False
+            return True
+        except Exception:
+            return False
 
     def verify(self, w: dict, record: dict) -> bool:
         del w
@@ -566,50 +1310,37 @@ class NetworkIsolationAction(RemediationAction):
 
 # ── 7. AV-telemetry-aware file quarantine (G2-G) ────────────────────────────
 class AVDetectionQuarantineAction(RemediationAction):
-    """Quarantine a file identified by Windows Defender (av_telemetry_bridge).
-
-    Matches weakness dicts that carry a 'threat_name' field (emitted by
-    AVTelemetryBridgeModule for EID 1116/1117).  Delegates the actual file move
-    to the same logic as QuarantineFileAction but records the threat name in the
-    audit record for SIEM correlation.
-    """
+    """Explain why a legacy Defender pathname cannot authorize quarantine."""
     key = "av_quarantine"
-    title = "Quarantine file flagged by Windows Defender"
-    reversible = True
+    title = "Review exact-object quarantine for the Defender detection"
+    proposal_only = True
+    executable = False
+    proposal_reason = QuarantineFileAction.proposal_reason
+    reversible = False
     host_level = False
 
     def matches(self, weakness: dict) -> bool:
         if not weakness.get("threat_name"):
             return False
-        p = _first_path_in(weakness)
-        return bool(p) and Path(p).is_file()
+        return bool(_first_path_in(weakness))
 
     def apply(self, weakness: dict, quarantine_dir: Path) -> dict:
-        src = Path(_first_path_in(weakness))
-        quarantine_dir.mkdir(parents=True, exist_ok=True)
-        dst = quarantine_dir / f"{int(time.time())}_{src.name}.av_quarantine"
-        shutil.move(str(src), str(dst))
+        del weakness, quarantine_dir
         return {
-            "ok":           True,
-            "action":       self.key,
-            "original":     str(src),
-            "quarantined":  str(dst),
-            "threat_name":  weakness.get("threat_name", ""),
-            "av_severity":  weakness.get("av_severity", ""),
+            "ok": False,
+            "action": self.key,
+            "proposal_only": True,
+            "executable": False,
+            "reason": self.proposal_reason,
         }
 
     def rollback(self, record: dict) -> dict:
-        try:
-            shutil.move(record["quarantined"], record["original"])
-            return {"ok": True}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+        del record
+        return {"ok": False, "proposal_only": True, "reason": self.proposal_reason}
 
     def verify(self, weakness: dict, record: dict) -> bool:
-        return (
-            not Path(record["original"]).exists()
-            and Path(record["quarantined"]).exists()
-        )
+        del weakness, record
+        return False
 
 
 # ── 8. Suspend a suspicious process (REAL, reversible, requires psutil) ──────
@@ -621,6 +1352,13 @@ class SuspendProcessAction(RemediationAction):
     title = "Suspend the suspicious process (reversible)"
     reversible = True
     host_level = True
+    durable_transaction = True
+    proposal_only = True
+    executable = False
+    proposal_reason = (
+        "Automatic weakness-row process suspension is disabled. Use Adversary "
+        "Combat's authenticated exact PID/create-time/image response contract."
+    )
 
     def _pid(self, w: dict) -> int | None:
         v = w.get("pid")
@@ -638,21 +1376,53 @@ class SuspendProcessAction(RemediationAction):
         except Exception:
             return False
 
-    def apply(self, w: dict, quarantine_dir: Path) -> dict:
+    def begin_transaction(self, w: dict, quarantine_dir: Path) -> dict:
         del quarantine_dir
         expected = _expected_process_identity(w)
         pid = expected["pid"] if expected else self._pid(w)
+        if expected is None or _psutil is None:
+            raise ValueError("sensor-bound PID identity is required")
+        proc = _psutil.Process(pid)
+        if not _process_matches_identity(proc, expected):
+            raise RuntimeError("process identity changed before suspend")
+        prior_status = str(proc.status() or "").casefold()
+        if prior_status == "stopped" or not prior_status:
+            raise RuntimeError("process suspension prior state is not safely reversible")
+        return {
+            "ok": False,
+            "action": self.key,
+            **expected,
+            "name": str(proc.name() or "").casefold(),
+            "prior_suspended": False,
+            "prior_status": prior_status,
+            "transaction_state": "prepared",
+            "mutation_started": False,
+            "compensation_ready": True,
+        }
+
+    def apply_transactional(
+        self, w: dict, quarantine_dir: Path, transaction: dict
+    ) -> dict:
+        del w, quarantine_dir
         try:
-            if expected is None:
-                raise ValueError("sensor-bound PID identity is required")
-            proc = _psutil.Process(pid)
-            if not _process_matches_identity(proc, expected):
+            proc = _psutil.Process(transaction["pid"])
+            if not _process_matches_identity(proc, transaction):
                 raise RuntimeError("process identity changed before suspend")
-            name = proc.name()
+            transaction["mutation_started"] = True
+            transaction["transaction_state"] = "mutation_started"
             proc.suspend()
-            return {"ok": True, "action": self.key, **expected, "name": name.casefold()}
+            transaction["ok"] = True
         except Exception as exc:
-            return {"ok": False, "action": self.key, "pid": pid, "error": str(exc)}
+            transaction["ok"] = False
+            transaction["error"] = str(exc)
+        return transaction
+
+    def apply(self, w: dict, quarantine_dir: Path) -> dict:
+        try:
+            transaction = self.begin_transaction(w, quarantine_dir)
+        except Exception as exc:
+            return {"ok": False, "action": self.key, "error": str(exc)}
+        return self.apply_transactional(w, quarantine_dir, transaction)
 
     def rollback(self, record: dict) -> dict:
         try:
@@ -663,6 +1433,18 @@ class SuspendProcessAction(RemediationAction):
             return {"ok": True}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    def verify_rollback(self, record: dict) -> bool:
+        if record.get("prior_suspended") is not False:
+            return False
+        try:
+            process = _psutil.Process(record["pid"])
+            return (
+                _process_matches_identity(process, record)
+                and str(process.status() or "").casefold() != "stopped"
+            )
+        except Exception:
+            return False
 
     def verify(self, w: dict, record: dict) -> bool:
         if not record.get("ok"):
@@ -683,6 +1465,13 @@ class KillProcessAction(RemediationAction):
     title = "Terminate the malicious process (hard-kill)"
     reversible = False
     host_level = True
+    durable_transaction = True
+    proposal_only = True
+    executable = False
+    proposal_reason = (
+        "Automatic weakness-row process termination is disabled. Use Adversary "
+        "Combat's authenticated exact PID/create-time/image response contract."
+    )
 
     _TRIGGERS = ("ransomware", "t1486", "worm", "t1041", "t1210",
                  "cryptominer", "keylogger", "exfil")
@@ -706,21 +1495,50 @@ class KillProcessAction(RemediationAction):
         h = _hay(w)
         return any(t in h for t in self._TRIGGERS)
 
-    def apply(self, w: dict, quarantine_dir: Path) -> dict:
+    def begin_transaction(self, w: dict, quarantine_dir: Path) -> dict:
         del quarantine_dir
         expected = _expected_process_identity(w)
         pid = expected["pid"] if expected else self._pid(w)
+        if expected is None or _psutil is None:
+            raise ValueError("sensor-bound PID identity is required")
+        proc = _psutil.Process(pid)
+        if not _process_matches_identity(proc, expected):
+            raise RuntimeError("process identity changed before termination")
+        return {
+            "ok": False,
+            "action": self.key,
+            **expected,
+            "name": str(proc.name() or "").casefold(),
+            "transaction_state": "prepared",
+            "mutation_started": False,
+            # Irreversible actions retain the exact identity needed to prove
+            # their postcondition during separately authorized reconciliation.
+            "compensation_ready": True,
+        }
+
+    def apply_transactional(
+        self, w: dict, quarantine_dir: Path, transaction: dict
+    ) -> dict:
+        del w, quarantine_dir
         try:
-            if expected is None:
-                raise ValueError("sensor-bound PID identity is required")
-            proc = _psutil.Process(pid)
-            if not _process_matches_identity(proc, expected):
+            proc = _psutil.Process(transaction["pid"])
+            if not _process_matches_identity(proc, transaction):
                 raise RuntimeError("process identity changed before termination")
-            name = proc.name()
+            transaction["mutation_started"] = True
+            transaction["transaction_state"] = "mutation_started"
             proc.kill()
-            return {"ok": True, "action": self.key, **expected, "name": name.casefold()}
+            transaction["ok"] = True
         except Exception as exc:
-            return {"ok": False, "action": self.key, "pid": pid, "error": str(exc)}
+            transaction["ok"] = False
+            transaction["error"] = str(exc)
+        return transaction
+
+    def apply(self, w: dict, quarantine_dir: Path) -> dict:
+        try:
+            transaction = self.begin_transaction(w, quarantine_dir)
+        except Exception as exc:
+            return {"ok": False, "action": self.key, "error": str(exc)}
+        return self.apply_transactional(w, quarantine_dir, transaction)
 
     def verify(self, w: dict, record: dict) -> bool:
         if not record.get("ok"):
@@ -792,33 +1610,197 @@ class PersistenceCleanupAction(RemediationAction):
 
 # ── registry of vetted actions (most specific first) ────────────────────────
 ACTIONS: list[RemediationAction] = [
-    KillProcessAction(),             # active ransomware/worm/exfil PID → hard-kill
-    SuspendProcessAction(),          # suspicious PID → suspend (preserves forensics)
     # Ambiguous Run/RunOnce value-name deletion is deliberately not registered.
-    DisableDriverServiceAction(),    # BYOVD driver → disable its service
+    # BYOVD disablement remains proposal-only until a single held SCM service
+    # handle spans approval, mutation, and postcondition verification.
     RegistryHardeningAction(),       # credential-access / UAC bypass → registry fix
-    DefenderHardeningAction(),       # defense-evasion → re-assert Defender baseline
-    NetworkIsolationAction(),        # C2 / exfil peer IP → host-firewall block
+    # Defender preference changes stay proposal-only until exact prior-state
+    # custody, full postcondition proof, and reliable rollback exist.
     # ACL lockdown stays proposal-only until a locale-independent descriptor
     # verifier can prove and restore the exact DACL, owner, and inheritance.
-    AVDetectionQuarantineAction(),   # G2-G: AV telemetry threat → quarantine
-    QuarantineFileAction(),          # flagged FILE → quarantine (fallback)
+    # Pathname-only quarantine stays proposal-only until it can reuse the
+    # exact-object broker's pinned identity and authenticated rollback record.
 ]
+
+# These entries may explain an operator-visible response proposal, but are
+# deliberately outside ACTIONS and therefore cannot reach apply_remediation's
+# mutation path even when both host-apply gates are enabled.
+PROPOSAL_ONLY_ACTIONS: tuple[RemediationAction, ...] = (
+    DefenderHardeningAction(),
+    KillProcessAction(),
+    SuspendProcessAction(),
+    NetworkIsolationAction(),
+    AVDetectionQuarantineAction(),
+    QuarantineFileAction(),
+    DisableDriverServiceAction(),
+)
+
+# Explicit safety classifications are evaluated before any generic executable
+# matcher.  A Defender/T1562 record can therefore never be turned into a file,
+# process, network, registry, or service mutation by adding target-shaped data.
+DOMINANT_PROPOSAL_ACTIONS: tuple[RemediationAction, ...] = (
+    PROPOSAL_ONLY_ACTIONS[0],
+)
+
+
+class _RecoveryCoordinator:
+    """Private orchestration boundary for one store and vetted registry.
+
+    The capability is deliberately unavailable through public recovery,
+    inspection, action, or ledger APIs.  This is an in-process least-authority
+    boundary for ordinary callers, not a Python sandbox: arbitrary
+    introspective code already executing with Angerona's token remains outside
+    the isolation promise and should be placed behind authenticated IPC.
+    """
+
+    __slots__ = (
+        "_capability",
+        "_registry_object",
+        "_registry_snapshot",
+        "_store_ref",
+    )
+
+    def __init__(self, store, registry: list[RemediationAction]) -> None:
+        snapshot = tuple(registry)
+        self._store_ref = weakref.ref(store)
+        self._registry_object = registry
+        self._registry_snapshot = snapshot
+        self._capability = store._bind_recovery_coordinator(snapshot)
+
+    def require_current(self, store, registry: list[RemediationAction]) -> None:
+        if self._store_ref() is not store:
+            raise RuntimeError("recovery coordinator store binding changed")
+        if self._registry_object is not registry:
+            raise RuntimeError("recovery action registry object changed after binding")
+        if len(registry) != len(self._registry_snapshot) or any(
+            current is not retained
+            for current, retained in zip(registry, self._registry_snapshot)
+        ):
+            raise RuntimeError("recovery action registry changed after binding")
+
+    def action_for(self, action_key: str) -> RemediationAction | None:
+        matches = [
+            action for action in self._registry_snapshot if action.key == action_key
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+
+_RECOVERY_COORDINATORS_LOCK = threading.Lock()
+_RECOVERY_COORDINATORS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _recovery_coordinator_for(store) -> _RecoveryCoordinator:
+    """Return the sole coordinator bound to this store and exact registry."""
+    with _RECOVERY_COORDINATORS_LOCK:
+        coordinator = _RECOVERY_COORDINATORS.get(store)
+        if coordinator is None:
+            coordinator = _RecoveryCoordinator(store, ACTIONS)
+            _RECOVERY_COORDINATORS[store] = coordinator
+        else:
+            coordinator.require_current(store, ACTIONS)
+        return coordinator
+
+
+@dataclass(frozen=True)
+class RemediationDecision:
+    """One typed, fail-closed classification for a weakness record."""
+
+    action: RemediationAction | None = None
+    proposal: RemediationAction | None = None
+    reason: str = ""
+    rejected_matches: tuple[str, ...] = ()
+
+
+def _matching_actions(
+    weakness: dict, catalog: tuple[RemediationAction, ...] | list[RemediationAction]
+) -> tuple[RemediationAction, ...]:
+    matches = []
+    for action in catalog:
+        try:
+            if action.matches(weakness):
+                matches.append(action)
+        except Exception:
+            # Classification errors cannot authorize a fallback mutation.
+            continue
+    return tuple(matches)
+
+
+def classify_remediation(weakness: dict) -> RemediationDecision:
+    """Resolve one non-overlapping action decision, with denials first.
+
+    Generic signal records may retain legacy matchers for compatibility, but
+    overlapping matches are rejected instead of resolved by list ordering.
+    """
+    dominant = _matching_actions(weakness, DOMINANT_PROPOSAL_ACTIONS)
+    if len(dominant) == 1:
+        return RemediationDecision(
+            proposal=dominant[0], reason=dominant[0].proposal_reason
+        )
+    if len(dominant) > 1:
+        keys = tuple(sorted(action.key for action in dominant))
+        return RemediationDecision(
+            reason="ambiguous dominant safety classifications; manual review required",
+            rejected_matches=keys,
+        )
+
+    executable = _matching_actions(weakness, ACTIONS)
+    if len(executable) == 1:
+        return RemediationDecision(action=executable[0])
+    if len(executable) > 1:
+        keys = tuple(sorted(action.key for action in executable))
+        return RemediationDecision(
+            reason="ambiguous executable action matches; typed manual review required",
+            rejected_matches=keys,
+        )
+
+    proposals = _matching_actions(weakness, PROPOSAL_ONLY_ACTIONS[1:])
+    if len(proposals) == 1:
+        return RemediationDecision(
+            proposal=proposals[0], reason=proposals[0].proposal_reason
+        )
+    if len(proposals) > 1:
+        keys = tuple(sorted(action.key for action in proposals))
+        return RemediationDecision(
+            reason="ambiguous proposal-only matches; manual review required",
+            rejected_matches=keys,
+        )
+    return RemediationDecision(reason="no vetted action; manual review required")
 
 
 def select_action(weakness: dict) -> RemediationAction | None:
-    """Deterministically map a weakness to the first vetted action that fits."""
-    return next((a for a in ACTIONS if a.matches(weakness)), None)
+    """Return only a unique executable classification."""
+    return classify_remediation(weakness).action
+
+
+def select_proposal_action(weakness: dict) -> RemediationAction | None:
+    """Return explanatory, non-executable guidance for a known response gap."""
+    return classify_remediation(weakness).proposal
 
 
 def plan_remediation(weaknesses: list[dict]) -> list[dict]:
     """Dry-run: what WOULD be done, per weakness. No changes."""
     plan = []
     for w in weaknesses:
-        a = select_action(w)
-        plan.append({"mitre": w.get("mitre_id") or w.get("mitre"),
-                     "action": a.key if a else None,
-                     "title": a.title if a else "no vetted action — manual review"})
+        decision = classify_remediation(w)
+        a = decision.action
+        proposal = decision.proposal
+        item = {
+            "mitre": w.get("mitre_id") or w.get("mitre"),
+            "action": a.key if a else (proposal.key if proposal else None),
+            "title": (
+                a.title if a else proposal.title if proposal
+                else "no vetted action — manual review"
+            ),
+            "proposal_only": bool(proposal),
+            "executable": bool(a),
+        }
+        if proposal:
+            item["reason"] = proposal.proposal_reason
+        elif decision.reason:
+            item["reason"] = decision.reason
+        if decision.rejected_matches:
+            item["rejected_matches"] = list(decision.rejected_matches)
+        plan.append(item)
     return plan
 
 
@@ -832,12 +1814,14 @@ def apply_remediation(weaknesses: list[dict], quarantine_dir, apply: bool = Fals
         (defaults to the ANGERONA_AUTO_REMEDIATE opt-in). Every applied action is
         verified; a failed verify triggers an automatic rollback.
       * trigger — caller label written to the remediation_log (e.g. "PostureHardening")
-      * db_path — if provided, inits the remediation_log singleton on first call
+      * db_path — durable transaction/audit custody; executable actions fail
+        closed when no initialized remediation database is available
     Returns {'applied','skipped','records'} — records support later rollback."""
     if allow_host is None:
         allow_host = _auto_apply_enabled()
     qdir = Path(quarantine_dir)
     records, applied, skipped = [], 0, 0
+    mutation_circuit_open = False
 
     # ── audit log (init on first call if db_path supplied) ───────────────────
     try:
@@ -848,6 +1832,31 @@ def apply_remediation(weaknesses: list[dict], quarantine_dir, apply: bool = Fals
             _rlog = get_log()
     except Exception:
         _rlog = None
+
+    custody_error = ""
+    unresolved: list[dict] = []
+    if apply:
+        required_custody_api = (
+            "prepare_transaction",
+            "transition_transaction",
+            "finish_transaction",
+            "unresolved_transactions",
+        )
+        if _rlog is None or any(
+            not callable(getattr(_rlog, name, None)) for name in required_custody_api
+        ):
+            custody_error = (
+                "durable remediation database custody is unavailable; "
+                "all executable actions are disabled"
+            )
+        else:
+            try:
+                # Ordinary apply calls only inspect.  They never promote,
+                # abandon, or compensate a PREPARED/MUTATING transaction that
+                # may still belong to a live caller.
+                unresolved = list(_rlog.unresolved_transactions())
+            except Exception as exc:
+                custody_error = f"durable remediation custody check failed: {exc}"
 
     def _log(level, msg):
         if log:
@@ -873,12 +1882,37 @@ def apply_remediation(weaknesses: list[dict], quarantine_dir, apply: bool = Fals
                 pass
         return None
 
+    def _finish_owned(owner, result: str, rec: dict) -> dict:
+        completion = _rlog.finish_transaction(owner, result=result, record=rec)
+        committed_record = completion.pop("record")
+        rec.clear()
+        rec.update(committed_record)
+        return completion
+
     for w in weaknesses:
         mitre = w.get("mitre_id") or w.get("mitre") or "-"
-        action = select_action(w)
+        decision = classify_remediation(w)
+        action = decision.action
         if action is None:
+            proposal = decision.proposal
             skipped += 1
-            _audit(mitre, None, "skipped")
+            if proposal is not None:
+                rec = {
+                    "proposal_only": True,
+                    "executable": False,
+                    "reason": proposal.proposal_reason,
+                }
+                _log(
+                    "INFO",
+                    f"PROPOSAL ONLY {proposal.key} for {mitre}: "
+                    f"{proposal.proposal_reason}",
+                )
+                _audit(mitre, proposal, "proposal_only", verified=-1, rec=rec)
+            else:
+                rec = {"reason": decision.reason}
+                if decision.rejected_matches:
+                    rec["rejected_matches"] = list(decision.rejected_matches)
+                _audit(mitre, None, "skipped", rec=rec)
             continue
         if not apply:
             _log("INFO", f"PLAN {action.key} for {mitre}")
@@ -889,30 +1923,375 @@ def apply_remediation(weaknesses: list[dict], quarantine_dir, apply: bool = Fals
             skipped += 1
             _audit(mitre, action, "skipped")
             continue
-        try:
-            rec = action.apply(w, qdir)
-            rec["mitre"] = mitre
-            ok = action.verify(w, rec)
-            rec["verified"] = ok
-            if not ok:
-                rb = action.rollback(rec)
-                rec["rolled_back"] = rb.get("ok")
-                _log("CRITICAL", f"{action.key} FAILED verify — rolled back: {rec}")
-                proof = _audit(
-                    mitre, action, "rolled_back", verified=0, rec=rec
+
+        if custody_error or unresolved or mutation_circuit_open:
+            if custody_error:
+                reason = custody_error
+            elif unresolved:
+                ids = [int(item["transaction_id"]) for item in unresolved[:8]]
+                reason = (
+                    "persistent remediation recovery is required for transaction(s) "
+                    + ", ".join(str(item) for item in ids)
                 )
-                if proof:
-                    rec["proof_receipt"] = proof
-                skipped += 1
             else:
-                applied += 1
-                _log("INFO", f"APPLIED {action.key}: {rec}")
-                proof = _audit(mitre, action, "applied", verified=1, rec=rec)
-                if proof:
-                    rec["proof_receipt"] = proof
-                records.append(rec)
+                reason = "prior action left host state unknown; mutation circuit is open"
+            rec = {
+                "action": action.key,
+                "mitre": mitre,
+                "transaction_state": "recovery_required",
+                "recovery_required": True,
+                "mutation_started": False,
+                "reason": reason,
+            }
+            skipped += 1
+            records.append(rec)
+            _log("CRITICAL", f"BLOCKED {action.key}: mutation circuit is open")
+            _audit(mitre, action, "recovery_required", verified=0, rec=rec)
+            continue
+
+        try:
+            rec = action.begin_transaction(w, qdir)
+            if not isinstance(rec, dict):
+                raise TypeError("remediation transaction initializer returned non-dict")
+            if not action.durable_transaction or rec.get("compensation_ready") is not True:
+                raise RuntimeError(
+                    "action has no exact durable compensation/postcondition record"
+                )
+            rec["mitre"] = mitre
+            transaction_owner = _rlog.prepare_transaction(
+                trigger=trigger or "remediation_actions",
+                mitre=mitre,
+                action_key=action.key,
+                action_title=action.title,
+                host_level=bool(action.host_level),
+                record=rec,
+            )
+            transaction_id = transaction_owner.transaction_id
+            rec["transaction_id"] = transaction_id
         except Exception as exc:
             skipped += 1
-            _log("CRITICAL", f"{action.key} errored: {exc}")
-            _audit(mitre, action, "error", rec={"error": str(exc)})
+            circuit_blocked = getattr(exc, "circuit_open", False) is True
+            rec = {
+                "action": action.key,
+                "mitre": mitre,
+                "transaction_state": (
+                    "recovery_required" if circuit_blocked else "apply_failed"
+                ),
+                "mutation_started": False,
+                "error": str(exc),
+            }
+            if circuit_blocked:
+                rec.update(
+                    {
+                        "recovery_required": True,
+                        "blocked": True,
+                        "blocking_transactions": list(
+                            getattr(exc, "transaction_ids", ())
+                        ),
+                        "reason": (
+                            "a durable remediation transaction is already unresolved; "
+                            "this action was not dispatched"
+                        ),
+                    }
+                )
+                records.append(rec)
+            _log("CRITICAL", f"{action.key} transaction preparation failed: {exc}")
+            _audit(
+                mitre,
+                action,
+                "recovery_required" if circuit_blocked else "apply_failed",
+                verified=0,
+                rec=rec,
+            )
+            continue
+
+        try:
+            rec["transaction_state"] = "mutating"
+            _rlog.transition_transaction(
+                transaction_owner,
+                state="MUTATING",
+                record=rec,
+            )
+        except Exception as exc:
+            skipped += 1
+            rec.update(
+                {
+                    "transaction_state": "apply_failed",
+                    "mutation_started": False,
+                    "error": f"durable MUTATING transition failed: {exc}",
+                }
+            )
+            _log("CRITICAL", f"{action.key} blocked before mutation: {exc}")
+            _audit(mitre, action, "apply_failed", verified=0, rec=rec)
+            continue
+
+        apply_error = None
+        try:
+            rec = action.apply_transactional(w, qdir, rec)
+            if not isinstance(rec, dict):
+                raise TypeError("remediation action returned a non-dict transaction")
+        except Exception as exc:
+            apply_error = str(exc)
+            rec["apply_error"] = apply_error
+            rec["ok"] = False
+
+        verified = False
+        if apply_error is None and rec.get("ok") is True:
+            try:
+                verified = action.verify(w, rec) is True
+            except Exception as exc:
+                rec["verification_error"] = str(exc)
+        rec["verified"] = verified
+
+        if verified:
+            try:
+                proof = _finish_owned(
+                    transaction_owner, "applied", rec
+                )
+            except Exception as exc:
+                rec.update(
+                    {
+                        "transaction_state": "recovery_required",
+                        "recovery_required": True,
+                        "journal_error": str(exc),
+                    }
+                )
+                mutation_circuit_open = True
+                skipped += 1
+                records.append(rec)
+                _log("CRITICAL", f"{action.key} terminal journal write failed: {exc}")
+                continue
+            applied += 1
+            _log("INFO", f"APPLIED {action.key}: {rec}")
+            rec["proof_receipt"] = proof
+            records.append(rec)
+            continue
+
+        skipped += 1
+        # An action can prove that it made no change. Otherwise, once dispatch
+        # began, failure/timeout is potentially partial and must be compensated.
+        if rec.get("changed") is False or not rec.get("mutation_started"):
+            try:
+                proof = _finish_owned(
+                    transaction_owner, "apply_failed_no_change", rec
+                )
+            except Exception as exc:
+                rec.update(
+                    {
+                        "transaction_state": "recovery_required",
+                        "recovery_required": True,
+                        "journal_error": str(exc),
+                    }
+                )
+                mutation_circuit_open = True
+                records.append(rec)
+                _log("CRITICAL", f"{action.key} terminal journal write failed: {exc}")
+                continue
+            rec["proof_receipt"] = proof
+            _log("CRITICAL", f"{action.key} apply failed before mutation: {rec}")
+            continue
+
+        if not action.reversible:
+            mutation_circuit_open = True
+            records.append(rec)
+            try:
+                proof = _finish_owned(
+                    transaction_owner, "recovery_required", rec
+                )
+            except Exception as exc:
+                rec.update(
+                    {
+                        "transaction_state": "recovery_required",
+                        "recovery_required": True,
+                        "journal_error": str(exc),
+                    }
+                )
+                _log("CRITICAL", f"{action.key} terminal journal write failed: {exc}")
+                continue
+            rec["proof_receipt"] = proof
+            _log("CRITICAL", f"{action.key} failed after irreversible dispatch: {rec}")
+            continue
+
+        try:
+            rollback = action.rollback(rec)
+        except Exception as exc:
+            rollback = {"ok": False, "error": str(exc)}
+        rec["rollback"] = rollback
+        rollback_verified = False
+        if isinstance(rollback, dict) and rollback.get("ok") is True:
+            try:
+                rollback_verified = action.verify_rollback(rec) is True
+            except Exception as exc:
+                rec["rollback_verification_error"] = str(exc)
+        rec["rollback_verified"] = rollback_verified
+        if rollback_verified:
+            try:
+                proof = _finish_owned(
+                    transaction_owner, "rolled_back", rec
+                )
+            except Exception as exc:
+                rec.update(
+                    {
+                        "transaction_state": "recovery_required",
+                        "recovery_required": True,
+                        "journal_error": str(exc),
+                    }
+                )
+                mutation_circuit_open = True
+                records.append(rec)
+                _log("CRITICAL", f"{action.key} terminal journal write failed: {exc}")
+                continue
+            _log("CRITICAL", f"{action.key} failed and exact rollback succeeded: {rec}")
+            rec["proof_receipt"] = proof
+            continue
+
+        mutation_circuit_open = True
+        records.append(rec)
+        try:
+            proof = _finish_owned(
+                transaction_owner, "rollback_failed", rec
+            )
+        except Exception as exc:
+            rec.update(
+                {
+                    "transaction_state": "recovery_required",
+                    "recovery_required": True,
+                    "journal_error": str(exc),
+                }
+            )
+            _log("CRITICAL", f"{action.key} terminal journal write failed: {exc}")
+            continue
+        _log("CRITICAL", f"{action.key} rollback failed; recovery required: {rec}")
+        rec["proof_receipt"] = proof
     return {"applied": applied, "skipped": skipped, "records": records}
+
+
+def reconcile_remediation_transaction(
+    transaction_id: int,
+    *,
+    authorized: bool = False,
+    db_path=None,
+) -> dict:
+    """Run the sole reviewed recovery coordinator for one circuit entry.
+
+    Public callers can request recovery but cannot claim ledger authority,
+    choose a terminal outcome, replace the retained record, or manufacture a
+    rollback assertion.  The private coordinator is bound once to this exact
+    store and action-registry snapshot.  It claims, invokes the exact registered
+    control, verifies the rollback/postcondition, obtains a store-issued proof,
+    and atomically finishes.  Any failed step leaves the claim ``RECONCILING``.
+    """
+    if authorized is not True:
+        return {"ok": False, "error": "explicit recovery authorization is required"}
+    try:
+        from angerona.core.remediation_log import get_log, init_log
+
+        store = init_log(db_path) if db_path is not None else get_log()
+    except Exception as exc:
+        return {"ok": False, "error": f"durable remediation custody unavailable: {exc}"}
+    if store is None:
+        return {"ok": False, "error": "durable remediation custody unavailable"}
+    try:
+        coordinator = _recovery_coordinator_for(store)
+        claim = store._claim_reconciliation(
+            coordinator._capability, int(transaction_id)
+        )
+    except Exception as exc:
+        return {"ok": False, "error": f"transaction claim failed: {exc}"}
+    transaction = claim.get("transaction")
+    if claim.get("claimed") is not True:
+        current_state = transaction.get("state") if transaction else "missing"
+        return {
+            "ok": False,
+            "transaction_id": int(transaction_id),
+            "state": current_state,
+            "recovery_required": current_state in {
+                "PREPARED",
+                "MUTATING",
+                "RECOVERY_REQUIRED",
+                "RECONCILING",
+            },
+            "error": (
+                "transaction is already being reconciled"
+                if current_state == "RECONCILING"
+                else "transaction is not available for explicit reconciliation"
+            ),
+        }
+    recovery_capability = claim.get("capability")
+    action = coordinator.action_for(str(transaction.get("action_key") or ""))
+    if action is None:
+        return {
+            "ok": False,
+            "transaction_id": int(transaction_id),
+            "state": "RECONCILING",
+            "recovery_required": True,
+            "error": "exact remediation action is unavailable; claim remains locked",
+        }
+    record = dict(transaction.get("record") or {})
+    if action.reversible:
+        try:
+            rollback = action.rollback(record)
+            verified = (
+                isinstance(rollback, dict)
+                and rollback.get("ok") is True
+                and action.verify_rollback(record) is True
+            )
+        except Exception as exc:
+            rollback, verified = {"ok": False, "error": str(exc)}, False
+        record["rollback"] = rollback
+        record["rollback_verified"] = verified
+        if not verified:
+            return {
+                "ok": False,
+                "recovery_required": True,
+                "transaction_id": int(transaction_id),
+                "state": "RECONCILING",
+                "error": "exact rollback could not be verified; claim remains locked",
+            }
+        target = "ROLLED_BACK"
+        operation = "verified_rollback"
+        evidence = rollback
+    else:
+        try:
+            verified = action.verify({}, record) is True
+        except Exception:
+            verified = False
+        if not verified:
+            return {
+                "ok": False,
+                "recovery_required": True,
+                "transaction_id": int(transaction_id),
+                "state": "RECONCILING",
+                "error": "irreversible action postcondition could not be verified",
+            }
+        target = "APPLIED"
+        operation = "verified_postcondition"
+        evidence = {"verified": True}
+    try:
+        recovery_proof = store._issue_verified_recovery_proof(
+            coordinator._capability,
+            recovery_capability,
+            action=action,
+            operation=operation,
+            evidence=evidence,
+        )
+        completion = store._finish_reconciliation(
+            coordinator._capability,
+            recovery_capability,
+            recovery_proof,
+        )
+        completion.pop("record")
+    except Exception as exc:
+        return {
+            "ok": False,
+            "recovery_required": True,
+            "transaction_id": int(transaction_id),
+            "state": "RECONCILING",
+            "error": f"durable reconciliation commit failed: {exc}",
+        }
+    return {
+        "ok": True,
+        "transaction_id": int(transaction_id),
+        "state": target,
+        "proof_receipt": completion,
+    }

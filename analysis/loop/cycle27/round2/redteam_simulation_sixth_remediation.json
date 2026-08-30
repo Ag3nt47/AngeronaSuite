@@ -1,0 +1,74 @@
+{
+  "schema": "angerona.redteam-simulation-remediation.v6",
+  "cycle": 27,
+  "round": 2,
+  "date": "2026-08-28",
+  "disposition": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+  "scope": {
+    "findings": [
+      "RTS-R4-02",
+      "RTS-R4-03",
+      "RTS-R4-05"
+    ],
+    "inert_temp_fixtures_only": true,
+    "real_exploitation": false,
+    "credential_access": false,
+    "persistence": false,
+    "network_attack": false,
+    "host_targeting": false,
+    "host_security_control_mutation": false,
+    "publication": false
+  },
+  "findings": [
+    {
+      "id": "RTS-R4-02",
+      "status": "FIXED",
+      "control": "version-4 native FIM proof requires the exact one-use internal scan object and binds scan/lifecycle generation, covered root, coverage counters/errors, baseline/snapshot digests, file identity/change token, prior and observed content, and change kind",
+      "regression": "direct mapping evaluation has no proof; a real bounded scan is accepted once and its replay cannot mint another receipt"
+    },
+    {
+      "id": "RTS-R4-03",
+      "status": "FIXED",
+      "control": "slotted lease authority contains no verifier callables and exact verifier implementations are captured outside mutable registry/class dispatch",
+      "regression": "all former dispatch fields are absent and unassignable; receipt-free evidence remains rejected after class replacement"
+    },
+    {
+      "id": "RTS-R4-05",
+      "status": "FIXED",
+      "control": "authenticated fixed head independently witnesses journal continuity; newer-fixed/lower-journal rollback, same-sequence fork, and non-ancestor states fail closed; GUI requires the exact current signed journal row and fixed byte bundle",
+      "regression": "journal-only rollback creates no lower fork and both inconsistent GUI handoffs are rejected"
+    }
+  ],
+  "gates": {
+    "sixth_adversarial_regressions": {
+      "passed": 3,
+      "failed": 0
+    },
+    "focused_fourth_through_sixth": {
+      "passed": 24,
+      "failed": 0
+    },
+    "wider_cycle27_redteam_simulation": {
+      "passed": 45,
+      "failed": 0
+    },
+    "compile": "PASS",
+    "ruff_check": "PASS",
+    "diff_check": "PASS",
+    "direct_module_selftests": {
+      "passed": 2,
+      "failed": 0
+    },
+    "module_selftest_runner": {
+      "passed": 65,
+      "failed": 0,
+      "expected_skips": 17
+    },
+    "headless_application_selfcheck": {
+      "passed": 26,
+      "failed": 0
+    }
+  },
+  "residual_boundary": "Same-process hostile native code is not a memory-isolation boundary. Journal-only rollback is independently detected by the fixed head, while total coordinated rollback of every local witness requires a separately administered monotonic witness.",
+  "independent_reattack_required": true
+}

@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "date": "2026-08-28",
+  "scope": [
+    "C27-R1-C09",
+    "C27-R1-C10",
+    "C27-R1-C17",
+    "C27-R1-C19"
+  ],
+  "hostile_test_unchanged": true,
+  "execution_boundary": {
+    "fixtures": "inert temporary files and fake event-log backends",
+    "live_attack": false,
+    "host_mutation": false,
+    "committed": false,
+    "published": false
+  },
+  "closures": [
+    {
+      "id": "C27-R1-C09",
+      "status": "CLOSED",
+      "controls": [
+        "process-monotonic retry deadlines",
+        "restart delay capped to exact authenticated attempt schedule",
+        "exact integer schema and retry counters; Boolean compatibility rejected",
+        "selected/opened single-link source object identity",
+        "bounded recursive-state parse failure"
+      ]
+    },
+    {
+      "id": "C27-R1-C10",
+      "status": "CLOSED",
+      "mandatory_target_count": 19,
+      "controls": [
+        "is_active_threat included in mandatory dependency closure",
+        "unknown ACL collector states degrade health"
+      ]
+    },
+    {
+      "id": "C27-R1-C17",
+      "status": "CLOSED",
+      "controls": [
+        "pre/post-enumeration root object identity",
+        "junction, reparse and ordinary object swap rejection",
+        "bounded 1000-entry enumeration",
+        "retired mutation remains inert"
+      ]
+    },
+    {
+      "id": "C27-R1-C19",
+      "status": "CLOSED",
+      "controls": [
+        "in-process authenticated sequence rollback/fork rejection",
+        "mandatory retained-log replay on every generation transition",
+        "lower record checkpoint admitted only for a new generation",
+        "full incremental anchor hashing under a 2 MiB fail-closed bound",
+        "exact integer cursor schema and record number"
+      ]
+    }
+  ],
+  "gates": {
+    "frozen_hostile_pytest": {"passed": 14, "failed": 0},
+    "post_reattack_pytest": {"passed": 9, "failed": 0},
+    "combined_scoped_pytest": {"passed": 63, "failed": 0},
+    "module_self_tests": {"passed": 4, "failed": 0},
+    "headless_selfcheck": {"passed": 26, "failed": 0},
+    "selfcheck_module_runner": {"passed": 66, "failed": 0, "skipped": 16},
+    "cycle27_broad_snapshot": {
+      "passed": 379,
+      "failed": 5,
+      "skipped": 2,
+      "scoped_failures": 0,
+      "note": "Five unrelated frozen gates remain in Adversary Combat, AV Telemetry Bridge, and Driver Provenance Guard."
+    },
+    "compileall": "passed",
+    "py_compile": "passed",
+    "ruff": "passed",
+    "json_validation": "passed",
+    "diff_check": "passed"
+  },
+  "versions": {
+    "HEAL": "1.12.1",
+    "SINT": "1.12.1",
+    "SHYG": "1.12.1",
+    "SYSL": "1.12.1"
+  },
+  "remaining_limits": [
+    "No independent elapsed-time authority while C09 is stopped.",
+    "Pre-selection source replacement requires a signed release manifest to distinguish.",
+    "C10 is user-mode and default live TOFU remains deliberately non-green.",
+    "No portable cross-platform handle-relative directory enumeration contract for C17; mutation is retired.",
+    "C19 cross-process authentic rollback requires an independent monotonic high-water authority.",
+    "Classic Windows event-log APIs expose no stable generation UUID."
+  ],
+  "test_file": "tests/test_cycle27_shard_c_post_reattack_remediation.py"
+}

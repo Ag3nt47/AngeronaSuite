@@ -10,7 +10,38 @@
 ## STACK / LAUNCH
 Python package metadata supports 3.10–3.13; the hardened Windows source bootstrap and launcher require the reviewed **CPython 3.12 x64** ABI and hash-locked wheels. PySide6 GUI · local Ollama (llama3) triage; sanitized cloud fallback is opt-in and default-off. Windows editable install: `pip install -e .[windows,voice]`; Linux/macOS source editions use target extras through the hash-locked installer. Entry `python -m angerona` → `app.py:AngeronaApp` builds core services + `gui/main_window.py:MainWindow`. First-run install, SETUP, `--setup`, and `angerona-setup` enter the same 16-step Full Setup. Self-elevating source launchers overwrite inherited `ANGERONA_DATA` with the sibling `<install-folder>\..\AngeronaData` on D: before elevation; frozen Windows builds prefer protected `D:\AngeronaData`. DB: `flight-recorder.db`. TEMP/TMP, watchdog state, reports, diagnostics, scanner evidence, legacy engine status/telemetry, and incident staging use canonical data/temp helpers rather than the checkout.
 
-## LATEST (v1.12.0 — Cycle 25 capability, adaptation, and reliability loop)
+## LATEST (v1.12.1 — Cycles 26-30 defensive hardening and SentinelLens)
+
+- **Inventory and UI truth:** 81 Windows-target capabilities; six native
+  contracts and 75 compatibility adapters. Built-in implementation labels are
+  1.12.1. Typed sortable/clickable assurance rows disclose runtime health,
+  coverage, loss, freshness, baseline, dependencies, exact trusted file/digest/
+  line evidence, and a red read-only implicated-line highlight.
+- **SentinelLens:** app-owned bounded background Syslog, Windows Event, NetFlow,
+  JSONL, array, and non-blocking EventBus ingestion with explicit queue/parser/
+  analysis loss; deterministic attack-chain graph and anomaly narrative;
+  clickable evidence and proposal-only remediation; strict-loopback optional
+  local AI with no cloud fallback or public/LAN listening socket.
+- **Safe automation:** Guided Auto Adapt performs one audit, closed security-
+  intent selection, completeness gate, immutable preview, no-write simulation,
+  and separate exact-plan approval. Immutable recovery applies only to the full
+  Windows Firewall policy that Host Adaptation can change.
+- **Five-loop evidence:** Cycles 26-30 cover source/signer isolation, exhaustive
+  module assurance, object/generation identity, authenticated baselines,
+  durable delivery and crash recovery, bounded resources, continuity/loss,
+  exact response authority, and lifecycle truth. Independent hostile tests are
+  retained even when they reopen author-green changes.
+- **Honest boundary:** no claim of complete attack coverage, privileged-
+  attacker immunity, external certification, fleet parity, or state/agency
+  attribution. No live offensive probes or host attacks are part of the gates.
+- **Verification:** 2659 passed / 13 intentional
+  host-platform skips / 0 failed on the exact v1.12.1 tree. `compileall`, Ruff,
+  selfcheck 26/26, workflow-policy, dependency-audit, documentation-drift, and
+  diff gates pass. Canonical public-main and README-image byte proof remains a
+  separate guarded publication step until `publication_done` becomes true.
+- Evidence map: `analysis/loop/cycles26-30-summary.md`.
+
+## PRIOR (v1.12.0 — Cycle 25 capability, adaptation, and reliability loop)
 
 - **Inventory truth:** exactly 80 Windows-target capabilities use the validated
   `angerona.capability-contract.v12` schema and a common operational
@@ -82,7 +113,7 @@ Python package metadata supports 3.10–3.13; the hardened Windows source bootst
   346/346; 82/82 module
   files; 64/64 hooks; 80 discovery; 92 core/module self-tests plus EventBus and
   12 expected inactive/platform skips; selfcheck 26/26 direct/batch; Ruff and
-  diff clean. Do not claim 1,811 until the post-doc suite verifies it.
+  diff clean.
 - Full three-round disposition, sources, and residuals:
   `analysis/loop/cycle25/summary.md`.
 

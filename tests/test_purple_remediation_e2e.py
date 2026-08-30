@@ -27,6 +27,8 @@ def test_fresh_purple_detection_and_correlated_soar_action_change_scorecard():
             "artifact_path": path,
             "mitre": "T1003",
             "detector_policy": "reviewed-redteam-candidate",
+            "evidence_type": "simulation_contract_validation",
+            "detector_verdict": "positive",
         })
     action = Event(
         "Active Response SOAR", "artifact removed", Severity.HIGH,

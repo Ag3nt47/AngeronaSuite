@@ -1,0 +1,295 @@
+{
+  "cycle": 26,
+  "round": 3,
+  "date": "2026-08-28",
+  "scope": "defensive-only theoretical hardening",
+  "status": "CONFIRMED_PENDING_REMEDIATION",
+  "findings": [
+    {
+      "id": "C26-R3-A01",
+      "severity": "MEDIUM",
+      "title": "Workflow-level environment secrets bypass the release authority policy",
+      "component": "tools/validate_workflow_policy.py:199-208,282-305; .github/workflows/release.yml:8-15",
+      "status": "FIXED",
+      "required_fix": "Reject every secrets-context reference across the complete release workflow document, including workflow-level env/defaults/concurrency and all non-job mappings, regardless of the secret's name. Keep duplicate-key rejection, exact structural job/dependency checks, and the current unconditional external-authority failure. Add inert workflow-level env fixtures using both dot and bracket expression forms with renamed secret aliases."
+    },
+    {
+      "id": "C26-R3-A02",
+      "severity": "MEDIUM",
+      "title": "Response transaction and mutation-circuit custody are only batch-local",
+      "component": "src/angerona/modules/remediation_actions.py:92-116,979-995,1081-1168; src/angerona/core/remediation_log.py:129-190",
+      "status": "FIXED",
+      "required_fix": "Write and fsync a bounded PREPARED record containing exact action-specific prior state and compensation identities before the first mutation, transition it durably through MUTATING/APPLIED/ROLLED_BACK/RECOVERY_REQUIRED, and fail closed if journal writes fail. Persist the mutation circuit and reconcile incomplete or recovery-required transactions on startup and before every later batch; only an exact verified rollback or explicit governed recovery may clear it.",
+      "closure_evidence": "Post-fix concurrency audit closed: prepare_transaction now atomically rejects PREPARED, MUTATING, or RECOVERY_REQUIRED state inside BEGIN IMMEDIATE; a synchronized two-call regression proves one dispatch, one durable-circuit block, and no clearing of the live transaction. init_log also rejects a different canonical database path."
+    },
+    {
+      "id": "C26-R3-A03",
+      "severity": "MEDIUM",
+      "title": "Substring proposal dominance and hidden registry candidates produce wrong remediation decisions",
+      "component": "src/angerona/modules/remediation_actions.py:312-364,482-500,868-939; src/angerona/modules/posture_hardening.py:848-867",
+      "status": "FIXED",
+      "required_fix": "Replace broad text-substring dominance with an exact typed technique-family/schema decision. T1562 proposal dominance must not absorb the explicitly supported T1562.011 script-block-logging control. RegistryHardeningAction must enumerate candidates and authorize mutation only when exactly one typed candidate matches the exact technique and expected control; zero or multiple candidates must remain proposal-only/manual review and can never mark the weakness patched."
+    },
+    {
+      "id": "C26-R3-B01",
+      "severity": "MEDIUM",
+      "title": "Missing or invalid component assurance is graded complete and enrollable",
+      "component": "src/angerona/core/windows_auth_extensions.py:615-652,1694-1718; src/angerona/modules/authentication_extension_guard.py:138-153,317-346",
+      "status": "FIXED",
+      "required_fix": "Require complete handle-bound component assurance for complete health and ordinary trusted enrollment. Unknown/error/invalid signature or catalog state, missing owner/ACL evidence, and partial evidence must remain partial and non-enrollable unless a separate exact-digest risk-acceptance workflow is used; ship a bounded handle-bound Windows signature/catalog verifier and revalidate after all probes.",
+      "closure_evidence": "Assessment and enrollment now require a stable component digest/file identity, complete signature-or-catalog assurance with signer evidence, owner/ACL evidence, and observed registry-key owner/ACL custody. The handle and path are revalidated after every metadata probe. No pathname-only signature claim was invented: the production provider has no eligible signature probe and therefore remains partial/non-enrollable until a genuine handle-bound verifier is provisioned."
+    },
+    {
+      "id": "C26-R3-B02",
+      "severity": "MEDIUM",
+      "title": "Unauthenticated baseline numbers can escape validation and crash the observer",
+      "component": "src/angerona/core/windows_auth_extensions.py:845-932; src/angerona/modules/authentication_extension_guard.py:294-350",
+      "status": "FIXED",
+      "required_fix": "Normalize every pre-authentication parse/schema/conversion failure, including OverflowError, RecursionError, excessive nesting, and hostile numeric representations, to a bounded BaselineIntegrityError. Add strict depth/cardinality/range parsing and prove observe_once reports tamper/unknown rather than crashing for malformed unauthenticated state.",
+      "closure_evidence": "Unauthenticated JSON now has bounded integer/float parsing, object/array/node/depth/string limits, duplicate rejection, safe numeric range checks without huge-int float conversion, and normalized parse/schema/conversion failures. Huge integer, huge exponent, and excessive-depth fixtures all produce tampered health 15 through observe_once without escaping an exception."
+    },
+    {
+      "id": "C26-R3-B03",
+      "severity": "MEDIUM",
+      "title": "Self-test child custody forwards secrets and code-loading controls and bounds output only after capture",
+      "component": "src/angerona/resilience/_selftest_environment.py:186-265; src/angerona/core/privilege.py:400-420",
+      "status": "FIXED",
+      "required_fix": "Use the existing minimal sanitized child-environment policy plus an exact per-target routing allowlist, a trusted working directory, and isolated Python startup. Assign a suspended Windows child to its configured job before resume. Stream and terminate at 16 KiB instead of buffering unbounded communicate output, and add conservative process-count, CPU, and memory limits with secret-forwarding/startup/output/orphan regressions.",
+      "closure_evidence": "Children now start from sanitized_child_environment(source={}), receive only an exact target routing set, use a trusted source cwd and -I fixed bootstrap, and never inherit Python/proxy/credential controls. Windows creates suspended, assigns a kill-on-close job with process/CPU/memory caps, then resumes exactly one main thread. Output is streamed into a 16 KiB maximum and killed on overflow; POSIX applies safe per-child resource ceilings plus process-group/wall-clock custody without claiming a portable perfect tree process counter."
+    },
+    {
+      "id": "C26-R3-B04",
+      "severity": "LOW",
+      "title": "Direct-file reads can exceed the scan deadline and still report completed",
+      "component": "src/angerona/core/security_scan_center.py:313-401,828-975",
+      "status": "FIXED",
+      "required_fix": "Pass the absolute deadline and cancellation token through descriptor reads and YARA work, check them between chunks, and use a custodied worker or platform cancellation primitive wherever a hard wall-clock guarantee is claimed. A late one-file result must report limited/timed_out rather than completed.",
+      "closure_evidence": "The absolute deadline and cancellation token are checked before and after each bounded descriptor read and before/after YARA. Direct-file roots receive the same post-work deadline accounting. Blocking platform calls are explicitly disclosed as cooperative rather than hard-interruptible, and every result returning after the deadline is limited with timed_out=true; late YARA output is discarded."
+    },
+    {
+      "id": "C26-R3-B05",
+      "severity": "LOW",
+      "title": "Mutable loaded-module registration can still forge verified source provenance",
+      "component": "src/angerona/core/module_base.py:86-151,211-282; src/angerona/gui/pages.py:2858-2977",
+      "status": "FIXED",
+      "required_fix": "Bind source provenance to an immutable loader/source code manifest captured at trusted module admission, including a stable code-object/source signature and line mapping. Do not treat membership in mutable live module globals as declaration provenance; withhold exact highlighting whenever bytecode-to-source identity is unproven.",
+      "closure_evidence": "Health evidence now compiles the exact descriptor-bound canonical source into an immutable bounded code-object manifest and requires structural code-object membership plus module/spec/source identity. Mutable live globals are never searched for declaration proof. A dynamically compiled function inserted into the real module dictionary receives unverified-callsite with no path or line."
+    },
+    {
+      "id": "C26-R3-C01",
+      "severity": "HIGH",
+      "title": "Bash startup injection and expression-named artifacts compose into a release-gate bypass",
+      "component": "tools/validate_workflow_policy.py:142-179,185-190,196-288; .github/workflows/release.yml:8-15,221-286,557-670",
+      "status": "FIXED",
+      "required_fix": "Reject workflow-level env/defaults and require an exact release root/job/runner/shell schema whose Bash startup ignores BASH_ENV and imported functions. Require literal exact artifact identities, forbid every extra candidate upload, and bind an externally signed artifact ID/digest and exact bytes before attestation or publication.",
+      "closure_evidence": "The release policy is now a closed root/job/runner/timeout/permission/step schema with an exact job and artifact graph. The checked-in authority remains an unreachable fail-stop launched by env -i and a fixed absolute Bash path, so BASH_ENV/imported functions cannot reach it and no finalized artifact can exist. Windows security artifacts require exact literal identities; extra/expression-named uploads fail validation. A future external authority must replace this deliberately exact fail-stop policy with independent ID/digest/byte binding before publication can become reachable."
+    },
+    {
+      "id": "C26-R3-C02",
+      "severity": "MEDIUM",
+      "title": "Whole-context secret serialization bypasses the repaired detector",
+      "component": "tools/validate_workflow_policy.py:28-34,182-215,303-314",
+      "status": "FIXED",
+      "required_fix": "Reject secrets as a standalone lexical token inside every GitHub expression across the complete release document, regardless of accessor or function syntax, with toJSON(secrets) fixtures at workflow, job, and step scope.",
+      "closure_evidence": "Every scalar in the parsed release document is searched expression-by-expression for a standalone secrets token. Workflow, job, and step toJSON(secrets) fixtures fail; YAML comments and prose outside GitHub expressions remain inert."
+    },
+    {
+      "id": "C26-R3-C03",
+      "severity": "LOW",
+      "title": "Cancelled or failed UAC is followed only by another identity check",
+      "component": "src/angerona/__main__.py:55-83; src/angerona/core/privilege.py:466-509",
+      "status": "FIXED",
+      "required_fix": "Make elevation return a typed result and require both exact package identity and the effective Administrator token afterward; fail explicitly or enter a separately restricted Observe mode on cancellation/failure.",
+      "closure_evidence": "ensure_admin returns a typed fail-closed result whenever it returns; successful medium-token handoff still exits the parent. Frozen startup requires typed EFFECTIVE_ADMINISTRATOR, a fresh IsUserAnAdmin effective-token proof, and the repeated exact package identity. Cancellation, denial, helper failure, missing typed result, or either failed proof exits visibly with status 2 before runtime initialization."
+    },
+    {
+      "id": "C26-R3-C04",
+      "severity": "LOW",
+      "title": "Publisher verifies mutable worktree assets after its final clean check",
+      "component": "tools/publish_github_update.py:247-270; tools/verify_published_readme_assets.py:150-223",
+      "status": "FIXED",
+      "required_fix": "Read README/image bytes from captured immutable HEAD, compare those blobs to public HEAD, and repeat exact local HEAD/worktree cleanliness after network verification immediately before success.",
+      "closure_evidence": "The verifier resolves one exact commit and reads bounded README/image blobs with git cat-file, compares the public README target set and every public PNG to those blobs, and never derives expectations from worktree files. The publisher passes its captured HEAD and repeats exact HEAD plus porcelain-clean proof as its final operation before success. Concurrent-edit regressions and a live read-only four-image public verification pass."
+    },
+    {
+      "id": "C26-R3-A04",
+      "severity": "MEDIUM",
+      "title": "Reconciliation can seize a live mutation and run compensation more than once",
+      "component": "src/angerona/core/remediation_log.py:269-326; src/angerona/modules/remediation_actions.py:1388-1391,1707-1817",
+      "status": "FIXED",
+      "required_fix": "Bind every MUTATING row to an exact process owner and bounded renewable lease; only classify it interrupted after proving the owner dead or stale. Atomically claim one RECOVERING state before compensation so only one winner can touch host state, bind authorization to the exact transaction and retained-record digest, and commit terminal state plus truthful receipt atomically.",
+      "closure_evidence": "Ordinary apply calls now perform read-only unresolved inspection and can never promote or compensate PREPARED/MUTATING rows. Explicit recovery can claim only RECOVERY_REQUIRED through a durable unique CAS row bound to the retained-record SHA-256; the loser executes zero compensation, a crashed claim remains RECONCILING/fail-closed, and the winner commits terminal state plus its proof receipt atomically. Deterministic live-MUTATING and dual-reconciler regressions prove one dispatch/one compensation and truthful retained state."
+    },
+    {
+      "id": "C26-R3-A05",
+      "severity": "MEDIUM",
+      "title": "Hard-link database aliases split SQLite WAL custody and authorize two mutations",
+      "component": "src/angerona/core/remediation_log.py:74-104,109-118,185-230",
+      "status": "FIXED",
+      "required_fix": "Bind the journal and instance lease to stable Windows volume/file identity beneath a protected root handle; reject reparse targets, hard links, remote filesystems, and pre/post-open identity changes. Add a two-process NTFS hard-link regression proving an alias cannot obtain independent PREPARED or MUTATING custody.",
+      "closure_evidence": "RemediationLog now binds the canonical fixed-local-disk path to stable parent and database object identities, rejects reparse/symlink traversal and any main or sidecar object whose link count is not exactly one, checks pre/post-open identity, and revalidates custody at every prepare, transition, reconciliation claim/finish, and inspection boundary. An NTFS hard-link regression proves zero action dispatch and alias-open rejection; a separate same-canonical-path two-connection race still admits exactly one PREPARED row."
+    },
+    {
+      "id": "C26-R3-C05",
+      "severity": "MEDIUM",
+      "title": "Windows asset fallback trusts caller-selected PowerShell and forwards the full environment",
+      "component": "tools/verify_published_readme_assets.py:146-209",
+      "status": "FIXED",
+      "required_fix": "Remove the process fallback and fail closed on bounded Python HTTPS failure, or resolve and authenticate a trusted system client via Win32 and launch it with a fresh minimal environment containing no caller proxy, module, Python, shell-startup, or credential values. Add forged SystemRoot/PSModulePath/proxy/secret regressions.",
+      "closure_evidence": "The fallback resolves canonical System32 with GetSystemDirectoryW and accepts only the exact resolved WindowsPowerShell/v1.0/powershell.exe beneath it, with stable pre/post file identity. It launches by absolute path, fixed trusted cwd, NoProfile/NonInteractive, and a fresh four-entry environment: WinAPI-derived SystemRoot plus exact URL/output/timeout inputs. Caller SystemRoot, PATH, PSModulePath, proxies, Python controls, and secrets are neither selected nor forwarded. Python revalidates status 200, canonical final raw HTTPS URL, content type, size, and the caller retains exact digest/byte verification. Mocked hostile-environment and real bounded fallback tests pass."
+    },
+    {
+      "id": "C26-R3-C06",
+      "severity": "LOW",
+      "title": "Publisher accepts non-canonical origin spellings while claiming exact-origin proof",
+      "component": "tools/publish_github_update.py:48-78,200-211",
+      "status": "FIXED",
+      "required_fix": "Require the sole fetch and push URL strings to equal https://github.com/Ag3nt47/AngeronaSuite.git byte-for-byte; reject normalized equivalents while retaining the current credential, host, SHA, default-main, and fast-forward checks.",
+      "closure_evidence": "Publication now permits only the remote named origin and compares raw binary output for its sole fetch and push URL to the exact canonical URL plus one Git line terminator. The canonical repository parameter cannot be overridden. A second URL, whitespace, slash/case/path variants, missing .git, credentials, or any normalized equivalent is rejected before remote queries or push. Existing SHA/default-main/fast-forward/clean/public-asset proofs remain intact."
+    },
+    {
+      "id": "C26-R3-A06",
+      "severity": "LOW",
+      "title": "Unowned transaction transitions can terminalize live work and authorize a second dispatch",
+      "component": "src/angerona/core/remediation_log.py:331-371; src/angerona/modules/remediation_actions.py:1372-1391,1452-1598",
+      "status": "FIXED",
+      "required_fix": "Return an opaque random owner capability from PREPARED creation, store only its digest, require it on every ordinary transition, and enforce only PREPARED->MUTATING->APPLIED|ROLLED_BACK|RECOVERY_REQUIRED. Keep recovery on its separate claim/atomic-finish path and add a competing wrong-owner transition regression proving only one action body can be entered.",
+      "closure_evidence": "PREPARED now returns an opaque 256-bit owner capability while SQLite retains only its domain-separated digest. Every ordinary transition requires the exact capability and derives its expected predecessor from the fixed PREPARED->MUTATING->APPLIED|ROLLED_BACK|RECOVERY_REQUIRED graph; caller-selected expected states and raw transaction IDs are rejected. Terminal transitions clear the digest and retire the in-memory secret. A synchronized wrong-owner schedule preserves live MUTATING state, blocks the second batch, and proves exactly one action-body dispatch; stale, foreign, raw-ID, skipped-state, and invalid-target regressions also fail closed."
+    },
+    {
+      "id": "C26-R3-B06",
+      "severity": "LOW",
+      "title": "A crashed authentication-baseline enrollment leaves a permanent stale lockout",
+      "component": "src/angerona/core/windows_auth_extensions.py:1113-1132",
+      "status": "FIXED",
+      "required_fix": "Replace the persistent create-exclusive sentinel with an operating-system-owned exclusive lock whose ownership is released automatically on process exit, while retaining protected-root, no-link, and exact-object checks. If a persistent record is retained, bind it to exact process/start identity and reclaim it only after proving that owner dead; expose a separately reviewed recovery path and regress live-owner, crash, stale-record, and two-enroller schedules.",
+      "closure_evidence": "The retained one-byte rendezvous file no longer conveys authority. Windows enrollment owns a zero-share CreateFileW handle and POSIX uses a nonblocking flock; both are released by close or process death. Acquisition revalidates the protected parent, exact Windows handle path or POSIX inode, regular-file type, reparse status, and single-link count. Legacy PID/malformed content is normalized only after the exclusive handle is held, while symlink/reparse, hard-link, directory, live-owner, and ambiguous open conditions fail closed. A real os._exit child-crash regression proves the subsequent reviewed enrollment succeeds without altering the authenticated provisional-baseline checks."
+    },
+    {
+      "id": "C26-R3-C07",
+      "severity": "MEDIUM",
+      "title": "Minimal PowerShell launch reconstructs a user-writable module search path",
+      "component": "tools/verify_published_readme_assets.py:226-247",
+      "status": "FIXED",
+      "recommendation": "Remove the PowerShell fallback or disable module autoload, use a deliberately non-default module path, import the exact OS-owned Utility module by verified absolute identity, invoke the module-qualified cmdlet, and revalidate module/process identity and signer evidence after use.",
+      "required_fix": "Remove the PowerShell fallback or disable module autoload, use a deliberately non-default module path, import the exact OS-owned Utility module by verified absolute identity, invoke the module-qualified cmdlet, and revalidate module/process identity and signer evidence after use.",
+      "closure_evidence": "The PowerShell process fallback was deleted completely. Public README and image bytes now have one in-process Python HTTPS path using a private opener, so Windows PowerShell module discovery, module autoload, and CurrentUser module shadowing are unreachable. A synthetic CurrentUser Microsoft.PowerShell.Utility shadow remains untouched while the in-memory path completes."
+    },
+    {
+      "id": "C26-R3-C08",
+      "severity": "MEDIUM",
+      "title": "Pathname-only fallback output permits link replacement and false content custody",
+      "component": "tools/verify_published_readme_assets.py:222-224,231,283-302",
+      "status": "FIXED",
+      "recommendation": "Use a proven private fixed-local directory and retain an exclusive handle or stable parent/file identity. Reject reparse, multi-link, remote-volume, replacement, and caller-selected temporary roots, and revalidate the exact object before read and unlink.",
+      "required_fix": "Use a proven private fixed-local directory and retain an exclusive handle or stable parent/file identity. Reject reparse, multi-link, remote-volume, replacement, and caller-selected temporary roots, and revalidate the exact object before read and unlink.",
+      "closure_evidence": "Deleting the external downloader also deleted every temporary pathname and output-file handoff. Responses are read directly into one bounded in-memory byte string; no temp root, closed descriptor, output pathname, stat/read reopening, or unlink exists. An inert hard-link alias and victim remain byte-identical and untouched through the only download path."
+    },
+    {
+      "id": "C26-R3-C09",
+      "severity": "MEDIUM",
+      "title": "Ambient Git and HTTPS transport authority can falsify canonical publication proof",
+      "component": "tools/publish_github_update.py:32-46,110-129,227-298; tools/verify_published_readme_assets.py:108-117,170-207",
+      "status": "FIXED",
+      "recommendation": "Resolve and identity-bind a trusted Git executable, launch every Git process with an allowlisted environment/configuration, reject URL/proxy/custom-CA/TLS-disable/helper/startup overrides, and use a private Python opener with proxies disabled and an environment-independent TLS trust source.",
+      "required_fix": "Resolve and identity-bind a trusted Git executable, launch every Git process with an allowlisted environment/configuration, reject URL/proxy/custom-CA/TLS-disable/helper/startup overrides, and use a private Python opener with proxies disabled and an environment-independent TLS trust source.",
+      "closure_evidence": "All Git processes now use one stable-identity executable selected from the HKLM machine Git-for-Windows installation (or a root-owned fixed POSIX path), pre/post identity checks, a fresh allowlisted environment, disabled system/global Git configuration, no ambient Git/proxy/CA/askpass/startup inputs, strict Schannel on Windows, exact command configuration pins, and only the identity-bound machine Git Credential Manager with noninteractive stored-credential access. Python raw-content requests use a request-local ProxyHandler({}) plus a newly loaded strict system-trust TLS context and reject proxy, CA, OpenSSL, and TLS-keylog environment authority. Live read-only canonical GitHub refs and four public image assets passed through these boundaries."
+    },
+    {
+      "id": "C26-R3-C10",
+      "severity": "LOW",
+      "title": "Remote configuration is mutable after the exact-origin gate",
+      "component": "tools/publish_github_update.py:227-233,245-276,289-298",
+      "status": "FIXED",
+      "recommendation": "Lock or snapshot all Git configuration authority for the full operation, use the captured canonical transport for every network query, prohibit URL rewrites, and repeat raw fetch/push URL plus configuration identity proof after asset verification.",
+      "required_fix": "Lock or snapshot all Git configuration authority for the full operation, use the captured canonical transport for every network query, prohibit URL rewrites, and repeat raw fetch/push URL plus configuration identity proof after asset verification.",
+      "closure_evidence": "Publication captures the exact single-link local config path, file identity, size, mtime, and SHA-256; rejects local include/URL/HTTP/credential/protocol/helper/remote authority; and rechecks raw sole fetch/push URL bytes, config fingerprint, HEAD, and full worktree cleanliness before and after every network operation and asset verification. Every ls-remote, fetch, and push receives the literal canonical HTTPS URL rather than the mutable remote name, with an exact self-rewrite pin at command priority. A deterministic mid-gate config mutation fails before fetch or push."
+    },
+    {
+      "id": "C26-R3-A07",
+      "severity": "LOW",
+      "title": "Reconciliation finish authority is reconstructible from public inspection data",
+      "component": "src/angerona/core/remediation_log.py:493-550,552-737; src/angerona/modules/remediation_actions.py:1705-1923",
+      "status": "FIXED",
+      "recommendation": "Return an exact-type non-serializable 256-bit reconciliation-owner capability to the sole claim winner, store only its domain-separated digest, require and retire it in the atomic finish path, hide finish authority from inspection, and internalize fixed finish states and receipt metadata.",
+      "required_fix": "Return an exact-type non-serializable 256-bit reconciliation-owner capability to the sole claim winner, store only its domain-separated digest, require and retire it in the atomic finish path, hide finish authority from inspection, and internalize fixed finish states and receipt metadata.",
+      "closure_evidence": "Recovery claims now mint an exact-type, non-copyable/non-serializable 256-bit RecoveryCapability only for the sole claim winner. SQLite stores only a domain-separated digest bound to transaction ID plus the retained-record SHA-256; finish requires and retires that capability. transaction()/unresolved inspection exposes only recovery_active, never claim IDs, digests, or finish authority. Synchronized forged-finish, cross-transaction, stale, copy/pickle/redaction, tamper, and crash/restart regressions pass."
+    },
+    {
+      "id": "C26-R3-A08",
+      "severity": "LOW",
+      "title": "Ordinary terminal state and its proof receipt commit separately",
+      "component": "src/angerona/core/remediation_log.py:430-483,769-840; src/angerona/modules/remediation_actions.py:1403-1418,1572-1701",
+      "status": "FIXED",
+      "recommendation": "Commit every owner-gated ordinary terminal transition and its bound receipt in one SQLite transaction; on receipt failure leave the durable circuit unresolved and fail visibly so no later dispatch is authorized.",
+      "required_fix": "Commit every owner-gated ordinary terminal transition and its bound receipt in one SQLite transaction; on receipt failure leave the durable circuit unresolved and fail visibly so no later dispatch is authorized.",
+      "closure_evidence": "Ordinary transition_transaction now permits only PREPARED-to-MUTATING. The owner-only finish_transaction maps a bounded result token to fixed terminal state/outcome/verification/record semantics and atomically updates the transaction, clears its owner, and inserts the bound proof receipt. Injected receipt serialization and insert failures roll back with MUTATING plus the owner digest intact; the product path reports failure and a later batch performs zero dispatch."
+    },
+    {
+      "id": "C26-R3-B07",
+      "severity": "LOW",
+      "title": "Baseline path aliases split enrollment authority and fork trusted state",
+      "component": "src/angerona/core/windows_auth_extensions.py:999-1012,1014-1042,1181-1208,1246-1268",
+      "status": "FIXED",
+      "recommendation": "Reject baseline objects unless a no-follow handle proves fixed-local, regular, single-link identity beneath a retained protected parent; bind one lock to the canonical logical baseline identity, revalidate object/parent/link/volume state around promotion, and add NTFS hard-link plus POSIX unlink-recreate/parent-swap regressions.",
+      "required_fix": "Reject baseline objects unless a no-follow handle proves fixed-local, regular, single-link identity beneath a retained protected parent; bind one lock to the canonical logical baseline identity, revalidate object/parent/link/volume state around promotion, and add NTFS hard-link plus POSIX unlink-recreate/parent-swap regressions.",
+      "closure_evidence": "Authentication baseline paths are canonicalized beneath a stable protected-root identity and restricted to fixed local Windows storage. Existing baselines are opened no-follow and must remain regular, single-link, exact-path objects with stable volume/file, parent, and root identity. Every data root uses one constant root-wide enrollment rendezvous rather than a caller-derived basename; Windows retains root/parent/zero-share lock handles, while POSIX additionally flocks the retained root-directory inode so unlink/recreate of the inert lock file cannot admit a cooperating second enroller. Custody is revalidated before, during, and after load, creation, and promotion; POSIX mutations use the retained parent descriptor. NTFS hard-link aliases produced zero successful enrollments, two missing filenames shared one lock, symlink/reparse aliases failed closed, namespace rename/replacement was denied or detected, and the prior exact-path/live-owner/crash-recovery schedules remained green."
+    },
+    {
+      "id": "C26-R3-A09",
+      "title": "Public recovery claim can self-issue finish authority without compensation proof",
+      "severity": "LOW",
+      "component": "src/angerona/core/remediation_log.py:833-900,903-1025; src/angerona/modules/remediation_actions.py:1705-1762,1793-1896",
+      "status": "FIXED",
+      "recommendation": "Require an exact one-use governed recovery authorization before claim, bind it to the transaction/action/retained-record digest and intended operation, and keep claim, compensation, exact verification, and finish within one reviewed coordinator. Finish must require a separately unforgeable verified-compensation witness rather than a caller-selected result and record; use a narrow authenticated helper-process boundary when untrusted in-process extensions are in scope.",
+      "closure_evidence": "The public claim_reconciliation/finish_reconciliation methods were removed. remediation_actions now owns one module-private coordinator per exact RemediationLog instance and exact action-registry snapshot; the store mints its random coordinator capability once. Private claim, proof issuance, and finish require that exact coordinator, while finish additionally requires the winning one-use RecoveryCapability and the exact store-issued verified proof. The store derives outcome and terminal record from the retained record and verified operation instead of accepting caller-selected result/record values. The public entry selects the exact bound action, invokes rollback or a fail-closed postcondition verifier, and only then obtains and atomically commits proof. Missing actions and failed verifiers retain the durable RECONCILING claim. Final independent convergence reran 24/24 response authority/custody tests: ordinary denial, fake assertion, exact-once rollback and verifier, durable failure locks, cross-store/coordinator/capability rejection, and A07/A08 atomic receipt controls all passed; Ruff and byte-compilation also passed. Arbitrary introspective code inside Angerona's Python process remains explicitly outside this in-process boundary."
+    },
+    {
+      "id": "C26-R3-B08",
+      "title": "Promotion check-to-replace race leaves an enrollable provisional alias",
+      "severity": "LOW",
+      "component": "src/angerona/core/windows_auth_extensions.py:1384-1415,1644-1722",
+      "status": "FIXED",
+      "recommendation": "Bind authenticated baseline bodies to one exact canonical logical slot and verify it on every load, observation, and enrollment; copied or orphaned provisional bytes must be invalid under another name. Close the final check-to-replace window with an OS-specific handle-bound promotion primitive or equivalent postcondition, and regress both last-check hard-link creation and byte-copy aliases to prove zero second trusted enrollments.",
+      "closure_evidence": "Baseline schema v2 HMAC bodies now contain a token derived from the exact canonical protected root, exact normalized relative filename, and schema. Every load verifies it after HMAC authentication, so byte copies, hard-link survivors, and moved-root copies are tampered outside that slot. One authenticated fixed-name registry under the root admits only one trusted logical slot; a second approved filename cannot fork trust, while an explicitly approved same-slot enrollment can finish registration after an interrupted commit. Windows promotion retains a DELETE/share-delete handle and uses ReplaceFileW; POSIX retains the no-follow descriptor. The retired object must have zero links and the promoted object exactly one, or the promoted name is removed and remains unregistered/fail-closed. Deterministic hard-link-during-replace, trusted byte-copy alias, sequential two-name approval, root normalization/move, and same-slot interruption recovery regressions pass."
+    },
+    {
+      "id": "C26-R3-C11",
+      "title": "HKLM-selected Git is accepted without proving its installation ACL or transport closure",
+      "severity": "MEDIUM",
+      "component": "tools/windows_publication_runtime.py; tools/publication_git_runtime_profile.json; tools/publication_transport.py; tools/publish_github_update.py; tools/verify_published_readme_assets.py",
+      "status": "FIXED",
+      "recommendation": "Fail closed unless handle-based owner/DACL checks prove the HKLM Git key, installation root, parents, Git, GCM, HTTPS helper, shell and runtime/DLL closure are protected from ordinary-user write/delete/ACL authority; retain deny-write/delete handles or launch an equivalently sealed exact image for the full operation, bind the complete transport dependency closure, verify expected signatures/digests, and correctly shell-quote the absolute GCM helper command. Regress Authenticated Users/Users writable installs, unbound sidecar replacement, check-to-launch replacement, and Program Files whitespace/metacharacter paths.",
+      "closure_evidence": "The HKLM installation is now discovery input only. A reviewed closed-schema profile pins Git for Windows 2.55.0.windows.4/build a93524749d7806870fd2b4b00a3812da1d6e5f4a across 312 exact paths, 191289767 bytes, per-file SHA-256 and tree digest 7151e168c3a919a5b63d42f432d38ebf51c1d05ee3eed821016e8c7349ce2356, including Git, GCM, git-remote-https, runtime DLLs, sh.exe and msys-2.0.dll. Source files/directories are acquired without write/delete sharing, copied into an atomically private non-reparse directory, rehashed, then held with deny-write handles while a protected DACL grants the publisher read/execute only and SYSTEM/Administrators full control. Git executes only the staged absolute image with staged PATH/GIT_EXEC_PATH, private cwd, a separately private non-code transient directory, explicit System32 DLL trust, and a shell-quoted absolute GCM helper. The publisher and public-asset verifier reuse one seal and close it exactly. Same-size pre-replacement, DLL/helper addition, write/replace copy race, stage addition, metacharacter/whitespace/apostrophe helper paths, private ACL and cleanup fixtures passed; live staged Git resolved local HEAD, staged GCM reported its exact version, and both private trees left zero residue."
+    },
+    {
+      "id": "C26-R3-B09",
+      "title": "Registry loss reopens slot selection and creates replayable trusted forks",
+      "severity": "LOW",
+      "component": "src/angerona/core/windows_auth_extensions.py:1279-1466,2307-2329",
+      "status": "FIXED",
+      "recommendation": "Bind the capability to one immutable or policy-authenticated expected relative slot so registry absence cannot reopen slot selection. Permit interrupted registration recovery only for an existing trusted body at that exact slot; reject an alternate pathname before file creation. If runtime slot selection is required, use independent rollback-resistant custody rather than another replayable file in the same root. Regress registry loss after A, approved B, and replay of every retained authentic registry while preserving exact same-slot recovery.",
+      "closure_evidence": "AuthExtensionBaselineStore now accepts only the canonical <data_root>/baselines/windows_auth_extensions.json policy slot and revalidates that fixed path during root-custody checks. Alternate filenames and relative locations fail during construction before observation, file creation, or enrollment. If the authenticated slot registry is missing, only a trusted HMAC-valid body at that fixed root/name/schema slot can restore it, and divergent reviewed evidence is rejected. The exact saved-registry-loss/replay schedule, same-root recovery, alternate paths, root move/copy, promotion races, and prior enrollment-custody regressions passed. The design still explicitly relies on a local software clock and HMAC and does not claim an independent anti-rollback witness."
+    },
+    {
+      "id": "C26-R3-C12",
+      "title": "Self-authenticating runtime profile is read before repository custody",
+      "severity": "MEDIUM",
+      "component": "tools/windows_publication_runtime.py:27,133-151,1107; tools/publish_github_update.py:434-492; tools/publication_git_runtime_profile.json",
+      "status": "FIXED",
+      "recommendation": "Compile the approved profile-byte SHA-256 and expected tree digest into the already loaded runtime module; load the profile once through a stable no-follow/no-write-delete handle, reject reparse and multi-link objects, validate both compiled constants before parsing/staging, and never reopen the pathname. Regress internally valid profile substitution before the later clean-worktree gate, duplicate keys, Windows non-canonical names/ADS/8.3 aliases, read replacement, and the exact approved profile. Explicitly scope pre-start publisher-code replacement and process-memory compromise outside this in-process boundary.",
+      "required_fix": "Establish an authority independent of the mutable profile document so a transient self-consistent profile plus matching writable Git tree cannot be staged and then hidden by restoring the checkout before HEAD/status custody begins.",
+      "closure_evidence": "The already-loaded runtime module now pins the exact 54008-byte LF profile SHA-256 plus Git version/build, directory/file count, total bytes, and tree SHA-256 independently of JSON. Production opens only the compiled absolute profile path on a fixed local volume through no-follow file/parent handles that deny write/delete sharing, requires a regular non-reparse single-link object and exact canonical handle name, reads bounded bytes once, authenticates them before duplicate-safe JSON parsing, and retains/revalidates the profile seal and every Git source identity through staging. Git's version probe now runs only through the completed TrustedGitBoundary, and publish binds that boundary before HEAD/status/config/remote logic. Nine focused regressions cover the exact profile, mutation, internally consistent addition, duplicate keys, constant mismatch, alternate path, read/write/replace/link races, lightweight end-of-stage revalidation, zero-launch substitution, and boundary ordering; compile/Ruff/JSON/diff gates passed. Pre-start replacement of the loaded publisher Python and live process-memory compromise remain explicitly outside this same-process authority boundary."
+    },
+    {
+      "id": "C26-R3-C13",
+      "title": "Blanket multi-link rejection blocks the reviewed Git runtime",
+      "severity": "LOW",
+      "component": "tools/windows_publication_runtime.py:115,686-789,1266-1410,1636-1847; tests/test_cycle26_publication_snapshot.py:46-63,644-751",
+      "status": "FIXED",
+      "recommendation": "Group source names by stable Windows volume/file ID; enumerate and exact-match the complete canonical hard-link set for every multi-link identity; reject outside, unprofiled, reparse, noncanonical, mismatched, or changing aliases; retain one deny-write/delete handle per identity; read it once and stage independent copies for every reviewed name; revalidate before and after staging.",
+      "required_fix": "Replace blanket nlink rejection only with complete reviewed hard-link topology custody. Do not accept an unprofiled or outside alias and do not weaken single-link source or staged-tree controls.",
+      "closure_evidence": "Source acquisition groups exact volume/file identities and retains one deny-write/delete handle per group. Single-link groups require one exact final handle name; multi-link groups use FindFirstFileNameW/FindNextFileNameW to prove every canonical alias is in-root, non-reparse, exactly profiled, and metadata-identical. Alias sets and identities are revalidated around staging. Each identity is read once and every reviewed alias becomes a separately rehashed single-link staged file. Five inert topology regressions and six adjacent staging/profile checks passed; a direct real-host handle probe proved the exact two reviewed cmd/git.exe and cmd/git-lfs.exe names. The consolidated real-runtime three-node rerun was stopped without result at the eight-minute AV/I/O ceiling and left zero processes/private directories; it remains a final cooled-down release gate. Final byte-compilation and Ruff passed."
+    }
+  ]
+}

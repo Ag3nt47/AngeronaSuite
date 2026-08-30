@@ -1,0 +1,141 @@
+{
+  "schema": "angerona.cycle27.remaining-a.second-independent-reattack.v1",
+  "title": "Cycle 27 Round 1 second independent hostile re-attack of A02/A03/A07/A13/A14",
+  "date": "2026-08-28",
+  "scope": {
+    "product_code_edited": false,
+    "host_mutation": false,
+    "fixtures": [
+      "temporary inert files",
+      "synthetic Defender records",
+      "in-memory EventBus subscribers",
+      "captured empty SQLite outbox",
+      "offline Ed25519 issuers and verifiers"
+    ]
+  },
+  "verdict": {
+    "closed": 1,
+    "reopened": 4,
+    "high": 3,
+    "medium": 1,
+    "release_blocker": true,
+    "hostile_tests": "5 failed / 14 passed"
+  },
+  "findings": [
+    {
+      "id": "C27-R1-A02",
+      "status": "REOPENED",
+      "severity": "HIGH",
+      "product_lines": [
+        "src/angerona/modules/adversary_combat.py:2772-2790",
+        "src/angerona/modules/adversary_combat.py:4644-4654",
+        "src/angerona/modules/adversary_combat.py:4867-4901"
+      ],
+      "failed_test": "tests/test_cycle27_remaining_a_second_independent_reattack.py:136",
+      "observed": "Mutating nested details/history in the first _trusted_action result changed the second result without changing journal bytes.",
+      "closed_subgate": "Equal-size interior journal tamper with a constant metadata fingerprint raised JournalIntegrityError and disarmed response.",
+      "required": "Deep-copy or freeze cached commit records at every egress, including _trusted_action."
+    },
+    {
+      "id": "C27-R1-A03",
+      "status": "REOPENED",
+      "severity": "MEDIUM",
+      "product_lines": [
+        "src/angerona/modules/adversary_combat.py:713-720",
+        "src/angerona/modules/adversary_combat.py:3126-3154",
+        "src/angerona/modules/adversary_combat.py:3457-3481"
+      ],
+      "failed_test": "tests/test_cycle27_remaining_a_second_independent_reattack.py:189",
+      "observed": {
+        "hardlink_created_after_terminal_validator": true,
+        "actual_link_count": 2,
+        "returned_status": "applied",
+        "signed_destination_link_count": 1
+      },
+      "closed_subgate": "A failed terminal proof plus failed immediate rollback remained pending and was restored successfully on restart.",
+      "required": "Do not terminalize applied until the supported filesystem has an enforceable alias boundary or an honest post-append finalization protocol."
+    },
+    {
+      "id": "C27-R1-A07",
+      "status": "REOPENED",
+      "severity": "HIGH",
+      "product_lines": [
+        "src/angerona/modules/av_telemetry_bridge.py:263-345",
+        "src/angerona/modules/av_telemetry_bridge.py:731-766",
+        "src/angerona/modules/av_telemetry_bridge.py:814-878"
+      ],
+      "failed_tests": [
+        "tests/test_cycle27_remaining_a_second_independent_reattack.py:297",
+        "tests/test_cycle27_remaining_a_second_independent_reattack.py:392"
+      ],
+      "observed": {
+        "conflicting_equal_cursor": {
+          "subscriber_deliveries_before": 1,
+          "subscriber_deliveries_after": 2,
+          "continuity_gaps": 0,
+          "pending_rows": 1,
+          "cursor": 1
+        },
+        "older_empty_outbox_replay": {
+          "opened": true,
+          "health": 100,
+          "continuity_gaps": 0,
+          "cursor": 0,
+          "pending_rows": 0
+        }
+      },
+      "closed_subgates": [
+        "subscriber failure retained one pending row and cursor zero across restart",
+        "older retry did not regress cursor 2 or republish",
+        "authenticated gap remained health 45 across quiet restart",
+        "plain enrolled-database deletion failed closed"
+      ],
+      "required": "Validate number/anchor before EventBus publication and bind enrollment to an independently authenticated database generation plus outbox high-water."
+    },
+    {
+      "id": "C27-R1-A13",
+      "status": "CLOSED_REQUESTED_BOUNDARY",
+      "severity": null,
+      "product_lines": [
+        "src/angerona/modules/deception.py:99-149",
+        "src/angerona/modules/deception.py:231-274"
+      ],
+      "passed_tests": [
+        "tests/test_cycle27_remaining_a_second_independent_reattack.py:444",
+        "tests/test_cycle27_remaining_a_second_independent_reattack.py:469"
+      ],
+      "observed": "Same-size/same-mtime atomic replacement emitted a touch event; zero remaining canaries set health 0 and cleared evidence."
+    },
+    {
+      "id": "C27-R1-A14",
+      "status": "REOPENED",
+      "severity": "HIGH",
+      "product_lines": [
+        "src/angerona/modules/driver_provenance_guard.py:272-314",
+        "src/angerona/modules/driver_provenance_guard.py:859-871",
+        "src/angerona/modules/driver_provenance_guard.py:897-919"
+      ],
+      "failed_test": "tests/test_cycle27_remaining_a_second_independent_reattack.py:516",
+      "observed": "The same authentic receipt returned provenance-verified through two provider/guard instances with separate verifiers for the same enrolled authority.",
+      "closed_subgates": [
+        "forged signature rejected",
+        "wrong public key rejected",
+        "same verifier replay rejected",
+        "complete-empty providers with null, zero, and inconsistent counts remained below green"
+      ],
+      "required": "Use a bounded authenticated replay authority shared and persisted across provider/verifier instances and restart."
+    }
+  ],
+  "gates": {
+    "prior_hostile_and_author": "14 passed in 3.47s",
+    "fresh_independent": "5 failed / 14 passed in 4.52s",
+    "py_compile_new_test": "PASS",
+    "ruff_new_test": "PASS"
+  },
+  "sha256": {
+    "src/angerona/modules/adversary_combat.py": "b8c240ac7d413585d2122d506600a517ac6b485e0cb3388560e298a7277c62ab",
+    "src/angerona/modules/av_telemetry_bridge.py": "4f55bd132996bcbadc3deb59c6e0bcbdb2630e1cb0fbc1d8b2db82b094977f3e",
+    "src/angerona/modules/deception.py": "9dc9ba8403806605e5bfa224944be1b6de63ddc9ce6f2cbd0597f23728e93f00",
+    "src/angerona/modules/driver_provenance_guard.py": "249ddc8214677138c205ae0dd676f92a7affd22fbbc7cb9ecee001895dcf270c"
+  }
+}

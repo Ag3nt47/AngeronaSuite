@@ -1,0 +1,196 @@
+{
+  "schema": "angerona.redteam-simulation-independent-reattack.v2",
+  "cycle": 27,
+  "round": 2,
+  "date": "2026-08-28",
+  "disposition": "REOPENED",
+  "scope": {
+    "inert_temp_fixtures_only": true,
+    "product_or_test_code_changed": false,
+    "real_exploitation": false,
+    "host_security_control_mutation": false,
+    "network_attack": false,
+    "publication": false
+  },
+  "coverage_reproductions": {
+    "original_default_evaluate_replay": {
+      "denominator": 13,
+      "raw_observations": 1,
+      "native_analytic_catches": 1,
+      "caught": 1,
+      "missed": 12,
+      "coverage_percent": 7.7,
+      "verdict": "REOPENED"
+    },
+    "strict_authenticated_replay": {
+      "denominator": 13,
+      "raw_observations": 1,
+      "native_analytic_catches": 0,
+      "simulation_contract_validations": 0,
+      "caught": 0,
+      "missed": 13,
+      "verdict": "CLOSED_IN_PRODUCTION_PATH"
+    },
+    "honest_gated_campaign": {
+      "denominator": 13,
+      "simulation_contract_validations": 13,
+      "native_analytic_catches": 0,
+      "verdict": "PASS",
+      "interpretation": "inert pipeline canaries only; not real-attack efficacy"
+    }
+  },
+  "findings": [
+    {
+      "id": "RTS-R2-01",
+      "title": "Non-strict evaluation defaults recreate the original 1/13 inflation",
+      "severity": "MEDIUM",
+      "component": "src/angerona/shark/aar_report.py:399-494",
+      "status": "OPEN",
+      "evidence": {
+        "default_caught": 1,
+        "default_missed": 12,
+        "strict_caught": 0,
+        "strict_missed": 13,
+        "source_event": "Process Monitor raw INFO process_creation"
+      },
+      "recommendation": "Make semantic taxonomy strict in every mode; default to authenticated scoring and move any fixture-only authentication bypass to an explicitly named test adapter that never promotes raw telemetry."
+    },
+    {
+      "id": "RTS-R2-02",
+      "title": "The lease target is read-only by convention, not immutable",
+      "severity": "MEDIUM",
+      "component": "src/angerona/modules/purple_guard.py:253-354",
+      "status": "OPEN",
+      "evidence": {
+        "target_a_readiness": true,
+        "target_b_bound": true,
+        "receipt_target_mismatch": true,
+        "consume_accepted": true
+      },
+      "recommendation": "Keep issued identity in an issuer-owned registry, compare it with readiness at every boundary, use exact class dispatch, and process-isolate untrusted extensions for a strong immutable boundary."
+    },
+    {
+      "id": "RTS-R2-03",
+      "title": "Exact stopped detector objects are receipt-signing oracles",
+      "severity": "MEDIUM",
+      "component": "src/angerona/modules/purple_guard.py:492-591",
+      "status": "OPEN",
+      "evidence": {
+        "producer": "File Integrity Monitor",
+        "producer_status": "stopped",
+        "native_caught": 1,
+        "denominator": 1
+      },
+      "recommendation": "Issue one-use receipts only inside the actual detector observation site, require live healthy generation and held evidence identity, and do not wrap the public emit method as a signer."
+    },
+    {
+      "id": "RTS-R2-04",
+      "title": "AAR dispatches through writable lease verifier methods",
+      "severity": "MEDIUM",
+      "component": "src/angerona/shark/aar_report.py:1086-1144",
+      "status": "OPEN",
+      "evidence": {
+        "exact_lease_type_preserved": true,
+        "event_bus_hmac_valid": true,
+        "detector_receipt_present": false,
+        "native_caught": 1,
+        "denominator": 1
+      },
+      "recommendation": "Invoke exact lease class implementations, retain authoritative state outside writable instances, and isolate signer/verifier authority from admitted extension code."
+    },
+    {
+      "id": "RTS-R2-05",
+      "title": "Authenticated prior AAR pairs can be replayed into a newer dialog",
+      "severity": "MEDIUM",
+      "component": "src/angerona/gui/pages.py:6517-6558,6754-6795",
+      "status": "OPEN",
+      "evidence": {
+        "old_hmac_valid": true,
+        "initial_binding": "redteam-new-run",
+        "binding_after_refresh": "redteam-old-run",
+        "old_text_accepted": true
+      },
+      "recommendation": "Bind refresh to the immutable expected run ID and report digest, add a monotonic current-report head, and identity-check the JSON/text pair while reading."
+    },
+    {
+      "id": "RTS-R2-06",
+      "title": "Lease expiry uses rollbackable wall time",
+      "severity": "LOW",
+      "component": "src/angerona/modules/purple_guard.py:242-245,322-379",
+      "status": "OPEN",
+      "evidence": {
+        "rejected_after_expiry": true,
+        "accepted_after_backward_clock_step": true
+      },
+      "recommendation": "Use monotonic time for process-lifetime deadlines and wall time only for display/audit metadata; surface large clock discontinuities."
+    },
+    {
+      "id": "RTS-R2-07",
+      "title": "Marker validation is not bound to a no-alias file identity",
+      "severity": "MEDIUM",
+      "component": "src/angerona/modules/purple_guard.py:1048-1108; src/angerona/shark/run_manifest.py:342-369; src/angerona/shark/red_team.py:169-181",
+      "status": "OPEN",
+      "evidence": {
+        "alias_type": "NTFS hardlink",
+        "created_after_readiness": true,
+        "history_artifact_status": "hashed",
+        "simulation_contract_validations": 1,
+        "denominator": 1,
+        "external_file_unchanged": true
+      },
+      "recommendation": "Use exclusive no-follow marker creation and held handles; bind volume/file ID, link count, digest, run and step; reject reparse, directory and multi-link objects; require acceptable artifact custody in AAR scoring."
+    }
+  ],
+  "closed_checks": {
+    "production_strict_raw_taxonomy": true,
+    "no_lease_launch_refusal": true,
+    "canonical_recorder_and_root_binding": true,
+    "ring_only_recorder_rejected": true,
+    "foreign_root_recorder_rejected": true,
+    "closed_recorder_rejected": true,
+    "wrong_authority_rejected": true,
+    "fake_stored_hmac_rejected_despite_instance_verifiers": true,
+    "public_target_mismatch_rejected": true,
+    "released_lease_replay_rejected": true,
+    "policy_drift_rejected": true,
+    "sensor_restart_rejected": true,
+    "concurrent_single_use": {
+      "accepted": 1,
+      "rejected": 31
+    },
+    "custom_token_collision_rejected": true,
+    "post_lease_refresh_does_not_rescore": true
+  },
+  "prior_findings": {
+    "assessed": 14,
+    "verified_closed": 10,
+    "still_open_or_partial": 4,
+    "partial_or_reopened_ids": ["RTS-03", "RTS-R05", "RTS-R02", "RTS-R04"]
+  },
+  "gates": {
+    "focused_pytest": {
+      "passed": 41,
+      "failed": 0,
+      "seconds": 16.43
+    },
+    "relevant_compile": "PASS",
+    "ruff": "PASS",
+    "headless_selfcheck": {
+      "passed": 26,
+      "failed": 0
+    },
+    "module_selftests": {
+      "passed": 65,
+      "failed": 0,
+      "expected_skips": 17
+    },
+    "purple_guard_self_test": "PASS",
+    "red_team_self_test": "PASS"
+  },
+  "summary": {
+    "medium_open": 6,
+    "low_open": 1,
+    "total_open": 7,
+    "release_blocking": true
+  }
+}

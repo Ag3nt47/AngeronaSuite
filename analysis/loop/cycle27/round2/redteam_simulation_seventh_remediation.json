@@ -1,0 +1,94 @@
+{
+  "schema": "angerona.redteam-simulation-remediation.v7",
+  "cycle": 27,
+  "round": 2,
+  "date": "2026-08-28",
+  "version": "1.12.1",
+  "disposition": "FIXED_AT_DECLARED_SAME_PROCESS_BOUNDARY",
+  "scope": {
+    "findings": [
+      "RTS-R4-02",
+      "RTS-R4-03"
+    ],
+    "product_files": [
+      "src/angerona/modules/file_integrity.py",
+      "src/angerona/modules/purple_guard.py"
+    ],
+    "dedicated_test": "tests/test_cycle27_redteam_simulation_seventh_remediation.py",
+    "frozen_test_unchanged": "tests/test_cycle27_redteam_simulation_sixth_independent_reattack.py",
+    "inert_temp_fixtures_only": true,
+    "live_attacks": false,
+    "host_mutation": false,
+    "commit": false,
+    "publication": false
+  },
+  "findings": [
+    {
+      "id": "RTS-R4-02",
+      "status": "FIXED",
+      "severity_before": "MEDIUM",
+      "title": "Immutable producer-owned FIM scan custody and monotonic issuer claims",
+      "changes": [
+        "Frozen slots-only custody retains canonical tuple/byte evidence separately from the mutable evaluator view.",
+        "Claim validation requires exact current scan and producer lifecycle generations.",
+        "The producer burns every attempted custody generation and clears both pending handles.",
+        "The evaluator receives copied receipt, identity, and baseline values only.",
+        "Issuer-owned generation/path claims reject older and duplicate receipt claims and are not returned by the lease façade."
+      ],
+      "red_gates": [
+        "test_post_scan_mutation_cannot_add_an_unscanned_artifact_to_receipt_custody",
+        "test_consumed_scan_generation_cannot_be_rearmed_for_a_second_receipt"
+      ],
+      "result": "PASS"
+    },
+    {
+      "id": "RTS-R4-03",
+      "status": "FIXED_AT_DECLARED_BOUNDARY",
+      "severity_before": "MEDIUM",
+      "title": "Immutable acceptance dispatch and capability-owned Ed25519 signing",
+      "changes": [
+        "Native receipts are signed by a capability-owned ephemeral Ed25519 signer and verified with copied public material.",
+        "The ordinary lease façade no longer returns live signing keys or native enrollment/replay-state dictionaries.",
+        "Closure-cell replacement cannot become the acceptance dispatch authority.",
+        "The trust label is explicitly same-process-simulation-validation."
+      ],
+      "red_gates": [
+        "test_captured_verifier_closure_cell_cannot_redirect_acceptance",
+        "test_module_reachable_authority_cannot_forge_a_new_native_receipt"
+      ],
+      "result": "PASS",
+      "boundary": "CPython interpreter introspection and native memory are not isolation. Stronger proof requires a separately measured/restricted signer, replay ledger, and verifier service with opaque IPC handles."
+    }
+  ],
+  "preserved": {
+    "fixed_head_and_aar_handoff": "PASS",
+    "exact_producer_object_and_generation": "PASS",
+    "mandatory_contract_denominator": 13,
+    "process_monitor_t1059_contract": "PASS",
+    "module_version": "1.12.1"
+  },
+  "validation": {
+    "frozen_sixth_independent_reattack": "7 passed",
+    "frozen_before_remediation": "4 failed, 3 passed",
+    "dedicated_seventh_remediation": "4 passed",
+    "cycle27_redteam_simulation_matrix": "56 passed",
+    "exact_full_cycle27_selection": "413 passed, 2 skipped, 2237 deselected",
+    "concurrent_in_progress_failure_report": "NOT_REPRODUCED_IN_COMPLETED_TREE_SHARED_FILE_RACE",
+    "purple_drill_matrix": "29 passed",
+    "wider_lease_aar_fim_matrix": "97 passed, 2 unrelated failed",
+    "compile": "PASS",
+    "ruff": "PASS",
+    "file_integrity_self_test": "PASS",
+    "purple_guard_self_test": "PASS"
+  },
+  "unrelated_broad_gate_failures": [
+    {
+      "test": "tests/test_cycle29_fim_approved_baseline.py::test_missing_approved_file_is_detected_on_first_complete_scan",
+      "classification": "OUT_OF_SCOPE_PREEXISTING_WINDOWS_PATH_CASE_ASSERTION"
+    },
+    {
+      "test": "tests/test_cycle29_fim_approved_baseline.py::test_metadata_preserving_rewrite_invalidates_windows_change_token_cache",
+      "classification": "OUT_OF_SCOPE_PREEXISTING_WINDOWS_PATH_CASE_ASSERTION"
+    }
+  ]
+}

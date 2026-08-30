@@ -1,0 +1,39 @@
+[
+  {
+    "original_id": "C27-R1-A01",
+    "status": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+    "implementation": [
+      "schema-2 recovery anchor",
+      "descriptor-pinned HMAC high-water derived from the existing journal signing key",
+      "monotonic journal/anchor/witness transaction",
+      "one-time legacy migration that cannot recur after schema 2"
+    ],
+    "regressions": [
+      "paired journal plus protected-anchor deletion with signing key retained",
+      "paired journal plus protected-anchor rollback with signing key retained"
+    ],
+    "remaining_boundary": "Rollback or deletion of every local witness plus the signing authority requires TPM NV or an external append-only witness to detect."
+  },
+  {
+    "original_id": "C27-R1-A16",
+    "status": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+    "implementation": [
+      "full length-delimited streaming event-record identity with explicit fail-incomplete budgets",
+      "descriptor-pinned live cursor/high-water verification on every poll",
+      "state-root process and OS writer lease",
+      "fail-incomplete high-water/cursor/anchor commit order with final reread",
+      "signing-identity-bound authority witness"
+    ],
+    "regressions": [
+      "content change after character 4096",
+      "change to insertion 65",
+      "over-budget complete record",
+      "live cursor deletion",
+      "live high-water deletion",
+      "live protected-anchor deletion",
+      "duplicate durable writers",
+      "paired cursor/high-water/protected-anchor/channel rollback"
+    ],
+    "remaining_boundary": "Rollback of the channel and every local witness/signing identity is outside software-only proof; use TPM monotonic state or an independent witness."
+  }
+]

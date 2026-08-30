@@ -2056,3 +2056,1207 @@ boundaries, and primary-source citations are in
   contracts are adapters rather than native declarations.
 - Complete record: `analysis/loop/cycle25/summary.md`,
   `analysis/loop/cycle25/prior_findings.md`, and the three round directories.
+
+## Round 1 — Innovation (Cycle 26, 2026-08-28)
+
+- Reviewed the current 80-capability v1.12 architecture before proposing new
+  controls. The research deliberately avoids duplicating existing driver,
+  audit-log, identity-session, network-path, recovery, RAG, and response
+  contracts.
+- Researched current public 2025–2026 defensive reporting from CISA, NSA, UK
+  NCSC, Microsoft Incident Response/Threat Intelligence, Microsoft platform
+  documentation, Microsoft Graph, and MITRE ATT&CK. The highest-value emerging
+  themes are abuse of trusted management relationships, Windows authentication
+  extensibility, selective sensor impairment, compromised router/DNS paths,
+  fast-flux infrastructure, identity/control-plane abuse, out-of-band KVM/HID
+  paths, and agentic-AI supply-chain/consent failures.
+- Ranked ten buildable defensive proposals by impact divided by effort:
+  Windows Authentication Extension Integrity Guard; Security-Control Drift
+  Witness and Safe Recovery Plans; ARIA Runtime Supply-Chain and Consent Proof;
+  Completeness-Aware Sensor Witness Quorum; Independent DNS Path Witness and
+  Fast-Flux Guard; Trusted Administration and RMM Provenance Ledger; Native
+  Administration Sequence Correlator; Out-of-Band Console and HID Topology
+  Guard; Least-Privilege Entra Identity Evidence Connector; and Edge
+  Control-Plane Evidence Intake.
+- Every proposal records platform limits, confidence, data/privacy cost,
+  false-positive risk, concrete acceptance tests, and a defensive-only safety
+  boundary. Actor attribution remains contextual and cannot become an Angerona
+  verdict. No product code was changed in this innovation pass.
+- Full sources, architecture mapping, rankings, tests, and non-goals:
+  `analysis/loop/innovation_ideas.md`.
+
+## Round 1 — Remediation (Cycle 26, release signing)
+
+- **C26-R1-A04 — FIXED fail-closed:** removed repository-controlled witness jobs
+  that received exportable threshold keys and removed candidate-code
+  finalization with protected root material. The workflow now preserves only a
+  prepared, explicitly untrusted statement request and then fails before
+  packaging/publication without checkout, secrets, or artifact download.
+- Added static policy and parser regressions preventing key/root reintroduction,
+  authority-gate checkout/download, or downstream `always()` /
+  `continue-on-error` bypass. Focused gate: 25 passed; changed Python compiled.
+- Publication remains intentionally disabled until a real independently
+  maintained, OIDC-bound, non-exportable two-party signing authority is
+  provisioned. The exact external contract is documented in
+  `docs/enterprise/RELEASE_SIGNING_BOUNDARY.md`.
+## Cycle 26 Round 1 — Remediation
+
+- Fixed C26-R1-A01 through C26-R1-A03: mutable Windows source is now an
+  unelevated Observe/development boundary, rejects inherited Administrator
+  execution, never requests UAC or mutates machine/source-tree ACLs, and retains
+  exact/hash-locked setup. Full Protect remains available only through the
+  OS-validated signed installed authority.
+- Gates: three Python files compiled; `self_installer.self_test()` passed; 56
+  focused launcher, trust-boundary, hash-lock, documentation-contract, and
+  hostile-environment tests passed.
+- Fixed C26-R1-B01 through C26-R1-B03. Resilience self-tests now share exact
+  environment/temp-root custody and manager test helpers reap only their
+  marker-, executable-, creation-time-, and ancestry-bound process chain.
+  Scan Center reads once through an OS-resolved, selected-root/volume-bound
+  handle and scans the bounded byte snapshot; combined GUI results preserve
+  every requested scanner status/error and can say Complete only when all did.
+- Surface gates: all changed Python files compiled; five resilience self-tests
+  passed; Scan Center tests passed 17 with two expected symlink-capability
+  skips; Cycle 26 concurrency/custody/status regressions passed 10/10; no
+  detached scanner helper remained after the final lifecycle gate.
+
+## Cycle 26 Round 1 — Bug Test
+
+- Independent post-remediation QA passed: 347/347 product Python files
+  compiled; 82/82 module files imported; 64/64 compatibility register hooks
+  constructed; all 80 capabilities and 80 unique capability IDs discovered;
+  and all 61 declared module codes were unique.
+- Focused gates passed 102 with two expected platform skips. All 37 discovered
+  top-level self-tests passed; the capability runner reported 64 passed, zero
+  failed, and 17 expected unstarted/optional/platform skips. The headless
+  selfcheck passed 26/26 phases.
+- The complete suite passed **1,836 tests with 7 expected skips and 0 failures**.
+  No Angerona/selfcheck/scanner helper process remained afterward; diff hygiene
+  was clean apart from informational line-ending notices.
+- **QA-C26-R1-01 (HIGH, REPORTED):** the fail-closed authority gate blocks
+  packaging/publication, but `prepare-windows` still executes candidate
+  repository code while an exportable Windows publisher PFX and password are
+  present. The blocked package/migration job retains the same pattern. This
+  requires an immutable OIDC/non-exportable external signer design in round 2;
+  it was not changed under the bug tester's obvious-fix authority.
+- **QA-C26-R1-02 (HIGH, REPORTED):** inert failure injection proved Defender
+  hardening can return `applied=1` even when its apply command returned exit
+  code 1, provided real-time monitoring was already enabled. The action
+  silently requests three settings, verifies only one, ignores `record.ok`, is
+  non-reversible, and uses PATH PowerShell with execution-policy bypass. Round
+  2 owns a trusted executable, typed all-setting verification, and explicit
+  partial-failure/compensation design.
+- Full evidence: `analysis/loop/cycle26/round1/bugtest_results.md`.
+
+## Cycle 26 Round 2 — Remediation (release signing)
+
+- **C26-R2-A01 — FIXED:** removed all exportable Windows publisher PFX,
+  password, certificate-secret, import, and SignTool use from repository jobs.
+  Candidate jobs now emit only explicitly unsigned payload/package artifacts,
+  canonical digests, and untrusted requests.
+- The external-authority job remains no-permission/no-checkout/no-download and
+  fails after the unsigned Windows package request. Publication depends on that
+  failed gate and asks for a finalized Windows artifact that no repository job
+  creates.
+- Static policy now rejects known and generic exportable signing-secret names
+  across every workflow, signing APIs in unsigned builders, prepared-request
+  publication, missing dependency gates, and downstream failure bypasses.
+- Gates: changed Python compiled; Ruff and workflow policy passed; the expanded
+  authorization/update/release/policy sweep passed **66/66**, including workflow
+  PowerShell parsing and a cross-workflow forbidden-PFX mutation. Publication
+  remains deliberately disabled pending a real independently maintained,
+  OIDC-bound, non-exportable release and Windows publisher authority.
+
+## Cycle 26 Round 2 — Remediation (Defender response boundary)
+
+- **C26-R2-B01 — FIXED:** removed Defender preference mutation from the
+  executable response catalog and retained explicit proposal-only guidance.
+  Host-apply approval can no longer reach a Defender subprocess or create an
+  applied/verified receipt for this response gap.
+- Generic remediation verification now requires an exact successful apply
+  record, preventing a pre-existing postcondition from masking apply failure.
+- Gates: changed Python compiled; Ruff passed; 35 focused remediation, posture,
+  UI, lifecycle, receipt, and purple-path tests passed; module self-test N/A.
+
+## Round 1 — Performance (Cycle 26)
+
+- Applied descriptor-bound size/budget preflight without removing any no-follow,
+  root/volume/final-handle, mutation, or post-read identity proof. A stable
+  64 MiB file rejected by a 1 KiB remaining budget fell from 128.12 MiB to
+  0.71 MiB measured peak allocation while preserving the same limited result.
+- Coalesced invariant root/Win32 handle proof work. The isolated 1,000-file
+  median improved from 1.763615 s to 1.464359 s (17.0%).
+- Module Inspector now shares one coherent operational snapshot across health
+  evidence and contract display and suppresses unchanged health-button writes;
+  snapshot calls per refresh fell from two to one.
+- Gates: changed Python and tests compiled; Ruff passed; **36 focused tests
+  passed with two expected platform/symlink-capability skips**. Full evidence:
+  `analysis/loop/cycle26/round1/performance_results.md`.
+
+## Round 2 — Red Team (Cycle 26, release/source authority)
+
+- **C26-R2-C01 (HIGH, CONFIRMED):** `sys.frozen` alone reaches the UAC and
+  protected frozen-runtime path without proving the pinned MSIX identity,
+  publisher, or protected portable-upgrade authority; UAC consent is still
+  required, so this is not presented as a silent elevation bypass.
+- **C26-R2-C02 (MEDIUM, CONFIRMED):** the workflow policy misses bracketed or
+  dynamic secret access, job-level reusable workflows/`secrets: inherit`, and
+  non-literal failed-dependency conditions; the present no-secret authority
+  still exits 1 and publication remains fail-closed.
+
+## Round 2 — Red Team (Cycle 26, runtime boundaries)
+
+- **C26-R2-D01 (MEDIUM, OPEN):** same-volume hard links let an in-root alias pass final-path/volume checks while the scanner reads an outside-root file object.
+- **C26-R2-D02 (MEDIUM, OPEN):** empty/wide directory traversal has no entry/queue/deadline checks and can exceed the advertised scan budget while reporting complete.
+- **C26-R2-D03 (MEDIUM, OPEN):** process-global self-test environment changes still divert ordinary live resilience workers; callback and cleanup paths are not fully exception/object safe.
+- **C26-R2-D04 (LOW, OPEN):** arbitrary `co_filename` metadata can forge an available trusted health-evidence path and highlighted line.
+- **C26-R2-D05 (LOW, OPEN):** Module Inspector mixes a captured operational snapshot with a second live health read, transiently hiding or mislabelling degradation evidence.
+- **C26-R2-D06 (MEDIUM, OPEN):** a Defender proposal record with a generic target field is selected as an executable action before the proposal-only deny classification.
+- **C26-R2-D07 (MEDIUM, OPEN):** failed compensation is audited as rolled back and apply exceptions after partial mutation receive no generic compensation.
+- **C26-R2-D08 (HIGH, OPEN):** legacy quarantine mutates and verifies pathnames without pinned detection-time file identity/digest/parent custody, enabling wrong-object response receipts.
+
+## Cycle 26 Round 2 — Bug Test
+
+- Final QA compiled **348/348** product Python files; imported **82/82** module
+  files; constructed **64/64** compatibility register hooks; discovered all
+  **80** capabilities; and found zero duplicate names, capability IDs, or the
+  **61** declared module codes.
+- Core top-level self-tests passed **24/24**. The capability runner reported
+  **64 passed, 0 failed, 17 expected skips**, and the complete headless selfcheck
+  passed **26/26** phases.
+- Focused release, workflow, response, Scan Center, resilience,
+  source-authority, and module-health gates passed **105 tests with 2 expected
+  symlink-capability skips and 0 failures**. Workflow policy and diff hygiene
+  also passed.
+- **QA-C26-R2-01 (HIGH, REPORTED THEN FIXED):** three valid-YAML policy
+  mutations bypassed the original text checks: a bracketed secret alias, an
+  executable-success authority plus unsigned artifact impersonating the final
+  asset, and comment-only dependency names. Structural remediation now rejects
+  all three; its release subset passed 54/54.
+- **QA-C26-R2-02 (MEDIUM, FIXED):** an oversize file skip with zero scanned
+  files could still report Complete. Oversize skips now produce Limited without
+  weakening descriptor/root identity checks.
+- **QA-C26-R2-03 / C26-R2-D05 (LOW, FIXED):** Module Inspector mixed a captured
+  health evidence snapshot with later live health reads. Text, color,
+  percentage, reason, and evidence now use one atomic operational snapshot.
+- **QA-C26-R2-04 (LOW, FIXED):** selfcheck and ATT&CK coverage retained the old
+  executable Defender response claim after the action became proposal-only.
+  Both now prove and display the truthful non-executable boundary.
+- **QA-C26-R2-05 (LOW, REPORTED THEN FIXED):** the structural parser correctly
+  ignored a comment-only secret fixture; the test now supplies a real parsed
+  secret reference and passes.
+- Full evidence: `analysis/loop/cycle26/round2/bugtest_results.md`. Bug testing
+  did not change the separate red-team JSON or claim closure for its remaining
+  remediation-owned findings.
+
+## Round 2 — Remediation (Cycle 26, installed/release authority)
+
+- **C26-R2-C01 — FIXED:** `sys.frozen` no longer authorizes UAC. Frozen
+  startup must prove the process-bound Windows package full name/family against
+  exact immutable package-family and publisher-ID pins before elevation and
+  again after the elevation helper returns. Unpinned or unverifiable frozen
+  builds fail closed; because the real independent publisher pin is not yet
+  provisioned, frozen elevation remains honestly disabled.
+- **C26-R2-C02 — FIXED:** release policy is now duplicate-key-rejecting and
+  YAML-structural. It rejects all release-job secret contexts, reusable jobs
+  and inherited secrets, non-exact dependency edges, failed-dependency status
+  functions, all continuation forms, non-executable stopping claims, and
+  artifact-name comment spoofing.
+- Gates: changed Python compiled; Ruff and checked-in workflow validation
+  passed; **54 focused source-authority, release-policy, setup, and hash-lock
+  tests passed**; product/helper self-test N/A.
+
+## Round 2 — Remediation (Cycle 26, response action custody)
+
+- **C26-R2-D06 — FIXED:** one typed, fail-closed action decision now gives the
+  Defender/T1562 proposal boundary precedence over every generic matcher and
+  rejects ambiguous executable matches. Target-shaped path, IP, PID, driver,
+  and threat fields cannot promote that proposal into a mutation.
+- **C26-R2-D07 — FIXED:** actions now receive a retained pre-dispatch
+  transaction; multi-step firewall identities are captured before each command;
+  exception and verification failures are compensated. Outcomes distinguish
+  `apply_failed`, exact `rolled_back`, `rollback_failed`, and
+  `recovery_required`; unknown state opens a batch mutation circuit.
+- **C26-R2-D08 — FIXED fail-safe:** both pathname-only quarantine actions are
+  inert proposal-only entries outside the executable catalog. Even direct
+  calls cannot mutate a pathname; exact-object quarantine remains isolated in
+  its separately tested pinned-identity response broker.
+- Gates: changed product/test Python compiled; Ruff passed; **44 focused
+  response, Defender, transaction, receipt, posture, UI, purple-path, and prior
+  remediation tests passed**; helper self-test N/A.
+
+## Round 2 — Remediation (Cycle 26, runtime boundaries)
+
+- **C26-R2-D01 — FIXED:** Scan Center rejects unproven/multi-link regular
+  objects before reading content and reports an explicit limited unsafe-scope
+  result; the same-volume hard-link regression reaches zero reads.
+- **C26-R2-D02 — FIXED:** traversal now owns deadline, cancellation, entry,
+  visited-directory, and discovered/queued-directory budgets, including empty,
+  wide, deep, slow-iterator, and mid-iteration cancellation cases.
+- **C26-R2-D03 — FIXED:** all five resilience self-tests run in allowlisted,
+  bounded children with explicit environment copies and process-tree custody;
+  the parent environment is never changed, callback cleanup is exception safe,
+  and a concurrent live writer remains on its original root.
+- **C26-R2-D04 — FIXED:** exact health source evidence requires loaded-module,
+  declared-code-object, canonical path, stable identity, and digest proof;
+  forged `co_filename` metadata is explicitly untrusted and receives no line.
+- **C26-R2-D05 — FIXED:** BaseModule status/health snapshot publication is
+  atomic and Inspector derives every health/status/evidence field from one
+  captured operational snapshot in both transition directions.
+- Gates: changed product/tests compiled; Ruff passed; **45 focused tests passed
+  with 2 expected platform/link skips**; all **5/5** affected resilience
+  self-tests passed; the post-run test-owned helper audit found zero survivors.
+
+## Round 3 — Red Team (Cycle 26, release/response closure)
+
+- **C26-R3-A01 (MEDIUM, OPEN):** a renamed secret in workflow-level `env`
+  reaches release jobs while the job-only secrets invariant and heuristic
+  signing-secret-name pass both return clean.
+- **C26-R3-A02 (MEDIUM, OPEN):** transaction preparation is not durably written
+  before mutation and the recovery circuit resets for every batch; an inert
+  second call applied immediately after an audited rollback failure.
+- **C26-R3-A03 (MEDIUM, OPEN):** broad `t1562` proposal dominance suppresses the
+  exact T1562.011 control, while overlapping registry candidates are hidden
+  inside one action and silently resolved by table order.
+- Verified resolved in this scope: exact package-family/publisher proof before
+  and after UAC (`C26-R2-C01`) and inert, unregistered legacy pathname
+  quarantine (`C26-R2-D08`). Three prior remediations were incomplete and are
+  re-filed above with exact inert reproductions.
+
+## Round 2 — Visionary (Cycle 26, authentication extension integrity)
+
+- Added a Windows-only, observation-only Authentication Extension Integrity
+  Guard for the fixed LSA package, credential provider/filter, and ordered
+  network provider surfaces. Registry strings are never executed or loaded;
+  resolution is limited to WinAPI-derived Windows directories and absolute
+  local paths, with bounded handle-based evidence and conservative unknowns.
+- Added immutable per-surface coverage, ordered binding/component evidence,
+  pure bounded drift comparison, purpose-keyed path minimization, and a
+  host-bound HMAC baseline. Complete first state is exclusively provisional;
+  trusted enrollment requires an approved operator and review reason; drift is
+  never promoted.
+- Events are path-safe and declare `read_only=True`,
+  `response_authorized=False`, `response_authority=observe-only`, and
+  `attribution=not-assessed`. Health is capped at 75% because local HMAC and
+  clock freshness have no independent high-water or hardware-backed witness.
+- Gates: product Python compiled; Ruff passed; **15 focused tests passed**;
+  capability self-test passed; Windows-target discovery found **81** unique
+  capabilities and zero discovery errors. The integrating maintainer owns the
+  pre-existing global 80-capability assertion. Full evidence:
+  `analysis/loop/cycle26/round2/visionary_summary.md`.
+
+## Round 3 — Remediation (Cycle 26, release/response closure)
+
+- **C26-R3-A01 — FIXED:** release policy now rejects every actual
+  secrets-context expression across the complete parsed workflow, including
+  workflow-level inheritance surfaces. Comment-only and inert prose mentions
+  do not satisfy or confuse the structural gate.
+- **C26-R3-A02 — FIXED:** executable responses now require the existing SQLite
+  custody boundary and a bounded, fsync-backed PREPARED/MUTATING transaction
+  before dispatch. Applied, rolled-back, and recovery-required states survive
+  later calls/restarts; unresolved state disables all later mutations until the
+  separate authorized reconciliation API proves exact rollback or an exact
+  irreversible postcondition. Missing/failed DB custody disables execution.
+- **C26-R3-A03 — FIXED:** Defender and registry decisions use exact ATT&CK /
+  typed control identities. T1562.011 is not absorbed by generic T1562; registry
+  mutation requires exactly one enumerated technique-consistent control, while
+  zero/multiple/conflicting candidates remain manual-review only.
+- Gates: assigned Python/test compile PASS; Ruff PASS; checked-in workflow
+  validator PASS; **124 affected tests passed with 1 expected skip**; diff
+  hygiene PASS; helper/module self-test N/A.
+
+## Round 3 — Red Team (Cycle 26, runtime/auth independent follow-up)
+
+- **C26-R3-B01 (MEDIUM, OPEN):** invalid/error/partial component evidence is
+  graded 75% complete and baseline-eligible; the production provider supplies
+  no signature probe.
+- **C26-R3-B02 (MEDIUM, OPEN):** a pre-HMAC 400-digit baseline timestamp raises
+  uncaught `OverflowError`, allowing malformed authenticated-state input to
+  crash and repeatedly quarantine the observer instead of reporting tamper.
+- **C26-R3-B03 (MEDIUM, OPEN):** resilience self-test children inherit secrets,
+  Python/code-loading controls, and caller CWD, while the 16 KiB output limit is
+  applied only after `communicate()` has buffered the entire stream.
+- **C26-R3-B04 (LOW, OPEN):** a one-file read can overrun the scan deadline and
+  still return `completed` with `timed_out=False` because reads/YARA do not own
+  the deadline.
+- **C26-R3-B05 (LOW, OPEN):** dynamic code inserted into mutable loaded-module
+  globals can still receive `verified-loaded-implementation` provenance and a
+  false exact highlighted line.
+- Survived: hard-link/reparse scope rejection, empty-tree traversal budgets,
+  process-global self-test routing isolation, atomic health snapshots,
+  path-minimized events/baselines, no drift promotion, fixed registry catalog
+  and cardinality/byte bounds, and observe-only response authority. Focused
+  existing regressions: **40 passed**.
+
+## Round 3 — Red Team (Cycle 26, release/source authority addendum)
+
+- **C26-R3-C01 (HIGH, OPEN):** workflow `BASH_ENV` runs before the static
+  authority gate, while an expression-named prepare upload evades literal final-
+  artifact checks; the composed in-memory mutation passed release policy.
+- **C26-R3-C02 (MEDIUM, OPEN):** `${{ toJSON(secrets) }}` bypasses both repaired
+  detectors because neither recognizes the whole secrets context.
+- **C26-R3-C03 (LOW, OPEN):** failed/cancelled UAC returns to the medium-token
+  package process and package identity is rechecked without proving elevation.
+- **C26-R3-C04 (LOW, OPEN):** publisher asset proof reads mutable worktree bytes
+  after its last clean check and performs no final local clean-state proof.
+
+## Round 3 — Bug Test (Cycle 26)
+
+- Cumulative QA compiled **350/350** product Python files; imported **83/83**
+  module files; constructed **65/65** compatibility register hooks; discovered
+  all **81** capabilities; and found zero duplicate names, discovery errors, or
+  duplicate values among the **62** declared module codes.
+- All **37/37** isolated top-level self-tests passed. The capability runner
+  reported **65 passed, 0 failed, 17 expected platform/configuration skips**.
+  The focused Cycle 26 plus adjacent release/response/authentication/Scan
+  Center gate passed **138 tests with 2 expected symlink-capability skips**.
+- **QA-C26-R3-01 (HIGH, OPEN):** an inert synchronized two-thread probe proved
+  that two concurrent `apply_remediation()` calls sharing one database both
+  pass the preflight reconcile, create separate PREPARED/MUTATING rows, and
+  dispatch. Both returned applied and terminal APPLIED, leaving no unresolved
+  row. C26-R3-A02 is reopened: transaction preparation must atomically reject
+  any existing PREPARED, MUTATING, or RECOVERY_REQUIRED row, with thread and
+  cross-process regression coverage before Cycle 26 can close.
+- **QA-C26-R3-02 (LOW, FIXED):** selfcheck still required pathname-only
+  quarantine to execute after that legacy action became proposal-only, and it
+  used a free-text credential fixture after registry selection became typed and
+  exact. The harness now proves quarantine is inert in dry-run, apply, and
+  direct-call paths and uses the exact typed registry fixture. Direct and batch
+  wrapper selfcheck both pass **26/26** phases with exit code 0.
+- `git diff --check` passed and the helper-process audit found zero survivors.
+  The terminal full suite was stopped at the coordinator's request because it
+  must be rerun after the open custody defect is remediated. Full evidence:
+  `analysis/loop/cycle26/round3/bugtest_results.md`.
+
+## Round 3 — Terminal Bug Test (Cycle 26)
+
+- Terminal QA compiled **350/350** product files, imported **83/83** module
+  files, constructed **65/65** compatibility hooks, and discovered **81**
+  unique capabilities with zero errors or duplicate values among **62** codes.
+  All **37/37** isolated package-level self-tests pass after bounded fixes.
+- **QA-C26-R3-03 (LOW, FIXED):** synchronized the stale current 80-capability
+  assertion/README markers to 81 while retaining historical Cycle 25 evidence.
+- **QA-C26-R3-04 (LOW, FIXED):** the manager self-test no longer calls `tick()`
+  concurrently with the real supervisor and manufactures SAFE_MODE; direct
+  lifecycle gate proves no duplicate and exactly one respawn.
+- **QA-C26-R3-05 (LOW, FIXED):** YARA readiness scans the inert marker in
+  memory rather than writing an AV-intercepted EICAR-named fixture; compile and
+  direct self-test pass in 4.1 seconds, with product file scanning unchanged.
+- Focused pytest: **249 passed, 5 expected skips, 3 failed** in 601.41 seconds.
+  All failures are **C26-R3-C13**, the pinned Git publisher rejecting the
+  reviewed `cmd/git-lfs.exe` / `cmd/git.exe` hard-link pair even though size and
+  SHA-256 match the profile. C13 is assigned to release remediation.
+- First exact selfcheck completed **25/26** phases (64 pass, 1 timeout, 17
+  expected skips); a warmed capability rerun exposed six-worker/AV contention
+  (63 pass, 2 timeouts, 17 skips), while both timed-out capabilities passed in
+  another terminal invocation. No timeout was converted to a skip.
+- Ruff passed **52** Python files, **44** JSON documents parsed, diff hygiene
+  passed, and zero helpers survived. The full suite remains required after C13
+  remediation. Full evidence: `analysis/loop/cycle26/round3/bugtest_results.md`.
+
+## Round 3 — Remediation post-fix closure (Cycle 26, response concurrency)
+
+- **QA-C26-R3-01 / C26-R3-A02 — FIXED:** the remediation database now checks
+  for every PREPARED, MUTATING, or RECOVERY_REQUIRED row and inserts a new
+  PREPARED row atomically inside one `BEGIN IMMEDIATE`. A concurrent caller is
+  returned as blocked/recovery-required with zero dispatch and the exact
+  blocking transaction ID; it cannot clear or replace the live row.
+- The process-wide remediation log singleton now fails closed if a caller asks
+  to rebind it to a different canonical database path.
+- A deterministic inert two-thread regression synchronizes both apply calls
+  after an empty initial reconciliation, holds the first in MUTATING, and proves
+  exactly **1 dispatch**, **1 blocked call**, and a final APPLIED first row with
+  no unresolved residue.
+- Gates: assigned Python/test compile PASS; Ruff PASS; focused affected gate
+  **70 passed**; adjacent remediation/workflow gate **56 passed, 1 expected
+  skip**; diff hygiene PASS; module/helper self-test N/A.
+
+## Round 3 — Red Team (Cycle 26, response-custody re-attack)
+
+- **C26-R3-A04 (MEDIUM, OPEN):** reconciliation has no durable live-owner lease
+  or pre-compensation RECOVERING claim. It can seize an active MUTATING row,
+  interleave rollback with the still-running action, and let two reconcilers
+  dispatch compensation; an inert schedule ended effect-mutated behind a
+  durable ROLLED_BACK row.
+- **C26-R3-A05 (MEDIUM, OPEN):** two NTFS hard-link names for one SQLite database
+  receive separate WAL/SHM sidecars. Both alias connections returned transaction
+  ID 1 and reached MUTATING, bypassing the single-unresolved-transaction circuit.
+- Survived: same-path cross-connection prepare serialization, all three existing
+  unresolved-state gates, fail-closed journal/record bounds, terminal-only
+  pruning, and exact registry/Defender routing. Focused existing gate: **15
+  passed**.
+
+## Round 3 — Remediation (Cycle 26, release/source authority addendum)
+
+- **C26-R3-C01 — FIXED:** release validation now requires the exact root, job,
+  runner, timeout, permission, step, matrix, and artifact graph. Extra or
+  expression-named candidate uploads fail. The still-unprovisioned authority
+  gate launches fixed Bash through `env -i`, so inherited startup files and
+  imported functions cannot bypass its unconditional stop.
+- **C26-R3-C02 — FIXED:** every parsed GitHub expression rejects standalone
+  `secrets`, including `toJSON(secrets)` at workflow/job/step scope, while YAML
+  comments and non-expression prose remain inert.
+- **C26-R3-C03 — FIXED:** UAC returns typed outcomes and frozen startup requires
+  that typed success, a fresh effective-Administrator token check, and repeated
+  exact package identity. Cancellation/failure exits before runtime setup.
+- **C26-R3-C04 — FIXED:** publication evidence comes from bounded immutable Git
+  blobs for the captured HEAD, including the exact public README target set;
+  the publisher repeats clean worktree/exact HEAD proof after network checks as
+  its last pre-success operation.
+- Gates: compile PASS; Ruff PASS; workflow validator PASS; **52 focused tests
+  passed**; current-public-commit asset proof **4/4 images passed**; diff/JSON
+  hygiene PASS. No publication or privileged action was performed.
+
+## Round 3 — Remediation (Cycle 26, publication boundary post-fix)
+
+- **C26-R3-C05 — FIXED:** the Windows public-asset fallback resolves System32
+  with `GetSystemDirectoryW`, executes only its exact resolved PowerShell under
+  a fixed trusted cwd, and passes a fresh environment containing only trusted
+  `SystemRoot` plus exact URL/output/timeout inputs. Caller SystemRoot, PATH,
+  module paths, proxies, shell/Python controls, and secrets never cross. Python
+  independently rechecks status, final raw HTTPS URL, content type, size, and
+  the immutable caller retains exact digest/byte verification.
+- **C26-R3-C06 — FIXED:** publication permits only remote `origin`; raw binary
+  fetch and push URL output must each be exactly one canonical
+  `https://github.com/Ag3nt47/AngeronaSuite.git` line. Normalized equivalents
+  and canonical-parameter overrides fail before network or push activity.
+- Gates: compile/Ruff PASS; focused boundary gate **68 passed**; the real
+  minimal-environment PowerShell fallback downloaded
+  the exact **1,490-byte** public PNG; read-only immutable asset proof remains
+  **4/4 images PASS**. No publication or remote mutation occurred.
+
+## Round 3 — Remediation (Cycle 26, runtime/authentication closure)
+
+- **C26-R3-B01 — FIXED:** complete/enrollable authentication-extension
+  evidence now requires stable handle-bound identity/digest, valid
+  embedded-or-catalog signature assurance with signer evidence, component and
+  registry-key owner/ACL custody, and post-probe handle revalidation. No fake
+  signature probe was added; production remains partial/non-enrollable until a
+  real handle-bound verifier exists.
+- **C26-R3-B02 — FIXED:** unauthenticated baseline JSON now has strict numeric,
+  depth, node, collection, field, key, and string bounds. Overflow, recursion,
+  parse, schema, and conversion failures become tampered/unknown observer state
+  instead of escaping and quarantining the module.
+- **C26-R3-B03 — FIXED:** resilience self-test children receive a fresh
+  sanitized environment and exact target routes, trusted cwd, isolated fixed
+  Python bootstrap, pre-resume Windows job custody, conservative resource
+  ceilings, and streamed 16 KiB output termination. POSIX retains explicit
+  process-group/wall-clock custody without claiming a perfect portable tree
+  process counter.
+- **C26-R3-B04 — FIXED:** scan deadlines/cancellation now cross descriptor reads
+  and YARA boundaries. Blocking calls are honestly described as cooperative;
+  a late direct-file or YARA result is limited/timed-out and never completed.
+- **C26-R3-B05 — FIXED:** exact red-line health evidence is admitted only when
+  the live immutable code object matches a bounded manifest compiled from the
+  exact canonical source bytes. Mutable module-global registration provides no
+  provenance and receives no path/line.
+- Gates: affected compile PASS; Ruff PASS; **88 focused/adjacent tests passed,
+  2 expected platform skips**; all **6/6** directly affected module/helper
+  self-tests passed; no host mutation, credential access, or registered
+  authentication component loading occurred.
+
+## Round 3 — Remediation post-fix closure (Cycle 26, response custody A04/A05)
+
+- **C26-R3-A04 — FIXED:** ordinary apply now only reads unresolved transaction
+  state and cannot seize live `PREPARED`/`MUTATING` work. Separately authorized
+  recovery atomically claims one `RECOVERY_REQUIRED` row, binds the claim to the
+  retained-record digest, leaves a crashed claim durably fail-closed, and
+  atomically commits the winner's terminal state plus proof receipt. A
+  deterministic two-reconciler schedule proves exactly one compensation and
+  zero compensation by the loser.
+- **C26-R3-A05 — FIXED:** remediation SQLite custody is bound to the canonical
+  fixed-local path and stable parent/database identities. Reparse/link/remote,
+  pre/post-open identity, and multi-link main/sidecar conditions fail closed at
+  each prepare, transition, inspection, claim, and finish boundary. The NTFS
+  hard-link fixture dispatches zero actions; two connections using the same
+  canonical path still admit exactly one `PREPARED` row.
+- Gates: Python compile PASS; Ruff PASS; exact custody regression **9 passed**;
+  focused/adjacent response gate **63 passed**; helper/module self-test N/A. No
+  host mutation, publication, commit, or network action was performed.
+
+## Round 3 — Red Team (Cycle 26, release/source authority re-audit)
+
+- **C26-R3-C05 (MEDIUM, OPEN):** the Windows public-asset fallback selects
+  PowerShell beneath caller-controlled `SystemRoot` and forwards the complete
+  environment. An inert monkeypatched fixture proved executable substitution,
+  unrelated-secret forwarding, and acceptance of child-supplied response bytes.
+- **C26-R3-C06 (LOW, OPEN):** the publisher normalizes extra slashes and an
+  omitted `.git` to the expected repository slug, so it does not prove the exact
+  required canonical fetch/push URL string. The variants still target the same
+  GitHub slug; no wrong-destination push was demonstrated.
+- Survived: closed workflow root/job/step/needs/artifact controls, all secrets
+  context and shell-startup mutations, the unconditional current authority
+  stop, pre/post-UAC package/effective-token proofs, immutable asset target
+  selection, and final remote/default-main/HEAD/clean checks. Focused gate:
+  **44 passed**; no UAC, publication, network request, or host mutation occurred.
+
+## Round 3 — Red Team (Cycle 26, final response-custody re-attack)
+
+- **C26-R3-A06 (LOW, OPEN):** ordinary transaction transitions have no owner
+  capability or fixed state graph. A competing inert caller terminalized a live
+  MUTATING row as APPLIED; a normal second batch then reached MUTATING and
+  dispatched before the first returned (`dispatches=2`, states initially
+  `[APPLIED,MUTATING]`). This requires direct in-process core-API access; no
+  external product route was found.
+- Survived: live-state ordinary inspection, dual reconciliation single-flight,
+  crashed-claim fail-closed state, retained-record digest binding, atomic
+  terminal-plus-receipt rollback on injected failure, same-path connection
+  serialization, and NTFS hardlink/reparse/8.3/trailing-dot/space/non-fixed and
+  identity-swap checks. Focused checked-in response gate: **18 passed**.
+
+## Round 3 — Red Team (Cycle 26, runtime/authentication post-fix re-audit)
+
+- **C26-R3-B06 (LOW, OPEN):** a crash after creation of the authentication-
+  baseline enrollment sentinel leaves a regular lock file with no live-owner
+  proof or recovery path, permanently blocking trusted enrollment while
+  observation remains safely provisional and fail-visible.
+- B01-B05 stayed closed under invalid-authenticity enrollment, hostile bounded
+  JSON, child environment/bootstrap/process/output custody, late read/YARA, and
+  mutable source-manifest attacks. Gate: **77 passed, 2 expected skips**; all
+  **5/5** real resilience wrappers passed; no test-owned survivor remained.
+
+## Round 3 — Remediation post-fix closure (Cycle 26, response owner capability)
+
+- **C26-R3-A06 — FIXED:** durable `PREPARED` creation returns one opaque,
+  256-bit in-memory owner capability and persists only its domain-separated
+  digest. Ordinary transitions require that exact capability and enforce the
+  internal fixed graph `PREPARED -> MUTATING ->
+  APPLIED|ROLLED_BACK|RECOVERY_REQUIRED`; callers can no longer supply expected
+  states or transition with a raw transaction ID. Terminal transitions clear
+  the stored digest and retire the in-memory secret. Explicit reconciliation
+  remains separately claim-ID/retained-record-digest bound.
+- A deterministic inert reproduction pauses the legitimate runner in
+  `MUTATING`, proves a foreign owner cannot forge `APPLIED`, proves the second
+  batch stays blocked, and completes with exactly **1 action-body dispatch**.
+  Raw-ID, stale, foreign/cross-transaction, skipped-state, and invalid-target
+  regressions all fail closed.
+- Gates: affected product/test compile PASS; Ruff PASS; exact custody file
+  **11 passed**; focused/adjacent response-remediation gate **40 passed**;
+  JSON/diff hygiene PASS; direct helper/module self-test N/A. No host mutation,
+  publication, network request, or commit occurred.
+
+## Round 3 — Remediation post-fix closure (Cycle 26, authentication enrollment lock)
+
+- **C26-R3-B06 — FIXED:** authentication-baseline enrollment now derives
+  authority solely from a live, crash-released OS handle: Windows opens the
+  retained rendezvous file with zero sharing and POSIX holds a nonblocking
+  exclusive file lock. Stale PID/malformed contents no longer cause permanent
+  lockout and are normalized only after exclusive acquisition; file existence
+  is never owner proof.
+- The protected-root boundary now rejects symlink/reparse, hard-link,
+  non-regular, parent/object-swap, exact-path, and ambiguous-open conditions
+  before baseline promotion. A real child-process `os._exit` schedule proves
+  crash recovery, while a deterministic two-enroller schedule proves a live
+  owner admits no competing promotion. HMAC, host binding, completeness, and
+  provisional-signature validation remain unchanged and fail closed.
+- Gates: affected product/test compile PASS; Authentication Extension Integrity
+  Guard self-test PASS; Ruff PASS; focused/adjacent authentication gate **35
+  passed, 1 expected platform skip**; JSON/diff hygiene PASS. No host mutation,
+  publication, network request, or commit occurred.
+
+## Round 3 — Red Team (Cycle 26, final publication-boundary re-attack)
+
+- **C26-R3-C07 (MEDIUM, OPEN):** omitting `PSModulePath` makes Windows
+  PowerShell reconstruct CurrentUser/AllUsers/system module paths; unqualified
+  `Invoke-WebRequest` can therefore auto-load a user-writable shadow module even
+  under `-NoProfile` and the four-entry child environment.
+- **C26-R3-C08 (MEDIUM, OPEN):** the fallback closes its exclusive temporary
+  handle and hands PowerShell a caller-temp pathname with no object/link/reparse
+  custody; an inert hard-link swap overwrote a separate victim and the function
+  still accepted the exact expected PNG.
+- **C26-R3-C09 (MEDIUM, OPEN):** Git and primary Python HTTPS inherit ambient
+  executable/proxy/TLS/config authority. Inert runtime Git config disabled TLS
+  verification and selected a proxy while the exact canonical origin output
+  remained unchanged; Python's default opener likewise discovered caller proxy
+  and CA override inputs.
+- **C26-R3-C10 (LOW, OPEN):** exact origin URLs are checked only before later
+  remote-name operations; repository/included config can change outside clean-
+  worktree proof and late URL rewrites can redirect fetch/ref/push evidence.
+- Survived: exact LF-only single fetch/push URL framing, CRLF/extra/multiple and
+  normalized-origin rejection, fixed URL/path/timeout data passing, exact
+  stdout framing, immutable commit README/PNG binding, size/content checks, and
+  the WinAPI System32 path proof. Focused checked-in gate: **37 passed**; no
+  publication, push, fetch, GitHub asset request, untrusted module, or product
+  mutation occurred.
+
+## Round 3 — Red Team (Cycle 26, final response owner/reconciliation re-attack)
+
+- **C26-R3-A07 (LOW, OPEN):** the sequential reconciliation claim ID and
+  retained record are inspection-visible, and the record SHA-256 is
+  reconstructible; an inert competing caller forged terminal rollback plus a
+  receipt, cleared the circuit, and admitted a second dispatch while the real
+  compensator was still paused.
+- **C26-R3-A08 (LOW, OPEN):** ordinary terminal response state commits before a
+  best-effort receipt call that suppresses failure; injected audit failure
+  returned `applied=1` with durable APPLIED state but zero receipt rows, then
+  admitted the next batch.
+- A06's ordinary owner capability survived raw-ID, wrong/cross-transaction,
+  stale, skipped-state, arbitrary-state, copying, serialization, equality, and
+  redaction probes. Same-path serialization, hard-link rejection, unresolved-
+  row pruning exclusion, and restart lockout remained fail closed. Focused
+  checked-in response/remediation gate: **36 passed**; no host mutation or
+  external action occurred.
+
+## Round 3 — Red Team (Cycle 26, final authentication enrollment-lock re-attack)
+
+- **C26-R3-B07 (LOW, OPEN):** an authenticated provisional baseline can be
+  hard-linked under a second name, which derives an independent rendezvous;
+  two synchronized approved enrollers both returned successfully and forked
+  the shared provisional inode into two trusted baselines. POSIX additionally
+  checks the `flock` inode/parent only before yielding, so unlink-recreate or a
+  parent namespace swap can split cooperating lock ownership for a writer of
+  the private directory.
+- **C26-R3-B06 stayed FIXED for exact-path use:** real two-process exclusion,
+  zero-share Windows delete/parent-rename resistance, crash before/after lock
+  metadata normalization, exception/GC cleanup, and oversized stale metadata
+  recovery all passed. Focused checked-in authentication gate: **35 passed, 1
+  expected symlink/reparse privilege skip**; all extra probes were inert and
+  left no child or temporary object behind.
+
+## Round 3 — Remediation post-fix closure (Cycle 26, response finish authority)
+
+- **C26-R3-A07 — FIXED:** the sole recovery claimant now receives an opaque,
+  exact-type, non-copyable/non-serializable 256-bit capability. Only a
+  domain-separated digest bound to transaction ID plus retained-record digest
+  is stored. Inspection exposes `recovery_active` but no claim ID, digest, or
+  reconstructible authority; atomic finish requires and retires the capability.
+  Forged synchronized finish, cross-transaction/stale/copy/pickle/redaction,
+  record-tamper, owner crossover, and crash/restart schedules fail closed.
+- **C26-R3-A08 — FIXED:** ordinary terminal state, normalized fixed semantics,
+  immutable action metadata, and the exact proof receipt now commit in one
+  owner-gated SQLite transaction. Receipt serialization/insert failure rolls
+  back to live `MUTATING`, preserves the owner digest, returns no successful
+  application, and blocks all later dispatch.
+- Gates: affected product/test compile PASS; Ruff PASS; exact response custody
+  **21 passed**; focused/adjacent response-remediation **91 passed**; JSON/diff
+  hygiene PASS; direct self-test N/A. No host mutation, network request,
+  publication, commit, or external action occurred.
+
+## Round 3 — Remediation post-fix closure (Cycle 26, authentication aliases)
+
+- **C26-R3-B07 — FIXED:** every existing authentication baseline must now be a
+  canonical, no-follow, fixed-local Windows, regular, single-link object beneath
+  the retained protected-root identity. Root, parent, lock, baseline, and
+  promotion-object identity are revalidated across the complete enrollment
+  window; POSIX namespace mutations use the retained parent descriptor.
+- Enrollment authority is one constant data-root-wide rendezvous, independent
+  of caller filename. Windows retains exact directory/zero-share lock handles;
+  POSIX additionally flocks the retained root-directory inode, so replacing the
+  inert rendezvous cannot split cooperating owners. Hard-linked aliases produced
+  zero successful enrollments, missing names shared one lock, and reparse/root/
+  parent replacements were rejected or detected before success.
+- Gates: affected compile PASS; module self-test PASS; Ruff PASS; focused and
+  adjacent authentication gate **39 passed, 3 expected platform skips**;
+  JSON/diff hygiene PASS. No host mutation, credential access, registered
+  component load, publication, or commit occurred.
+
+## Round 3 — Red Team (Cycle 26, final response convergence)
+
+- **C26-R3-A09 (LOW, OPEN):** the public reconciliation claim API mints the
+  opaque finish capability from only a visible transaction ID. A competing
+  ordinary in-process caller used public claim/finish calls to assert a verified
+  rollback without invoking compensation, commit an authenticated `ROLLED_BACK`
+  receipt, clear the circuit, and admit a later `PREPARED` transaction.
+- **C26-R3-A07/A08 stayed FIXED:** capability secrecy/type/lifecycle, inspection
+  redaction, claim single-flight, cross-owner/transaction/tamper/restart gates,
+  atomic terminal-plus-receipt failure handling, and same-path/link custody all
+  survived. Focused and adjacent response/remediation gate: **39 passed**; all
+  additional probes used a disposable inert database and no host action.
+
+## Round 3 — Remediation post-fix closure (Cycle 26, publication transport)
+
+- **C26-R3-C07 — FIXED:** the PowerShell downloader was removed. Public assets
+  use only bounded in-memory Python HTTPS, making user-module discovery and
+  autoload unreachable; the inert shadow-module regression stays untouched.
+- **C26-R3-C08 — FIXED:** no temporary download pathname or external output
+  handoff remains. A synthetic hard-link/victim pair is unchanged through the
+  only downloader.
+- **C26-R3-C09 — FIXED:** Git now runs through a stable-identity machine/root-
+  owned executable boundary with a fresh allowlisted environment, disabled
+  system/global configuration and ambient transport/startup controls, strict
+  TLS, and only the identity-bound noninteractive system Git Credential Manager.
+  Raw-content verification uses a private no-proxy opener and strict freshly
+  loaded system trust; ambient proxy/CA/OpenSSL/TLS-keylog authority is refused.
+- **C26-R3-C10 — FIXED:** the sole local config is path/identity/digest bound and
+  policy-audited. Exact raw fetch/push URL, config, HEAD, and cleanliness are
+  checked before/after every network boundary; all remote Git commands use the
+  literal canonical HTTPS URL. A late config mutation fails before fetch/push.
+- Gates: affected helpers compile; Ruff PASS; exact regression **36 passed**;
+  adjacent release/workflow/launcher **50 passed**; workflow validator and JSON/
+  diff hygiene PASS; live read-only canonical refs plus **4/4** public assets
+  PASS. The unrelated README `modules=80` versus static discovery `81` drift is
+  left for release-document synchronization. No push or publication occurred.
+
+## Round 3 — Red Team (Cycle 26, authentication alias convergence)
+
+- **C26-R3-B08 (LOW, OPEN):** a writer can add a hard link to the authenticated
+  provisional baseline after the final custody check but immediately before
+  pathname replacement. The original promotion succeeds, the orphaned alias
+  returns to single-link provisional state, and a later approved alias
+  enrollment produces a second trusted file because authentication is not
+  bound to the exact logical pathname.
+- **C26-R3-B07 stayed FIXED for cooperating/existing cases:** one root-wide
+  authority blocked real same-name and different-missing-name two-process
+  schedules; pre-existing hard links, reparse aliases, root/parent replacement,
+  crash/exception release, retained-handle checks, and Windows nonlocal storage
+  rejection remained fail closed. Focused gate: **39 passed, 3 expected
+  platform/privilege skips**; all added fixtures were inert and temporary.
+
+## Round 3 — Remediation (Cycle 26, response recovery authority)
+
+- **C26-R3-A09 — FIXED:** ordinary public ledger claim/finish methods were
+  removed. One module-private recovery coordinator is minted per exact
+  `RemediationLog` and exact vetted action-registry snapshot. Private claim,
+  proof, and finish require that coordinator; finish also requires the winning
+  digest-bound one-use recovery capability and exact store-issued verified
+  proof. The ledger derives fixed outcome/record semantics and accepts no
+  caller-selected rollback assertion.
+- The public recovery request invokes exactly one bound action rollback or its
+  fail-closed postcondition verifier before proof issuance. Missing controls,
+  exceptions, and verification failure retain the durable `RECONCILING` claim;
+  a competing request cannot dispatch compensation again. Arbitrary
+  introspective Python within the process remains outside this API boundary.
+- Gates: affected compile PASS; direct self-test N/A; Ruff PASS; A07/A08/A09
+  plus response-custody **24 passed**; adjacent response/remediation **18
+  passed**; JSON/diff hygiene PASS. All probes were inert; no host mutation,
+  publication, commit, push, or network action occurred.
+
+## Round 3 — Red Team (Cycle 26, final publication-transport convergence)
+
+- **C26-R3-C11 (MEDIUM, OPEN):** HKLM selected the actual `D:\\Git` install,
+  but read-only ACL inspection proved `Authenticated Users: FullControl` on the
+  root, bound Git/GCM binaries, unbound `git-remote-https`, and transport DLLs.
+  The boundary checks no ACL/signer, binds only Git/GCM pathname metadata, and
+  therefore accepts a pre-replaced binary or an unbound helper/DLL capable of
+  executing as the publisher, receiving credentials, and falsifying transport.
+- **C07/C08/C10 stayed FIXED; C09 is partial at its executable premise:** the
+  no-PowerShell/no-path downloader, no-proxy strict-system-trust opener, fresh
+  Git environment, literal canonical URL, stable local-config policy/fingerprint,
+  and pre/post HEAD/cleanliness checks survived. Focused publication regression:
+  **36 passed**. No live GitHub access followed the local ACL trust failure; no
+  binary, ACL, credential, network state, repository content, fetch, push, or
+  publication was touched.
+
+## Round 3 — Remediation post-fix closure (Cycle 26, baseline logical slot)
+
+- **C26-R3-B08 — FIXED:** schema-v2 authenticated baseline bodies are bound to
+  the exact canonical protected root, normalized relative filename, and schema.
+  A root-wide authenticated trusted-slot record permits only one approved
+  logical slot; copied, hard-linked, renamed-root, and alternate-name bytes can
+  never become trusted aliases.
+- Promotion now retains the provisional object through the atomic operation
+  (`ReplaceFileW` on Windows, descriptor-relative replacement on POSIX) and
+  proves the retired object has zero links and the exact promoted object has
+  one. A violated postcondition removes the promoted name and leaves trusted
+  registration absent/fail-closed. Explicit same-slot approval safely completes
+  registration after an interrupted commit.
+- Gates: affected compile PASS; module self-test PASS; Ruff PASS; focused and
+  adjacent authentication gate **44 passed, 3 expected platform skips**; JSON/
+  diff hygiene PASS. All race fixtures were inert and temporary; no host
+  mutation, credential access, publication, commit, or network action occurred.
+
+## Round 3 — Red Team final response-authority convergence (Cycle 26)
+
+- **C26-R3-A09 stayed FIXED; no new response finding:** ordinary callers cannot
+  publicly claim, finish, or assert rollback. Exact coordinator/store/registry,
+  one-use capability, retained-record, action, and verified-proof bindings held;
+  real rollback/verifier ran once, every failure stayed durably locked, and A07/
+  A08 receipt controls remained atomic. Focused gate **24/24**, Ruff PASS, and
+  byte-compilation PASS; all probes were inert and temporary.
+
+## Round 3 — Red Team final authentication-slot convergence (Cycle 26)
+
+- **C26-R3-B09 (LOW, OPEN):** registry loss reopens root slot selection. After
+  trusted A, deleting its registry permits an explicitly approved alternate B
+  enrollment; both authentic registry documents can then be replayed to toggle
+  divergent A/B baselines between `stable` and `tampered` without forging an
+  HMAC. Registry absence must allow only the immutable expected same-slot
+  recovery, never a new pathname.
+- **B08's remaining controls stayed FIXED:** schema-v2 root/name/slot HMAC
+  binding, byte-copy and moved-root rejection, malformed/multi-link registry
+  refusal, retained promotion handles/link postconditions, and explicit
+  same-slot interrupted-commit recovery survived. Focused gate: **38 passed, 3
+  expected platform skips**; module self-test PASS; all probes were inert and
+  temporary.
+
+## Round 3 — Remediation post-fix closure (Cycle 26, fixed authentication slot)
+
+- **C26-R3-B09 — FIXED:** each canonical data root now has exactly one accepted
+  authentication baseline location,
+  `baselines/windows_auth_extensions.json`. Alternate relative filenames and
+  directories fail at construction before observation, creation, or enrollment;
+  the fixed path is also revalidated inside root-custody checks.
+- Missing-registry recovery accepts only the HMAC-valid trusted body at that
+  fixed root/name/schema slot and only for matching reviewed evidence. The exact
+  registry-loss schedule rejected divergent B, recovered A in place, and showed
+  that replay of the saved authentic registry cannot select a second baseline.
+  Copied and moved roots remained tampered.
+- The local HMAC and software freshness clock are not an external anti-rollback
+  witness; that limitation remains explicit. Gates: affected compile PASS;
+  module self-test PASS; Ruff PASS; focused/adjacent authentication gate **46
+  passed, 3 expected platform skips**; JSON/diff hygiene PASS. All fixtures were
+  inert and temporary; no host, credential, publication, commit, or network
+  mutation occurred.
+
+## Round 3 — Independent B09 terminal convergence (Cycle 26)
+
+- **C26-R3-B09 remains FIXED; no new bypass:** the constructor admitted only
+  the canonical fixed slot, normalized same-slot aliases converged, alternate
+  paths failed before creation, saved-registry replay could name no divergent
+  slot, divergent recovery failed, exact same-slot interrupted recovery passed,
+  and root copies/moves remained tampered through root/name/schema HMAC binding.
+- Independent gates: authentication suite **46 passed, 3 expected platform
+  skips**; exact B09 subset **7 passed**; module self-test **1 passed**; Ruff and
+  byte-compilation PASS. Same-path rollback after restart remains the explicitly
+  disclosed local-clock/HMAC limitation, not a claimed anti-rollback guarantee.
+
+## Round 3 — Remediation post-fix closure (Cycle 26, publication runtime)
+
+- **C26-R3-C11 — FIXED:** the writable HKLM Git installation is discovery
+  input, never execution authority. A closed reviewed profile binds 312
+  names/sizes/SHA-256 values (191,289,767 bytes), the Git/GCM/HTTPS/shell/DLL
+  closure, exact version/build, and tree digest `7151e168c3a919a5…`.
+- Every source object is held without write/delete sharing while exact bytes
+  are copied and rehashed in an atomically private non-reparse tree. Retained
+  staged handles deny writes; a protected DACL leaves the publisher
+  read/execute only and trusts only SYSTEM/Administrators for full control.
+  Cwd and executable search are private/staged, GCM is absolute and
+  shell-quoted, and System32 DLLs are the explicit OS trust boundary.
+- Same-size pre-replacement, sidecar/DLL/helper addition, copy write/replace
+  race, staged mutation, whitespace/metacharacter/apostrophe quoting, private
+  ACL, and cleanup gates passed **7/7**. Live staged Git resolved exact local
+  HEAD and live staged GCM reported its exact version; cleanup proved zero
+  staging residue and zero gate-process orphans. Byte-compilation passed and no
+  helper defines `self_test()`.
+- Bounded affected-file Ruff passed. The full 43-test file and canonical
+  read-only `ls-remote` proof move to cooled-down final QA because host AV/disk
+  pressure slowed ordinary
+  `_pytest`/stdlib imports to multiple seconds per file. Faulthandler showed
+  progressing reads, not a runtime deadlock. No credential, fetch, push,
+  publication, host ACL, or repository state was changed.
+
+## Round 3 — Red Team final publication-profile convergence (Cycle 26)
+
+- **C26-R3-C12 (MEDIUM, OPEN):** the sealed Git profile authenticates its tree
+  with digests stored only inside the same mutable JSON and is loaded by pathname
+  before HEAD/clean-worktree custody. A local writer can transiently pair an
+  internally valid alternate profile with the writable machine Git tree, restore
+  the tracked profile before the later status gate, and leave an actor-selected
+  runtime sealed for publication. Anchor the exact profile-byte SHA-256 and tree
+  digest in already loaded trusted code and read once through a stable no-follow,
+  no-write/delete handle. This re-attack was static/read-only: no staging,
+  credential access, GitHub request, fetch, push, publication, or ACL mutation.
+
+## Round 3 — Performance (Cycle 26)
+
+- **APPLIED:** one allocation-light atomic `health_summary()` now supplies each
+  Capability Center row. The paired 81-module data-refresh benchmark improved
+  from **438.564 to 251.523 microseconds (42.7%)** without caching, changing the
+  1.5-second cadence, or altering status/health semantics.
+- **APPLIED:** full operational snapshots now probe thread liveness once rather
+  than twice, a **50% call reduction** with coherent uptime/liveness fields.
+- **RETAINED:** scan deadline/cancellation and immutable byte custody,
+  remediation FULL-sync/object/capability custody, authentication fixed-slot
+  identity/HMAC/freshness checks, and fresh isolated self-test children. Bounded
+  measurements showed a 3.97 ms pre-cancel scan, 32.014 MiB peak for a 16 MiB
+  admitted snapshot, zero unresolved remediation rows, 19.922 ms median stable
+  auth observation, and 3/3 isolated diagnostics passes.
+- Gates: scoped compile PASS; `BaseModule.self_test()` PASS; diff hygiene PASS;
+  no benchmark residue/orphans. The combined focused pytest displayed 15 dots
+  at 100% with no failure output but was stopped before its terminal summary
+  after roughly five minutes of confirmed AV/I/O pressure, so it remains
+  non-authoritative pending the cooled-down final suite.
+
+## Round 3 — Remediation post-fix closure (Cycle 26, profile trust anchor)
+
+- **C26-R3-C12 — FIXED:** the already-loaded Windows publication runtime now
+  pins the exact 54,008-byte LF profile SHA-256 and independent expected Git
+  version/build, directory/file counts, total bytes, and tree SHA-256. It
+  authenticates bytes before duplicate-safe parsing, so a transient internally
+  consistent JSON and matching writable Git tree cannot select executable code.
+- Only the compiled absolute fixed-local profile path is admitted. Retained
+  no-follow file/parent handles deny write/delete sharing and require a regular,
+  single-link, non-reparse exact canonical object. Its bytes are read once; the
+  profile seal and all Git source identities are revalidated through staging.
+  The version probe runs only through the completed sealed transport, which is
+  bound before HEAD/status/configuration/remote publication logic.
+- Focused C12 regressions passed **9/9**; changed-file byte-compilation, Ruff,
+  JSON, and diff hygiene passed. Trusted publisher Python at process start is
+  the explicit root; pre-start code replacement and live process-memory
+  compromise remain out of scope. No full runtime staging, credential, network,
+  fetch, push, publication, host-state, or repository-state mutation occurred.
+
+## Round 3 — Independent terminal C12 convergence (Cycle 26)
+
+- **C26-R3-C12 remains FIXED; no new bypass:** exact LF profile bytes and
+  compiled SHA-256/metadata/tree anchors matched; fixed-path no-follow retained
+  handle custody, single-link/reparse/volume/final-name checks, read-once parsing,
+  end-of-stage identity revalidation, and pre-repository-Git boundary ordering
+  survived static re-attack. The exact focused pytest was stopped after about
+  90 seconds without output under documented host AV/I/O pressure and yielded no
+  new result; the prior completed **9/9** remains authoritative. No staging,
+  Git/GCM execution, credential, network, publication, host, or product change
+  occurred.
+
+## Round 3 — Visionary trust-boundary synthesis (Cycle 26)
+
+- Reviewed all Cycle 26 findings/remediations plus the existing Round 1
+  defensive innovation and upstream-project comparison. Five next
+  architectures were delivery-ranked with explicit impact, feasibility, risk,
+  threat boundaries, failure gates, and residual limitations: health-evidence
+  lineage, automated security-control drift, signed portable publication
+  runtime profiles, out-of-process capability/response isolation, and a
+  separately administered rollback-resistant witness.
+- Selected exactly one **future** bounded MVP: `Health Evidence Lineage
+  Envelope v1`. It would make every sub-100% health result traceable to one
+  atomic typed generation, dependency/coverage/freshness evidence, and a
+  canonical-source-proved path/line. Red line highlighting remains a diagnostic
+  callsite—not a claim that the line is itself vulnerable—and unverified source
+  identity yields no arbitrary filesystem link.
+- No product MVP was implemented. The external witness and response-process
+  isolation remain strategic high-value designs because same-host HMAC/time and
+  in-process Python capabilities cannot honestly supply those boundaries.
+  Signed runtime identity likewise does not prove vulnerability freedom, and
+  Auto Adapt must keep non-qualified controls observe-only rather than infer
+  blanket restorability from the Firewall baseline.
+- Full evidence: `analysis/loop/cycle26/round3/visionary_summary.md`. This phase
+  changed analysis documentation only; no product, test, host, credential,
+  network, release, commit, or publication state was changed.
+
+## Round 3 — Remediation post-fix closure (Cycle 26, hard-link topology)
+
+- **C26-R3-C13 — FIXED:** the reviewed Windows Git runtime legitimately maps
+  one file ID to `cmd/git.exe` and `cmd/git-lfs.exe`; both 46,920-byte profile
+  entries have the same pinned SHA-256. The blanket `nlink != 1` rejection was
+  replaced with exact topology custody, not broad multi-link acceptance.
+- Source paths are grouped by stable volume/file ID behind one retained
+  no-write/delete handle. Single-link identities require one exact final name.
+  Multi-link identities use complete Win32 name enumeration and require every
+  canonical alias to be non-reparse, in-root, exactly profiled, and
+  size/digest-identical. Identity and alias sets are revalidated before/after
+  staging; one source read creates separate single-link staged files.
+- Exact inert topology regressions passed **5/5** and adjacent profile/stage
+  checks passed **6/6**. A direct read-only host probe confirmed link count two
+  and exactly the two reviewed `D:\Git\cmd` aliases. Final helper/test compile
+  and Ruff gates passed.
+- The three formerly blocked live assertions were consolidated behind one
+  shared sealed-runtime fixture, but the single real 191 MB run was stopped at
+  the agreed eight-minute ceiling under known AV/I/O pressure before private
+  staging. It produced no result and remains a final release gate; interruption
+  left zero processes and zero private directories. No Git/GCM launch,
+  credential, network, fetch, push, publication, or host mutation occurred.
+
+## Round 3 — Red Team terminal C13 convergence (Cycle 26)
+
+- **C26-R3-C13 — VERIFIED FIXED / NO NEW BYPASS:** exact Win32 alias
+  enumeration, outside/unprofiled rejection, case/8.3/ADS/reparse behavior,
+  pre/post topology seals, one-read copying, independent staged files, and
+  metadata agreement were re-audited. The exact five small tests were stopped
+  without a result after about 90 seconds of host I/O pressure; zero test
+  processes survived, no 191 MB stage ran, and the prior completed **5/5**
+  result remains the regression evidence.
+
+## Cycle 27 Round 1 — Fifth Independent High-A Red Team
+
+- **C27-R1-A01 — REOPENED / PARTIAL (MEDIUM):** paired journal/anchor loss now
+  fails while the new witness survives, but replaying a copied authenticated
+  schema-1 anchor/journal makes migration overwrite the newer witness and re-arm
+  with no pending irreversible mutation. Instance-local writers can also both
+  report success over a duplicate sequence, and the journal follows a planted
+  hard link.
+- **C27-R1-A16 — REOPENED / PARTIAL (HIGH):** complete record identity, honest
+  bounds, live state verification, partial-commit recovery, and the OS writer
+  lease held. A copied authenticated schema-1 anchor/cursor/high-water/channel
+  still makes migration overwrite the surviving current witness, suppress
+  records 4-6, and restart health 100 at bookmark 3.
+
+## Cycle 27 Round 2 — Fourth Independent Red Team Simulation Re-attack
+
+- **RTS-R3-01 — OPEN (HIGH):** mandatory step failures are omitted from a signed `completed` history; one retained canary produced a misleading 1/1 (100%) rate despite 13 armed contracts and 15 projected steps.
+- **RTS-R3-02 — OPEN (MEDIUM):** readiness pins only the target pathname; replacing the directory with a different inode at the same path was accepted by lease consumption.
+- **RTS-R3-03 — OPEN (MEDIUM):** an arbitrary bus-authenticated INFO publisher and synthetic PID/token, with no process spawned, acquired a valid Purple process receipt and 1/1 credit.
+- **RTS-R3-04 — OPEN (MEDIUM):** directly invoking the exact running FIM object's public `emit()` method remained a native detector-receipt signing oracle.
+- **RTS-R3-05 — OPEN (MEDIUM):** replacing `RedTeamValidationLease.verify_native_event` on the mutable class admitted a receipt-free authenticated row as a 1/1 native catch.
+- **RTS-R3-06 — OPEN (MEDIUM):** an older valid signed report pair can win the gap between AAR generation and dialog binding, producing a new-text/old-action mismatch.
+- **RTS-R3-07 — OPEN (LOW):** accepted four-cycle/60-second jitter requires at least 3,360 seconds, exceeding the fixed 600-second monotonic run lease before work and settling.
+
+## Cycle 27 Round 1 — Seventh High-A Remediation
+
+- **C27-R1-A01 — REMEDIATED / PENDING INDEPENDENT RE-ATTACK:** runtime schema-1 migration was removed, so deleting the current recovery witness and replaying an authentic legacy anchor/journal cannot recreate or lower authority. One identity-pinned journal object now spans verified read, append, fsync, anchor/witness advance, host effect, postcondition, and terminal receipt; between-read/append and post-final-read swaps cannot return authorization success or receive signed bytes in an alternate file. Strict 32 MiB/64 KiB/32,768-record/16-depth JSON and exact record-schema limits convert recursion/resource input into a health-0 circuit.
+- **C27-R1-A16 — REMEDIATED / PENDING INDEPENDENT RE-ATTACK:** the running Security sensor rejects schema-1 authority unconditionally, including after current-witness deletion, and neither rewrites the legacy anchor nor recreates a lowered witness.
+- Exact inert regressions passed **7/7**; the directly affected Combat/ETW matrix passed **99/99**; compile, Ruff, two module self-tests, and owned-file diff checks passed. The all-local schema-2 rollback boundary remains explicit and independent hostile re-attack is still required.
+
+## Cycle 27 Round 2 — Fourth Red Team Simulation Remediation
+
+- **RTS-R3-01 through RTS-R3-07 — REMEDIATED, PENDING INDEPENDENT
+  RE-ATTACK:** signed Red Team histories now bind the exact mandatory plan and
+  13-contract-per-cycle denominator; incomplete/failed/duplicate/unexpected
+  inventories cannot receive a percentage. Target directories are held by
+  stable object identity, T1059 proof requires an enrolled live PID/birth/token
+  tuple, and FIM public emissions no longer possess signing authority.
+- AAR authority/history/event verification uses definition-time captured
+  built-in dispatch. Generation hands the GUI one frozen text/run/JSON/head/
+  sequence result, eliminating the mutable-file prebinding gap, while persisted
+  refreshes verify the authenticated head. The lease deadline is derived from
+  the admitted preflight runtime and settle budget under a 4,500-second cap.
+- Gates passed: seven direct adversarial regressions plus one positive custody
+  receipt control; **123/123** wider
+  Red Team/Purple/drill/AAR tests; changed-file compile, Ruff, and diff hygiene;
+  headless self-check **26/26**; module self-tests **65 passed, 0 failed, 17
+  expected skips**. All tests were inert and temporary. Same-process hostile
+  code and total local-state rollback still require process/signer isolation
+  and an independent witness for stronger boundaries.
+
+## Cycle 27 Round 1 — Seventh High-C Remediation
+
+- **C27-R1-C03 — REMEDIATED / PENDING INDEPENDENT RE-ATTACK:** packed-format
+  magic and automated unchanged observations no longer grant exclusions. A
+  keyed bounded-memory reservoir selects across the complete held directory
+  stream before budget truncation, and health reports eligible/selected counts
+  plus conservative oldest-unseen epoch age.
+- **C27-R1-C13 — REMEDIATED / PENDING INDEPENDENT RE-ATTACK:** normal GUI and
+  headless `ModuleManager` construction can bind an application-owned authority,
+  Personal Sentinel enrolls the exact custody domain by default, and an
+  authenticated pre-commit outbox plus OS writer lease safely reconciles exact
+  one-step local-ahead/lost-response states. Forks, gaps, changed installation
+  identity, missing/tampered transition proof, and concurrent writers stay
+  fail-closed.
+- Gates passed: **90 passed, 1 privilege-dependent skip** across the high-C
+  focused/wider matrix; **44/44** manager/authority/capability compatibility;
+  compile, Ruff, diff hygiene, and RANS/SDEC/Personal Sentinel self-tests. The
+  default remains honestly local-only without explicit external provisioning,
+  and userspace evidence remains `captured_unverified` until WORM/kernel/hardware
+  custody exists.
+
+## Cycle 27 Round 2 — Fifth Red Team Simulation Remediation
+
+- **RTS-R4-01 through RTS-R4-07 — FIXED, PENDING INDEPENDENT RE-ATTACK:**
+  T1059 readiness and credit now require an exact Process Monitor object,
+  capability, generation, fresh PID boundary, loss state, and genuine
+  challenge-bound OS observation receipt. The public FIM attester is inert;
+  FIM receipts are object/generation/code-site capabilities. Mutable global
+  verifier aliases were removed in favor of lease-issued dispatch.
+- Marker cleanup retains object custody through exact Windows handle
+  disposition (or a verified unpredictable POSIX custody rename), so a
+  same-path replacement is never deleted. AAR publication now holds an OS
+  writer lease, fsyncs an authenticated append-only exact-byte journal,
+  reconciles its highest retained head, and verifies the exact signed byte
+  handoff immediately before GUI display/action.
+- The Red Team evidence horizon cannot be shorter than the authenticated
+  admitted campaign TTL, and authenticated zero-step failures persist the full
+  13-contract denominator with score withheld. Gates passed: **6/6** new tests
+  covering seven findings; **126/126** focused/wider tests; compile, Ruff, and
+  diff hygiene; headless self-check **26/26**; module self-tests **65 passed, 0
+  failed, 17 expected skips**. Same-process native memory mutation and total
+  rollback of all local files remain explicit isolation/independent-witness
+  boundaries; no real exploit or host attack was performed.
+
+## Cycle 27 Round 1 — Eighth High-A/High-C Remediation
+
+- **C27-R1-A01 — REMEDIATED / PENDING INDEPENDENT RE-ATTACK:** protected
+  recovery anchors and witnesses now use the bounded, duplicate-free authority
+  parser and convert deep/resource/numeric failures into the visible health-0
+  mutation circuit. The concurrently installed continuous pinned undo custody
+  path was preserved and validated through the host-compensation boundary.
+- **C27-R1-A16 — REMEDIATED / PENDING INDEPENDENT RE-ATTACK:** an authenticated,
+  bounded at-least-once delivery outbox precedes Security cursor advancement;
+  restart replays stable generation/record/anchor identities until every
+  EventBus publication receives an explicit in-process acknowledgement.
+- **C27-R1-C03 — REMEDIATED / PENDING INDEPENDENT RE-ATTACK:** held directory
+  enumeration checks deadline and stop state on every entry and reports
+  truncation immediately. A signed adjacent old/new state+witness intent repairs
+  only exact old-old, new-old, or new-new crash states, including genesis.
+- **C27-R1-C13 — REMEDIATED / PENDING INDEPENDENT RE-ATTACK:** first-enrollment
+  intent now precedes SQLite/head/witness creation. Startup reconciles the exact
+  ledger/head/witness/outbox state before equality refusal, and ambiguous COMMIT
+  outcomes retain their proof for restart classification.
+- Gates passed: **16/16** new combined crash/custody regressions; **40/40**
+  updated seventh hostile/author tests; **197 passed, 2 expected skips** across
+  the directly affected wider matrix; compile, Ruff, four module self-tests,
+  and diff hygiene. Tests were inert and temporary; independent hostile
+  re-attack remains required before closure.
+
+## Cycle 27 Round 1 — Ninth High-A/High-C Remediation
+
+- **C27-R1-A01 — FIXED / PENDING INDEPENDENT RE-ATTACK:** recovery authority
+  numeric fields require exact integer types; terminal durability loss opens
+  the current-process mutation circuit; restart compensation retains the exact
+  pinned journal session across the inert host-effect boundary.
+- **C27-R1-A16 — FIXED / PENDING INDEPENDENT RE-ATTACK:** authenticated cursor
+  acknowledgement truth now distinguishes delivered progress from a deleted
+  outbox. Ack claims and reauthenticates the exact custody object before its
+  HMAC-bound receipt and cleanup, preserving at-least-once crash behavior.
+- **C27-R1-C03 — FIXED / PENDING INDEPENDENT RE-ATTACK:** stop/deadline checks
+  precede every next directory request with an explicit blocking-call admission
+  reserve; authority JSON is depth-bounded; pre-key genesis survives every
+  tested key-only crash; writer lease plus predecessor CAS rejects stale forks.
+- **C27-R1-C13 — FIXED / PENDING INDEPENDENT RE-ATTACK:** local-only genesis is
+  marker-recoverable, deep authority inputs fail closed, the local head is
+  size/identity bounded before parse, and SQLite authentication streams a
+  bounded row count.
+- The immutable independent file improved from **14 failed / 8 passed** to
+  **22/22 passed** without modification. Ninth regressions passed **15/15** and
+  the directly affected compatibility matrix passed **160/160**. Compile,
+  Ruff, four self-tests, JSON validation, and diff hygiene passed. An additional
+  Cycle 27 sweep had **139 passed, 2 expected skips, 5 unrelated concurrent red
+  gates** (`A02`, `A03`, two `A07`, `A14`). All fixtures were inert and
+  temporary; no commit or publication was performed.
+
+## Cycle 27 convergence — independent closure
+
+- Repeated independent re-attacks closed the remaining exact-object,
+  authentication-extension, recovery, delivery, and Red Team Simulation
+  findings without weakening the hostile regressions. All **83 module files / 81
+  capabilities** were reviewed across three shards.
+- Capability assurance now gives every sub-100 state a bounded reason and, when
+  provenance is provable, a governed path, digest, exact line, and red read-only
+  source highlight. Untrusted or unavailable source remains explicitly
+  unavailable.
+- Red Team Simulation readiness and scoring bind the complete denominator,
+  exact process/detector generations, marker custody, detector receipts, and
+  signed AAR handoff. Native analytic catches remain separate from simulation
+  contracts.
+
+## Cycle 28 — completeness, identity, and temporal custody
+
+- Three adversarial/engineering/re-attack rounds hardened API-patch coverage,
+  hardware-root truth, canonical network/process identity, governed posture
+  paths, and temporal-health custody.
+- Focused result: **30/30 passed**. Unknown, stale, replaced, lossy, or
+  unauthenticated evidence cannot remain complete.
+
+## Cycle 29 — per-module durability and authority
+
+- Three rounds revisited every built-in capability for authenticated baselines,
+  exact object/generation identity, delivery/loss accounting, liveness, bounded
+  acquisition, forward secrecy, fairness, and typed authorization.
+- The 25 focused regression files contain **118 tests**. Successful invocation
+  is never relabeled successful delivery without its capability-specific
+  acknowledgement or retained receipt.
+
+## Cycle 30 — convergence, comprehensive simulation, and SentinelLens
+
+- Cross-module replay, CAS, cursor, lifecycle, crash-delivery, recovery, and
+  unsafe legacy response boundaries were remediated and independently retested.
+- Red Team Simulation now defaults to **38 mandatory stages / 37 scored inert
+  contracts**, with clickable exact implementation/artifact evidence and 24
+  additional fixed local marker probes across major ATT&CK tactics.
+- SentinelLens adds bounded in-process Syslog, Windows Event, NetFlow, and
+  EventBus ingestion; explicit queue/parser/analysis loss; deterministic
+  attack-chain/anomaly graphs; clickable evidence; strict-loopback optional
+  local AI; and proposal-only remediation. It opens no LAN/public listener.
+- Cycle 30 result: **66 passed / 1 expected skip**; SentinelLens-focused result:
+  **19 passed / 1 expected skip**.
+
+## Cycles 26–30 terminal release gate — ready for publication
+
+- Combined focused gate: **819 passed / 6 expected platform skips / 0 failed**
+  across 93 overlapping files.
+- Exact serial tree: **2659 passed / 13
+  intentional platform skips / 0 failed**. `compileall`, Ruff, selfcheck 26/26,
+  workflow policy, dependency audit, documentation drift, and diff hygiene pass.
+- State is `READY_FOR_PUBLICATION`; `publication_done` remains false until the
+  guarded publisher proves canonical public `main` and all README image bytes.
+  A separate completion-state commit and guarded publication will record that
+  proof. No patch is represented as proof against every future or privileged
+  attacker.

@@ -1,0 +1,59 @@
+[
+  {
+    "id": "C27-R1-C03",
+    "status": "FIXED",
+    "residual_source": "independent_reaudit_high_c_second.json",
+    "closure": "Entropy content is sampled from the exact enumerated no-follow file handle while its parent is held. Typed root/file identity, size, modification-generation, and bounded entropy/SHA-256/length receipts are revalidated while the exact root and file are held through scoring and event publication. Namespace or sample uncertainty increments skipped/errors, sets complete=false, and lowers health.",
+    "regressions": [
+      "post-enumeration NTFS root-junction swap",
+      "root junction admission",
+      "enrolled root replacement",
+      "nested no-reparse traversal",
+      "fail-visible traversal budgets"
+    ],
+    "gates": {
+      "compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "PASS",
+      "targeted_pytest": "PASS"
+    }
+  },
+  {
+    "id": "C27-R1-C04",
+    "status": "FIXED",
+    "residual_source": "independent_reaudit_high_c_second.json",
+    "closure": "The BYOVD action remains absent from executable ACTIONS, has no service mutation sink, and can only produce an inert proposal. Every direct, transactional, rollback, and verification path fails closed and cannot retain ok=true.",
+    "regressions": [
+      "plain driver record denial",
+      "exact proposal-only classification",
+      "post-claim target swap",
+      "transaction success-field overwrite"
+    ],
+    "gates": {
+      "compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "NOT_APPLICABLE",
+      "targeted_pytest": "PASS"
+    }
+  },
+  {
+    "id": "C27-R1-C13",
+    "status": "FIXED",
+    "residual_source": "independent_reaudit_high_c_second.json",
+    "closure": "Evidence is copied from the frozen source handle into a new exclusive single-link inode, fsynced, SHA-256 sealed, reread, renamed relative to the held quarantine root, and periodically revalidated from its digest-bearing receipt name before the original link is retired. Alias residue and custody drift lower health. Trip-alert state expires inside every trip, is capped at 256, and cap saturation lowers health.",
+    "regressions": [
+      "pre-existing hard-link alias",
+      "post-archive alias mutation",
+      "evidence digest drift",
+      "5000 dedup epochs without run loop",
+      "dedup cap saturation",
+      "bounded quarantine retention"
+    ],
+    "gates": {
+      "compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "PASS",
+      "targeted_pytest": "PASS"
+    }
+  }
+]

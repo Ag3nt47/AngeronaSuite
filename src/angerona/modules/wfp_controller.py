@@ -37,8 +37,11 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import ipaddress
 import json
+import math
+import socket
 import subprocess
 import time
+from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 from angerona.core.module_base import BaseModule, Severity
@@ -84,6 +87,38 @@ class RollbackReceipt:
     expires_at: str
     rollback_actions: tuple[str, ...]
     receipt_digest: str
+
+
+@dataclass(frozen=True)
+class ConnectionOwnership:
+    """One full-tuple IP Helper observation with process-generation identity."""
+
+    protocol: str
+    family: str
+    local_address: str
+    local_port: int
+    remote_address: str
+    remote_port: int
+    state: str
+    pid: int
+    process_birth: float | None
+    process_image: str
+    source: str = "ip-helper-snapshot"
+
+
+@dataclass(frozen=True)
+class ConnectionCoverage:
+    source: str
+    collection_ok: bool
+    rows: int
+    ipv4_rows: int
+    ipv6_rows: int
+    tcp_rows: int
+    udp_rows: int
+    unresolved_process_rows: int
+    ambiguous_port_keys: int
+    row_errors: int
+    error: str = ""
 
 
 def _canonical(value: object) -> bytes:
@@ -237,6 +272,117 @@ def _build_port_pid_map_iphlp() -> dict[tuple[str, int], int]:
     return result
 
 
+def _endpoint(value: object) -> tuple[str, int]:
+    if not value:
+        return "", 0
+    address = getattr(value, "ip", None)
+    port = getattr(value, "port", None)
+    if address is None and isinstance(value, (tuple, list)) and len(value) >= 2:
+        address, port = value[0], value[1]
+    rendered = str(address or "").split("%", 1)[0]
+    try:
+        parsed_port = int(port or 0)
+    except (TypeError, ValueError, OverflowError):
+        parsed_port = 0
+    if not 0 <= parsed_port <= 65_535:
+        raise ValueError("connection endpoint port is invalid")
+    return rendered, parsed_port
+
+
+def _collect_connection_ownership() -> tuple[tuple[ConnectionOwnership, ...], ConnectionCoverage]:
+    """Collect an honest full-tuple IP Helper snapshot through psutil.
+
+    This is intentionally not described as WFP net-event telemetry.  On
+    Windows psutil obtains owner tables through IP Helper; it does not prove
+    permit/drop classify events, direction, or WFP sequence continuity.
+    """
+    try:
+        import psutil
+    except Exception as exc:
+        return (), ConnectionCoverage(
+            "ip-helper-snapshot", False, 0, 0, 0, 0, 0, 0, 0, 0,
+            f"psutil unavailable: {exc}",
+        )
+    try:
+        snapshot = psutil.net_connections(kind="inet")
+    except Exception as exc:
+        return (), ConnectionCoverage(
+            "ip-helper-snapshot", False, 0, 0, 0, 0, 0, 0, 0, 0,
+            f"connection table query failed: {exc}",
+        )
+    records: list[ConnectionOwnership] = []
+    process_cache: dict[int, tuple[float | None, str]] = {}
+    row_errors = 0
+    for connection in snapshot:
+        try:
+            family_value = int(getattr(connection, "family", 0))
+            socket_type = int(getattr(connection, "type", 0))
+            family = "ipv6" if family_value == int(socket.AF_INET6) else "ipv4"
+            protocol = "udp" if socket_type == int(socket.SOCK_DGRAM) else "tcp"
+            local_address, local_port = _endpoint(getattr(connection, "laddr", None))
+            remote_address, remote_port = _endpoint(getattr(connection, "raddr", None))
+            pid = int(getattr(connection, "pid", 0) or 0)
+            process_birth: float | None = None
+            process_image = ""
+            if pid > 0:
+                identity = process_cache.get(pid)
+                if identity is None:
+                    try:
+                        process = psutil.Process(pid)
+                        observed_birth = float(process.create_time())
+                        process_birth = (
+                            observed_birth
+                            if observed_birth > 0 and math.isfinite(observed_birth)
+                            else None
+                        )
+                        process_image = str(process.exe() or "")
+                    except Exception:
+                        process_birth, process_image = None, ""
+                    identity = (process_birth, process_image)
+                    process_cache[pid] = identity
+                process_birth, process_image = identity
+            records.append(ConnectionOwnership(
+                protocol=protocol,
+                family=family,
+                local_address=local_address,
+                local_port=local_port,
+                remote_address=remote_address,
+                remote_port=remote_port,
+                state=str(getattr(connection, "status", "") or "unknown"),
+                pid=pid,
+                process_birth=process_birth,
+                process_image=process_image,
+            ))
+        except Exception:
+            row_errors += 1
+    port_keys: dict[tuple[str, int], set[tuple[object, ...]]] = {}
+    for record in records:
+        port_keys.setdefault((record.protocol, record.local_port), set()).add((
+            record.family,
+            record.local_address,
+            record.remote_address,
+            record.remote_port,
+            record.pid,
+            record.process_birth,
+        ))
+    coverage = ConnectionCoverage(
+        source="ip-helper-snapshot",
+        collection_ok=True,
+        rows=len(records),
+        ipv4_rows=sum(record.family == "ipv4" for record in records),
+        ipv6_rows=sum(record.family == "ipv6" for record in records),
+        tcp_rows=sum(record.protocol == "tcp" for record in records),
+        udp_rows=sum(record.protocol == "udp" for record in records),
+        unresolved_process_rows=sum(
+            record.pid <= 0 or record.process_birth is None or not record.process_image
+            for record in records
+        ),
+        ambiguous_port_keys=sum(len(values) > 1 for values in port_keys.values()),
+        row_errors=row_errors,
+    )
+    return tuple(records), coverage
+
+
 # ── Singleton ────────────────────────────────────────────────────────────────
 
 _instance: Optional["WFPController"] = None
@@ -257,8 +403,18 @@ class WFPController:
 
     def __init__(self) -> None:
         self._cache: dict[tuple[str, int], int] = {}
+        self._records: tuple[ConnectionOwnership, ...] = ()
+        self._coverage = ConnectionCoverage(
+            "ip-helper-snapshot", False, 0, 0, 0, 0, 0, 0, 0, 0,
+            "not collected",
+        )
         self._cache_ts: float = 0.0
-        self._wfp_available = self._try_init_wfp()
+        self._wfp_library_available = self._try_init_wfp()
+        # Loading fwpuclnt.dll is not evidence of an opened engine or subscribed
+        # net-event stream. Keep the legacy attribute for integrations, but
+        # never translate library presence into telemetry coverage.
+        self._wfp_available = self._wfp_library_available
+        self._wfp_telemetry_available = False
 
     def _try_init_wfp(self) -> bool:
         """Attempt to load fwpuclnt.dll (WFP engine).  Non-fatal if missing."""
@@ -270,8 +426,21 @@ class WFPController:
             return False
 
     def _refresh(self) -> None:
-        """Rebuild the port→pid map (iphlpapi fallback always available)."""
-        self._cache    = _build_port_pid_map_iphlp()
+        """Rebuild full ownership rows and an ambiguity-safe legacy lookup."""
+        records, coverage = _collect_connection_ownership()
+        candidates: dict[tuple[str, int], set[int]] = {}
+        for record in records:
+            if record.pid > 0:
+                candidates.setdefault((record.protocol, record.local_port), set()).add(
+                    record.pid
+                )
+        # A proto/port-only query is inherently lossy. Return a PID only when
+        # every full-tuple row agrees; collisions are withheld, never overwritten.
+        self._cache = {
+            key: next(iter(pids)) for key, pids in candidates.items() if len(pids) == 1
+        }
+        self._records = records
+        self._coverage = coverage
         self._cache_ts = time.time()
 
     def pid_for_port(self, port: int, proto: str = "tcp") -> Optional[int]:
@@ -281,10 +450,21 @@ class WFPController:
         return self._cache.get((proto.lower(), port))
 
     def all_connections(self) -> dict[tuple[str, int], int]:
-        """Return the full {(proto, port): pid} map, refreshing if stale."""
+        """Return only unambiguous legacy {(proto, local_port): pid} rows."""
         if time.time() - self._cache_ts > self._CACHE_TTL:
             self._refresh()
         return dict(self._cache)
+
+    def connection_records(self) -> tuple[ConnectionOwnership, ...]:
+        """Return exact full-tuple ownership rows from the latest fresh snapshot."""
+        if time.time() - self._cache_ts > self._CACHE_TTL:
+            self._refresh()
+        return tuple(self._records)
+
+    def coverage(self) -> ConnectionCoverage:
+        if time.time() - self._cache_ts > self._CACHE_TTL:
+            self._refresh()
+        return self._coverage
 
     @staticmethod
     def _validate_target(target: ContainmentTarget) -> ContainmentTarget:
@@ -447,9 +627,10 @@ class WFPControllerModule(BaseModule):
     CODE = "WFPC"
     NAME = "WFP Controller"
     name = "WFP Controller"
+    version = "1.12.1"
     description = (
-        "Windows Filtering Platform bridge — resolves local port→PID mappings "
-        "and monitors for unexpected outbound connections from system processes."
+        "WFP-aware containment planner plus full-tuple IP Helper ownership "
+        "snapshots; health explicitly reports when native WFP net-event telemetry is absent."
     )
     category = "Network"
 
@@ -473,61 +654,124 @@ class WFPControllerModule(BaseModule):
     def __init__(self) -> None:
         super().__init__()
         self._ctrl: Optional[WFPController] = None
+        self._seen_alerts: dict[tuple[object, ...], float] = {}
 
     def run(self) -> None:
         self._ctrl = get_wfp()
-        mode = "WFP (fwpuclnt)" if self._ctrl._wfp_available else "iphlpapi fallback"
+        mode = "IP Helper full-tuple ownership snapshot (no WFP net-event subscription)"
         self.emit(
-            f"WFP Controller active — port-to-PID resolution via {mode}.",
+            f"Windows network ownership controller active — {mode}.",
             Severity.INFO,
             mode=mode,
+            wfp_library_available=self._ctrl._wfp_library_available,
+            wfp_net_event_telemetry=False,
         )
-        self.set_health(100, "")
 
         while not self.stopping:
             self._scan_suspicious()
             self.sleep(self._SCAN_INTERVAL)
 
     def _scan_suspicious(self) -> None:
-        """Alert on outbound connections from sensitive system processes."""
-        try:
-            import psutil
-        except ImportError:
+        """Alert on full-tuple remote connections from sensitive process generations."""
+        if self._ctrl is None:
+            self.set_health(20, "network ownership controller is not initialized")
             return
+        records = self._ctrl.connection_records()
+        coverage = self._ctrl.coverage()
+        if not coverage.collection_ok:
+            self.set_health(20, f"IP Helper ownership collection failed: {coverage.error}")
+            return
+        if coverage.rows == 0:
+            self.set_health(45, "IP Helper returned an empty table; network coverage is unproven")
+        elif coverage.row_errors:
+            self.set_health(
+                50,
+                f"IP Helper snapshot partial: {coverage.rows} rows, "
+                f"{coverage.row_errors} row errors; no WFP net-event telemetry",
+            )
+        elif coverage.unresolved_process_rows:
+            self.set_health(
+                60,
+                f"IP Helper snapshot has {coverage.unresolved_process_rows} row(s) without "
+                "PID birth/image identity; no WFP net-event telemetry",
+            )
+        elif coverage.ambiguous_port_keys:
+            self.set_health(
+                65,
+                f"full tuples retained; {coverage.ambiguous_port_keys} proto/port collision(s) "
+                "withheld from legacy lookup; no WFP net-event telemetry",
+            )
+        else:
+            self.set_health(
+                70,
+                f"{coverage.rows} full-tuple IP Helper row(s) observed; native WFP "
+                "permit/drop direction and sequence telemetry is not implemented",
+            )
 
-        conns = self._ctrl.all_connections()
-        pid_names: dict[int, str] = {}
-        for (proto, port), pid in conns.items():
-            name = pid_names.get(pid)
-            if name is None:
-                try:
-                    name = psutil.Process(pid).name().lower()
-                    pid_names[pid] = name
-                except Exception:
-                    pid_names[pid] = ""
-                    continue
+        now = time.monotonic()
+        for record in records:
+            if not record.remote_address or record.remote_port <= 0:
+                continue
+            name = Path(record.process_image).name.casefold()
             if name in self._SENSITIVE_PROCS:
-                # Check if this is a loopback port — skip if so
-                # (loopback IPC between system processes is normal)
-                self.emit(
-                    f"System process {name} (PID={pid}) listening on "
-                    f"{proto.upper()}:{port} — verify this is expected",
-                    Severity.MEDIUM,
-                    pid=pid,
-                    proc_name=name,
-                    proto=proto,
-                    port=port,
-                    mitre_tags=["T1090", "T1071"],
+                try:
+                    remote = ipaddress.ip_address(record.remote_address)
+                except ValueError:
+                    continue
+                if remote.is_loopback:
+                    continue
+                identity = (
+                    record.protocol,
+                    record.family,
+                    record.local_address,
+                    record.local_port,
+                    record.remote_address,
+                    record.remote_port,
+                    record.pid,
+                    record.process_birth,
                 )
+                if now - self._seen_alerts.get(identity, 0.0) < 300.0:
+                    continue
+                self._seen_alerts[identity] = now
+                self.emit(
+                    f"Sensitive process {name} (PID={record.pid}) has a remote "
+                    f"{record.protocol.upper()} flow to "
+                    f"{record.remote_address}:{record.remote_port}; verify expected behavior",
+                    Severity.MEDIUM,
+                    pid=record.pid,
+                    process_birth=record.process_birth,
+                    process_image=record.process_image,
+                    proc_name=name,
+                    proto=record.protocol,
+                    family=record.family,
+                    local_address=record.local_address,
+                    local_port=record.local_port,
+                    remote_address=record.remote_address,
+                    remote_port=record.remote_port,
+                    connection_state=record.state,
+                    telemetry_source=record.source,
+                    mitre_tags=["T1090", "T1071"],
+                    response_authorized=False,
+                )
+        if len(self._seen_alerts) > 4096:
+            cutoff = now - 300.0
+            self._seen_alerts = {
+                key: timestamp for key, timestamp in self._seen_alerts.items()
+                if timestamp >= cutoff
+            }
 
     def self_test(self) -> tuple[bool, str]:
         if self.status != "running":
             return super().self_test()   # not started yet — graceful "stopped" status
         if self._ctrl is None:
             return False, "Controller not yet initialised"
-        # Verify we can do a port lookup
-        conns = self._ctrl.all_connections()
-        return True, f"Port-to-PID table has {len(conns)} entries"
+        coverage = self._ctrl.coverage()
+        if not coverage.collection_ok:
+            return False, f"IP Helper collection failed: {coverage.error}"
+        return True, (
+            f"IP Helper full-tuple table has {coverage.rows} rows; "
+            "WFP net-event telemetry is explicitly unavailable"
+        )
 
     def _netsh_fallback(self) -> str:
         """Read Windows Firewall profile via netsh (administrative diagnostic)."""

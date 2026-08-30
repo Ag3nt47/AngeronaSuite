@@ -27,18 +27,22 @@ import ctypes
 import json
 import os
 import random
+import stat
 import struct
 import threading
 import time
 from pathlib import Path
 
+from angerona.core.assurance_receipts import (
+    DetectorReceiptIssuer,
+    assurance_target_digest,
+)
 from angerona.core.module_base import BaseModule, Severity
 try:
     import ctypes.wintypes as _wt
 except Exception:                       # non-Windows
     _wt = None
 
-_SYS32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
 _WATCH = {
     "ntdll.dll": ["NtProtectVirtualMemory", "NtWriteVirtualMemory",
                   "NtReadVirtualMemory", "NtCreateThreadEx", "NtMapViewOfSection",
@@ -48,6 +52,24 @@ _WATCH = {
                      "GetProcAddress"],
 }
 _PROLOGUE = 16
+_MAX_DLL_BYTES = 128 * 1024 * 1024
+
+
+def _system32_dir() -> Path:
+    """Resolve Windows' trusted system directory without ambient environment input."""
+    if os.name != "nt":
+        raise OSError("Windows system directory is unavailable on this platform")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetSystemDirectoryW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
+    kernel32.GetSystemDirectoryW.restype = ctypes.c_uint
+    buffer = ctypes.create_unicode_buffer(32_768)
+    length = int(kernel32.GetSystemDirectoryW(buffer, len(buffer)))
+    if length <= 0 or length >= len(buffer):
+        raise OSError(ctypes.get_last_error(), "GetSystemDirectoryW failed")
+    path = Path(buffer.value).resolve(strict=True)
+    if not path.is_dir():
+        raise OSError("GetSystemDirectoryW did not return a directory")
+    return path
 
 
 def _repo_root() -> Path:
@@ -143,7 +165,7 @@ class ApiPatchDetectorModule(BaseModule):
     description = ("Reads pristine ntdll/kernel32 from disk and compares export "
                    "prologues against live memory to catch inline sensor hooks.")
     category = "Integrity"
-    version = "1.0.0"
+    version = "1.12.1"
     enabled_by_default = True
 
     # BL-14: a much shorter (jittered) interval shrinks the hook→act→unhook window
@@ -155,9 +177,44 @@ class ApiPatchDetectorModule(BaseModule):
         self.state_lock = threading.Lock()
         self._soar = _repo_root() / "shared_logs" / "soar_events.json"
         self._disk_cache: dict[str, dict[str, bytes]] = {}
+        self._baseline_errors: dict[str, str] = {}
+        self._coverage: dict[str, object] = {
+            "expected": sum(len(items) for items in _WATCH.values()),
+            "disk_ready": 0,
+            "memory_ready": 0,
+            "compared": 0,
+            "missing_disk": [],
+            "missing_memory": [],
+        }
         self._flagged: set[str] = set()
         self._addr_cache = None            # {(dll, fn): local export address}
         self._proc_cursor = 0              # rotates cross-process coverage
+        self._assurance_issuer: DetectorReceiptIssuer | None = None
+
+    def bind_assurance_receipt_issuer(self, issuer: DetectorReceiptIssuer) -> None:
+        self._assurance_issuer = issuer
+
+    def _publish_assurance_receipts(self) -> None:
+        issuer = self._assurance_issuer
+        expected = sum(len(functions) for functions in _WATCH.values())
+        if issuer is None or getattr(self, "_last_checked", 0) != expected:
+            return
+        target_digest = assurance_target_digest(
+            "apid", "ntdll-kernel32-prologues-v1"
+        )
+        for challenge in issuer.active(self, "apid"):
+            receipt = issuer.issue(
+                self,
+                challenge.probe_id,
+                observation="api_prolog_integrity_observed",
+                observed_target_digest=target_digest,
+            )
+            if receipt is not None:
+                self.emit(
+                    "APID object-bound assurance receipt: complete prologue scan observed.",
+                    Severity.INFO,
+                    **receipt,
+                )
 
     @property
     def state(self) -> str:
@@ -173,15 +230,54 @@ class ApiPatchDetectorModule(BaseModule):
             return self._disk_cache[dll]
         result: dict[str, bytes] = {}
         try:
-            data = Path(_SYS32, dll).read_bytes()
+            if dll not in _WATCH:
+                raise ValueError("DLL is outside the fixed APID watch set")
+            system32 = _system32_dir()
+            candidate = system32 / dll
+            resolved = candidate.resolve(strict=True)
+            if resolved.parent != system32 or resolved.name.casefold() != dll.casefold():
+                raise OSError("system DLL resolved outside the trusted system directory")
+            link_info = candidate.lstat()
+            if (
+                not stat.S_ISREG(link_info.st_mode)
+                or bool(getattr(link_info, "st_file_attributes", 0) & 0x400)
+            ):
+                raise OSError("system DLL is not a direct regular file")
+            with candidate.open("rb") as handle:
+                before = os.fstat(handle.fileno())
+                if not 0 < int(before.st_size) <= _MAX_DLL_BYTES:
+                    raise OSError("system DLL size is outside the parser bound")
+                data = handle.read(_MAX_DLL_BYTES + 1)
+                after = os.fstat(handle.fileno())
+            if len(data) != int(before.st_size) or len(data) > _MAX_DLL_BYTES:
+                raise OSError("system DLL read was incomplete or exceeded the bound")
+            before_identity = (
+                int(before.st_dev), int(before.st_ino), int(before.st_size), int(before.st_mtime_ns)
+            )
+            after_identity = (
+                int(after.st_dev), int(after.st_ino), int(after.st_size), int(after.st_mtime_ns)
+            )
+            if before_identity != after_identity:
+                raise OSError("system DLL changed during baseline acquisition")
             pe = _PE(data)
             exports = pe.exports()
             for fn in _WATCH[dll]:
                 pr = pe.prologue(fn, exports)
-                if pr:
+                if pr is not None and len(pr) == _PROLOGUE:
                     result[fn] = pr
+            missing = set(_WATCH[dll]).difference(result)
+            if missing:
+                raise ValueError(
+                    f"missing required export prologues: {', '.join(sorted(missing))}"
+                )
         except Exception as exc:
             self.last_error = f"{dll}: {exc}"
+            self._baseline_errors[dll] = str(exc)[:500]
+            return {}
+        self._baseline_errors.pop(dll, None)
+        # Cache only a complete exact baseline. A transient read/parser failure
+        # remains retryable on the next bounded scan instead of becoming an
+        # empty process-lifetime truth.
         self._disk_cache[dll] = result
         return result
 
@@ -213,14 +309,25 @@ class ApiPatchDetectorModule(BaseModule):
     def scan_once(self) -> list[dict]:
         """Compare disk vs live prologues; return a list of hook findings."""
         findings: list[dict] = []
-        checked = 0
-        for dll in _WATCH:
+        compared = 0
+        disk_ready = 0
+        memory_ready = 0
+        missing_disk: list[str] = []
+        missing_memory: list[str] = []
+        for dll, functions in _WATCH.items():
             disk = self._disk_prologues(dll)
-            for fn, disk_bytes in disk.items():
-                mem = self._mem_prologue(dll, fn)
-                if mem is None:
+            for fn in functions:
+                disk_bytes = disk.get(fn)
+                if disk_bytes is None or len(disk_bytes) != _PROLOGUE:
+                    missing_disk.append(f"{dll}!{fn}")
                     continue
-                checked += 1
+                disk_ready += 1
+                mem = self._mem_prologue(dll, fn)
+                if mem is None or len(mem) != _PROLOGUE:
+                    missing_memory.append(f"{dll}!{fn}")
+                    continue
+                memory_ready += 1
+                compared += 1
                 if mem == disk_bytes:
                     continue
                 indicator = _looks_hooked(mem)
@@ -230,7 +337,16 @@ class ApiPatchDetectorModule(BaseModule):
                     "dll": dll, "function": fn, "indicator": indicator,
                     "disk": disk_bytes[:8].hex(), "memory": mem[:8].hex(),
                 })
-        self._last_checked = checked
+        self._last_checked = compared
+        self._coverage = {
+            "expected": sum(len(items) for items in _WATCH.values()),
+            "disk_ready": disk_ready,
+            "memory_ready": memory_ready,
+            "compared": compared,
+            "missing_disk": missing_disk,
+            "missing_memory": missing_memory,
+            "baseline_errors": dict(self._baseline_errors),
+        }
         return findings
 
     # ── BL-14: cross-process hook scan ───────────────────────────────────────
@@ -258,7 +374,8 @@ class ApiPatchDetectorModule(BaseModule):
                             out[(dll, fn)] = a
             except Exception as exc:
                 self.last_error = f"addr resolve: {exc}"
-        self._addr_cache = out
+        expected = sum(len(items) for items in _WATCH.values())
+        self._addr_cache = out if len(out) == expected else None
         return out
 
     def _scan_other_processes(self, max_procs: int = 40) -> list[dict]:
@@ -350,38 +467,65 @@ class ApiPatchDetectorModule(BaseModule):
         self.emit(f"🚨 Inline hook on {key} ({finding['indicator']}) — possible sensor "
                   f"blinding.", Severity.CRITICAL, **finding)
 
+    def _update_coverage_health(self, findings: list[dict]) -> None:
+        expected = int(self._coverage.get("expected", 0))
+        compared = int(self._coverage.get("compared", 0))
+        disk_ready = int(self._coverage.get("disk_ready", 0))
+        missing_memory = len(self._coverage.get("missing_memory", []))
+        if findings:
+            self.set_health(20, f"{len(findings)} hooked export(s)")
+        elif compared == expected and expected > 0:
+            self.set_health(100, f"all {expected} required exports compared clean")
+        elif disk_ready < expected:
+            self.set_health(
+                30,
+                f"APID baseline incomplete: {disk_ready}/{expected} required disk "
+                f"exports ready; failures are retryable",
+            )
+        else:
+            self.set_health(
+                45,
+                f"APID live-memory coverage incomplete: {compared}/{expected} "
+                f"exports compared, {missing_memory} unreadable",
+            )
+
     # ── lifecycle ────────────────────────────────────────────────────────────
     def run(self) -> None:
         try:
             os.nice(10)   # low priority (POSIX); harmless no-op resolution on Windows
         except Exception:
             pass
-        if os.name != "nt":
-            self.set_health(60, "non-Windows: disk parse only, no live compare")
         self.emit("APID online — watching ntdll/kernel32 export integrity.", Severity.INFO)
         while not self.stopping:
             try:
                 findings = self.scan_once()                     # our own process
                 findings += self._scan_other_processes()        # BL-14: other processes
+                self._publish_assurance_receipts()
                 for f in findings:
                     self._raise_alert(f)
-                if not findings:
-                    self.set_health(100, f"{getattr(self,'_last_checked',0)} exports clean")
-                else:
-                    self.set_health(20, f"{len(findings)} hooked export(s)")
+                self._update_coverage_health(findings)
             except Exception as exc:
                 self.last_error = str(exc)
                 self.set_health(50, "scan error")
             # Jitter the cadence so an attacker can't time an unhook to the scan.
             self.sleep(self._INTERVAL * (0.7 + 0.6 * random.random()))
 
+    def coverage_snapshot(self) -> dict[str, object]:
+        """Return bounded per-export failure evidence for clickable diagnostics."""
+        return {
+            key: (list(value) if isinstance(value, list) else dict(value)
+                  if isinstance(value, dict) else value)
+            for key, value in self._coverage.items()
+        }
+
     def self_test(self) -> tuple[bool, str]:
         """Verify the parser resolves real exports from the on-disk ntdll."""
         disk = self._disk_prologues("ntdll.dll")
         if os.name != "nt":
             return True, "non-Windows: parser path only (skipped live compare)"
-        if disk:
-            return True, f"parsed {len(disk)} ntdll export prologue(s) from disk"
+        expected = len(_WATCH["ntdll.dll"])
+        if len(disk) == expected:
+            return True, f"parsed all {expected} required ntdll export prologue(s) from disk"
         return False, f"could not parse ntdll exports ({self.last_error})"
 
 

@@ -59,6 +59,7 @@ typedef enum _ANGERONA_EVENT_TYPE {
 
 typedef struct _ANGERONA_EVENT {
     ULONG               EventType;          /* ANGERONA_EVENT_TYPE */
+    ULONGLONG           Sequence;           /* monotonic delivery identity */
     ULONG               ProcessId;
     ULONG               ParentProcessId;
     ULONG               ThreadId;
@@ -72,15 +73,35 @@ typedef struct _ANGERONA_EVENT {
 /* Header for IOCTL_ANGERONA_GET_EVENTS output buffer */
 typedef struct _ANGERONA_EVENTS_BUFFER {
     ULONG           EventCount;
+    ULONG           ProtocolVersion;
+    ULONGLONG       InstanceId;     /* changes on every driver load */
+    ULONGLONG       DroppedEvents;  /* cumulative overwritten ring entries */
+    ULONGLONG       WriteSequence;  /* newest sequence assigned by producer */
     ANGERONA_EVENT  Events[1];   /* variable-length array */
 } ANGERONA_EVENTS_BUFFER, *PANGERONA_EVENTS_BUFFER;
 
 /* Version info returned by IOCTL_ANGERONA_GET_VERSION */
+#define ANGERONA_PROTOCOL_VERSION  2
+#define ANGERONA_CAP_PROCESS       0x00000001
+#define ANGERONA_CAP_IMAGE         0x00000002
+#define ANGERONA_CAP_SEQUENCE      0x00000004
+#define ANGERONA_CAP_LOSS_COUNTER  0x00000008
+#define ANGERONA_CAP_HEARTBEAT     0x00000010
+#define ANGERONA_REQUIRED_CAPS     (ANGERONA_CAP_PROCESS | ANGERONA_CAP_IMAGE | \
+                                    ANGERONA_CAP_SEQUENCE | ANGERONA_CAP_LOSS_COUNTER | \
+                                    ANGERONA_CAP_HEARTBEAT)
+
 typedef struct _ANGERONA_VERSION {
     ULONG   Major;
     ULONG   Minor;
     ULONG   Build;
     CHAR    Tag[8];   /* "ANGRSENS" */
+    ULONG   ProtocolVersion;
+    ULONG   Capabilities;
+    ULONGLONG InstanceId;
+    ULONGLONG WriteSequence;
+    ULONGLONG DroppedEvents;
+    ULONGLONG Heartbeat100ns;
 } ANGERONA_VERSION, *PANGERONA_VERSION;
 
 #pragma pack(pop)

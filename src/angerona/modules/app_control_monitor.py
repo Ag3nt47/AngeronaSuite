@@ -412,7 +412,7 @@ class AppControlDecisionSensor(BaseModule):
         "their signature evidence by ActivityID without changing App Control policy."
     )
     category = "Integrity"
-    version = "1.0.0"
+    version = "1.12.1"
     enabled_by_default = True
     supported_platforms = frozenset({"windows"})
     capability_mode = "observe"

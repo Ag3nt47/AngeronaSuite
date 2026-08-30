@@ -1,0 +1,89 @@
+{
+  "schema": "angerona.redteam-simulation-remediation.v3",
+  "cycle": 27,
+  "round": 2,
+  "date": "2026-08-28",
+  "disposition": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+  "scope": {
+    "inert_temp_fixtures_only": true,
+    "real_exploitation": false,
+    "credential_access": false,
+    "persistence": false,
+    "network_attack": false,
+    "host_security_control_mutation": false,
+    "publication": false
+  },
+  "findings": [
+    {
+      "id": "RTS-R2-01",
+      "status": "REMEDIATED_PENDING_REATTACK",
+      "control": "strict semantic taxonomy in every evaluate mode",
+      "regression": "raw INFO remains observation-only and receives zero analytic credit"
+    },
+    {
+      "id": "RTS-R2-02",
+      "status": "REMEDIATED_PENDING_REATTACK",
+      "control": "issuer-owned immutable lease identity and exact-class authority",
+      "regression": "private target mutation plus target re-registration rejected"
+    },
+    {
+      "id": "RTS-R2-03",
+      "status": "REMEDIATED_PENDING_REATTACK",
+      "control": "running live-thread and exact enrolled-generation producer prerequisite",
+      "regression": "stopped exact FIM plus writable instance attester receives no receipt"
+    },
+    {
+      "id": "RTS-R2-04",
+      "status": "REMEDIATED_PENDING_REATTACK",
+      "control": "AAR exact-class central verifier dispatch",
+      "regression": "three replaced lease verifier methods cannot admit receipt-free event"
+    },
+    {
+      "id": "RTS-R2-05",
+      "status": "REMEDIATED_PENDING_REATTACK",
+      "control": "identity-held report reads and immutable run/JSON-digest dialog high-water",
+      "regression": "older valid signed pair replay rejected without changing current binding"
+    },
+    {
+      "id": "RTS-R2-06",
+      "status": "REMEDIATED_PENDING_REATTACK",
+      "control": "process-bound monotonic acquisition and run deadlines",
+      "regression": "wall-clock rollback cannot revive expired lease"
+    },
+    {
+      "id": "RTS-R2-07",
+      "status": "REMEDIATED_PENDING_REATTACK",
+      "control": "exclusive no-follow marker creation, held identity, link-count and digest binding",
+      "regression": "pre-readiness and post-consumption NTFS hardlinks rejected; external file unchanged"
+    }
+  ],
+  "honest_campaign": {
+    "denominator": 13,
+    "simulation_contract_validations": 13,
+    "native_analytics_are_separate": true,
+    "interpretation": "inert pipeline canaries only, not real-attack efficacy"
+  },
+  "gates": {
+    "direct_adversarial_regressions": {
+      "passed": 7,
+      "failed": 0
+    },
+    "focused_suite": {
+      "passed": 87,
+      "failed": 0
+    },
+    "compile": "PASS",
+    "ruff": "PASS",
+    "headless_selfcheck": {
+      "passed": 26,
+      "failed": 0
+    },
+    "module_selftests": {
+      "passed": 65,
+      "failed": 0,
+      "expected_skips": 17
+    }
+  },
+  "residual_boundary": "Same-process malicious extensions require process isolation and signer separation for a strong memory boundary.",
+  "independent_reattack_required": true
+}

@@ -1,0 +1,161 @@
+[
+  {
+    "original_id": "C27-R1-A02",
+    "verdict": "PARTIALLY_FIXED_INCIDENTALLY",
+    "residual_severity": "MEDIUM",
+    "title": "Combat journal is bounded but remains quadratic and semantically incomplete",
+    "components": [
+      "src/angerona/modules/adversary_combat.py:94-97",
+      "src/angerona/modules/adversary_combat.py:1129-1135",
+      "src/angerona/modules/adversary_combat.py:2244-2346",
+      "src/angerona/modules/adversary_combat.py:2509-2678",
+      "src/angerona/modules/adversary_combat.py:2680-2783",
+      "src/angerona/modules/adversary_combat.py:3541-3587",
+      "src/angerona/modules/adversary_combat.py:4015-4059",
+      "src/angerona/modules/adversary_combat.py:4231-4250"
+    ],
+    "controls_verified": [
+      "32 MiB journal, 64 KiB line, 32768 record, and JSON depth 16 ceilings exist",
+      "bounded descriptor reads and strict resource/schema parsing reject deep and oversized journal input",
+      "record exhaustion fails append instead of permitting unbounded allocation"
+    ],
+    "reproduction": {
+      "tail_semantics": "With 5001 synthetic live commits, real list_actions/undo_all selection attempted only 5000 and omitted the oldest.",
+      "append_cost": "Four consecutive 25-record append windows took 1.4735, 1.8975, 1.9896, and 2.2606 seconds in an inert temporary journal.",
+      "capacity_boundary": "Source review confirms no worst-case terminal byte/record reservation before an intent can consume the last available slot."
+    },
+    "recommendation": "Add authenticated immutable segments/checkpoints and a transactionally updated complete live-action index; reserve worst-case terminal and rollback capacity before every intent; use full live state for reconciliation and undo while keeping limits only for display.",
+    "required_gates": [
+      "501 active actions all rebuild on restart",
+      "5001 reversible actions are all attempted by undo_all",
+      "near-byte and near-record ceilings refuse before the host effect",
+      "crash-safe rotation/compaction preserves live and recovery records",
+      "append latency is independent of terminal-history length"
+    ]
+  },
+  {
+    "original_id": "C27-R1-A03",
+    "verdict": "OPEN",
+    "residual_severity": "MEDIUM",
+    "title": "Quarantine accepts a hard-linked object and can commit after alias drift",
+    "components": [
+      "src/angerona/modules/adversary_combat.py:385-521",
+      "src/angerona/modules/adversary_combat.py:534-560",
+      "src/angerona/modules/adversary_combat.py:701-719",
+      "src/angerona/modules/adversary_combat.py:764-921",
+      "src/angerona/modules/adversary_combat.py:2879-2934",
+      "src/angerona/modules/adversary_combat.py:4102-4159"
+    ],
+    "controls_verified": [
+      "source content and identity are read through a pinned handle",
+      "Windows denies write/delete sharing while the handle is retained",
+      "no-follow parent traversal and no-replace move checks resist path swaps",
+      "a post-move digest check occurs before custody is released"
+    ],
+    "reproduction": {
+      "alias_survival": "A two-link temporary file was moved successfully; the original name disappeared but the alternate alias remained readable with the same file identity.",
+      "terminal_drift": "Mutating the surviving alias after pinned.close and before _commit_after_mutation produced an authenticated applied commit whose receipt SHA-256 did not match the quarantine destination."
+    },
+    "recommendation": "Require and receipt-bind link count one at enrollment, pre-effect, post-move, and pre-commit; retain exact file and directory custody through the terminal; provide same-handle rollback; protect the quarantine namespace; reject cross-volume alias-unsafe moves.",
+    "required_gates": [
+      "pre-existing Windows and POSIX hard links fail before intent/effect",
+      "link introduction at each transaction boundary is denied or detected",
+      "alias mutation between postcondition and commit cannot produce success",
+      "cross-volume copy/delete proves one-link source and destination",
+      "undo/restart never authorizes an alias-mismatched receipt"
+    ]
+  },
+  {
+    "original_id": "C27-R1-A07",
+    "verdict": "OPEN",
+    "residual_severity": "MEDIUM",
+    "title": "AV Telemetry Bridge still discards retained Defender detections without restart continuity",
+    "components": [
+      "src/angerona/modules/av_telemetry_bridge.py:204-241",
+      "src/angerona/modules/av_telemetry_bridge.py:243-276",
+      "src/angerona/modules/av_telemetry_bridge.py:279-338"
+    ],
+    "controls_verified": [
+      "Defender event XML is bounded and parsed with defusedxml",
+      "event-log read errors lower health transiently",
+      "PowerShell fallback is explicitly labeled lower fidelity"
+    ],
+    "reproduction": {
+      "retained_restart": "Two independent fake starts each supplied one retained EID 1116. Both silently drained it, processed zero records, and reported health 100.",
+      "state_review": "No durable bookmark, generation anchor, stable record identity, gap record, pending delivery batch, or fallback DetectionID cursor exists."
+    },
+    "recommendation": "Use bounded modern WEVT queries with an authenticated generation/anchor/bookmark cursor and a durable at-least-once pending outbox; replay retained/unacknowledged identities, persist fallback delivery state, close handles, and keep every continuity gap below health 100.",
+    "required_gates": [
+      "retained detection before first start is delivered or explicitly gapped",
+      "restart after and before delivery acknowledgement is at least once",
+      "clear/refill, record reuse, retention loss, and read reopen persist gaps",
+      "cursor rollback/tamper fails incomplete",
+      "fallback restart and failures retain exact counters and degraded health"
+    ]
+  },
+  {
+    "original_id": "C27-R1-A13",
+    "verdict": "PARTIALLY_FIXED_INCIDENTALLY",
+    "residual_severity": "MEDIUM",
+    "title": "Deception discloses missing read coverage but still emits one false access claim and has no read observer",
+    "components": [
+      "src/angerona/modules/deception.py:1-10",
+      "src/angerona/modules/deception.py:69-76",
+      "src/angerona/modules/deception.py:138-177",
+      "src/angerona/modules/deception.py:213-242"
+    ],
+    "controls_verified": [
+      "module docstring and description now scope coverage to mutation/deletion",
+      "live health is capped at 70 or 45 with the exact missing audited-read reason",
+      "the startup event publishes read_visibility=false",
+      "personal-folder and registry lures remain explicit opt-in"
+    ],
+    "reproduction": {
+      "plain_read": "Reading a temporary registered canary left mtime unchanged and emitted zero alerts.",
+      "remaining_claim": "A real generated lure contained 'Any access is logged & isolated'; reading it left the baseline unchanged and emitted zero alerts.",
+      "registry": "The registry helper only runs reg add and has no read subscription."
+    },
+    "recommendation": "Remove the remaining any-access claim immediately. For full capability, require explicit audited mode with verified audit policy/SACL, exact file and registry identities, actor process generation, bounded restart-safe telemetry, dedupe, and health 100 only while read visibility is proven.",
+    "required_gates": [
+      "ordinary file read and registry query each produce one object-bound alert",
+      "same-path replacement cannot inherit decoy authority",
+      "wrong-object, wrong-actor, and replayed audit records fail",
+      "missing audit source/policy/cursor remains below health 100",
+      "restart replays retained reads and self-reads do not false-trip"
+    ]
+  },
+  {
+    "original_id": "C27-R1-A14",
+    "verdict": "OPEN",
+    "residual_severity": "MEDIUM",
+    "title": "Driver provenance remains a mutable configured-path sample without loaded-image binding",
+    "components": [
+      "src/angerona/modules/driver_provenance_guard.py:35-50",
+      "src/angerona/modules/driver_provenance_guard.py:65-79",
+      "src/angerona/modules/driver_provenance_guard.py:195-247",
+      "src/angerona/modules/driver_provenance_guard.py:263-357",
+      "src/angerona/modules/driver_provenance_guard.py:359-481",
+      "src/angerona/modules/driver_provenance_guard.py:484-625"
+    ],
+    "controls_verified": [
+      "inventory, output, row, and image-size bounds are explicit",
+      "missing and truncated evidence is non-green",
+      "the PowerShell executable path is resolved through the trusted path helper",
+      "HVCI/Secure Boot posture is joined and the module is observe-only",
+      "ordinary bundled blocklist non-match remains unknown rather than safe"
+    ],
+    "reproduction": {
+      "schema_acceptance": "A complete synthetic evidence object containing no file/load binding fields was assessed as provenance-verified with evidence_complete=true.",
+      "source_review": "The provider derives running state from Win32_SystemDriver, tokenizes service name plus basename, and performs Get-Item/Get-FileHash/Get-AuthenticodeSignature/Get-Item as separate mutable path operations."
+    },
+    "recommendation": "Classify the current provider as unbound configured-path sampling. Require a mandatory binding state; pin/hash/catalog-verify one exact disk object; and accept exact loaded provenance only from a monotonic native/kernel load receipt binding boot/load generation, module base/size, Code Integrity result, and backing file identity/digest.",
+    "required_gates": [
+      "post-load benign disk replacement remains unbound",
+      "same-size/same-timestamp hash-signature swap fails",
+      "leaf/parent reparse and hard-link objects fail",
+      "service-running without loaded-module receipt cannot claim running provenance",
+      "path reuse across load generations is distinct",
+      "no unbound evidence can produce provenance-verified"
+    ]
+  }
+]

@@ -1,0 +1,85 @@
+{
+  "schema": "angerona.redteam-simulation-remediation.v4",
+  "cycle": 27,
+  "round": 2,
+  "date": "2026-08-28",
+  "disposition": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+  "scope": {
+    "inert_temp_fixtures_only": true,
+    "real_exploitation": false,
+    "credential_access": false,
+    "persistence": false,
+    "network_attack": false,
+    "host_targeting": false,
+    "host_security_control_mutation": false,
+    "publication": false
+  },
+  "findings": [
+    {
+      "id": "RTS-R3-01",
+      "status": "REMEDIATED_PENDING_REATTACK",
+      "control": "authenticated exact mandatory per-cycle plan and score-ineligible incomplete state",
+      "regression": "one retained mandatory row yields a 13-contract planned denominator with null rates and no percentage"
+    },
+    {
+      "id": "RTS-R3-02",
+      "status": "REMEDIATED_PENDING_REATTACK",
+      "control": "held no-reparse target-directory identity plus custody-bound cleanup",
+      "regression": "same pathname with a replacement directory identity is rejected"
+    },
+    {
+      "id": "RTS-R3-03",
+      "status": "REMEDIATED_PENDING_REATTACK",
+      "control": "issuer-enrolled live PID, birth time, token, command and executable identity",
+      "regression": "synthetic INFO process event with no live enrollment receives no Purple receipt"
+    },
+    {
+      "id": "RTS-R3-04",
+      "status": "REMEDIATED_PENDING_REATTACK",
+      "control": "FIM scan-site-only receipt bound to held marker content identity",
+      "regression": "exact running FIM public emit call has no signing authority"
+    },
+    {
+      "id": "RTS-R3-05",
+      "status": "REMEDIATED_PENDING_REATTACK",
+      "control": "definition-time captured built-in authority and verifier dispatch",
+      "regression": "class-level native-verifier replacement cannot admit a receipt-free row"
+    },
+    {
+      "id": "RTS-R3-06",
+      "status": "REMEDIATED_PENDING_REATTACK",
+      "control": "frozen generation handoff and authenticated report head/run/digest/sequence binding",
+      "regression": "older valid pair replacement after generation is refused before dialog binding"
+    },
+    {
+      "id": "RTS-R3-07",
+      "status": "REMEDIATED_PENDING_REATTACK",
+      "control": "preflight-derived bounded monotonic runtime and settle deadline",
+      "regression": "maximum accepted configuration receives 3975 seconds within a 4500-second cap"
+    }
+  ],
+  "gates": {
+    "direct_adversarial_regressions": {
+      "passed": 7,
+      "failed": 0
+    },
+    "focused_and_wider_suite": {
+      "passed": 123,
+      "failed": 0
+    },
+    "compile": "PASS",
+    "ruff": "PASS",
+    "diff_check": "PASS",
+    "headless_selfcheck": {
+      "passed": 26,
+      "failed": 0
+    },
+    "module_selftests": {
+      "passed": 65,
+      "failed": 0,
+      "expected_skips": 17
+    }
+  },
+  "residual_boundary": "Same-process hostile code is not a hardware boundary; strong extension isolation requires a separate verifier/signing process, and total local rollback requires an independent witness.",
+  "independent_reattack_required": true
+}

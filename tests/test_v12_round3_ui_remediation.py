@@ -158,6 +158,56 @@ def test_auto_adapt_worker_uses_immutable_accepted_choices(
         dialog.close()
 
 
+def test_safe_automatic_checkup_audits_once_and_simulates_every_profile(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    _app()
+    service = HostAdaptationService(tmp_path)
+    dialog = AdaptationWorkbench(service)
+    captured: dict[str, object] = {}
+    audit_calls: list[bool] = []
+    simulated: list[tuple[str, dict]] = []
+    profiles = tuple(service.profiles())
+    current = {"firewall": {"Domain": True, "Private": True, "Public": True}}
+
+    monkeypatch.setattr(
+        dialog,
+        "_run_task",
+        lambda name, operation: captured.update(name=name, operation=operation),
+    )
+    monkeypatch.setattr(
+        service,
+        "audit",
+        lambda: audit_calls.append(True) or {"current": current, "findings": []},
+    )
+    monkeypatch.setattr(
+        service,
+        "sandbox",
+        lambda profile_id, snapshot: (
+            simulated.append((profile_id, snapshot))
+            or {"profile_id": profile_id, "changes": []}
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "apply_plan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("safe checkup attempted a host mutation")
+        ),
+    )
+    try:
+        dialog._run_safe_checkup()
+        assert captured["name"] == "safe_checkup"
+        result = captured["operation"]()
+        assert audit_calls == [True]
+        assert [item["profile_id"] for item in result["simulations"]] == [
+            profile.profile_id for profile in profiles
+        ]
+        assert simulated == [(profile.profile_id, current) for profile in profiles]
+    finally:
+        dialog.close()
+
+
 def test_module_event_refresh_identity_covers_details_and_hmac(monkeypatch) -> None:
     _app()
     current = [

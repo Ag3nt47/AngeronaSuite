@@ -1,0 +1,235 @@
+{
+  "schema": "angerona.redteam-shard.v1",
+  "cycle": 27,
+  "round": 1,
+  "shard": "A",
+  "scope_kind": "assigned_module_files",
+  "reviewed_file_count": 25,
+  "finding_count": 17,
+  "severity_counts": {
+    "CRITICAL": 0,
+    "HIGH": 3,
+    "MEDIUM": 13,
+    "LOW": 1,
+    "INFO": 0
+  },
+  "findings": [
+    {
+      "id": "C27-R1-A01",
+      "title": "Crash recovery terminalizes an unverifiable non-reversible mutation and re-arms response",
+      "severity": "HIGH",
+      "status": "FIXED",
+      "components": ["src/angerona/modules/adversary_combat.py:1542-1572", "src/angerona/modules/adversary_combat.py:1955-2011", "src/angerona/modules/adversary_combat.py:2048-2061"],
+      "evidence": "Intent-only terminate_process recovery writes a terminal failure but does not trip the mutation circuit; inert reconciliation returned true with mutation_blocked false and no recovery_required state.",
+      "impact": "A crash-interrupted non-reversible host mutation is discarded from manual-review state and later elevated mutations are re-authorized.",
+      "recommendation": "Keep non-reversible orphan intents recovery-required, open the mutation circuit, and require authenticated operator disposition before re-arming.",
+      "closure": {
+        "summary": "Fourth reopened residual closed: recovery authorization now issues an OS-protected, host-bound, monotonically sequenced one-process challenge for the exact latest mutation-started ORPHAN. Its resource cryptographically binds the install epoch, challenge counter/nonce, action/combat/generation, selected allowlisted disposition, and full normalized-reason digest. Resolution uses a monotonic deadline rather than reversible wall time, durably consumes the challenge, and retains the complete HMAC-verifiable human AuthorizationDecision. Ordered replay requires the exact terminal schema, action/combat/status/disposition/reason, orphan and challenge bindings, and policy receipt; malformed HMAC-authentic terminals remain non-terminal. The protected anchor tracks the latest journal sequence/HMAC, so journal rollback or deletion stays health 0 and disarmed. Whole-host rollback including the journal key and protected store remains outside software-only proof.",
+        "files": ["src/angerona/modules/adversary_combat.py", "tests/test_cycle27_round1_high_a.py"],
+        "focused_gate": "94 passed"
+      }
+    },
+    {
+      "id": "C27-R1-A02",
+      "title": "The response journal has quadratic append cost and silently ignores old live actions",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": ["src/angerona/modules/adversary_combat.py:1432-1517", "src/angerona/modules/adversary_combat.py:2048-2093", "src/angerona/modules/adversary_combat.py:2282-2335", "src/angerona/modules/adversary_combat.py:2507-2520"],
+      "evidence": "Every append rereads and re-verifies the full unbounded journal; startup and undo operations return only the latest 500 or 5000 actions.",
+      "impact": "Incident volume can exhaust response resources and older active mutations can disappear from runtime state or undo-all semantics.",
+      "recommendation": "Add authenticated segmentation/checkpoints, quotas, compaction, a complete live-action index, and fail-safe exhaustion health."
+    },
+    {
+      "id": "C27-R1-A03",
+      "title": "Quarantine moves one hard-link name while an executable alias remains live",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": ["src/angerona/modules/adversary_combat.py:164-189", "src/angerona/modules/adversary_combat.py:480-498", "src/angerona/modules/adversary_combat.py:1672-1722"],
+      "evidence": "POSIX and Windows pinned-file paths do not reject link count greater than one; an inert two-link rename left the alternate alias readable after quarantine.",
+      "impact": "The module can commit successful quarantine while the same malicious file object remains executable by another name.",
+      "recommendation": "Require and receipt-bind link count one, revalidate on the pinned handle, and fail closed when alias-safe quarantine cannot be proved."
+    },
+    {
+      "id": "C27-R1-A04",
+      "title": "Model attestation silently re-enrolls lost state, missing files, and new content",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": ["src/angerona/modules/ai_model_integrity.py:75-86", "src/angerona/modules/ai_model_integrity.py:295-356", "src/angerona/modules/ai_model_integrity.py:361-421", "src/angerona/modules/ai_triage.py:99-175", "src/angerona/modules/ai_triage.py:259-305"],
+      "evidence": "Malformed baseline becomes empty TOFU; missing baseline entries are not checked; new/error values auto-pin; AI Triage verifies a tag name but not an attested manifest digest.",
+      "impact": "Poisoned, missing, unreadable, or silently re-enrolled model content can be reported clean and used for triage.",
+      "recommendation": "Use an authenticated atomic complete inventory, fail non-clean on missing/new/error entries, and gate exact-tag inference on a fresh attestation receipt."
+    },
+    {
+      "id": "C27-R1-A05",
+      "title": "API Patch Detector reports zero checked exports as 100% clean and caches failure forever",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": ["src/angerona/modules/api_patch_detector.py:41-49", "src/angerona/modules/api_patch_detector.py:171-234", "src/angerona/modules/api_patch_detector.py:353-374"],
+      "evidence": "Baseline exceptions cache an empty map permanently; zero comparisons produce no findings and the run loop sets health 100 with zero exports clean.",
+      "impact": "Anti-blinding coverage can be absent for the process lifetime while health remains green.",
+      "recommendation": "Require the complete fixed export set, retry baseline failure, expose per-export coverage, and never score zero/partial comparison as clean."
+    },
+    {
+      "id": "C27-R1-A06",
+      "title": "ARP Watchdog trusts startup/new poison and treats collector failure as healthy",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": ["src/angerona/modules/arp_watchdog.py:69-90", "src/angerona/modules/arp_watchdog.py:111-176", "src/angerona/modules/arp_watchdog.py:373-376"],
+      "evidence": "ARP command failure becomes an empty successful result; run and self-test accept it; every first-seen mapping is trusted in volatile memory.",
+      "impact": "Pre-start/restart/new-address ARP poisoning and collector loss can be blessed as a healthy baseline.",
+      "recommendation": "Persist authenticated adapter-scoped state, require independent enrollment evidence, and separate collector completeness from valid empty data."
+    },
+    {
+      "id": "C27-R1-A07",
+      "title": "AV Telemetry Bridge deliberately discards retained detections and has no restart-safe cursor",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": ["src/angerona/modules/av_telemetry_bridge.py:188-241", "src/angerona/modules/av_telemetry_bridge.py:278-338"],
+      "evidence": "Startup drains all retained events without processing, fallback seeds all existing threats, recurring failures are swallowed, and no bookmark/generation/gap state exists.",
+      "impact": "Restart or collector failure creates invisible Defender telemetry gaps for downstream consumers.",
+      "recommendation": "Use authenticated WEVT bookmarks and generation anchors, retained replay, explicit gap events, and failure-aware health."
+    },
+    {
+      "id": "C27-R1-A08",
+      "title": "Connection-based detectors fail open; the inference-port allowlist is basename-only",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": ["src/angerona/modules/beacon_detector.py:100-128", "src/angerona/modules/counter_agentic.py:64-67", "src/angerona/modules/counter_agentic.py:170-206", "src/angerona/modules/counter_agentic.py:219-232"],
+      "evidence": "Both modules return silently on shared connection-snapshot exceptions and then report 100; Counter-Agentic exempts generic mutable process names.",
+      "impact": "Socket visibility can disappear silently and a renamed client can evade local inference-port detection.",
+      "recommendation": "Propagate typed snapshot completeness into health and bind allowed clients to process birth plus object-resolved signed/digested executable identity."
+    },
+    {
+      "id": "C27-R1-A09",
+      "title": "Canary Drill can reach 100% without testing the promised durable recorder path",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": ["src/angerona/modules/canary_drill.py:15-22", "src/angerona/modules/canary_drill.py:316-342", "src/angerona/modules/canary_drill.py:499-504"],
+      "evidence": "The contract promises FlightRecorder verification, but health is calculated solely from in-memory EventBus echoes and the file has no ledger query/receipt path.",
+      "impact": "Forensic persistence may be broken while the canary pipeline reports complete health.",
+      "recommendation": "Require a second authenticated recorder receipt for the exact canary and score live echo and durable persistence independently."
+    },
+    {
+      "id": "C27-R1-A10",
+      "title": "Continuous Chaos Harness satisfies every probe with its own announcement",
+      "severity": "HIGH",
+      "status": "FIXED",
+      "components": ["src/angerona/modules/chaos_harness.py:79-110", "src/angerona/modules/chaos_harness.py:112-153", "src/angerona/modules/chaos_harness.py:156-180"],
+      "evidence": "Broad module/message keyword predicates match the harness's own APID, entropy DNS, and EICAR FIM/AMSI announcement; inert fake-bus checks returned true for all three without detector events.",
+      "impact": "All tested sensors can be absent while the assurance control reports every detector responsive and health 100.",
+      "recommendation": "Use nonce-bound strict responder receipts from allowlisted module identities and reject self/practice/text-only echoes.",
+      "closure": {
+        "summary": "Reopened residual closed: a manager-held broker enrolls exact built-in detector objects and gives each a detector-specific object capability and private per-enrollment MAC authority. Receipts bind capability ID, module/code, lifecycle generation, source epoch, one-time nonce/challenge, exact observed-target digest, observation, and time. Generic publishers with the shared EventBus and every public field cannot mint a valid receipt. APID, FIM, and enabled native AMSI issue receipts only after real object-bound observations; NDRD's shared-bus DNS source intentionally remains unassured rather than self-satisfying.",
+        "files": ["src/angerona/core/assurance_receipts.py", "src/angerona/core/module_manager.py", "src/angerona/modules/chaos_harness.py", "src/angerona/modules/api_patch_detector.py", "src/angerona/modules/network_protocol_decoder.py", "src/angerona/modules/file_integrity.py", "src/angerona/modules/amsi_bridge.py", "tests/test_cycle27_round1_high_a.py"],
+        "focused_gate": "82 passed"
+      }
+    },
+    {
+      "id": "C27-R1-A11",
+      "title": "Compliance artifact calls mappings enforced and hides bounded-bus loss",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": ["src/angerona/modules/compliance_mapper.py:79-100", "src/angerona/modules/compliance_mapper.py:132-175"],
+      "evidence": "Detection mappings are emitted as nist_control_enforced/stig_baseline_enforced; bus overflow is ignored, only 2000 volatile incidents remain, and health stays 100.",
+      "impact": "A partial relevance crosswalk can be mistaken for complete evidence that controls are implemented and effective.",
+      "recommendation": "Separate mapping from implementation/assessment evidence and persist authenticated coverage, gaps, truncation, and exact report scope."
+    },
+    {
+      "id": "C27-R1-A12",
+      "title": "Daily briefing is an unbounded-age last-500 sample and reports success before persistence",
+      "severity": "LOW",
+      "status": "OPEN",
+      "components": ["src/angerona/modules/daily_briefing.py:52-87", "src/angerona/modules/daily_briefing.py:162-191", "src/angerona/modules/daily_briefing.py:214-243"],
+      "evidence": "Recent 500 events are not filtered to a daily interval; count/ready emission precede file writes and all write failures are swallowed.",
+      "impact": "Busy-day events may be omitted, stale events included, or no durable report produced while health reports success.",
+      "recommendation": "Use a durable closed interval with gaps/counts and emit success only after validated atomic persistence."
+    },
+    {
+      "id": "C27-R1-A13",
+      "title": "Deception detects writes/deletes, not the credential reads it promises to trap",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": ["src/angerona/modules/deception.py:90-100", "src/angerona/modules/deception.py:134-161", "src/angerona/modules/deception.py:197-227"],
+      "evidence": "File traps poll only modification time and registry trap code only writes a value; no read observer exists. Inert read left mtime unchanged.",
+      "impact": "Credential thieves can read decoy files/registry values without alerting or producing a SOAR recommendation.",
+      "recommendation": "Use OS-native audited read telemetry bound to exact file/registry identities and degrade health when read visibility is unavailable."
+    },
+    {
+      "id": "C27-R1-A14",
+      "title": "Driver provenance describes mutable path samples, not one pinned loaded image",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": ["src/angerona/modules/driver_provenance_guard.py:273-313", "src/angerona/modules/driver_provenance_guard.py:359-469"],
+      "evidence": "Hash and Authenticode are separate path operations guarded only by size/mtime, with no file handle/object/link identity or binding to loaded kernel image bytes.",
+      "impact": "A privileged attacker can compose benign provenance for a different or replaced loaded driver image.",
+      "recommendation": "Pin the exact image object, bind hash/signature/catalog and loaded-module identity, and label unbound path samples unknown."
+    },
+    {
+      "id": "C27-R1-A15",
+      "title": "eBPF telemetry can be name-filtered away and loses events without accounting",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": ["src/angerona/modules/ebpf_sensor.py:38-50", "src/angerona/modules/ebpf_sensor.py:53-78", "src/angerona/modules/ebpf_sensor.py:108-134", "src/angerona/modules/ebpf_sensor.py:158-184"],
+      "evidence": "Every exec whose current comm begins sys is dropped; perf buffers have no lost callback, callbacks swallow errors, IPv6 identity is omitted, and successful poll restores health 100.",
+      "impact": "An attacker-selected name or buffer pressure can erase Linux telemetry invisibly.",
+      "recommendation": "Remove basename drops, add loss/error/sequence accounting and IPv6 evidence, and derive health from measured delivery completeness."
+    },
+    {
+      "id": "C27-R1-A16",
+      "title": "Security-log reader skips event bursts and never recovers from channel generation reset",
+      "severity": "HIGH",
+      "status": "FIXED",
+      "components": ["src/angerona/modules/etw_listener.py:53-96", "src/angerona/modules/etw_listener.py:140-178"],
+      "evidence": "Only one newest backward batch is read before the cursor advances; startup drops history and record-number reset leaves every new record below the sticky cursor while health stays 100.",
+      "impact": "Event flooding or clear/refill can hide process/logon telemetry from a core sensor without a health signal.",
+      "recommendation": "Use authenticated WEVT bookmarks/generation anchors and bounded forward pagination without advancing past unread evidence.",
+      "closure": {
+        "summary": "Fourth reopened residual closed: cursor v3 and high-water v2 are now witnessed by a separately stored OS-protected, host-bound rollback anchor carrying an install epoch, monotonic challenge counter, current cursor/high-water HMACs, and consumed request state. Deleting both local state files or restoring an older valid pair cannot recreate/reuse an approval or restore green health; a fresh random anchor challenge and distinct human approval are required. Enrollment uses a process-monotonic deadline and binds the install epoch, challenge nonce/counter, exact gap/generation/cursor/bounds/reason, and a bounded digest of every retained record. The live channel identity is serialized and resampled before and after the durable cursor/high-water/anchor commit; any pre-bookmark replacement persists a gap and replays degraded. Missing/unverifiable external anchor authority explicitly caps health. Whole-host rollback including the protected store/signing authority and telemetry snapshot remains outside software-only proof.",
+        "files": ["src/angerona/modules/etw_listener.py", "tests/test_cycle27_round1_high_a.py"],
+        "focused_gate": "94 passed"
+      }
+    },
+    {
+      "id": "C27-R1-A17",
+      "title": "Real-time ETW health is a sticky local boolean, not session liveness or delivery",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": ["src/angerona/modules/etw_realtime_sensor.py:134-146", "src/angerona/modules/etw_realtime_sensor.py:215-274", "src/angerona/modules/etw_realtime_sensor.py:333-366"],
+      "evidence": "Only stop clears running; asynchronous consumer termination and callback errors do not, and no loss/heartbeat metric exists. Wrapper health checks only that boolean.",
+      "impact": "A dead, stalled, or lossy ETW session can continue to report live at health 100.",
+      "recommendation": "Supervise the real session/thread, consume error/loss callbacks, require bounded liveness proof, and restart or remain degraded."
+    }
+  ],
+  "module_reviews": [
+    {"file":"adversary_combat.py","status":"NEW_AND_KNOWN_OPEN","finding_ids":["C27-R1-A01","C27-R1-A02","C27-R1-A03"],"known_open_ids":["R6-03"],"reviewed_lines":"1-2601"},
+    {"file":"ai_model_integrity.py","status":"NEW","finding_ids":["C27-R1-A04"],"known_open_ids":[],"reviewed_lines":"1-450"},
+    {"file":"ai_triage.py","status":"NEW_COMPONENT","finding_ids":["C27-R1-A04"],"known_open_ids":[],"reviewed_lines":"1-347"},
+    {"file":"amsi_bridge.py","status":"NO_NEW","finding_ids":[],"known_open_ids":[],"reviewed_lines":"1-387"},
+    {"file":"api_patch_detector.py","status":"NEW","finding_ids":["C27-R1-A05"],"known_open_ids":[],"reviewed_lines":"1-389"},
+    {"file":"app_control_monitor.py","status":"NO_NEW","finding_ids":[],"known_open_ids":[],"reviewed_lines":"full file"},
+    {"file":"arp_watchdog.py","status":"NEW","finding_ids":["C27-R1-A06"],"known_open_ids":[],"reviewed_lines":"1-380"},
+    {"file":"audit_log_guard.py","status":"NO_NEW","finding_ids":[],"known_open_ids":[],"reviewed_lines":"full file"},
+    {"file":"authentication_extension_guard.py","status":"KNOWN_OPEN_ONLY","finding_ids":[],"known_open_ids":["A04"],"reviewed_lines":"full file"},
+    {"file":"av_telemetry_bridge.py","status":"NEW","finding_ids":["C27-R1-A07"],"known_open_ids":[],"reviewed_lines":"1-363"},
+    {"file":"beacon_detector.py","status":"NEW","finding_ids":["C27-R1-A08"],"known_open_ids":[],"reviewed_lines":"1-206"},
+    {"file":"behavioral_tuner.py","status":"NO_NEW","finding_ids":[],"known_open_ids":[],"reviewed_lines":"1-664"},
+    {"file":"canary_drill.py","status":"NEW","finding_ids":["C27-R1-A09"],"known_open_ids":[],"reviewed_lines":"1-537"},
+    {"file":"chaos_harness.py","status":"NEW","finding_ids":["C27-R1-A10"],"known_open_ids":[],"reviewed_lines":"1-190"},
+    {"file":"cloud_escalation.py","status":"NO_NEW","finding_ids":[],"known_open_ids":[],"reviewed_lines":"full file"},
+    {"file":"compliance_mapper.py","status":"NEW","finding_ids":["C27-R1-A11"],"known_open_ids":[],"reviewed_lines":"1-207"},
+    {"file":"counter_agentic.py","status":"NEW","finding_ids":["C27-R1-A08"],"known_open_ids":[],"reviewed_lines":"1-263"},
+    {"file":"daily_briefing.py","status":"NEW","finding_ids":["C27-R1-A12"],"known_open_ids":[],"reviewed_lines":"1-270"},
+    {"file":"deception.py","status":"NEW","finding_ids":["C27-R1-A13"],"known_open_ids":[],"reviewed_lines":"1-250"},
+    {"file":"driver_provenance_guard.py","status":"NEW_AND_KNOWN_OPEN","finding_ids":["C27-R1-A14"],"known_open_ids":["A06"],"reviewed_lines":"full file"},
+    {"file":"dynamic_resource.py","status":"NO_NEW","finding_ids":[],"known_open_ids":[],"reviewed_lines":"1-210"},
+    {"file":"ebpf_sensor.py","status":"NEW","finding_ids":["C27-R1-A15"],"known_open_ids":[],"reviewed_lines":"1-211"},
+    {"file":"etw_listener.py","status":"NEW","finding_ids":["C27-R1-A16"],"known_open_ids":[],"reviewed_lines":"1-207"},
+    {"file":"etw_realtime_sensor.py","status":"NEW","finding_ids":["C27-R1-A17"],"known_open_ids":[],"reviewed_lines":"1-408"},
+    {"file":"evidence_lattice.py","status":"KNOWN_OPEN_ONLY","finding_ids":[],"known_open_ids":["A04"],"reviewed_lines":"1-382"}
+  ],
+  "prior_reconciliation": {
+    "verified_resolved_count": 6,
+    "verified_still_open_count": 3,
+    "still_open_ids": ["R6-03", "A06", "A04"]
+  }
+}

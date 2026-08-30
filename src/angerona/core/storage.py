@@ -884,6 +884,66 @@ class FlightRecorder:
             ).fetchall()
         return [self._event_from_row(r) for r in rows]
 
+    def bounded_events_in_window(
+        self,
+        start_ts: float,
+        end_ts: float,
+        *,
+        limit: int = 10_000,
+    ) -> tuple[List[Event], int]:
+        """Return oldest-first durable events plus the exact interval count.
+
+        Reporting modules can therefore distinguish a complete interval from a
+        bounded sample instead of silently describing the newest N rows as an
+        entire day. The hard limit protects memory during event storms.
+        """
+        limit = max(1, min(int(limit), 10_000))
+        with self._lock:
+            total_row = self._db.execute(
+                "SELECT COUNT(*) FROM events WHERE ts >= ? AND ts <= ?",
+                (float(start_ts), float(end_ts)),
+            ).fetchone()
+            rows = self._db.execute(
+                "SELECT id, ts, module, severity, message, details, hmac_sig "
+                "FROM events WHERE ts >= ? AND ts <= ? ORDER BY id ASC LIMIT ?",
+                (float(start_ts), float(end_ts), limit),
+            ).fetchall()
+        total = int(total_row[0] if total_row else 0)
+        return [self._event_from_row(row) for row in rows], total
+
+    def bounded_events_after_id(
+        self,
+        record_id: int,
+        *,
+        limit: int = 5_000,
+    ) -> tuple[list[tuple[int, Event]], int, int]:
+        """Return authenticated rows after a durable consumer cursor.
+
+        ``total`` is the exact backlog and ``highwater`` is the database's
+        current maximum id. Consumers advance only to the last returned id, so
+        a burst larger than ``limit`` drains over multiple cycles without loss.
+        """
+        record_id = max(0, int(record_id))
+        limit = max(1, min(int(limit), 10_000))
+        with self._lock:
+            total_row = self._db.execute(
+                "SELECT COUNT(*) FROM events WHERE id > ?", (record_id,)
+            ).fetchone()
+            highwater_row = self._db.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM events"
+            ).fetchone()
+            rows = self._db.execute(
+                "SELECT id, ts, module, severity, message, details, hmac_sig "
+                "FROM events WHERE id > ? ORDER BY id ASC LIMIT ?",
+                (record_id, limit),
+            ).fetchall()
+        decoded = [(int(row[0]), self._event_from_row(row)) for row in rows]
+        return (
+            decoded,
+            int(total_row[0] if total_row else 0),
+            int(highwater_row[0] if highwater_row else 0),
+        )
+
     def search(self, query: str, limit: int = 50) -> List[dict]:
         """Full-text search across message and details columns (case-insensitive).
 

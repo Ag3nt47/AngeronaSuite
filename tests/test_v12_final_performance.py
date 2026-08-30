@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication
 from angerona.core.eventbus import Event, EventBus, Severity
 from angerona.core.module_base import BaseModule
 from angerona.core.storage import _BoundedSimpleQueue
-from angerona.gui.pages import ModuleInspector, _capability_summary
+from angerona.gui.pages import ModulesStatusWindow, ModuleInspector, _capability_summary
 
 
 class _ProbeModule(BaseModule):
@@ -117,6 +117,67 @@ def test_live_capability_summary_does_not_request_recursive_export_copy() -> Non
         "response_authority": "none",
         "supported_platforms": ("windows",),
     }
+
+
+def test_capability_center_reads_one_atomic_health_summary_per_module() -> None:
+    class Contract:
+        capability_id = "angerona.test.performance"
+        description = "bounded"
+        implementation_version = "1.1.0"
+        maturity = "stable"
+        metadata_gaps = ()
+        metadata_level = "native"
+        mode = "detect"
+        response_authority = "none"
+        supported_platforms = ("windows",)
+
+    app = QApplication.instance() or QApplication([])
+    bus = EventBus()
+    module = _ProbeModule()
+    module.status = "running"
+    module._angerona_contract = Contract()
+    calls = 0
+    original = module.health_summary
+
+    def counted_summary() -> tuple[str, int, str]:
+        nonlocal calls
+        calls += 1
+        return original()
+
+    module.health_summary = counted_summary  # type: ignore[method-assign]
+    manager = _Manager()
+    manager.modules = {module.name: module}
+    window = ModulesStatusWindow(manager, bus)
+    window._timer.stop()
+    try:
+        calls = 0
+        window._refresh()
+        assert calls == 1
+        assert window.table.item(0, 1).text() == "running"
+        assert window.table.item(0, 2).text() == "100%"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_operational_snapshot_probes_thread_liveness_once() -> None:
+    class ThreadProbe:
+        calls = 0
+
+        def is_alive(self) -> bool:
+            self.calls += 1
+            return True
+
+    module = _ProbeModule()
+    thread = ThreadProbe()
+    module._thread = thread  # type: ignore[assignment]
+    module._generation_started_at = 1.0
+
+    snapshot = module.operational_snapshot()
+
+    assert snapshot["thread_alive"] is True
+    assert snapshot["generation_uptime_seconds"] is not None
+    assert thread.calls == 1
 
 
 def test_bounded_simple_queue_releases_capacity_after_failed_handoff() -> None:

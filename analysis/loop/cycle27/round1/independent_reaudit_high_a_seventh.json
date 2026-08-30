@@ -1,0 +1,60 @@
+[
+  {
+    "original_id": "C27-R1-A01",
+    "verdict": "REOPENED_PARTIAL",
+    "residual_severity": "LOW",
+    "components": [
+      "src/angerona/modules/adversary_combat.py:1677-1701",
+      "src/angerona/modules/adversary_combat.py:1748-1837",
+      "src/angerona/modules/adversary_combat.py:3541-3554",
+      "src/angerona/modules/adversary_combat.py:4252-4294"
+    ],
+    "controls_verified": [
+      "authenticated schema-1 anchors are rejected with a surviving or missing recovery witness",
+      "strict journal bytes, lines, records, JSON depth, duplicate members, non-finite values, terminal completeness, and signed record schemas fail closed",
+      "all seven primary response effects retain one journal descriptor and Windows denies canonical deletion during the fake irreversible effect",
+      "a hard link added during the fake kill is detected and opens the non-reversible circuit",
+      "journal-before-anchor and anchor-before-witness interruptions restart health 0",
+      "cross-process writer contention is rejected and forced writer exit releases the kernel lease"
+    ],
+    "residuals": [
+      {
+        "severity": "LOW",
+        "title": "Operator undo releases journal custody before its host effect",
+        "evidence": "The inert undo removed the canonical journal after undo_intent and before the simulated reversal. The effect crossed, terminal append failed, but mutation_blocked remained false and health remained 100."
+      },
+      {
+        "severity": "LOW",
+        "title": "Protected anchor and witness parsing can escape the fail-closed circuit",
+        "evidence": "Separate 8,000-byte 4,000-level protected anchor and witness values raised RecursionError out of reconciliation while mutation_blocked remained false; the base lifecycle later quarantines the worker."
+      }
+    ],
+    "architectural_boundary": "Deleting or restoring every local schema-2 authority object together remains accepted and was independently reproduced. This is the previously disclosed all-local-witness boundary; TPM NV or an external monotonic witness is needed to close complete snapshot rollback.",
+    "recommendation": "Hold receipt lock, OS writer lease, and one pinned journal session across the complete operator undo transaction and trip the circuit after any possibly-started effect that lacks a terminal receipt. Apply the strict bounded duplicate-free parser and resource-error conversion to protected anchors and witnesses as well as journal lines."
+  },
+  {
+    "original_id": "C27-R1-A16",
+    "verdict": "REOPENED_PARTIAL",
+    "residual_severity": "MEDIUM",
+    "components": [
+      "src/angerona/modules/etw_listener.py:1971-2138",
+      "src/angerona/modules/etw_listener.py:2182-2206"
+    ],
+    "controls_verified": [
+      "authenticated schema-1 Security anchors are rejected with a surviving or missing authority witness",
+      "non-matching schema-2 and mixed legacy subsets remain degraded and replay retained records",
+      "high-water, cursor, and protected-anchor partial commits restart at health 45 and replay",
+      "full record identity and bounded Security-channel scans remain fail incomplete",
+      "cross-process writer contention is rejected and forced writer exit releases the kernel lease"
+    ],
+    "residuals": [
+      {
+        "severity": "MEDIUM",
+        "title": "Durable cursor commit precedes EventBus delivery",
+        "evidence": "Records 4-6 were returned but not published after the cursor had committed bookmark 6. A fresh listener over unchanged authenticated state returned no events, had no gap, and reported health 100."
+      }
+    ],
+    "architectural_boundary": "A complete matching local cursor/high-water/anchor/witness/channel snapshot remains accepted within the disclosed local signing-identity ceiling.",
+    "recommendation": "Use a bounded authenticated pending batch/outbox and stable event identities. Advance the durable cursor only after delivery acknowledgement; replay unacknowledged records after restart and keep health below 100 while delivery is pending."
+  }
+]

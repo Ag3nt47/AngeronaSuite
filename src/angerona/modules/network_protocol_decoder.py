@@ -28,6 +28,7 @@ import time
 from collections import Counter
 
 from angerona.core import self_ioc
+from angerona.core.assurance_receipts import DetectorReceiptIssuer
 from angerona.core.module_base import BaseModule, Severity
 
 # entropy (bits/char) above which a label looks machine-generated
@@ -75,7 +76,7 @@ class NetworkProtocolDecoderModule(BaseModule):
     description = ("Decodes DNS query names and scores label entropy to catch DGA "
                    "beacons and DNS-tunneling exfiltration.")
     category = "Network"
-    version = "1.0.0"
+    version = "1.12.1"
 
     def __init__(self) -> None:
         super().__init__()
@@ -84,6 +85,13 @@ class NetworkProtocolDecoderModule(BaseModule):
         self._flagged = 0
         self._recent_flags: list[dict] = []
         self._last_emit: dict[str, float] = {}   # qname -> last HIGH emit (monotonic)
+        self._assurance_issuer: DetectorReceiptIssuer | None = None
+
+    def bind_assurance_receipt_issuer(self, issuer: DetectorReceiptIssuer) -> None:
+        # This detector currently consumes caller-described DNS events from the
+        # shared bus. Retain the enrollment only to disclose that limitation;
+        # no receipt is issued until an object-bound OS/network DNS source exists.
+        self._assurance_issuer = issuer
 
     @property
     def state(self) -> str:
@@ -213,7 +221,16 @@ class NetworkProtocolDecoderModule(BaseModule):
                   Severity.INFO)
         while not self.stopping:
             st = self.stats()
-            self.set_health(100, f"{st['dns_seen']} DNS names, {st['flagged']} flagged")
+            if self._assurance_issuer is not None:
+                self.set_health(
+                    75,
+                    "DNS analysis active, but source telemetry is shared-bus and "
+                    "cannot provide object-bound Chaos assurance",
+                )
+            else:
+                self.set_health(
+                    100, f"{st['dns_seen']} DNS names, {st['flagged']} flagged"
+                )
             self.sleep(10.0)
 
     def self_test(self) -> tuple[bool, str]:

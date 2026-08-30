@@ -11,6 +11,7 @@ import json
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,6 +21,8 @@ from angerona.core.win import popen_hidden
 _CAPTURE_WINDOW_SECONDS = 30.0
 _WORKER_POLL_SECONDS = 0.20
 _WORKER_STOP_TIMEOUT = 1.5
+_WORKER_HARD_DEADLINE = _CAPTURE_WINDOW_SECONDS + 5.0
+_MAX_WORKER_OUTPUT_CHARS = 256 * 1024
 _MAX_FAILURE_BACKOFF = 60.0
 
 
@@ -28,6 +31,8 @@ class _CaptureResult:
     returncode: int
     records: tuple[dict[str, Any], ...]
     diagnostic: str = ""
+    complete: bool = False
+    output_truncated: bool = False
 
 
 def _returncode_label(returncode: int) -> str:
@@ -69,13 +74,27 @@ def _decode_records(output: str) -> tuple[dict[str, Any], ...]:
                     "message": str(raw.get("message", "capture worker error"))[:240],
                 }
             )
-        if len(records) >= 256:
+        elif kind == "end":
+            try:
+                emitted = max(0, min(256, int(raw.get("emitted", 0))))
+                dropped = max(0, int(raw.get("dropped", 0)))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            records.append(
+                {
+                    "type": "end",
+                    "emitted": emitted,
+                    "dropped": dropped,
+                }
+            )
+        if len(records) >= 257:
             break
     return tuple(records)
 
 
 class PacketSnifferModule(BaseModule):
     name = "Packet Sniffer"
+    version = "1.12.1"
     description = (
         "Inspects network packets for cleartext credentials in a crash-isolated "
         "capture worker."
@@ -135,23 +154,117 @@ class PacketSnifferModule(BaseModule):
         worker = self._launch_worker()
         with self._worker_lock:
             self._worker = worker
+        output_parts: list[str] = []
+        output_chars = 0
+        output_truncated = False
+        drain_error = ""
+        stdout = getattr(worker, "stdout", None)
+
+        def _drain_stdout() -> None:
+            nonlocal output_chars, output_truncated, drain_error
+            if stdout is None:
+                return
+            try:
+                while True:
+                    chunk = stdout.read(4096)
+                    if not chunk:
+                        break
+                    if isinstance(chunk, bytes):
+                        chunk = chunk.decode("utf-8", "replace")
+                    remaining = _MAX_WORKER_OUTPUT_CHARS - output_chars
+                    if remaining > 0:
+                        output_parts.append(chunk[:remaining])
+                        output_chars += min(len(chunk), remaining)
+                    if len(chunk) > remaining:
+                        output_truncated = True
+            except Exception as exc:  # represented as a failed capture receipt
+                drain_error = str(exc)[:240]
+
+        drain_thread: threading.Thread | None = None
+        if stdout is not None:
+            drain_thread = threading.Thread(
+                target=_drain_stdout,
+                name="AngeronaPacketPipeDrain",
+                daemon=True,
+            )
+            drain_thread.start()
         try:
             stop_event = self.generation_stop_event()
+            deadline = time.monotonic() + _WORKER_HARD_DEADLINE
             while worker.poll() is None:
                 if stop_event.wait(_WORKER_POLL_SECONDS):
                     self._terminate_worker(worker)
                     return None
-            stdout, _ = worker.communicate(timeout=_WORKER_STOP_TIMEOUT)
-            records = _decode_records(stdout or "")
+                if time.monotonic() >= deadline:
+                    self._terminate_worker(worker)
+                    return _CaptureResult(
+                        124,
+                        (),
+                        "capture worker exceeded its hard deadline",
+                        complete=False,
+                    )
+
+            if drain_thread is None:
+                captured, _ = worker.communicate(timeout=_WORKER_STOP_TIMEOUT)
+                if isinstance(captured, bytes):
+                    captured = captured.decode("utf-8", "replace")
+                if len(captured or "") > _MAX_WORKER_OUTPUT_CHARS:
+                    output_truncated = True
+                output_parts.append((captured or "")[:_MAX_WORKER_OUTPUT_CHARS])
+            else:
+                drain_thread.join(timeout=_WORKER_STOP_TIMEOUT)
+                if drain_thread.is_alive():
+                    return _CaptureResult(
+                        125,
+                        (),
+                        "capture worker pipe did not reach EOF",
+                        complete=False,
+                    )
+
+            records = _decode_records("".join(output_parts))
             diagnostic = ""
             for record in records:
                 if record.get("type") == "error":
                     diagnostic = str(record.get("message", ""))
                     break
+            end_receipts = [record for record in records if record.get("type") == "end"]
+            detection_count = sum(
+                1 for record in records if record.get("type") == "detection"
+            )
+            terminal_counts_match = bool(
+                len(end_receipts) == 1
+                and int(end_receipts[0].get("dropped", 0)) == 0
+                and int(end_receipts[0].get("emitted", -1)) == detection_count
+            )
+            complete = (
+                int(worker.returncode or 0) == 0
+                and terminal_counts_match
+                and not output_truncated
+                and not drain_error
+            )
+            returncode = int(worker.returncode or 0)
+            if returncode == 0 and not complete:
+                returncode = 126
+                if not diagnostic:
+                    if output_truncated:
+                        diagnostic = "capture worker output exceeded its bounded pipe budget"
+                    elif drain_error:
+                        diagnostic = f"capture worker pipe failed: {drain_error}"
+                    elif len(end_receipts) == 1 and int(
+                        end_receipts[0].get("dropped", 0)
+                    ):
+                        diagnostic = (
+                            "capture worker reported "
+                            f"{int(end_receipts[0]['dropped'])} dropped detections"
+                        )
+                    else:
+                        diagnostic = "capture worker terminal receipt was missing or inconsistent"
             return _CaptureResult(
-                returncode=int(worker.returncode or 0),
+                returncode=returncode,
                 records=records,
                 diagnostic=diagnostic,
+                complete=complete,
+                output_truncated=output_truncated,
             )
         finally:
             self._terminate_worker(worker)
@@ -208,7 +321,7 @@ class PacketSnifferModule(BaseModule):
                 break
 
             self._publish_detections(result.records)
-            if result.returncode == 0:
+            if result.returncode == 0 and result.complete:
                 self._worker_failures = 0
                 self.last_error = ""
                 self.set_health(100, "")
@@ -232,6 +345,8 @@ class PacketSnifferModule(BaseModule):
                 worker_exit=code,
                 failure_count=self._worker_failures,
                 capture_isolation="subprocess",
+                complete=result.complete,
+                output_truncated=result.output_truncated,
             )
             delay = min(
                 _MAX_FAILURE_BACKOFF,

@@ -183,7 +183,7 @@ class SSHSurfaceGuardModule(BaseModule):
         "listener, authentication, and tunnel-drift monitoring with authenticated baselines."
     )
     category = "Zero Trust"
-    version = "1.1.0"
+    version = "1.12.1"
     supported_platforms = SUPPORTED_PLATFORMS
     capability_mode = "observe"
     platform_requirements = (

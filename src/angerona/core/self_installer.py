@@ -87,9 +87,10 @@ def summary() -> str:
         mark = "[ready]" if st["ready"] else "[missing] " + ", ".join(st["missing"])
         lines.append(f"  - {cap:<15} {mark} - {st['desc']}")
     lines.append(
-        "\nUse Install-Angerona.bat to add missing capabilities from Angerona's "
-        "exact, SHA-256-locked release set. ARIA never changes its live Python "
-        "environment."
+        "\nFor full Windows Protect coverage, install the OS-validated signed "
+        "MSIX. Developers may close Angerona and run Install-Angerona.bat to "
+        "prepare the exact/hash-locked unelevated source Observe profile. ARIA "
+        "never changes its live Python environment."
     )
     return "\n".join(lines)
 
@@ -121,9 +122,11 @@ def install(caps: Optional[Iterable[str]] = None,
     return (
         "Runtime package installation refused; no interpreter changes were made.\n"
         f"Missing approved packages: {', '.join(pkgs)}.\n"
-        "Close Angerona, run Install-Angerona.bat from the verified release, then "
-        "restart. The installer uses requirements-release-hashed.txt with exact "
-        "versions, SHA-256 hashes, binary wheels only, and no dependency drift."
+        "For full Windows Protect coverage, close Angerona and install the "
+        "OS-validated signed MSIX. Source developers may run Install-Angerona.bat "
+        "from a normal user session; it prepares only the unelevated Observe "
+        "profile and uses requirements-release-hashed.txt with exact versions, "
+        "SHA-256 hashes, binary wheels only, and no dependency drift."
     )
 
 

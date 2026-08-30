@@ -8,6 +8,7 @@ because it stayed resident for a while.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -398,6 +399,38 @@ def is_allowed(name: str = "", path: str = "", data_dir=None,
         # Proton defaults) retain their existing behavior.
         elif not norm_path and norm_name and norm_name == row_name:
             return True
+    return False
+
+
+def is_digest_pinned_allowed(
+    name: str = "",
+    path: str = "",
+    data_dir=None,
+    policy: PolicySnapshot | None = None,
+) -> bool:
+    """Require an exact path whose approved row carries a matching digest.
+
+    This stricter predicate is for privileged/local-service boundaries where a
+    legacy path-only approval or basename hint is insufficient. It never
+    upgrades observed software automatically.
+    """
+    norm_name = _normal_name(name or path)
+    norm_path = _normal_path(path)
+    if not norm_name or not norm_path:
+        return False
+    rows = policy_snapshot(data_dir) if policy is None else policy
+    for row in rows:
+        row_name, row_path = row[0], row[1]
+        row_digest = row[2] if len(row) >= 3 else ""
+        if (
+            row_name == norm_name
+            and row_path == norm_path
+            and _SHA256.fullmatch(row_digest)
+        ):
+            try:
+                return hmac.compare_digest(executable_sha256(path), row_digest)
+            except (OSError, ValueError):
+                return False
     return False
 
 

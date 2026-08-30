@@ -179,25 +179,25 @@ def test_purple_candidate_requires_a_distinct_later_run(tmp_path, monkeypatch):
     assert any(row["mitre_id"] == "T1003" for row in module.weaknesses("PATCHED"))
 
 
-def test_release_installer_hardens_before_local_code_and_does_not_grant_medium_user():
+def test_source_setup_delegates_without_becoming_privileged_authority():
     root = os.path.dirname(os.path.dirname(__file__))
     text = open(os.path.join(root, "Install-Angerona.bat"), encoding="utf-8").read()
-    assert text.index("call :harden_trust_root") < text.index(":harden_trust_root")
-    assert text.index("call :harden_trust_root") < text.index("-m pip")
-    assert ".install-trust-v2" in text
-    assert "DirectorySecurity" in text
-    assert "S-1-5-18" in text and "S-1-5-32-544" in text
-    assert "ANGERONA_PRINCIPAL%:(OI)(CI)F" not in text
+    assert 'call "%~dp0start-angerona.bat" --source-setup' in text
+    assert "signed MSIX" in text
+    assert "icacls" not in text.casefold()
+    assert "set-acl" not in text.casefold()
+    assert "runas" not in text.casefold()
+    assert "--scope machine" not in text.casefold()
 
 
-def test_release_installer_refuses_a_volume_root_before_acl_mutation():
+def test_source_launcher_refuses_admin_and_uses_user_scoped_storage():
     root = os.path.dirname(os.path.dirname(__file__))
-    text = open(os.path.join(root, "Install-Angerona.bat"), encoding="utf-8").read()
-    root_guard = 'if /I "%~dp0"=="%~d0\\" ('
-    assert root_guard in text
-    assert "Refusing to install or harden an entire filesystem volume root" in text
-    assert text.index(root_guard) < text.index("call :harden_trust_root")
-    assert text.index(root_guard) < text.index("Set-Acl -LiteralPath $env:ANGERONA_INSTALL_ROOT")
+    text = open(os.path.join(root, "start-angerona.bat"), encoding="utf-8").read()
+    assert "IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)" in text
+    assert "Refusing to execute mutable Angerona source with Administrator rights" in text
+    assert "%LocalAppData%\\Angerona\\SourceData" in text
+    assert "protect-key-custody.ps1" not in text
+    assert "ANGERONA_STORAGE_AUTOMIGRATE=0" in text
 
 
 def test_source_launcher_is_bounded_and_reports_early_startup_failures():

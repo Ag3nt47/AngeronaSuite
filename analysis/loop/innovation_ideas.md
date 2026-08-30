@@ -1,868 +1,867 @@
-# Angerona Defensive Innovation and Open-Source Gap Review — 2026-08-25
+# Angerona Cycle 26 Defensive Innovation Review — 2026-08-28
 
 ## Decision
 
-Angerona already has the essential shape of a local-first EDR/NDR/SOAR:
-66 discovered modules, ETW and Sysmon process telemetry, WFP response,
-authenticated evidence and action contracts, signed detection packages, cases,
-Suricata/Zeek/OCSF imports, OCSF export, guarded osquery snapshots, YARA-X,
-canary deception, ransomware rollback, and a typed local-AI broker. The useful
-next step is not another broad feature list. It is deeper event continuity,
-portable detection engineering, evidence attribution, response verification,
-and supply-chain control.
+Recent public reporting does not justify adding offensive simulation, exploit
+delivery, credential collection, or an unsigned kernel component to Angerona.
+It does justify strengthening the boundaries between controls. Advanced
+intrusions increasingly abuse legitimate administration, trusted providers,
+identity control planes, routers, DNS, and out-of-band hardware while trying to
+make ordinary endpoint activity look normal.
 
-This review compared the current tree with the official documentation for
-Wazuh, Velociraptor, osquery/Fleet, Falco, Suricata, Zeek, Security Onion,
-Sigma, YARA-X, OCSF, OASIS STIX/TAXII, Microsoft Windows telemetry, Ollama,
-SLSA, and OWASP GenAI. The comparison deliberately does not propose features
-Angerona already ships.
+The ten proposals below are defensive designs only. They are ranked by
+estimated impact divided by effort and deliberately extend existing Angerona
+controls instead of duplicating them. Source-reported attribution is context,
+not a detection output: Angerona must label behavior and evidence, never infer a
+state, agency, sponsor, or person from a technique match.
 
-### Current-tree facts that shaped the ranking
+### Current-tree gap map
 
-- Sysmon Listener consumes event IDs 1, 3, 6, 8, 10, and 25, but not the
-  high-value DNS, named-pipe, registry, WMI, and file events documented by
-  Microsoft. It seeks to the end of the log at startup instead of resuming from
-  an authenticated bookmark.
-- ETW Realtime Sensor currently streams process creation only.
-- Suricata import preserves community_id, while Zeek import and native Angerona
-  flow events do not yet compute the same cross-tool flow identifier.
-- OCSF export is a useful Detection Finding mapping, but it declares schema
-  version 1.3.0 and does not emit the remediation and activity classes now
-  available in the current OCSF schema.
-- Kernel Posture Ledger records a driver-set digest, and Intel Sync has a small
-  filename-oriented vulnerable-driver catalog. Neither forms a complete
-  load-time signer, hash, version, Code Integrity, block-policy, and response
-  evidence chain.
-- YARA Scanner already uses YARA-X with compile-before-activate and a scan
-  timeout. It does not have a rule-cost admission or hot-rule quarantine gate.
-- AI Model Integrity Guard validates Ollama content-addressed blobs and a
-  trust-on-first-use baseline. Angerona has no governed model or ARIA
-  knowledge-pack installer with publisher provenance, resource admission,
-  offline import, staged evaluation, and atomic rollback.
-- ARIA already has typed outputs, evidence citations, tool validation,
-  expiring authorization, and no raw shell tool. The remaining AI gap is
-  stronger separation of untrusted retrieved data from control flow plus a
-  repeatable security-quality evaluation gate.
-- Linux has an optional privileged BCC/eBPF sensor. It does not yet have a
-  signed CO-RE sidecar comparable to the modern eBPF deployment model.
+- `LSASS Credential-Access Guard` detects command-line and artifact patterns
+  around credential dumping, while `Persistence Sweep` checks common autoruns.
+  Neither currently inventories Windows authentication extension points such
+  as LSA notification packages and network providers as a complete
+  file/signer/ACL baseline.
+- `AV Telemetry Bridge`, `Audit Log Integrity Guard`, `API Patch Detector`,
+  `Self Integrity`, ETW, Sysmon, and process polling provide overlapping
+  signals, but there is no explicit completeness-aware witness quorum that
+  detects one source going selectively blind.
+- `Network Trust Monitor` records privacy-tokenized DNS/DHCP/route/gateway
+  drift. It does not independently witness selected DNS answers or perform
+  bounded fast-flux analytics over DNS and flow history.
+- `Identity Session Guard` already understands device-code, new-device, RMM,
+  and privilege-transition evidence, but its collector mode is intentionally
+  `supplied-evidence-only`; it has no first-party, least-privilege Entra audit
+  connector.
+- `Temporal Tradecraft Correlator` covers selected SSH, network-path, and
+  log-clear sequences. The deterministic fast path still relies heavily on
+  individual command/process indicators rather than completeness-aware native
+  administration sequences.
+- `Peripheral and DMA Posture` and `USB Monitor` cover DMA and removable media,
+  not an enrolled topology of HID, composite USB-network, and console devices.
+- ARIA has typed tools, bounded RAG, signed plugin lifecycle, evidence IDs, and
+  an independent response broker. There is not yet one runtime manifest binding
+  the model, prompt, retrieval corpus, tool schemas/descriptions, connector
+  permissions, agent identities, and approval semantics.
+- Guided Auto Adapt has an immutable, restorable Windows Firewall baseline.
+  Other security-control posture is not represented as equivalently restorable;
+  that boundary must remain explicit.
 
 ## Ranked shortlist
 
-Ranking uses impact divided by an effort weight: S=1, S-M=1.5, M=2, and L=3.
-The score is a prioritization aid, not a delivery promise.
+Effort weights are S=1, S-M=1.5, M=2, M-L=2.5, and L=3. Impact is a relative
+1–5 estimate. Ties are ordered by implementation readiness and breadth.
 
 | Rank | Proposal | Impact | Effort | Impact / effort | Primary mode |
 |---:|---|---:|:---:|---:|---|
-| 1 | Community-ID Flow Fusion | 4 | S | 4.00 | Detect / Visualize |
-| 2 | Restart-Safe Windows Event Continuity Sensor | 5 | S-M | 3.33 | Detect / Harden / Visualize |
-| 3 | Evidence-Grade BYOVD Guard | 5 | S-M | 3.33 | Detect / Respond / Harden |
-| 4 | ARIA Untrusted-Data Compartment and Eval Gate | 5 | S-M | 3.33 | Harden / Visualize |
-| 5 | OCSF 1.8 Conformance and Remediation Export | 4 | S-M | 2.67 | Detect / Respond / Visualize |
-| 6 | Sigma 2.1 Native Rule and Correlation Runtime | 5 | M | 2.50 | Detect / Visualize |
-| 7 | Verified Stateful Containment Leases | 5 | M | 2.50 | Respond / Harden / Visualize |
-| 8 | Governed Ollama Model and ARIA Pack Manager | 5 | M | 2.50 | Harden / Visualize |
-| 9 | YARA-X Rule-Cost Admission | 3 | S-M | 2.00 | Detect / Harden |
-| 10 | Journal-Backed Ransomware and Deception Attribution | 4 | M | 2.00 | Detect / Respond / Visualize |
-| 11 | STIX/TAXII Intelligence Lifecycle | 4 | M | 2.00 | Detect / Harden / Visualize |
-| 12 | Signed Linux CO-RE Sensor Sidecar | 4 | L | 1.33 | Detect / Harden |
+| 1 | Windows Authentication Extension Integrity Guard | 5 | S-M | 3.33 | Detect / Harden / Visualize |
+| 2 | Security-Control Drift Witness and Safe Recovery Plans | 5 | S-M | 3.33 | Detect / Harden / Respond |
+| 3 | ARIA Runtime Supply-Chain and Consent Proof | 5 | S-M | 3.33 | Harden / Visualize |
+| 4 | Completeness-Aware Sensor Witness Quorum | 5 | M | 2.50 | Detect / Harden / Visualize |
+| 5 | Independent DNS Path Witness and Fast-Flux Guard | 5 | M | 2.50 | Detect / Harden / Visualize |
+| 6 | Trusted Administration and RMM Provenance Ledger | 5 | M | 2.50 | Detect / Harden / Visualize |
+| 7 | Native Administration Sequence Correlator | 4 | M | 2.00 | Detect / Visualize |
+| 8 | Out-of-Band Console and HID Topology Guard | 4 | M | 2.00 | Detect / Harden / Visualize |
+| 9 | Least-Privilege Entra Identity Evidence Connector | 5 | M-L | 2.00 | Detect / Visualize |
+| 10 | Edge Control-Plane Evidence Intake | 5 | L | 1.67 | Detect / Harden / Visualize |
 
 ---
 
-## 1. Community-ID Flow Fusion
+## 1. Windows Authentication Extension Integrity Guard
 
-**Pitch.** Give native Angerona, Suricata, and Zeek observations one stable flow
-identity so endpoint process evidence and NDR evidence join into a single
-investigation timeline without IP-address guesswork.
+**Pitch.** Detect unauthorized changes to Windows authentication extension
+points before a legitimate logon or password-change path becomes a durable
+credential-interception surface.
 
 ### Why now
 
-Suricata documents Community ID specifically as a predictable flow identifier
-for matching records with tools such as Zeek. Its seed must be consistent
-across tools. Zeek provides detailed connection and intelligence observations,
-but source-specific IDs alone do not form a cross-sensor join.
+Microsoft Incident Response reported in May 2026 that a stealthy intrusion
+abused a trusted third-party management relationship and legitimate management
+software, then registered authentication components on domain infrastructure.
+The important defensive lesson is not the campaign's specific artifact names;
+it is that trusted delivery and legitimate authentication extensibility can
+hide persistence from malware-centric controls.
 
 Sources:
-[Suricata 8 EVE Community Flow ID](https://docs.suricata.io/en/suricata-8.0.5/output/eve/eve-json-output.html),
-[Zeek Intelligence Framework](https://docs.zeek.org/en/current/frameworks/intel.html).
+
+- [Microsoft — Undermining the trust boundary: Investigating a stealthy intrusion through third-party compromise](https://www.microsoft.com/en-us/security/blog/2026/05/12/undermining-the-trust-boundary-investigating-a-stealthy-intrusion-through-third-party-compromise/)
+- [MITRE ATT&CK — Modify Authentication Process](https://attack.mitre.org/techniques/T1556/)
 
 ### Fit
 
-- **Core:** add a bounded Community ID v1 helper to security_interop and the
-  normalized evidence contract. Preserve an incoming ID; otherwise compute it
-  from canonical protocol, address, port, direction, and an explicitly
-  configured seed.
-- **Modules:** add community_id to Network Monitor, WFP Controller, packet
-  decoder, and beacon evidence whenever a complete five-tuple exists.
-- **Evidence Store / GUI:** group matching endpoint, Suricata, and Zeek records
-  into one flow timeline. Show source count, process lineage, first/last seen,
-  and any missing tuple fields. Never invent a join from partial data.
-- **Mode:** Detect / Visualize.
+- **New Windows `BaseModule`:** `AuthenticationExtensionGuard`, with fixed,
+  read-only collectors for the bounded Windows authentication provider,
+  notification-package, security-package, and password-filter surfaces.
+- **Core:** stable-read each referenced file and bind normalized registry
+  location, ordered value, absolute canonical path, SHA-256, Authenticode and
+  catalog result, signer identity, file version, owner, and ACL digest into an
+  authenticated host baseline. A missing or unreadable surface is `unknown`,
+  never healthy.
+- **Existing modules:** send exact file identity and registry-delta evidence to
+  `Persistence Sweep`, `LSASS Guard`, `File Integrity`, `App Control Monitor`,
+  and the incident graph. Do not read LSASS memory.
+- **GUI:** a clickable Authentication Boundary view showing the extension
+  point, evidence source, previous/current digest, signer, governed file path,
+  completeness, and operator enrollment history.
+- **Mode:** Detect / Harden / Visualize. Response remains a reviewed recovery
+  plan; Angerona must not automatically remove an authentication component.
 
 ### Effort
 
-**S.** Pure user-mode normalization and UI grouping. IPv4/IPv6 normalization,
-ICMP semantics, NAT, direction reversal, and seed migration need fixtures. A
-Community ID proves tuple equivalence, not maliciousness or endpoint identity.
+**S-M.** Windows only. Requires elevation for complete evidence and careful
+Windows-version/domain-controller gating. The first release should observe and
+compare only; safe reversal needs a separately reviewed adapter and reboot/
+recovery testing.
 
-### Acceptance tests
+### Assurance profile
 
-1. Published Community ID test vectors produce exact expected identifiers for
-   TCP, UDP, IPv4, IPv6, and reversed directions.
-2. A synthetic Angerona flow, Suricata EVE row, and Zeek row join once when
-   their tuples match and never join when one port differs.
-3. Partial or malformed tuples remain separate with an honest not-computable
-   reason.
-4. A 100,000-row import stays bounded and demonstrates no quadratic join.
+- **Confidence:** High that the tradecraft matters; first-party incident
+  response plus ATT&CK. Detection confidence is high only for an authenticated
+  change from an enrolled complete baseline.
+- **Data/privacy cost:** Low to moderate. Retain file and signer metadata and
+  keyed path tokens by default; reveal full governed paths only in the local
+  detail view. Never retain credentials or authentication buffers.
+- **False-positive risk:** Security software, credential providers, smart-card
+  middleware, and planned domain maintenance legitimately change these
+  surfaces. Require a maintenance/enrollment receipt and do not classify a new
+  signed component as malicious solely because it is new.
+
+### Buildable acceptance tests
+
+1. Fixture matrices cover an unchanged baseline, an added package, order
+   change, path replacement, signer change, ACL change, missing file, linked
+   path, partial registry read, and Windows-version variation.
+2. A same-name/same-signer file with a different digest remains a change.
+3. An incomplete first capture cannot become the trusted baseline.
+4. Synthetic changes create an incident and review plan but invoke no mutation
+   sink, DLL load, credential access, or process injection.
 
 ### Safety
 
-Defensive and read-only. It captures no payload, scans no remote target, and
-does not turn a flow match into automatic blocking without the existing
-corroboration and response policy.
+Defensive and read-only in the initial implementation. No credential capture,
+LSASS memory access, authentication hooking, DLL injection, payload creation,
+or automated deletion. The proposal records and validates OS configuration; it
+does not demonstrate how to abuse it.
 
 ---
 
-## 2. Restart-Safe Windows Event Continuity Sensor
+## 2. Security-Control Drift Witness and Safe Recovery Plans
 
-**Pitch.** Expand Windows event coverage and persist authenticated bookmarks so
-short-lived activity and events produced while Angerona restarts are not
-silently lost.
+**Pitch.** Expand Angerona's host baseline from firewall recovery into an
+honest, completeness-aware view of critical protection settings, with each
+future repair independently gated and reversible.
 
 ### Why now
 
-Microsoft identifies Sysmon DNS Query 22, File Create 11, Registry 12-14,
-Named Pipe 17-18, WMI 19-21, Driver Load 6, Process Access 10,
-CreateRemoteThread 8, and Process Tampering 25 as valuable security telemetry.
-Microsoft also provides event-log bookmarks specifically to resume queries or
-subscriptions after the last processed record. Velociraptor persists its event
-table locally and buffers results while disconnected, illustrating why
-endpoint monitoring must continue across control-plane loss.
+Microsoft documents that attackers attempt to disable or alter security
+features, and that Defender tamper protection covers real-time protection,
+behavior monitoring, cloud protection, security-intelligence updates, and
+selected exclusion settings. Microsoft's 2026 Storm-2949 report also describes
+an intrusion that attempted to weaken endpoint protections and clear local
+forensic evidence before establishing remote access.
 
 Sources:
-[Microsoft Sysmon events](https://learn.microsoft.com/en-us/windows/security/operating-system-security/sysmon/sysmon-events),
-[Microsoft Event Log bookmarks](https://learn.microsoft.com/en-us/windows/win32/wes/bookmarking-events),
-[Velociraptor client monitoring](https://docs.velociraptor.app/docs/clients/monitoring/).
+
+- [Microsoft Learn — Protect security settings with tamper protection](https://learn.microsoft.com/en-us/defender-endpoint/prevent-changes-to-security-settings-with-tamper-protection)
+- [Microsoft — How Storm-2949 turned a compromised identity into a cloud-wide breach](https://www.microsoft.com/en-us/security/blog/2026/05/18/storm-2949-turned-compromised-identity-into-cloud-wide-breach/)
 
 ### Fit
 
-- **BaseModule:** evolve Sysmon Listener into a selective Windows Event
-  Continuity sensor. Add event IDs 11, 12-14, 17-22 and preserve the existing
-  1/3/6/8/10/25 mappings. Collect Windows Security events only when the channel
-  and audit policy provide them: 4624/4625, 4648, 4672, 4688, 4697, 4720-4726,
-  4728/4732, 4740, 4768/4769/4771/4776, and service event 7045.
-- **Core:** persist the last event record/bookmark per channel in an HMAC
-  envelope. On rollover, clearing, missing bookmark, or permission loss, emit a
-  visibility-gap event with start/end and reason instead of pretending
-  continuity.
-- **Correlation:** normalize process GUID, logon ID, account SID, target
-  service, DNS query, named pipe, registry path, and WMI consumer into bounded
-  attributes. Default collection excludes command lines and user display names
-  unless the privacy setting already permits them.
-- **GUI:** add channel coverage, current bookmark, lag, dropped/rolled-over
-  count, and audit-policy availability to the telemetry coverage view.
-- **Mode:** Detect / Harden / Visualize.
+- **Core `host_adaptation`:** add a separate *observational protection-posture
+  manifest* for Defender state, tamper protection, exclusions policy, ASR
+  posture, HVCI/Credential Guard/LSA protection, relevant security services,
+  PowerShell logging, and audit-policy coverage. Keep it distinct from the
+  currently restorable Firewall artifact.
+- **Existing modules:** consume typed facts from `AV Telemetry Bridge`,
+  `Platform Attestation Guard`, `Kernel Posture Ledger`, `Audit Log Integrity
+  Guard`, and `Posture Hardening`. Resolve contradictions as `conflict` rather
+  than choosing the most favorable source.
+- **Guided Auto Adapt:** offer audit and simulation immediately. A future
+  setting-specific repair is eligible only after a dedicated provider,
+  compatibility check, pre-change recovery point, exact confirmation,
+  postcondition, compensation, and startup reconciliation are proven for that
+  setting. Never label the entire posture restorable because Firewall is.
+- **GUI:** clickable per-control status with source, authority, last-known-good,
+  current value, policy owner (local/GPO/MDM/unknown), conflict, recovery
+  support, and reboot impact.
+- **Mode:** Detect / Harden / Respond.
 
 ### Effort
 
-**S-M.** The existing Sysmon XML parser and EventBus contract are reusable.
-Event volume and event-field differences require edition/version gating and
-per-event filters. Security-channel access requires elevation; missing auditing
-is a visible limitation, not an installation side effect.
+**S-M** for observation and drift; **L** if all controls are made restorable.
+Windows edition, third-party AV, GPO/MDM ownership, and Defender for Endpoint
+licensing create real unknown states. Start with observation and one narrowly
+proven adapter at a time.
 
-### Acceptance tests
+### Assurance profile
 
-1. Sanitized XML fixtures for every supported event ID map to exact normalized
-   fields, severity, and ATT&CK tags.
-2. Stop after record N, append N+1 through N+50, restart, and prove every new
-   event is ingested exactly once.
-3. Log clear, rollover, stale bookmark, access denied, malformed XML, and event
-   flood each emit explicit coverage state without crashing or replay storms.
-4. A noisy DNS/file fixture stays under configured CPU, queue, and evidence
-   budgets; lower-value records shed before high-signal injection/driver events.
+- **Confidence:** High for the need; Microsoft platform guidance and incident
+  evidence. Individual local-setting truth may be moderate when enterprise
+  policy owns the setting.
+- **Data/privacy cost:** Low. Store policy values, source and timestamps—not
+  Defender detections, file contents, or tenant secrets.
+- **False-positive risk:** Troubleshooting mode, AV migration, policy refresh,
+  and approved maintenance can create temporary drift. Track policy owner and
+  declared maintenance windows, and distinguish `blocked change`, `effective
+  drift`, and `collector disagreement`.
 
-### Safety
+### Buildable acceptance tests
 
-Defensive and local. The sensor does not change audit policy automatically,
-enable Sysmon, clear logs, query a remote host, collect credentials, or execute
-commands found in event data.
-
----
-
-## 3. Evidence-Grade BYOVD Guard
-
-**Pitch.** Replace filename-only vulnerable-driver awareness with a complete
-load-time evidence chain and a reversible, audit-first hardening plan.
-
-### Why now
-
-Microsoft explains that attackers abuse legitimate signed vulnerable drivers
-for kernel execution. Its vulnerable-driver blocklist covers known
-vulnerabilities, malicious signers, and behavior that circumvents the Windows
-security model. Microsoft explicitly warns that blocking can break software or
-devices and recommends audit-mode validation before enforcement. Sysmon Driver
-Load event 6 carries signature and hash context.
-
-Sources:
-[Microsoft recommended driver block rules](https://learn.microsoft.com/en-us/windows/security/application-security/app-control-for-business/design/microsoft-recommended-driver-block-rules),
-[Microsoft Sysmon Driver Load event](https://learn.microsoft.com/en-us/windows/security/operating-system-security/sysmon/sysmon-events).
-
-### Fit
-
-- **Modules:** correlate Sysmon event 6 with Kernel Posture Ledger,
-  Intel Sync, Code Integrity Operational events, loaded driver services, file
-  hash, signer/certificate status, file version, first seen, and the current
-  Microsoft block-policy state.
-- **Core:** version the bundled vulnerable-driver intelligence by source
-  release, digest, retrieval time, and expiry. Prefer exact hash/signer/version
-  matches; filename-only matches remain weak evidence and cannot autonomously
-  unload or delete a driver.
-- **Response/Harden:** add a closed hardening plan that checks HVCI, ASR
-  vulnerable-driver protection, and App Control audit results. Enforcement is
-  offered only after a clean compatibility observation window, exact policy
-  preview, a backup, OS support checks, and verified postconditions.
-- **GUI:** show driver identity, why it matched, confidence, current protection,
-  reboot requirement, compatibility warnings, and whether evidence is live or
-  historical.
-- **Mode:** Detect / Respond / Harden.
-
-### Effort
-
-**S-M** for evidence correlation and posture visibility; **M** if App Control
-audit-to-enforce orchestration is included. Driver signatures and Code
-Integrity field shapes vary by Windows version. Loaded drivers generally
-cannot be safely removed without a reboot.
-
-### Acceptance tests
-
-1. Exact vulnerable hash/version, known-good same filename, unsigned driver,
-   stale feed, and hash-unavailable fixtures produce distinct decisions.
-2. A filename-only match can alert but cannot reach the response sink.
-3. Audit-mode events generate a compatibility report; simulated enforcement is
-   refused when the platform, backup, or postcondition proof is absent.
-4. The Purple Guard BYOVD marker proves the whole detection path without
-   loading any driver.
+1. Complete, incomplete, contradictory, GPO-owned, MDM-owned, unsupported, and
+   third-party-AV fixtures never collapse into one healthy boolean.
+2. A simulated setting change produces an exact plan and no writes.
+3. A stale approval, post-review drift, failed recovery capture, or ambiguous
+   policy owner blocks apply.
+4. Every enabled mutation adapter proves its pre-state, post-state,
+   compensation, restart reconciliation, and accurate restorable-scope label.
 
 ### Safety
 
-Defensive only. Never load, exploit, patch, unload, or delete a driver. Never
-ship a vulnerable driver or an unsigned kernel component. Policy enforcement
-stays audit-first, reversible where Windows permits, and explicit about reboot
-and blue-screen risk.
+Defensive hardening only. No silent policy changes, no automatic weakening, no
+Defender exclusion creation, no GPO/MDM override, and no claim that a local
+baseline defeats Administrator, SYSTEM, kernel, or whole-host rollback.
 
 ---
 
-## 4. ARIA Untrusted-Data Compartment and Eval Gate
+## 3. ARIA Runtime Supply-Chain and Consent Proof
 
-**Pitch.** Treat web pages, email, imported reports, model output, and retrieved
-runbook text as tainted data that can inform a conclusion but can never rewrite
-ARIA's control flow or tool authority.
+**Pitch.** Bind every active AI component and every approved action to one
+signed runtime manifest so retrieved text, tool descriptions, plugins, or
+model-generated summaries cannot launder authority.
 
 ### Why now
 
-OWASP's current GenAI guidance lists prompt injection, supply-chain risk,
-improper output handling, model denial of service, and excessive agency among
-the central LLM application risks. CaMeL demonstrates a useful architectural
-direction: extract trusted control flow separately and keep untrusted retrieved
-data from changing program flow. Ollama structured outputs can enforce a JSON
-schema, but schema validity alone does not establish authority.
+Microsoft's June 2026 agentic-AI red-team taxonomy recommends SBOM coverage for
+tool dependencies, provenance verification for plugins and MCP servers,
+version pinning for external tool definitions, verifiable agent identity,
+context provenance, and consent UX derived from actual underlying actions.
+Those recommendations sharpen the gap beyond ordinary prompt-injection
+filtering.
 
-Sources:
-[OWASP GenAI LLM Top 10](https://owasp.org/www-project-top-10-for-large-language-model-applications/),
-[Defeating Prompt Injections by Design](https://arxiv.org/abs/2503.18813),
-[Ollama structured outputs](https://docs.ollama.com/capabilities/structured-outputs).
+Source:
+
+- [Microsoft — Updating the taxonomy of failure modes in agentic AI systems: What a year of red teaming taught us](https://www.microsoft.com/en-us/security/blog/2026/06/04/updating-taxonomy-failure-modes-agentic-ai-systems-year-red-teaming-taught-us/)
 
 ### Fit
 
-- **Core AI Security Broker:** label every evidence item with origin, trust,
-  sensitivity, and permitted data flow. Trusted operator intent selects a fixed
-  read-only or response workflow before untrusted text enters the prompt.
-- **Runbook RAG:** index only approved roots, record content digest and
-  publisher, and return typed citations. Text that resembles instructions,
-  tool calls, system prompts, or exfiltration requests remains quoted evidence.
-- **ARIA:** use deterministic schemas at temperature zero for security
-  conclusions. A model can select only registered typed tools already admitted
-  by policy. Response Broker independently re-derives authorization from signed
-  evidence; ARIA output is never the sole authority for a host mutation.
-- **Eval gate:** maintain local fixtures for direct/indirect injection,
-  malicious email/web content, forged evidence IDs, tool-name spoofing,
-  oversized inputs, resource exhaustion, secret requests, and false citations.
-  Compare candidate model and prompt-pack versions before activation.
-- **GUI:** show data trust labels, citations, abstention, blocked control-flow
-  attempts, token/resource budget, and active model/prompt-pack revision.
+- **Core AI Security Broker:** construct a canonical runtime manifest binding
+  model digest, prompt-template digest, Defense Memory/RAG corpus digest,
+  plugin manifests, MCP endpoint identity, exact tool JSON schemas and
+  descriptions, connector permission set, egress policy, and registered agent
+  identities.
+- **Capability and plugin lifecycle:** treat a natural-language description or
+  permission change as a new revision requiring staging, evaluation, and
+  activation; existing signed code identity alone is insufficient.
+- **Consent:** derive the human-readable approval from the typed tool calls and
+  exact targets, split compound actions, display reversibility/blast radius,
+  and sign a short-lived approval over the canonical call set. Model-authored
+  prose is never the source of the consent description.
+- **Inter-agent path:** authenticate any local agent handoff and bind its role,
+  capabilities, parent request, expiration, and evidence IDs. Self-asserted
+  role names grant nothing.
+- **GUI:** clickable Runtime Trust view with active component revisions,
+  permission delta, tainted context count, blocked authority transitions, and
+  approval-frequency warnings.
 - **Mode:** Harden / Visualize.
 
 ### Effort
 
-**S-M.** Most primitives already exist: typed output validation, evidence IDs,
-tool validators, expiring authorization, RAG citations, and the Response
-Broker. The work is provenance propagation, taint-policy enforcement, and a
-reproducible eval corpus. No prompt-only defense should be claimed as complete.
+**S-M.** Existing typed tools, capability manifests, plugin lifecycle, release
+SBOM, evidence IDs, and response authorization are reusable. The challenge is
+canonical cross-component binding and migration without pretending that a
+manifest makes model behavior deterministic.
 
-### Acceptance tests
+### Assurance profile
 
-1. Every indirect-injection fixture may affect quoted findings but produces
-   zero unauthorized tool calls and zero authority changes.
-2. Unknown evidence IDs, extra schema fields, unsupported tools, replayed
-   authorization, and expired requests fail closed.
-3. A safe baseline task suite retains a defined quality floor while the hostile
-   suite reaches zero unauthorized mutation.
-4. Secrets, paths, URLs, IPs, and private context never leave the approved
-   local/cloud boundary in egress tests.
+- **Confidence:** High for the design direction; first-party red-team findings.
+- **Platform:** Cross-platform core and GUI.
+- **Data/privacy cost:** Low. The manifest contains digests, schemas,
+  permissions, and identities, not prompt contents or user evidence. Retain
+  only bounded taint metadata for sessions.
+- **False-positive risk:** Legitimate prompt, model, or plugin updates will
+  require re-evaluation. Provide clear revision diffs and atomic rollback
+  rather than allowing mutable components to change silently.
 
-### Safety
+### Buildable acceptance tests
 
-Defensive only. This does not add autonomous offensive agents, arbitrary tools,
-shell access, exploit generation, credential access, or permission bypass.
-
----
-
-## 5. OCSF 1.8 Conformance and Remediation Export
-
-**Pitch.** Upgrade Angerona's OCSF layer from one Detection Finding mapper to a
-validated, version-pinned contract covering observations, findings, and
-response receipts.
-
-### Why now
-
-OCSF is an open, vendor-neutral event schema for producers, analytic systems,
-and retained security data. The official repository's current release is 1.8.0
-and includes event classes beyond Detection Finding, including remediation
-activity introduced in earlier schema releases. Angerona currently labels its
-mapping 1.3.0, so schema drift will increasingly reduce interoperability.
-
-Sources:
-[OCSF schema repository](https://github.com/ocsf/ocsf-schema),
-[OCSF releases](https://github.com/ocsf/ocsf-schema/releases).
-
-### Fit
-
-- **Core:** pin an exact OCSF release digest and generate or vendor only the
-  minimal schema fragments needed for Angerona classes. Map process, file,
-  authentication, DNS/network, driver, detection finding, incident finding,
-  and file/process/network remediation activity.
-- **Evidence Store:** preserve producer schema version and original unmapped
-  fields in bounded form. Import must validate against the declared version,
-  not reinterpret unknown fields as healthy.
-- **Response Broker / SOAR:** export requested, admitted, executed, verified,
-  failed, rolled-back, and expired states as remediation activity with action
-  and evidence correlation IDs.
-- **GUI:** add a local conformance report listing supported classes, required
-  field coverage, lossy mappings, and rejected records.
-- **Mode:** Detect / Respond / Visualize.
-
-### Effort
-
-**S-M.** Mapping and validation are local and non-executable. The main work is
-schema versioning, privacy redaction, backward compatibility, and deterministic
-fixtures. OCSF does not solve transport, trust, or data retention by itself.
-
-### Acceptance tests
-
-1. Golden records validate against the exact pinned OCSF schema for every
-   supported class.
-2. Angerona event to OCSF to Angerona round trips preserve event ID, time,
-   severity, process/flow identity, ATT&CK technique, and response state.
-3. Unknown versions, missing required fields, oversized unmapped content, and
-   formula-like export strings fail or sanitize deterministically.
-4. No host identity, raw command line, path, or network address is exported
-   when the privacy profile forbids it.
+1. Changing only a tool description, prompt, connector scope, RAG digest, or
+   MCP identity invalidates the prior runtime manifest.
+2. A compound action is decomposed into exact calls; approving a summary cannot
+   authorize an omitted or changed call.
+3. Retrieved text and peer-agent messages cannot alter tool schemas, roles,
+   egress policy, or response authority.
+4. Replay, stale approval, self-asserted role, capability disclosure probe,
+   context flooding, and approval-fatigue fixtures produce zero unauthorized
+   mutation and bounded audit output.
 
 ### Safety
 
-Defensive and data-only. OCSF records are evidence, not executable commands.
-Importing a remediation record cannot invoke a response.
+Defensive governance only. No autonomous offensive agents, arbitrary shell,
+exploit generation, credential tooling, covert capability discovery, or
+permission escalation.
 
 ---
 
-## 6. Sigma 2.1 Native Rule and Correlation Runtime
+## 4. Completeness-Aware Sensor Witness Quorum
 
-**Pitch.** Let Angerona run a bounded, signed subset of portable Sigma rules and
-ordered temporal correlations directly over its normalized evidence stream.
-
-### Why now
-
-Sigma 2.1 defines portable rules, filters, taxonomies, and standardized
-correlations. Correlation types include event count, value count, temporal, and
-ordered temporal proximity, with field aliases for different log sources. This
-matches Angerona's evidence-lattice and kill-chain model but is not currently a
-native detection-content format.
-
-Sources:
-[Sigma 2.1 specification](https://sigmahq.io/sigma-specification/),
-[Sigma correlation rules specification](https://sigmahq.io/sigma-specification/specification/sigma-correlation-rules-specification.html).
-
-### Fit
-
-- **Core:** implement a strict parser for a documented Sigma subset:
-  selections, approved modifiers, boolean conditions, filters, ATT&CK tags,
-  and the four bounded correlation types. Compile rules to an internal
-  predicate plan; never execute generated query text or arbitrary YAML tags.
-- **Evidence:** define an Angerona-to-Sigma field taxonomy for process, file,
-  registry, DNS, network, authentication, driver, and response activity.
-  Missing fields produce unsupported coverage, not a false non-match.
-- **Detection registry:** package rules through the existing signed quarantine,
-  validate, stage, activate, and rollback lifecycle. Record rule ID, source
-  digest, compiler version, required fields, cost estimate, and expiry.
-- **GUI:** add rule validation errors, required-sensor coverage, sample replay,
-  performance cost, false-positive notes, and correlation timeline.
-- **Mode:** Detect / Visualize.
-
-### Effort
-
-**M.** A safe subset is realistic; full Sigma backend parity is not. The
-runtime needs bounded windows, group cardinality caps, eviction, clock-skew
-handling, and deterministic modifier semantics. External pySigma may be used
-only if hash-locked and release-reviewed; a small native subset reduces
-dependency risk.
-
-### Acceptance tests
-
-1. Official-style fixtures for selection, filters, count, temporal, and ordered
-   temporal rules produce exact positive and negative results.
-2. Unsupported log source, field, modifier, correlation, YAML type, or
-   excessive cardinality fails validation before activation.
-3. A 100,000-event adversarial stream stays inside memory and latency budgets
-   with exact expiry and no cross-host/group contamination.
-4. Signed-package activation and rollback leave one authoritative rule revision
-   and an authenticated receipt.
-
-### Safety
-
-Defensive only. Sigma content is declarative detection logic. No shell,
-subprocess, network fetch, response command, offensive emulation, or
-model-generated rule can become active without the existing signed lifecycle.
-
----
-
-## 7. Verified Stateful Containment Leases
-
-**Pitch.** Turn automatic containment into short-lived, evidence-bound leases
-whose effect and rollback are both verified, so autonomy is fast without
-becoming permanent unobserved outage.
+**Pitch.** Detect selective blinding by comparing independent observations of
+the same host activity while refusing to call ordinary collection loss an
+intrusion.
 
 ### Why now
 
-Wazuh distinguishes stateless actions from stateful responses that revert after
-a configured interval, and warns that poorly implemented automatic response
-can increase endpoint risk. Angerona already has richer response protections
-than a generic response script system; the gap is a uniform lease and
-postcondition contract across process, file, IP, and host-isolation actions.
+State-sponsored living-off-the-land activity is intended to blend into normal
+administration and evade common logging. Microsoft also describes endpoint
+tampering as a multi-control problem rather than one setting, and recommends
+monitoring sensor health. Angerona already has multiple user-mode witnesses;
+the missing control is explicit, loss-aware disagreement analysis.
 
 Sources:
-[Wazuh Active Response](https://documentation.wazuh.com/current/user-manual/capabilities/active-response/index.html),
-[Wazuh incident-response use cases](https://documentation.wazuh.com/current/getting-started/use-cases/incident-response.html).
+
+- [CISA joint advisory AA24-038A — PRC state-sponsored actors compromise U.S. critical infrastructure](https://www.cisa.gov/sites/default/files/2024-03/aa24-038a_csa_prc_state_sponsored_actors_compromise_us_critical_infrastructure_3.pdf)
+- [Microsoft Learn — Protect your organization from the effects of tampering](https://learn.microsoft.com/en-us/defender-endpoint/tamper-resiliency)
 
 ### Fit
 
-- **Core Response Broker:** add a typed response recipe containing evidence
-  minimums, exact target identity, precondition, action, postcondition,
-  lease duration, renewal ceiling, rollback, rollback postcondition, protected
-  targets, and failure escalation.
-- **Adversary Combat / SOAR:** route automatic suspend, quarantine, IP block,
-  and host isolation through the same recipe engine. A stronger action requires
-  stronger independent evidence. Repeat triggers may renew within a bound;
-  they may not silently convert a lease into a permanent change.
-- **Flight recorder:** authenticate admitted, executing, verified, renewed,
-  expired, rolled-back, rollback-failed, and manually retained states. The
-  Watchdog resolves expired leases after GUI/core restart.
-- **GUI:** show active containment, exact scope, reason, time remaining,
-  observed effect, undo readiness, and recovery failure. Provide an emergency
-  local-console rollback independent of ARIA.
-- **Mode:** Respond / Harden / Visualize.
-
-### Effort
-
-**M.** Response Broker, WFP containment, quarantine, protected-process guards,
-Watchdog, and receipts already exist. Each action adapter still needs a precise
-postcondition and idempotent rollback. Network and process state can change
-between admission and execution.
-
-### Acceptance tests
-
-1. Synthetic high-confidence evidence automatically applies each allowed
-   action once, verifies the effect, expires, and verifies rollback.
-2. Stale/mutated evidence, PID reuse, path replacement, protected targets,
-   duplicate triggers, concurrent actions, restart mid-action, and replay fail
-   closed without widening scope.
-3. A failed postcondition triggers recovery; a failed recovery becomes a
-   Critical operator-visible state and never reports success.
-4. Kill-switch and local-console rollback work while Ollama, the GUI, and
-   network access are unavailable.
-
-### Safety
-
-Defensive only. The catalog contains containment and recovery operations, not
-arbitrary scripts. It cannot attack a remote machine, erase evidence, disable
-security controls, kill protected/system processes, or expand beyond the exact
-local target authorized by corroborated evidence.
-
----
-
-## 8. Governed Ollama Model and ARIA Pack Manager
-
-**Pitch.** Add one explicit installer for approved local models and
-non-executable ARIA knowledge packs with provenance, digest pinning, resource
-admission, offline transfer, evaluation, atomic activation, and rollback.
-
-### Why now
-
-Ollama exposes model pull, show, list, digest, format, parameter size,
-quantization, license, capabilities, context length, and Modelfile parameters.
-SLSA emphasizes verifying an artifact's digest, signature/provenance, trusted
-builder identity, and expected build parameters. Velociraptor's Artifact
-Exchange warns that community artifacts can fetch binaries or run code and are
-not guaranteed safe; Angerona should not reproduce that trust model.
-
-Sources:
-[Ollama pull API](https://docs.ollama.com/api/pull),
-[Ollama show model details](https://docs.ollama.com/api-reference/show-model-details),
-[Ollama Modelfile reference](https://docs.ollama.com/modelfile),
-[SLSA artifact verification](https://slsa.dev/spec/v1.2/verifying-artifacts),
-[Velociraptor Artifact Exchange warning](https://docs.velociraptor.app/docs/artifacts/exchange_reference/).
-
-### Fit
-
-- **Core:** define a signed Model/ARIA Pack Manifest with package ID, publisher,
-  exact Ollama model digest or file SHA-256, family, quantization, size,
-  license digest, minimum Ollama version, capabilities, memory/VRAM/disk
-  estimate, allowed source, prompt/runbook digests, eval profile, and rollback
-  target.
-- **Download:** only an explicit user action may pull. Force secure transport;
-  never set Ollama's insecure option. Download to a confined staging area,
-  enforce byte/time/free-space limits, verify content and metadata, scan
-  archives safely, and refuse links, devices, path escapes, or executable
-  knowledge-pack content.
-- **Offline:** export/import a signed manifest plus content-addressed blobs on
-  local media. Verify before any Ollama import. No network availability is
-  required to validate, run evals, activate, or roll back.
-- **Activation:** run the ARIA hostile/safe eval gate and a hardware smoke test,
-  then atomically update the selected model/prompt/runbook revision. Preserve
-  the last known-good revision and unload rejected candidates.
-- **GUI:** an Approved Models and ARIA Packs page shows provenance, license,
-  digest, size, hardware fit, capability, evaluation delta, active revision,
-  rollback, and delete-unused action.
-- **Mode:** Harden / Visualize.
-
-### Effort
-
-**M.** Ollama already supplies useful metadata but does not by itself establish
-publisher provenance. An Angerona-approved catalog and signed manifest are
-required. Exact RAM/VRAM use remains a measured estimate and must be gated by
-the resource governor.
-
-### Acceptance tests
-
-1. Valid online pull, valid offline import, wrong digest, unknown publisher,
-   altered manifest, license change, downgrade, oversized package, low disk,
-   insufficient RAM, interrupted download, and archive escape fixtures all
-   produce deterministic results.
-2. Failed evaluation or smoke test leaves the active model unchanged and
-   unloads/quarantines the candidate.
-3. Power loss between staging and activation recovers to exactly one
-   authenticated active revision.
-4. A knowledge pack containing code, tool definitions, shell text marked as an
-   executable action, external include, symlink, or network callback is refused.
-
-### Safety
-
-Defensive only. No arbitrary GitHub URL, automatic self-update, executable
-skill, unsigned model, insecure Ollama pull, silent license acceptance, or
-model-authored host action is permitted. Downloaded content can improve
-analysis and guidance but cannot grant new tool authority.
-
----
-
-## 9. YARA-X Rule-Cost Admission
-
-**Pitch.** Measure candidate YARA-X rules before activation and quarantine rules
-that exceed CPU, timeout, or match-volume budgets.
-
-### Why now
-
-YARA-X provides rule profiling to identify slow rules by total scan time. Its
-Python Scanner supports explicit timeouts and match limits. Angerona already
-uses those scanner controls; admission-time cost evidence is the missing
-performance layer.
-
-Sources:
-[YARA-X rule profiling](https://virustotal.github.io/yara-x/blog/profiling-your-yara-rules/),
-[YARA-X Python API](https://virustotal.github.io/yara-x/docs/api/python/).
-
-### Fit
-
-- **YARA Scanner / detection registry:** benchmark staged rule packages against
-  a fixed benign corpus, pathological-size samples, and safe synthetic
-  positives. Record compile time, bytes/sec, per-rule scan time, timeout count,
-  match count, and memory high-water mark.
-- **Admission:** reject global rules without a bounded purpose, excessive
-  wildcard/regex cost, repeated timeouts, huge match volume, or regression
-  beyond an approved performance envelope. Atomically activate only compiled
-  and admitted rules.
-- **Runtime:** maintain per-rule timeout/error counters. Automatically disable
-  only the offending package revision after repeated budget breaches, preserve
-  evidence, and restore the last known-good rules.
-- **GUI:** show slowest rules, coverage contribution, last timeout, package
-  revision, and rollback state.
-- **Mode:** Detect / Harden.
-
-### Effort
-
-**S-M.** Scanner timeouts already exist. Portable per-rule profiling may require
-the YARA-X profiling-enabled CLI or a controlled benchmark strategy when the
-Python binding lacks equivalent counters. Cold-cache variability requires
-relative thresholds and repeated runs.
-
-### Acceptance tests
-
-1. Known-fast, intentionally slow, excessive-match, compile-fail, and timeout
-   fixtures are admitted or rejected as expected.
-2. A rejected package never replaces active compiled rules.
-3. Runtime repeated timeout quarantines only the offending revision and
-   restores the prior rules without interrupting other sensors.
-4. Benchmark work respects Chill Mode, cancellation, file-size, and wall-clock
-   budgets.
-
-### Safety
-
-Defensive and file-scanning only. The corpus contains inert fixtures, not live
-malware; rules cannot execute code, fetch data, or authorize remediation.
-
----
-
-## 10. Journal-Backed Ransomware and Deception Attribution
-
-**Pitch.** Use bounded NTFS journal events and high-value file telemetry to
-attribute canary and encryption changes to process lineage instead of reporting
-only that a file changed.
-
-### Why now
-
-osquery documents NTFS Journal event publishing for real-time Windows file
-integrity monitoring. Microsoft Sysmon File Create records the responsible
-process for file creation/overwrite. Angerona's ransomware and deception
-modules already detect entropy, rename bursts, canary deletion/tampering, and
-restore clean snapshots, but their polling path cannot always identify the
-actor.
-
-Sources:
-[osquery File Integrity Monitoring](https://osquery.readthedocs.io/en/5.9.0/deployment/file-integrity-monitoring/),
-[Microsoft Sysmon file-system events](https://learn.microsoft.com/en-us/windows/security/operating-system-security/sysmon/sysmon-events).
-
-### Fit
-
-- **BaseModule:** add an optional native NTFS Journal reader or fixed osquery
-  event-table adapter for only approved local volumes and watched roots. Persist
-  journal ID and USN cursor in an authenticated envelope and expose journal
-  reset/wrap as a coverage gap.
-- **Ransomware:** correlate rename/write/delete bursts with process GUID, parent
-  lineage, signer/hash, target root, entropy change, Shadow Shield snapshot,
-  and canary contact. Preserve ordering in a bounded incident window.
-- **Deception:** give each decoy an opaque canary ID and signed manifest.
-  Attribute trip events from journal/Sysmon evidence, immediately rotate the
-  decoy set, and require a negative-control decoy to remain quiet before
-  escalating to automatic containment.
-- **Performance:** watch configured directories, not whole volumes; batch journal
-  reads, deduplicate by volume/journal/USN, and move hashing to the existing
-  bounded worker pool.
-- **Mode:** Detect / Respond / Visualize.
-
-### Effort
-
-**M.** Native journal parsing is Windows-specific and volume journals can be
-disabled, reset, or wrap. The guarded osquery bridge may be extended only with
-fixed read-only queries; it must still reject caller SQL and automatic install.
-Sysmon file events are valuable but may be noisy.
-
-### Acceptance tests
-
-1. Synthetic create/write/rename/delete sequences attribute exact process
-   lineage and preserve order across restart without duplicates.
-2. Journal wrap/reset, unsupported filesystem, removable-volume change,
-   permission failure, and missing Sysmon correlation become visible coverage
-   states.
-3. Canary trip plus ransomware burst reaches the response recipe; canary-only,
-   backup/indexer, and negative-control fixtures remain below automatic action.
-4. A high-churn file workload remains within queue, memory, hash, and CPU
-   budgets while high-signal canary events are never shed.
-
-### Safety
-
-Defensive and local. It does not enable a journal, alter audit policy, plant
-decoys outside approved roots, inspect file contents beyond existing bounded
-hash/entropy logic, or execute a suspected file.
-
----
-
-## 11. STIX/TAXII Intelligence Lifecycle
-
-**Pitch.** Replace flat IOC refreshes with versioned STIX relationships,
-confidence, markings, expiry, and collection provenance while retaining
-local-only correlation and offline caches.
-
-### Why now
-
-OASIS defines STIX as a machine-readable language for cyber threat intelligence
-and TAXII as its HTTPS exchange protocol. STIX captures indicators plus
-relationships and contextual objects; TAXII exposes collections, manifests,
-versions, filtering, and pagination. Zeek's Intelligence Framework similarly
-attaches source metadata and warns that larger intelligence sets increase CPU
-cost.
-
-Sources:
-[OASIS STIX/TAXII documentation](https://oasis-open.github.io/cti-documentation/),
-[OASIS TAXII 2.1 introduction](https://oasis-open.github.io/cti-documentation/taxii/intro.html),
-[Zeek Intelligence Framework](https://docs.zeek.org/en/current/frameworks/intel.html).
-
-### Fit
-
-- **Intel Sync:** add an opt-in TAXII 2.1 client for explicitly configured,
-  HTTPS-only collections. Bound pages, bytes, objects, relationships, and
-  request time. Store server identity, collection ID, object version, received
-  time, valid_from/until, confidence, marking, source, and content digest.
-- **Core:** support a strict STIX subset: Indicator, Malware, Tool,
-  Vulnerability, Attack Pattern, Course of Action, Relationship, and Marking
-  Definition. Compile supported patterns to the existing hash/IP/domain/URL
-  match indexes; unsupported pattern operators remain visible and inactive.
-- **Correlation:** intelligence is context, never sole mutation authority.
-  Response still requires fresh host/network evidence and existing policy.
-- **GUI:** show feed health, provenance, freshness, expiry, markings, supported
-  versus inactive objects, relationship graph, and last known-good offline
-  cache.
+- **Core:** add a bounded witness ledger keyed by process birth identity,
+  service identity, and event channel/record. Record source generation,
+  freshness, coverage interval, loss counter, filter scope, and privilege.
+- **Modules:** compare ETW, Security 4688, Sysmon process events, process
+  polling, Defender, Code Integrity, Audit Log Guard, and `Self Integrity`
+  where two or more are genuinely expected to overlap.
+- **Decision model:** `corroborated`, `single-source`, `expected-unobserved`,
+  `coverage-gap`, `source-conflict`, and `possible-selective-blinding`. Absence
+  can contribute to a finding only when the source proves complete coverage
+  for that interval.
+- **GUI:** a clickable Sensor Witness matrix with source generation, lag,
+  drops, last record, permissions, disagreement, and exact evidence lineage.
 - **Mode:** Detect / Harden / Visualize.
 
 ### Effort
 
-**M.** STIX patterning is broad; a strict documented subset is essential.
-Collections may require credentials, which remain in SecureStore. Large feeds
-need incremental versions, tombstones, expiry, deduplication, and cost budgets.
+**M.** Windows-first. Requires persistent bookmarks/cursors and normalized
+process birth identities. A user-mode quorum is defense in depth, not
+tamper-proofing against Administrator/SYSTEM or kernel authority.
 
-### Acceptance tests
+### Assurance profile
 
-1. OASIS-style bundles, relationships, markings, pagination, versions, expiry,
-   malformed patterns, server truncation, replay, and clock skew produce exact
-   lifecycle state.
-2. Network failure retains the last verified cache and labels it stale; it does
-   not erase active local intelligence.
-3. Unsupported objects/operators cannot enter match indexes or trigger action.
-4. Marked or privacy-restricted intelligence never appears in an export that
-   lacks the required handling level.
+- **Confidence:** High that selective defense impairment matters; moderate that
+  a given disagreement is hostile without corroboration.
+- **Data/privacy cost:** Moderate. Duplicate source metadata can increase local
+  volume. Deduplicate by event identity, retain bounded normalized facts, and
+  keep command line collection optional/redacted.
+- **False-positive risk:** Audit-policy changes, boot races, event rollover,
+  provider filters, queue pressure, sleep/resume, and permissions routinely
+  create gaps. Those states must produce `coverage-gap` before any threat
+  label.
+
+### Buildable acceptance tests
+
+1. Exact overlap, expected non-overlap, source delay, rollover, dropped events,
+   restart, sleep/resume, and permission loss map to distinct states.
+2. A synthetic selectively missing process observation raises only when the
+   witness declares the interval complete.
+3. PID reuse and reordered events never join without matching process birth.
+4. A sustained 100,000-event test remains bounded and reports every internal
+   drop rather than silently degrading.
 
 ### Safety
 
-Defensive intelligence consumption only. No IOC is probed, contacted, scanned,
-sinkholed, or attacked. TAXII is opt-in and inbound data never becomes code or
-automatic response authority.
+Observation and integrity assessment only. No kernel hooks, undocumented ETW
+Threat Intelligence claim, process injection, stealth collection, or automatic
+containment from negative evidence alone.
 
 ---
 
-## 12. Signed Linux CO-RE Sensor Sidecar
+## 5. Independent DNS Path Witness and Fast-Flux Guard
 
-**Pitch.** Replace the Linux BCC-only ceiling with an optional signed,
-resource-bounded CO-RE eBPF sidecar that emits the existing normalized event
-contract.
+**Pitch.** Detect both local resolver-path manipulation and rapidly changing
+malicious infrastructure using privacy-bounded DNS, route, and flow evidence.
 
 ### Why now
 
-Falco's default modern eBPF driver uses CO-RE and is included with the binary,
-avoiding per-kernel probe builds on supported systems. Falco also distributes
-rules and plugins as OCI artifacts and documents compatibility/version
-requirements. osquery notes that event-based process and socket auditing is
-powerful but can add CPU and event volume, so explicit budgets and host testing
-are required.
+The UK NCSC reported in April 2026 that APT28 compromised routers and changed
+DHCP/DNS settings to redirect selected traffic through actor-controlled DNS,
+enabling adversary-in-the-middle credential and token theft. NSA and partners'
+2025 fast-flux advisory separately warns that rapid DNS infrastructure churn is
+a continuing gap and recommends layered DNS, network, and threat-intelligence
+analytics.
 
 Sources:
-[Falco modern eBPF download and driver model](https://falco.org/docs/setup/download/),
-[Falco plugin compatibility](https://falco.org/docs/concepts/plugins/usage/),
-[osquery process and socket auditing](https://osquery.readthedocs.io/en/stable/deployment/process-auditing/).
+
+- [UK NCSC — APT28 exploit routers to enable DNS hijacking operations](https://www.ncsc.gov.uk/news/apt28-exploit-routers-to-enable-dns-hijacking-operations)
+- [NSA — Fast Flux as a National Security Threat](https://www.nsa.gov/Press-Room/Press-Releases-Statements/Press-Release-View/Article/4143636/nsa-and-partners-issue-guidance-on-fast-flux-as-a-national-security-threat/)
 
 ### Fit
 
-- **Native sidecar:** a minimal memory-safe Rust or reviewed C/libbpf binary
-  observes process exec/exit, file execution, outbound connection, and selected
-  security-relevant syscalls. It emits length-delimited, versioned local IPC
-  records; it accepts no target, filter language, command, or response action
-  from the wire.
-- **eBPF module:** verify Authenticode-equivalent package signature where
-  available, file SHA-256, manifest, architecture, kernel/BTF support, protocol
-  version, and privilege boundary before launch. Normalize into the existing
-  Linux sensor event contract.
-- **Resource governor:** bound ring size, event rate, batch size, field lengths,
-  CPU, memory, and drop policy. Expose produced, consumed, kernel-lost, user-
-  dropped, malformed, and restart counts.
-- **Packaging:** release only reviewed, reproducible target binaries with
-  provenance and exact hashes. Keep rootless Observe as the default fallback.
-- **Mode:** Detect / Harden.
+- **Network Trust Monitor:** retain current DNS/DHCP/gateway drift and add an
+  explicitly enrolled DNS-path policy. A first capture made after compromise
+  is `unverified`, not trusted merely because it stays stable.
+- **New cross-platform `BaseModule`:** `DNSIntegrityGuard` consumes bounded DNS
+  query/answer events plus normalized flows. Calculate per-domain churn,
+  TTL distribution, address/prefix/ASN diversity, name-server change,
+  answer-to-flow consistency, and process context over fixed windows.
+- **Independent witness:** optionally compare only operator-enrolled synthetic
+  canary names or selected critical service names through one separately
+  approved, pinned reference resolver. This is off by default, rate limited,
+  and records a disagreement—not a claim that either resolver is truthful.
+- **Intel Sync:** combine heuristic evidence with signed reputation/feed age;
+  heuristics alone cannot authorize blocking. CDN/anycast and split-horizon
+  exceptions are explicit, expiring policy records.
+- **GUI:** clickable DNS Path view with resolver source, network profile,
+  query-token, answer set, TTL/churn, related process/flow, witness result,
+  source loss, and why a CDN-safe decision was made.
+- **Mode:** Detect / Harden / Visualize.
 
 ### Effort
 
-**L.** Requires native build, Linux kernel/BTF/version testing, privilege
-separation, signed release artifacts, and target-runner CI. Containers and
-namespaces complicate process/network identity. Unsupported hosts remain on
-rootless or BCC modes with an honest capability contract.
+**M.** Cross-platform analytics; Windows collection can begin with supported
+Sysmon/DNS Client evidence. ASN enrichment needs a versioned offline database
+or optional feed. Independent resolution creates a real privacy/egress
+boundary and must remain optional.
 
-### Acceptance tests
+### Assurance profile
 
-1. Supported-kernel VM matrices prove exec/connect capture, process identity,
-   event ordering, restart, protocol negotiation, and clean unload.
-2. No BTF, old kernel, wrong architecture, altered binary, wrong signature,
-   protocol mismatch, privilege failure, and ring overflow fail to explicit
-   degraded states.
-3. A 100,000-event stress run reports exact loss counters, respects resource
-   budgets, and does not block the GUI/core.
-4. Fuzzed IPC records cannot crash the consumer, allocate unbounded memory, or
-   invoke any action.
+- **Confidence:** High for the threat; government reporting. Moderate for
+  endpoint-only fast-flux classification because legitimate CDNs behave
+  similarly.
+- **Data/privacy cost:** High if raw domains are retained. Default to keyed
+  domain tokens plus public-suffix class and coarse ASN/prefix; raw local detail
+  requires explicit retention. Synthetic canaries minimize independent-query
+  disclosure.
+- **False-positive risk:** CDNs, anycast, VPNs, captive portals, failover,
+  split-horizon DNS, travel, and privacy relays. Require profile-aware history,
+  several analytic features, and no autonomous block from churn alone.
+
+### Buildable acceptance tests
+
+1. Fixtures distinguish stable DNS, legitimate CDN churn, split-horizon/VPN,
+   selective answer divergence, resolver drift, and single/double-flux-like
+   synthetic behavior without embedding live malicious infrastructure.
+2. Missing answers, event loss, stale ASN data, and failed witness egress stay
+   unknown and never become clean or malicious by default.
+3. Raw domain retention and independent queries remain off in a fresh install.
+4. A 100,000-answer window uses bounded memory and deterministic eviction.
 
 ### Safety
 
-Defensive observation only. No exploit, packet injection, process manipulation,
-remote scanning, arbitrary BPF program, unsigned driver/module, or hidden
-persistence. Rootless Observe remains available; privileged telemetry is an
-explicit operator deployment.
+Defensive observation only. No DNS poisoning, sinkhole operation, credential
+interception, remote probing, or automatic broad blocking. The optional witness
+performs ordinary, rate-limited resolution of operator-approved names only.
 
 ---
 
-## Cross-project comparison and disposition
+## 6. Trusted Administration and RMM Provenance Ledger
 
-| Project / standard | Mature pattern reviewed | Angerona disposition |
-|---|---|---|
-| Wazuh | Triggered and stateful active response | Reuse Angerona's stronger typed broker; add verified leases, not arbitrary scripts |
-| Velociraptor | Persistent client event tables, offline buffering, artifact ecosystem | Add restart-safe bookmarks; reject bulk unreviewed executable artifacts |
-| osquery / Fleet | Evented host tables, portable queries, scheduled differential state | Keep fixed read-only bridge; add bounded journal telemetry, never caller SQL |
-| Falco | Modern CO-RE eBPF, versioned plugins/rules | Long-term signed Linux sidecar; preserve rootless fallback |
-| Suricata / Zeek | Community ID, rich flow/intelligence context | Add stable cross-sensor flow joins and versioned intelligence |
-| Security Onion | Cases, escalation, analyzers, node/EPS/staleness visibility | Cases already exist; deepen sensor continuity, lag, loss, and performance UX |
-| Sigma | Portable detection and temporal correlation | Add a strict signed subset over normalized evidence |
-| YARA-X | Safe compiled scanning, timeouts, rule profiling | Keep current scanner; add admission and hot-rule rollback |
-| OCSF | Versioned vendor-neutral event/remediation classes | Upgrade the existing mapper and validate exact schema contracts |
-| Ollama / SLSA | Model metadata plus artifact provenance verification | Build an approved, digest-pinned, resource-gated, rollback-safe manager |
+**Pitch.** Treat an approved signer or management product as the start of a
+trust decision, not proof that every session and child action is authorized.
 
-## Recommended implementation sequence
+### Why now
 
-1. Community-ID flow fusion, Windows event continuity, BYOVD evidence, and ARIA
-   compartment/eval work deliver the highest impact per effort.
-2. OCSF conformance provides the stable field contract needed before building
-   Sigma correlations and broader STIX/TAXII interchange.
-3. Stateful containment leases should land before any additional unattended
-   response recipe.
-4. The model/ARIA pack manager must land before exposing any in-app model or
-   skill download surface.
-5. YARA-X admission and journal attribution can then deepen performance and
-   ransomware/deception quality.
-6. The CO-RE sidecar remains a separately reviewed native release project with
-   target-runner evidence, not a Python-only increment.
+Microsoft's 2026 incident report describes abuse of a legitimate enterprise
+management platform operated through a compromised third-party relationship.
+CISA's 2025 SimpleHelp advisory documents downstream compromise through an
+unpatched RMM product. These cases support behavior and provenance controls
+around trusted tools, not name-based bans.
+
+Sources:
+
+- [Microsoft — Undermining the trust boundary: Investigating a stealthy intrusion through third-party compromise](https://www.microsoft.com/en-us/security/blog/2026/05/12/undermining-the-trust-boundary-investigating-a-stealthy-intrusion-through-third-party-compromise/)
+- [CISA AA25-163A — Ransomware actors exploit unpatched SimpleHelp RMM](https://www.cisa.gov/sites/default/files/2025-06/aa25-163a-ransomware-simplehelp-rmm-compromise.pdf)
+
+### Fit
+
+- **New `BaseModule`:** `TrustedAdministrationGuard` inventories RMM,
+  deployment, backup, monitoring, remote-support, and automation services using
+  fixed local service/software/App Control evidence.
+- **Core provenance ledger:** bind product/service identity, executable hash,
+  signer, version, service account class, installation receipt, approved
+  controller token, maintenance window, expected child-process classes,
+  tokenized egress destinations, and update provenance.
+- **Existing modules:** correlate with `Identity Session Guard`, `App Control
+  Monitor`, `Persistence Sweep`, `Process Egress Guard`, `Process Monitor`, and
+  the incident graph. A signed binary with an unexpected controller/session,
+  child lineage, version, or destination becomes anomalous without declaring
+  the vendor malicious.
+- **GUI:** clickable Administration Trust view showing approved owner,
+  third-party relationship, active version, exposure/KEV status, session
+  receipt, process lineage, egress token, and maintenance context.
+- **Mode:** Detect / Harden / Visualize.
+
+### Effort
+
+**M.** Windows-first with partial cross-platform inventory. Authoritative
+session provenance requires vendor or administrator evidence; when absent,
+Angerona can report local behavior only. Product identification must not rely
+solely on filename.
+
+### Assurance profile
+
+- **Confidence:** High for the tradecraft, high for exact local drift, and
+  moderate for session authorization without an external management receipt.
+- **Data/privacy cost:** Moderate. Management product, service identity, child
+  process class, timing, and destination tokens can reveal operations. Do not
+  retain full remote commands or operator content.
+- **False-positive risk:** Emergency support, upgrades, monitoring scripts, and
+  new service-provider infrastructure. Use explicit maintenance windows,
+  version migrations, and learned candidates requiring human enrollment.
+
+### Buildable acceptance tests
+
+1. Approved binary/approved controller, same signer/new hash, stale version,
+   unknown controller, unexpected child class, novel destination, missing
+   session receipt, and maintenance-window fixtures remain distinct.
+2. A signer match alone never suppresses behavioral evidence.
+3. Missing external provenance lowers evidence grade and cannot become a
+   fabricated unauthorized-session claim.
+4. No test or production path captures remote commands, screen contents, or
+   credentials.
+
+### Safety
+
+Defensive inventory and correlation only. No exploitation of RMM, remote
+session initiation, command replay, credential use, vendor impersonation, or
+automatic removal of legitimate management software.
+
+---
+
+## 7. Native Administration Sequence Correlator
+
+**Pitch.** Detect suspicious chains of ordinary Windows administration events
+without depending on malware names or publishing offensive command recipes.
+
+### Why now
+
+The joint Volt Typhoon advisory describes long-lived access using valid
+accounts, strong operational security, and living-off-the-land techniques.
+The UK-led 2025 logistics advisory also highlights credential guessing,
+phishing, and abuse of mailbox permissions across a targeted campaign. These
+patterns reward ordered, identity-aware correlation rather than isolated tool
+alerts.
+
+Sources:
+
+- [CISA joint advisory AA24-038A — PRC state-sponsored actors compromise U.S. critical infrastructure](https://www.cisa.gov/sites/default/files/2024-03/aa24-038a_csa_prc_state_sponsored_actors_compromise_us_critical_infrastructure_3.pdf)
+- [UK NCSC — Russian intelligence campaign targeting western logistics and technology organisations](https://www.ncsc.gov.uk/news/uk-partners-expose-russian-intelligence-campaign)
+
+### Fit
+
+- **Temporal Tradecraft Correlator:** add bounded Windows sequence families for
+  unusual remote/privileged logon, native administration activity, service or
+  task creation, WMI subscription change, script-host evidence, outbound
+  connection, persistence drift, and audit impairment.
+- **Core:** use normalized event kinds and process/logon/session birth
+  identities—not free-form command-line regex—as the primary join. Every edge
+  records time bound, evidence grade, source completeness, and alternative
+  benign explanations.
+- **Fast Path:** retain single-event high-confidence controls, but use them as
+  corroboration rather than the sequence schema itself.
+- **GUI:** clickable actor-neutral timeline showing each event, source, join
+  basis, coverage gap, confidence contribution, and the exact rule revision.
+- **Mode:** Detect / Visualize.
+
+### Effort
+
+**M.** Windows-first. Requires broader restart-safe event coverage and privacy-
+bounded script/logon metadata. Some events depend on Sysmon, PowerShell, or
+Security audit policy and must be capability-gated.
+
+### Assurance profile
+
+- **Confidence:** High for LOTL relevance; moderate for any individual local
+  sequence because administrators legitimately use the same facilities.
+- **Data/privacy cost:** Moderate to high if command text is stored. Prefer
+  typed event categories, signer/path tokens, identity tokens, and bounded
+  features; full command text remains off or locally redacted.
+- **False-positive risk:** software deployment, help-desk work, domain
+  administration, backup, and incident response. Require ordered multi-source
+  evidence, maintenance context, peer-group rarity, and operator feedback.
+
+### Buildable acceptance tests
+
+1. Synthetic benign administration, ordered suspicious chain, reordered
+   events, PID/LUID reuse, missing source, maintenance window, and replay after
+   restart have deterministic outcomes.
+2. One process name or one command token cannot satisfy a multi-event rule.
+3. Sequence memory, fan-out, and retention stay bounded under an event storm.
+4. The rule pack contains only defensive event schemas and synthetic markers,
+   not runnable intrusion commands or payloads.
+
+### Safety
+
+Defensive correlation only. No command generation, credential guessing,
+remote execution, persistence creation, mailbox access, or autonomous response
+from actor attribution.
+
+---
+
+## 8. Out-of-Band Console and HID Topology Guard
+
+**Pitch.** Detect unexpected keyboard/mouse, composite USB-network, and console
+topology changes that can create a control path below ordinary endpoint remote-
+access telemetry.
+
+### Why now
+
+Microsoft Incident Response reported in December 2025 that compromised user
+accounts associated with a North Korean remote-worker scheme connected PiKVM
+devices to employer workstations, providing persistent out-of-band control and
+an egress path that could bypass traditional EDR visibility. Microsoft
+recommends monitoring for unapproved devices of this class.
+
+Sources:
+
+- [Microsoft — Imposter for hire: How fake people can gain very real access](https://www.microsoft.com/en-us/security/blog/2025/12/11/imposter-for-hire-how-fake-people-can-gain-very-real-access/)
+- [Microsoft Learn — Enumerate installed devices safely with PnP/SetupAPI](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/enumerating-installed-devices)
+
+### Fit
+
+- **Peripheral and DMA Guard / USB Monitor:** add a read-only PnP provider using
+  supported Configuration Manager or SetupAPI enumeration, not direct registry
+  assumptions.
+- **Topology model:** enroll keyed tokens for present HID, keyboard, mouse,
+  monitor, USB composite, USB network, dock, and bus-parent relationships.
+  Record class, driver signer/version, arrival generation, location path token,
+  and approved owner—never keystrokes or screen content.
+- **Correlation:** join unexpected topology changes with new network adapters,
+  route/DNS changes, logon/session anomalies, sleep/resume, and physical-device
+  installation evidence. The module cannot prove who controls a device or what
+  happens outside the host.
+- **GUI:** clickable Device Control Path view with topology, class, driver,
+  first/last seen, enrollment, related network change, and limitations.
+- **Mode:** Detect / Harden / Visualize.
+
+### Effort
+
+**M.** Windows-first. Device classes, docks, accessibility hardware, VMs, and
+sleep/resume require substantial field fixtures. Blocking HID installation is
+out of scope for the first version because it can lock out the operator.
+
+### Assurance profile
+
+- **Confidence:** High for the reported risk; moderate that generic device
+  topology uniquely identifies out-of-band control.
+- **Data/privacy cost:** Moderate. Hardware instance/location identifiers can
+  fingerprint a user. Store keyed tokens by default and show raw identifiers
+  only locally with explicit detail access.
+- **False-positive risk:** docks, KVM switches, accessibility devices, gaming
+  peripherals, virtualization, firmware updates, and port changes. Require
+  enrollment and topology/process/network corroboration; never classify by
+  vendor ID alone.
+
+### Buildable acceptance tests
+
+1. PnP fixtures cover known device, new HID, composite HID/network, dock,
+   phantom device, missing property, sleep/resume reorder, and driver change.
+2. Direct registry enumeration is absent; only present-device PnP evidence can
+   claim current attachment.
+3. Device identifiers are tokenized in EventBus/public views.
+4. No automatic block, device disable, keystroke capture, screen capture, or
+   firmware interaction occurs.
+
+### Safety
+
+Defensive inventory only. It does not emulate input, operate a KVM, capture a
+screen, monitor keystrokes, disable accessibility devices, or probe device
+firmware.
+
+---
+
+## 9. Least-Privilege Entra Identity Evidence Connector
+
+**Pitch.** Turn Identity Session Guard's supplied-evidence contract into an
+optional, first-party, cursor-safe Entra audit feed without making cloud access
+the default.
+
+### Why now
+
+Microsoft's 2026 Storm-2949 report shows a compromise expanding through self-
+service password reset abuse, MFA method changes, application identities, and
+legitimate cloud management features. Microsoft Graph exposes Entra directory
+audit records for user, app, device, group, PIM, identity-protection, and
+password-management activity and documents `AuditLog.Read.All` as the least
+privileged permission for this API.
+
+Sources:
+
+- [Microsoft — How Storm-2949 turned a compromised identity into a cloud-wide breach](https://www.microsoft.com/en-us/security/blog/2026/05/18/storm-2949-turned-compromised-identity-into-cloud-wide-breach/)
+- [Microsoft Graph — List directoryAudits](https://learn.microsoft.com/en-us/graph/api/directoryaudit-list?view=graph-rest-1.0)
+
+### Fit
+
+- **New optional core connector:** explicit tenant enrollment, delegated or
+  application identity, `AuditLog.Read.All` only for the first release,
+  protected token custody, fixed Microsoft endpoint, normal TLS validation,
+  bounded paging, durable cursor, retry budget, and visible throttling/loss.
+- **Admission:** normalize only fixed schemas for MFA/authentication-method
+  change, password reset, privileged role, app/service-principal credential,
+  device registration, and consent changes. Tokenize tenant/user/app/device
+  identities before EventBus publication; omit token bodies and secrets.
+- **Identity Session Guard:** consume broker-authenticated evidence with source
+  tenant, record ID, event time, ingestion time, cursor generation, and
+  completeness. Correlate with local logon, device-code, RMM, and process
+  evidence without treating cloud IP geolocation as proof.
+- **GUI:** clickable Cloud Identity Coverage view showing consent scope,
+  cursor/lag, tenant token, event category, affected identity tokens, evidence
+  lineage, and revoke/disconnect control.
+- **Mode:** Detect / Visualize.
+
+### Effort
+
+**M-L.** Cross-platform connector with Windows-focused correlation. Requires an
+Entra work/school tenant, admin consent to a broad read permission, secure OAuth
+token lifecycle, national-cloud endpoint support, throttling, retention, and
+licensing tests. It is unavailable for personal Microsoft accounts under this
+API contract.
+
+### Assurance profile
+
+- **Confidence:** High for the threat and authoritative audit source; cloud
+  logs still do not prove user intent or attribution.
+- **Data/privacy cost:** High. Directory audit data identifies people, apps,
+  devices, IPs, and administrative changes. Default off; least fields; local
+  encryption; privacy tokens; short retention; no cloud-to-cloud forwarding
+  without separate consent.
+- **False-positive risk:** help-desk resets, onboarding, app rotation, PIM, and
+  normal device registration. Require privileged-target context, temporal
+  chains, known automation identities, and maintenance/change receipts.
+
+### Buildable acceptance tests
+
+1. Consent absent, token missing, wrong tenant, wrong audience, expired token,
+   pagination replay, throttling, partial page, schema drift, national-cloud
+   mismatch, and revocation all fail to explicit coverage states.
+2. Only documented least-privilege scope is accepted for the first version;
+   any extra requested permission is visible and rejected by policy.
+3. Raw identities, access tokens, refresh tokens, and IPs never enter public
+   EventBus summaries or exports.
+4. Disconnect revokes local use and wipes protected connector credentials while
+   preserving bounded audit receipts.
+
+### Safety
+
+Read-only and opt-in. No password reset, MFA registration, user disabling,
+role change, mailbox access, Graph enumeration outside fixed audit endpoints,
+or automated cloud response.
+
+---
+
+## 10. Edge Control-Plane Evidence Intake
+
+**Pitch.** Admit signed, typed network-device change and health evidence so a
+compromised router or firewall cannot remain an invisible external assumption.
+
+### Why now
+
+CISA and partners reported in 2025 that PRC state-sponsored actors were
+modifying routers, abusing trusted network relationships, and using network-
+device capabilities for durable access. Their hardening guidance recommends
+scrutinizing configuration changes, centrally retaining configurations,
+monitoring management connections and accounts, and off-device logging. The
+2026 NCSC DNS-hijacking report reinforces that an endpoint's inherited network
+settings can be downstream evidence of a compromised edge device.
+
+Sources:
+
+- [CISA AA25-239A — Countering Chinese state-sponsored actors' compromise of networks worldwide](https://www.cisa.gov/news-events/cybersecurity-advisories/aa25-239a)
+- [CISA/NSA/FBI and partners — Enhanced Visibility and Hardening Guidance for Communications Infrastructure](https://www.cisa.gov/resources-tools/resources/enhanced-visibility-and-hardening-guidance-communications-infrastructure)
+- [UK NCSC — APT28 exploit routers to enable DNS hijacking operations](https://www.ncsc.gov.uk/news/apt28-exploit-routers-to-enable-dns-hijacking-operations)
+
+### Fit
+
+- **Core evidence contract:** define a vendor-neutral, fixed schema for device
+  identity token, firmware/version posture, config digest/revision, typed
+  account/ACL/protocol/route/DNS delta, management-login receipt, flow summary,
+  collector generation, completeness, and loss. Raw configurations and
+  credentials are not accepted.
+- **Personal Sentinel authority:** optionally countersign evidence from one
+  explicitly enrolled edge adapter and provide monotonic sequence/freshness.
+  A receipt proves only source and continuity, not firmware integrity.
+- **Network Trust Monitor / Device Security Lab / SIEM:** correlate edge deltas
+  with endpoint DNS/DHCP/route/gateway changes, exposure/KEV posture, and
+  management sessions. Missing source logs or rollback becomes a coverage
+  finding.
+- **Adapters:** separately reviewed, read-only adapters may consume an
+  operator-supplied signed export or existing authenticated syslog/API feed.
+  Angerona never discovers devices, accepts router credentials, or issues
+  configuration commands.
+- **GUI:** clickable Edge Evidence view showing enrolled source, evidence
+  grade, revision, changed category, management origin token, firmware/KEV
+  status, continuity, and explicit limits.
+- **Mode:** Detect / Harden / Visualize.
+
+### Effort
+
+**L.** Vendor schemas, secure export, clock/freshness, external key custody,
+device lifecycle, rollback, and realistic lab fixtures are substantial. Begin
+with the vendor-neutral contract and one offline signed-export adapter, not a
+generic network-management client.
+
+### Assurance profile
+
+- **Confidence:** High for the threat and need; high for a cryptographically
+  admitted change record, but low for device truth after privileged firmware
+  compromise without independent attestation.
+- **Platform:** Angerona core is cross-platform; target adapters depend on the
+  separately administered edge device.
+- **Data/privacy cost:** High if configurations or addresses are retained.
+  Accept typed deltas and keyed topology/account tokens, cap flow summaries,
+  and reject secrets/raw configuration by schema.
+- **False-positive risk:** planned firmware upgrades, failover, route changes,
+  ISP maintenance, DHCP renewal, and administrator changes. Require change-
+  management receipts, device generation, redundancy context, and no automatic
+  endpoint isolation from a single edge delta.
+
+### Buildable acceptance tests
+
+1. Valid signed revision, replay, rollback, gap, mixed device identity, stale
+   time, malformed delta, oversized export, raw secret/config field, and
+   unknown adapter version fixtures have deterministic outcomes.
+2. A valid signature never upgrades incomplete device evidence to healthy.
+3. Endpoint and edge events correlate only through an enrolled device/path
+   token and compatible time/generation.
+4. Tests prove zero active discovery, credential storage, configuration write,
+   remote command, or firmware claim.
+
+### Safety
+
+Defensive evidence intake only. No router exploitation, port scanning,
+credential testing, packet interception, configuration mutation, remote shell,
+traffic redirection, or hack-back.
+
+---
+
+## Recommended implementation order
+
+1. Land the Authentication Extension Guard and observational Security-Control
+   Drift Witness first; both close specific Windows blind spots with no new
+   network authority.
+2. Bind ARIA's runtime components and consent semantics before expanding any
+   AI/plugin/agent integration surface.
+3. Build the witness quorum, then use its completeness states as a prerequisite
+   for Windows native-administration sequence detections.
+4. Add DNS query/answer continuity and privacy tokens before enabling fast-flux
+   windows or an optional independent resolver witness.
+5. Reuse those identity, process, and network contracts for the trusted-
+   administration ledger and out-of-band device topology guard.
+6. Treat the Entra connector and edge evidence adapter as separate opt-in
+   integration projects with their own threat models, permission reviews, and
+   deployment acceptance.
 
 ## Explicit non-goals
 
-- No offensive tooling, exploit creation, credential theft, evasion, attack
-  infrastructure, hack-back, remote scanning, or weaponized adversary module.
-- No arbitrary shell/script response, downloaded executable skill, bulk GitHub
-  artifact import, unverified model, insecure Ollama pull, or silent update.
-- No new unsigned Windows kernel driver. ETW Threat Intelligence access that
-  requires protected-process privileges must not be claimed from an ordinary
-  elevated user-mode process.
-- No automatic security-policy weakening, GPO/MDM reversal, driver deletion,
-  log clearing, audit-policy mutation, or permanent containment without an
-  explicit retained-policy decision.
-- No claim of 100 percent attack coverage. Completion means passing the stated
-  positive, negative, continuity, resource, and rollback tests with limitations
-  visible.
+- No offensive tooling, intrusion instructions, exploit code, credential
+  collection, persistence creation, evasion implementation, hack-back, remote
+  scanning, or weaponized adversary module.
+- No unsupported attribution. Behavior can resemble source-reported tradecraft
+  without proving a state, service, organization, group, or person.
+- No automatic blocking from a heuristic, negative-space signal, signer name,
+  DNS churn, device vendor ID, cloud IP, or external report alone.
+- No raw router configuration, private key, authentication token, password,
+  keystroke, screen content, remote command, or LSASS memory collection.
+- No new unsigned kernel component and no claim that user-mode telemetry can
+  resist Administrator, SYSTEM, kernel authority, compromised firmware, or a
+  privileged whole-host rollback.
+- No expansion of the existing Firewall-only restorable baseline by wording.
+  Each additional mutation class must independently prove capture, apply,
+  postcondition, rollback, restart recovery, and scope.

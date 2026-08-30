@@ -1,0 +1,135 @@
+{
+  "schema": "angerona.redteam-simulation-independent-reattack.v5",
+  "cycle": 27,
+  "round": 2,
+  "date": "2026-08-28",
+  "disposition": "REOPENED",
+  "scope": {
+    "findings": [
+      "RTS-R4-01",
+      "RTS-R4-02",
+      "RTS-R4-03",
+      "RTS-R4-04",
+      "RTS-R4-05",
+      "RTS-R4-06",
+      "RTS-R4-07"
+    ],
+    "inert_temp_fixtures_only": true,
+    "live_probes": false,
+    "host_mutation": false,
+    "product_edits": false,
+    "publication": false
+  },
+  "summary": {
+    "closed": 4,
+    "reopened": 3,
+    "critical": 0,
+    "high": 0,
+    "medium": 3,
+    "low": 0
+  },
+  "findings": [
+    {
+      "id": "RTS-R4-01",
+      "status": "CLOSED",
+      "severity": null,
+      "title": "T1059 readiness and exact OS-source receipt",
+      "component": "src/angerona/modules/purple_guard.py:334-425,1006-1102,1393-1540,1820-1947,1961-2022,3051-3258; src/angerona/modules/process_monitor.py:50-117,166-260",
+      "evidence": [
+        "A manager without Process Monitor provisioned the exact built-in object, capability, EventBus binding and fresh lifecycle/cycle boundary.",
+        "The authenticated 13-row contract named angerona.builtin.process_monitor as T1059 source.",
+        "A bounded no-op child yielded a version-3 receipt after a second Process Monitor OS reread.",
+        "A receipt-free event copying the exact live PID, birth time and token was rejected.",
+        "Release stopped and removed the temporary producer."
+      ]
+    },
+    {
+      "id": "RTS-R4-02",
+      "status": "REOPENED_PARTIAL",
+      "severity": "MEDIUM",
+      "title": "Direct canonical FIM evaluator invocation mints native proof without a scan",
+      "component": "src/angerona/modules/purple_guard.py:225-332,1543-1570,1961-2022,2024-2134,2251-2262; src/angerona/modules/file_integrity.py:508-549,572-698,773-885",
+      "evidence": [
+        "The former public attest_fim_scan_observation surface returned an empty result.",
+        "With the exact running FIM and enrolled held marker, unrelated code called _evaluate_snapshot with a caller-created path-to-digest mapping.",
+        "No _scan call occurred and _last_scan_receipt remained complete=false/reason=not scanned.",
+        "The code-site capability minted a version-3 native_analytic_detection receipt that verify_validation_native_event accepted for T1003."
+      ],
+      "impact": "Same-process code can manufacture native detector efficacy while proving only that the enrolled inert marker exists with the supplied content.",
+      "recommendation": "Require _evaluate_snapshot to consume a one-use authenticated result produced only by a complete internal _scan generation and bind root coverage, exact snapshot digest, per-object identity/change token, and lifecycle. Strong closure requires a measured isolated producer with a private key/channel; otherwise label the result same-process simulation validation rather than native analytic detection."
+    },
+    {
+      "id": "RTS-R4-03",
+      "status": "REOPENED",
+      "severity": "MEDIUM",
+      "title": "Issuer-owned verifier dispatch is still ordinary mutable Python state",
+      "component": "src/angerona/modules/purple_guard.py:83-158,922-968,2199-2248",
+      "evidence": [
+        "The former module-global callable alias no longer controls dispatch.",
+        "The replacement callable fields remain on _LeaseAuthorityState, reachable through _lease_authority(lease) and the module-global weak registry.",
+        "Replacing only state.verify_native_impl made the public wrapper accept a receipt-free row without altering the lease class or former alias."
+      ],
+      "impact": "An admitted Python extension can redirect evidence verification and invalidate an immutable/issuer-only in-process assurance claim.",
+      "recommendation": "Move verifier code, keys, replay state and result signing into a measured restricted process or service and expose only an opaque handle/public verification key. Until then, describe the capture as accidental-tamper resistance, not an immutable verifier boundary."
+    },
+    {
+      "id": "RTS-R4-04",
+      "status": "CLOSED",
+      "severity": null,
+      "title": "Cleanup exact-object custody",
+      "component": "src/angerona/modules/purple_guard.py:576-749,1285-1391",
+      "evidence": [
+        "A replacement before DELETE-handle acquisition caused fail-closed retention.",
+        "A replacement after the exact DELETE-capable handle opened survived unchanged while only the enrolled renamed original was disposed.",
+        "The POSIX branch moves to unpredictable same-directory custody and verifies the moved inode before unlink."
+      ]
+    },
+    {
+      "id": "RTS-R4-05",
+      "status": "REOPENED_PARTIAL",
+      "severity": "MEDIUM",
+      "title": "Rolling back only the AAR journal recreates an authenticated sequence fork",
+      "component": "src/angerona/shark/aar_report.py:135-197,975-1302; src/angerona/gui/main_window.py:2132-2180,2316-2382; src/angerona/gui/pages.py:6517-6657",
+      "evidence": [
+        "Normal fixed-file rollback advanced to sequence 3 and cooperative publication remains OS-serialized.",
+        "Restoring only the ordinary writable journal to its authentic report-1 prefix while leaving report-2 fixed files intact caused the publisher to repair the fixed files backward.",
+        "The next report became a different HMAC-valid sequence-2 descendant of report 1; the resulting journal chain validated.",
+        "verified_aar_handoff_text accepted the new fork because it verifies report/head bytes but not journal inclusion or an independent high-water."
+      ],
+      "impact": "A same-user writer can hide an intervening report and bind review/remediation to a validly signed rolled-back branch.",
+      "recommendation": "Anchor every accepted AAR journal transition to a separately administered monotonic CAS authority using an authenticated precommit outbox, retain and revalidate the journal object across load/append, and make GUI handoff verify the exact signed journal row plus witnessed head. Without that witness, call the local journal tamper-evident rather than rollback-resistant."
+    },
+    {
+      "id": "RTS-R4-06",
+      "status": "CLOSED",
+      "severity": null,
+      "title": "Maximum admitted TTL evidence horizon",
+      "component": "src/angerona/modules/purple_guard.py:1104-1283; src/angerona/shark/aar_report.py:1609-1640; src/angerona/shark/run_manifest.py:381-456",
+      "evidence": [
+        "The authenticated 4,235-second campaign horizon overrode the 3,600-second caller default while remaining below the 4,500-second cap.",
+        "A separately signed history ending 1 ms beyond its admitted TTL failed lease history verification."
+      ]
+    },
+    {
+      "id": "RTS-R4-07",
+      "status": "CLOSED",
+      "severity": null,
+      "title": "Zero-step planned denominator",
+      "component": "src/angerona/shark/aar_report.py:1480-1514,1517-1607",
+      "evidence": [
+        "An independent signed zero-step incomplete Red Team history persisted an authenticated report.",
+        "The report contained 14 diagnostic verdicts, denominator/detection_steps 13, coverage_score_eligible=false and a null simulation-validation rate."
+      ]
+    }
+  ],
+  "validation": {
+    "author_fifth_remediation": "6 passed",
+    "independent_hostile_reproduction_and_closure": "7 passed",
+    "wider_redteam_purple_compatibility": "126 passed",
+    "compile": "PASS",
+    "ruff": "PASS",
+    "module_selftests": "65 passed / 0 failed / 17 expected skips",
+    "dedicated_test": "tests/test_cycle27_redteam_simulation_fifth_independent_reattack.py"
+  },
+  "assurance_boundary": "The closed cases validate inert local simulation contracts only. The reopened cases require same-process Python execution or same-user local report-state write access and affect evidence truth/continuity, not host compromise."
+}

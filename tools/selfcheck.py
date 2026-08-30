@@ -87,7 +87,8 @@ from angerona.core.module_manager import ModuleManager   # noqa: E402
 config = Config.load()
 storage = FlightRecorder(config.db_path)
 bus = EventBus()
-bus.subscribe(storage.record)
+bus.arm(storage.authority)
+bus.subscribe(storage.record_bus)
 manager = ModuleManager(bus, config)
 
 
@@ -306,24 +307,44 @@ def _():
     # new complexity loop, custom-technique step, and target_dir override — this
     # catches runtime bugs a signature check can't.
     import tempfile
+    from angerona.modules.purple_guard import acquire_redteam_validation_lease
     from angerona.shark.red_team import RedTeamEngine
     tmp = tempfile.mkdtemp(prefix="angerona_rt_")
     eng = RedTeamEngine(config.data_dir)
-    started = eng.start(jitter_range=(0.0, 0.0), noise_chance=0.0, complexity=2,
-                        target_dir=tmp, custom={"name": "unit", "payload": "detect-me-xyz"})
-    assert started, "engine did not start"
-    deadline = time.time() + 30
-    while eng.is_running and time.time() < deadline:
-        time.sleep(0.3)
-    assert not eng.is_running, "drill did not finish within 30s"
-    assert eng.steps, "no steps recorded"
-    files = os.listdir(tmp)
-    custom = [f for f in files if "custom" in f]
-    assert custom, f"custom marker not written; files={files}"
-    with open(os.path.join(tmp, custom[0]), encoding="utf-8") as f:
-        txt = f.read()
-    assert "detect-me-xyz" in txt and "never executed" in txt.lower(), "custom marker not inert"
-    eng.stop_and_clean()
+    lease = acquire_redteam_validation_lease(
+        manager,
+        bus,
+        storage,
+        config.data_dir,
+        tmp,
+        timeout=5,
+    )
+    try:
+        started = eng.start(
+            jitter_range=(0.0, 0.0),
+            noise_chance=0.0,
+            complexity=2,
+            target_dir=tmp,
+            custom={"name": "unit", "payload": "detect-me-xyz"},
+            validation_lease=lease,
+        )
+        assert started, "engine did not start with its live validation lease"
+        deadline = time.time() + 30
+        while eng.is_running and time.time() < deadline:
+            time.sleep(0.3)
+        assert not eng.is_running, "drill did not finish within 30s"
+        assert eng.steps, "no steps recorded"
+        files = os.listdir(tmp)
+        custom = [f for f in files if "custom" in f]
+        assert custom, f"custom marker not written; files={files}"
+        with open(os.path.join(tmp, custom[0]), encoding="utf-8") as f:
+            txt = f.read()
+        assert "detect-me-xyz" in txt and "never executed" in txt.lower(), (
+            "custom marker not inert"
+        )
+        eng.stop_and_clean()
+    finally:
+        lease.release()
     try:
         os.rmdir(tmp)
     except OSError:
@@ -465,7 +486,7 @@ def _():
             "gate tamper-detects and model advice stays inert")
 
 
-@phase("Vetted active remediation (real file quarantine + gated host actions)")
+@phase("Vetted remediation (inert path proposals + gated host actions)")
 def _():
     import tempfile
     from angerona.modules import remediation_actions as ra
@@ -476,16 +497,38 @@ def _():
     qdir = os.path.join(tmp, "q")
     w = {"mitre_id": "T1105", "path": bad}
     a = ra.select_action(w)
-    assert a and a.key == "quarantine_file", f"wrong action selected: {a}"
-    # dry-run must change nothing
+    assert a is None, f"pathname-only quarantine must not auto-select: {a}"
+    proposal = ra.select_proposal_action(w)
+    assert (
+        proposal is not None
+        and proposal.key == "quarantine_file"
+        and proposal.proposal_only is True
+        and proposal.executable is False
+    ), f"missing inert quarantine proposal: {proposal}"
+    plan = ra.plan_remediation([w])
+    assert (
+        len(plan) == 1
+        and plan[0]["action"] == "quarantine_file"
+        and plan[0]["proposal_only"] is True
+        and plan[0]["executable"] is False
+    ), f"unsafe or missing quarantine plan: {plan}"
+    # Dry-run and apply mode must both preserve the pathname-selected object.
     r0 = ra.apply_remediation([w], qdir, apply=False)
-    assert r0["applied"] == 0 and os.path.exists(bad), "dry-run modified the host"
-    # real apply: quarantined + verified
+    assert r0["applied"] == 0 and r0["skipped"] == 1, r0
+    assert os.path.exists(bad), "dry-run modified the host"
     r1 = ra.apply_remediation([w], qdir, apply=True)
-    assert r1["applied"] == 1 and not os.path.exists(bad), f"quarantine failed: {r1}"
-    # reversible
-    rb = ra.QuarantineFileAction().rollback(r1["records"][0])
-    assert rb["ok"] and os.path.exists(bad), "rollback failed"
+    assert r1["applied"] == 0 and r1["skipped"] == 1, r1
+    assert os.path.exists(bad), "proposal-only quarantine changed the host"
+    assert not os.path.exists(qdir), "proposal-only quarantine created a target"
+    direct = proposal.apply(w, qdir)
+    assert (
+        direct.get("ok") is False
+        and direct.get("proposal_only") is True
+        and direct.get("executable") is False
+    ), f"direct legacy quarantine was not inert: {direct}"
+    assert os.path.exists(bad) and not os.path.exists(qdir), (
+        "direct proposal-only quarantine changed the host"
+    )
     # host-level action (driver service) is GATED — never applied without opt-in
     rg = ra.apply_remediation([{"mitre_id": "T1068", "driver": "rtcore64.sys"}], qdir,
                               apply=True, allow_host=False)
@@ -499,23 +542,41 @@ def _():
     # exact, locale-independent DACL/owner/inheritance verifier and rollback
     # contract exist, so an ambiguous directory finding must not auto-select it.
     d = tempfile.mkdtemp(prefix="angerona_dir_")
-    cred = {"mitre_id": "T1003", "name": "Credential Access", "detect_message": "lsass dump"}
+    cred = {
+        "mitre_id": "T1003.001",
+        "control_id": "windows.lsass.run_as_ppl",
+        "name": "LSASS credential access",
+    }
     dfe = {"mitre_id": "T1562", "category": "defense-evasion", "name": "AMSI bypass"}
     dirw = {"mitre_id": "T1105", "path": d}
     c2 = {"mitre_id": "T1071", "category": "command-and-control",
-          "remote_ip": "203.0.113.9", "name": "beacon to 203.0.113.9"}
+          "remote_ip": "8.8.8.8", "name": "synthetic beacon identity"}
     # IP extractor ignores loopback/link-local (never firewall those).
     assert ra._first_ip_in({"remote_ip": "127.0.0.1"}) is None, "must ignore loopback"
-    assert ra._first_ip_in(c2) == "203.0.113.9", "failed to extract C2 IP"
+    assert ra._first_ip_in(c2) == "8.8.8.8", "failed to extract exact global C2 IP"
     if os.name == "nt":
         assert ra.select_action(cred).key == "registry_hardening", "cred→registry"
-        assert ra.select_action(dfe).key == "defender_hardening", "defev→defender"
+        assert ra.select_action(dfe) is None, "Defender response must not auto-select"
+        defender_proposal = ra.select_proposal_action(dfe)
+        assert (
+            defender_proposal is not None
+            and defender_proposal.key == "defender_hardening"
+            and defender_proposal.proposal_only is True
+            and defender_proposal.executable is False
+        ), "defev→proposal-only Defender guidance"
         assert ra.select_action(dirw) is None, "directory ACL change must remain proposal-only"
-        assert ra.select_action(c2).key == "network_isolation", "c2→network_isolation"
+        assert ra.select_action(c2) is None, "legacy firewall mutation must not auto-select"
+        network_proposal = ra.select_proposal_action(c2)
+        assert (
+            network_proposal is not None
+            and network_proposal.key == "network_isolation"
+            and network_proposal.proposal_only is True
+            and network_proposal.executable is False
+        ), "C2 evidence must produce proposal-only network-isolation guidance"
         rh = ra.apply_remediation([cred, dfe, dirw, c2], qdir, apply=True, allow_host=False)
         assert rh["applied"] == 0, f"host actions ran without opt-in: {rh}"
-    return ("quarantine ok; registry/defender/network-isolation select + gate "
-            "correctly; ACL remains proposal-only; plan ok")
+    return ("path quarantine, Defender, and ACL remain proposal-only; "
+            "registry is gated and network isolation is proposal-only; plan ok")
 
 
 @phase("Persistence Sweep (autorun classifier + discovery)")

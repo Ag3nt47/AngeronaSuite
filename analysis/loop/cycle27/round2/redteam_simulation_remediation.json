@@ -1,0 +1,62 @@
+{
+  "schema": "angerona.redteam-simulation-remediation.v2",
+  "cycle": 27,
+  "round": 2,
+  "date": "2026-08-28",
+  "scope": {
+    "inert_only": true,
+    "real_exploitation": false,
+    "host_persistence": false,
+    "network_attack": false,
+    "publication": false
+  },
+  "outcome": "closed",
+  "findings": {
+    "RTS-01": "closed",
+    "RTS-02": "closed",
+    "RTS-03": "closed",
+    "RTS-04": "closed",
+    "RTS-05": "closed",
+    "RTS-06": "closed",
+    "RTS-07": "closed",
+    "RTS-08": "closed",
+    "RTS-09": "closed",
+    "RTS-R01": "closed",
+    "RTS-R02": "closed",
+    "RTS-R03": "closed",
+    "RTS-R04": "closed",
+    "RTS-R05": "closed"
+  },
+  "coverage_model": [
+    "sensor_observation",
+    "native_analytic_detection",
+    "simulation_contract_validation",
+    "successful_response"
+  ],
+  "limitations": "Simulation-contract validation is an inert pipeline canary, not real-attack, exploit, state-actor, breach-prevention, or native behavioral coverage.",
+  "acceptance": {
+    "safe_end_to_end_detection_steps": 13,
+    "safe_end_to_end_simulation_validated": 13,
+    "safe_end_to_end_native_analytics_without_native_alerts": 0,
+    "dedicated_trust_boundary_tests_passed": 29,
+    "core_redteam_compatibility_tests_passed": 54,
+    "purple_practice_lifecycle_tests_passed": 49,
+    "headless_selfcheck": "26 passed / 0 failed",
+    "module_self_tests": "65 passed / 0 failed / 17 expected skips",
+    "compile": "passed",
+    "ruff": "passed"
+  },
+  "files": [
+    "src/angerona/gui/main_window.py",
+    "src/angerona/gui/pages.py",
+    "src/angerona/modules/purple_guard.py",
+    "src/angerona/core/attack_coverage.py",
+    "src/angerona/shark/red_team.py",
+    "src/angerona/shark/aar_report.py",
+    "tools/selfcheck.py",
+    "tests/test_cycle27_redteam_simulation_repair.py",
+    "tests/test_cycle27_redteam_validation_lease.py",
+    "tests/test_cycle2_round2_remediation.py",
+    "tests/test_redteam_runtime_targets.py"
+  ]
+}

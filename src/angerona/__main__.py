@@ -55,10 +55,55 @@ def _install_fast_pyside_feature_detection() -> bool:
 def main() -> int:
     setup_requested = "--setup" in sys.argv
     chill_requested = "--chill" in sys.argv
-    # Elevate before creating or trusting any persistent packaged data path. A
-    # medium-token process must not prepare inputs for the elevated instance.
-    from angerona.core.privilege import ensure_admin
-    ensure_admin()
+    frozen = bool(getattr(sys, "frozen", False))
+    from angerona.core.privilege import ElevationResult, ensure_admin, is_admin
+    if frozen and sys.platform == "win32":
+        # Packaging metadata is not privilege authority.  Prove the exact
+        # process-bound MSIX family/publisher before UAC, then prove it again
+        # after ensure_admin returns in the elevated child.
+        from angerona.core.windows_package_identity import (
+            verify_current_msix_authority,
+        )
+        authority = verify_current_msix_authority()
+        if not authority.trusted:
+            print(
+                "[Angerona] Refusing privileged frozen execution: "
+                f"{authority.reason}.",
+                flush=True,
+            )
+            return 2
+        elevation = ensure_admin()
+        authority_after_elevation = verify_current_msix_authority()
+        effective_administrator = is_admin()
+        if (
+            not isinstance(elevation, ElevationResult)
+            or not elevation.effective_administrator
+            or not effective_administrator
+            or not authority_after_elevation.trusted
+        ):
+            elevation_reason = (
+                elevation.reason
+                if isinstance(elevation, ElevationResult)
+                else "the elevation helper returned no typed result"
+            )
+            print(
+                "[Angerona] Refusing frozen execution after UAC: "
+                f"{elevation_reason}; {authority_after_elevation.reason}; "
+                "the complete post-UAC package and Administrator authority "
+                "was not proven.",
+                flush=True,
+            )
+            return 2
+    elif sys.platform == "win32" and is_admin():
+        # A mutable checkout is not privileged execution authority, even when
+        # started manually from an already-elevated terminal.
+        print(
+            "[Angerona] Refusing elevated source execution. Use a normal user "
+            "session for Observe/development coverage, or install the signed "
+            "MSIX for full Windows Protect coverage.",
+            flush=True,
+        )
+        return 2
 
     # Establish the canonical install-drive/ProgramData runtime boundary before
     # crash logging, singleton locks, Qt, or scanner imports can create files.

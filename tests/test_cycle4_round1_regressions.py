@@ -125,21 +125,14 @@ def test_active_response_defaults_to_critical_and_aar_counts_only_success(
 
 def test_launchers_keep_diagnostics_inside_the_runtime_root() -> None:
     root = __import__("pathlib").Path(__file__).resolve().parents[1]
-    for name in (
-        "start-angerona.bat",
-        "start-angerona-guarded.bat",
-        "Install-Angerona.bat",
-    ):
-        text = (root / name).read_text(encoding="utf-8")
-        assert 'set "ANGERONA_DIAG_DIR=%ANGERONA_DATA%\\diagnostics"' in text
-        assert 'set "ANGERONA_DIAG_DIR=%~dp0diagnostics"' not in text
-        assert "if not defined ANGERONA_DATA" not in text
-        assert (
-            'for %%I in ("%~dp0..\\AngeronaData") do '
-            'set "ANGERONA_DATA=%%~fI"'
-        ) in text
+    canonical = (root / "start-angerona.bat").read_text(encoding="utf-8")
+    assert 'set "ANGERONA_DIAG_DIR=%ANGERONA_DATA%\\diagnostics"' in canonical
+    assert 'set "ANGERONA_DIAG_DIR=%~dp0diagnostics"' not in canonical
+    assert "if not defined ANGERONA_DATA" not in canonical
+    assert '%LocalAppData%\\Angerona\\SourceData' in canonical
     guarded = (root / "start-angerona-guarded.bat").read_text(encoding="utf-8")
     assert 'call "%~dp0start-angerona.bat"' in guarded
+    assert "ANGERONA_DATA" not in guarded
     assert 'angerona_watchdog.exe "venv\\Scripts\\pythonw.exe"' not in guarded
 
 

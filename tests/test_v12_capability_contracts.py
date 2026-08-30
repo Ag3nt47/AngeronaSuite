@@ -27,13 +27,15 @@ def test_all_builtins_publish_unique_v12_contracts() -> None:
     manager.discover()
 
     assert not manager.discovery_errors
-    assert len(manager.modules) == 80
+    assert len(manager.modules) == 81
     rows = manager.capability_inventory()
     identifiers = {row["capability_id"] for row in rows}
     assert len(identifiers) == len(rows)
     assert all(row["contract_schema"] == CONTRACT_SCHEMA_ID for row in rows)
     assert all(row["contract_schema_version"] == CONTRACT_SCHEMA_VERSION for row in rows)
-    assert all(row["implementation_version"] for row in rows)
+    assert {
+        row["implementation_version"] for row in rows
+    } == {"1.12.1"}
     assert all(row["operational"]["schema"] == "angerona.module-operational.v12" for row in rows)
     json.dumps(rows, sort_keys=True)
 

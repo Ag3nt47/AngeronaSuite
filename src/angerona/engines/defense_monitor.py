@@ -67,7 +67,7 @@ def analyze_logs(log_file_path: str):
         print(f"[-] Parsing failed: {e}")
 
 def trigger_mitigation_gate(incident: SecurityIncident):
-    print(f"\n[⚠️] CRITICAL ALERT TRIGGERED: {incident.category} ({incident.severity})")
+    print(f"\n[!] CRITICAL ALERT TRIGGERED: {incident.category} ({incident.severity})")
     print(f"Proposed Action: {incident.recommended_action} on target: {incident.target_identifier}")
     
     # The legacy mitigation gate discovered arbitrary generated PowerShell and

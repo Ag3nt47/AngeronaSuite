@@ -1,11 +1,11 @@
 {
   "loop": "angerona-improvement",
-  "active_cycle": "cycle25",
-  "release": "1.12.0",
-  "focus": "universal capability contracts, guided firewall adaptation and recovery, durable delivery, bounded clickable evidence, standards truth, and three-round safety/reliability closure",
+  "active_cycle": "cycle30",
+  "release": "1.12.1",
+  "focus": "five completed three-round defensive hardening cycles, universal capability evidence, safe automation, comprehensive inert Red Team Simulation, and local-first SentinelLens",
   "rounds_total": 3,
   "round": 3,
-  "phase": "COMPLETE",
+  "phase": "READY_FOR_PUBLICATION",
   "round_1_status": "COMPLETE",
   "round_2_status": "COMPLETE",
   "round_3_status": "COMPLETE",
@@ -13,37 +13,18 @@
   "web_search_done": true,
   "docs_update_round": 3,
   "docs_update_done": true,
-  "manual_update_done": true,
-  "publication_done": true,
-  "started": "2026-08-27",
-  "updated": "2026-08-28",
-  "completed": "2026-08-28",
-  "round_1_results": {
-    "research": "adversarial review, visionary design, and primary-source upstream comparison complete",
-    "disposition": "all lineages fixed or truthfully scoped"
-  },
-  "round_2_results": {
-    "overlapping_reliability_records": 8,
-    "fixed": 8,
-    "focused_qa": "see analysis/loop/cycle25/round2/bugtest_results.md"
-  },
-  "round_3_results": {
-    "closure_checks": 12,
-    "open_high_or_critical": 0,
-    "performance_focused": "106 passed"
-  },
+  "manual_update_done": false,
+  "publication_done": false,
+  "started": "2026-08-28",
+  "updated": "2026-08-29",
+  "planned_cycles": [26, 27, 28, 29, 30],
+  "scope": "authorized defensive-only theoretical hardening",
   "final_results": {
-    "release": "v1.12.0",
-    "pytest": "1811 passed / 6 expected host-platform skips / 0 failed",
-    "compile": "346/346 product Python files",
-    "module_files": "82/82 imported",
-    "capabilities": "80 discovered / 5 native contracts / 75 compatibility adapters",
-    "register_hooks": "64/64 valid",
-    "self_tests": "92 core/module passed / 12 expected inactive-platform skips plus EventBus passed",
-    "selfcheck": "26/26 direct and batch",
-    "ruff": "clean",
-    "documentation_version": "1.12.0",
-    "documentation_record": "analysis/loop/cycle25/summary.md"
+    "serial_pytest": "2659 passed / 13 intentional platform skips / 0 failed",
+    "cycles_26_30_focused": "819 passed / 6 expected platform skips / 0 failed",
+    "selfcheck": "26 passed / 0 failed",
+    "static_discovery": "81 capabilities; 6 native contracts; 75 compatibility adapters",
+    "other_gates": "compileall, Ruff, workflow policy, dependency audit, documentation drift, and diff checks passed"
   },
-  "notes": "Cycle 25 converged after three adversarial, visionary, upstream-comparison, remediation, performance, and QA rounds. Host adaptation remains proposal-first and exact-approval gated; its immutable recovery baseline restores complete Windows Firewall policy only. Universal v1.12 contracts do not imply that all 80 implementation modules independently changed semantic version."
+  "notes": "Cycle 25/v1.12.0 remains preserved under analysis/loop/cycle25. Publication completion requires a guarded first publish, a completion-state commit, and a second guarded publish. The Word manual was not changed in this maintenance release."
 }

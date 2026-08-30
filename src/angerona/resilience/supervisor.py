@@ -857,13 +857,27 @@ def self_test() -> tuple[bool, str]:
     """Live (Linux/Unix) test: spawn a detached child that heartbeats then exits;
     verify respawn-on-death, SAFE_MODE backoff, stand-down halt, AND adopt-if-alive
     (a second _spawn while the child is alive does NOT start a duplicate)."""
-    import tempfile as _tf
-    workdir = _tf.mkdtemp(prefix="sup_selftest_")
-    _prev_diag = os.environ.get("ANGERONA_DIAG_DIR")
-    try:
-        os.environ["ANGERONA_DATA"] = workdir
-        os.environ["ANGERONA_DIAG_DIR"] = os.path.join(workdir, "diag")
+    from angerona.resilience._selftest_environment import run_isolated_selftest
 
+    return run_isolated_selftest(
+        "supervisor",
+        "sup_selftest_",
+        lambda root: {
+            "ANGERONA_DATA": str(root),
+            "ANGERONA_DIAG_DIR": str(root / "diag"),
+        },
+        timeout=25.0,
+    )
+
+
+def _isolated_self_test() -> tuple[bool, str]:
+    workdir = os.environ["ANGERONA_DATA"]
+    sup = ProcessSupervisor(
+        poll_interval=0.2,
+        initial_backoff_s=0.05,
+        max_backoff_s=0.2,
+    )
+    try:
         child = os.path.join(workdir, "child.py")
         with open(child, "w") as f:
             f.write(
@@ -880,11 +894,6 @@ def self_test() -> tuple[bool, str]:
             )
         py = sys.executable
 
-        sup = ProcessSupervisor(
-            poll_interval=0.2,
-            initial_backoff_s=0.05,
-            max_backoff_s=0.2,
-        )
         c = sup.add("scanner", [py, child, "scanner", "40"], stale_after_s=1.0,
                     max_failures=3, window_s=60.0, window="normal")
         sup._spawn(c)
@@ -934,20 +943,14 @@ def self_test() -> tuple[bool, str]:
         standdown_ok = c3.restarts == r_before
         tok.clear_standdown()
 
-        sup.stop()
         ok = alive_ok and no_dup_ok and respawn_ok and safemode_ok and standdown_ok
         return ok, ("minimized detached spawn + adopt-if-alive (no duplicate) + "
                     "respawn-on-death + SAFE_MODE + stand-down verified" if ok else
                     f"failed: alive={alive_ok} no_dup={no_dup_ok} respawn={respawn_ok} "
                     f"safemode={safemode_ok} standdown={standdown_ok}")
     finally:
-        import shutil as _sh
-        os.environ.pop("ANGERONA_DATA", None)
-        if _prev_diag is None:
-            os.environ.pop("ANGERONA_DIAG_DIR", None)
-        else:
-            os.environ["ANGERONA_DIAG_DIR"] = _prev_diag
-        _sh.rmtree(workdir, ignore_errors=True)
+        tok.clear_standdown()
+        sup.stop()
 
 
 if __name__ == "__main__":

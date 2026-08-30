@@ -11,19 +11,20 @@ Opt-in by design
     This module sends data OFF the host, so it is DISABLED by default and does
     nothing until a destination is configured via environment:
         ANGERONA_SIEM_HOST   destination IP/hostname   (required to activate)
-        ANGERONA_SIEM_PORT   default 6514
-        ANGERONA_SIEM_PROTO  "tls" (default); plaintext tcp/udp require an
-                             additional explicit risk acknowledgement
+        ANGERONA_SIEM_PORT   defaults to 6514 for TLS, 443 for HTTPS
         ANGERONA_SIEM_MINSEV minimum severity to forward: INFO/LOW/MEDIUM/HIGH/CRITICAL
                              (default MEDIUM)
+        ANGERONA_SIEM_PROTO  "tls" (default), "https" for exact application ACK;
+                             plaintext tcp/udp require explicit risk acceptance
     With no host set it stays idle and reports so — it never blasts a default IP.
 
 Resilience
     Selected events are committed to a bounded authenticated local outbox before
-    their EventBus cursor advances. TLS/TCP reconnect on failure; opted-in UDP is
-    fire-and-forget. A successful socket write is a transport handoff, not a
-    collector application receipt. EventBus retention overflow is exported as
-    an explicit durable gap receipt and degrades health instead of being hidden.
+    their EventBus cursor advances. HTTPS requires an exact TLS-protected JSON
+    acknowledgement before deleting a row. TLS/TCP reconnect on failure; opted-in
+    UDP is fire-and-forget. Syslog socket success is explicitly transport-only
+    and cannot produce end-to-end health 100. EventBus retention overflow is
+    exported as an explicit durable gap receipt.
 
 Drop-in contract: BaseModule subclass + CODE/NAME/state/health_pct/self_test +
 module-level register().
@@ -31,6 +32,8 @@ module-level register().
 from __future__ import annotations
 
 import hashlib
+import hmac
+import http.client
 import json
 import os
 import socket
@@ -94,7 +97,7 @@ class SIEMForwarderModule(BaseModule):
     description = ("Forwards detections to a central SIEM as CEF over Syslog "
                    "(UDP/TCP). Opt-in: idle until ANGERONA_SIEM_HOST is set.")
     category = "Integration"
-    version = "1.1.0"
+    version = "1.12.1"
     supported_platforms = ("windows", "macos", "linux")
     capability_mode = "observe"
     capability_inputs = ("authenticated-eventbus-event",)
@@ -112,7 +115,10 @@ class SIEMForwarderModule(BaseModule):
     )
     resource_budget = {
         "worker_model": "single-lifecycle-thread",
-        "event_delivery": "durable-retry-until-socket-handoff;no-syslog-application-ack",
+        "event_delivery": (
+            "durable-retry-until-exact-https-application-ack;"
+            "syslog-is-transport-handoff-only"
+        ),
         "startup_cycle_timeout_seconds": 30.0,
     }
     settings_schema = {
@@ -120,7 +126,10 @@ class SIEMForwarderModule(BaseModule):
         "properties": {
             "host": {"type": "string", "maxLength": 253},
             "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-            "protocol": {"type": "string", "enum": ["tls", "tcp", "udp"]},
+            "protocol": {
+                "type": "string",
+                "enum": ["https", "tls", "tcp", "udp"],
+            },
             "minimum_severity": {
                 "type": "string",
                 "enum": ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"],
@@ -137,6 +146,7 @@ class SIEMForwarderModule(BaseModule):
         self.state_lock = threading.Lock()
         self._fmt = _CefFormatter()
         self._sent = 0
+        self._application_acks = 0
         self._fails = 0
         self._tcp: socket.socket | None = None
         self.host = ""
@@ -164,12 +174,15 @@ class SIEMForwarderModule(BaseModule):
         except ValueError:
             self.port = 514
         self.proto = (os.environ.get("ANGERONA_SIEM_PROTO", "tls") or "tls").lower()
-        if "ANGERONA_SIEM_PORT" not in os.environ and self.proto == "tls":
-            self.port = 6514
-        if self.proto not in {"tls", "tcp", "udp"}:
+        if "ANGERONA_SIEM_PORT" not in os.environ:
+            if self.proto == "tls":
+                self.port = 6514
+            elif self.proto == "https":
+                self.port = 443
+        if self.proto not in {"https", "tls", "tcp", "udp"}:
             self._config_refusal = f"unsupported SIEM protocol: {self.proto}"
             return False
-        if self.proto != "tls" and os.environ.get(
+        if self.proto in {"tcp", "udp"} and os.environ.get(
                 "ANGERONA_SIEM_ALLOW_PLAINTEXT", "").strip().lower() not in {
                     "1", "true", "yes"}:
             self._config_refusal = (
@@ -208,6 +221,63 @@ class SIEMForwarderModule(BaseModule):
         else:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
                 s.sendto(data, (self.host, self.port))
+
+    def _send_https(self, payload: str, item_id: str) -> None:
+        """Require an exact TLS endpoint acknowledgement for one durable ID."""
+        ack_id = str(item_id or "").strip()
+        if not ack_id or len(ack_id) > 200:
+            raise ValueError("durable SIEM item has an invalid acknowledgement ID")
+        path = (os.environ.get("ANGERONA_SIEM_HTTPS_PATH") or "/api/events").strip()
+        if (
+            not path.startswith("/")
+            or path.startswith("//")
+            or len(path) > 2048
+            or any(ord(char) < 0x20 for char in path)
+        ):
+            raise ValueError("ANGERONA_SIEM_HTTPS_PATH must be a bounded absolute path")
+        ca_file = (os.environ.get("ANGERONA_SIEM_CA_FILE") or "").strip()
+        context = ssl.create_default_context(cafile=ca_file or None)
+        body = json.dumps(
+            {"id": ack_id, "cef": payload},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        connection = http.client.HTTPSConnection(
+            self.host,
+            self.port,
+            timeout=5.0,
+            context=context,
+        )
+        try:
+            connection.request(
+                "POST",
+                path,
+                body=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": ack_id,
+                },
+            )
+            response = connection.getresponse()
+            response_body = response.read(64 * 1024 + 1)
+            if len(response_body) > 64 * 1024:
+                raise OSError("SIEM HTTPS acknowledgement exceeds 64 KiB")
+            if not 200 <= int(response.status) < 300:
+                raise OSError(f"SIEM HTTPS endpoint returned {response.status}")
+            try:
+                receipt = json.loads(response_body.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise OSError("SIEM HTTPS acknowledgement is not valid JSON") from exc
+            if (
+                not isinstance(receipt, dict)
+                or receipt.get("accepted") is not True
+                or not hmac.compare_digest(str(receipt.get("ack_id") or ""), ack_id)
+            ):
+                raise OSError(
+                    "SIEM HTTPS acknowledgement does not match the durable ID"
+                )
+        finally:
+            connection.close()
 
     def _format_event(self, ev) -> str:
         details = getattr(ev, "details", {}) or {}
@@ -316,7 +386,11 @@ class SIEMForwarderModule(BaseModule):
                 payload = item.payload.get("cef")
                 if not isinstance(payload, str) or not payload:
                     raise ValueError("durable SIEM item has no CEF payload")
-                self._send(payload)
+                if self.proto == "https":
+                    self._send_https(payload, item.item_id)
+                    self._application_acks += 1
+                else:
+                    self._send(payload)
                 self._outbox.acknowledge(item.item_id, self._outbox_owner)
                 self._sent += 1
             except Exception as exc:
@@ -388,10 +462,22 @@ class SIEMForwarderModule(BaseModule):
                         f"{self._fails} retries",
                     )
                 else:
-                    self.set_health(
-                        100,
-                        f"{self._sent} durable socket handoffs; collector application ACK unavailable",
-                    )
+                    if self.proto == "https" and self._application_acks:
+                        self.set_health(
+                            100,
+                            f"{self._application_acks} exact HTTPS application ACK(s)",
+                        )
+                    elif self.proto == "https":
+                        self.set_health(
+                            85,
+                            "HTTPS endpoint ready; no application ACK observed yet",
+                        )
+                    else:
+                        self.set_health(
+                            75,
+                            f"{self._sent} durable socket handoffs; collector "
+                            "application ACK unavailable for Syslog transport",
+                        )
             except OutboxFull as exc:
                 self.last_error = str(exc)
                 self.set_health(20, str(exc))

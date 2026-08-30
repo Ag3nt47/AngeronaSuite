@@ -37,9 +37,13 @@ import pathlib
 import subprocess
 import sys
 import threading
-from functools import lru_cache
 
 from angerona.core.config import Config
+from angerona.core.executable_trust import (
+    ExecutableTrustError,
+    TrustedExecutable,
+    acquire_pinned_executable,
+)
 from angerona.core.jitter import jittered
 from angerona.core.module_base import BaseModule, Severity
 from angerona.resilience import heartbeat as hb
@@ -81,11 +85,35 @@ def _legacy_watchdog_present() -> bool:
     ))
 
 
-@lru_cache(maxsize=1)
+def _watchdog_pins() -> tuple[str, str]:
+    """Return immutable build-time pins embedded in the frozen parent image."""
+    try:
+        from angerona._release_integrity import (
+            FRZ_WATCHDOG_PUBLISHER,
+            FRZ_WATCHDOG_SHA256,
+        )
+
+        return str(FRZ_WATCHDOG_SHA256), str(FRZ_WATCHDOG_PUBLISHER)
+    except (AttributeError, ImportError):
+        return "", ""
+
+
+def _acquire_trusted_watchdog() -> TrustedExecutable:
+    digest, publisher = _watchdog_pins()
+    return acquire_pinned_executable(
+        _watchdog_path(),
+        expected_sha256=digest,
+        expected_publisher=publisher,
+    )
+
+
 def _trusted_watchdog_path() -> pathlib.Path | None:
-    from angerona.core.executable_trust import executable_is_trusted
-    path = _watchdog_path()
-    return path if executable_is_trusted(path) else None
+    """Compatibility probe with no mutable-path trust cache."""
+    try:
+        with _acquire_trusted_watchdog() as receipt:
+            return receipt.path
+    except (ExecutableTrustError, OSError, ValueError):
+        return None
 
 
 def _mmap_path() -> pathlib.Path:
@@ -105,7 +133,7 @@ class FrzHeartbeatModule(BaseModule):
         "isolation and terminates the compromised interpreter."
     )
     category = "Resilience"
-    version = "1.0.0"
+    version = "1.12.1"
     enabled_by_default = True
 
     _WRITE_INTERVAL = HEARTBEAT_MS / 1000.0
@@ -114,6 +142,8 @@ class FrzHeartbeatModule(BaseModule):
         super().__init__()
         self._heartbeat_writer: hb.HeartbeatWriter | None = None
         self._watchdog_proc: subprocess.Popen | None = None
+        self._watchdog_custody: TrustedExecutable | None = None
+        self._watchdog_identity: dict[str, object] = {}
         self._lock = threading.Lock()
         self._beats: int = 0
 
@@ -160,40 +190,98 @@ class FrzHeartbeatModule(BaseModule):
                 pass
 
     # ── watchdog management ──────────────────────────────────────────────────
+    def _release_watchdog_custody(self) -> None:
+        custody = self._watchdog_custody
+        self._watchdog_custody = None
+        self._watchdog_identity = {}
+        if custody is not None:
+            try:
+                custody.close()
+            except OSError:
+                pass
+
     def _launch_watchdog(self) -> None:
-        exe = _trusted_watchdog_path()
-        if exe is None:
+        if self._watchdog_proc is not None and self._watchdog_alive():
+            if (
+                self._watchdog_custody is not None
+                and self._watchdog_custody.still_valid()
+            ):
+                return
+            try:
+                self._watchdog_proc.terminate()
+                self._watchdog_proc.wait(timeout=2.0)
+            except (OSError, subprocess.SubprocessError):
+                try:
+                    self._watchdog_proc.kill()
+                except OSError:
+                    pass
+        self._watchdog_proc = None
+        self._release_watchdog_custody()
+        try:
+            custody = _acquire_trusted_watchdog()
+        except (ExecutableTrustError, OSError, ValueError) as exc:
+            self.last_error = str(exc)
             legacy_present = _legacy_watchdog_present()
             legacy = (
                 " A legacy unauthenticated watchdog was ignored."
                 if legacy_present else ""
             )
             self.emit(
-                "A validly signed authenticated-v2 FRZ watchdog binary was not "
-                "found. Heartbeat remains active; external termination is "
-                f"disabled.{legacy}",
+                "An exact digest-, publisher-, ACL-, and object-bound "
+                "authenticated-v2 FRZ watchdog was not available. Heartbeat "
+                f"remains active; external termination is disabled: {exc}.{legacy}",
                 Severity.LOW,
-                watchdog_path="",
+                watchdog_path=str(_watchdog_path()),
+                trust_error=str(exc),
                 legacy_incompatible=legacy_present,
             )
             return
+        exe = custody.path
         try:
+            from angerona.core.privilege import sanitized_child_environment
+
+            environment = sanitized_child_environment(source={})
             self._watchdog_proc = subprocess.Popen(
                 [str(exe), str(os.getpid()), str(_mmap_path())],
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                cwd=str(exe.parent),
+                env=environment,
+                close_fds=True,
                 # Detach so it outlives any parent-process suspension
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 | getattr(subprocess, "DETACHED_PROCESS", 8),
             )
+            if not custody.still_valid(rehash=True):
+                try:
+                    self._watchdog_proc.kill()
+                    self._watchdog_proc.wait(timeout=2.0)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+                self._watchdog_proc = None
+                raise ExecutableTrustError(
+                    "watchdog object/path trust changed across process creation"
+                )
+            self._watchdog_custody = custody
+            self.last_error = ""
+            self._watchdog_identity = {
+                "path": str(exe),
+                "sha256": custody.sha256,
+                "publisher": custody.publisher,
+                "thumbprint": custody.thumbprint,
+                "object_identity": list(custody.object_identity),
+            }
             self.emit(
                 f"FRZ watchdog launched (PID {self._watchdog_proc.pid}) — "
                 f"monitoring this process (PID {os.getpid()}).",
                 Severity.INFO,
                 watchdog_pid=self._watchdog_proc.pid,
                 monitored_pid=os.getpid(),
+                watchdog_trust=dict(self._watchdog_identity),
             )
         except Exception as exc:
+            custody.close()
             self.last_error = str(exc)
             self.emit(f"FRZ watchdog launch failed: {exc}", Severity.LOW)
 
@@ -212,7 +300,6 @@ class FrzHeartbeatModule(BaseModule):
             return
 
         self._launch_watchdog()
-        watchdog_missing_warned = _trusted_watchdog_path() is None
 
         self.emit(
             f"FRZ online — heartbeat every {HEARTBEAT_MS} ms to "
@@ -234,17 +321,24 @@ class FrzHeartbeatModule(BaseModule):
                     self.set_health(40, f"mmap write errors: {exc}")
 
             # Check watchdog health
-            if _trusted_watchdog_path() is not None:
-                if not self._watchdog_alive():
+            custody = self._watchdog_custody
+            if custody is not None:
+                if not custody.still_valid() or not self._watchdog_alive():
                     # Watchdog died — relaunch
                     self._launch_watchdog()
                     self.set_health(70, "Watchdog restarted")
                 else:
-                    self.set_health(100, f"{self._beats} beats written")
+                    self.set_health(
+                        100,
+                        f"{self._beats} beats; exact watchdog "
+                        f"{custody.sha256[:12]}… / {custody.publisher}",
+                    )
             else:
-                if not watchdog_missing_warned:
-                    watchdog_missing_warned = True
-                self.set_health(65, "Watchdog binary absent — mmap only")
+                self.set_health(
+                    65,
+                    "External watchdog trust unavailable — authenticated mmap "
+                    f"only ({self.last_error or 'missing release pins'})",
+                )
 
             # Jittered write cadence (anti-TOCTOU). Stays well within the
             # watchdog's freeze threshold, so a late beat never false-triggers.
@@ -254,8 +348,11 @@ class FrzHeartbeatModule(BaseModule):
         if self._watchdog_proc and self._watchdog_alive():
             try:
                 self._watchdog_proc.terminate()
+                self._watchdog_proc.wait(timeout=2.0)
             except Exception:
                 pass
+        self._watchdog_proc = None
+        self._release_watchdog_custody()
 
     def self_test(self) -> tuple[bool, str]:
         """Verify independent authenticated-v2 reads see advancing beats."""
@@ -304,9 +401,9 @@ class FrzHeartbeatModule(BaseModule):
                     and int(stopped["flags"]) == 0
                 )
                 watchdog_note = (
-                    "signed v2 watchdog present"
+                    "exact pinned v2 watchdog available"
                     if _trusted_watchdog_path() is not None
-                    else "signed v2 watchdog absent; authenticated Python heartbeat only"
+                    else "pinned v2 watchdog unavailable; authenticated Python heartbeat only"
                 )
                 return (
                     ok,

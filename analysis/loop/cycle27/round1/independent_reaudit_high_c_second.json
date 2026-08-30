@@ -1,0 +1,26 @@
+[
+  {
+    "id": "C27-R1-C03",
+    "verdict": "REOPENED",
+    "residual_severity": "MEDIUM",
+    "component": "src/angerona/modules/ransomware_heuristics.py:653-662,695-703,735-749,783-820",
+    "evidence": "A held traversal enumerated a 7.9974-entropy file, then a post-enumeration root-junction swap caused the unchanged tick to score a different 0.0-entropy object, emit no alert, and retain complete=true with health=100.",
+    "recommendation": "Carry enumerated file identity into the scoring contract and perform the bounded read through a no-follow handle opened relative to the still-held parent/root object; any mismatch or read failure must invalidate coverage and health."
+  },
+  {
+    "id": "C27-R1-C04",
+    "verdict": "CLOSED",
+    "residual_severity": null,
+    "component": "src/angerona/modules/remediation_actions.py:616-682,1525-1550,1642-1681",
+    "evidence": "The action has no mutation sink, is absent from ACTIONS, is classified only from PROPOSAL_ONLY_ACTIONS, and direct/transactional/rollback/verification paths all fail closed without reaching the mocked command sink.",
+    "recommendation": "Retain proposal-only catalog isolation and inert methods until query, mutation, verification, and rollback share held SCM and image-object identities; add explicit non-executable metadata for consistency."
+  },
+  {
+    "id": "C27-R1-C13",
+    "verdict": "REOPENED",
+    "residual_severity": "MEDIUM",
+    "component": "src/angerona/modules/smart_deception.py:505-580,681-824,1004-1055",
+    "evidence": "A pre-existing hard-link alias survived exact-object archival and modified the retained evidence while health stayed 100; separately, 5,000 expired logical-slot epochs left 5,000 dedup entries with health 100 because no eviction or cap exists.",
+    "recommendation": "Reject or comprehensively secure multi-link decoys, authenticate and revalidate evidence custody, prune and cap epoch dedup state, and lower health whenever link/digest custody or bounded-state proof is unavailable."
+  }
+]

@@ -1,0 +1,23 @@
+{
+  "loop": "angerona-improvement",
+  "active_cycle": "cycle28",
+  "release_target": "1.12.1",
+  "focus": "truthful sensor completeness, canonical network and process identity, trusted posture evidence paths, hardware-root disclosure, and temporal-custody health",
+  "rounds_total": 3,
+  "round": 3,
+  "phase": "READY_FOR_PUBLICATION",
+  "round_1_status": "COMPLETE",
+  "round_2_status": "COMPLETE",
+  "round_3_status": "COMPLETE",
+  "research_done": true,
+  "started": "2026-08-28",
+  "updated": "2026-08-29",
+  "scope": "authorized defensive-only theoretical hardening",
+  "validation": {
+    "files": 5,
+    "focused_tests": "30 passed",
+    "test_scope": "tests/test_cycle28_*.py",
+    "terminal_serial_gate": "2659 passed / 13 intentional platform skips / 0 failed"
+  },
+  "publication_done": false
+}

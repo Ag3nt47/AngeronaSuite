@@ -16,7 +16,8 @@ Technique — VirtualQueryEx loop:
 
 False-positive mitigations:
   • JIT runtimes (Python, Node, CLR, JVM) legitimately allocate RWX regions.
-    Known safe processes are in the _JIT_SAFE_NAMES allowlist.
+    An exact path+digest policy binding may lower this weak signal to MEDIUM,
+    but the process is still scanned and still produces an event.
   • We skip our own PID (the Angerona process) to avoid self-flagging.
   • We require RegionSize ≥ 4096 bytes (ignores transient 1-page stubs).
   • Re-alerts for the same (pid, base_address) pair are suppressed for 60s.
@@ -24,8 +25,8 @@ False-positive mitigations:
 Privilege note:
   Opening remote processes with PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
   requires at least User-level rights for owned processes, and SeDebugPrivilege
-  for system processes.  Missing privilege is caught per-PID and silently
-  skipped (not an error; the scanner still covers what it can reach).
+  for system processes. Missing privilege is measured as denied coverage and
+  keeps health below 100 rather than silently presenting a green sensor.
 
 Fallback:
   If ctypes / OpenProcess fails entirely (non-Windows), the module parks in an
@@ -35,14 +36,16 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
+import hmac
 import os
 import sys
 import time
+from dataclasses import dataclass
 from typing import Optional
 
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.process_allowlist import (
-    is_allowed as _process_is_allowed,
+    executable_sha256 as _executable_sha256,
     policy_snapshot as _process_policy_snapshot,
 )
 
@@ -78,6 +81,75 @@ _JIT_SAFE_NAMES: frozenset[str] = frozenset({
     "postman.exe", "1password.exe", "steam.exe", "steamwebhelper.exe",
     "epicgameslauncher.exe",
 })
+
+
+class PROCESSENTRY32W(ctypes.Structure):
+    """HANDLE-safe Toolhelp process record for both 32- and 64-bit Python."""
+
+    _fields_ = [
+        ("dwSize", ctypes.wintypes.DWORD),
+        ("cntUsage", ctypes.wintypes.DWORD),
+        ("th32ProcessID", ctypes.wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", ctypes.wintypes.DWORD),
+        ("cntThreads", ctypes.wintypes.DWORD),
+        ("th32ParentProcessID", ctypes.wintypes.DWORD),
+        ("pcPriClassBase", ctypes.wintypes.LONG),
+        ("dwFlags", ctypes.wintypes.DWORD),
+        ("szExeFile", ctypes.c_wchar * 260),
+    ]
+
+
+class FILETIME(ctypes.Structure):
+    _fields_ = [
+        ("dwLowDateTime", ctypes.wintypes.DWORD),
+        ("dwHighDateTime", ctypes.wintypes.DWORD),
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class _ProcessEnumeration:
+    processes: dict[int, str]
+    complete: bool
+    error: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class _PidScanResult:
+    opened: bool
+    scanned: bool
+    outcome: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessCoverage:
+    enumerated: int = 0
+    opened: int = 0
+    scanned: int = 0
+    denied: int = 0
+    failed: int = 0
+    skipped: int = 0
+    enumeration_complete: bool = False
+    enumeration_error: str = ""
+
+    @property
+    def health(self) -> int:
+        eligible = self.enumerated - self.skipped
+        if not self.enumeration_complete or eligible <= 0:
+            return 0
+        return max(0, min(100, int((self.scanned * 100) / eligible)))
+
+    @property
+    def detail(self) -> str:
+        state = "complete" if self.enumeration_complete else "incomplete"
+        detail = (
+            f"coverage {self.health}%: enumerated={self.enumerated}, "
+            f"opened={self.opened}, scanned={self.scanned}, denied={self.denied}, "
+            f"failed={self.failed}, skipped={self.skipped}; enumeration={state}"
+        )
+        if self.enumeration_error:
+            detail += f" ({self.enumeration_error[:160]})"
+        return detail
 
 # Minimum suspicious region size (bytes).  1-page stubs are common in JIT/CLR.
 _MIN_REGION_BYTES = 4096
@@ -140,6 +212,40 @@ def _try_load_kernel32() -> Optional[ctypes.WinDLL]:
             ctypes.wintypes.DWORD
         ]
         k32.OpenProcess.restype = ctypes.wintypes.HANDLE
+
+        k32.CreateToolhelp32Snapshot.argtypes = [
+            ctypes.wintypes.DWORD,
+            ctypes.wintypes.DWORD,
+        ]
+        k32.CreateToolhelp32Snapshot.restype = ctypes.wintypes.HANDLE
+
+        k32.Process32FirstW.argtypes = [
+            ctypes.wintypes.HANDLE,
+            ctypes.POINTER(PROCESSENTRY32W),
+        ]
+        k32.Process32FirstW.restype = ctypes.wintypes.BOOL
+        k32.Process32NextW.argtypes = [
+            ctypes.wintypes.HANDLE,
+            ctypes.POINTER(PROCESSENTRY32W),
+        ]
+        k32.Process32NextW.restype = ctypes.wintypes.BOOL
+        k32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+        k32.CloseHandle.restype = ctypes.wintypes.BOOL
+        k32.QueryFullProcessImageNameW.argtypes = [
+            ctypes.wintypes.HANDLE,
+            ctypes.wintypes.DWORD,
+            ctypes.wintypes.LPWSTR,
+            ctypes.POINTER(ctypes.wintypes.DWORD),
+        ]
+        k32.QueryFullProcessImageNameW.restype = ctypes.wintypes.BOOL
+        k32.GetProcessTimes.argtypes = [
+            ctypes.wintypes.HANDLE,
+            ctypes.POINTER(FILETIME),
+            ctypes.POINTER(FILETIME),
+            ctypes.POINTER(FILETIME),
+            ctypes.POINTER(FILETIME),
+        ]
+        k32.GetProcessTimes.restype = ctypes.wintypes.BOOL
         
         return k32
     except Exception:
@@ -150,6 +256,7 @@ class MemInjectScannerModule(BaseModule):
     CODE = "MINJ"
     NAME = "Memory Injection Scanner"
     name = "Memory Injection Scanner"
+    version = "1.12.1"
     description = (
         "Scans running process address spaces via VirtualQueryEx for anonymous "
         "RWX memory regions that indicate T1055 injection (shellcode, process "
@@ -182,6 +289,7 @@ class MemInjectScannerModule(BaseModule):
         # pid → last aggregated-alert ts (per-process cooldown; also throttles the
         # heavy psutil enrichment so it can't run every scan for the same process)
         self._seen: dict[int, float] = {}
+        self._coverage = ProcessCoverage()
 
     def run(self) -> None:
         self._k32 = _try_load_kernel32()
@@ -196,91 +304,115 @@ class MemInjectScannerModule(BaseModule):
                 self.sleep(60.0)
             return
 
-        self.set_health(100, "")
         self.emit("Memory Injection Scanner active — VirtualQueryEx mode.", Severity.INFO)
 
         while not self.stopping:
-            self._scan_all_pids()
+            self._coverage = self._scan_all_pids()
+            self.set_health(self._coverage.health, self._coverage.detail)
             self._evict_stale_dedup()
             self.sleep(self._SCAN_INTERVAL)
 
-    def _scan_all_pids(self) -> None:
-        """Enumerate running PIDs via lightweight native API and scan each one."""
+    def _scan_all_pids(self) -> ProcessCoverage:
+        """Scan every enumerated PID and return an honest coverage receipt."""
         # Use native C-API to batch-pull all PIDs and Names at once. 
         # This completely eliminates heavy psutil.Process() object creation during idle scanning.
-        processes = self._get_active_processes()
+        enumeration = self._get_active_processes()
+        processes = enumeration.processes
         process_policy = _process_policy_snapshot()
+        opened = scanned = denied = failed = skipped = processed = 0
 
         for pid, proc_name in processes.items():
             if self.stopping:
-                return
+                failed += max(0, len(processes) - processed)
+                break
             if pid == self._self_pid:
+                skipped += 1
+                processed += 1
                 continue
-            # Early JIT exclusion before even opening a process handle
-            if proc_name and proc_name.lower() in _JIT_SAFE_NAMES:
-                continue
-            # Do not skip a scan from a basename alone: a renamed executable
-            # could otherwise inherit another program's trust. Exact-path
-            # policy is applied after suspicious memory is found and the
-            # process has been enriched with its executable path.
-            self._scan_pid(pid, proc_name, process_policy)
+            # A basename is never scan authority. JIT names are used only after
+            # a suspicious region is observed to tune the alert's severity.
+            result = self._scan_pid(pid, proc_name, process_policy)
+            processed += 1
+            opened += int(result.opened)
+            scanned += int(result.scanned)
+            if result.outcome == "denied":
+                denied += 1
+            elif result.outcome == "failed":
+                failed += 1
 
-    def _get_active_processes(self) -> dict[int, str]:
-        """Returns a map of {pid: process_name} using native Windows API."""
+        return ProcessCoverage(
+            enumerated=len(processes),
+            opened=opened,
+            scanned=scanned,
+            denied=denied,
+            failed=failed,
+            skipped=skipped,
+            enumeration_complete=enumeration.complete and not self.stopping,
+            enumeration_error=enumeration.error,
+        )
+
+    def _get_active_processes(self) -> _ProcessEnumeration:
+        """Return a typed Toolhelp process inventory; partial reads stay visible."""
         TH32CS_SNAPPROCESS = 0x00000002
-
-        class PROCESSENTRY32(ctypes.Structure):
-            _fields_ = [
-                ("dwSize",              ctypes.wintypes.DWORD),
-                ("cntUsage",            ctypes.wintypes.DWORD),
-                ("th32ProcessID",       ctypes.wintypes.DWORD),
-                ("th32DefaultHeapID",   ctypes.POINTER(ctypes.c_ulong)),
-                ("th32ModuleID",        ctypes.wintypes.DWORD),
-                ("cntThreads",          ctypes.wintypes.DWORD),
-                ("th32ParentProcessID", ctypes.wintypes.DWORD),
-                ("pcPriClassBase",      ctypes.c_long),
-                ("dwFlags",             ctypes.wintypes.DWORD),
-                ("szExeFile",           ctypes.c_char * 260),
-            ]
-
         proc_map: dict[int, str] = {}
+        snap = None
         try:
             snap = self._k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-            if snap == ctypes.wintypes.HANDLE(-1).value:
-                return proc_map
+            invalid = ctypes.c_void_p(-1).value
+            if not snap or int(snap) == invalid:
+                return _ProcessEnumeration({}, False, "snapshot creation failed")
             
-            entry = PROCESSENTRY32()
-            entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+            entry = PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
             
-            if self._k32.Process32First(snap, ctypes.byref(entry)):
-                while True:
-                    try:
-                        name = entry.szExeFile.decode('utf-8', errors='ignore')
-                    except Exception:
-                        name = ""
-                    proc_map[entry.th32ProcessID] = name
-                    
-                    if not self._k32.Process32Next(snap, ctypes.byref(entry)):
-                        break
-            self._k32.CloseHandle(snap)
-        except Exception:
-            pass
-        return proc_map
+            if not self._k32.Process32FirstW(snap, ctypes.byref(entry)):
+                return _ProcessEnumeration({}, False, "first process record unavailable")
+            while True:
+                proc_map[int(entry.th32ProcessID)] = str(entry.szExeFile or "")
+                ctypes.set_last_error(0)
+                if not self._k32.Process32NextW(snap, ctypes.byref(entry)):
+                    error = ctypes.get_last_error()
+                    if error != 18:  # ERROR_NO_MORE_FILES
+                        return _ProcessEnumeration(
+                            proc_map, False, f"process enumeration error {error}"
+                        )
+                    break
+            if not proc_map:
+                return _ProcessEnumeration({}, False, "no process records returned")
+            return _ProcessEnumeration(proc_map, True)
+        except Exception as exc:
+            return _ProcessEnumeration(
+                proc_map, False, f"{type(exc).__name__} during process enumeration"
+            )
+        finally:
+            if snap and int(snap) != ctypes.c_void_p(-1).value:
+                try:
+                    self._k32.CloseHandle(snap)
+                except Exception:
+                    pass
 
-    def _scan_pid(self, pid: int, proc_name: str, process_policy=None) -> None:
+    def _scan_pid(
+        self, pid: int, proc_name: str, process_policy=None
+    ) -> _PidScanResult:
         """Walk the VAS of a single PID, looking for suspicious RWX regions."""
         handle = None
         try:
+            ctypes.set_last_error(0)
             handle = self._k32.OpenProcess(_OPEN_FLAGS, False, pid)
             if not handle:
-                return   # access denied or already exited
-
+                return _PidScanResult(
+                    False,
+                    False,
+                    "denied" if ctypes.get_last_error() == 5 else "failed",
+                )
             mbi = MEMORY_BASIC_INFORMATION()
             mbi_size = ctypes.sizeof(mbi)
             addr: int = 0
             regions: list[tuple[int, int, int]] = []   # (base, size, protect)
+            queried = 0
 
             while addr < self._MAX_ADDRESS:
+                ctypes.set_last_error(0)
                 ret = self._k32.VirtualQueryEx(
                     handle,
                     ctypes.c_void_p(addr),
@@ -288,7 +420,10 @@ class MemInjectScannerModule(BaseModule):
                     mbi_size,
                 )
                 if ret == 0:
+                    if ctypes.get_last_error() not in (0, 87):
+                        return _PidScanResult(True, False, "failed")
                     break   # end of accessible VAS for this process
+                queried += 1
 
                 region_base = mbi.BaseAddress
                 region_size = mbi.RegionSize
@@ -304,17 +439,32 @@ class MemInjectScannerModule(BaseModule):
                         break   # already ample evidence; stop walking 128TB of VAS
 
                 # Advance — if RegionSize is 0 we'd loop forever
-                if region_size == 0:
-                    break
-                addr = region_base + region_size
+                next_address = int(region_base) + int(region_size)
+                if region_size == 0 or next_address <= addr:
+                    return _PidScanResult(True, False, "failed")
+                addr = next_address
 
             # One aggregated alert per process (not one per region) — this is what
             # turned a JIT app's dozens of RWX regions into an alert storm.
             if regions:
-                self._alert(pid, proc_name, regions, process_policy)
+                # Resolve/hash the executable from this still-open process
+                # object only after a suspicious region exists. Ordinary
+                # processes pay no image-hash cost and no PID lookup can grant
+                # a pre-scan exclusion.
+                bound_image = self._bound_image_identity(handle)
+                self._alert(
+                    pid,
+                    proc_name,
+                    regions,
+                    process_policy,
+                    bound_image=bound_image,
+                )
+            if queried <= 0:
+                return _PidScanResult(True, False, "failed")
+            return _PidScanResult(True, True, "scanned")
 
         except Exception:
-            pass
+            return _PidScanResult(bool(handle), False, "failed")
         finally:
             if handle:
                 try:
@@ -323,6 +473,45 @@ class MemInjectScannerModule(BaseModule):
                     pass
 
     # ── Enrichment helpers ────────────────────────────────────────────────────
+    def _bound_image_identity(self, process_handle: int) -> dict[str, object]:
+        """Resolve the image path from the exact opened process object."""
+        try:
+            buffer = ctypes.create_unicode_buffer(32768)
+            size = ctypes.wintypes.DWORD(len(buffer))
+            if not self._k32.QueryFullProcessImageNameW(
+                process_handle, 0, buffer, ctypes.byref(size)
+            ):
+                return {}
+            path = os.path.normcase(os.path.normpath(buffer.value))
+            if not path or not os.path.isabs(path):
+                return {}
+            created = FILETIME()
+            exited = FILETIME()
+            kernel = FILETIME()
+            user = FILETIME()
+            if not self._k32.GetProcessTimes(
+                process_handle,
+                ctypes.byref(created),
+                ctypes.byref(exited),
+                ctypes.byref(kernel),
+                ctypes.byref(user),
+            ):
+                return {}
+            windows_ticks = (
+                int(created.dwHighDateTime) << 32
+            ) | int(created.dwLowDateTime)
+            created_epoch = (windows_ticks - 116444736000000000) / 10_000_000
+            if created_epoch <= 0:
+                return {}
+            return {
+                "exe": path,
+                "image_sha256": _executable_sha256(path),
+                "image_identity_bound": True,
+                "process_create_time": created_epoch,
+            }
+        except (AttributeError, OSError, TypeError, ValueError):
+            return {}
+
     def _enrich_process(self, pid: int) -> dict:
         """CRITICAL WHEN NEEDED: Heavy psutil enrichment only runs upon detection."""
         ctx: dict = {}
@@ -408,7 +597,39 @@ class MemInjectScannerModule(BaseModule):
         return f"{hint} | Techniques: {', '.join(techniques)}"
 
     # ── Alert ─────────────────────────────────────────────────────────────────
-    def _alert(self, pid, proc_name, regions, process_policy=None):
+    @staticmethod
+    def _trusted_jit_image(
+        proc_name: str,
+        path: str,
+        image_sha256: str,
+        process_policy,
+    ) -> bool:
+        """Accept a JIT damper only for an exact executable path+digest."""
+        if (
+            not path
+            or not image_sha256
+            or (proc_name or "").casefold() not in _JIT_SAFE_NAMES
+        ):
+            return False
+        normalized = os.path.normcase(os.path.normpath(path))
+        expected = ""
+        for row in process_policy or ():
+            if len(row) >= 3 and row[1] == normalized and row[2]:
+                expected = str(row[2]).casefold()
+                break
+        if not expected:
+            return False
+        return hmac.compare_digest(image_sha256, expected)
+
+    def _alert(
+        self,
+        pid,
+        proc_name,
+        regions,
+        process_policy=None,
+        *,
+        bound_image: Optional[dict[str, object]] = None,
+    ):
         now = time.time()
         if now - self._seen.get(pid, 0.0) < _DEDUP_TTL:
             return
@@ -427,9 +648,14 @@ class MemInjectScannerModule(BaseModule):
 
         # Deep enrichment triggered only upon detection
         ctx = self._enrich_process(pid)
-        if _process_is_allowed(
-                proc_name, ctx.get("exe", ""), policy=process_policy):
-            return
+        if bound_image:
+            ctx.update(bound_image)
+        trusted_jit = self._trusted_jit_image(
+            proc_name,
+            str(ctx.get("exe") or ""),
+            str(ctx.get("image_sha256") or ""),
+            process_policy,
+        )
         prediction = self._predict_technique(proc_name, size, protect, ctx)
 
         parts = [
@@ -453,7 +679,7 @@ class MemInjectScannerModule(BaseModule):
 
         self.emit(
             "\n".join(parts),
-            Severity.HIGH,
+            Severity.MEDIUM if trusted_jit else Severity.HIGH,
             pid=pid,
             proc_name=proc_name,
             exe=ctx.get("exe", ""),
@@ -474,6 +700,7 @@ class MemInjectScannerModule(BaseModule):
             process_create_time=ctx.get("process_create_time"),
             active_attack=True,
             detector_policy="rwx-memory-indicator-alert-only",
+            exact_identity_jit_damper=trusted_jit,
         )
 
     def _evict_stale_dedup(self):

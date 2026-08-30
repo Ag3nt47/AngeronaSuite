@@ -14,6 +14,7 @@ module-level register().
 """
 from __future__ import annotations
 
+import math
 import os
 import threading
 
@@ -38,6 +39,23 @@ _DUMP_TOKENS = (
     "sekurlsa", "mimikatz", "lsass.dmp", "nanodump", "dumpert", "lsassy",
     "pypykatz", "handlekatz", "safetykatz", "invoke-mimikatz",
 )
+
+
+def _process_generation(info: dict) -> tuple[tuple[int, str, str] | None, bool]:
+    try:
+        pid = int(info.get("pid"))
+    except (TypeError, ValueError):
+        return None, False
+    if pid <= 0:
+        return None, False
+    executable = str(info.get("exe") or info.get("name") or "").casefold()
+    try:
+        birth = float(info.get("create_time"))
+    except (TypeError, ValueError):
+        birth = float("nan")
+    complete = math.isfinite(birth) and birth > 0
+    token = f"{birth:.6f}" if complete else f"unknown:{executable}"
+    return (pid, token, executable), complete
 
 
 def _looks_like_lsass_dump(cmdline: str) -> str | None:
@@ -164,15 +182,21 @@ class LsassGuardModule(BaseModule):
     description = ("Detects LSASS credential-dumping (Mimikatz/procdump/comsvcs MiniDump, "
                    "T1003.001) by process command line + artifact signatures. Read-only.")
     category = "Detection"
-    version = "1.0.0"
+    version = "1.12.1"
 
     _POLL = 3.0
 
     def __init__(self) -> None:
         super().__init__()
         self.state_lock = threading.Lock()
-        self._alerted: set[int] = set()
+        self._alerted: set[tuple[int, str, str]] = set()
         self._detections = 0
+        self._last_coverage = {
+            "enumerated": 0,
+            "readable": 0,
+            "unreadable": 0,
+            "identity_incomplete": 0,
+        }
 
     @property
     def state(self) -> str:
@@ -192,35 +216,53 @@ class LsassGuardModule(BaseModule):
         self.emit("CREDG online — watching for LSASS credential-dumping.", Severity.INFO)
         while not self.stopping:
             try:
-                live = set()
+                live: set[tuple[int, str, str]] = set()
+                enumerated = 0
+                readable = 0
+                unreadable = 0
+                identity_incomplete = 0
                 for p in psutil.process_iter([
                     "pid", "name", "exe", "cmdline", "create_time"
                 ]):
-                    live.add(p.info["pid"])
+                    enumerated += 1
+                    info = p.info
+                    identity, complete = _process_generation(info)
+                    if identity is None:
+                        identity_incomplete += 1
+                        continue
+                    live.add(identity)
+                    identity_incomplete += int(not complete)
+                    raw_cmdline = info.get("cmdline")
+                    if raw_cmdline is None:
+                        unreadable += 1
+                        continue
                     try:
-                        cmd = " ".join(p.info.get("cmdline") or [])
+                        cmd = " ".join(raw_cmdline or [])
                     except Exception:
-                        cmd = ""
+                        unreadable += 1
+                        continue
+                    readable += 1
                     reason = _looks_like_lsass_dump(cmd)
-                    if reason and p.info["pid"] not in self._alerted:
-                        self._alerted.add(p.info["pid"])
+                    if reason and identity not in self._alerted:
+                        self._alerted.add(identity)
                         self._detections += 1
-                        created = p.info.get("create_time")
+                        pid = identity[0]
+                        created = info.get("create_time")
                         response = {}
                         scope = _lsass_response_scope(
-                            p.info.get("name"),
-                            p.info.get("exe"),
-                            p.info.get("cmdline"),
+                            info.get("name"),
+                            info.get("exe"),
+                            raw_cmdline,
                         )
                         if scope:
                             response = process_response(
-                                p.info["pid"], created, escalate_host=scope == "host"
+                                pid, created, escalate_host=scope == "host"
                             )
                         self.emit(
-                            f"⚠ LSASS credential-access attempt: {p.info.get('name','?')} "
-                            f"(pid {p.info['pid']}) — {reason}. Possible credential theft.",
-                            Severity.CRITICAL, pid=p.info["pid"], name=p.info.get("name"),
-                            exe=p.info.get("exe"),
+                            f"⚠ LSASS credential-access attempt: {info.get('name','?')} "
+                            f"(pid {pid}) — {reason}. Possible credential theft.",
+                            Severity.CRITICAL, pid=pid, name=info.get("name"),
+                            exe=info.get("exe"),
                             process_create_time=created, mitre="T1003.001",
                             cmdline=cmd[:200], active_attack=True,
                             detector_policy=(
@@ -229,9 +271,29 @@ class LsassGuardModule(BaseModule):
                                 else "semantic-indicator-alert-only"
                             ),
                             **response)
-                # evict pids that have exited so re-launches re-alert
+                # Evict exact generations that exited. A new birth at the same
+                # PID remains distinct even if PID continuity spans snapshots.
                 self._alerted &= live
-                self.set_health(100, f"{self._detections} credential-dump attempt(s) seen")
+                self._last_coverage = {
+                    "enumerated": enumerated,
+                    "readable": readable,
+                    "unreadable": unreadable,
+                    "identity_incomplete": identity_incomplete,
+                }
+                if enumerated == 0:
+                    self.set_health(60, "process enumeration returned no LSASS coverage")
+                elif unreadable or identity_incomplete:
+                    self.set_health(
+                        70,
+                        f"LSASS coverage incomplete: {readable}/{enumerated} command "
+                        f"lines readable, {identity_incomplete} identity gap(s)",
+                    )
+                else:
+                    self.set_health(
+                        100,
+                        f"{readable}/{enumerated} process generations inspected; "
+                        f"{self._detections} credential-dump attempt(s) seen",
+                    )
             except Exception as exc:
                 self.last_error = str(exc)
                 self.set_health(60, f"scan error: {exc}")

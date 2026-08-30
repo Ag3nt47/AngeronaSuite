@@ -10,21 +10,22 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_launchers_pin_cmd_owned_windows_root_before_redirect_or_elevation():
+def test_launchers_pin_cmd_owned_windows_root_before_redirect_or_local_code():
     canonical = (ROOT / "start-angerona.bat").read_text(encoding="utf-8")
     guarded = (ROOT / "start-angerona-guarded.bat").read_text(encoding="utf-8")
 
-    for text in (canonical, guarded):
-        trust = text.index('set "SAFE_SYSTEM32=%__APPDIR__%"')
-        redirect = text.index('cd /d "%~dp0"')
-        assert trust < redirect
-        assert 'set "SystemRoot=%SAFE_WINDOWS%"' in text
-        assert 'set "ComSpec=%SAFE_SYSTEM32%cmd.exe"' in text
-        assert 'set "PYTHONPATH="' in text
-        assert 'set "ANGERONA_CORE_CMD="' in text
-        assert 'set "ANGERONA_FLEET_SERVICE_KEY="' in text
+    trust = canonical.index('set "SAFE_SYSTEM32=%__APPDIR__%"')
+    redirect = canonical.index('cd /d "%~dp0"')
+    assert trust < redirect
+    assert 'set "SystemRoot=%SAFE_WINDOWS%"' in canonical
+    assert 'set "ComSpec=%SAFE_SYSTEM32%cmd.exe"' in canonical
+    assert 'set "PYTHONPATH="' in canonical
+    assert 'set "ANGERONA_CORE_CMD="' in canonical
+    assert 'set "ANGERONA_FLEET_SERVICE_KEY="' in canonical
 
-    elevation = canonical.index('"%SAFE_SYSTEM32%net.exe" session')
+    admin_refusal = canonical.index(
+        "IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"
+    )
     for fragment in (
         'set "PYTHONPATH="',
         'set "ANGERONA_CORE_CMD="',
@@ -32,13 +33,20 @@ def test_launchers_pin_cmd_owned_windows_root_before_redirect_or_elevation():
         'set "ANGERONA_FLEET_SERVICE_KEY="',
         'set "OPENAI_API_KEY="',
     ):
-        assert canonical.index(fragment) < elevation
+        assert canonical.index(fragment) < admin_refusal
 
     assert 'set "ANGERONA_JARVIS_CONTROL_TOKEN="' in canonical
-    assert canonical.index('set "ANGERONA_JARVIS_CONTROL_TOKEN="') < elevation
+    assert canonical.index('set "ANGERONA_JARVIS_CONTROL_TOKEN="') < admin_refusal
     assert '"%SystemRoot%\\System32' not in canonical
     assert '"%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive' in canonical
     assert 'call "%~dp0start-angerona.bat" --bootstrap-selftest' in guarded
+    assert "ANGERONA_DATA" not in guarded
+    assert "ANGERONA_ENFORCE_KEY_ACL" not in guarded
+    assert "watchdog" not in guarded.casefold()
+    for text in (canonical, guarded):
+        lowered = text.casefold()
+        assert "-verb runas" not in lowered
+        assert "net.exe\" session" not in lowered
 
 
 def test_canonical_launcher_refuses_an_unreviewed_existing_venv_before_launch():

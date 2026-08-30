@@ -162,12 +162,15 @@ def test_later_purple_proof_survives_earlier_fim_catch(tmp_path) -> None:
     }
     fim = Event(
         "File Integrity Monitor", "file appeared", Severity.HIGH, started + 0.1,
-        {"path": str(marker)},
+        {"path": str(marker), "evidence_type": "native_analytic_detection",
+         "detector_verdict": "positive"},
     )
     purple = Event(
         "Purple Remediation Guard", "candidate detected", Severity.HIGH, started + 0.2,
         {"path": str(marker), "mitre": "T1003",
-         "detector_policy": "reviewed-redteam-candidate"},
+         "detector_policy": "reviewed-redteam-candidate",
+         "evidence_type": "simulation_contract_validation",
+         "detector_verdict": "positive"},
     )
     response = Event(
         "Active Response SOAR", "artifact removed", Severity.HIGH, started + 0.3,

@@ -462,6 +462,118 @@ def capture_gallery(destination: Path) -> tuple[Path, ...]:
     return outputs
 
 
+def capture_sentinel_lens(destination: Path) -> Path:
+    """Capture the real SentinelLens UI with fixed synthetic log evidence."""
+    import json
+
+    from angerona.core.sentinel_lens import (  # noqa: PLC0415
+        parse_netflow,
+        parse_windows_event,
+    )
+    from angerona.gui.sentinel_lens import SentinelLensDialog  # noqa: PLC0415
+
+    app, window, storage = _build_demo_window()
+    dialog = None
+    try:
+        base = 1_785_240_200.0
+        records = [
+            parse_windows_event(
+                json.dumps({
+                    "EventID": 4688,
+                    "Computer": "synthetic-endpoint",
+                    "EventData": {
+                        "Image": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+                        "ParentImage": r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
+                        "ProcessId": "4242",
+                        "ParentProcessId": "4100",
+                        "CommandLine": "powershell.exe -NoProfile [synthetic training marker]",
+                        "User": "PUBLIC-DEMO\\analyst",
+                    },
+                }).encode("utf-8"),
+                observed_at=base,
+            ),
+            parse_windows_event(
+                json.dumps({
+                    "EventID": 4688,
+                    "Computer": "synthetic-endpoint",
+                    "EventData": {
+                        "Image": r"C:\Windows\System32\wsmprovhost.exe",
+                        "ParentImage": r"C:\Windows\System32\svchost.exe",
+                        "ProcessId": "4300",
+                        "ParentProcessId": "720",
+                        "CommandLine": "wsmprovhost.exe [synthetic remote-management marker]",
+                        "User": "PUBLIC-DEMO\\service",
+                    },
+                }).encode("utf-8"),
+                observed_at=base + 4,
+            ),
+            parse_netflow(
+                json.dumps({
+                    "src_ip": "10.20.30.40",
+                    "dst_ip": "8.8.8.8",
+                    "src_port": 55000,
+                    "dst_port": 8443,
+                    "protocol": "tcp",
+                    "bytes": 64000,
+                    "packets": 120,
+                    "host": "synthetic-endpoint",
+                }).encode("utf-8"),
+                observed_at=base + 8,
+            ),
+        ]
+        for index in range(5):
+            records.append(parse_windows_event(
+                json.dumps({
+                    "EventID": 4625,
+                    "Computer": "synthetic-endpoint",
+                    "EventData": {
+                        "TargetUserName": "PUBLIC-DEMO-ACCOUNT",
+                        "IpAddress": "198.51.100.20",
+                        "Status": "synthetic-failure",
+                    },
+                }).encode("utf-8"),
+                observed_at=base + 12 + index * 10,
+            ))
+
+        dialog = SentinelLensDialog(
+            None,
+            window.manager,
+            window,
+            config=window.config,
+        )
+        dialog._refresh_timer.stop()
+        initial = dialog._snapshot_worker
+        if initial is not None:
+            initial.wait(5_000)
+        dialog._import_complete(records, "synthetic-public-demo.json")
+        dialog.resize(1600, 980)
+        dialog.show()
+        dialog.raise_()
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            app.processEvents()
+            worker = dialog._snapshot_worker
+            if worker is None or not worker.isRunning():
+                break
+            time.sleep(0.02)
+        _settle(app, 0.5)
+        if dialog.anomalies.rowCount() < 4:
+            raise RuntimeError("SentinelLens synthetic anomaly fixture was incomplete")
+        dialog.anomalies.selectRow(0)
+        dialog._select_anomaly(0, 0)
+        _settle(app, 0.3)
+        _save_widget(dialog, destination)
+        _privacy_guard()
+    finally:
+        if dialog is not None:
+            dialog.close()
+            worker = dialog._snapshot_worker
+            if worker is not None:
+                worker.wait(5_000)
+        _close_demo(app, window, storage)
+    return destination
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -476,8 +588,15 @@ def main() -> int:
         type=Path,
         help="directory for dashboard, SOAR, Scan Center, and ARIA PNGs",
     )
+    parser.add_argument(
+        "--sentinel-lens",
+        type=Path,
+        help="capture the SentinelLens graph with synthetic log evidence",
+    )
     args = parser.parse_args()
-    if args.gallery is not None:
+    if args.sentinel_lens is not None:
+        print(capture_sentinel_lens(args.sentinel_lens.resolve()))
+    elif args.gallery is not None:
         for output in capture_gallery(args.gallery.resolve()):
             print(output)
     else:

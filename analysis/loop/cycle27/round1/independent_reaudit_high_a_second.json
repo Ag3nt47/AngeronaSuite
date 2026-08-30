@@ -1,0 +1,60 @@
+[
+  {
+    "original_id": "C27-R1-A01",
+    "verdict": "REOPENED_PARTIAL",
+    "residual_severity": "HIGH",
+    "components": [
+      "src/angerona/modules/adversary_combat.py:1854-1879",
+      "src/angerona/modules/adversary_combat.py:2008-2028",
+      "src/angerona/modules/adversary_combat.py:2150-2169",
+      "src/angerona/modules/adversary_combat.py:2227-2253"
+    ],
+    "controls_verified": [
+      "A completed fake kill followed by a postcondition exception appends an orphan, blocks mutation, sets health zero, and remains recovery-required after restart.",
+      "Failure to append the richer orphan still blocks the current process and the durable intent reconstructs recovery-required state after restart.",
+      "Signed-journal tampering prevents reconciliation and leaves health zero."
+    ],
+    "evidence": "During an inert kill barrier, a valid human disposition was accepted for the bare in-flight intent. After the fake effect completed and the postcondition raised, the journal was [intent,operator_disposition,orphan]; current state blocked, but restart treated the earlier disposition as terminal and returned mutation_blocked=false with no pending recovery.",
+    "recommendation": "Serialize intent-through-terminal mutation state, accept disposition only for the exact latest authenticated mutation-started orphan already held in the open recovery circuit, validate phase ordering and the bound orphan HMAC during journal replay, and use an internal trusted clock."
+  },
+  {
+    "original_id": "C27-R1-A10",
+    "verdict": "CLOSED",
+    "residual_severity": null,
+    "components": [
+      "src/angerona/core/assurance_receipts.py:130-412",
+      "src/angerona/core/module_manager.py:133-153",
+      "src/angerona/modules/chaos_harness.py:105-172",
+      "src/angerona/modules/api_patch_detector.py:167-190",
+      "src/angerona/modules/file_integrity.py:209-247",
+      "src/angerona/modules/amsi_bridge.py:197-227",
+      "src/angerona/modules/network_protocol_decoder.py:90-94"
+    ],
+    "controls_verified": [
+      "Generic EventBus field forgery is rejected despite a valid bus HMAC.",
+      "Producer and consumer object spoofs, cross-producer issue, registry rebinding, lifecycle replay, and duplicate consumption are rejected.",
+      "Genuine APID, exact-content FIM, and native AMSI paths can issue their own receipts.",
+      "Shared-bus NDRD and default observation-only AMSI remain explicitly unassured."
+    ],
+    "evidence": "All seven negative broker-boundary checks held; one native AMSI fake provider returning DETECTED produced a valid one-time receipt, while a shared-bus NDRD event did not. The original self-announcement and arbitrary EventBus publisher paths no longer satisfy a probe.",
+    "recommendation": "Retain the negative regression matrix and scope assurance wording to trusted in-process modules; use process isolation before claiming resistance to arbitrary code already executing in the manager process."
+  },
+  {
+    "original_id": "C27-R1-A16",
+    "verdict": "REOPENED_PARTIAL",
+    "residual_severity": "HIGH",
+    "components": [
+      "src/angerona/modules/etw_listener.py:187-267",
+      "src/angerona/modules/etw_listener.py:268-337",
+      "src/angerona/modules/etw_listener.py:339-430",
+      "src/angerona/modules/etw_listener.py:502-627"
+    ],
+    "controls_verified": [
+      "Missing, malformed, MAC-altered, unsafe, and other-host cursor objects stay incomplete.",
+      "Live clear/refill, reset, retention, anchor mismatch, missing record, backlog, and persistence failure remain visible and below 100.",
+      "A first enrollment requires human policy approval and a recent caught-up bounds sample."
+    ],
+    "evidence": "The exact same signed human approval enrolled generation 1, then cleared a detected generation-2 reset without a new decision; health became 100 and restarted at 100 with no gap. Separately, restoring an older valid cursor plus corresponding old channel snapshot after progress from sequence 1/bookmark 5 to sequence 2/bookmark 10 was accepted at health 100 because no independent sequence high-water exists.",
+    "recommendation": "Durably consume each approval once and bind it to the exact current generation, cursor sequence, bookmark, anchor, sampled bounds, and gap digest under one lock. Add an independent append-only or hardware-backed high-water, or explicitly disclose whole-host rollback limits."
+  }
+]

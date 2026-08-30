@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import dataclass
 
 try:
     import psutil
@@ -65,6 +66,14 @@ def _beacon_score(timestamps: list[float]) -> tuple[bool, float, float]:
     return (cv <= _MAX_CV), mean, cv
 
 
+@dataclass(frozen=True)
+class BeaconPollReceipt:
+    complete: bool
+    observed: int
+    identity_failures: int
+    error: str = ""
+
+
 class BeaconDetectorModule(BaseModule):
     CODE = "BEAC"
     NAME = "C2 Beacon Detector"
@@ -72,7 +81,7 @@ class BeaconDetectorModule(BaseModule):
     description = ("Flags regular-interval outbound callbacks (command-and-control "
                    "beaconing, T1071/T1571) by timing per-process connections to a host.")
     category = "Detection"
-    version = "1.0.0"
+    version = "1.12.1"
 
     _POLL = 5.0
     _HISTORY = 12          # keep up to this many callback timestamps per (name,ip)
@@ -107,25 +116,43 @@ class BeaconDetectorModule(BaseModule):
         self.emit("BEAC online — watching for C2 beaconing cadence.", Severity.INFO)
         while not self.stopping:
             try:
-                self._poll_once()
-                self.set_health(100, f"{self._detections} beacon pattern(s) flagged")
+                receipt = self._poll_once()
+                if receipt.complete:
+                    self.set_health(
+                        100,
+                        f"complete snapshot ({receipt.observed} rows); "
+                        f"{self._detections} beacon pattern(s) flagged",
+                    )
+                else:
+                    self.set_health(
+                        65,
+                        "connection coverage incomplete: "
+                        f"{receipt.error or 'identity evidence unavailable'}; "
+                        f"rows={receipt.observed}, identity_failures="
+                        f"{receipt.identity_failures}",
+                    )
             except Exception as exc:
                 self.last_error = str(exc)
                 self.set_health(60, f"scan error: {exc}")
             self.sleep(self._POLL)
 
-    def _poll_once(self) -> None:
+    def _poll_once(self) -> BeaconPollReceipt:
         now = time.time()
         current: set[tuple] = set()
         names: dict[int, str] = {}
         create_times: dict[int, float] = {}
+        identity_attempted: set[int] = set()
         try:
             # Reuse the suite's short-lived connection snapshot. Network
             # Monitor and Counter-Agentic inspect the same OS table on nearby
             # cadences; independently enumerating it is expensive on Windows.
             conns = list_connections()
-        except Exception:
-            return
+        except Exception as exc:
+            return BeaconPollReceipt(False, 0, 0, str(exc)[:500])
+        snapshot = getattr(conns, "receipt", None)
+        snapshot_complete = bool(getattr(snapshot, "complete", True))
+        snapshot_error = str(getattr(snapshot, "error", "") or "")[:500]
+        identity_failures = 0
         for c in conns:
             raddr = c.get("raddr") or ""
             if not raddr or c.get("status") not in ("ESTABLISHED", "SYN_SENT"):
@@ -135,18 +162,18 @@ class BeaconDetectorModule(BaseModule):
             if not _is_external(ip) or not pid:
                 continue
             current.add((pid, ip))
-            if pid not in names:
+            if pid not in identity_attempted:
+                identity_attempted.add(pid)
                 try:
                     process = psutil.Process(pid)
-                    names[pid] = process.name()
+                    created = float(process.create_time())
+                    name = str(process.name() or "?")[:260]
+                    if float(process.create_time()) != created:
+                        raise ValueError("process generation changed during lookup")
+                    names[pid] = name
+                    create_times[pid] = created
                 except Exception:
-                    names[pid] = "?"
-                    process = None
-                try:
-                    if process is not None:
-                        create_times[pid] = float(process.create_time())
-                except Exception:
-                    pass
+                    identity_failures += 1
         # A NEW connection = present now but not on the previous poll.
         for (pid, ip) in current - self._seen_last:
             created = create_times.get(pid)
@@ -184,12 +211,25 @@ class BeaconDetectorModule(BaseModule):
                         else "cadence-indicator-alert-only"
                     ),
                     **response)
-        self._seen_last = current
+        # An incomplete table must not be mistaken for closed sockets; retain
+        # the previous complete state so recovery does not fabricate "new"
+        # callbacks from rows that were merely absent during a failed scan.
+        if snapshot_complete:
+            self._seen_last = current
         # evict stale history
         for key, hist in list(self._callbacks.items()):
             if hist and now - hist[-1] > self._EVICT_AFTER:
                 del self._callbacks[key]
                 self._alerted.discard(key)
+        errors = [value for value in (snapshot_error,) if value]
+        if identity_failures:
+            errors.append(f"{identity_failures} process identity lookup(s) failed")
+        return BeaconPollReceipt(
+            snapshot_complete and identity_failures == 0,
+            len(conns),
+            identity_failures,
+            "; ".join(errors)[:500],
+        )
 
     def self_test(self) -> tuple[bool, str]:
         # Regular cadence (every 60s) → beacon; jittery human traffic → not.

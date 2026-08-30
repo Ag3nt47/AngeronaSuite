@@ -90,26 +90,49 @@ _REDACTIONS = [
 
 
 # ── pure guardrail logic (unit-testable, stdlib only) ────────────────────────
-def scan_input(prompt: str, max_chars: int = MAX_PROMPT_CHARS) -> dict:
-    """Pre-inference scan. Returns {blocked, risk, reasons, truncated, prompt}."""
-    text = prompt or ""
-    reasons = []
-    hits = [rx.pattern for rx in _INJECTION_RE if rx.search(text)]
-    if hits:
-        reasons.append(f"injection-signature ({len(hits)})")
-    truncated = False
-    if len(text) > max_chars:
-        truncated = True
-        text = text[:max_chars]
-        reasons.append(f"length>{max_chars} (truncated)")
-    if hits:
-        risk, blocked = "High", True
-    elif truncated:
-        risk, blocked = "Medium", False
-    else:
-        risk, blocked = "Low", False
-    return {"blocked": blocked, "risk": risk, "reasons": reasons,
-            "truncated": truncated, "prompt": text}
+def _build_input_scanner(policy: tuple[re.Pattern[str], ...]):
+    """Capture immutable policy in the callable watched by self-integrity.
+
+    A module global remains replaceable by any code executing in this process.
+    Capturing the compiled tuple in a closure means replacing ``_INJECTION_RE``
+    cannot change enforcement. Replacing the closure/default/code itself changes
+    the callable fingerprint and is reported by ``SelfIntegrityEngine``.
+    """
+    admitted_policy = tuple(policy)
+
+    def scan_input(prompt: str, max_chars: int = MAX_PROMPT_CHARS) -> dict:
+        """Pre-inference scan. Return the bounded input verdict."""
+        text = prompt or ""
+        reasons = []
+        hits = [rx.pattern for rx in admitted_policy if rx.search(text)]
+        if hits:
+            reasons.append(f"injection-signature ({len(hits)})")
+        truncated = False
+        if len(text) > max_chars:
+            truncated = True
+            text = text[:max_chars]
+            reasons.append(f"length>{max_chars} (truncated)")
+        if hits:
+            risk, blocked = "High", True
+        elif truncated:
+            risk, blocked = "Medium", False
+        else:
+            risk, blocked = "Low", False
+        return {
+            "blocked": blocked,
+            "risk": risk,
+            "reasons": reasons,
+            "truncated": truncated,
+            "prompt": text,
+        }
+
+    return scan_input
+
+
+scan_input = _build_input_scanner(tuple(_INJECTION_RE))
+scan_input.__name__ = "scan_input"
+scan_input.__qualname__ = "scan_input"
+del _build_input_scanner
 
 
 def redact_output(text: str) -> tuple[str, list]:

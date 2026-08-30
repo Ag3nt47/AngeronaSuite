@@ -1,0 +1,67 @@
+[
+  {
+    "original_id": "C27-R1-A01",
+    "verdict": "REOPENED_PARTIAL",
+    "residual_severity": "MEDIUM",
+    "components": [
+      "src/angerona/modules/adversary_combat.py:1773-1807",
+      "src/angerona/modules/adversary_combat.py:2009-2082",
+      "src/angerona/modules/adversary_combat.py:2027-2034",
+      "src/angerona/modules/adversary_combat.py:2280-2406"
+    ],
+    "controls_verified": [
+      "The kill transaction and operator disposition share one transition lock; a blocked in-flight kill cannot be dispositioned before its exact outcome.",
+      "Kill exceptions, unprovable postconditions, and orphan-write loss remain recovery-required across restart.",
+      "Wrong bound orphan HMAC, bound sequence, and mutation generation are non-terminal.",
+      "A later mutation-started orphan always reopens recovery after an earlier valid disposition.",
+      "A normal second consumption of the same decision is rejected."
+    ],
+    "evidence": "An HMAC-authentic operator_disposition with exact orphan HMAC, sequence, and generation but action=isolate_host, status=failed, or disposition=fabricated was treated as terminal; each restart returned mutation_blocked=false, health=100, pending=false. The authorization resource omits the selected disposition/reason, and a decision stamped 1000.0 was accepted when the simulated host wall clock was rolled to 1001.0.",
+    "exploitability_boundary": "Arbitrary disk edits remain rejected. The malformed-terminal replay requires access to a trusted signing path or a defective/confused trusted writer; disposition substitution requires a caller holding a valid exact human decision; clock replay requires control of host wall time plus that decision.",
+    "recommendation": "Validate the complete disposition schema and retained authorization receipt during journal replay; bind action, combat ID, selected disposition, and normalized reason digest into the human-approved resource; combine monotonic same-process expiry with a durable one-time challenge and disclose any remaining host-clock limitation."
+  },
+  {
+    "original_id": "C27-R1-A10",
+    "verdict": "CLOSED",
+    "residual_severity": null,
+    "components": [
+      "src/angerona/core/assurance_receipts.py:145-412",
+      "src/angerona/modules/chaos_harness.py:105-172",
+      "src/angerona/modules/api_patch_detector.py:167-190",
+      "src/angerona/modules/file_integrity.py:209-247",
+      "src/angerona/modules/amsi_bridge.py:197-227",
+      "src/angerona/modules/network_protocol_decoder.py:90-94"
+    ],
+    "controls_verified": [
+      "Generic EventBus field forgery is rejected despite valid bus integrity.",
+      "An impostor producer object cannot use the enrolled producer issuer.",
+      "A genuine exact producer receipt is accepted once and replay is rejected.",
+      "APID complete-prologue and FIM exact-content observations work.",
+      "Shared-bus NDRD remains explicitly unassured rather than self-satisfying."
+    ],
+    "evidence": "The current focused suite retained every object-bound and one-time receipt boundary; no product path reintroduced self-announcement or shared-EventBus producer trust.",
+    "recommendation": "Retain the negative matrix and keep assurance language scoped to trusted in-process object identity; process isolation is required before claiming resistance to arbitrary code already executing in the manager process."
+  },
+  {
+    "original_id": "C27-R1-A16",
+    "verdict": "REOPENED_PARTIAL",
+    "residual_severity": "HIGH",
+    "components": [
+      "src/angerona/modules/etw_listener.py:248-282",
+      "src/angerona/modules/etw_listener.py:284-452",
+      "src/angerona/modules/etw_listener.py:454-575",
+      "src/angerona/modules/etw_listener.py:660-804",
+      "src/angerona/modules/etw_listener.py:879-1007"
+    ],
+    "controls_verified": [
+      "Normal approval replay after a later generation reset is rejected before and after restart.",
+      "Reason/state changes invalidate the exact approval resource.",
+      "Cursor-only rollback is detected against the newer high-water.",
+      "Malformed, MAC-altered, other-host, missing-half, and interrupted two-file states remain incomplete.",
+      "In-process reads and enrollments serialize under one state lock."
+    ],
+    "evidence": "After one valid enrollment, deleting both cursor and high-water files recreated the exact original approval resource on restart; the already-used decision was accepted, cleared the gap, and set health 100. Restoring both older valid state files plus the older channel snapshot also loaded health 100 without changing either key. In a final-sample race, replacing two pre-bookmark records while preserving bounds and the final bookmark left enrollment and restart health 100 with zero replacement events emitted.",
+    "exploitability_boundary": "The attacks require elevated ability to remove/restore protected state or replace the telemetry snapshot and, for approval replay, possession of a previously signed decision. Ordinary append and cursor-only rollback remain detected.",
+    "recommendation": "Add a random per-listener enrollment challenge so approvals cannot survive restart/state loss; consume approvals in a separate non-resettable authority; use TPM or external monotonic witnessing for anti-rollback; bind a stronger channel-generation and retained-record digest; revalidate after persistence; otherwise cap assurance and document the software-only rollback boundary."
+  }
+]

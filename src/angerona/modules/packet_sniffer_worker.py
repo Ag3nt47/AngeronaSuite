@@ -54,19 +54,22 @@ def capture(timeout: float) -> int:
         from scapy.all import IP, TCP, sniff
     except Exception as exc:
         _emit({"type": "error", "message": f"Scapy/Npcap unavailable: {exc}"})
+        _emit({"type": "end", "emitted": 0, "dropped": 0})
         return 2
 
     emitted = 0
+    dropped = 0
 
     def on_packet(packet: Any) -> None:
-        nonlocal emitted
-        if emitted >= _MAX_RECORDS:
-            return
+        nonlocal dropped, emitted
         try:
             if not packet.haslayer(TCP) or not packet.haslayer(IP):
                 return
             token_kind = _token_kind(bytes(packet[TCP].payload))
             if not token_kind:
+                return
+            if emitted >= _MAX_RECORDS:
+                dropped += 1
                 return
             emitted += 1
             _emit(
@@ -90,7 +93,9 @@ def capture(timeout: float) -> int:
         )
     except Exception as exc:
         _emit({"type": "error", "message": f"Capture failed: {exc}"})
+        _emit({"type": "end", "emitted": emitted, "dropped": dropped})
         return 3
+    _emit({"type": "end", "emitted": emitted, "dropped": dropped})
     return 0
 
 

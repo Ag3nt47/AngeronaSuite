@@ -1,0 +1,150 @@
+{
+  "title": "Cycle 27 Round 1 independent hostile re-attack of A02/A03/A07/A13/A14",
+  "date": "2026-08-28",
+  "scope": {
+    "product_code_edited": false,
+    "live_host_security_state_changed": false,
+    "fixtures": [
+      "temporary files",
+      "synthetic Defender records",
+      "fake event-log APIs",
+      "in-memory EventBus",
+      "inert canary bytes",
+      "offline driver evidence"
+    ]
+  },
+  "verdict": {
+    "closure_gate": "FAILED",
+    "closed": 0,
+    "reopened": 5,
+    "high": 3,
+    "medium": 2,
+    "release_blocker": true
+  },
+  "findings": [
+    {
+      "id": "C27-R1-A02",
+      "verdict": "REOPEN",
+      "severity": "HIGH",
+      "title": "Retained journal cache is mutable and does not authenticate interior bytes",
+      "evidence": [
+        "A shallow strict-read snapshot mutated nested details later returned by _trusted_action.",
+        "Same-size interior tamper plus restored Windows file metadata left response_ready true and permitted append; a fresh restart rejected line 1.",
+        "A captured journal+witness+anchor bundle replayed successfully to an older state; this limitation is explicitly documented as residual."
+      ],
+      "source_lines": [
+        "src/angerona/modules/adversary_combat.py:2081-2093",
+        "src/angerona/modules/adversary_combat.py:2663-2672",
+        "src/angerona/modules/adversary_combat.py:2682-2710",
+        "src/angerona/modules/adversary_combat.py:2722-2758",
+        "src/angerona/modules/adversary_combat.py:2760-2769",
+        "src/angerona/modules/adversary_combat.py:4521-4531"
+      ],
+      "test": "tests/test_cycle27_remaining_a_independent_reattack.py:54"
+    },
+    {
+      "id": "C27-R1-A03",
+      "verdict": "REOPEN",
+      "severity": "MEDIUM",
+      "title": "Terminal quarantine custody can commit an alias or lose recovery",
+      "evidence": [
+        "A Windows hard link created after the final topology check remained present with nlink=2 while the journal committed status=applied and receipt destination_link_count=1.",
+        "A fourth/final topology-check exception left the source absent and quarantine object present, appended terminal failure, had no pending recovery, and restart reconciled successfully."
+      ],
+      "source_lines": [
+        "src/angerona/modules/adversary_combat.py:3031-3044",
+        "src/angerona/modules/adversary_combat.py:3331-3353",
+        "src/angerona/modules/adversary_combat.py:3363-3379",
+        "src/angerona/modules/adversary_combat.py:705-719"
+      ],
+      "tests": [
+        "tests/test_cycle27_remaining_a_independent_reattack.py:78",
+        "tests/test_cycle27_remaining_a_independent_reattack.py:121"
+      ]
+    },
+    {
+      "id": "C27-R1-A07",
+      "verdict": "REOPEN",
+      "severity": "HIGH",
+      "title": "Defender delivery cursor is not contiguous, durable, or restart-honest",
+      "evidence": [
+        "Subscriber failure was swallowed, yet the row was acknowledged and cursor advanced; restart had no event.",
+        "A newer ready record overtook an older retry and the later retry regressed checkpoint 2 to 1.",
+        "Persisted coverage_complete=false restarted with gaps=0 and health=100.",
+        "Tampered outbox raised without a gap; deleted outbox silently recreated empty state."
+      ],
+      "source_lines": [
+        "src/angerona/modules/av_telemetry_bridge.py:254-268",
+        "src/angerona/modules/av_telemetry_bridge.py:381-390",
+        "src/angerona/modules/av_telemetry_bridge.py:585-640",
+        "src/angerona/core/eventbus.py:307-343",
+        "src/angerona/core/durable_outbox.py:156-189",
+        "src/angerona/core/durable_outbox.py:546-565",
+        "src/angerona/core/durable_outbox.py:640-671",
+        "src/angerona/core/event_log_integrity.py:455-457",
+        "src/angerona/core/event_log_integrity.py:702-707"
+      ],
+      "tests": [
+        "tests/test_cycle27_remaining_a_independent_reattack.py:160",
+        "tests/test_cycle27_remaining_a_independent_reattack.py:206"
+      ]
+    },
+    {
+      "id": "C27-R1-A13",
+      "verdict": "REOPEN",
+      "severity": "MEDIUM",
+      "title": "Read downgrade is fixed but mutation coverage and health remain overstated",
+      "closed_boundary": "Dynamic lure and runtime evidence now explicitly deny native read visibility.",
+      "evidence": [
+        "Same-path replacement with changed bytes and restored mtime emitted no alert.",
+        "Deleting all canaries left health=70 and note claiming visibility active."
+      ],
+      "source_lines": [
+        "src/angerona/modules/deception.py:3-10",
+        "src/angerona/modules/deception.py:138-151",
+        "src/angerona/modules/deception.py:163-177",
+        "src/angerona/modules/deception.py:221-224"
+      ],
+      "tests": [
+        "tests/test_cycle27_remaining_a_independent_reattack.py:219",
+        "tests/test_cycle27_remaining_a_independent_reattack.py:243"
+      ]
+    },
+    {
+      "id": "C27-R1-A14",
+      "verdict": "REOPEN",
+      "severity": "HIGH",
+      "title": "Loaded-image receipt is an unauthenticated replayable digest",
+      "evidence": [
+        "Arbitrary 64-hex binding_receipt_sha256 produced provenance-verified/evidence_complete.",
+        "The same receipt value produced verified results for two different image hashes.",
+        "A hostile complete-empty provider with reported total_count=999 produced zero assessments and health=100 'driver provenance verified'."
+      ],
+      "source_lines": [
+        "src/angerona/modules/driver_provenance_guard.py:89-180",
+        "src/angerona/modules/driver_provenance_guard.py:237-304",
+        "src/angerona/modules/driver_provenance_guard.py:569-602",
+        "src/angerona/modules/driver_provenance_guard.py:646-689",
+        "src/angerona/modules/driver_provenance_guard.py:702-724"
+      ],
+      "tests": [
+        "tests/test_cycle27_remaining_a_independent_reattack.py:259",
+        "tests/test_cycle27_remaining_a_independent_reattack.py:286",
+        "tests/test_cycle27_remaining_a_independent_reattack.py:300"
+      ]
+    }
+  ],
+  "validation": {
+    "existing_remediation_regressions": "13 passed in 6.85s",
+    "independent_hostile_regressions": "10 failed in 4.98s",
+    "hostile_failures_are_intentional_red_gates": true,
+    "ruff": "PASS",
+    "py_compile": "PASS"
+  },
+  "audited_sha256": {
+    "src/angerona/modules/adversary_combat.py": "4e65b2b5ef29dd0722b2689dbd16d1ec75223975b6a17d932f866e5ff0732c4b",
+    "src/angerona/modules/av_telemetry_bridge.py": "1a8cf905b6a041202667c142dfd062190e76fffcb40c21df8946eb4a1b819df9",
+    "src/angerona/modules/deception.py": "a990fb6bb11f43dd5db836ea28ee2dad68e62f48d8a519ffd78f69d832d979b6",
+    "src/angerona/modules/driver_provenance_guard.py": "6f280719b3369780130dbcb83ae5831abcae94f1e379bc4affac377e83e1943b"
+  }
+}

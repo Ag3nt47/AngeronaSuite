@@ -387,6 +387,18 @@ class EventBus:
         health/verification signal only; callers must never infer permission
         for a destructive response without a retained, verified event.
         """
+        current, records, overflow = self.priority_records_since(revision)
+        return current, [event for _item_revision, event in records], overflow
+
+    def priority_records_since(
+        self, revision: int
+    ) -> tuple[int, List[tuple[int, Event]], bool]:
+        """Return priority events with their exact per-lane commit revisions.
+
+        Consumers which perform response work can advance only after each
+        terminal disposition instead of acknowledging a whole batch up front.
+        Results are newest-first, matching :meth:`priority_since`.
+        """
         try:
             previous = int(revision)
         except (TypeError, ValueError):
@@ -398,17 +410,21 @@ class EventBus:
             if previous < 0 or previous > current:
                 return (
                     current,
-                    [entry[2] for entry in reversed(self._priority_ring)],
+                    [
+                        (priority_revision, event)
+                        for _global_revision, priority_revision, event
+                        in reversed(self._priority_ring)
+                    ],
                     True,
                 )
             delta = current - previous
             retained = len(self._priority_ring)
             count = min(delta, retained)
-            events = [
-                entry[2]
+            records = [
+                (entry[1], entry[2])
                 for entry in islice(reversed(self._priority_ring), count)
             ]
-            return current, events, delta > retained
+            return current, records, delta > retained
 
     def recent_since(self, revision: int) -> tuple[int, List[Event], bool]:
         """Atomically return events published after ``revision``.
@@ -419,6 +435,13 @@ class EventBus:
         This prevents bursty INFO telemetry from hiding a security event simply
         because a UI poller guessed too small a fixed recent-event limit.
         """
+        current, records, overflow = self.records_since(revision)
+        return current, [event for _item_revision, event in records], overflow
+
+    def records_since(
+        self, revision: int
+    ) -> tuple[int, List[tuple[int, Event]], bool]:
+        """Return general events with exact global commit revisions."""
         try:
             previous = int(revision)
         except (TypeError, ValueError):
@@ -434,24 +457,24 @@ class EventBus:
                 }
                 for global_revision, _priority_revision, event in self._priority_ring:
                     events_by_revision.setdefault(global_revision, event)
-                events = [
-                    events_by_revision[key]
+                records = [
+                    (key, events_by_revision[key])
                     for key in sorted(events_by_revision, reverse=True)
                 ]
-                return current, events, True
+                return current, records, True
             delta = current - previous
             retained = len(self._ring)
             count = min(delta, retained)
-            events = list(islice(reversed(self._ring), count))
+            records = [
+                (current - offset, event)
+                for offset, event in enumerate(
+                    islice(reversed(self._ring), count)
+                )
+            ]
             overflow = delta > retained
             if not overflow:
-                return current, events, False
+                return current, records, False
 
-            # Recover any still-retained priority evidence that was evicted
-            # from the general ring by an INFO flood.  The dedicated priority
-            # cursor remains the authoritative way to detect overflow of this
-            # lane itself; this merge preserves compatibility for general-ring
-            # consumers such as the GUI.
             events_by_revision = {
                 current - offset: event
                 for offset, event in enumerate(reversed(self._ring))
@@ -460,8 +483,8 @@ class EventBus:
             for global_revision, _priority_revision, event in self._priority_ring:
                 if global_revision > previous:
                     events_by_revision.setdefault(global_revision, event)
-            events = [
-                events_by_revision[key]
+            records = [
+                (key, events_by_revision[key])
                 for key in sorted(events_by_revision, reverse=True)
             ]
-            return current, events, True
+            return current, records, True

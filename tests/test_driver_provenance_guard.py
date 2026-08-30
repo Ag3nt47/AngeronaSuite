@@ -1,17 +1,36 @@
 from __future__ import annotations
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from angerona.core.eventbus import EventBus, Severity
 from angerona.modules.driver_provenance_guard import (
     SCHEMA,
     DriverCollection,
     DriverEvidenceRejected,
+    DriverLoadReceipt,
+    DriverLoadReceiptVerifier,
     DriverProvenanceEvidence,
     DriverProvenanceGuard,
     WindowsDriverEvidenceProvider,
     assess_driver_provenance,
     parse_driver_evidence,
+)
+
+
+_RECEIPT_PRIVATE = Ed25519PrivateKey.generate()
+_RECEIPT_NOW = 1_800_000_000.0
+_AUTHORITY_ID = "1" * 64
+_HOST_ID = "2" * 64
+_INSTALL_ID = "3" * 64
+_BOOT_ID = "4" * 64
+_RECEIPT_VERIFIER = DriverLoadReceiptVerifier(
+    _RECEIPT_PRIVATE.public_key(),
+    authority_id=_AUTHORITY_ID,
+    host_id=_HOST_ID,
+    install_id=_INSTALL_ID,
+    boot_id=_BOOT_ID,
+    clock=lambda: _RECEIPT_NOW,
 )
 
 
@@ -22,6 +41,9 @@ def _evidence(**overrides):
         "image_sha256": "b" * 64,
         "image_size": 4096,
         "load_state": "running",
+        "binding_state": "loaded-image-bound",
+        "binding_source": "kernel-load-receipt",
+        "binding_receipt_sha256": "d" * 64,
         "signer_status": "trusted",
         "signer_thumbprint": "c" * 40,
         "catalog_status": "trusted",
@@ -32,14 +54,68 @@ def _evidence(**overrides):
         "observed_at": 1_800_000_000.0,
     }
     values.update(overrides)
+    if (
+        values["binding_state"] == "loaded-image-bound"
+        and isinstance(values["image_sha256"], str)
+        and isinstance(values["image_size"], int)
+        and values["load_state"] in {"running", "stopped"}
+    ):
+        receipt = DriverLoadReceipt.issue(
+            _RECEIPT_PRIVATE,
+            authority_id=_AUTHORITY_ID,
+            host_id=_HOST_ID,
+            install_id=_INSTALL_ID,
+            boot_id=_BOOT_ID,
+            load_generation=1,
+            driver_token=values["driver_token"],
+            object_identity="5" * 64,
+            image_base=0x100000,
+            image_size=values["image_size"],
+            image_sha256=values["image_sha256"],
+            load_state=values["load_state"],
+            code_integrity_disposition="trusted",
+            issued_at=_RECEIPT_NOW,
+            expires_at=_RECEIPT_NOW + 60.0,
+        )
+        values["binding_receipt_sha256"] = receipt.digest()
+        values["binding_receipt"] = receipt
     return DriverProvenanceEvidence(**values)
 
 
+def _assess(evidence):
+    return assess_driver_provenance(evidence, _RECEIPT_VERIFIER)
+
+
 def test_complete_driver_evidence_requires_every_joined_control():
-    result = assess_driver_provenance(_evidence())
+    result = _assess(_evidence())
     assert result.state == "provenance-verified"
     assert result.evidence_complete
     assert result.response_authorized is False
+
+
+def test_configured_path_sample_cannot_claim_loaded_provenance():
+    evidence = _evidence(
+        load_state="unknown",
+        binding_state="configured-path-sample-unbound",
+        binding_source="configured-service-path",
+        binding_receipt_sha256=None,
+    )
+
+    result = _assess(evidence)
+
+    assert result.state == "incomplete-driver-evidence"
+    assert result.evidence_complete is False
+    assert "loaded_image_binding" in result.unknown
+
+
+def test_unbound_evidence_cannot_assert_running_state():
+    with pytest.raises(DriverEvidenceRejected):
+        _evidence(
+            binding_state="configured-path-sample-unbound",
+            binding_source="configured-service-path",
+            binding_receipt_sha256=None,
+            load_state="running",
+        )
 
 
 def test_loaded_blocklisted_driver_is_critical_but_never_auto_disabled():
@@ -47,7 +123,7 @@ def test_loaded_blocklisted_driver_is_critical_but_never_auto_disabled():
         blocklist_status="listed",
         blocklist_source="microsoft-policy",
     )
-    result = assess_driver_provenance(evidence)
+    result = _assess(evidence)
     details = result.event_details(evidence.driver_token)
     assert result.state == "critical-loaded-blocklisted-driver"
     assert result.severity == "critical"
@@ -56,7 +132,7 @@ def test_loaded_blocklisted_driver_is_critical_but_never_auto_disabled():
 
 
 def test_untrusted_signature_catalog_or_host_boot_control_is_high_risk():
-    result = assess_driver_provenance(
+    result = _assess(
         _evidence(
             signer_status="untrusted",
             catalog_status="untrusted",
@@ -71,7 +147,7 @@ def test_untrusted_signature_catalog_or_host_boot_control_is_high_risk():
 
 
 def test_missing_hash_blocklist_and_boot_evidence_is_unknown_not_safe():
-    result = assess_driver_provenance(
+    result = _assess(
         _evidence(
             image_sha256=None,
             image_size=None,
@@ -96,6 +172,9 @@ def test_strict_driver_parser_rejects_extra_keys_bad_hash_and_bad_status():
         "image_sha256": "b" * 64,
         "image_size": 4096,
         "load_state": "running",
+        "binding_state": "loaded-image-bound",
+        "binding_source": "kernel-load-receipt",
+        "binding_receipt_sha256": "d" * 64,
         "signer_status": "trusted",
         "signer_thumbprint": "c" * 40,
         "catalog_status": "trusted",
@@ -126,7 +205,10 @@ def test_module_emits_only_tokenized_observe_only_driver_evidence():
     evidence = _evidence(
         blocklist_status="listed", blocklist_source="microsoft-policy"
     )
-    guard = DriverProvenanceGuard(Provider(DriverCollection((evidence,), True, "ok")))
+    guard = DriverProvenanceGuard(
+        Provider(DriverCollection((evidence,), True, "ok")),
+        receipt_verifier=_RECEIPT_VERIFIER,
+    )
     bus = EventBus()
     guard.bind(bus)
     result = guard.observe_once()
@@ -161,7 +243,9 @@ def test_unchanged_driver_posture_does_not_reemit_when_only_receipt_time_changes
             self.observed += 10
             return DriverCollection((_evidence(observed_at=self.observed),), True, "ok")
 
-    guard = DriverProvenanceGuard(ChangingReceiptProvider())
+    guard = DriverProvenanceGuard(
+        ChangingReceiptProvider(), receipt_verifier=_RECEIPT_VERIFIER
+    )
     bus = EventBus()
     guard.bind(bus)
     guard.observe_once()

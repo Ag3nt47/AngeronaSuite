@@ -1,8 +1,8 @@
 @echo off
 REM ============================================================================
-REM  Angerona - one-click start.
-REM  First run: self-elevates, creates a venv, installs the app + dependencies
-REM  (downloads PySide6, ~1-2 min). Every run after: just launches the GUI.
+REM  Angerona source checkout - one-click UNELEVATED Observe/development start.
+REM  First run creates a venv and installs exact/hash-locked dependencies.
+REM  Every run after launches the GUI without requesting Administrator rights.
 REM
 REM  Finds a REAL Python even when the Microsoft Store "python.exe" stub is on
 REM  PATH (the #1 cause of "Python was not found" on a fresh Windows machine).
@@ -12,7 +12,7 @@ REM ============================================================================
 
 REM cmd.exe supplies __APPDIR__ from its own loaded image and ignores an
 REM inherited variable of the same name. Use that process-owned directory as
-REM the trust root before any executable lookup or UAC transition.
+REM the trust root before any executable lookup.
 set "SAFE_SYSTEM32=%__APPDIR__%"
 if not exist "%SAFE_SYSTEM32%cmd.exe" exit /b 1
 for %%I in ("%SAFE_SYSTEM32%..") do set "SAFE_WINDOWS=%%~fI"
@@ -28,7 +28,7 @@ if not exist "%ANGERONA_POWERSHELL%" exit /b 1
 
 REM Strip inherited code-loading, egress, credential, and resilience controls.
 REM Protected credentials are loaded later from the OS store; none are needed
-REM by this elevated installation/bootstrap boundary.
+REM by this source setup/launch boundary.
 set "PYTHONHOME="
 set "PYTHONPATH="
 set "PYTHONSTARTUP="
@@ -98,55 +98,58 @@ if /i "%~1"=="--bootstrap-selftest" (
     echo ANGERONA_BOOTSTRAP_SELFTEST_OK
     exit /b 0
 )
+set "ANGERONA_SETUP_ONLY="
+if /i "%~1"=="--source-setup" set "ANGERONA_SETUP_ONLY=1"
+if not "%~1"=="" if not defined ANGERONA_SETUP_ONLY (
+    echo [!] Unsupported source-launch option.
+    exit /b 1
+)
+
+REM A source checkout must never inherit an Administrator token. The signed
+REM MSIX is the only Windows first-install authority for full Protect coverage.
+"%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "$p=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()); if ($p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {exit 0}; exit 1" >nul 2>&1
+if not errorlevel 1 (
+    echo [!] Refusing to execute mutable Angerona source with Administrator rights.
+    echo     Use a normal user session for Observe/development coverage.
+    echo     Use the OS-validated signed MSIX for full Windows Protect coverage:
+    echo     https://github.com/Ag3nt47/AngeronaSuite/releases
+    exit /b 1
+)
 
 cd /d "%~dp0"
 title Angerona launcher
 echo.
-echo  [ANGERONA] Starting the security suite...
+echo  [ANGERONA] Starting the unelevated source Observe/development profile...
 echo  [ANGERONA] This window will close after the dashboard is confirmed alive.
 echo.
 
-REM Keep mutable/protected data beside (not inside) the Git checkout. Never
-REM trust an inherited ANGERONA_DATA here: this launcher elevates and recursively
-REM protects the selected root, so caller-controlled paths would be dangerous.
-for %%I in ("%~dp0..\AngeronaData") do set "ANGERONA_DATA=%%~fI"
+REM Keep mutable source-profile data in the current user's OS-owned local-data
+REM folder, never in the checkout and never at a caller-selected inherited path.
+if not defined LocalAppData (
+    echo [!] Windows could not resolve the current user's Local AppData folder.
+    exit /b 1
+)
+for %%I in ("%LocalAppData%\Angerona\SourceData") do set "ANGERONA_DATA=%%~fI"
 set "ANGERONA_DIAG_DIR=%ANGERONA_DATA%\diagnostics"
-set "ANGERONA_STORAGE_AUTOMIGRATE=1"
+set "ANGERONA_STORAGE_AUTOMIGRATE=0"
 set "TEMP=%ANGERONA_DATA%\tmp"
 set "TMP=%TEMP%"
 set "ANGERONA_INSTALL_ROOT=%~dp0"
-set "ANGERONA_ENFORCE_KEY_ACL=1"
+set "ANGERONA_ENFORCE_KEY_ACL=0"
 set "ANGERONA_DEVELOPMENT_MODE=0"
 set "ANGERONA_ALLOW_UNSIGNED_EXTERNAL_MODULES=0"
 
-REM ── Self-elevate (full-system telemetry needs Administrator) ────────────────
-"%SAFE_SYSTEM32%net.exe" session >nul 2>&1
-if errorlevel 1 (
-    echo [*] Requesting Administrator privileges ...
-    set "ANGERONA_ELEVATE_PATH=%~f0"
-    "%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "Start-Process -FilePath $env:ANGERONA_ELEVATE_PATH -Verb RunAs"
-    exit /b
-)
-
-REM This source/developer launcher must not recursively rewrite the checkout ACLs.
-REM The release installer establishes the protected installed-program trust root.
-REM Fail closed on redirected/removable source roots before executing elevated code.
+REM Fail closed on redirected/removable source roots before executing local code.
 title Angerona launcher - validating source
 echo [1/4] Validating the local installation...
 "%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "$r=Get-Item -LiteralPath $env:ANGERONA_INSTALL_ROOT -Force; $v=[IO.DriveInfo]::new([IO.Path]::GetPathRoot($r.FullName)); if (($r.Attributes -band [IO.FileAttributes]::ReparsePoint) -or !$v.IsReady -or $v.DriveType -ne [IO.DriveType]::Fixed) {exit 1}; $required=@('start-angerona.bat','pyproject.toml','src\angerona\__init__.py'); foreach($n in $required) {$p=Join-Path $r.FullName $n; if (!(Test-Path -LiteralPath $p -PathType Leaf) -or ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {exit 1}}; exit 0"
 if errorlevel 1 (
-    echo [!] Refusing redirected, incomplete, or non-fixed elevated source checkout.
+    echo [!] Refusing redirected, incomplete, or non-fixed source checkout.
     pause
     exit /b 1
 )
-title Angerona launcher - preparing protected storage
-echo [2/4] Preparing protected runtime storage...
-"%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0tools\protect-key-custody.ps1" -DataRoot "%ANGERONA_DATA%"
-if errorlevel 1 (
-    echo [!] Unable to establish protected runtime key custody.
-    pause
-    exit /b 1
-)
+title Angerona launcher - preparing user storage
+echo [2/4] Preparing user-scoped source-profile storage...
 if not exist "%TEMP%" mkdir "%TEMP%"
 if not exist "%ANGERONA_DATA%\logs" mkdir "%ANGERONA_DATA%\logs"
 
@@ -215,55 +218,38 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+if defined ANGERONA_SETUP_ONLY (
+    echo [OK] Unelevated source Observe/development setup is ready.
+    echo      Run start-angerona.bat from a normal user session to launch.
+    exit /b 0
+)
 
 :launch
 REM ── Launch (pythonw = no console window) ─────────────────────────────────────
 title Angerona launcher - opening dashboard
 echo [4/4] Opening the Angerona dashboard...
-REM BL-01: if the signed out-of-process watchdog is built, use it as the resilience
-REM PARENT (it launches + hashes + relaunches Angerona). ANGERONA_EXTERNAL_WATCHDOG
-REM tells the in-process manager to skip its own watchdog (no double-supervision).
-REM See frz\BUILD_SIGN_DEPLOY.md to build and code-sign the binary.
-set "ANGERONA_WATCHDOG=%~dp0frz\angerona_watchdog.exe"
-set "ANGERONA_WATCHDOG_SIGNED="
 set "ANGERONA_PYTHON=%~dp0venv\Scripts\python.exe"
 set "ANGERONA_STDOUT_LOG=%ANGERONA_DATA%\logs\launcher-stdout.log"
 set "ANGERONA_STDERR_LOG=%ANGERONA_DATA%\logs\launcher-stderr.log"
 set "ANGERONA_STARTUP_READY=%ANGERONA_DATA%\logs\dashboard-ready.signal"
 "%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "Remove-Item -LiteralPath $env:ANGERONA_STARTUP_READY -Force -ErrorAction SilentlyContinue"
-if exist "%ANGERONA_WATCHDOG%" "%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "if ((Get-AuthenticodeSignature -LiteralPath $env:ANGERONA_WATCHDOG).Status -eq 'Valid') {exit 0}; exit 1" >nul 2>&1 && set "ANGERONA_WATCHDOG_SIGNED=1"
-if defined ANGERONA_WATCHDOG_SIGNED (
-    set "ANGERONA_EXTERNAL_WATCHDOG=1"
-    for /f %%H in ('"%SAFE_SYSTEM32%certutil.exe" -hashfile "venv\Scripts\pythonw.exe" SHA256 ^| "%SAFE_SYSTEM32%findstr.exe" /r "^[0-9a-f]*$"') do set "ANGERONA_AGENT_SHA256=%%H"
-    echo [*] Using signed watchdog as resilience parent.
-    start "" "%ANGERONA_WATCHDOG%" "venv\Scripts\pythonw.exe" -m angerona --chill
-    "%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "$deadline=[DateTime]::UtcNow.AddSeconds(120); do {Start-Sleep -Milliseconds 250; if (Test-Path -LiteralPath $env:ANGERONA_STARTUP_READY -PathType Leaf) {exit 0}} while ([DateTime]::UtcNow -lt $deadline); exit 2"
-    if errorlevel 2 (
-        echo [!] The watchdog is running but the dashboard did not become ready.
-        echo     The launcher will remain open so this condition is visible.
-        pause
-        exit /b 2
-    )
-) else (
-    REM Keep observing the hidden bootstrap through its high-risk initialization
-    REM window. The old 1.5-second check could close this launcher just before a
-    REM delayed Qt/storage failure, leaving no dashboard and no visible error.
-    "%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "$p=Start-Process -FilePath $env:ANGERONA_PYTHON -ArgumentList @('-m','angerona','--chill') -WorkingDirectory $env:ANGERONA_INSTALL_ROOT -WindowStyle Hidden -RedirectStandardOutput $env:ANGERONA_STDOUT_LOG -RedirectStandardError $env:ANGERONA_STDERR_LOG -PassThru; $deadline=[DateTime]::UtcNow.AddSeconds(120); do {Start-Sleep -Milliseconds 250; if ($p.HasExited) {exit 1}; if (Test-Path -LiteralPath $env:ANGERONA_STARTUP_READY -PathType Leaf) {exit 0}} while ([DateTime]::UtcNow -lt $deadline); exit 2"
-    if errorlevel 2 (
-        echo [!] Angerona is still running but the dashboard did not become ready.
-        echo     The launcher will remain open so this condition is visible.
-        echo     Error log: %ANGERONA_STDERR_LOG%
-        if exist "%ANGERONA_STDERR_LOG%" type "%ANGERONA_STDERR_LOG%"
-        pause
-        exit /b 2
-    )
-    if errorlevel 1 (
-        echo [!] Angerona exited before its window opened.
-        echo     Error log: %ANGERONA_STDERR_LOG%
-        if exist "%ANGERONA_STDERR_LOG%" type "%ANGERONA_STDERR_LOG%"
-        pause
-        exit /b 1
-    )
+REM Source launch never invokes a watchdog or helper that could request a high-
+REM integrity token. Full protected resilience is a signed installed-build path.
+"%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "$p=Start-Process -FilePath $env:ANGERONA_PYTHON -ArgumentList @('-m','angerona','--chill') -WorkingDirectory $env:ANGERONA_INSTALL_ROOT -WindowStyle Hidden -RedirectStandardOutput $env:ANGERONA_STDOUT_LOG -RedirectStandardError $env:ANGERONA_STDERR_LOG -PassThru; $deadline=[DateTime]::UtcNow.AddSeconds(120); do {Start-Sleep -Milliseconds 250; if ($p.HasExited) {exit 1}; if (Test-Path -LiteralPath $env:ANGERONA_STARTUP_READY -PathType Leaf) {exit 0}} while ([DateTime]::UtcNow -lt $deadline); exit 2"
+if errorlevel 2 (
+    echo [!] Angerona is still running but the dashboard did not become ready.
+    echo     The launcher will remain open so this condition is visible.
+    echo     Error log: %ANGERONA_STDERR_LOG%
+    if exist "%ANGERONA_STDERR_LOG%" type "%ANGERONA_STDERR_LOG%"
+    pause
+    exit /b 2
+)
+if errorlevel 1 (
+    echo [!] Angerona exited before its window opened.
+    echo     Error log: %ANGERONA_STDERR_LOG%
+    if exist "%ANGERONA_STDERR_LOG%" type "%ANGERONA_STDERR_LOG%"
+    pause
+    exit /b 1
 )
 
 REM ── Black Box out-of-band recorder ─────────────────────────────────────────

@@ -1,0 +1,49 @@
+[
+  {
+    "id": "C27-R1-C03",
+    "status": "REMEDIATED_AWAITING_INDEPENDENT_REATTACK",
+    "severity": "MEDIUM",
+    "files": [
+      "src/angerona/modules/ransomware_heuristics.py",
+      "tests/test_cycle27_high_c_sixth_remediation.py"
+    ],
+    "changes": [
+      "Added a separately keyed authenticated high-water witness for content-state sequence and fair-scan epoch.",
+      "Rejects older valid state, v2 witness loss, and key+state deletion while enrollment survives.",
+      "Consumes prior exact receipts and exposes unchanged, changed, new, missing, and incomplete transitions in bounded alerts and health.",
+      "Replaced suffix-only exclusion with suffix, magic, exact identity, and a prior unchanged authenticated receipt; unproved containers are non-green.",
+      "Added fixed-window entropy fraction scoring that detects deterministic 50-percent strided encryption.",
+      "Added a durable sorted-directory rotation epoch so repeated budget pressure cannot deterministically starve one tail forever."
+    ],
+    "gates": {
+      "compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "PASS",
+      "focused_and_wider_pytest": "80 passed, 1 skipped"
+    },
+    "assurance_boundary": "A coherent replacement of every local key, state, and witness remains indistinguishable without TPM or remote monotonic authority; loaded local-only state is explicitly capped at health 90."
+  },
+  {
+    "id": "C27-R1-C13",
+    "status": "REMEDIATED_AWAITING_INDEPENDENT_REATTACK",
+    "severity": "MEDIUM",
+    "files": [
+      "src/angerona/modules/smart_deception.py",
+      "tests/test_cycle27_high_c_sixth_remediation.py"
+    ],
+    "changes": [
+      "Added an optional independently administered monotonic high-water contract for custody sequence/head digests.",
+      "Independent history blocks total local deletion, coherent rollback, and local key/witness substitution as recovery-required.",
+      "Applies and verifies required service/admin-only ACLs on the quarantine directory and each evidence object before packaged capture succeeds.",
+      "Added typed captured_unverified outcomes so userspace link-topology uncertainty is never represented as immutable evidence.",
+      "Health exposes freshness, ACL proof, capture outcome, and prior-history-erasure risk; local-only custody is capped conservatively."
+    ],
+    "gates": {
+      "compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "PASS",
+      "focused_and_wider_pytest": "80 passed, 1 skipped"
+    },
+    "assurance_boundary": "Verified ACLs separate ordinary users from custody. An administrator-equivalent actor can still replace all local software authority or mutate local evidence; administrator-resistant preservation requires TPM/remote monotonic authority plus minifilter or append-only/WORM replication."
+  }
+]

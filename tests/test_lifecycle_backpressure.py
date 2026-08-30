@@ -206,5 +206,5 @@ def test_canary_echo_saturation_keeps_newest_records_without_blocking():
         ))
     assert module._echo_queue.qsize() == _ECHO_QUEUE_LIMIT
     assert module._echo_queue_dropped == 10
-    first, _observed_at = module._echo_queue.get_nowait()
+    first, _observed_at, _event_ts, _event_hmac = module._echo_queue.get_nowait()
     assert first == "DRILLCANARY_000000000000000A"

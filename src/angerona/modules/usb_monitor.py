@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import hmac
 import os
 import struct
 import sys
@@ -358,7 +359,7 @@ class USBMonitorModule(BaseModule):
         "PIN approves Angerona scanning, and disables Windows AutoRun/AutoPlay."
     )
     category = "Detection"
-    version = "1.1.0"
+    version = "1.12.1"
     supported_platforms = frozenset({"windows", "darwin", "linux"})
 
     _POLL = 4.0
@@ -369,6 +370,7 @@ class USBMonitorModule(BaseModule):
         self.state_lock = threading.Lock()
         self._known: set[str] = set()
         self._known_identities: dict[str, str] = {}
+        self._identity_blind_mounts: set[str] = set()
         self._seeded = False
         self._events = 0
         self._mount_provider = _removable_mounts
@@ -376,7 +378,10 @@ class USBMonitorModule(BaseModule):
         self._identity_provider = _volume_identity
         self._known_local_mounts: set[str] = set()
         self._watched_local_mounts: set[str] = set()
-        self._approval_policy = UsbApprovalPolicy()
+        self._approval_policy = UsbApprovalPolicy(
+            identity_provider=lambda mount: self._identity_provider(mount),
+            require_identity=True,
+        )
         self._autorun_policy = WindowsAutoRunPolicy()
         self._policy_result = AutoRunPolicyResult(
             supported=False,
@@ -418,13 +423,21 @@ class USBMonitorModule(BaseModule):
                 self._check()
                 self._verify_autorun_policy_if_due()
                 pending = len(self._approval_policy.pending())
-                health = 100 if (
-                    not self._policy_result.supported or self._policy_result.user_enforced
-                ) else 65
+                if self._identity_blind_mounts:
+                    health = 35
+                    identity_note = (
+                        f"; identity unavailable for {len(self._identity_blind_mounts)} "
+                        "mounted volume(s), trust revoked"
+                    )
+                else:
+                    health = 100 if (
+                        not self._policy_result.supported or self._policy_result.user_enforced
+                    ) else 65
+                    identity_note = ""
                 self.set_health(
                     health,
                     f"{len(self._known)} removable volume(s), {pending} awaiting approval, "
-                    f"{self._events} event(s)",
+                    f"{self._events} event(s){identity_note}",
                 )
             except Exception as exc:
                 self.last_error = str(exc)
@@ -451,6 +464,9 @@ class USBMonitorModule(BaseModule):
                 )
             self._known = cur_set
             self._known_identities = current_identities
+            self._identity_blind_mounts = {
+                mp for mp, identity in current_identities.items() if not identity
+            }
             # Fixed internal volumes are baseline only.  They are deliberately not
             # approval prompts, while already-present media classified USB above is.
             self._known_local_mounts = local_set
@@ -474,31 +490,57 @@ class USBMonitorModule(BaseModule):
         current_identities = {
             mp: str(self._identity_provider(mp) or "") for mp in cur_set
         }
-        swapped = {
+        identity_lost = {
+            mp
+            for mp in cur_set & self._known
+            if self._known_identities.get(mp)
+            and not current_identities.get(mp)
+            and mp not in self._identity_blind_mounts
+        }
+        identity_recovered = {
+            mp for mp in self._identity_blind_mounts & cur_set
+            if current_identities.get(mp)
+        }
+        identity_changed = {
             mp
             for mp in cur_set & self._known
             if self._known_identities.get(mp)
             and current_identities.get(mp)
             and self._known_identities[mp] != current_identities[mp]
         }
-        for mp in sorted(swapped):
+        compromised = identity_lost | identity_recovered | identity_changed
+        for mp in sorted(compromised):
             self._approval_policy.remove(mp)
+            current_identity = current_identities.get(mp, "")
+            reason = (
+                "volume_identity_unavailable"
+                if mp in identity_lost
+                else "volume_identity_changed"
+            )
+            if mp in identity_lost:
+                self._identity_blind_mounts.add(mp)
+            else:
+                self._identity_blind_mounts.discard(mp)
             self.emit(
-                f"Removable media identity changed at {mp}; prior trust was revoked.",
+                f"Removable media identity is no longer continuous at {mp}; "
+                "prior trust was revoked.",
                 Severity.MEDIUM,
                 event_type="usb_media_removed",
                 mountpoint=mp,
                 approval_state="untrusted",
-                reason="volume_identity_changed",
+                reason=reason,
+                identity_available=bool(current_identity),
                 mitre="T1091",
             )
             self._handle_attached(
                 mp,
                 current.get(mp, "?"),
                 present_at_start=False,
-                volume_id=current_identities.get(mp, ""),
+                volume_id=current_identity,
             )
         for mp in sorted(cur_set - self._known):
+            if not current_identities.get(mp):
+                self._identity_blind_mounts.add(mp)
             self._handle_attached(
                 mp,
                 current.get(mp, "?"),
@@ -507,6 +549,7 @@ class USBMonitorModule(BaseModule):
             )
         for mp in sorted(self._known - cur_set):
             self._approval_policy.remove(mp)
+            self._identity_blind_mounts.discard(mp)
             self.emit(
                 f"Removable media removed: {mp}; in-memory trust was revoked.",
                 Severity.INFO,
@@ -517,7 +560,13 @@ class USBMonitorModule(BaseModule):
             )
         self._approval_policy.retain_mounts(cur_set)
         self._known = cur_set
-        self._known_identities = current_identities
+        # Unknown is a coverage failure, never a new identity baseline. Retain
+        # the last-known value so a later probe can prove same/different rather
+        # than laundering a replacement through one blank poll.
+        self._known_identities = {
+            mp: current_identities.get(mp) or self._known_identities.get(mp, "")
+            for mp in cur_set
+        }
         self._known_local_mounts = local_set
 
     def _handle_attached(
@@ -560,10 +609,83 @@ class USBMonitorModule(BaseModule):
         return self._approval_policy.trust_state(mountpoint)
 
     def approve_media(self, approval_id: object, pin: object) -> UsbApprovalDecision:
+        binding = self._approval_policy.approval_binding(approval_id)
+        require_identity = bool(getattr(self._approval_policy, "_require_identity", False))
+        if require_identity and binding is not None:
+            mountpoint, expected_identity = binding
+            try:
+                current_identity = str(self._identity_provider(mountpoint) or "").strip().casefold()
+            except Exception:
+                current_identity = ""
+            if (
+                not expected_identity
+                or not current_identity
+                or not hmac.compare_digest(current_identity, expected_identity)
+            ):
+                self._approval_policy.remove(mountpoint)
+                self._identity_blind_mounts.add(mountpoint)
+                if current_identity:
+                    self._identity_blind_mounts.discard(mountpoint)
+                self._handle_attached(
+                    mountpoint,
+                    "removable media (identity revalidation)",
+                    present_at_start=False,
+                    volume_id=current_identity,
+                )
+                reason = (
+                    "identity_unavailable" if not current_identity else "identity_changed"
+                )
+                self.emit(
+                    "Removable-media approval refused because the live insertion "
+                    "identity no longer matches the prompt.",
+                    Severity.HIGH,
+                    approval_id=str(approval_id or ""),
+                    mountpoint=mountpoint,
+                    approval_state="untrusted",
+                    reason=reason,
+                    response_authorized=False,
+                )
+                return UsbApprovalDecision(
+                    False,
+                    "untrusted",
+                    reason,
+                    approval_id=str(approval_id or ""),
+                    mountpoint=mountpoint,
+                )
         decision = self._approval_policy.verify(approval_id, pin)
         if decision.approved:
             # Only after approval may Angerona touch content on the volume.
             autorun = _has_autorun(decision.mountpoint)
+            if require_identity and binding is not None:
+                try:
+                    after_identity = str(
+                        self._identity_provider(decision.mountpoint) or ""
+                    ).strip().casefold()
+                except Exception:
+                    after_identity = ""
+                if (
+                    not after_identity
+                    or not hmac.compare_digest(after_identity, binding[1])
+                ):
+                    self._approval_policy.remove(decision.mountpoint)
+                    self._identity_blind_mounts.add(decision.mountpoint)
+                    self.emit(
+                        "Removable-media identity changed during approval-time inspection; "
+                        "trust was revoked.",
+                        Severity.CRITICAL,
+                        approval_id=decision.approval_id,
+                        mountpoint=decision.mountpoint,
+                        approval_state="untrusted",
+                        reason="identity_changed_during_scan",
+                        response_authorized=False,
+                    )
+                    return UsbApprovalDecision(
+                        False,
+                        "untrusted",
+                        "identity_changed_during_scan",
+                        approval_id=decision.approval_id,
+                        mountpoint=decision.mountpoint,
+                    )
             if autorun:
                 risk_details = decision.event_details()
                 risk_details.update({

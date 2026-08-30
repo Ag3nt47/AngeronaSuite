@@ -85,15 +85,13 @@ def test_precreated_known_bus_key_is_quarantined_before_read(tmp_path, monkeypat
     assert list(tmp_path.glob("bus.key.rejected-*"))
 
 
-def test_launcher_protects_parent_before_runtime_key_access():
+def test_source_launcher_never_invokes_privileged_key_custody():
     root = Path(__file__).parents[1]
     launcher = (root / "start-angerona.bat").read_text(encoding="utf-8")
-    custody = (root / "tools" / "protect-key-custody.ps1").read_text(encoding="utf-8")
-    protect_at = launcher.index("protect-key-custody.ps1")
-    first_runtime_create = launcher.index('if not exist "%TEMP%" mkdir')
-    assert protect_at < first_runtime_create
-    assert "[IO.Directory]::CreateDirectory($Path, $security)" in custody
-    assert 'foreach ($name in @("bus.key", "shutdown.key"))' in custody
+    assert "protect-key-custody.ps1" not in launcher
+    assert "%LocalAppData%\\Angerona\\SourceData" in launcher
+    assert 'set "ANGERONA_ENFORCE_KEY_ACL=0"' in launcher
+    assert "Refusing to execute mutable Angerona source with Administrator rights" in launcher
 
 
 def test_key_custody_uses_valid_separate_icacls_command_forms():

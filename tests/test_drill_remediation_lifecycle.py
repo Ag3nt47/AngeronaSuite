@@ -354,9 +354,11 @@ def test_reconcile_run_turns_real_purple_echo_into_nonzero_closure(tmp_path):
         ts=started + 0.2,
         details={
             "path": str(path),
-            "mitre": "T1003",
-            "detector_policy": "reviewed-redteam-candidate",
-        },
+                "mitre": "T1003",
+                "detector_policy": "reviewed-redteam-candidate",
+                "evidence_type": "simulation_contract_validation",
+                "detector_verdict": "positive",
+            },
     )
     verdicts = evaluate(
         history,

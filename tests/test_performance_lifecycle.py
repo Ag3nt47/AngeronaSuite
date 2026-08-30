@@ -245,7 +245,7 @@ def test_default_runtime_data_is_on_installation_drive(monkeypatch) -> None:
     root = data_paths.data_dir(create=False)
     assert root == data_paths.project_root().parent / "AngeronaData"
     assert root.drive.casefold() == data_paths.project_root().drive.casefold()
-    assert root.drive.casefold() == "d:"
+    # The security invariant is volume affinity, not a maintainer-specific drive letter.
 
 
 def test_frozen_runtime_prefers_configured_fixed_data_drive(monkeypatch) -> None:

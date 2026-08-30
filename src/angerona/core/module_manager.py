@@ -15,13 +15,20 @@ import importlib.util
 import inspect
 import os
 import pkgutil
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
+from angerona.core.assurance_receipts import (
+    PRODUCER_CONTRACTS,
+    AssuranceReceiptBroker,
+)
+from angerona.core.capability_assurance import assess_capability
 from angerona.core.capability_manifest import verify_external_module
 from angerona.core.config import Config
 from angerona.core.eventbus import EventBus
+from angerona.core.independent_high_water import IndependentHighWater
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.module_contract import ContractError, build_capability_contract
 from angerona.core.platforms import (
@@ -54,11 +61,23 @@ class ModuleManager:
         config: Config,
         *,
         target_platform: str | None = None,
+        recorder: object | None = None,
+        high_water_provider: IndependentHighWater | None = None,
+        module_factory: Callable[[type], BaseModule] | None = None,
     ) -> None:
         self.bus = bus
         self.config = config
         self.platform = normalize_platform(target_platform)
+        self.recorder = recorder
+        self.high_water_provider = high_water_provider
+        self._module_factory = module_factory
         self.modules: Dict[str, BaseModule] = {}
+        # Serialises operator enable/disable changes with watchdog generation
+        # recovery.  The module itself performs the generation compare-and-
+        # restart; this manager lock additionally proves the registered object
+        # and enabled policy did not change underneath that request.
+        self._module_control_lock = threading.RLock()
+        self.assurance_receipt_broker = AssuranceReceiptBroker(lambda: self.modules)
         self.discovery_errors: List[str] = []
         # Enterprise extension inventory. Built-ins inherit the release trust
         # boundary; external modules are recorded only after their detached
@@ -71,7 +90,7 @@ class ModuleManager:
         capability_ids: set[str] = set()
         for cls in self._builtin_classes() + self._external_classes():
             try:
-                inst = cls()
+                inst = self._construct_module(cls)
             except Exception as exc:
                 self.discovery_errors.append(f"{cls.__module__}.{cls.__name__}: {exc}")
                 continue
@@ -93,6 +112,13 @@ class ModuleManager:
                     inst.bind_manager(self)
                 except Exception:
                     pass
+            if self.recorder is not None and hasattr(inst, "bind_recorder"):
+                try:
+                    inst.bind_recorder(self.recorder)
+                except Exception as exc:
+                    self.discovery_errors.append(
+                        f"{cls.__module__}.{cls.__name__}: recorder binding: {exc}"
+                    )
             manifest = getattr(cls, "_angerona_manifest", None)
             origin = "external" if manifest is not None else "builtin"
             trust = str(getattr(cls, "_angerona_trust", "release"))
@@ -127,6 +153,24 @@ class ModuleManager:
             setattr(inst, "_angerona_contract", contract)
             capability_ids.add(capability_id)
             self.modules[inst.name] = inst
+            try:
+                if getattr(inst, "CODE", "") == "CHAOS" and inst.name == "CHAOS":
+                    self.assurance_receipt_broker.enroll_consumer(inst)
+                producer_code = str(getattr(inst, "CODE", ""))
+                if producer_code in PRODUCER_CONTRACTS:
+                    issuer = self.assurance_receipt_broker.enroll_producer(
+                        inst,
+                        code=producer_code,
+                        module_name=inst.name,
+                        capability_id=capability_id,
+                    )
+                    binder = getattr(inst, "bind_assurance_receipt_issuer", None)
+                    if callable(binder):
+                        binder(issuer)
+            except Exception as exc:
+                self.discovery_errors.append(
+                    f"{cls.__module__}.{cls.__name__}: assurance enrollment: {exc}"
+                )
             self.module_trust[inst.name] = {
                 "origin": origin,
                 "trust": trust,
@@ -142,6 +186,26 @@ class ModuleManager:
                 ),
                 "publisher": manifest.publisher if manifest is not None else "Angerona",
             }
+
+    def _construct_module(self, cls: type) -> BaseModule:
+        """Construct one module and bind application-owned security services.
+
+        The optional factory keeps production composition explicit and testable.
+        Independent high-water authority is offered only to bundled modules;
+        an external drop-in never receives this privileged service implicitly.
+        """
+        instance = self._module_factory(cls) if self._module_factory else cls()
+        if not isinstance(instance, BaseModule):
+            raise TypeError("module factory did not return a BaseModule")
+        if (
+            self.high_water_provider is not None
+            and cls.__module__.startswith("angerona.modules.")
+            and getattr(cls, "_angerona_manifest", None) is None
+        ):
+            binder = getattr(instance, "bind_high_water", None)
+            if callable(binder):
+                binder(self.high_water_provider)
+        return instance
 
     def _builtin_classes(self) -> List[type]:
         import angerona.modules as pkg
@@ -414,17 +478,39 @@ class ModuleManager:
         return skipped
 
     def set_enabled(self, name: str, enabled: bool) -> None:
-        mod = self.modules.get(name)
-        if not mod:
-            return
-        platform = availability_for(mod, self.platform)
-        if enabled and not platform.available:
-            mod.status = "unavailable"
-            mod.set_health(0, platform.reason)
-            return
-        self.config.module_states[name] = enabled
-        self.config.save()
-        mod.start() if enabled else mod.stop()
+        with self._module_control_lock:
+            mod = self.modules.get(name)
+            if not mod:
+                return
+            platform = availability_for(mod, self.platform)
+            if enabled and not platform.available:
+                mod.status = "unavailable"
+                mod.set_health(0, platform.reason)
+                return
+            self.config.module_states[name] = enabled
+            self.config.save()
+            mod.start() if enabled else mod.stop()
+
+    def restart_module_generation(
+        self,
+        name: str,
+        expected_module: BaseModule,
+        expected_generation: int,
+    ) -> bool:
+        """Restart only the still-enabled, still-registered observed worker.
+
+        This is the watchdog's sole restart authority.  It prevents a stale
+        sweep from acting on a replacement object, a newer lifecycle
+        generation, or an operator-disabled capability.
+        """
+        with self._module_control_lock:
+            current = self.modules.get(name)
+            if current is not expected_module or not self.is_enabled(name):
+                return False
+            restart = getattr(current, "restart_if_generation", None)
+            if not callable(restart):
+                return False
+            return bool(restart(int(expected_generation)))
 
     def stop_all(self) -> None:
         for mod in self.modules.values():
@@ -455,14 +541,25 @@ class ModuleManager:
                 except ContractError:
                     contract = None
             operational = mod.operational_snapshot()
+            platform = availability_for(mod, self.platform)
+            enabled = bool(self.is_enabled(name))
+            assurance = assess_capability(
+                mod,
+                contract=contract,
+                operational=operational,
+                platform=self.platform,
+                enabled=enabled,
+            )
             trust.update(
                 {
                     "name": name,
                     "category": str(getattr(mod, "category", "General")),
                     "status": str(getattr(mod, "status", "unknown")),
                     "health": int(getattr(mod, "health", 0)),
-                    "enabled": bool(self.is_enabled(name)),
+                    "enabled": enabled,
                     "operational": operational,
+                    "assurance": assurance.as_dict(),
+                    "assurance_score": assurance.score,
                 }
             )
             if contract is not None:
@@ -480,7 +577,7 @@ class ModuleManager:
                         "metadata_gaps": list(contract.metadata_gaps),
                     }
                 )
-            trust.update(availability_for(mod, self.platform).as_dict())
+            trust.update(platform.as_dict())
             rows.append(trust)
         return rows
 

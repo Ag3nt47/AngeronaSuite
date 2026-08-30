@@ -51,7 +51,7 @@ class TemporalTradecraftCorrelatorModule(BaseModule):
         "tunnels, network-path drift, and audit-log clearing."
     )
     category = "Correlation"
-    version = "1.0.0"
+    version = "1.12.1"
     supported_platforms = frozenset(SUPPORTED_PLATFORMS)
     capability_mode = "observe"
     platform_requirements = (
@@ -177,6 +177,26 @@ class TemporalTradecraftCorrelatorModule(BaseModule):
         return base
 
     def _publish_assessment(self, assessment: TemporalAssessment) -> None:
+        if assessment.state == "blind":
+            health = 20
+        elif assessment.state == "overflow":
+            health = 35
+        elif assessment.state == "missing":
+            health = 55
+        else:
+            health = 100
+        if assessment.persistence_status in {"untrusted", "unavailable"}:
+            health = min(health, 25 if assessment.persistence_status == "untrusted" else 35)
+        elif assessment.persistence_status == "missing":
+            health = min(health, 55)
+        if self._key_unavailable:
+            health = min(health, 35)
+        note = (
+            f"temporal state={assessment.state}; continuity={assessment.reason}; "
+            f"persistence={assessment.persistence_status}; "
+            f"retained={assessment.retained_signals}; dropped={assessment.dropped_signals}"
+        )
+        self.set_health(health, note)
         for finding in assessment.findings:
             self.emit(
                 finding.summary,

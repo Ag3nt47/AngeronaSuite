@@ -42,10 +42,15 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
+import hashlib
 import os
 import time
 from typing import Optional
 
+from angerona.core.assurance_receipts import (
+    DetectorReceiptIssuer,
+    assurance_target_digest,
+)
 from angerona.core.module_base import BaseModule, Severity
 
 # ── AMSI constants ────────────────────────────────────────────────────────────
@@ -176,7 +181,7 @@ class AMSIBridgeModule(BaseModule):
         "time.  Does NOT patch AmsiScanBuffer (no offensive bypass)."
     )
     category = "Endpoint"
-    version = "1.1.0"
+    version = "1.12.1"
 
     _POLL_INTERVAL = 5.0   # how often to drain the bus for new script events
 
@@ -187,6 +192,39 @@ class AMSIBridgeModule(BaseModule):
         self._last_health_check: float = 0.0
         # (hash of content) → last_alert_ts
         self._seen: dict[int, float] = {}
+        self._assurance_issuer: DetectorReceiptIssuer | None = None
+
+    def bind_assurance_receipt_issuer(self, issuer: DetectorReceiptIssuer) -> None:
+        self._assurance_issuer = issuer
+
+    def _publish_assurance_receipts(self) -> None:
+        issuer = self._assurance_issuer
+        if issuer is None or self._amsi is None:
+            return
+        evidence_digest = hashlib.sha256(_EICAR).hexdigest()
+        target_digest = assurance_target_digest(
+            "amsi", "eicar-health-check", evidence_digest
+        )
+        for challenge in issuer.active(self, "amsi"):
+            try:
+                result = self._amsi.scan(_EICAR, "angerona_assurance_eicar")
+            except Exception as exc:
+                self.last_error = str(exc)
+                continue
+            if result < AMSI_RESULT_DETECTED:
+                continue
+            receipt = issuer.issue(
+                self,
+                challenge.probe_id,
+                observation="content_signature_observed",
+                observed_target_digest=target_digest,
+            )
+            if receipt is not None:
+                self.emit(
+                    "AMSI object-bound assurance receipt: EICAR detection observed.",
+                    Severity.INFO,
+                    **receipt,
+                )
 
     @property
     def state(self) -> str:
@@ -213,10 +251,12 @@ class AMSIBridgeModule(BaseModule):
             self.emit("AMSI Bridge active — AmsiScanBuffer connected.", Severity.INFO)
             # Verify EICAR is detected (proves AV provider is registered)
             self._check_eicar_health()
+            self._publish_assurance_receipts()
 
         while not self.stopping:
             self.sleep(self._POLL_INTERVAL)
             self._drain_bus()
+            self._publish_assurance_receipts()
 
             now = time.time()
             if not self._fallback and (now - self._last_health_check >= _HEALTH_CHECK_INTERVAL):

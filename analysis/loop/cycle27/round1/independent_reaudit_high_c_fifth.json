@@ -1,0 +1,77 @@
+[
+  {
+    "id": "C27-R1-C03",
+    "title": "Ransomware state rollback and deterministic content exclusions retain health-100 blind spots",
+    "status": "REOPENED_PARTIAL",
+    "severity": "MEDIUM",
+    "original_scope_status": "RESOLVED",
+    "component": "src/angerona/modules/ransomware_heuristics.py:223-231,367,450-574,890-969,1282-1545",
+    "evidence": [
+      "The exact old-mtime 4 MiB header-preserving attack was caught at entropy 7.977157 with one alert, complete=true and health 100; a wholly random old-mtime 64 KiB file was also caught.",
+      "Restoring a valid authenticated content-state file changed accepted sequence 2 to 1 with no load error; current coverage remained complete and health 100. Deleting both key and state silently enrolled sequence 0 at health 100. Isolated state deletion was correctly refused.",
+      "_change_receipts is initialized and assigned after load/commit, but no candidate, comparison, alert or health path reads a prior receipt.",
+      "A 4 MiB entropy-8 file named encrypted.zip produced no candidate, skipped=0, complete=true and health 100.",
+      "A 4 MiB file alternating 64 KiB clear and 64 KiB uniform-random regions produced aggregate entropy 4.981552, no alert, complete=true and health 100.",
+      "A 64 MiB range-aware evasion had whole entropy 7.991095 and no alert for the observed process, but was honestly incomplete at health 80. A restart selected different ranges and caught it.",
+      "Real 64 MiB content-budget pressure skipped the final encrypted target, but reported content_budget_exhausted=1, skipped=1, truncated=1 and health 65."
+    ],
+    "controls_held": [
+      "Bounded files through 8 MiB are streamed completely from held exact objects.",
+      "Mutable mtime is no longer admission authority.",
+      "Large-file representative ranges change across restart and are never health 100.",
+      "Traversal/content budgets and isolated state loss are fail-visible.",
+      "Held ancestry, exact identity and publication-boundary revalidation remain intact."
+    ],
+    "recommendation": "Compare authenticated prior receipts with current exact observations before overwrite; add an independently enrolled monotonic high-water and refuse total authority loss after enrollment. Replace suffix-only blanket exclusions with identity/type/change-bound policy and count unproved exclusions below health 100. Preserve chunk/window entropy and baseline deltas for fully read files so strided partial encryption cannot be diluted by one aggregate histogram. Add a fair durable scan cursor while retaining current incomplete-health caps.",
+    "attack_results": {
+      "fourth_prefix_and_mtime_bypasses": "CAUGHT",
+      "large_unsampled_range_placement": "MISSED_HEALTH_80_RESTART_CAUGHT",
+      "content_budget_starvation": "MISSED_HEALTH_65",
+      "isolated_state_deletion": "CAUGHT",
+      "valid_state_rollback": "MISSED_HEALTH_100",
+      "key_and_state_deletion": "MISSED_HEALTH_100",
+      "excluded_extension_encryption": "MISSED_HEALTH_100",
+      "strided_partial_encryption": "MISSED_HEALTH_100"
+    }
+  },
+  {
+    "id": "C27-R1-C13",
+    "title": "Custody is fail-visible but not preserved across link-topology and complete local-authority compromise",
+    "status": "REOPENED_PARTIAL",
+    "severity": "MEDIUM",
+    "original_scope_status": "RESOLVED",
+    "component": "src/angerona/modules/smart_deception.py:717-824,965-1261,1271-1531,1653-1782,2050-2096",
+    "evidence": [
+      "Source alias, pending loss and authenticated eviction state survived restart at health 65; isolated witness/main-bundle loss and an old SQLite/head pair were refused at health 65.",
+      "A real hard link created immediately after the final evidence audit survived, and later mutation changed the evidence. Permanent topology and alias events prevented green health and restart remained health 65.",
+      "Same-size tail mutation with exact mtime restoration failed digest reconciliation before and after restart.",
+      "Eviction crashes before deletion recovered; a crash after deletion reconstructed durable continuity loss. Terminal-capacity exhaustion refused capture and retained the tampered source.",
+      "A forced same-sequence concurrent commit allowed one archive, refused the other, retained the refused source, and restarted with a valid sequence-2 ledger.",
+      "Deleting evidence plus every local authority file enrolled fresh sequence 0 with refresh=true, loss=0 and health 90.",
+      "Restoring an older SQLite/head/witness set or coherently substituting the enrollment key and witness was accepted. Health remained 65 only because an older/current permanent topology event was already present."
+    ],
+    "controls_held": [
+      "Original bounded-read, exclusive-create, safe restage and alert-dedup defects remain fixed.",
+      "Durable chain reconstruction retains aliases, topology uncertainty, loss, refusal, eviction and pending transitions.",
+      "Ordinary deletion/rollback, evidence digest mutation, crash stages, capacity pressure and writer races fail closed or non-green.",
+      "Software-only local freshness is explicitly labeled and capped below 100."
+    ],
+    "recommendation": "Protect quarantine with a verified service-only ACL and, for stronger threats, a minifilter, remote append-only replication or WORM boundary. Make enrollment installer-owned with explicit authenticated reset instead of create-on-total-absence. Use TPM NV/attestation or a remote monotonic witness for rollback claims and cap purely local authority more conservatively. Return a typed captured_unverified outcome while link topology is uncertain and replicate evidence before source retirement where preservation is required.",
+    "attack_results": {
+      "source_alias_restart": "CAUGHT_HEALTH_65",
+      "post_final_hardlink_mutation": "NOT_PREVENTED_BUT_DURABLY_NON_GREEN",
+      "pending_and_eviction_restart": "CAUGHT_HEALTH_65",
+      "main_bundle_deletion": "CAUGHT_HEALTH_65",
+      "old_db_head_rollback": "CAUGHT_HEALTH_65",
+      "evidence_timestomp_tail_mutation": "CAUGHT_HEALTH_65",
+      "isolated_witness_deletion": "CAUGHT_HEALTH_65",
+      "two_phase_eviction_crashes": "RECOVERED_OR_FAIL_VISIBLE",
+      "reserved_capacity_exhaustion": "SAFE_REFUSAL_SOURCE_RETAINED",
+      "forced_concurrent_commit": "ONE_COMMIT_ONE_SAFE_REFUSAL",
+      "complete_local_authority_deletion": "MISSED_HEALTH_90",
+      "complete_local_authority_rollback": "MISSED_HEALTH_65",
+      "coherent_enrollment_key_witness_substitution": "MISSED_HEALTH_65"
+    },
+    "assurance_boundary": "No software-only HMAC state can prove freshness against an actor that can replace its key and every local witness. This limitation is now disclosed, but evidence immutability and prior-history continuity still require an authority outside that actor's control."
+  }
+]

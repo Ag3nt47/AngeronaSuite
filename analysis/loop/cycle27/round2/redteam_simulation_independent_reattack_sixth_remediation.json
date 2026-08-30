@@ -1,0 +1,126 @@
+{
+  "schema": "angerona.redteam-simulation-independent-reattack.v6",
+  "cycle": 27,
+  "round": 2,
+  "date": "2026-08-28",
+  "disposition": "REOPENED",
+  "scope": {
+    "findings": [
+      "RTS-R4-02",
+      "RTS-R4-03",
+      "RTS-R4-05"
+    ],
+    "supplemental_contracts": [
+      "mandatory 13-contract denominator",
+      "exact producer object and lifecycle generation binding",
+      "T1059 process-source generation and OS receipt",
+      "signed display/action report handoff"
+    ],
+    "inert_temp_fixtures_only": true,
+    "live_probes": false,
+    "real_attacks": false,
+    "credential_access": false,
+    "persistence": false,
+    "network_activity": false,
+    "host_mutation": false,
+    "product_edits": false,
+    "existing_test_edits": false,
+    "publication": false
+  },
+  "summary": {
+    "root_findings_closed": 1,
+    "root_findings_reopened": 2,
+    "independent_hostile_gates_passed": 3,
+    "independent_hostile_gates_failed": 4,
+    "critical": 0,
+    "high": 0,
+    "medium": 2,
+    "low": 0
+  },
+  "findings": [
+    {
+      "id": "RTS-R4-02",
+      "status": "REOPENED",
+      "severity": "MEDIUM",
+      "title": "Mutable FIM scan object defeats capture-time and one-use custody",
+      "component": "src/angerona/modules/file_integrity.py:199-223,773-787,863-917; src/angerona/modules/purple_guard.py:242-500,2188-2397",
+      "red_gates": [
+        "tests/test_cycle27_redteam_simulation_sixth_independent_reattack.py:108 test_post_scan_mutation_cannot_add_an_unscanned_artifact_to_receipt_custody",
+        "tests/test_cycle27_redteam_simulation_sixth_independent_reattack.py:165 test_consumed_scan_generation_cannot_be_rearmed_for_a_second_receipt"
+      ],
+      "evidence": [
+        "A genuine completed empty scan returned the exact retained _FIMScanSnapshot.",
+        "After scan completion, an inert enrolled marker was created and injected into the mutable mapping and identity dictionary; the mutable receipt counters and snapshot/coverage digests were recomputed.",
+        "_evaluate_snapshot accepted the mutated object and minted a version-4 receipt that verify_validation_native_event accepted, even though the file did not exist during the scan.",
+        "After one valid evaluation, resetting the snapshot's writable _fim_consumed flag and reinstalling the same object as _pending_scan_snapshot minted a second accepted receipt for the same scan generation."
+      ],
+      "impact": "Same-process code can manufacture native detector credit after scan completion and replay one scan generation for multiple accepted receipts. This affects simulation evidence truth, not host compromise.",
+      "recommendation": "Keep scan custody in producer-owned state that callers cannot mutate: capture an immutable canonical snapshot/identity/receipt record under a private generation handle, validate the exact current generation, and maintain an issuer-owned consumed-generation set or monotonic claim token. The evaluator should receive only an opaque claim and copied read-only values."
+    },
+    {
+      "id": "RTS-R4-03",
+      "status": "REOPENED",
+      "severity": "MEDIUM",
+      "title": "Captured verifier closure and live signing key remain module-reachable mutable authority",
+      "component": "src/angerona/modules/purple_guard.py:84-154,242-500,2188-2397,2513-2574",
+      "red_gates": [
+        "tests/test_cycle27_redteam_simulation_sixth_independent_reattack.py:217 test_captured_verifier_closure_cell_cannot_redirect_acceptance",
+        "tests/test_cycle27_redteam_simulation_sixth_independent_reattack.py:285 test_module_reachable_authority_cannot_forge_a_new_native_receipt"
+      ],
+      "evidence": [
+        "The public verify_validation_native_event function exposes verify_native_impl through its writable Python closure cell; replacing cell_contents with a lambda made a receipt-free event pass.",
+        "_lease_authority(lease) returns the live _LeaseAuthorityState, including state.key.",
+        "Starting from one valid inert FIM event, changing only event_nonce and recomputing detector_receipt_mac with the reachable key produced a new synthetic Event accepted by verify_validation_native_event.",
+        "The sixth author test closes class-attribute replacement but does not exercise closure-cell mutation or registry-reachable key use."
+      ],
+      "impact": "An admitted same-process Python component can redirect validation or mint accepted detector receipts without using the enrolled producer capability. The declared same-process-object-capability label is honest, but the verifier is not immutable and the key is not issuer-only.",
+      "recommendation": "Do not describe Python closures as immutable. For a security boundary, move signing, replay state, and verification into a measured restricted process/service and expose only opaque handles plus a public verification key. If isolation is deferred, prevent direct state/key return and downgrade the assurance claim to same-process simulation validation."
+    },
+    {
+      "id": "RTS-R4-05",
+      "status": "CLOSED",
+      "severity": null,
+      "title": "Fixed-head journal continuity and signed handoff",
+      "component": "src/angerona/shark/aar_report.py:154-239,1090-1386",
+      "green_gate": "tests/test_cycle27_redteam_simulation_sixth_independent_reattack.py:354 test_fixed_head_journal_and_handoff_reject_prefix_and_field_swaps",
+      "evidence": [
+        "The exact current report handoff verified normally.",
+        "Swapping text, text bytes, or the signed journal row/hash across two authentic report results was rejected.",
+        "Dropping the authenticated journal prefix and retaining only row two failed chain validation and invalidated the handoff.",
+        "The existing sixth journal-only rollback gate and older signed display replay gates remained green in the 80-test compatibility run."
+      ],
+      "residual": "The remediation already discloses that coordinated rollback of every local witness is not detectable without a separately administered monotonic witness. This re-attack found no narrower rollback or handoff bypass."
+    }
+  ],
+  "supplemental_closure": [
+    {
+      "control": "exact producer object and lifecycle generation binding",
+      "status": "CLOSED",
+      "gate": "tests/test_cycle27_redteam_simulation_sixth_independent_reattack.py:384",
+      "evidence": "A valid receipt was rejected after manager module-object replacement and again after lifecycle-generation advance."
+    },
+    {
+      "control": "mandatory 13-contract denominator",
+      "status": "CLOSED",
+      "gate": "tests/test_cycle27_redteam_simulation_sixth_independent_reattack.py:420",
+      "evidence": "A signed duplicate-only, missing-inventory campaign retained detection_steps=13, withheld score eligibility, and emitted a null validation rate."
+    },
+    {
+      "control": "T1059 process source identity/generation",
+      "status": "CLOSED_UNCHANGED",
+      "gate": "tests/test_cycle27_redteam_simulation_fifth_independent_reattack.py:162",
+      "evidence": "The existing exact OS-source, generation-bound Process Monitor gate passed unchanged in the broader run."
+    }
+  ],
+  "validation": {
+    "new_independent_hostile_suite": "4 failed, 3 passed",
+    "new_green_closure_subset": "3 passed, 4 deselected",
+    "sixth_author_plus_fifth_independent": "10 passed",
+    "broader_unchanged_redteam_suite": "80 passed",
+    "display_action_replacement_gate": "1 passed",
+    "compile_new_test": "PASS",
+    "ruff_new_test": "PASS",
+    "dedicated_test": "tests/test_cycle27_redteam_simulation_sixth_independent_reattack.py"
+  },
+  "assurance_boundary": "All red reproductions require code already executing in Angerona's Python process and affect Red Team simulation evidence integrity. They use only inert temporary marker files and synthetic events; they do not demonstrate or attempt host compromise."
+}

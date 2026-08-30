@@ -24,13 +24,16 @@ import time
 from angerona.core.config import Config
 from angerona.core.chill_runtime import ChillRuntimeController
 from angerona.core.eventbus import EventBus
+from angerona.core.independent_high_water import IndependentHighWater
 from angerona.core.module_manager import ModuleManager
 from angerona.core.platforms import current_platform
 from angerona.core.status_report import StatusReporter
 from angerona.core.storage import AsyncFlightRecorder, FlightRecorder
 
 
-def run_headless() -> int:
+def run_headless(
+    *, high_water_provider: IndependentHighWater | None = None
+) -> int:
     """Build core services (no Qt), start modules, and block until signalled."""
     config = Config.load()
     storage = FlightRecorder(config.db_path)
@@ -60,7 +63,12 @@ def run_headless() -> int:
     except Exception:
         pass
 
-    manager = ModuleManager(bus, config)
+    manager = ModuleManager(
+        bus,
+        config,
+        recorder=storage,
+        high_water_provider=high_water_provider,
+    )
     reporter = StatusReporter(bus, storage, manager, config)
     chill = None
     if getattr(config, "eco_mode", True):

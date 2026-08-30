@@ -173,7 +173,7 @@ class FastPathModule(BaseModule):
         "known-bad patterns."
     )
     category = "AI"
-    version = "1.1.0"
+    version = "1.12.1"
 
     _POLL_INTERVAL = 3.0
 

@@ -33,6 +33,8 @@ def test_canonical_mobile_settings_editor_is_reachable_and_saves(tmp_path, monke
     assert hasattr(dialog, "_mob_chk")
     dialog._mob_chk.setChecked(True)
     dialog._mob_cli.setText("C:/Tools/signal-cli.exe")
+    dialog._mob_sha256.setText("a" * 64)
+    dialog._mob_publisher.setText("CN=Trusted Signal CLI Publisher")
     dialog._mob_host.setText("+15551112222")
     dialog._mob_dest.setText("+15553334444")
     dialog._ollama_model.setText("qa-model")
@@ -45,6 +47,8 @@ def test_canonical_mobile_settings_editor_is_reachable_and_saves(tmp_path, monke
     assert saved["eco_mode"] is False
     assert saved["mobile_enabled"] is True
     assert saved["mobile_signal_cli"] == "C:/Tools/signal-cli.exe"
+    assert saved["mobile_signal_cli_sha256"] == "a" * 64
+    assert saved["mobile_signal_cli_publisher"] == "CN=Trusted Signal CLI Publisher"
     assert saved["mobile_host_number"] == "+15551112222"
     assert saved["mobile_dest_number"] == "+15553334444"
     assert saved["process_baseline_enabled"] is False

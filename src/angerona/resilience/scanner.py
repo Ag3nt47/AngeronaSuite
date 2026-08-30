@@ -321,17 +321,26 @@ def self_test() -> tuple[bool, str]:
     """Offline, isolated: run a few scanner loop iterations against a temp ring
     and confirm the process sensor baselines then emits frames, the heartbeat
     advances, and status is written — without spawning a process."""
-    import tempfile, shutil
-    prev = os.environ.get("ANGERONA_DATA")
-    prev_diag = os.environ.get("ANGERONA_DIAG_DIR")
-    workdir = tempfile.mkdtemp(prefix="scan_selftest_")
-    os.environ["ANGERONA_DATA"] = workdir
-    os.environ["ANGERONA_DIAG_DIR"] = os.path.join(workdir, "diag")
+    from angerona.resilience._selftest_environment import run_isolated_selftest
+
+    return run_isolated_selftest(
+        "scanner",
+        "scan_selftest_",
+        lambda root: {
+            "ANGERONA_DATA": str(root),
+            "ANGERONA_DIAG_DIR": str(root / "diag"),
+        },
+        timeout=20.0,
+    )
+
+
+def _isolated_self_test() -> tuple[bool, str]:
+    host = ScannerHost(interval=0.05)
+    procs: list[subprocess.Popen] = []
+    reader = None
     try:
-        host = ScannerHost(interval=0.05)
         # First poll = baseline (no frames); spawn a couple procs; second poll emits.
         host.sensors[0].poll()
-        import subprocess
         procs = [subprocess.Popen([sys.executable, "-c", "import time;time.sleep(0.4)"])
                  for _ in range(2)]
         time.sleep(0.1)
@@ -350,21 +359,21 @@ def self_test() -> tuple[bool, str]:
         beat_ok = c2 == c1 + 1
         status_ok = status.get("component") == "scanner" and status.get("last_ping") == "nonce123"
 
-        for p in procs:
-            try: p.wait(timeout=1)
-            except Exception: p.kill()
-        host.ring.close(); reader.close(); host.beat.close()
         ok = emitted_ok and decode_ok and beat_ok and status_ok
         return ok, ("raw process frames emitted→ring, decoded, heartbeat advanced, "
                     "status(pong) written" if ok else
                     f"failed: emitted={emitted_ok} decode={decode_ok} beat={beat_ok} status={status_ok}")
     finally:
-        for k, v in (("ANGERONA_DATA", prev), ("ANGERONA_DIAG_DIR", prev_diag)):
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-        shutil.rmtree(workdir, ignore_errors=True)
+        for process in procs:
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1)
+        host.ring.close()
+        if reader is not None:
+            reader.close()
+        host.beat.close()
 
 
 if __name__ == "__main__":

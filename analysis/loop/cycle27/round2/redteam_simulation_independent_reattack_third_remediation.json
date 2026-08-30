@@ -1,0 +1,240 @@
+{
+  "schema": "angerona.redteam-simulation-independent-reattack.v3",
+  "cycle": 27,
+  "round": 2,
+  "date": "2026-08-28",
+  "disposition": "REOPENED",
+  "scope": {
+    "inert_temp_fixtures_only": true,
+    "product_or_test_code_changed": false,
+    "real_exploitation": false,
+    "credential_access": false,
+    "persistence": false,
+    "network_attack": false,
+    "host_targeting": false,
+    "host_security_control_mutation": false,
+    "publication": false,
+    "temporary_fixtures_removed": true
+  },
+  "claimed_closures": {
+    "RTS-R2-01": {
+      "direct_case": "CLOSED",
+      "adjacent_case": "REOPENED_BY_RTS-R3-03",
+      "evidence": "raw INFO stays observation-only in evaluate; arbitrary raw INFO can still acquire a Purple receipt through the process-event oracle"
+    },
+    "RTS-R2-02": {
+      "direct_case": "CLOSED",
+      "adjacent_case": "REOPENED_BY_RTS-R3-02",
+      "evidence": "lease attribute mutation is rejected; same path with a replacement directory identity is accepted"
+    },
+    "RTS-R2-03": {
+      "direct_case": "CLOSED",
+      "adjacent_case": "REOPENED_BY_RTS-R3-04",
+      "evidence": "stopped and restarted generations cannot sign; the exact running FIM public emit method can"
+    },
+    "RTS-R2-04": {
+      "direct_case": "CLOSED",
+      "adjacent_case": "REOPENED_BY_RTS-R3-05",
+      "evidence": "instance verifier mutation is ignored; class-level verifier mutation is accepted"
+    },
+    "RTS-R2-05": {
+      "direct_case": "CLOSED",
+      "adjacent_case": "REOPENED_BY_RTS-R3-06",
+      "evidence": "an established dialog rejects replacement; an older pair can win before binding establishment"
+    },
+    "RTS-R2-06": {
+      "direct_case": "CLOSED",
+      "adjacent_case": "DEADLINE_SIZING_GAP_RTS-R3-07",
+      "evidence": "wall rollback cannot revive monotonic expiry; accepted maximum run duration exceeds the fixed TTL"
+    },
+    "RTS-R2-07": {
+      "direct_case": "CLOSED",
+      "adjacent_case": "TARGET_DIRECTORY_IDENTITY_GAP_RTS-R3-02",
+      "evidence": "marker hardlinks and replacements fail closed; target directory identity is not held"
+    }
+  },
+  "findings": [
+    {
+      "id": "RTS-R3-01",
+      "title": "Missing mandatory probes disappear from a signed completed denominator",
+      "severity": "HIGH",
+      "component": "src/angerona/shark/red_team.py:554-613; src/angerona/shark/run_manifest.py:473-560,611-720; src/angerona/modules/purple_guard.py:591-622; src/angerona/shark/aar_report.py:880-930,1080-1099",
+      "status": "OPEN",
+      "reproduction": {
+        "actual_engine_fault_injection": {
+          "history_authenticated": true,
+          "history_status": "completed",
+          "preflight_projected_steps": 15,
+          "actual_steps": 1,
+          "injected_mandatory_step_failures": 13
+        },
+        "production_aar": {
+          "readiness_policy_count": 13,
+          "actual_steps": 1,
+          "denominator": 1,
+          "simulation_contract_validations": 1,
+          "simulation_rate": 1.0
+        }
+      },
+      "recommendation": "Bind preflight to the complete mandatory per-cycle plan, record failed and missing attempts, mark incomplete runs explicitly, enforce campaign order when selected, and refuse a coverage percentage or retain the planned denominator with missing probes counted as misses."
+    },
+    {
+      "id": "RTS-R3-02",
+      "title": "Lease readiness pins a path string rather than target directory identity",
+      "severity": "MEDIUM",
+      "component": "src/angerona/modules/purple_guard.py:80-115,225-256,488-589",
+      "status": "OPEN",
+      "reproduction": {
+        "old_and_new_directory_identity_differed": true,
+        "path_string_unchanged": true,
+        "consume_accepted": true,
+        "readiness_target_equal_bound_target": true
+      },
+      "recommendation": "Hold a no-reparse directory descriptor and volume/file identity from acquisition through release and verify the current path maps to that exact object at every consume, marker, scan, history, cleanup, and AAR boundary."
+    },
+    {
+      "id": "RTS-R3-03",
+      "title": "Arbitrary INFO publisher becomes a Purple process-receipt oracle",
+      "severity": "MEDIUM",
+      "component": "src/angerona/modules/purple_guard.py:1355-1365,1445-1478,1595-1666",
+      "status": "OPEN",
+      "reproduction": {
+        "real_process_spawned": false,
+        "source_module": "Arbitrary Telemetry Publisher",
+        "source_severity": "INFO",
+        "purple_receipt_present": true,
+        "simulation_contract_validations": 1,
+        "denominator": 1
+      },
+      "recommendation": "Require an issuer-enrolled process challenge and exact Process Monitor producer/generation, bind token/PID/birth/held process identity to the run and step, and issue the receipt only from the canonical object-observation site."
+    },
+    {
+      "id": "RTS-R3-04",
+      "title": "The exact running FIM object's public emit method remains a signing oracle",
+      "severity": "MEDIUM",
+      "component": "src/angerona/modules/purple_guard.py:878-1083",
+      "status": "OPEN",
+      "reproduction": {
+        "fim_status": "running",
+        "fim_thread_alive": true,
+        "caller_invoked_public_emit": true,
+        "receipt_present": true,
+        "exact_verifier_accepted": true,
+        "native_analytic_count": 1,
+        "denominator": 1
+      },
+      "recommendation": "Remove signing from general emit and issue one-use receipts inside the actual FIM observation/classification site, bound to held file identity/content, scan generation, run, step, and event; isolate the signer from extensions."
+    },
+    {
+      "id": "RTS-R3-05",
+      "title": "Mutable class-level dispatch bypasses detector receipts",
+      "severity": "MEDIUM",
+      "component": "src/angerona/shark/aar_report.py:1066-1093,1111-1144",
+      "status": "OPEN",
+      "reproduction": {
+        "exact_lease_preserved": true,
+        "class_method_replaced": "RedTeamValidationLease.verify_native_event",
+        "event_bus_hmac_valid": true,
+        "detector_receipt_present": false,
+        "native_analytic_count": 1,
+        "denominator": 1
+      },
+      "recommendation": "Move scoring and verification to an isolated measured helper with a signer unavailable to extensions; fail closed on callable/code provenance drift as defense in depth and document that a mutable Python class is not an immutable same-process authority."
+    },
+    {
+      "id": "RTS-R3-06",
+      "title": "Replay can win before the dialog establishes its run and digest binding",
+      "severity": "MEDIUM",
+      "component": "src/angerona/gui/main_window.py:2296-2310,2422-2428; src/angerona/gui/pages.py:6522-6628,6642-6653,6827-6908; src/angerona/shark/aar_report.py:1002-1010",
+      "status": "OPEN",
+      "reproduction": {
+        "new_text_initially_displayed": true,
+        "older_pair_hmac_valid": true,
+        "older_pair_won_binding": true,
+        "older_pair_accepted_by_authenticated_loader": true,
+        "display_action_mismatch": true
+      },
+      "recommendation": "Return text/run/signed-JSON bytes and digest as one immutable generator result, bind before display, publish the pair through one authenticated atomic manifest, and keep a durable authenticated monotonic current-report head."
+    },
+    {
+      "id": "RTS-R3-07",
+      "title": "Valid maximum-duration runs cannot fit inside the fixed monotonic lease",
+      "severity": "LOW",
+      "component": "src/angerona/shark/run_manifest.py:139-191,274-329; src/angerona/modules/purple_guard.py:63-68,540-589; src/angerona/shark/red_team.py:562-603",
+      "status": "OPEN",
+      "reproduction": {
+        "preflight_accepted": true,
+        "cycles": 4,
+        "jitter_seconds_per_step": 60,
+        "mandatory_steps": 56,
+        "minimum_jitter_seconds": 3360,
+        "lease_run_ttl_seconds": 600,
+        "settle_window_not_included": true
+      },
+      "recommendation": "Derive a bounded monotonic deadline from the accepted preflight and settle budget or reject configurations that cannot fit; surface expiration as incomplete rather than producing coverage."
+    }
+  ],
+  "independently_closed_checks": {
+    "direct_raw_info_remains_observation_only": true,
+    "private_lease_target_attribute_mutation_rejected": true,
+    "stopped_fim_receipt_rejected": true,
+    "restarted_fim_generation_receipt_rejected": true,
+    "lease_instance_verifier_mutation_rejected": true,
+    "established_dialog_pair_replay_rejected": true,
+    "wall_clock_rollback_does_not_revive_lease": true,
+    "pre_readiness_marker_hardlink_rejected": true,
+    "post_consumption_unregistered_hardlink_rejected": true,
+    "post_registration_marker_hardlink": {
+      "link_count": 2,
+      "purple_hits": 0,
+      "detector_receipts": 0
+    }
+  },
+  "prior_findings": {
+    "assessed": 7,
+    "verified_fully_closed": 3,
+    "still_open_or_partial": 4,
+    "fully_closed_ids": [
+      "RTS-R2-01",
+      "RTS-R2-06",
+      "RTS-R2-07-marker-file-custody"
+    ],
+    "partial_or_reopened_ids": [
+      "RTS-R2-02",
+      "RTS-R2-03",
+      "RTS-R2-04",
+      "RTS-R2-05"
+    ]
+  },
+  "gates": {
+    "direct_third_remediation_regressions": {
+      "passed": 7,
+      "failed": 0,
+      "seconds": 2.45
+    },
+    "focused_wider_suite": {
+      "passed": 87,
+      "failed": 0,
+      "seconds": 25.55
+    },
+    "compile": "PASS",
+    "ruff": "PASS",
+    "headless_selfcheck": {
+      "passed": 26,
+      "failed": 0
+    },
+    "module_selftests": {
+      "passed": 65,
+      "failed": 0,
+      "expected_skips": 17
+    }
+  },
+  "summary": {
+    "high_open": 1,
+    "medium_open": 5,
+    "low_open": 1,
+    "total_open": 7,
+    "release_blocking": true,
+    "interpretation": "These are simulation evidence-integrity and completeness failures under the documented prerequisites, not proof of real exploitation or host compromise."
+  }
+}

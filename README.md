@@ -15,7 +15,7 @@ portfolios—not offensive intrusion or hack-back.
 ![Python](https://img.shields.io/badge/Python-3.10--3.13-3776AB)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-Current version: **v1.12.0**
+Current version: **v1.12.1**
 
 [Master Manual](Angerona_Master_Manual.docx) ·
 [Current capabilities](ANGERONA_CAPABILITIES.md) ·
@@ -25,11 +25,11 @@ Current version: **v1.12.0**
 
 ## Dashboard and major features
 
-| Main defensive dashboard | Human-reviewed SOAR queue |
+| SentinelLens local-first hunt graph | Main defensive dashboard |
 | --- | --- |
-| [![Angerona v1.11.0 main dashboard](docs/screenshots/angerona-v1.11-dashboard.png)](docs/screenshots/angerona-v1.11-dashboard.png) | [![Angerona v1.11.0 SOAR review](docs/screenshots/angerona-v1.11-soar-review.png)](docs/screenshots/angerona-v1.11-soar-review.png) |
-| Scan Center | ARIA local-first assistant |
-| [![Angerona v1.11.0 Scan Center](docs/screenshots/angerona-v1.11-scan-center.png)](docs/screenshots/angerona-v1.11-scan-center.png) | [![Angerona v1.11.0 ARIA local-first assistant](docs/screenshots/angerona-v1.11-aria-local-first.png)](docs/screenshots/angerona-v1.11-aria-local-first.png) |
+| [![Angerona v1.12.1 SentinelLens synthetic threat-hunting graph](docs/screenshots/angerona-v1.12-sentinel-lens.png)](docs/screenshots/angerona-v1.12-sentinel-lens.png) | [![Angerona v1.11.0 main dashboard](docs/screenshots/angerona-v1.11-dashboard.png)](docs/screenshots/angerona-v1.11-dashboard.png) |
+| Human-reviewed SOAR queue | Scan Center |
+| [![Angerona v1.11.0 SOAR review](docs/screenshots/angerona-v1.11-soar-review.png)](docs/screenshots/angerona-v1.11-soar-review.png) | [![Angerona v1.11.0 Scan Center](docs/screenshots/angerona-v1.11-scan-center.png)](docs/screenshots/angerona-v1.11-scan-center.png) |
 
 These are reproducible public demonstrations. All displayed telemetry,
 identifiers, timestamps, and counts are synthetic.
@@ -46,6 +46,16 @@ identifiers, timestamps, and counts are synthetic.
   access indicators, ransomware, shadow-copy tamper, beaconing, removable
   media, vulnerable-driver posture, deception, YARA/YARA-X, and network
   behavior detections.
+- **SentinelLens** is a local-first threat-hunting and log-anomaly workspace over
+  live EventBus evidence and explicit bounded Syslog, Windows Event, NetFlow,
+  JSON, JSONL, and array imports. An app-owned background service uses a bounded
+  non-blocking queue, continuously maintains deterministic hunt snapshots, and
+  exposes queue, parser, and analysis loss without slowing EventBus publishers.
+  Its clickable graph links process, network, file, technique, correlation, and
+  proof nodes; every anomaly exposes its exact deterministic reason, evidence
+  identity, path fields, narrative, and proposal-only remediation. Optional
+  narrative assistance is restricted to a strict loopback local-model endpoint
+  with no cloud fallback, public/LAN listener, or telemetry export.
 - The actor-neutral **SSH Surface / Key / Tunnel Guard** observes bounded
   OpenSSH configuration, public-key fingerprints and custody, services,
   listeners, fixed-provider authentication evidence, and normalized forwarding
@@ -104,8 +114,11 @@ identifiers, timestamps, and counts are synthetic.
   SOC, cases, hunts, evidence custody, ATT&CK views, threat intelligence, and
   forensic exports.
 - Non-destructive Red Team, Shark Attack, and Adversary Combat validation use
-  bounded reversible markers—not exploits, credentials, persistence, or remote
-  attack infrastructure.
+  bounded reversible markers—not exploits, credentials, persistence, outbound
+  attack traffic, or remote infrastructure. The default comprehensive Red Team
+  plan authenticates 38 mandatory stages and 37 separately scored simulation
+  contracts, including 24 fixed inert probes across the major ATT&CK tactic
+  families; native analytic catches remain a separate number.
 
 ### Adapt safely and inspect details
 
@@ -121,9 +134,9 @@ identifiers, timestamps, and counts are synthetic.
   startup reconciliation and compensation.
 - **Run safe automatic checkup** audits once and simulates every registered
   profile without writing.
-- All 80 discovered capabilities receive a validated v12 machine-readable
+- All 81 discovered capabilities receive a validated v12 machine-readable
   contract and a common lifecycle/freshness/loss snapshot. The inventory is
-  explicit: five native contracts and 75 compatibility adapters; product and
+  explicit: six native contracts and 75 compatibility adapters; product and
   module implementation versions are independent.
 - Capability Center, Module Inspector, adaptation, alerts, Live Defense,
   Context Info, CVE, and SOAR surfaces provide typed sorting and bounded
@@ -164,11 +177,11 @@ identifiers, timestamps, and counts are synthetic.
 
 | Platform | Current contract | Static platform discovery |
 | --- | --- | ---: |
-| Windows | **Protect:** supported user-mode telemetry and governed response; elevation is needed for the complete path. | **80 modules** |
+| Windows | **Protect:** supported user-mode telemetry and governed response from the signed installed authority. Source checkouts are unelevated Observe/development only. | **81 modules** |
 | Linux | **Observe + optional eBPF:** rootless process/flow/posture monitoring; BCC/eBPF is an explicit privileged supplement. | **14 modules** |
 | macOS | **Observe preview:** privacy-minimized shared-core process/flow visibility; no Endpoint Security or Network Extension enforcement claim. | **13 modules** |
 
-Static discovery reports **80 modules** on the primary Windows contract. No
+Static discovery reports **81 modules** on the primary Windows contract. No
 unsigned kernel driver is shipped.
 
 ## 🚀 One-click Windows install
@@ -194,13 +207,20 @@ numeric version/sequence floors, and protected path access-control custody
 before target mutation. A privileged whole-host snapshot can still roll back a
 local floor unless a Trusted Platform Module or independent witness anchors it.
 
-For a reviewed Windows source deployment:
+For an unelevated Windows source Observe/development setup:
 
 ```powershell
 git clone https://github.com/Ag3nt47/AngeronaSuite.git
 cd AngeronaSuite
 .\Install-Angerona.bat
 ```
+
+This source path never requests Administrator rights, changes machine scope, or
+claims full Protect coverage. It installs only exact/hash-locked dependencies in
+the checkout virtual environment and stores source-profile state under the
+current user's Local AppData. If launched from an elevated terminal, it refuses
+to run. Use the signed MSIX above for the protected installed authority and the
+complete Windows Protect path.
 
 For development:
 
@@ -229,19 +249,17 @@ Packaged Windows installs prefer protected `D:\AngeronaData` and use protected
 
 ## Validation status
 
-The authoritative v1.12.0 serial release gate is **1,811 passed, 6 expected
-host-platform skips, and 0 failed**. It includes all three final-performance
-regressions; those tests and their surrounding performance/reliability group
-also passed a focused **106/106** gate.
+The terminal v1.12.1 serial result is recorded at the end of this document on
+the exact publication tree. The release gate also requires all of the following
+to pass on that same tree:
 
-- Product compile: **346/346** Python files.
-- Structure: **82/82** module files imported, **64/64** optional compatibility
-  hooks constructed, and **80** capabilities discovered without duplicate
-  identity.
-- Self-tests: **92** standalone core/module passes, **12** expected
-  inactive/platform skips, plus EventBus passed.
-- Selfcheck: **26/26** directly and through the supported batch launcher.
-- Ruff and diff checks: clean.
+- Python `compileall` and repository-wide Ruff validation.
+- Static discovery of **81** capabilities: **6 native contracts** and **75
+  compatibility adapters**, without duplicate identity.
+- The **26/26** supported headless self-check, workflow-policy validation,
+  dependency audit, documentation-drift validation, and `git diff --check`.
+- Guarded fast-forward publication to canonical public `main`, followed by
+  byte-for-byte verification of every README image from that public commit.
 
 Focused groups overlap and are not a clean-machine deployment, privileged-host,
 native Linux/macOS, or independent efficacy proof.
@@ -280,6 +298,36 @@ native Linux/macOS, or independent efficacy proof.
 - No hack-back, remote exploitation, credential theft, arbitrary response
   shell, log deletion/evasion, downloaded executable skill, unverified model,
   or unsigned kernel component is part of the product.
+
+## What changed in v1.12.1
+
+- Added SentinelLens: app-owned bounded background standardized-log ingestion,
+  explicit queue/parser/analysis loss, deterministic anomaly scoring,
+  attack-chain graphing, exact evidence narratives, sortable/clickable findings,
+  strict-loopback local AI, and proposal-only remediation.
+- Completed five additional adversarial/visionary/upstream-comparison loops over
+  every built-in module. The passes targeted exact-object authority, crash
+  boundaries, telemetry continuity, rollback, durable delivery, coverage
+  honesty, and resource bounds; independent reattacks reopened and drove
+  additional fixes instead of being counted as passes.
+- Expanded Guided Auto Adapt, an immutable Windows Firewall recovery baseline, safe automatic
+  checkups, a default 38-stage/37-contract one-button defensive simulation, and
+  item-specific clickable event, stage, assurance, and detail surfaces. Any
+  capability below 100% now explains the weakest
+  contract dimension and links to governed file, class, field, digest, and a
+  red-highlighted verified source line when that location is provable. Missing
+  fields use the owning class declaration as an explicit fallback; unavailable
+  or untrusted runtime source remains visibly unavailable instead of guessed.
+- Retired legacy pathname-, PID-, and display-text-selected mutation routes.
+  Response now requires typed exact identities, retained custody, verified
+  postconditions, authenticated delivery state, or remains explicitly
+  proposal-only.
+- Upgraded the suite and built-in module implementation labels to v1.12.1 while
+  retaining honest per-capability platform, evidence, and deployment limits.
+
+Detailed Cycle 26–30 evidence, upstream comparisons, hostile reattacks,
+remediations, and residual deployment boundaries are under
+[`analysis/loop/`](analysis/loop/).
 
 ## What changed in v1.12.0
 
@@ -375,6 +423,6 @@ is an engineering inference, not an attribution claim.
 MIT licensed. See [LICENSE](LICENSE), [SECURITY.md](SECURITY.md), and
 [SUPPORT.md](SUPPORT.md).
 
-**Final Cycle 25 verification.** The authoritative v1.12.0 serial gate passes **1811 tests with 6 intentional platform skips**; static discovery reports **80 modules**.
+**Final Cycle 30 verification.** The authoritative v1.12.1 serial gate passes **2659 tests with 13 intentional platform skips** and 0 failures. Current static discovery reports **81 modules**.
 
-<!-- ANGERONA_DOC_STATUS tests=1811 skips=6 modules=80 -->
+<!-- ANGERONA_DOC_STATUS tests=2659 skips=13 modules=81 -->

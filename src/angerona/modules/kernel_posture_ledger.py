@@ -27,6 +27,8 @@ from angerona.core.win import run_hidden
 LEDGER_VERSION = 1
 GENESIS_HASH = "0" * 64
 MAX_LEDGER_RECORDS = 256
+MAX_DRIVER_SERVICE_KEYS = 16_384
+MAX_DRIVER_COLLECTION_ERRORS = 32
 
 
 def _canonical(value: object) -> bytes:
@@ -129,10 +131,29 @@ def _code_integrity_log() -> bool | None:
         return None
 
 
-def _driver_services(limit: int = 2048) -> list[dict]:
-    """Return bounded driver-service metadata without loading driver binaries."""
+@dataclass(frozen=True)
+class DriverCollectionReceipt:
+    rows: tuple[dict, ...]
+    status: str
+    namespace_total: int | None
+    enumerated: int
+    skipped: int
+    truncated: bool
+    errors: tuple[str, ...]
+    collected_at: float
+
+
+def _driver_services(
+    limit: int = MAX_DRIVER_SERVICE_KEYS,
+) -> DriverCollectionReceipt:
+    """Return driver metadata with exact namespace coverage accounting."""
+    collected_at = time.time()
     if os.name != "nt":
-        return []
+        return DriverCollectionReceipt(
+            (), "unavailable", None, 0, 0, False,
+            ("Windows registry is unavailable on this host",), collected_at,
+        )
+    bounded_limit = max(1, min(MAX_DRIVER_SERVICE_KEYS, int(limit)))
     try:
         import winreg
         root = winreg.OpenKey(
@@ -141,12 +162,28 @@ def _driver_services(limit: int = 2048) -> list[dict]:
             0,
             winreg.KEY_READ,
         )
-    except Exception:
-        return []
+    except Exception as exc:
+        return DriverCollectionReceipt(
+            (), "unavailable", None, 0, 0, False,
+            (f"driver-service registry open failed: {_bounded_text(exc)}",),
+            collected_at,
+        )
     rows: list[dict] = []
+    errors: list[str] = []
+    skipped = 0
+    enumerated = 0
+    count: int | None = None
     try:
-        count = winreg.QueryInfoKey(root)[0]
-        for index in range(min(count, limit)):
+        try:
+            count = max(0, int(winreg.QueryInfoKey(root)[0]))
+        except Exception as exc:
+            return DriverCollectionReceipt(
+                (), "unavailable", None, 0, 0, False,
+                (f"driver-service namespace count failed: {_bounded_text(exc)}",),
+                collected_at,
+            )
+        for index in range(min(count, bounded_limit)):
+            enumerated += 1
             try:
                 name = winreg.EnumKey(root, index)
                 key = winreg.OpenKey(root, name, 0, winreg.KEY_READ)
@@ -156,20 +193,52 @@ def _driver_services(limit: int = 2048) -> list[dict]:
                         continue
                     try:
                         image = _bounded_text(winreg.QueryValueEx(key, "ImagePath")[0])
-                    except OSError:
+                    except OSError as exc:
                         image = ""
+                        skipped += 1
+                        if len(errors) < MAX_DRIVER_COLLECTION_ERRORS:
+                            errors.append(
+                                f"{_bounded_text(name, 120)}: ImagePath unavailable "
+                                f"({_bounded_text(exc, 120)})"
+                            )
                     try:
                         start = int(winreg.QueryValueEx(key, "Start")[0])
-                    except OSError:
+                    except OSError as exc:
                         start = -1
+                        skipped += 1
+                        if len(errors) < MAX_DRIVER_COLLECTION_ERRORS:
+                            errors.append(
+                                f"{_bounded_text(name, 120)}: Start unavailable "
+                                f"({_bounded_text(exc, 120)})"
+                            )
                     rows.append({"name": name, "image": image, "start": start})
                 finally:
                     winreg.CloseKey(key)
-            except OSError:
+            except OSError as exc:
+                skipped += 1
+                if len(errors) < MAX_DRIVER_COLLECTION_ERRORS:
+                    errors.append(
+                        f"service index {index} unavailable ({_bounded_text(exc, 160)})"
+                    )
                 continue
     finally:
         winreg.CloseKey(root)
-    return sorted(rows, key=lambda row: row["name"].casefold())
+    truncated = bool(count is not None and count > bounded_limit)
+    if truncated and len(errors) < MAX_DRIVER_COLLECTION_ERRORS:
+        errors.append(
+            f"namespace contains {count} keys; safety budget admitted {bounded_limit}"
+        )
+    status = "complete" if not truncated and skipped == 0 else "partial"
+    return DriverCollectionReceipt(
+        tuple(sorted(rows, key=lambda row: row["name"].casefold())),
+        status,
+        count,
+        enumerated,
+        skipped,
+        truncated,
+        tuple(errors),
+        collected_at,
+    )
 
 
 @dataclass(frozen=True)
@@ -208,6 +277,28 @@ def assess(snapshot: dict) -> PostureAssessment:
     elif int(snapshot["vbs_status"]) < 2:
         risks.append("Virtualization-Based Security is not running")
 
+    driver_status = snapshot.get("driver_collection_status")
+    driver_total = snapshot.get("driver_namespace_total")
+    driver_enumerated = snapshot.get("driver_enumerated")
+    driver_skipped = snapshot.get("driver_skipped")
+    driver_truncated = snapshot.get("driver_truncated")
+    driver_count = snapshot.get("driver_count")
+    if (
+        driver_status != "complete"
+        or type(driver_total) is not int
+        or type(driver_enumerated) is not int
+        or type(driver_skipped) is not int
+        or type(driver_truncated) is not bool
+        or type(driver_count) is not int
+        or driver_total < 0
+        or driver_enumerated != driver_total
+        or driver_skipped != 0
+        or driver_truncated
+        or driver_count < 0
+        or driver_count > driver_enumerated
+    ):
+        unknown.append(f"driver_inventory:{driver_status or 'unknown'}")
+
     health = max(10, 100 - 18 * len(risks) - 6 * len(set(unknown)))
     return PostureAssessment(health, tuple(risks), tuple(sorted(set(unknown))))
 
@@ -225,8 +316,15 @@ class KernelPostureProvider:
             "debug": boot["debug"],
             "nointegritychecks": boot["nointegritychecks"],
             "code_integrity_log": _code_integrity_log(),
-            "driver_count": len(drivers),
-            "driver_set_sha256": _digest(drivers),
+            "driver_count": len(drivers.rows),
+            "driver_set_sha256": _digest(drivers.rows),
+            "driver_collection_status": drivers.status,
+            "driver_namespace_total": drivers.namespace_total,
+            "driver_enumerated": drivers.enumerated,
+            "driver_skipped": drivers.skipped,
+            "driver_truncated": drivers.truncated,
+            "driver_collection_errors": list(drivers.errors),
+            "driver_collected_at": drivers.collected_at,
         }
 
 
@@ -371,7 +469,7 @@ class KernelBoundaryPostureLedger(BaseModule):
         "Code Integrity telemetry, and kernel-driver-service drift."
     )
     category = "Integrity"
-    version = "1.0.0"
+    version = "1.12.1"
     enabled_by_default = True
     _INTERVAL = 300.0
 
@@ -455,6 +553,13 @@ class KernelBoundaryPostureLedger(BaseModule):
                         "code_integrity_log": None,
                         "driver_count": 0,
                         "driver_set_sha256": _digest([]),
+                        "driver_collection_status": "complete",
+                        "driver_namespace_total": 0,
+                        "driver_enumerated": 0,
+                        "driver_skipped": 0,
+                        "driver_truncated": False,
+                        "driver_collection_errors": [],
+                        "driver_collected_at": 0.0,
                     },
                     ts=0.0,
                 )

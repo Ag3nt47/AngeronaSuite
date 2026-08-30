@@ -87,7 +87,7 @@ def test_suspicious_port_alone_has_no_firewall_authority() -> None:
 
 def test_corroborated_network_contract_binds_one_normalized_ip() -> None:
     assert _block_remote_contract(
-        "203.0.113.9",
+        "8.8.8.8",
         corroborated=True,
         classification="threat-intel-ioc",
     ) == {
@@ -96,7 +96,7 @@ def test_corroborated_network_contract_binds_one_normalized_ip() -> None:
         "response_contract": {
             "version": 1,
             "actions": ["block_remote_ip"],
-            "targets": {"remote_ips": ["203.0.113.9"]},
+            "targets": {"remote_ips": ["8.8.8.8"]},
         },
     }
 

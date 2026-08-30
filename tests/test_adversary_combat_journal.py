@@ -206,7 +206,15 @@ def test_mutation_failure_appends_authenticated_failure(tmp_path, monkeypatch):
     records, _legacy = module._read_journal(strict=True)
 
     assert artifact.exists()
-    assert [record["record_type"] for record in records] == ["intent", "failure"]
+    assert [record["record_type"] for record in records] == [
+        "intent",
+        "orphan",
+        "undo_intent",
+        "undo_commit",
+        "failure",
+    ]
+    assert records[1]["rollback_state"] == "pending"
+    assert records[3]["status"] == "undone"
 
 
 def test_forced_source_swap_cannot_quarantine_attacker_selected_file(

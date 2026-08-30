@@ -38,8 +38,13 @@ def test_repository_documentation_claims_are_synchronized():
     publisher = (ROOT / "tools" / "publish_github_update.py").read_text(
         encoding="utf-8"
     )
+    transport = (ROOT / "tools" / "publication_transport.py").read_text(
+        encoding="utf-8"
+    )
     assert '"--no-follow-tags"' in publisher
-    assert '"core.hooksPath=/dev/null"' in publisher
+    assert 'f"core.hooksPath={null_path}"' in transport
+    assert "null_path = os.devnull" in transport
+    assert '"GIT_CONFIG_NOSYSTEM": "1"' in transport
     assert 'parser.add_argument("--repository"' not in publisher
     pull_helper = (ROOT / "pull-from-github.bat").read_text(encoding="utf-8")
     assert "[INCOMPLETE] Local branch is ahead of GitHub." in pull_helper

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import queue
+import re
 import threading
 import time
 from pathlib import Path
@@ -41,7 +42,7 @@ from angerona.gui.dashboard_details import (
     SystemPulseDetailDialog,
 )
 from angerona.gui.pages import (
-    AARDialog, AlertsPanel, CommandConsolePanel, DashboardCards, ModuleInspector,
+    AARDialog, AlertDetailDialog, AlertsPanel, CommandConsolePanel, DashboardCards, ModuleInspector,
     EventsWindow, ModulesPanel, ResourceStrip, SettingsDialog, SharkMonitorDialog, SoarPanel,
     StatusStrip,
 )
@@ -142,7 +143,7 @@ def _dashboard_refresh_plan(
 class MainWindow(QMainWindow):
     # Emitted from background threads; Qt signals are the safe way to hand
     # control back to the GUI thread to touch widgets.
-    _aar_ready = Signal(str)
+    _aar_ready = Signal(object)
     _shark_narration = Signal(str)
     _selftest_done = Signal(str, object)   # report text, failures list
     _selftest_progress = Signal(int, int)  # (done, total) → live progress wheel
@@ -551,6 +552,9 @@ class MainWindow(QMainWindow):
         self.live_defense_activity.details_requested.connect(
             self._open_live_defense_details
         )
+        self.live_defense_activity.event_details_requested.connect(
+            self._open_live_defense_event
+        )
         if getattr(self, "aria_hud", None) is not None:
             self.aria_hud.details_requested.connect(self._open_aria_details)
             self._console_section = QSplitter(Qt.Horizontal)
@@ -903,6 +907,17 @@ class MainWindow(QMainWindow):
                 parent=self,
             )
             self._live_defense_detail = dialog
+            dialog.show()
+            dialog.raise_()
+            return dialog
+
+        self._reveal_window_from(self.live_defense_activity, _show, "#22d3ee")
+
+    def _open_live_defense_event(self, event: object) -> None:
+        """Open the exact clicked summary row, including governed path evidence."""
+        def _show():
+            dialog = AlertDetailDialog(event, self)
+            self._live_defense_event_detail = dialog
             dialog.show()
             dialog.raise_()
             return dialog
@@ -1706,9 +1721,66 @@ class MainWindow(QMainWindow):
         bottom = max(1, round(total * 0.42))
         self._body_splitter.setSizes([max(1, total - bottom), bottom])
 
+    def _release_redteam_validation_lease(self) -> None:
+        """Restore the operator's pre-drill Purple Guard runtime state once."""
+        lease = getattr(self, "_redteam_validation_lease", None)
+        self._redteam_validation_lease = None
+        if lease is not None:
+            lease.release()
+
+    def _restore_simulation_response_policy(self) -> None:
+        import os
+
+        for key, previous in (
+            ("ANGERONA_SOAR_KILL_AND_ROLLBACK", getattr(self, "_shark_prev_armed", None)),
+            ("ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY",
+             getattr(self, "_shark_prev_minsev", None)),
+            ("ANGERONA_SOAR_RESPONSE_SCOPE", getattr(self, "_shark_prev_scope", None)),
+        ):
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
+
+    def _abort_simulation_launch(self, reason: str, started: tuple = ()) -> None:
+        """Collapse a refused launch without ever scheduling a stale AAR."""
+        for engine in started:
+            try:
+                engine.stop_and_clean()
+            except Exception:
+                pass
+        try:
+            self.red_team_engine.cancel_evidence_hold()
+        except Exception:
+            pass
+        try:
+            self._release_redteam_validation_lease()
+        except Exception as exc:
+            reason += f"; validation-lease restore failed: {type(exc).__name__}: {exc}"
+        try:
+            from angerona.modules.file_integrity import unregister_runtime_watch
+
+            unregister_runtime_watch(getattr(self, "_sim_runtime_watch", None))
+        except Exception as exc:
+            reason += f"; FIM target restore failed: {type(exc).__name__}: {exc}"
+        self._sim_runtime_watch = None
+        self._sim_aar_pending = 0
+        self._restore_simulation_response_policy()
+        self.shark_swim.stop()
+        self.shark_banner.stop()
+        message = (
+            "Red Team simulation launch was refused or aborted; any newly "
+            f"started drill was stopped and no AAR was scheduled: {reason}"
+        )
+        self.console._append(f"[red-team] {message}")
+        QMessageBox.warning(self, "Red Team Simulation", message)
+        if self._eco_on and self._chill_policy.enabled:
+            self.chill_return_requested.emit()
+
     def _run_simulation(self, cfg) -> None:
         if (self.shark_engine.is_running or self.red_team_engine.is_running
-                or int(getattr(self, "_sim_aar_pending", 0)) > 0):
+                or int(getattr(self, "_sim_aar_pending", 0)) > 0
+                or bool(getattr(self, "_redteam_report_pending", False))):
             QMessageBox.information(
                 self,
                 "Red Team Simulation",
@@ -1758,9 +1830,12 @@ class MainWindow(QMainWindow):
             pass
         self._sim_ran_shark = bool(cfg.get("run_shark"))
         self._sim_ran_redteam = bool(cfg.get("run_redteam"))
-        self._sim_aar_pending = int(self._sim_ran_shark) + int(self._sim_ran_redteam)
+        self._sim_aar_pending = 0
         import threading
         self._sim_aar_lock = threading.Lock()
+        if not self._sim_ran_shark and not self._sim_ran_redteam:
+            self._abort_simulation_launch("no drill scenario was selected")
+            return
         # The Red Team console shows engine narration itself, so the legacy Live
         # Offense Monitor is no longer popped up. It is still reset and fed
         # silently for backward compatibility.
@@ -1771,48 +1846,115 @@ class MainWindow(QMainWindow):
             f"apt={self._sim_ran_redteam}, auto-remediate={self._sim_auto_remediate}"
             + (", +custom technique" if cfg.get('custom') else "") + "…")
         self.shark_swim.start(); self.shark_banner.start()
-        _target = cfg.get("target_dir") or None
+        # Always pass one explicit intended target to validation, sensor-watch,
+        # engine preflight, response scope, and the signed run manifest.
+        _target = str(
+            cfg.get("target_dir")
+            or self.red_team_engine.default_documents_dir
+        ).strip()
         _custom = cfg.get("custom") or None
-        self._sim_runtime_watch = _target
-        if _target:
-            try:
-                from angerona.modules.file_integrity import register_runtime_watch
-                register_runtime_watch(_target)
-            except Exception:
-                pass
-            try:
-                from angerona.modules.purple_guard import register_runtime_target
-                register_runtime_target(_target)
-            except Exception:
-                pass
-        if self._sim_ran_redteam and self._sim_auto_remediate:
-            try:
-                from angerona.modules.purple_guard import ensure_redteam_validation_pack
+        self._sim_runtime_watch = None
+        self._redteam_validation_lease = None
+        started: list = []
+        try:
+            from angerona.modules.file_integrity import register_runtime_watch
 
-                validation = ensure_redteam_validation_pack(self.config.data_dir)
-                self.console._append(
-                    "[red-team] Complete simulation detector pack armed: "
-                    f"{len(validation.get('active', []))}/13 technique contracts."
+            if not register_runtime_watch(_target):
+                raise RuntimeError(
+                    f"File Integrity Monitor refused runtime target {_target!r}"
                 )
-            except Exception as exc:
-                self.console._append(
-                    "[red-team] Detector-pack activation failed closed: "
-                    f"{type(exc).__name__}: {exc}"
+            self._sim_runtime_watch = _target
+            if self._sim_ran_shark:
+                from angerona.shark.run_manifest import preflight_run
+
+                shark_preflight = preflight_run(
+                    kind="shark",
+                    cycles=cfg.get("complexity", 1),
+                    jitter_range=(2.0, 9.0),
+                    noise_chance=0.25,
+                    target_dir=_target,
+                    custom=_custom,
                 )
-                # No engine has started yet, so collapse the pending count and
-                # restore every temporary response/coverage lease immediately.
-                self._sim_aar_pending = 1
-                self._simulation_aar_finished()
-                return
-        if self._sim_ran_redteam:
-            self.red_team_engine.hold_evidence_for_aar()
-            self.red_team_engine.start(intensity=cfg.get("intensity"),
-                                       campaign=bool(cfg.get("campaign", False)),
-                                       target_dir=_target, custom=_custom)
-        if self._sim_ran_shark:
-            # Shark engine keeps the legacy interface (complexity/target/custom).
-            self.shark_engine.start(complexity=cfg.get("complexity", 1),
-                                    target_dir=_target, custom=_custom)
+                if not shark_preflight.accepted:
+                    raise RuntimeError(
+                        "Shark safety preflight rejected the run: "
+                        + "; ".join(shark_preflight.violations)
+                    )
+            if self._sim_ran_redteam:
+                from angerona.shark.red_team import INTENSITY_LEVELS
+                from angerona.shark.run_manifest import preflight_run
+
+                preset = INTENSITY_LEVELS.get(str(cfg.get("intensity")))
+                red_preflight = preflight_run(
+                    kind="red_team",
+                    cycles=preset["cycles"] if preset else 1,
+                    jitter_range=preset["jitter"] if preset else (2.0, 7.0),
+                    noise_chance=preset["noise"] if preset else 0.25,
+                    target_dir=_target,
+                    custom=_custom,
+                    campaign=bool(cfg.get("campaign", False)),
+                    comprehensive=bool(cfg.get("comprehensive", True)),
+                )
+                if not red_preflight.accepted:
+                    raise RuntimeError(
+                        "Red Team safety preflight rejected the run: "
+                        + "; ".join(red_preflight.violations)
+                    )
+                from angerona.modules.purple_guard import (
+                    acquire_redteam_validation_lease,
+                )
+
+                lease = acquire_redteam_validation_lease(
+                    self.manager,
+                    self.bus,
+                    self.storage,
+                    self.config.data_dir,
+                    _target,
+                    comprehensive=bool(cfg.get("comprehensive", True)),
+                )
+                self._redteam_validation_lease = lease
+                readiness = dict(lease.readiness)
+                self.console._append(
+                    "[red-team] Simulation validation plane ready: "
+                    f"{readiness.get('policy_count', 0)}/"
+                    f"{readiness.get('policy_count', 0)} exact contracts, "
+                    f"sensor health {readiness.get('sensor_health', 0)}%, "
+                    "authenticated recorder echo verified."
+                )
+
+                self.red_team_engine.hold_evidence_for_aar()
+                if not self.red_team_engine.start(
+                    intensity=cfg.get("intensity"),
+                    campaign=bool(cfg.get("campaign", False)),
+                    comprehensive=bool(cfg.get("comprehensive", True)),
+                    target_dir=_target,
+                    custom=_custom,
+                    validation_lease=lease,
+                ):
+                    self.red_team_engine.cancel_evidence_hold()
+                    raise RuntimeError("Red Team engine safety preflight rejected the run")
+                started.append(self.red_team_engine)
+
+            if self._sim_ran_shark:
+                # Shark keeps the legacy complexity interface, but refusal is a
+                # launch failure rather than permission to report stale history.
+                if not self.shark_engine.start(
+                    complexity=cfg.get("complexity", 1),
+                    target_dir=_target,
+                    custom=_custom,
+                ):
+                    raise RuntimeError("Shark engine safety preflight rejected the run")
+                started.append(self.shark_engine)
+        except Exception as exc:
+            self._abort_simulation_launch(
+                f"{type(exc).__name__}: {exc}", tuple(started)
+            )
+            return
+
+        self._sim_aar_pending = len(started)
+        if not self._sim_aar_pending:
+            self._abort_simulation_launch("no engine accepted the run")
+            return
         self._sim_poll = QTimer(self)
         self._sim_poll.timeout.connect(self._sim_check_done)
         self._sim_poll.start(500)
@@ -1854,25 +1996,10 @@ class MainWindow(QMainWindow):
             self._sim_aar_pending = pending
             if pending:
                 return
-            import os
-            for key, previous in (
-                    ("ANGERONA_SOAR_KILL_AND_ROLLBACK", self._shark_prev_armed),
-                    ("ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY",
-                     getattr(self, "_shark_prev_minsev", None)),
-                    ("ANGERONA_SOAR_RESPONSE_SCOPE",
-                     getattr(self, "_shark_prev_scope", None))):
-                if previous is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = previous
+            self._restore_simulation_response_policy()
             try:
                 from angerona.modules.file_integrity import unregister_runtime_watch
                 unregister_runtime_watch(getattr(self, "_sim_runtime_watch", None))
-            except Exception:
-                pass
-            try:
-                from angerona.modules.purple_guard import unregister_runtime_target
-                unregister_runtime_target(getattr(self, "_sim_runtime_watch", None))
             except Exception:
                 pass
             self._sim_runtime_watch = None
@@ -1923,7 +2050,12 @@ class MainWindow(QMainWindow):
 
     # ── Red Team Attack (its own distinct drill) ─────────────────────────────
     def _start_red_team(self) -> None:
-        if self.red_team_engine.is_running or self.shark_engine.is_running:
+        if (
+            self.red_team_engine.is_running
+            or self.shark_engine.is_running
+            or int(getattr(self, "_sim_aar_pending", 0)) > 0
+            or bool(getattr(self, "_redteam_report_pending", False))
+        ):
             QMessageBox.information(self, "Red Team Attack", "A drill is already running.")
             return
         reply = QMessageBox.question(
@@ -1945,15 +2077,54 @@ class MainWindow(QMainWindow):
         self.shark_monitor.activateWindow()
         self.shark_swim.start()
         self.shark_banner.start()
+        target = str(self.red_team_engine.default_documents_dir)
+        self._legacy_redteam_watch = None
+        self._redteam_validation_lease = None
         try:
-            from angerona.modules.purple_guard import ensure_redteam_validation_pack
+            from angerona.modules.file_integrity import register_runtime_watch
+            from angerona.modules.purple_guard import acquire_redteam_validation_lease
 
-            ensure_redteam_validation_pack(self.config.data_dir)
+            if not register_runtime_watch(target):
+                raise RuntimeError(
+                    f"File Integrity Monitor refused runtime target {target!r}"
+                )
+            self._legacy_redteam_watch = target
+            lease = acquire_redteam_validation_lease(
+                self.manager,
+                self.bus,
+                self.storage,
+                self.config.data_dir,
+                target,
+            )
+            self._redteam_validation_lease = lease
+            self.red_team_engine.hold_evidence_for_aar()
+            if not self.red_team_engine.start(
+                target_dir=target,
+                validation_lease=lease,
+            ):
+                self.red_team_engine.cancel_evidence_hold()
+                raise RuntimeError("Red Team engine safety preflight rejected the run")
+            self._legacy_redteam_active = True
+            self._redteam_report_pending = True
         except Exception as exc:
             self.shark_monitor.append(
-                "Red Team detector-pack activation failed closed: "
+                "Red Team validation/start failed closed before marker creation: "
                 f"{type(exc).__name__}: {exc}"
             )
+            try:
+                self.red_team_engine.cancel_evidence_hold()
+                self._release_redteam_validation_lease()
+            except Exception:
+                pass
+            try:
+                from angerona.modules.file_integrity import unregister_runtime_watch
+
+                unregister_runtime_watch(self._legacy_redteam_watch)
+            except Exception:
+                pass
+            self._legacy_redteam_watch = None
+            self._legacy_redteam_active = False
+            self._redteam_report_pending = False
             if self._shark_prev_armed is None:
                 os.environ.pop("ANGERONA_SOAR_KILL_AND_ROLLBACK", None)
             else:
@@ -1961,8 +2132,6 @@ class MainWindow(QMainWindow):
             self.shark_swim.stop()
             self.shark_banner.stop()
             return
-        self.red_team_engine.hold_evidence_for_aar()
-        self.red_team_engine.start()
         self._rt_poll = QTimer(self)
         self._rt_poll.timeout.connect(self._red_team_check_done)
         self._rt_poll.start(500)
@@ -1973,11 +2142,6 @@ class MainWindow(QMainWindow):
         self._rt_poll.stop()
         self.shark_swim.stop()
         self.shark_banner.stop()
-        import os
-        if self._shark_prev_armed is None:
-            os.environ.pop("ANGERONA_SOAR_KILL_AND_ROLLBACK", None)
-        else:
-            os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = self._shark_prev_armed
         self._sim_redteam_cleanup_scope = (
             self.red_team_engine.evidence_cleanup_scope()
         )
@@ -1985,20 +2149,43 @@ class MainWindow(QMainWindow):
         threading.Thread(target=self._red_team_build_aar, daemon=True).start()
 
     def _red_team_build_aar(self) -> None:
-        from angerona.shark.aar_report import generate_aar
+        from angerona.shark.aar_report import (
+            AARReportResult,
+            generate_aar,
+            verified_aar_handoff_text,
+        )
         scope = getattr(self, "_sim_redteam_cleanup_scope", None)
+        validation_lease = getattr(self, "_redteam_validation_lease", None)
         if scope is None:
             scope = self.red_team_engine.evidence_cleanup_scope()
         try:
-            text = generate_aar(self.config.data_dir, settle_seconds=45,
+            report_handoff = generate_aar(self.config.data_dir, settle_seconds=45,
                                  history_name="redteam_history.json",
-                                 stage_category=REDTEAM_STAGE_CATEGORY,
-                                 title="RED TEAM ATTACK", report_basename="redteam_aar")
+                                  stage_category=REDTEAM_STAGE_CATEGORY,
+                                  title="RED TEAM ATTACK", report_basename="redteam_aar",
+                                  recorder=self.storage, bus=self.bus,
+                                  manager=self.manager,
+                                  validation_lease=validation_lease,
+                                  return_result=True)
+            if type(report_handoff) is AARReportResult:
+                text = verified_aar_handoff_text(report_handoff)
+            else:
+                text = str(report_handoff)
+                report_handoff = {
+                    "text": text,
+                    "report_kind": "red_team",
+                    "error": "generation did not return an authenticated immutable report",
+                }
         except Exception as exc:
             text = (
                 "RED TEAM ATTACK — After-Action Report unavailable\n\n"
                 f"Report persistence/evaluation failed: {type(exc).__name__}: {exc}"
             )
+            report_handoff = {
+                "text": text,
+                "report_kind": "red_team",
+                "error": "report persistence or evaluation failed",
+            }
         finally:
             try:
                 self.red_team_engine.release_evidence_after_aar(scope)
@@ -2008,6 +2195,34 @@ class MainWindow(QMainWindow):
                 )
             finally:
                 self._sim_redteam_cleanup_scope = None
+            try:
+                self._release_redteam_validation_lease()
+            except Exception as lease_exc:
+                self._shark_narration.emit(
+                    f"Red Team validation lease restore needs review: {lease_exc}"
+                )
+            legacy_watch = getattr(self, "_legacy_redteam_watch", None)
+            if legacy_watch:
+                try:
+                    from angerona.modules.file_integrity import unregister_runtime_watch
+
+                    unregister_runtime_watch(legacy_watch)
+                except Exception as watch_exc:
+                    self._shark_narration.emit(
+                        f"Red Team FIM target restore needs review: {watch_exc}"
+                    )
+                self._legacy_redteam_watch = None
+            if getattr(self, "_legacy_redteam_active", False):
+                import os
+
+                if self._shark_prev_armed is None:
+                    os.environ.pop("ANGERONA_SOAR_KILL_AND_ROLLBACK", None)
+                else:
+                    os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = (
+                        self._shark_prev_armed
+                    )
+                self._legacy_redteam_active = False
+            self._redteam_report_pending = False
             self._simulation_aar_finished()
         try:
             print(text)
@@ -2015,7 +2230,7 @@ class MainWindow(QMainWindow):
             pass
         self._shark_narration.emit("\U0001F4CB Red Team settle window done — opening the "
                                    "After-Action Report.")
-        self._aar_ready.emit(text)
+        self._aar_ready.emit(report_handoff)
 
     # ── Flight Instructor Mode (Cyber Security Academy) ─────────────────────
     def _on_fi_toggle(self, state: int) -> None:
@@ -2099,7 +2314,13 @@ class MainWindow(QMainWindow):
         # margin for scheduling jitter without a noticeably longer wait for
         # the AAR dialog to pop up.
         try:
-            text = generate_aar(self.config.data_dir, settle_seconds=45)
+            text = generate_aar(
+                self.config.data_dir,
+                settle_seconds=45,
+                recorder=self.storage,
+                bus=self.bus,
+                manager=self.manager,
+            )
         finally:
             self._simulation_aar_finished()
         try:
@@ -2111,19 +2332,71 @@ class MainWindow(QMainWindow):
                                    "via the console's `aar` command.)")
         self._aar_ready.emit(text)
 
-    def _show_aar_dialog(self, text: str) -> None:
+    def _show_aar_dialog(self, handoff: object) -> None:
+        from angerona.shark.aar_report import (
+            AARReportResult,
+            verified_aar_handoff_text,
+        )
+
         pm = self.manager.modules.get("Posture Hardening")
-        is_redteam = "RED TEAM ATTACK" in text.upper()
+        immutable_result = (
+            handoff if type(handoff) is AARReportResult else None
+        )
+        failed_result = (
+            handoff
+            if isinstance(handoff, dict)
+            and handoff.get("report_kind") == "red_team"
+            else None
+        )
+        if immutable_result is not None:
+            try:
+                text = verified_aar_handoff_text(immutable_result)
+            except (TypeError, ValueError) as exc:
+                immutable_result = None
+                failed_result = {
+                    "text": (
+                        "RED TEAM ATTACK — After-Action Report unavailable\n\n"
+                        "The immutable signed byte handoff failed verification."
+                    ),
+                    "report_kind": "red_team",
+                    "error": str(exc),
+                }
+                text = str(failed_result["text"])
+        else:
+            text = str(failed_result.get("text") if failed_result else handoff)
+        is_redteam = bool(
+            immutable_result is not None
+            and immutable_result.report_kind == "red_team"
+        ) or failed_result is not None or "RED TEAM ATTACK" in text.upper()
         report_path = self.config.data_dir / ("redteam_aar.json" if is_redteam
                                               else "shark_aar.json")
         report_binding = {"run_id": "", "sha256": "", "error": ""}
         try:
-            raw_report = report_path.read_bytes()
-            payload = json.loads(raw_report.decode("utf-8"))
-            report_binding.update({
-                "run_id": str(payload.get("run_id") or ""),
-                "sha256": hashlib.sha256(raw_report).hexdigest(),
-            })
+            if immutable_result is not None:
+                if (
+                    immutable_result.report_basename
+                    != ("redteam_aar" if is_redteam else "shark_aar")
+                    or not immutable_result.run_id
+                    or not re.fullmatch(
+                        r"[0-9a-f]{64}", immutable_result.report_sha256
+                    )
+                ):
+                    raise ValueError("immutable report handoff identity is invalid")
+                report_binding.update({
+                    "run_id": immutable_result.run_id,
+                    "sha256": immutable_result.report_sha256,
+                    "head_sha256": immutable_result.head_sha256,
+                    "sequence": immutable_result.sequence,
+                })
+            elif failed_result is not None:
+                raise ValueError(str(failed_result.get("error") or "report failed"))
+            else:
+                raw_report = report_path.read_bytes()
+                payload = json.loads(raw_report.decode("utf-8"))
+                report_binding.update({
+                    "run_id": str(payload.get("run_id") or ""),
+                    "sha256": hashlib.sha256(raw_report).hexdigest(),
+                })
         except (OSError, UnicodeDecodeError, ValueError, TypeError) as exc:
             report_binding["error"] = str(exc)
 
@@ -4648,6 +4921,12 @@ class MainWindow(QMainWindow):
             if self._operations_service is not None:
                 self._operations_service.close()
                 self._operations_service = None
+        except Exception:
+            pass
+        try:
+            for engine in (self.red_team_engine, self.shark_engine):
+                engine.stop_and_clean()
+            self._release_redteam_validation_lease()
         except Exception:
             pass
         try:

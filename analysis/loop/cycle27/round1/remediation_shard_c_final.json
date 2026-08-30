@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "date": "2026-08-28",
+  "scope": [
+    "C27-R1-C09",
+    "C27-R1-C10",
+    "C27-R1-C17",
+    "C27-R1-C19"
+  ],
+  "execution_boundary": {
+    "fixtures": "local inert temporary state",
+    "live_attack": false,
+    "host_mutation": false,
+    "committed": false,
+    "published": false
+  },
+  "findings": [
+    {
+      "id": "C27-R1-C09",
+      "status": "CLOSED",
+      "controls": [
+        "authenticated bounded durable retry/completion/dead-letter state",
+        "bounded exponential retry schedule",
+        "no-follow authenticated snapshot and trusted-source custody",
+        "fail-closed initialization and coverage health"
+      ]
+    },
+    {
+      "id": "C27-R1-C10",
+      "status": "CLOSED",
+      "expected_targets": 18,
+      "primary_targets": 6,
+      "dependency_targets": 12,
+      "controls": [
+        "mandatory target/dependency closure",
+        "source file digest and exact source line evidence",
+        "TOFU baseline cannot reach health 100",
+        "structured ACL collection failure and weak-ACL health"
+      ]
+    },
+    {
+      "id": "C27-R1-C17",
+      "status": "CLOSED",
+      "controls": [
+        "OS-authoritative legacy profile path",
+        "unsafe/unavailable/reparse state cannot become clean",
+        "privileged pathname migration and purge retired",
+        "bounded dry-run proposals only"
+      ]
+    },
+    {
+      "id": "C27-R1-C19",
+      "status": "CLOSED",
+      "cursor_schema": 3,
+      "controls": [
+        "HMAC generation and exact event anchors",
+        "monotonic durable cursor sequence and age",
+        "persistence failure health degradation",
+        "explicit reload, generation verification, reseek, and replay after every reopen",
+        "continuity and rejection evidence"
+      ]
+    }
+  ],
+  "gates": {
+    "focused_pytest": {"passed": 40, "failed": 0},
+    "module_self_tests": {"passed": 4, "failed": 0},
+    "headless_selfcheck": {"passed": 66, "failed": 0, "skipped": 16},
+    "cycle27_broad_snapshot": {
+      "passed": 312,
+      "failed": 15,
+      "skipped": 2,
+      "scoped_failures": 0,
+      "note": "All failures are out-of-scope pre-existing/concurrent red gates."
+    },
+    "compileall": "passed",
+    "py_compile": "passed",
+    "ruff": "passed",
+    "diff_check": "passed"
+  },
+  "test_file": "tests/test_cycle27_shard_c_final_remediation.py"
+}

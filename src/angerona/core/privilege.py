@@ -15,6 +15,8 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path, PureWindowsPath
 
 
@@ -94,6 +96,29 @@ _PATH_OR_CODE_LOADING_ENVIRONMENT = frozenset({
     "TK_LIBRARY",
     "WINDIR",
 })
+
+
+class ElevationState(str, Enum):
+    """Outcome when an elevation helper returns to its caller."""
+
+    NOT_REQUIRED = "not-required"
+    EFFECTIVE_ADMINISTRATOR = "effective-administrator"
+    CANCELLED_OR_DENIED = "cancelled-or-denied"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class ElevationResult:
+    """Typed, non-authoritative description of a UAC attempt."""
+
+    state: ElevationState
+    reason: str
+
+    @property
+    def effective_administrator(self) -> bool:
+        return self.state is ElevationState.EFFECTIVE_ADMINISTRATOR
+
+
 _WATCHDOG_CONTEXT_KEYS = (
     "ANGERONA_EXTERNAL_WATCHDOG",
     "ANGERONA_WATCHDOG_MMAP",
@@ -463,17 +488,20 @@ def is_admin() -> bool:
         return False  # not Windows, or call unavailable
 
 
-def ensure_admin() -> None:
-    """Relaunch from a sanitized environment if needed. No-op off Windows."""
+def ensure_admin() -> ElevationResult:
+    """Relaunch if needed and return a typed result only when no handoff occurs."""
     if sys.platform != "win32":
-        return
+        return ElevationResult(ElevationState.NOT_REQUIRED, "not running on Windows")
     # ShellExecute does not accept an explicit environment block. Replace this
     # process's inherited block before UAC so the elevated instance cannot
     # receive caller-controlled paths, Python controls, credentials, or
     # resilience commands. Also sanitize already-elevated direct launches.
     sanitize_privileged_bootstrap_environment()
     if is_admin():
-        return
+        return ElevationResult(
+            ElevationState.EFFECTIVE_ADMINISTRATOR,
+            "effective Administrator token is present",
+        )
     try:
         target = str(Path(sys.executable).resolve(strict=True))
         if getattr(sys, "frozen", False):
@@ -502,9 +530,13 @@ def ensure_admin() -> None:
             None, "runas", target, params, working_directory, 1
         ) or 0)
         if result <= 32:
-            return
+            return ElevationResult(
+                ElevationState.CANCELLED_OR_DENIED,
+                "the UAC request was cancelled, denied, or could not start",
+            )
     except Exception:
-        # If elevation fails, continue unelevated with reduced visibility
-        # rather than refusing to start. The current process remains sanitized.
-        return
+        return ElevationResult(
+            ElevationState.FAILED,
+            "the UAC request failed before an elevated child was started",
+        )
     raise SystemExit(0)  # the elevated instance takes over

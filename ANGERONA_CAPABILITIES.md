@@ -1,9 +1,9 @@
 # Angerona Capabilities
 
-Current status: **v1.12.0**. This is a present-tense capability and boundary
+Current status: **v1.12.1**. This is a present-tense capability and boundary
 summary. Operating detail is in the [Master Manual](Angerona_Master_Manual.docx);
 engineering evidence is in
-[`analysis/loop/cycle25/`](analysis/loop/cycle25/).
+[`analysis/loop/`](analysis/loop/), including the Cycle 26–30 evidence.
 
 ## Core proposition
 
@@ -13,7 +13,7 @@ security-engineering portfolios. It brings telemetry, detection, correlation,
 investigation, governed response, recovery, local AI, and non-destructive
 validation into one PySide6 desktop application.
 
-The v1.12.0 security model separates four kinds of claims:
+The v1.12.1 security model separates four kinds of claims:
 
 - **Integrated:** a production path is connected to the application and covered
   by its local contract.
@@ -26,18 +26,17 @@ The v1.12.0 security model separates four kinds of claims:
 
 ## v12 capability contract and operator surfaces
 
-- Exactly **80** built-in capabilities are present in the reproducible
+- Exactly **81** built-in capabilities are present in the reproducible
   Windows-target inventory. Every capability receives the same validated v12
   contract and operational lifecycle/freshness/loss snapshot.
 - Contract fields cover implementation version, platform, mode, permissions,
   inputs/outputs, egress, retention, response authority, dependencies,
   conflicts, settings, self-test, restart/loss behavior, and resource budget.
-- Contract truth is explicit: **5 native contracts** and **75 compatibility
-  adapters**. Compatibility metadata gaps remain visible. Product version
-  1.12.0 does not imply that every module implementation was independently
-  rewritten or assigned version 12.
-- Current implementation versions are **51 at 1.0.0**, **28 at 1.1.0**, and the
-  macOS Observe preview at **0.1.0**. Product and module semver are independent.
+- Contract truth is explicit: **6 native contracts** and **75 compatibility
+  adapters**. Compatibility metadata gaps remain visible and lower assurance
+  even though every shipped built-in module now carries the v1.12.1 release
+  implementation label. A shared version does not imply equal platform support,
+  evidence completeness, response authority, or independent efficacy.
 - Capability Center and Module Inspector provide search, filter, typed sorting,
   bounded details, source/dependency/path information, and live operational
   evidence. Contract export remains machine-readable.
@@ -55,6 +54,16 @@ The v1.12.0 security model separates four kinds of claims:
 - Community ID v1, OCSF 1.8 mappings, Suricata and Zeek evidence, guarded
   read-only osquery snapshots, cases, causal timelines, Evidence Lattice
   correlation, Telemetry Expectation Contracts, and MITRE ATT&CK mapping.
+- **SentinelLens** accepts bounded live EventBus evidence plus explicit Syslog,
+  Windows Event, NetFlow, JSON, JSONL, and array imports. Its local graph maps
+  process, network, file, technique, correlation, and proof relationships;
+  clickable nodes and sortable anomaly rows expose exact evidence identity,
+  deterministic selection reason, path fields, attack-chain narrative, and
+  proposal-only remediation. An app-owned background service uses a bounded
+  non-blocking queue and exposes drop/parser/analysis health without slowing
+  EventBus producers. Optional language-model narrative is restricted to a
+  strict loopback endpoint; there is no cloud fallback, public/LAN listener, or
+  telemetry export.
 - Authenticated local EventBus persistence protects record bytes. The
   **Sensor Provenance Broker** separately authenticates enrolled producer
   identity, exact event schema, sequence continuity, replay state, and loss
@@ -305,7 +314,7 @@ Angerona host
 
 | Platform | Current use | Static modules |
 | --- | --- | ---: |
-| Windows | **Protect:** supported elevated user-mode telemetry and governed response; no unsigned kernel driver ships. | **80** |
+| Windows | **Protect:** supported elevated user-mode telemetry and governed response; no unsigned kernel driver ships. | **81** |
 | Linux | **Observe + optional eBPF:** rootless shared-core visibility with an explicit privileged BCC/eBPF supplement. | **14** |
 | macOS | **Observe preview:** privacy-minimized shared-core visibility; no native enforcement claim. | **13** |
 
@@ -325,17 +334,15 @@ Angerona host
 
 ## Validation snapshot
 
-- Authoritative serial release suite, including the three final-performance
-  regressions: **1,811 passed; 6 expected host-platform skips; 0 failed**. The
-  added regressions and their surrounding performance/reliability group also
-  passed a focused **106/106** gate.
-- Static platform discovery: **80 Windows / 14 Linux / 13 macOS modules**.
-- Product compile: **346/346** Python files.
-- Structural gate: **82/82** module files imported, **64/64** optional
-  compatibility hooks constructed, and **80** capabilities discovered.
-- Self-tests: **92** standalone core/module passes, **12** expected
-  inactive/platform skips, plus EventBus passed.
-- Selfcheck: **26/26** direct and batch; Ruff and diff checks clean.
+- Authoritative v1.12.1 serial release suite:
+  **2659 passed; 13 intentional host-platform
+  skips; 0 failed**.
+- Static platform discovery: **81 Windows / 14 Linux / 13 macOS modules**.
+- Product `compileall`: pass.
+- Structural inventory: **81 capabilities** with **6 native contracts** and
+  **75 compatibility adapters**, without duplicate identity.
+- Supported headless selfcheck: **26/26**; workflow policy, dependency audit,
+  documentation drift, Ruff, and diff checks pass on the same release tree.
 
 Focused groups overlap. They are not a final-suite total or clean-machine
 publisher/deployment proof.

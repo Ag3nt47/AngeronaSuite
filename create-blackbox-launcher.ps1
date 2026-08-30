@@ -1,9 +1,9 @@
 <#
 Creates the supported Angerona Desktop shortcut.
 
-The Black Box recorder is launched as a child of the elevated suite. A separate
-unelevated recorder shortcut is intentionally not created because packaged
-runtime evidence is protected for Administrators and SYSTEM only.
+For a source checkout this creates an unelevated Observe/development shortcut.
+Full protected recorder custody is available only from the signed installed
+build, not from this mutable source helper.
 #>
 $ErrorActionPreference = 'Stop'
 
@@ -33,7 +33,7 @@ foreach ($desktop in $desktops) {
     if (Test-Path -LiteralPath $icon -PathType Leaf) {
         $shortcut.IconLocation = $icon
     }
-    $shortcut.Description = 'Angerona local-first endpoint security suite'
+    $shortcut.Description = 'Angerona source Observe/development profile (unelevated)'
     $shortcut.Save()
     if (Test-Path -LiteralPath $link -PathType Leaf) { $made++ }
 }

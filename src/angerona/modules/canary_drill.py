@@ -121,19 +121,23 @@ class CanaryDrillModule(BaseModule):
         "hooking) and raises a CRITICAL alert."
     )
     category = "Resilience"
-    version = "1.1.0"
+    version = "1.12.1"
     enabled_by_default = True
 
     def __init__(self) -> None:
         super().__init__()
         self._expectations = TelemetryExpectationEngine(max_pending=8)
-        self._echo_queue: queue.Queue[tuple[str, float]] = queue.Queue(
+        self._echo_queue: queue.Queue[tuple[str, float, float, str]] = queue.Queue(
             maxsize=_ECHO_QUEUE_LIMIT
         )
         self._echo_queue_dropped = 0
         self._consecutive_misses = 0
         self._drills_fired = 0
         self._drills_caught = 0
+        self._sensor_echoes = 0
+        self._durable_misses = 0
+        self._pending_durable: dict[str, tuple[float, float, str]] = {}
+        self._recorder = None
         self._subscribed = False
         # canary process pid → tag, so an echo can be matched on PID even when
         # the 4688 event carries no command line (default Windows auditing, or
@@ -152,6 +156,9 @@ class CanaryDrillModule(BaseModule):
         self._coverage_alerted: set[str] = set()   # dedup: one alert per silence episode
         self._next_coverage_check: float = time.monotonic() + _SENSOR_WARMUP_S
         self._start_time: float = time.monotonic()
+
+    def bind_recorder(self, recorder) -> None:
+        self._recorder = recorder
 
     # ── dual-contract properties ─────────────────────────────────────────────
     @property
@@ -231,7 +238,12 @@ class CanaryDrillModule(BaseModule):
             if pid is not None:
                 tag = self._pending_pids.get(pid)
         if tag:
-            echo = (tag, time.monotonic())
+            echo = (
+                tag,
+                time.monotonic(),
+                float(getattr(event, "ts", 0.0)),
+                str(getattr(event, "hmac_sig", "") or ""),
+            )
             try:
                 self._echo_queue.put_nowait(echo)
             except queue.Full:
@@ -318,7 +330,7 @@ class CanaryDrillModule(BaseModule):
         missed: list[str] = []
         while True:
             try:
-                tag, observed_at = self._echo_queue.get_nowait()
+                tag, observed_at, event_ts, event_hmac = self._echo_queue.get_nowait()
             except queue.Empty:
                 break
             outcome = self._expectations.observe(
@@ -329,16 +341,68 @@ class CanaryDrillModule(BaseModule):
             if outcome is None:
                 continue
             if outcome.status == "satisfied":
-                self._drills_caught += 1
-                self._consecutive_misses = 0
-                # The echo path is proven live: real blinding (misses AFTER a
-                # catch) can now legitimately escalate to CRITICAL again.
-                self._ever_caught = True
-                self._config_warned = False
+                self._sensor_echoes += 1
+                # A bus echo proves the sensor leg only. The drill is not caught
+                # until the exact signed Event is readable from FlightRecorder.
+                if (
+                    self._recorder is not None
+                    and len(event_hmac) == 64
+                    and event_ts > 0
+                ):
+                    self._pending_durable[outcome.probe_id] = (
+                        event_ts,
+                        observed_at + CANARY_TIMEOUT_S,
+                        event_hmac,
+                    )
+                else:
+                    self._durable_misses += 1
                 self._forget_tag(outcome.probe_id)
             else:
                 missed.append(outcome.probe_id)
                 self._forget_tag(outcome.probe_id)
+        return missed
+
+    def _check_durable_receipts(self) -> list[str]:
+        """Promote sensor echoes only after exact authenticated persistence."""
+        missed: list[str] = []
+        recorder = self._recorder
+        now = time.monotonic()
+        for tag, (event_ts, deadline, event_hmac) in list(
+            self._pending_durable.items()
+        ):
+            found = False
+            if recorder is not None and hasattr(recorder, "bounded_events_in_window"):
+                try:
+                    events, _total = recorder.bounded_events_in_window(
+                        event_ts - 0.000001,
+                        event_ts + 0.000001,
+                        limit=512,
+                    )
+                    found = any(
+                        getattr(event, "hmac_sig", "") == event_hmac
+                        and event.module in _TRUSTED_PROCESS_SENSORS
+                        and (event.details or {}).get("_ledger_integrity") != "invalid"
+                        for event in events
+                    )
+                except Exception as exc:
+                    self.last_error = str(exc)
+            if found:
+                self._pending_durable.pop(tag, None)
+                self._drills_caught += 1
+                self._consecutive_misses = 0
+                self._ever_caught = True
+                self._config_warned = False
+                self.emit(
+                    f"DRILL full pipeline verified for {tag}: sensor echo + signed ledger.",
+                    Severity.INFO,
+                    canary_tag=tag,
+                    sensor_echo=True,
+                    recorder_persisted=True,
+                )
+            elif now >= deadline:
+                self._pending_durable.pop(tag, None)
+                self._durable_misses += 1
+                missed.append(tag)
         return missed
 
     def _expire_pending(self) -> list[str]:
@@ -413,6 +477,17 @@ class CanaryDrillModule(BaseModule):
 
             # Collect any echoes that arrived
             late_misses = self._collect_echoes()
+            durable_misses = self._check_durable_receipts()
+            for tag in durable_misses:
+                self.emit(
+                    f"DRILL recorder miss: signed sensor echo for {tag} was not "
+                    "readable from FlightRecorder before deadline.",
+                    Severity.MEDIUM,
+                    canary_tag=tag,
+                    sensor_echo=True,
+                    recorder_persisted=False,
+                    durable_misses=self._durable_misses,
+                )
 
             # Check for expired (missed) canaries
             for tag in late_misses + self._expire_pending():
@@ -500,8 +575,17 @@ class CanaryDrillModule(BaseModule):
             if self._consecutive_misses == 0 and self._drills_fired > 0:
                 catch_rate = self._drills_caught / self._drills_fired
                 pct = int(catch_rate * 100)
-                self.set_health(min(100, pct),
-                                f"{self._drills_caught}/{self._drills_fired} canaries caught")
+                if self._pending_durable:
+                    pct = min(pct, 80)
+                if self._durable_misses:
+                    pct = min(pct, 60)
+                self.set_health(
+                    min(100, pct),
+                    f"{self._drills_caught}/{self._drills_fired} full pipeline; "
+                    f"sensor_echoes={self._sensor_echoes}; "
+                    f"recorder_misses={self._durable_misses}; "
+                    f"persistence_pending={len(self._pending_durable)}",
+                )
             elif self._consecutive_misses > 0 and self._drills_fired > 0:
                 if self._ever_caught:
                     self.set_health(
@@ -551,7 +635,9 @@ class CanaryDrillModule(BaseModule):
         )
         self._on_event(fake_event)
         try:
-            received, _observed_at = self._echo_queue.get(timeout=1.0)
+            received, _observed_at, _event_ts, _event_hmac = self._echo_queue.get(
+                timeout=1.0
+            )
             echo_ok = received == tag
         except queue.Empty:
             echo_ok = False

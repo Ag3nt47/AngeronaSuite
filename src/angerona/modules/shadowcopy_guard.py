@@ -146,15 +146,21 @@ class ShadowCopyGuardModule(BaseModule):
     description = ("Detects shadow-copy deletion + recovery disabling (vssadmin/wmic/"
                    "wbadmin/bcdedit, T1490) — a ransomware precursor — and alerts with the pid.")
     category = "Detection"
-    version = "1.0.0"
+    version = "1.12.1"
 
     _POLL = 2.0
 
     def __init__(self) -> None:
         super().__init__()
         self.state_lock = threading.Lock()
-        self._alerted: set[int] = set()
+        self._alerted: set[tuple[int, str, str]] = set()
         self._detections = 0
+        self._last_coverage = {
+            "enumerated": 0,
+            "readable": 0,
+            "unreadable": 0,
+            "identity_incomplete": 0,
+        }
 
     @property
     def state(self) -> str:
@@ -174,43 +180,63 @@ class ShadowCopyGuardModule(BaseModule):
         self.emit("VSSG online — watching for shadow-copy/recovery tampering.", Severity.INFO)
         while not self.stopping:
             try:
-                live = set()
+                live: set[tuple[int, str, str]] = set()
+                enumerated = 0
+                readable = 0
+                unreadable = 0
+                identity_incomplete = 0
                 for p in psutil.process_iter([
                     "pid", "name", "exe", "cmdline", "create_time"
                 ]):
-                    live.add(p.info["pid"])
+                    enumerated += 1
+                    info = p.info
+                    pid = info.get("pid")
+                    if not isinstance(pid, int) or pid <= 0:
+                        identity_incomplete += 1
+                        continue
+                    created = info.get("create_time")
+                    executable = str(info.get("exe") or "").strip().casefold()
+                    if created is None or not executable:
+                        identity_incomplete += 1
+                    identity = (pid, str(created or "unknown"), executable)
+                    live.add(identity)
+                    raw_cmdline = info.get("cmdline")
+                    if raw_cmdline is None:
+                        unreadable += 1
+                        continue
                     try:
-                        cmd = " ".join(p.info.get("cmdline") or [])
+                        cmd = " ".join(raw_cmdline or [])
                     except Exception:
-                        cmd = ""
+                        unreadable += 1
+                        continue
+                    readable += 1
                     reason = _looks_like_recovery_tamper(cmd)
-                    if reason and p.info["pid"] not in self._alerted:
-                        self._alerted.add(p.info["pid"])
+                    if reason and identity not in self._alerted:
+                        self._alerted.add(identity)
                         self._detections += 1
                         # Attribute to the PARENT where possible — vssadmin is often a
                         # child of the real ransomware process; report both.
                         ppid = None
                         try:
-                            ppid = psutil.Process(p.info["pid"]).ppid()
+                            ppid = psutil.Process(pid).ppid()
                         except Exception:
                             pass
-                        created = p.info.get("create_time")
                         response = {}
                         trusted_name = _trusted_system_utility(
-                            p.info.get("name"), p.info.get("exe")
+                            info.get("name"), info.get("exe")
                         )
                         if trusted_name and _recovery_argv_is_destructive(
-                            trusted_name, p.info.get("cmdline")
+                            trusted_name, raw_cmdline
                         ):
                             response = process_response(
-                                p.info["pid"], created, escalate_host=True
+                                pid, created, escalate_host=True
                             )
                         self.emit(
-                            f"⚠ RANSOMWARE PRECURSOR — {p.info.get('name','?')} "
-                            f"(pid {p.info['pid']}, parent {ppid}) is {reason}. This inhibits "
+                            f"⚠ RANSOMWARE PRECURSOR — {info.get('name','?')} "
+                            f"(pid {pid}, parent {ppid}) is {reason}. This inhibits "
                             "recovery before encryption. Contain immediately.",
-                            Severity.CRITICAL, pid=p.info["pid"], ppid=ppid,
-                            name=p.info.get("name"), exe=p.info.get("exe"),
+                            Severity.CRITICAL, pid=pid, ppid=ppid,
+                            name=info.get("name"), exe=info.get("exe"),
                             process_create_time=created,
                             mitre="T1490", cmdline=cmd[:200], active_attack=True,
                             detector_policy=(
@@ -220,7 +246,26 @@ class ShadowCopyGuardModule(BaseModule):
                             ),
                             **response)
                 self._alerted &= live
-                self.set_health(100, f"{self._detections} recovery-tamper attempt(s) seen")
+                self._last_coverage = {
+                    "enumerated": enumerated,
+                    "readable": readable,
+                    "unreadable": unreadable,
+                    "identity_incomplete": identity_incomplete,
+                }
+                if enumerated == 0:
+                    self.set_health(60, "process enumeration returned no coverage")
+                elif unreadable or identity_incomplete:
+                    self.set_health(
+                        70,
+                        f"process coverage incomplete: {readable}/{enumerated} command "
+                        f"lines readable, {identity_incomplete} identity gap(s)",
+                    )
+                else:
+                    self.set_health(
+                        100,
+                        f"{readable}/{enumerated} process command lines readable; "
+                        f"{self._detections} recovery-tamper attempt(s) seen",
+                    )
             except Exception as exc:
                 self.last_error = str(exc)
                 self.set_health(60, f"scan error: {exc}")

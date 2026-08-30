@@ -1,0 +1,111 @@
+{
+  "schema": 1,
+  "date": "2026-08-28",
+  "scope": [
+    "C27-R1-C09",
+    "C27-R1-C10",
+    "C27-R1-C19"
+  ],
+  "c17_implementation_changed": false,
+  "hostile_test_unchanged": true,
+  "execution_boundary": {
+    "fixtures": "inert temporary files, restored in-process monkeypatches, and fake event-log backends",
+    "live_attack": false,
+    "host_mutation": false,
+    "committed": false,
+    "published": false
+  },
+  "closures": [
+    {
+      "id": "C27-R1-C09",
+      "status": "CLOSED",
+      "controls": [
+        "purpose-separated HMAC companion receipt",
+        "monotonic receipt generation and exact state-byte digest binding",
+        "missing, forged, mismatched, or older-main/newer-receipt pair rejected before load",
+        "pending process-monotonic retry cannot be erased by replaying only an older authentic main state",
+        "legacy Boolean snapshot-coverage compatibility retained"
+      ]
+    },
+    {
+      "id": "C27-R1-C10",
+      "status": "CLOSED",
+      "mandatory_target_count": 19,
+      "controls": [
+        "compiled injection policy captured in watched scan_input closure",
+        "module-global policy replacement cannot alter enforcement",
+        "closure, defaults, and code mutation change the integrity fingerprint",
+        "ACL evidence normalized and recollected every monitor cycle",
+        "later weak, failed, or unknown ACL posture is non-green"
+      ]
+    },
+    {
+      "id": "C27-R1-C19",
+      "status": "CLOSED",
+      "controls": [
+        "exact contiguous-prefix delivery validation",
+        "checkpoint held at last proven contiguous record",
+        "missing, duplicate, reordered, invalid, or truncated delivery becomes delivery-gap",
+        "expected and observed record evidence retained",
+        "delivery gap and persistence failure remain non-green"
+      ]
+    }
+  ],
+  "gates": {
+    "frozen_final_verification_pytest": {
+      "passed": 4,
+      "failed": 0
+    },
+    "final_convergence_pytest": {
+      "passed": 6,
+      "failed": 0
+    },
+    "preserved_prior_shard_c_pytest": {
+      "passed": 34,
+      "failed": 0
+    },
+    "broader_affected_pytest": {
+      "passed": 95,
+      "failed": 0
+    },
+    "module_self_tests": {
+      "passed": 4,
+      "failed": 0
+    },
+    "headless_selfcheck": {
+      "passed": 26,
+      "failed": 0
+    },
+    "selfcheck_module_runner": {
+      "passed": 66,
+      "failed": 0,
+      "skipped": 16
+    },
+    "cycle27_broad_snapshot": {
+      "passed": 361,
+      "failed": 52,
+      "skipped": 2,
+      "scoped_failures": 0,
+      "note": "All failures are outside this scope in the concurrent Purple Guard validation-lease/native-authority cluster."
+    },
+    "compileall": "passed",
+    "py_compile": "passed",
+    "ruff": "passed",
+    "json_validation": "passed",
+    "diff_check": "passed"
+  },
+  "versions": {
+    "HEAL": "1.12.1",
+    "SINT": "1.12.1",
+    "SHYG": "1.12.1",
+    "SYSL": "1.12.1"
+  },
+  "remaining_limits": [
+    "A coherent rollback of both local HEAL files or theft of their local HMAC authority requires an external monotonic witness to distinguish.",
+    "No local file proves real elapsed time while HEAL is stopped.",
+    "SINT remains user-mode interval detection and ACL collection is a point-in-time icacls observation.",
+    "Classic Windows Event Log range calls are not atomic and expose no stable generation UUID.",
+    "Coherent cross-process rollback of all authentic local Sysmon evidence requires a separately protected monotonic high-water authority."
+  ],
+  "test_file": "tests/test_cycle27_shard_c_final_convergence.py"
+}

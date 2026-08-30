@@ -65,25 +65,21 @@ class Cycle4Round1PerformanceTests(unittest.TestCase):
         self.assertEqual(module._incidents[0], {"i": 105})
         self.assertEqual(module._incidents[-1], {"i": 2_104})
 
-    def test_self_healer_skips_unchanged_directory_and_finds_new_file_once(self) -> None:
+    def test_self_healer_keeps_prelaunch_and_new_snapshots_in_bounded_custody(self) -> None:
         healer = SelfHealer()
         with tempfile.TemporaryDirectory() as tmp:
             snap_dir = Path(tmp)
-            (snap_dir / "old.json").write_text("{}", encoding="utf-8")
-            healer._prime_snapshot_dir(snap_dir)
-            self.assertEqual(healer._new_snapshots(snap_dir), [])
+            old = snap_dir / "old.json"
+            old.write_text("{}", encoding="utf-8")
+            candidates, overflow = healer._snapshot_candidates(snap_dir)
+            self.assertEqual(candidates, [old])
+            self.assertFalse(overflow)
 
-            before = snap_dir.stat().st_mtime_ns
             fresh = snap_dir / "fresh.json"
             fresh.write_text("{}", encoding="utf-8")
-            # Filesystems with coarse metadata timestamps still get a
-            # deterministic invalidation in the test.
-            if snap_dir.stat().st_mtime_ns == before:
-                forced = max(time.time_ns(), before + 1_000_000_000)
-                os.utime(snap_dir, ns=(forced, forced))
-
-            self.assertEqual(healer._new_snapshots(snap_dir), [fresh])
-            self.assertEqual(healer._new_snapshots(snap_dir), [])
+            candidates, overflow = healer._snapshot_candidates(snap_dir)
+            self.assertEqual(candidates, [fresh, old])
+            self.assertFalse(overflow)
 
     def test_status_report_reuses_one_consistent_bus_snapshot(self) -> None:
         bus = _CountingBus()

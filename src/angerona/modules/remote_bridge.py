@@ -14,10 +14,12 @@ modes, selected by environment/config:
 
 Zero-Trust LAN transport
 ------------------------
-Both peers prove possession of a 256-bit shared key before telemetry moves. A
-fresh per-connection session key protects every event with AES-256-GCM, so a LAN
-observer cannot read or alter it. The receiver is loopback-only unless an
-operator explicitly chooses a routable bind address.
+Both peers prove possession of a 256-bit shared key and bind that proof to fresh
+ephemeral X25519 public keys before telemetry moves. HKDF derives each AES-256-
+GCM session key from the ephemeral shared secret and authenticated transcript,
+so later compromise of the long-term PSK does not recover captured sessions.
+The receiver is loopback-only unless an operator explicitly chooses a routable
+bind address.
 
 Consent / safety
 ----------------
@@ -68,8 +70,8 @@ _ALLOW_NONLOOPBACK_ENV = "ANGERONA_BRIDGE_ALLOW_NONLOOPBACK"
 _DEFAULT_PORT = 47924
 _SOCK_TIMEOUT = 4.0
 _FORWARD_MIN  = Severity.HIGH           # only HIGH/CRITICAL cross the network
-_PROTOCOL = "RBRG2"
-_AAD = b"Angerona-Remote-Bridge-v2"
+_PROTOCOL = "RBRG3"
+_AAD = b"Angerona-Remote-Bridge-v3"
 _MAX_FRAME = 1_000_000
 
 
@@ -113,15 +115,78 @@ def _shared_key() -> Optional[bytes]:
         return None
 
 
-def _proof(key: bytes, role: bytes, server_nonce: bytes,
-           client_nonce: bytes = b"") -> str:
-    return hmac.new(key, _AAD + role + server_nonce + client_nonce,
-                    hashlib.sha256).hexdigest()
+def _handshake_transcript(
+    server_nonce: bytes,
+    client_nonce: bytes,
+    server_public: bytes,
+    client_public: bytes,
+) -> bytes:
+    values = (server_nonce, client_nonce, server_public, client_public)
+    if any(not isinstance(value, bytes) or len(value) > 64 for value in values):
+        raise ValueError("remote bridge handshake field is invalid")
+    return b"".join(len(value).to_bytes(2, "big") + value for value in values)
 
 
-def _session_key(key: bytes, server_nonce: bytes, client_nonce: bytes) -> bytes:
-    return hmac.new(key, _AAD + b"session" + server_nonce + client_nonce,
-                    hashlib.sha256).digest()
+def _proof(
+    key: bytes,
+    role: bytes,
+    server_nonce: bytes,
+    client_nonce: bytes = b"",
+    server_public: bytes = b"",
+    client_public: bytes = b"",
+) -> str:
+    transcript = _handshake_transcript(
+        server_nonce, client_nonce, server_public, client_public
+    )
+    return hmac.new(key, _AAD + role + transcript, hashlib.sha256).hexdigest()
+
+
+def _ephemeral_keypair():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+
+    private = X25519PrivateKey.generate()
+    public = private.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    return private, public
+
+
+def _exchange_ephemeral(private, peer_public: bytes) -> bytes:
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
+
+    if not isinstance(peer_public, bytes) or len(peer_public) != 32:
+        raise ValueError("remote bridge ephemeral public key is invalid")
+    shared = private.exchange(X25519PublicKey.from_public_bytes(peer_public))
+    if len(shared) != 32 or hmac.compare_digest(shared, b"\0" * 32):
+        raise ValueError("remote bridge ephemeral exchange was invalid")
+    return shared
+
+
+def _session_key(
+    key: bytes,
+    server_nonce: bytes,
+    client_nonce: bytes,
+    shared_secret: bytes,
+    server_public: bytes,
+    client_public: bytes,
+) -> bytes:
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    if not isinstance(shared_secret, bytes) or len(shared_secret) != 32:
+        raise ValueError("remote bridge shared secret is invalid")
+    transcript = _handshake_transcript(
+        server_nonce, client_nonce, server_public, client_public
+    )
+    salt = hmac.new(key, _AAD + b"hkdf-salt" + transcript, hashlib.sha256).digest()
+    return HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        info=_AAD + b"ephemeral-session",
+    ).derive(shared_secret)
 
 
 def _encrypt(key: bytes, payload: bytes) -> bytes:
@@ -174,10 +239,12 @@ class RemoteBridge(BaseModule):
     CODE = "RBRG"
     NAME = "Remote Bridge"
     name = "Remote Bridge"
-    description = ("Secure multi-node telemetry forwarding (SENDER/RECEIVER) with "
-                   "mutual authentication and AES-256-GCM encryption. Off by default.")
+    description = (
+        "Secure multi-node telemetry forwarding with PSK-authenticated ephemeral "
+        "X25519, HKDF, and AES-256-GCM. Off by default."
+    )
     category = "Integrity"
-    version = "1.1.0"
+    version = "1.12.1"
     supported_platforms = SUPPORTED_PLATFORMS
     capability_mode = "observe"
     capability_inputs = ("authenticated-high-severity-event", "mutually-authenticated-frame")
@@ -489,20 +556,57 @@ class RemoteBridge(BaseModule):
             with socket.create_connection(peer, timeout=_SOCK_TIMEOUT) as s:
                 s.settimeout(_SOCK_TIMEOUT)
                 parts = self._recv_line(s, 512).split()
-                if len(parts) != 4 or parts[:2] != [_PROTOCOL, "CHALLENGE"]:
+                if len(parts) != 5 or parts[:2] != [_PROTOCOL, "CHALLENGE"]:
                     return False
                 server_nonce = bytes.fromhex(parts[2])
-                expected = _proof(self._key, b"server", server_nonce)
-                if not hmac.compare_digest(expected, parts[3]):
+                server_public = bytes.fromhex(parts[3])
+                expected = _proof(
+                    self._key,
+                    b"server",
+                    server_nonce,
+                    server_public=server_public,
+                )
+                if (
+                    len(server_nonce) != 32
+                    or len(server_public) != 32
+                    or not hmac.compare_digest(expected, parts[4])
+                ):
                     self.denied += 1
                     return False
                 client_nonce = os.urandom(32)
-                client_sig = _proof(self._key, b"client", server_nonce, client_nonce)
-                auth = f"{_PROTOCOL} AUTH {client_nonce.hex()} {client_sig}\n"
+                client_private, client_public = _ephemeral_keypair()
+                client_sig = _proof(
+                    self._key,
+                    b"client",
+                    server_nonce,
+                    client_nonce,
+                    server_public,
+                    client_public,
+                )
+                auth = (
+                    f"{_PROTOCOL} AUTH {client_nonce.hex()} "
+                    f"{client_public.hex()} {client_sig}\n"
+                )
                 s.sendall(auth.encode("ascii"))
-                session = _session_key(self._key, server_nonce, client_nonce)
+                shared_secret = _exchange_ephemeral(client_private, server_public)
+                session = _session_key(
+                    self._key,
+                    server_nonce,
+                    client_nonce,
+                    shared_secret,
+                    server_public,
+                    client_public,
+                )
+                del client_private, shared_secret
                 ack = self._recv_line(s, 256).split()
-                expected_ack = _proof(session, b"receiver-ok", server_nonce, client_nonce)
+                expected_ack = _proof(
+                    session,
+                    b"receiver-ok",
+                    server_nonce,
+                    client_nonce,
+                    server_public,
+                    client_public,
+                )
                 ack_ok = (len(ack) == 3 and ack[:2] == [_PROTOCOL, "OK"] and
                           hmac.compare_digest(expected_ack, ack[2]))
                 if not ack_ok:
@@ -516,6 +620,8 @@ class RemoteBridge(BaseModule):
                     b"stored:" + event_id.encode("ascii"),
                     server_nonce,
                     client_nonce,
+                    server_public,
+                    client_public,
                 )
                 if not (
                     len(stored) == 3
@@ -661,8 +767,11 @@ class RemoteBridge(BaseModule):
             while not self.stopping:
                 self.sleep(5)
             return
-        self.emit(f"Remote Bridge RECEIVER active — listening on {bind}:{port} "
-                  f"(mutual auth + AES-GCM, default-deny).", Severity.INFO)
+        self.emit(
+            f"Remote Bridge RECEIVER active — listening on {bind}:{port} "
+            f"(PSK-authenticated ephemeral X25519 + AES-GCM, default-deny).",
+            Severity.INFO,
+        )
         try:
             while not self.stopping:
                 try:
@@ -709,26 +818,63 @@ class RemoteBridge(BaseModule):
         try:
             conn.settimeout(_SOCK_TIMEOUT)
             server_nonce = os.urandom(32)
-            server_sig = _proof(self._key, b"server", server_nonce)
-            challenge = f"{_PROTOCOL} CHALLENGE {server_nonce.hex()} {server_sig}\n"
+            server_private, server_public = _ephemeral_keypair()
+            server_sig = _proof(
+                self._key,
+                b"server",
+                server_nonce,
+                server_public=server_public,
+            )
+            challenge = (
+                f"{_PROTOCOL} CHALLENGE {server_nonce.hex()} "
+                f"{server_public.hex()} {server_sig}\n"
+            )
             conn.sendall(challenge.encode("ascii"))
             parts = self._recv_line(conn, 512).split()
             valid = False
             client_nonce = b""
-            if len(parts) == 4 and parts[:2] == [_PROTOCOL, "AUTH"]:
+            client_public = b""
+            if len(parts) == 5 and parts[:2] == [_PROTOCOL, "AUTH"]:
                 try:
                     client_nonce = bytes.fromhex(parts[2])
-                    expected = _proof(self._key, b"client", server_nonce, client_nonce)
-                    valid = (len(client_nonce) == 32 and
-                             hmac.compare_digest(expected, parts[3]))
+                    client_public = bytes.fromhex(parts[3])
+                    expected = _proof(
+                        self._key,
+                        b"client",
+                        server_nonce,
+                        client_nonce,
+                        server_public,
+                        client_public,
+                    )
+                    valid = (
+                        len(client_nonce) == 32
+                        and len(client_public) == 32
+                        and hmac.compare_digest(expected, parts[4])
+                    )
                 except ValueError:
                     valid = False
             if not valid:
                 conn.sendall(f"{_PROTOCOL} DENY\n".encode("ascii"))
                 self._record_auth_denial(addr, "invalid mutual-auth proof")
                 return
-            session = _session_key(self._key, server_nonce, client_nonce)
-            ack = _proof(session, b"receiver-ok", server_nonce, client_nonce)
+            shared_secret = _exchange_ephemeral(server_private, client_public)
+            session = _session_key(
+                self._key,
+                server_nonce,
+                client_nonce,
+                shared_secret,
+                server_public,
+                client_public,
+            )
+            del server_private, shared_secret
+            ack = _proof(
+                session,
+                b"receiver-ok",
+                server_nonce,
+                client_nonce,
+                server_public,
+                client_public,
+            )
             conn.sendall(f"{_PROTOCOL} OK {ack}\n".encode("ascii"))
             hdr = self._recvn(conn, 4)
             if not hdr:
@@ -745,6 +891,8 @@ class RemoteBridge(BaseModule):
                         b"stored:" + event_id.encode("ascii"),
                         server_nonce,
                         client_nonce,
+                        server_public,
+                        client_public,
                     )
                     conn.sendall(f"{_PROTOCOL} STORED {stored}\n".encode("ascii"))
         except Exception as exc:
@@ -877,21 +1025,56 @@ class RemoteBridge(BaseModule):
         self._retire_receiver()
 
     def self_test(self) -> tuple[bool, str]:
-        """Verify mutual proofs and an AES-GCM round-trip."""
+        """Verify authenticated ephemeral agreement and an AES-GCM round-trip."""
         key = os.urandom(32)
         server_nonce = os.urandom(32)
         client_nonce = os.urandom(32)
-        signed = _proof(key, b"client", server_nonce, client_nonce)
+        server_private, server_public = _ephemeral_keypair()
+        client_private, client_public = _ephemeral_keypair()
+        signed = _proof(
+            key,
+            b"client",
+            server_nonce,
+            client_nonce,
+            server_public,
+            client_public,
+        )
         good = hmac.compare_digest(signed, signed)
         tampered = signed
         tampered = tampered[:-1] + ("0" if tampered[-1] != "0" else "1")
         bad = hmac.compare_digest(signed, tampered)
-        session = _session_key(key, server_nonce, client_nonce)
+        server_shared = _exchange_ephemeral(server_private, client_public)
+        client_shared = _exchange_ephemeral(client_private, server_public)
+        session = _session_key(
+            key,
+            server_nonce,
+            client_nonce,
+            server_shared,
+            server_public,
+            client_public,
+        )
+        peer_session = _session_key(
+            key,
+            server_nonce,
+            client_nonce,
+            client_shared,
+            server_public,
+            client_public,
+        )
+        del server_private, client_private, server_shared, client_shared
         encrypted = _encrypt(session, b"private telemetry")
-        if good and not bad and _decrypt(session, encrypted) == b"private telemetry":
+        if (
+            good
+            and not bad
+            and hmac.compare_digest(session, peer_session)
+            and _decrypt(session, encrypted) == b"private telemetry"
+        ):
             mode = self._mode or "idle"
             keyed = "keyed" if self._key else "no-key"
-            return True, f"mutual auth + AES-GCM verified; mode={mode}, {keyed}"
+            return True, (
+                f"ephemeral X25519 + mutual PSK auth + AES-GCM verified; "
+                f"mode={mode}, {keyed}"
+            )
         return False, "encrypted mutual-auth self-test failed"
 
 

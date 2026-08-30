@@ -417,16 +417,62 @@ class ScanCenterPanel(QFrame):
     def _merge_scan_results(first, second) -> dict[str, object]:
         left = first.to_dict() if hasattr(first, "to_dict") else dict(first)
         right = second.to_dict() if hasattr(second, "to_dict") else dict(second)
-        findings = list(left.get("findings", [])) + list(right.get("findings", []))
-        merged = dict(left)
+        components = (left, right)
+        findings = (
+            list(left.get("findings", [])) + list(right.get("findings", []))
+        )[:512]
+        statuses = [str(item.get("status", "error")).casefold() for item in components]
+        if all(status == "completed" for status in statuses):
+            aggregate_status = "completed"
+        elif "cancelled" in statuses:
+            aggregate_status = "cancelled"
+        elif any(status in {"error", "timeout"} for status in statuses):
+            aggregate_status = "error"
+        elif all(status == "unsupported" for status in statuses):
+            aggregate_status = "unsupported"
+        elif all(status == "rejected" for status in statuses):
+            aggregate_status = "rejected"
+        elif all(status in {"completed", "limited"} for status in statuses):
+            aggregate_status = "limited"
+        else:
+            aggregate_status = "partial"
+        component_errors: list[str] = []
+        component_statuses: list[dict[str, object]] = []
+        for position, item in enumerate(components, start=1):
+            operation = str(item.get("operation") or f"scanner-{position}")[:80]
+            status = str(item.get("status") or "error").casefold()[:24]
+            raw_errors = item.get("errors", [])
+            errors = raw_errors if isinstance(raw_errors, list) else []
+            bounded_errors = [str(error)[:200] for error in errors[:16]]
+            if status != "completed" and not bounded_errors:
+                bounded_errors.append(f"component-status:{status}")
+            component_errors.extend(
+                f"{operation}:{error}"[:300] for error in bounded_errors
+            )
+            component_statuses.append(
+                {
+                    "operation": operation,
+                    "status": status,
+                    "supported": bool(item.get("supported", False)),
+                    "executed": bool(item.get("executed", False)),
+                    "errors": bounded_errors,
+                }
+            )
+        merged = {
+            "operation": "combined_scan",
+            "status": aggregate_status,
+            "supported": all(bool(item.get("supported", False)) for item in components),
+            "executed": any(bool(item.get("executed", False)) for item in components),
+            "errors": component_errors[:32],
+        }
         merged["findings"] = findings
         merged["components"] = [left, right]
         merged["summary"] = {
             "finding_count": len(findings),
-            "scanners": [
-                left.get("operation", "Angerona"),
-                right.get("operation", "Defender"),
-            ],
+            "requested_components": len(components),
+            "completed_components": statuses.count("completed"),
+            "aggregate_status": aggregate_status,
+            "component_statuses": component_statuses,
         }
         return merged
 
@@ -554,12 +600,17 @@ class ScanCenterPanel(QFrame):
         if result_status == "cancelled":
             self.status.setText("Cancelled · Defender process stopped")
             self.progress.setFormat("Cancelled")
-        elif result_status in {"error", "limited", "rejected", "unsupported"}:
+        elif result_status in {
+            "error", "limited", "partial", "rejected", "unsupported"
+        }:
             self.status.setText(f"Finished with {result_status} status")
             self.progress.setFormat(result_status.title())
-        else:
+        elif result_status == "completed":
             self.status.setText(f"Complete · {len(findings)} finding(s)")
             self.progress.setFormat("Complete")
+        else:
+            self.status.setText("Finished with an unrecognized result status")
+            self.progress.setFormat("Review")
         summary = data.get("summary", {})
         if isinstance(summary, str):
             self.log.setPlainText(summary)

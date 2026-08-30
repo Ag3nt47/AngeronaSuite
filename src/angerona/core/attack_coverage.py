@@ -27,7 +27,9 @@ class Technique:
     remediate: List[str] = field(default_factory=list)   # remediation_actions keys
 
 
-# Ordered by the ATT&CK kill-chain tactics.
+# Ordered by the ATT&CK kill-chain tactics. ``remediate`` lists executable,
+# postcondition-verifiable actions only; review-only proposals (including
+# driver-service disablement) deliberately do not count as response coverage.
 COVERAGE: List[Technique] = [
     Technique("T1566", "Phishing (lure)", "Initial Access",
               simulate=["Shark Attack"]),
@@ -40,14 +42,14 @@ COVERAGE: List[Technique] = [
     Technique("T1547.004", "Winlogon Helper", "Persistence",
               detect=["Persistence Sweep"]),
     Technique("T1543.003", "Windows Service", "Persistence/Priv Esc",
-              detect=["Persistence Sweep"], remediate=["disable_driver_service"]),
+              detect=["Persistence Sweep"]),
     Technique("T1546.003", "WMI Event Subscription", "Persistence",
               detect=["Persistence Sweep"], simulate=["Red Team"]),
     Technique("T1068", "Exploitation for Priv Esc (BYOVD)", "Privilege Escalation",
               detect=["File Integrity Monitor", "Intel Sync"],
-              simulate=["Shark Attack"], remediate=["disable_driver_service"]),
+              simulate=["Shark Attack"]),
     Technique("T1562", "Impair Defenses (AMSI / Defender)", "Defense Evasion",
-              simulate=["Red Team"], remediate=["defender_hardening"]),
+              simulate=["Red Team"]),
     Technique("T1070", "Indicator Removal (log clear)", "Defense Evasion",
               simulate=["Red Team"]),
     Technique("T1112", "Modify Registry", "Defense Evasion",
@@ -59,13 +61,11 @@ COVERAGE: List[Technique] = [
     Technique("T1082", "System Information Discovery", "Discovery",
               simulate=["Red Team"]),
     Technique("T1021", "Remote Services (lateral)", "Lateral Movement",
-              detect=["Network Monitor"], remediate=["network_isolation"]),
+              detect=["Network Monitor"]),
     Technique("T1071", "Application Layer Protocol (C2)", "Command and Control",
-              detect=["Network Monitor", "Network Protocol Deep Decoder"],
-              remediate=["network_isolation"]),
+              detect=["Network Monitor", "Network Protocol Deep Decoder"]),
     Technique("T1041", "Exfiltration Over C2 Channel", "Exfiltration",
-              detect=["Network Monitor"], simulate=["Shark Attack"],
-              remediate=["network_isolation"]),
+              detect=["Network Monitor"], simulate=["Shark Attack"]),
     Technique("T1486", "Data Encrypted for Impact (ransomware)", "Impact",
               detect=["File Integrity Monitor"]),
 ]

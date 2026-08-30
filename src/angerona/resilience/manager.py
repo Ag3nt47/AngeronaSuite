@@ -37,6 +37,84 @@ _SENSOR_LABELS = {1: "process_creation"}
 _WATCHDOG_STALE_AFTER_SECONDS = 10.0
 
 
+class _OwnedSelfTestProcesses:
+    """Exact process custody for the manager's detached lifecycle self-test."""
+
+    def __init__(self, marker: str = "angerona.resilience.scanner") -> None:
+        self._marker = marker.casefold()
+        self._identities: dict[int, tuple[float, str, int]] = {}
+        self._roots: list[object] = []
+
+    def capture(self, popen) -> None:
+        if popen is None:
+            return
+        if all(item is not popen for item in self._roots):
+            self._roots.append(popen)
+        try:
+            import psutil
+
+            root = psutil.Process(int(popen.pid))
+            candidates = [(root, 0)]
+            candidates.extend((child, 1) for child in root.children(recursive=True))
+            for process, depth in candidates:
+                command = " ".join(str(part) for part in process.cmdline()).casefold()
+                if self._marker not in command:
+                    continue
+                self._identities[int(process.pid)] = (
+                    float(process.create_time()),
+                    os.path.normcase(os.path.abspath(process.exe())),
+                    depth,
+                )
+        except Exception:
+            return
+
+    def reap(self) -> None:
+        """Terminate only captured marker-bound identities, children first."""
+        for root in tuple(self._roots):
+            self.capture(root)
+        try:
+            import psutil
+        except ImportError:
+            psutil = None
+        if psutil is not None:
+            ordered = sorted(
+                self._identities.items(), key=lambda item: item[1][2], reverse=True
+            )
+            for pid, (created, executable, _depth) in ordered:
+                try:
+                    process = psutil.Process(pid)
+                    command = " ".join(
+                        str(part) for part in process.cmdline()
+                    ).casefold()
+                    if (
+                        abs(float(process.create_time()) - created) > 0.001
+                        or os.path.normcase(os.path.abspath(process.exe())) != executable
+                        or self._marker not in command
+                    ):
+                        continue
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2.0)
+                    except psutil.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=2.0)
+                except (psutil.Error, OSError):
+                    continue
+        # The exact Popen launchers are safe fallbacks if psutil was unavailable
+        # before their descendants could be captured.
+        for root in tuple(self._roots):
+            try:
+                if root.poll() is None:
+                    root.terminate()
+                    try:
+                        root.wait(timeout=2.0)
+                    except Exception:
+                        root.kill()
+                        root.wait(timeout=2.0)
+            except Exception:
+                continue
+
+
 def _repo_root() -> Path:
     from angerona.core.data_paths import project_root
     return project_root()
@@ -304,88 +382,109 @@ def self_test() -> tuple[bool, str]:
     """Live: start the manager (spawns a REAL scanner subprocess), confirm frames
     flow ring->core, a SECOND start does NOT duplicate the scanner (adopt), kill
     the scanner and confirm exactly one respawn, then stop."""
-    import tempfile, shutil, subprocess, threading as _th
-    prev = os.environ.get("ANGERONA_DATA")
-    prev_diag = os.environ.get("ANGERONA_DIAG_DIR")
-    prev_blackbox = os.environ.get("ANGERONA_BLACKBOX_ENABLED")
-    workdir = tempfile.mkdtemp(prefix="mgr_selftest_")
-    os.environ["ANGERONA_DATA"] = workdir
-    os.environ["ANGERONA_DIAG_DIR"] = os.path.join(workdir, "diag")
-    os.environ["ANGERONA_SCANNER_INTERVAL"] = "0.2"
-    os.environ["ANGERONA_SCANNER_UI"] = "0"
-    # Never adopt or terminate the operator's live Black Box during this
-    # isolated lifecycle test.
-    os.environ["ANGERONA_BLACKBOX_ENABLED"] = "0"
+    from angerona.resilience._selftest_environment import run_isolated_selftest
 
-    class _Bus:
-        def __init__(self): self.events = []
-        def publish(self, ev): self.events.append(ev)
+    environment = lambda root: {
+        "ANGERONA_DATA": str(root),
+        "ANGERONA_DIAG_DIR": str(root / "diag"),
+        "ANGERONA_SCANNER_INTERVAL": "0.2",
+        "ANGERONA_SCANNER_UI": "0",
+        # Never adopt or terminate the operator's live Black Box during this
+        # isolated lifecycle test.
+        "ANGERONA_BLACKBOX_ENABLED": "0",
+    }
 
-    bus = _Bus()
-    mgr = ResilienceManager(bus=bus, heartbeat_interval=0.2, ring_interval=0.2,
-                            start_watchdog=False, with_ui=False)
-    churn_stop = _th.Event()
-    def _churn():
-        live = []
-        while not churn_stop.is_set():
-            try:
-                live.append(subprocess.Popen([sys.executable, "-c", "pass"]))
-            except Exception:
-                pass
-            time.sleep(0.15)
-            live = [q for q in live if q.poll() is None]
-        for q in live:
-            try: q.wait(timeout=1)
-            except Exception: q.kill()
-    try:
-        mgr.start()
-        _th.Thread(target=_churn, daemon=True).start()
-        scanner = mgr._sup.components["scanner"]
+    return run_isolated_selftest(
+        "manager", "mgr_selftest_", environment, timeout=45.0
+    )
+
+
+def _isolated_self_test() -> tuple[bool, str]:
+    import subprocess, threading as _th
+    from contextlib import nullcontext
+
+    with nullcontext(Path(os.environ["ANGERONA_DATA"])) as work_root:
+        workdir = str(work_root)
+        custody = _OwnedSelfTestProcesses()
+
+        class _Bus:
+            def __init__(self): self.events = []
+            def publish(self, ev): self.events.append(ev)
+
+        bus = _Bus()
+        mgr = ResilienceManager(bus=bus, heartbeat_interval=0.2, ring_interval=0.2,
+                                start_watchdog=False, with_ui=False)
+        churn_stop = _th.Event()
+        churn_thread: _th.Thread | None = None
+        def _churn():
+            live = []
+            while not churn_stop.is_set():
+                try:
+                    live.append(subprocess.Popen([sys.executable, "-c", "pass"]))
+                except Exception:
+                    pass
+                time.sleep(0.15)
+                live = [q for q in live if q.poll() is None]
+            for q in live:
+                try: q.wait(timeout=1)
+                except Exception: q.kill()
+        try:
+            mgr.start()
+            churn_thread = _th.Thread(target=_churn, daemon=True)
+            churn_thread.start()
+            scanner = mgr._sup.components["scanner"]
+            custody.capture(scanner.proc)
         # Detached Windows processes can take more than a second to reach their
         # first heartbeat while Defender/ETW inspects the new interpreter. Wait
         # for observable readiness and an actual ring frame instead of relying
         # on one fixed startup sleep.
-        ready_deadline = time.time() + 8.0
-        alive_ok = False
-        ingested_ok = False
-        while time.time() < ready_deadline:
-            alive_ok = mgr._sup._is_running(scanner)
-            ingested_ok = mgr.frames_ingested >= 1
-            if alive_ok and ingested_ok:
-                break
-            time.sleep(0.1)
-        before = scanner.restarts
-        mgr._sup._spawn(scanner)
-        time.sleep(0.2)
-        no_dup_ok = scanner.restarts == before
-        if scanner.proc:
-            scanner.proc.kill()
-        time.sleep(0.6)
-        for _ in range(8):
-            mgr._sup.tick(); time.sleep(0.3)
-            if scanner.restarts > before:
-                break
-        respawn_ok = scanner.restarts == before + 1
-        churn_stop.set()
-        ok = alive_ok and ingested_ok and no_dup_ok and respawn_ok
-        return ok, (f"scanner alive + {mgr.frames_ingested} frame(s) + no-duplicate adopt + "
-                    f"single respawn" if ok else
-                    f"failed: alive={alive_ok} ingested={ingested_ok} no_dup={no_dup_ok} "
-                    f"respawn={respawn_ok}")
-    finally:
-        mgr.stop(terminate_children=True)
-        for k, v in (("ANGERONA_DATA", prev), ("ANGERONA_DIAG_DIR", prev_diag)):
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-        os.environ.pop("ANGERONA_SCANNER_INTERVAL", None)
-        os.environ.pop("ANGERONA_SCANNER_UI", None)
-        if prev_blackbox is None:
-            os.environ.pop("ANGERONA_BLACKBOX_ENABLED", None)
-        else:
-            os.environ["ANGERONA_BLACKBOX_ENABLED"] = prev_blackbox
-        shutil.rmtree(workdir, ignore_errors=True)
+            ready_deadline = time.time() + 15.0
+            alive_ok = False
+            ingested_ok = False
+            while time.time() < ready_deadline:
+                alive_ok = mgr._sup._is_running(scanner)
+                ingested_ok = mgr.frames_ingested >= 1
+                if alive_ok and ingested_ok:
+                    break
+                time.sleep(0.1)
+            before = scanner.restarts
+            mgr._sup._spawn(scanner)
+            time.sleep(0.2)
+            no_dup_ok = scanner.restarts == before
+            if scanner.proc:
+                scanner.proc.kill()
+            time.sleep(0.6)
+            # A production supervisor intentionally keeps the cross-process
+            # spawn claim for up to five seconds while a new child publishes
+            # its authenticated heartbeat, then applies restart backoff.  The
+            # previous assertion also called ``tick()`` from this thread while
+            # the real supervisor thread was ticking, which could spend the
+            # failure budget twice as fast and manufacture SAFE_MODE. Observe
+            # the actual bounded lifecycle without injecting extra ticks.
+            respawn_deadline = time.time() + 12.0
+            while time.time() < respawn_deadline:
+                time.sleep(0.3)
+                custody.capture(scanner.proc)
+                if scanner.restarts > before:
+                    break
+            respawn_ok = scanner.restarts == before + 1
+            churn_stop.set()
+            ok = alive_ok and ingested_ok and no_dup_ok and respawn_ok
+            return ok, (f"scanner alive + {mgr.frames_ingested} frame(s) + no-duplicate adopt + "
+                        f"single respawn" if ok else
+                        f"failed: alive={alive_ok} ingested={ingested_ok} no_dup={no_dup_ok} "
+                        f"respawn={respawn_ok} restarts={scanner.restarts} before={before} "
+                        f"state={scanner.last_state} safe_mode={scanner.safe_mode} "
+                        f"state_fault={scanner.state_fault}")
+        finally:
+            churn_stop.set()
+            if churn_thread is not None:
+                churn_thread.join(timeout=2.0)
+            for component in mgr._sup.components.values():
+                if component.name == "scanner":
+                    custody.capture(component.proc)
+            mgr.stop(terminate_children=True)
+            custody.reap()
 
 
 if __name__ == "__main__":

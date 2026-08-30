@@ -1,0 +1,54 @@
+[
+  {
+    "original_id": "C27-R1-A01",
+    "status": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+    "residuals_addressed": [
+      "schema-1 anchor and old journal replay overwriting a surviving newer recovery witness",
+      "cross-instance duplicate-sequence false success",
+      "hard-link receipt-path privileged append primitive"
+    ],
+    "implementation": [
+      "surviving recovery witness is a fail-closed monotonic schema floor",
+      "state-root-scoped re-entrant in-process and OS writer lease",
+      "descriptor-pinned single-link non-reparse receipt reads and appends",
+      "exact fsynced growth, topology, anchor, witness, and final-tail verification before success"
+    ],
+    "regressions": [
+      "legacy empty anchor and journal replay with newer witness retained",
+      "overlapping duplicate module writers",
+      "planted hard-link receipt path",
+      "legitimate pre-witness one-time migration"
+    ],
+    "gates": {
+      "new_tests": "PASS: 4 A01 tests",
+      "affected_suite": "PASS: included in 90 passed",
+      "py_compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "PASS"
+    },
+    "remaining_boundary": "Rollback of every local witness and the stable signing authority requires TPM monotonic state or an external append-only witness to distinguish."
+  },
+  {
+    "original_id": "C27-R1-A16",
+    "status": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+    "residuals_addressed": [
+      "schema-1 protected anchor plus old cursor, high-water, and channel replay overwriting a surviving current authority witness"
+    ],
+    "implementation": [
+      "surviving Security authority witness is a fail-closed monotonic schema floor",
+      "legacy migration is permitted only when no authority witness exists"
+    ],
+    "regressions": [
+      "legacy protected-anchor replay with newer authority witness retained",
+      "legitimate pre-witness one-time migration"
+    ],
+    "gates": {
+      "new_tests": "PASS: 2 A16 tests",
+      "affected_suite": "PASS: included in 90 passed",
+      "py_compile": "PASS",
+      "ruff": "PASS",
+      "self_test": "PASS"
+    },
+    "remaining_boundary": "Whole-local-snapshot rollback including channel, every witness, and stable signing identity requires TPM monotonic state or an independent witness to distinguish."
+  }
+]

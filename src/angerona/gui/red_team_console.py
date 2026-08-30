@@ -26,7 +26,7 @@ import os
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
     QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 from angerona.core.data_paths import data_dir
 from angerona.core.source_sandbox import SourceSandboxWorkspace
 from angerona.gui.animations import RunSpinner
+from angerona.shark.run_manifest import RED_TEAM_COMPREHENSIVE_PLAN
 
 # Canonical kill-chain stages → (stable key, readable label, narration aliases).
 # Both simulation engines use the same panel but narrate a few equivalent stages
@@ -60,7 +61,23 @@ _STAGES = [
     ("benign_execution", "Benign Execution", ("benign execution",)),
     ("custom_noise", "Custom / Noise", ("noise injection", "custom")),
 ]
+_STAGES.extend(
+    (
+        str(row["key"]),
+        str(row["stage"]).removesuffix(" (simulated)"),
+        (str(row["stage"]).removesuffix(" (simulated)").casefold(),),
+    )
+    for row in RED_TEAM_COMPREHENSIVE_PLAN
+)
 _STAGE_LABELS = {key: label for key, label, _aliases in _STAGES}
+_STAGE_DETAILS = {
+    str(row["key"]): {
+        "technique": str(row["technique"]),
+        "tactic": str(row.get("tactic") or "simulation"),
+        "stage": str(row["stage"]),
+    }
+    for row in RED_TEAM_COMPREHENSIVE_PLAN
+}
 _INTENSITY = ["Low", "Medium", "High", "Extreme"]
 _INTENSITY_DESC = {
     "Low": "1 phase · gentle timing · minimal noise — a quiet probe.",
@@ -71,6 +88,31 @@ _INTENSITY_DESC = {
 
 
 _RED_TEAM_SOURCE = "src/angerona/shark/red_team.py"
+
+
+class _StageChip(QLabel):
+    """Keyboard-accessible stage surface with an exact stable stage key."""
+
+    clicked = Signal(str)
+
+    def __init__(self, key: str, label: str) -> None:
+        super().__init__(label)
+        self.stage_key = key
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName(f"{label} simulation stage details")
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self.stage_key)
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.clicked.emit(self.stage_key)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 class RedTeamConsole(QDialog):
@@ -97,6 +139,7 @@ class RedTeamConsole(QDialog):
                 self.setStyleSheet(parent._qss())
         except Exception:
             pass
+        self._stage_messages: dict[str, list[str]] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 14)
@@ -166,8 +209,20 @@ class RedTeamConsole(QDialog):
         self.cb_apt.setToolTip(
             "Credential access and fileless-persistence simulation"
         )
+        # One click launches both complementary, inert profiles by default.
+        self.cb_shark.setChecked(True)
         self.cb_apt.setChecked(True)
         tl.addWidget(self.cb_shark); tl.addWidget(self.cb_apt)
+        self.cb_comprehensive = QCheckBox(
+            "Comprehensive safe catalog — 37 authenticated detector contracts"
+        )
+        self.cb_comprehensive.setChecked(True)
+        self.cb_comprehensive.setToolTip(
+            "Adds 24 fixed local text markers across ATT&CK tactics. No exploit, "
+            "credential access, persistence, remote connection, exfiltration, or "
+            "host damage is performed."
+        )
+        tl.addWidget(self.cb_comprehensive)
         lay.addWidget(types)
 
         # intensity
@@ -272,7 +327,7 @@ class RedTeamConsole(QDialog):
         self.live_status.setWordWrap(True)
         self.live_status.setStyleSheet("color:#9fb3c8; font-size:11px;")
         live_lay.addWidget(self.live_status)
-        self._chip_wrap = QWidget(); self._chips: dict[str, QLabel] = {}
+        self._chip_wrap = QWidget(); self._chips: dict[str, _StageChip] = {}
         self._active_stage: str | None = None
         cl = QGridLayout(self._chip_wrap)
         cl.setContentsMargins(0, 0, 0, 0)
@@ -281,14 +336,23 @@ class RedTeamConsole(QDialog):
         for column in range(4):
             cl.setColumnStretch(column, 1)
         for index, (key, label, _aliases) in enumerate(_STAGES):
-            chip = QLabel(label); chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            chip = _StageChip(key, label)
+            chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
             chip.setMinimumHeight(30)
             chip.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-            chip.setToolTip(label)
+            chip.setToolTip(f"Open exact {label} stage details and artifact evidence")
+            chip.clicked.connect(self._open_stage_detail)
             self._chips[key] = chip
             self._set_chip_state(key, "idle")
             cl.addWidget(chip, index // 4, index % 4)
-        live_lay.addWidget(self._chip_wrap)
+        chip_scroll = QScrollArea()
+        chip_scroll.setWidgetResizable(True)
+        chip_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        chip_scroll.setMinimumHeight(116)
+        chip_scroll.setMaximumHeight(260)
+        chip_scroll.setWidget(self._chip_wrap)
+        live_lay.addWidget(chip_scroll)
+        self._chip_scroll = chip_scroll
 
         # live log
         self.log = QTextEdit(); self.log.setReadOnly(True)
@@ -947,10 +1011,13 @@ class RedTeamConsole(QDialog):
         lowered = str(text).lower()
         if "stage:" not in lowered:
             return None
-        for key, _label, aliases in _STAGES:
-            if any(alias in lowered for alias in aliases):
-                return key
-        return None
+        matches = [
+            (len(alias), key)
+            for key, _label, aliases in _STAGES
+            for alias in aliases
+            if alias in lowered
+        ]
+        return max(matches, default=(0, None))[1]
 
     def _set_chip_state(self, key: str, state: str) -> None:
         chip = self._chips.get(key)
@@ -973,12 +1040,98 @@ class RedTeamConsole(QDialog):
         if d:
             self.loc_edit.setText(d)
 
+    def _stage_detail_text(self, key: str) -> str:
+        """Return exact, stage-specific evidence without reading unrelated rows."""
+        label = _STAGE_LABELS.get(key, key.replace("_", " ").title())
+        chip = self._chips.get(key)
+        state = str(chip.property("stageState") or "idle") if chip else "unknown"
+        meta = _STAGE_DETAILS.get(key, {})
+        lines = [
+            f"Stage: {label}",
+            f"State: {state}",
+            f"Tactic: {meta.get('tactic', 'simulation')}",
+            f"Technique: {meta.get('technique', 'see authenticated run manifest')}",
+            "Safety boundary: fixed inert marker/read-only probe only; no exploit, "
+            "credential access, persistence, remote connection, outbound traffic, "
+            "security-control bypass, collection, encryption, or deletion.",
+        ]
+
+        method_names = {
+            "initial_access": "_step_initial_access",
+            "discovery": "_step_recon",
+            "credential_access": "_step_credential_access",
+            "privilege_escalation": "_step_privilege_escalation",
+            "defense_evasion": "_step_defense_evasion",
+            "registry_run_key": "_step_registry_runkey",
+            "scheduled_task": "_step_scheduled_task",
+            "wmi_persistence": "_step_wmi_persistence",
+            "lateral_movement": "_step_lateral_movement",
+            "command_control": "_step_c2_beacon",
+            "exfiltration": "_step_exfil_staging",
+            "ransomware": "_step_ransomware_canary",
+            "data_destruction": "_step_data_destruction",
+            "benign_execution": "_step_random_processes",
+        }
+        method_name = method_names.get(key, f"_step_{key}")
+        try:
+            import inspect
+            from angerona.shark.red_team import RedTeamEngine
+
+            method = getattr(RedTeamEngine, method_name)
+            _, line = inspect.getsourcelines(method)
+            lines.append(f"Implementation: {Path(inspect.getsourcefile(method) or _RED_TEAM_SOURCE)}:{line}")
+        except (AttributeError, OSError, TypeError):
+            lines.append(f"Implementation: {_RED_TEAM_SOURCE}")
+
+        evidence: list[str] = []
+        for engine_name in ("red_team_engine", "shark_engine"):
+            engine = getattr(self._parent, engine_name, None)
+            for step in list(getattr(engine, "steps", ()) or ()):
+                stage = str(getattr(step, "stage", ""))
+                resolved = self._stage_from_narration(f"▶ STAGE: {stage}")
+                if resolved != key:
+                    continue
+                evidence.append(
+                    f"{engine_name}: {stage} · {getattr(step, 'technique', '')} · "
+                    f"ok={bool(getattr(step, 'ok', False))}"
+                )
+                for path in list(getattr(step, "artifact_paths", ()) or ()):
+                    evidence.append(f"  artifact: {path}")
+                for pid in list(getattr(step, "pids", ()) or ()):
+                    evidence.append(f"  bounded drill PID: {pid}")
+        lines.append("Evidence:")
+        lines.extend(evidence or ["  No stage evidence has been recorded in this window yet."])
+        messages = self._stage_messages.get(key, [])[-4:]
+        if messages:
+            lines.append("Recent stage narration:")
+            lines.extend(f"  {message}" for message in messages)
+        return "\n".join(lines)
+
+    def _open_stage_detail(self, key: str) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"{_STAGE_LABELS.get(key, key)} — exact stage evidence")
+        dialog.setMinimumSize(640, 420)
+        layout = QVBoxLayout(dialog)
+        detail = QPlainTextEdit(self._stage_detail_text(key))
+        detail.setReadOnly(True)
+        detail.setObjectName("RedTeamStageEvidence")
+        layout.addWidget(detail, 1)
+        close = QPushButton("Close")
+        close.clicked.connect(dialog.close)
+        row = QHBoxLayout(); row.addStretch(1); row.addWidget(close)
+        layout.addLayout(row)
+        self._stage_detail_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+
     def _on_narration(self, text: str) -> None:
         message = str(text)
         self.log.append(message)
         stage = self._stage_from_narration(message)
         if stage is None:
             return
+        self._stage_messages.setdefault(stage, []).append(message)
+        self._stage_messages[stage] = self._stage_messages[stage][-16:]
         if self._active_stage is not None and self._active_stage != stage:
             self._set_chip_state(self._active_stage, "complete")
         self._active_stage = stage
@@ -1003,6 +1156,7 @@ class RedTeamConsole(QDialog):
             "run_redteam": self.cb_apt.isChecked(),
             "intensity": _INTENSITY[self.sld.value()],
             "campaign": self.cb_campaign.isChecked(),
+            "comprehensive": self.cb_comprehensive.isChecked(),
             "target_dir": self.loc_edit.text().strip() or None,
             "custom": ({"name": self.custom_name.text().strip(),
                         "payload": self.custom_payload.text()}

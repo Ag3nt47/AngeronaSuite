@@ -1,0 +1,74 @@
+[
+  {
+    "original_id": "C27-R1-A01",
+    "verdict": "REOPENED_PARTIAL",
+    "residual_severity": "MEDIUM",
+    "components": [
+      "src/angerona/modules/adversary_combat.py:1550-1576",
+      "src/angerona/modules/adversary_combat.py:1684-1754",
+      "src/angerona/modules/adversary_combat.py:2259-2480",
+      "src/angerona/modules/adversary_combat.py:2607-2620",
+      "src/angerona/modules/adversary_combat.py:2660-2901"
+    ],
+    "controls_verified": [
+      "HMAC-authentic terminals with a wrong reason, reason digest, resource, request ID, non-finite time, extra field, action, combat ID, status, or disposition have no terminal effect.",
+      "The selected disposition and normalized reason are bound to the exact human-approved resource.",
+      "Process-monotonic expiry cannot be revived by wall-clock rollback.",
+      "Restart invalidates the old process challenge and produces a distinct nonce/counter resource; the old decision is rejected.",
+      "Two concurrent consumers of one live challenge yield exactly one success.",
+      "Journal-only or protected-anchor-only deletion remains fail-closed."
+    ],
+    "residuals": [
+      {
+        "severity": "MEDIUM",
+        "title": "Paired journal and protected-anchor deletion or rollback is treated as first installation",
+        "evidence": "With an authenticated mutation-started orphan pending, deleting both the journal and protected anchor, or restoring both to their pre-action empty snapshot, made a new instance reconcile successfully with mutation_blocked=false, pending=false, and health=100 while the journal signing key remained unchanged."
+      }
+    ],
+    "exploitability_boundary": "The bypass requires delete/restore access to both the protected current-user anchor state and the action journal. It does not require the journal HMAC key or a human authorization decision. This is outside an unprivileged attacker boundary but inside the requested elevated local-state/snapshot adversary.",
+    "recommendation": "Never infer first installation solely from an empty journal and missing anchor. Retain an independent installation/key-birth witness and fail closed when an established installation loses its anchor; bind the latest sequence to TPM NV or an external append-only witness for rollback resistance, and explicitly cap assurance when neither is configured."
+  },
+  {
+    "original_id": "C27-R1-A16",
+    "verdict": "REOPENED_PARTIAL",
+    "residual_severity": "HIGH",
+    "components": [
+      "src/angerona/modules/etw_listener.py:387-571",
+      "src/angerona/modules/etw_listener.py:698-765",
+      "src/angerona/modules/etw_listener.py:772-1054",
+      "src/angerona/modules/etw_listener.py:1066-1145",
+      "src/angerona/modules/etw_listener.py:1147-1295",
+      "src/angerona/modules/etw_listener.py:1307-1528"
+    ],
+    "controls_verified": [
+      "Deleting cursor, high-water, and protected anchor together changes the install epoch/challenge; the old approval is rejected and health remains 45.",
+      "One-sided rollback, malformed or truncated high-water state, and static multi-link cursor objects remain fail-incomplete.",
+      "A replacement during durable enrollment is detected by the post-commit identity sample.",
+      "A replacement immediately after the final sample is detected and replayed on the next poll rather than surviving restart indefinitely."
+    ],
+    "residuals": [
+      {
+        "severity": "HIGH",
+        "title": "Lossy event-record identity permits deterministic replacement collisions",
+        "evidence": "Changing only content after character 4096 of a StringInserts value, or changing only insert 65, preserved _record_anchor and the retained-channel digest. Restart emitted zero records, retained an empty gap, and reported health 100."
+      },
+      {
+        "severity": "MEDIUM",
+        "title": "Protected anchor plus cursor/high-water/channel snapshot rollback is accepted",
+        "evidence": "Restoring all three authenticated local state objects and the matching older channel snapshot while leaving the stable signing key unchanged loaded bookmark 5 with emitted=[], gap='', health=100. This is the remediation's disclosed software-only rollback boundary."
+      },
+      {
+        "severity": "MEDIUM",
+        "title": "Live cursor/high-water loss remains green until restart",
+        "evidence": "After deleting both durable files, an unchanged poll and then a poll that consumed record 4 both reported health 100. The recreated high-water began from a non-genesis in-memory tail; restart rejected it, reported health 45, and replayed records 1-4."
+      },
+      {
+        "severity": "LOW",
+        "title": "Concurrent module writers can return success over an invalid durable chain",
+        "evidence": "Two listeners synchronized at high-water append produced one ok=true health-100 enrollment and one failure, but restart rejected the resulting high-water authentication and replayed records 1-4 at health 45. The suite-level OS singleton reduces normal production reachability."
+      }
+    ],
+    "exploitability_boundary": "The permanent record-identity bypass requires privileged Security-channel replacement but no SHA-256 break or cursor-key access. Protected snapshot rollback requires restoring the protected anchor as well as adjacent files/channel. Live durability loss requires local state deletion. The multi-writer case is mitigated by the application singleton but remains reachable to duplicate in-process or embedded owners.",
+    "recommendation": "Hash a canonical length-delimited representation of every complete consumed event field and fail incomplete on budget overflow; verify exact durable cursor/high-water objects even on the no-change path; refuse a missing non-genesis high-water; re-read the completed transaction before success; add a state-root-scoped OS writer lease; use TPM or external monotonic witnessing for protected-store rollback claims."
+  }
+]

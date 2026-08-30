@@ -1,0 +1,55 @@
+[
+  {
+    "original_id": "C27-R1-A02",
+    "status": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+    "implementation": [
+      "deep-copy all cached journal authority crossing method boundaries",
+      "HMAC every byte of the exact pinned journal before cached authority admission",
+      "advance private cache authentication state only after a verified append"
+    ],
+    "hostile_gate": "PASS"
+  },
+  {
+    "original_id": "C27-R1-A03",
+    "status": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+    "implementation": [
+      "run exact-object topology and digest proof inside the signed terminal writer",
+      "retain no-sharing Windows object custody and verify the destination from the held handle",
+      "route every post-move exception through durable orphan rollback or retained recovery"
+    ],
+    "hostile_gates": "PASS: 2/2"
+  },
+  {
+    "original_id": "C27-R1-A07",
+    "status": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+    "implementation": [
+      "reject cursor regression and unresolved non-contiguous records",
+      "persist and honor incomplete coverage across restart",
+      "retain outbox rows when synchronous subscriber acceptance fails",
+      "authenticate outbox enrollment and refuse enrolled database deletion/tamper",
+      "derive health from coverage, cursor, errors, pending leases, and dead letters"
+    ],
+    "hostile_gates": "PASS: 2/2"
+  },
+  {
+    "original_id": "C27-R1-A13",
+    "status": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+    "implementation": [
+      "bind canaries to no-follow file identity, size, nanosecond time, and SHA-256",
+      "detect same-time object replacement",
+      "recompute health after every loss or unreadable object and set zero-canary health to zero"
+    ],
+    "hostile_gates": "PASS: 2/2"
+  },
+  {
+    "original_id": "C27-R1-A14",
+    "status": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+    "implementation": [
+      "typed Ed25519 kernel load receipt bound to enrolled host/install/boot authority and exact image/object/CI state",
+      "freshness bound and atomic one-use receipt consumption",
+      "digest-only or absent-verifier claims remain incomplete",
+      "empty and inconsistent complete provider collections remain below green"
+    ],
+    "hostile_gates": "PASS: 3/3"
+  }
+]

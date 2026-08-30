@@ -1,19 +1,22 @@
-"""Active deception — canary files/honeytokens + DYNAMIC re-staging (DEC).
+"""Active deception — canary-file mutation/deletion + dynamic re-staging (DEC).
 
 Plants tripwire files and alerts the moment anything touches them. Beyond the
-static canaries, this module now watches the red-team attack feed: when an
+static canaries, this module watches the red-team attack feed: when an
 attacker triggers discovery / lateral-movement / credential-hunting activity, a
 trap is considered 'burned', so the module autonomously RE-STAGES fresh, highly
 alluring honeytokens (and, on Windows, fake registry credentials) mapped to what
-the adversary is actively probing. Any interaction with a registered trap raises
-a zero-trust SOAR isolation recommendation to shared_logs/soar_events.json.
+the adversary is actively probing. This module proves file mutation/deletion
+coverage only. It never calls a plain read a detection: native audited-read and
+registry-read visibility require a separately configured OS audit source.
 """
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import os
 import random
+import stat
 import subprocess
 import sys
 import tempfile
@@ -24,6 +27,7 @@ from pathlib import Path
 from angerona.core.module_base import BaseModule, Severity
 
 CANARY_NAMES = ["passwords.txt", "wallet.dat", "backup_keys.txt"]
+_MAX_CANARY_BYTES = 64 * 1024
 
 # Keep decoys OUT OF SIGHT. HIDDEN alone still shows when the user has
 # "show hidden files" on; HIDDEN|SYSTEM stays invisible unless they also disable
@@ -67,13 +71,17 @@ def _user_folder_deception_enabled() -> bool:
 
 class DeceptionModule(BaseModule):
     name = "Active Deception"
-    description = "Plants canaries/honeytokens and DYNAMICALLY re-stages fresh traps when one is burned."
+    description = (
+        "Plants canaries/honeytokens, detects file mutation/deletion, and "
+        "dynamically re-stages traps; audited reads need an external OS source."
+    )
     category = "Deception"
-    version = "1.1.0"
+    version = "1.12.1"
 
     def __init__(self) -> None:
         super().__init__()
         self._canaries: dict[str, float] = {}
+        self._canary_evidence: dict[str, tuple[int, int, int, int, str]] = {}
         self._user_scope = _user_folder_deception_enabled()
         self._base = (
             Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents"
@@ -87,6 +95,67 @@ class DeceptionModule(BaseModule):
         self._feed_identity: tuple[int, int, int, int, int] | None = None
         self._restage_count = 0
 
+    @staticmethod
+    def _canary_snapshot(path: Path) -> tuple[float, tuple[int, int, int, int, str]]:
+        """Return a bounded identity/content snapshot without following links."""
+        before = os.lstat(path)
+        attributes = int(getattr(before, "st_file_attributes", 0))
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or bool(attributes & 0x400)
+            or int(before.st_size) > _MAX_CANARY_BYTES
+        ):
+            raise OSError("canary object is unsafe or oversized")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                int(opened.st_dev) != int(before.st_dev)
+                or int(opened.st_ino) != int(before.st_ino)
+                or int(opened.st_size) != int(before.st_size)
+            ):
+                raise OSError("canary identity changed while opening")
+            digest = hashlib.sha256()
+            remaining = _MAX_CANARY_BYTES + 1
+            while remaining:
+                chunk = os.read(descriptor, min(16 * 1024, remaining))
+                if not chunk:
+                    break
+                digest.update(chunk)
+                remaining -= len(chunk)
+            if remaining == 0:
+                raise OSError("canary content exceeded its bound")
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        named = os.lstat(path)
+        identity = (int(after.st_dev), int(after.st_ino))
+        if (
+            identity != (int(before.st_dev), int(before.st_ino))
+            or identity != (int(named.st_dev), int(named.st_ino))
+            or int(after.st_size) != int(named.st_size)
+            or int(after.st_mtime_ns) != int(named.st_mtime_ns)
+        ):
+            raise OSError("canary changed while being sampled")
+        evidence = (
+            identity[0],
+            identity[1],
+            int(after.st_size),
+            int(after.st_mtime_ns),
+            digest.hexdigest(),
+        )
+        return float(after.st_mtime), evidence
+
+    def _enroll_canary(self, path: Path) -> None:
+        mtime, evidence = self._canary_snapshot(path)
+        key = str(path)
+        # Preserve the historical float map for compatible diagnostics while
+        # keeping the real authorization evidence private and non-lossy.
+        self._canaries[key] = mtime
+        self._canary_evidence[key] = evidence
+
     def _plant(self) -> None:
         self._base.mkdir(parents=True, exist_ok=True)
         for nm in CANARY_NAMES:
@@ -95,7 +164,7 @@ class DeceptionModule(BaseModule):
                 if not p.exists():
                     p.write_text("# Do not modify — security canary.\n", encoding="utf-8")
                 _hide_file(p)
-                self._canaries[str(p)] = p.stat().st_mtime
+                self._enroll_canary(p)
             except Exception:
                 continue
 
@@ -103,11 +172,13 @@ class DeceptionModule(BaseModule):
         """Plant only inert namespaced fixtures in a disposable directory."""
         original_base = self._base
         original_canaries = self._canaries
+        original_evidence = self._canary_evidence
         try:
             with tempfile.TemporaryDirectory(prefix="angerona-deception-selftest-") as temp:
                 root = Path(temp).resolve()
                 self._base = root / "static"
                 self._canaries = {}
+                self._canary_evidence = {}
                 self._plant()
                 paths = [Path(path).resolve() for path in self._canaries]
                 ok = bool(
@@ -125,6 +196,7 @@ class DeceptionModule(BaseModule):
         finally:
             self._base = original_base
             self._canaries = original_canaries
+            self._canary_evidence = original_evidence
         return (
             ok,
             "disposable secret-free canary lifecycle passed"
@@ -133,7 +205,19 @@ class DeceptionModule(BaseModule):
 
     def run(self) -> None:
         self._plant()
-        self.emit(f"Planted {len(self._canaries)} canary files.", Severity.INFO)
+        self.set_health(
+            70 if len(self._canaries) == len(CANARY_NAMES) else 45,
+            "file mutation/deletion visibility active; audited file/registry "
+            "read telemetry is unavailable in this module",
+        )
+        self.emit(
+            f"Planted {len(self._canaries)} canary files with mutation/deletion "
+            "coverage; audited reads are not claimed.",
+            Severity.INFO,
+            coverage="file-mutation-and-deletion",
+            read_visibility=False,
+            evidence_path=str(self._base),
+        )
         try:
             self._shared.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -145,20 +229,49 @@ class DeceptionModule(BaseModule):
 
     # ── static + dynamic trap monitoring ─────────────────────────────────────
     def _check_canaries(self) -> None:
+        unreadable = 0
         for path, baseline in list(self._canaries.items()):
             try:
-                mtime = os.stat(path).st_mtime
+                mtime, evidence = self._canary_snapshot(Path(path))
             except FileNotFoundError:
                 self.emit(f"Canary file DELETED: {path}", Severity.CRITICAL, path=path)
                 self._soar_isolation(path, "canary deleted")
                 self._canaries.pop(path, None)
+                self._canary_evidence.pop(path, None)
                 continue
             except Exception:
+                unreadable += 1
                 continue
-            if mtime != baseline:
+            expected = self._canary_evidence.get(path)
+            if mtime != baseline or expected is None or evidence != expected:
                 self.emit(f"Canary file TOUCHED: {path}", Severity.CRITICAL, path=path)
                 self._soar_isolation(path, "canary touched")
                 self._canaries[path] = mtime
+                self._canary_evidence[path] = evidence
+        remaining = len(self._canaries)
+        if remaining == 0:
+            self.set_health(
+                0,
+                "canary mutation/deletion visibility unavailable: zero canaries remain",
+            )
+        elif unreadable:
+            self.set_health(
+                35,
+                f"canary visibility unavailable for {unreadable} object(s); "
+                f"{remaining} trap(s) remain enrolled",
+            )
+        elif remaining < len(CANARY_NAMES):
+            self.set_health(
+                45,
+                f"partial canary mutation/deletion visibility: {remaining}/"
+                f"{len(CANARY_NAMES)} baseline traps remain",
+            )
+        else:
+            self.set_health(
+                70,
+                "file mutation/deletion visibility active; audited file/registry "
+                "read telemetry is unavailable in this module",
+            )
 
     def _watch_attack_feed(self) -> None:
         """Tail attack_feed.log; a discovery / lateral / credential-hunt entry means
@@ -202,10 +315,14 @@ class DeceptionModule(BaseModule):
         name = f"{Path(lure).stem}_{hexid}{Path(lure).suffix or '.txt'}"
         p = self._base / name
         try:
-            p.write_text("# HONEYTOKEN — decoy credentials. Any access is logged & isolated.\n"
-                         "username=svc_admin\npassword=Winter2026!\n", encoding="utf-8")
+            p.write_text(
+                "# HONEYTOKEN — decoy credentials. File mutation or deletion "
+                "is logged; audited reads require the configured OS audit source.\n"
+                "username=svc_admin\npassword=Winter2026!\n",
+                encoding="utf-8",
+            )
             _hide_file(p)
-            self._canaries[str(p)] = p.stat().st_mtime   # register so touch → SOAR
+            self._enroll_canary(p)   # register identity/content so replacement → SOAR
             self._restage_count += 1
             self.emit(f"🍯 Re-staged honeytoken '{name}' (trap burned by: {context})",
                       Severity.INFO, artifact=str(p))
@@ -214,8 +331,7 @@ class DeceptionModule(BaseModule):
         self._plant_fake_registry_cred(name)
 
     def _plant_fake_registry_cred(self, name: str) -> None:
-        """Windows only: drop a fake credential under a decoy HKCU key. Any read of
-        it (by the mutated shark_attack cred-hunt) is a definitive tripwire."""
+        """Place a Windows registry lure without claiming read-observer coverage."""
         if not self._user_scope or not sys.platform.startswith("win"):
             return
         try:
@@ -227,7 +343,7 @@ class DeceptionModule(BaseModule):
             pass
 
     def _soar_isolation(self, artifact: str, reason: str) -> None:
-        """Any trap interaction → zero-trust isolation recommendation for SOAR."""
+        """A proven trap mutation/deletion → an isolation recommendation."""
         ev = {"ts": time.time(), "type": "TRAP_INTERACTION", "severity": "Critical",
               "artifact": artifact, "reason": reason,
               "recommend": "zero-trust isolate + suspend actor", "auto_applied": False}

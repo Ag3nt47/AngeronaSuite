@@ -41,6 +41,8 @@ from __future__ import annotations
 import os
 import threading
 import time
+from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 try:
     import psutil
@@ -48,6 +50,10 @@ except Exception:  # pragma: no cover
     psutil = None
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.process_allowlist import (
+    is_digest_pinned_allowed,
+    policy_snapshot,
+)
 from angerona.telemetry.sensors import list_connections
 
 # The inference-pause window that characterizes an agentic thinking loop.
@@ -61,10 +67,36 @@ _ACTION_KW = ("download", "invoke-expression", "iex", "invoke-webrequest",
               "iwr", "schtasks", "reg add", "reg.exe add", "new-service",
               "bitsadmin", "certutil", "-enc", "frombase64string")
 
-# Processes legitimately expected to talk to the local Ollama inference port.
-_OLLAMA_PORT = 11434
-_OLLAMA_ALLOW = {"ollama", "ollama.exe", "python", "python.exe", "python3",
-                 "pythonw.exe", "angerona", "angerona.exe"}
+def _configured_inference_port() -> tuple[int | None, str, str]:
+    """Return the configured loopback endpoint without trusting a basename."""
+    try:
+        from angerona.core.config import Config
+
+        endpoint = str(Config.load().ollama_host or "").strip()
+        parsed = urlsplit(endpoint)
+        host = (parsed.hostname or "").casefold()
+        if parsed.scheme not in {"http", "https"} or host not in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }:
+            raise ValueError("configured inference endpoint is not loopback HTTP(S)")
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        if not 1 <= port <= 65535:
+            raise ValueError("configured inference port is invalid")
+        return port, endpoint, ""
+    except Exception as exc:
+        return None, "", str(exc)[:500]
+
+
+@dataclass(frozen=True)
+class PortWatchReceipt:
+    complete: bool
+    observed: int
+    port_connections: int
+    identity_failures: int
+    unexpected: int
+    error: str = ""
 
 
 class CounterAgenticModule(BaseModule):
@@ -75,7 +107,7 @@ class CounterAgenticModule(BaseModule):
                    "rhythm, discovery→action chains, and anomalous inference-port "
                    "access. Detection-only; no active/offensive response.")
     category = "Detection"
-    version = "1.1.0"
+    version = "1.12.1"
 
     _POLL = 2.5      # governed cadence (Adaptive Resource Governor scales this)
 
@@ -85,7 +117,13 @@ class CounterAgenticModule(BaseModule):
         # parent_pid -> list[(ts, cmdline)]
         self.timelines: dict[int, list[tuple[float, str]]] = {}
         self._alerted: dict[int, float] = {}     # parent_pid -> last alert ts (dedup)
+        self._port_alerted: dict[tuple, float] = {}
         self._detections = 0
+        (
+            self._inference_port,
+            self._inference_endpoint,
+            self._endpoint_error,
+        ) = _configured_inference_port()
 
     @property
     def state(self) -> str:
@@ -168,42 +206,111 @@ class CounterAgenticModule(BaseModule):
                 and any(k in later for k in _ACTION_KW))
 
     # ── signal 3: local inference-port watch ─────────────────────────────────
-    def _watch_ollama_port(self) -> None:
+    def _watch_ollama_port(self) -> PortWatchReceipt:
+        port = self._inference_port
+        if port is None:
+            return PortWatchReceipt(
+                False, 0, 0, 0, 0, self._endpoint_error or "endpoint unavailable"
+            )
         if psutil is None:
-            return
+            return PortWatchReceipt(False, 0, 0, 0, 0, "psutil unavailable")
         try:
             # Share the bounded telemetry snapshot with the other network
             # modules instead of enumerating the kernel connection table every
             # 2.5 seconds independently.
             conns = list_connections()
-        except Exception:
-            return
+        except Exception as exc:
+            return PortWatchReceipt(False, 0, 0, 0, 0, str(exc)[:500])
+        snapshot = getattr(conns, "receipt", None)
+        snapshot_complete = bool(getattr(snapshot, "complete", True))
+        snapshot_error = str(getattr(snapshot, "error", "") or "")[:500]
+        try:
+            policy = policy_snapshot()
+        except Exception as exc:
+            policy = ()
+            snapshot_complete = False
+            snapshot_error = f"trusted-process policy unavailable: {exc}"[:500]
+        port_connections = 0
+        identity_failures = 0
+        unexpected = 0
         for c in conns:
             laddr = c.get("laddr") or ""
             raddr = c.get("raddr") or ""
             port_hit = (
-                (laddr and laddr.rsplit(":", 1)[-1] == str(_OLLAMA_PORT))
-                or (raddr and raddr.rsplit(":", 1)[-1] == str(_OLLAMA_PORT))
+                (laddr and laddr.rsplit(":", 1)[-1] == str(port))
+                or (raddr and raddr.rsplit(":", 1)[-1] == str(port))
             )
             pid = c.get("pid")
-            if not port_hit or not pid:
+            if (
+                not port_hit
+                or isinstance(pid, bool)
+                or not isinstance(pid, int)
+                or pid <= 0
+            ):
                 continue
+            port_connections += 1
+            pname = "<unverified>"
+            executable = ""
+            created: float | None = None
+            identity_error = ""
             try:
-                pname = psutil.Process(pid).name().lower()
-            except Exception:
-                continue
-            if pname not in _OLLAMA_ALLOW:
-                key = pid
+                process = psutil.Process(pid)
+                created = float(process.create_time())
+                pname = str(process.name() or "<unnamed>")[:260]
+                executable = str(process.exe() or "")[:32767]
+                if not executable:
+                    raise ValueError("process executable path is unavailable")
+                if float(process.create_time()) != created:
+                    raise ValueError("process generation changed during lookup")
+            except Exception as exc:
+                identity_failures += 1
+                identity_error = str(exc)[:500] or "process identity unavailable"
+            allowed = bool(
+                created is not None
+                and executable
+                and is_digest_pinned_allowed(
+                    pname, executable, policy=policy
+                )
+            )
+            if not allowed:
+                unexpected += 1
+                key = (
+                    pid,
+                    created if created is not None else 0.0,
+                    executable.casefold(),
+                    laddr,
+                    raddr,
+                )
                 now = time.time()
-                if now - self._alerted.get(-key, 0.0) < _STALE_AFTER:
+                dedup_window = _STALE_AFTER if created is not None else 10.0
+                if now - self._port_alerted.get(key, 0.0) < dedup_window:
                     continue
-                self._alerted[-key] = now
+                self._port_alerted[key] = now
+                self._detections += 1
                 self.emit(
                     f"Unexpected process '{pname}' (PID {pid}) connected to the local "
-                    f"inference port {_OLLAMA_PORT}. Possible attempt to hijack/abuse the "
+                    f"inference port {port}. Possible attempt to hijack/abuse the "
                     f"local LLM. Review (detection only).",
-                    Severity.HIGH, pid=pid, process=pname, port=_OLLAMA_PORT,
+                    Severity.HIGH, pid=pid, process=pname, port=port,
+                    configured_endpoint=self._inference_endpoint,
+                    process_create_time=created,
+                    process_path=executable,
+                    process_identity_complete=created is not None and bool(executable),
+                    identity_error=identity_error,
+                    authorization_policy="exact-path-sha256-operator-approval",
+                    response_authorized=False,
                     mitre="T1071 (Application Layer Protocol) / T1059")
+        errors = [value for value in (snapshot_error,) if value]
+        if identity_failures:
+            errors.append(f"{identity_failures} process identity lookup(s) failed")
+        return PortWatchReceipt(
+            snapshot_complete and identity_failures == 0,
+            len(conns),
+            port_connections,
+            identity_failures,
+            unexpected,
+            "; ".join(errors)[:500],
+        )
 
     # ── housekeeping ─────────────────────────────────────────────────────────
     def _prune(self) -> None:
@@ -215,6 +322,9 @@ class CounterAgenticModule(BaseModule):
         for key, ts in list(self._alerted.items()):
             if now - ts > 4 * _STALE_AFTER:
                 del self._alerted[key]
+        for key, ts in list(self._port_alerted.items()):
+            if now - ts > 4 * _STALE_AFTER:
+                del self._port_alerted[key]
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def run(self) -> None:
@@ -223,10 +333,24 @@ class CounterAgenticModule(BaseModule):
         while not self.stopping:
             try:
                 self._ingest_bus()
-                self._watch_ollama_port()
+                coverage = self._watch_ollama_port()
                 self._prune()
-                self.set_health(100, f"{len(self.timelines)} tracked lineages, "
-                                     f"{self._detections} agentic detections")
+                if coverage.complete:
+                    self.set_health(
+                        100,
+                        f"complete connection snapshot ({coverage.observed} rows; "
+                        f"{coverage.port_connections} on configured inference port), "
+                        f"{len(self.timelines)} tracked lineages, "
+                        f"{self._detections} detections",
+                    )
+                else:
+                    self.set_health(
+                        65,
+                        "inference-port coverage incomplete: "
+                        f"{coverage.error or 'identity evidence unavailable'}; "
+                        f"rows={coverage.observed}, port_rows="
+                        f"{coverage.port_connections}",
+                    )
             except Exception as exc:
                 self.last_error = str(exc)
                 self.set_health(60, f"analysis error: {exc}")

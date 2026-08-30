@@ -1,0 +1,41 @@
+{
+  "loop": "angerona-improvement",
+  "active_cycle": "cycle26",
+  "release_target": "1.12.1",
+  "focus": "privileged source-boundary removal, object-bound scanning, truthful aggregate scan state, resilience self-test custody, universal module health evidence, and release signer isolation",
+  "rounds_total": 3,
+  "round": 3,
+  "phase": "READY_FOR_PUBLICATION",
+  "round_1_status": "COMPLETE",
+  "round_2_status": "COMPLETE",
+  "round_3_status": "COMPLETE",
+  "research_done": true,
+  "started": "2026-08-28",
+  "updated": "2026-08-29",
+  "scope": "authorized defensive-only theoretical hardening",
+  "publication_done": false,
+  "open_findings": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  },
+  "closure": {
+    "findings_fixed": 50,
+    "round_1": "7/7 fixed",
+    "round_2": "12/12 fixed",
+    "round_3": "31/31 fixed",
+    "compile": "350/350 Python files",
+    "module_inventory": "83/83 files imported; 81/81 unique capabilities",
+    "top_level_self_tests": "37/37 passed",
+    "focused_pytest": "249 passed / 5 expected skips / 3 C13 integration failures subsequently remediated and independently converged",
+    "selfcheck": "terminal selfcheck passed 26/26",
+    "terminal_serial_gate": "2659 passed / 13 intentional platform skips / 0 failed",
+    "publication_runtime": "C13 exact topology 5/5 and adjacent 6/6 passed; guarded canonical-main publication proof pending"
+  },
+  "known_limitations": [
+    "Arbitrary hostile code already executing inside Angerona's Python process remains outside in-process capability isolation.",
+    "Authentication-baseline freshness is local-clock/HMAC based and does not claim an external rollback-resistant high-water witness.",
+    "The reviewed Windows publication runtime profile is host/version specific and fails closed on an unreviewed Git runtime."
+  ]
+}

@@ -25,7 +25,7 @@ class PeripheralDMAGuardModule(BaseModule):
         "device-install control posture without changing device state."
     )
     category = "Hardware"
-    version = "1.0.0"
+    version = "1.12.1"
     supported_platforms = frozenset(SUPPORTED_PLATFORMS)
     capability_mode = "observe"
     platform_requirements = (

@@ -1,0 +1,453 @@
+{
+  "schema_version": "angerona.redteam-shard.v1",
+  "schema_closed": true,
+  "cycle": 27,
+  "round": 1,
+  "shard": "B",
+  "status": "COMPLETE",
+  "scope": {
+    "root": "src/angerona/modules",
+    "file_count": 31,
+    "files": [
+      "evolution_engine.py",
+      "fast_path.py",
+      "file_integrity.py",
+      "flight_cache.py",
+      "forensics.py",
+      "frz_heartbeat.py",
+      "hardware_crypto.py",
+      "hermetic_packager.py",
+      "identity_session_guard.py",
+      "immutable_recovery_guard.py",
+      "intel_sync.py",
+      "ipc_guard.py",
+      "kernel_bridge.py",
+      "kernel_posture_ledger.py",
+      "linux_observe.py",
+      "lsass_guard.py",
+      "macos_observe.py",
+      "mem_inject_scanner.py",
+      "memory_timemachine.py",
+      "mobile_bridge.py",
+      "network_monitor.py",
+      "network_protocol_decoder.py",
+      "network_trust_monitor.py",
+      "packet_sniffer.py",
+      "packet_sniffer_worker.py",
+      "peripheral_dma_guard.py",
+      "persistence_sweep.py",
+      "platform_attestation_guard.py",
+      "posture_hardening.py",
+      "process_egress_guard.py",
+      "process_monitor.py"
+    ],
+    "product_mutation": false,
+    "network_activity": false,
+    "host_posture_mutation": false
+  },
+  "severity_counts": {
+    "CRITICAL": 0,
+    "HIGH": 2,
+    "MEDIUM": 11,
+    "LOW": 7,
+    "INFO": 0,
+    "TOTAL": 20
+  },
+  "findings": [
+    {
+      "id": "C27-R1-B01",
+      "title": "FRZ watchdog trust is signer-generic, pathname-based, and cached",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/frz_heartbeat.py", "lines": "56-88,163-188"},
+        {"file": "src/angerona/core/executable_trust.py", "lines": "10-44"}
+      ],
+      "evidence": [
+        "The first existing interpreter-neighbor or repository filename is selected and its pathname trust result is cached for the process lifetime.",
+        "The helper accepts any Authenticode Valid signer and does not pin publisher, digest, owner/DACL, link state, or a retained file object.",
+        "Popen later reopens the pathname and inherits the ambient environment."
+      ],
+      "impact": "A replaceable validly signed substitute or check/use replacement can execute with the suite token and inherited environment.",
+      "mitigations": ["Valid Authenticode is required", "Protected installed directories reduce writable-path exposure", "Legacy unauthenticated watchdog is rejected"],
+      "recommendation": "Pin release-manifest publisher and digest, verify owner/DACL/reparse/link state, bind verification through launch, use a minimal environment, invalidate trust on object change, and expose exact trust identity in health."
+    },
+    {
+      "id": "C27-R1-B02",
+      "title": "Hermetic status and build launch do not bind to a reviewed binary/script identity",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/hermetic_packager.py", "lines": "43-80,117-150"}
+      ],
+      "evidence": [
+        "Frozen status comes from Python attributes and the signature check can target a different first-found binary.",
+        "Any valid Authenticode signer is accepted, allowing health 100 without current-image provenance.",
+        "trigger_build launches mutable build-hermetic.bat through PATH-resolved cmd immediately after a review message, with no confirmation or digest check."
+      ],
+      "impact": "Packaging provenance can be overstated and an operator click can execute a substituted build script/interpreter under the current token.",
+      "mitigations": ["Operator interaction is required", "Expected use is a developer-controlled repository", "PowerShell signature command uses an absolute System32 path"],
+      "recommendation": "Resolve the OS current image, verify pinned publisher/digest/owner/DACL and a signed manifest, separate assurance factors, require digest-aware confirmation, and launch the absolute trusted command processor with a minimal environment and non-elevated token."
+    },
+    {
+      "id": "C27-R1-B03",
+      "title": "Hardware-Rooted Integrity can report 100 while TPM binding is explicitly absent",
+      "severity": "LOW",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/hardware_crypto.py", "lines": "100-111,153-173,184-199"}
+      ],
+      "evidence": [
+        "bind_db_key_to_tpm always returns false, including when tpm2-pytss imports.",
+        "Successful DPAPI IPC-key protection sets overall module health to 100 and the loop ignores tpm_ok."
+      ],
+      "impact": "A 100 score can be consumed as complete hardware-rooted integrity even though database TPM sealing is absent.",
+      "mitigations": ["DPAPI key protection is real", "The description candidly states TPM sealing is unsupported"],
+      "recommendation": "Split DPAPI IPC custody and TPM sealing/attestation into separate capability metrics and reserve aggregate 100 for proven hardware binding with exact missing-capability links."
+    },
+    {
+      "id": "C27-R1-B04",
+      "title": "Judgment subprocess text can certify or promote a control without authenticated success",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/intel_sync.py", "lines": "465-479,546-573"},
+        {"file": "src/angerona/modules/posture_hardening.py", "lines": "903-929"}
+      ],
+      "evidence": [
+        "Both parsers accept the first stdout/stderr substring VERIFICATION_RESULT without requiring return code zero or a schema, nonce, artifact digest, or recorder receipt.",
+        "Intel Sync sets active=true and announces rule promoted although this path installs no rule.",
+        "An inert fixture supplied BLOCKED with returncode 9 and the Posture method still followed its certification branch."
+      ],
+      "impact": "Spoofed, stale, shadow-imported, or dependency output can close a live weakness and create false interception assurance.",
+      "mitigations": ["Operator action is required", "Generated model advice remains inert", "Posture child launch uses the shared hidden-process helper"],
+      "recommendation": "Use an isolated trusted bootstrap and fixed cwd, bound child resources/output, require exit zero, and validate a signed JSON receipt with nonce, technique, build/rule digest, test identity, sequence, and independently verified recorder evidence before certification."
+    },
+    {
+      "id": "C27-R1-B05",
+      "title": "Kernel Bridge treats a device-name open as proven sensor health",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/kernel_bridge.py", "lines": "70-108,167-215"}
+      ],
+      "evidence": [
+        "CreateFileW and DeviceIoControl lack complete ctypes prototypes.",
+        "Any opened fixed-name device leads to unconditional health 100 even if version IOCTL returns no data.",
+        "Telemetry IOCTL failure returns silently and does not degrade or reopen; no driver/service/file identity is validated."
+      ],
+      "impact": "An incompatible/substituted device or native ABI failure can silently eliminate telemetry while the bridge claims kernel callbacks are connected.",
+      "mitigations": ["Creating a kernel device usually requires administrative signed-driver authority", "No device means health 50 rather than 100"],
+      "recommendation": "Declare all native prototypes, require an exact protocol/capability handshake, pin service and signed driver identity/ACL, track sequence/loss/heartbeat, and degrade/reconnect on every IOCTL/parse failure."
+    },
+    {
+      "id": "C27-R1-B06",
+      "title": "Kernel driver inventory can truncate or fail as an apparently complete digest",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/kernel_posture_ledger.py", "lines": "132-172,182-230,393-417"}
+      ],
+      "evidence": [
+        "Only min(service_count,2048) keys are enumerated, per-key errors are silently skipped, and registry-open failure returns an empty list.",
+        "The snapshot carries only driver_count and a digest, with no total, skipped, truncated, or error fields.",
+        "Assessment ignores driver collector completeness and can render posture verified at health 100."
+      ],
+      "impact": "Driver-service drift can be absent from an authenticated ledger while consumers treat the inventory as complete.",
+      "mitigations": ["Secure Boot/HVCI/boot flags retain value", "Unknown boolean controls lower health", "Ledger rows are authenticated"],
+      "recommendation": "Emit a typed completeness receipt with total/enumerated/skipped/truncated/error counts and epoch, mark incomplete collection UNKNOWN below 100, and paginate boundedly across the full namespace."
+    },
+    {
+      "id": "C27-R1-B07",
+      "title": "A basename alone disables Memory Injection Scanner coverage",
+      "severity": "HIGH",
+      "status": "FIXED",
+      "components": [
+        {"file": "src/angerona/modules/mem_inject_scanner.py", "lines": "66-80,120-146,186-226,228-268"}
+      ],
+      "evidence": [
+        "Every process named python.exe, chrome.exe, or another JIT-safe basename is skipped before opening/resolving the executable.",
+        "The skip contradicts the adjacent comment that basename must not grant trust.",
+        "Toolhelp enumeration functions lack HANDLE-safe prototypes, exceptions collapse to an empty map, and health 100 is set before coverage is measured."
+      ],
+      "impact": "An attacker can rename a payload to an allowlisted basename or inject into a real allowlisted process to opt out of the module's central T1055 scan; enumeration failure can blind all coverage while green.",
+      "mitigations": ["Other process/behavior sensors may detect related activity", "Suspicious non-allowlisted processes are enriched before response"],
+      "recommendation": "Never skip inspection by basename; use object-bound image identity only for post-scan severity tuning, declare all Toolhelp/HANDLE APIs and close safely, and base health on enumerated/opened/scanned/denied/failed/skipped totals."
+    },
+    {
+      "id": "C27-R1-B08",
+      "title": "Memory Time-Machine drops telemetry after permanently deduplicating it",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/memory_timemachine.py", "lines": "85-94,165-186,207-229,232-291"}
+      ],
+      "evidence": [
+        "Hashes are committed before queue admission and forwarded count increments before put_nowait.",
+        "queue.Full is silently discarded and the ring overwrites oldest records without loss counters.",
+        "A ring-open health 40 is overwritten by the next sweep's tautological reduction_pct >= 0 health 100; opt-in environment values enter plaintext mmap telemetry."
+      ],
+      "impact": "Bursting the bounded queue/ring can erase novel indicators, suppress their retry, and persist secret-like environment values while metrics claim successful forwarding.",
+      "mitigations": ["Storage is bounded", "Environment/open-file collection is opt-in", "Default collection avoids known unsafe psutil calls"],
+      "recommendation": "Commit dedup only after durable admission or spool retries, count every loss/high-water/age/error, derive health from complete delivery, apply bounded backpressure, and encrypt/restrict/zeroize persistent strings with secret-key redaction."
+    },
+    {
+      "id": "C27-R1-B09",
+      "title": "Mobile response trusts an unpinned external CLI that inherits credentials",
+      "severity": "HIGH",
+      "status": "FIXED",
+      "components": [
+        {"file": "src/angerona/modules/mobile_bridge.py", "lines": "135-205,803-837"}
+      ],
+      "evidence": [
+        "Configured signal-cli is launched with inherited cwd/environment and no absolute path, owner/DACL, reparse, publisher, digest, or retained-object check.",
+        "The inherited environment can contain a plaintext portable PIN or same-user-decryptable DPAPI PIN blob.",
+        "Receive stdout is trusted for sender/body without return-code, transcript-authentication, or total-output checks; self-test proves only existence and loop health overwrites transient send failure."
+      ],
+      "impact": "A substituted/configured CLI can obtain PIN material, forge the configured sender/command stream, and reach lockdown or token-gated host response under the suite token.",
+      "mitigations": ["Module is opt-in", "Signal E2EE and sender comparison protect the remote channel", "Destructive per-alert commands also require tokens"],
+      "recommendation": "Seal an absolute CLI object to pinned digest/publisher/owner/DACL/no-reparse policy, launch with a secret-free minimal environment, authenticate bounded IPC receipts with nonce/return code/job limits, and score health from binary identity plus a verified round trip."
+    },
+    {
+      "id": "C27-R1-B10",
+      "title": "Mobile ECO and LOCKDOWN authorization is weaker than the response surface",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/mobile_bridge.py", "lines": "143-163,333-405,436-456"}
+      ],
+      "evidence": [
+        "ECO changes module cadence after sender comparison without PIN/token.",
+        "LOCKDOWN accepts only a fixed four-digit PIN.",
+        "Authentication failures have no rate counter, backoff, lockout, replay window, or challenge nonce."
+      ],
+      "impact": "Compromise/spoofing of the configured messaging identity permits immediate monitoring throttling and a bounded 10,000-value online PIN search for lockdown.",
+      "mitigations": ["Signal sender identity is a first factor", "KILL/SUSPEND/ROLLBACK additionally require short-lived alert tokens"],
+      "recommendation": "Apply typed authorization to every state change, require fresh cryptographic approval for lockdown, rate-limit and lock out failures, bind tokens to command/target/expiry/nonce, and produce signed change/rollback receipts."
+    },
+    {
+      "id": "C27-R1-B11",
+      "title": "IPv4-mapped public IPv6 endpoints are classified as local",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/network_monitor.py", "lines": "133-148,250-305"}
+      ],
+      "evidence": [
+        "Every string starting with :: is local.",
+        "Inert probe: _is_local('::ffff:8.8.8.8') returned true while _is_local('8.8.8.8') returned false.",
+        "Local endpoints are discarded before IOC/port/novelty analysis and process novelty is PID-only."
+      ],
+      "impact": "External mapped-IPv4 connections bypass this detector and rapid PID reuse can inherit old novelty state.",
+      "mitigations": ["Other NDR layers may retain visibility", "Ordinary IPv4 external endpoints are analyzed"],
+      "recommendation": "Canonicalize via ipaddress, convert ipv4_mapped before explicit loopback/private/link-local policy, normalize zone/endpoints, bind state to process birth time, and add mapped-address fixtures."
+    },
+    {
+      "id": "C27-R1-B12",
+      "title": "Packet Sniffer can deadlock on its undrained worker pipe",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/packet_sniffer.py", "lines": "92-157"},
+        {"file": "src/angerona/modules/packet_sniffer_worker.py", "lines": "26,48-89"}
+      ],
+      "evidence": [
+        "The parent polls for exit without reading redirected stdout, then communicates only after exit.",
+        "The worker flushes up to 256 JSON lines from inside the capture callback.",
+        "A full pipe blocks the worker before timeout completion and the parent has no hard generation deadline or job limits."
+      ],
+      "impact": "Dense matching traffic can indefinitely wedge the enabled capture generation and leave module health stale.",
+      "mitigations": ["Module is disabled by default", "Worker is crash-isolated", "Payload values are not emitted and record count is capped"],
+      "recommendation": "Drain concurrently with byte/record caps, enforce a hard parent deadline and tree termination, use isolated trusted child import/cwd plus OS resource limits, and require an end receipt with packet/record/drop/error counts."
+    },
+    {
+      "id": "C27-R1-B13",
+      "title": "Forensic capture has no memory, disk, or privacy budget",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/forensics.py", "lines": "49-80,106-135,137-178,193-200"}
+      ],
+      "evidence": [
+        "Any HIGH event integer PID can be captured and supplied birth metadata is accepted before handle/image verification.",
+        "Each committed region is allocated whole and strings are written without region/case/time/free-space/global retention quotas.",
+        "Every case copies the operator's full PowerShell history regardless of suspect process."
+      ],
+      "impact": "Large committed regions or repeated serious-event identities can exhaust RAM/disk and collect unrelated credentials/commands.",
+      "mitigations": ["Module is disabled by default", "Capture failures are caught", "Evidence remains local"],
+      "recommendation": "Bind a retained process handle and verified birth/image before admission, require trusted event provenance, chunk reads, enforce all resource/retention quotas, encrypt/ACL/redact evidence, and make shell history separately consented and case-relevant."
+    },
+    {
+      "id": "C27-R1-B14",
+      "title": "Unvalidated technique IDs escape the posture remediation directory",
+      "severity": "LOW",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/posture_hardening.py", "lines": "370-394,767-800"},
+        {"file": "src/angerona/core/report_attest.py", "lines": "134-157"}
+      ],
+      "evidence": [
+        "Report mitre values are concatenated into an advisory pathname without strict ID schema or resolved containment.",
+        "Unsigned reports are ingested by default in lenient mode.",
+        "The forced .advisory.md suffix limits target type but path separators, parent references, and rooted values remain possible."
+      ],
+      "impact": "A writable/imported unsigned report can create or overwrite an advisory-suffixed file outside the remediation directory and poison weakness records.",
+      "mitigations": ["Generated content is explicitly inert", "Forced extension limits code-execution utility", "Invalid HMAC reports are rejected"],
+      "recommendation": "Accept only canonical MITRE IDs, derive a safe slug, resolve and enforce directory containment, use exclusive atomic no-follow writes, and require authenticated reports for filesystem/database mutation by default."
+    },
+    {
+      "id": "C27-R1-B15",
+      "title": "Missing posture evidence is rendered as posture clean",
+      "severity": "LOW",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/posture_hardening.py", "lines": "354-368,758-764"}
+      ],
+      "evidence": [
+        "Missing/unreadable/untrusted report processing does not lower health.",
+        "Zero database rows in VULNERABLE state is mapped directly to health 100 and note posture clean without feed freshness/authenticity/coverage proof."
+      ],
+      "impact": "First-run, stale, broken, or untrusted evidence can look identical to an evidence-backed clean posture.",
+      "mitigations": ["Integrity problems are emitted", "Model advice cannot execute directly"],
+      "recommendation": "Model UNKNOWN/STALE/UNTRUSTED/PARTIAL/ASSESSED_CLEAN separately and require a fresh authenticated coverage receipt with source, epoch, expected/observed rounds, and exact failure evidence before 100."
+    },
+    {
+      "id": "C27-R1-B16",
+      "title": "PID-only state can suppress new process and LSASS detections after reuse",
+      "severity": "LOW",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/lsass_guard.py", "lines": "171-175,193-234"},
+        {"file": "src/angerona/modules/process_monitor.py", "lines": "37-40,87-140"}
+      ],
+      "evidence": [
+        "Both dedup structures are sets of integer PIDs.",
+        "A process can exit and a new generation reuse its PID between snapshots without the PID disappearing from the live set.",
+        "Both collectors already obtain create_time but do not key state with it."
+      ],
+      "impact": "A narrow timing window suppresses new-process evaluation or one LSASS alert.",
+      "mitigations": ["Exploitation requires PID reuse timing", "Other sensors may still alert", "Response details include create_time when emitted"],
+      "recommendation": "Key by pid plus normalized create_time/object identity, treat missing birth time as incomplete coverage, expire generation state, and add same-PID/new-birth regression fixtures."
+    },
+    {
+      "id": "C27-R1-B17",
+      "title": "File Integrity Monitor uses startup TOFU and silently excludes failed or metadata-preserving changes",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/file_integrity.py", "lines": "194-218,239-284,354-359,374-443"}
+      ],
+      "evidence": [
+        "Baseline is in-memory startup state with no authenticated persisted reference or operator approval.",
+        "Hash/stat failures silently become absence and ordinary files reuse digest when size and mtime_ns are preserved.",
+        "Coverage counts/errors do not drive health, leaving default green possible for empty or partial scans."
+      ],
+      "impact": "Preexisting tampering is enrolled, inaccessible paths disappear, and same-size/mtime modifications to ordinary watched files evade detection.",
+      "mitigations": ["High-value/paranoid roots are always rehashed", "SHA-256 is used when hashing occurs"],
+      "recommendation": "Persist an authenticated reviewed baseline, hash no-follow opened objects with post-read identity revalidation, use journal/event invalidation or randomized full rehash, count all coverage failures/exclusions, and reserve 100 for complete fresh coverage."
+    },
+    {
+      "id": "C27-R1-B18",
+      "title": "Large startup entries are monitored by forgeable metadata only",
+      "severity": "LOW",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/persistence_sweep.py", "lines": "252-313"}
+      ],
+      "evidence": [
+        "Files above _MAX_STARTUP_HASH_BYTES receive digest not-hashed-size-bound.",
+        "Their drift identity is path, size, and mtime_ns, which content replacement can preserve."
+      ],
+      "impact": "An oversized startup payload can change content without persistence drift detection.",
+      "mitigations": ["Baseline is honestly marked unreviewed at health 75", "Collector errors become partial/unknown", "Other process/file controls may detect execution"],
+      "recommendation": "Stream hashes for all startup executables/scripts under an I/O budget, carry deferred/pending state instead of completeness, bind file IDs/no-follow handles, and postvalidate metadata."
+    },
+    {
+      "id": "C27-R1-B19",
+      "title": "Concurrent Evolution workers can lose or corrupt proposal history",
+      "severity": "LOW",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/evolution_engine.py", "lines": "147-153,401-470"}
+      ],
+      "evidence": [
+        "Different technique workers can execute concurrently.",
+        "History is an unlocked read/append/full-file write, is not atomic, and swallows all failures.",
+        "One worker sets health 100 on completion even if another remains active."
+      ],
+      "impact": "Review evidence for proposals can be lost/partial and lifecycle health can be inaccurate.",
+      "mitigations": ["Generated rules remain inert proposals", "No generated rule is auto-activated", "Same-technique work is gated"],
+      "recommendation": "Serialize or transactionally append history, write atomically with durability, expose failures and run IDs, and compute health from all active workers plus durable receipts."
+    },
+    {
+      "id": "C27-R1-B20",
+      "title": "IPC Guard can remain health 100 after its accept loop exits",
+      "severity": "LOW",
+      "status": "OPEN",
+      "components": [
+        {"file": "src/angerona/modules/ipc_guard.py", "lines": "306-355,370-426"}
+      ],
+      "evidence": [
+        "accept OSError silently breaks the daemon loop.",
+        "The parent never checks accept_thread.is_alive and writes health 100 every five seconds.",
+        "Worker-start health 40 can be overwritten on the next parent tick."
+      ],
+      "impact": "The diagnostic authentication listener can be unavailable while its module remains green.",
+      "mitigations": ["Loopback-only bind", "HMAC challenge", "Connection/thread caps", "No production payload consumer"],
+      "recommendation": "Propagate accept-loop terminal state, require listener/worker liveness for green health, restart with bounded backoff, and keep failure latched until an end-to-end challenge succeeds."
+    }
+  ],
+  "reviews": [
+    {"file": "evolution_engine.py", "lines": "1-513", "disposition": "FINDING", "finding_ids": ["C27-R1-B19"], "evidence": "Proposal-only authority held; concurrent history durability and aggregate health did not.", "recommendation": "Transactional history and aggregate worker health."},
+    {"file": "fast_path.py", "lines": "1-312", "disposition": "NO_NEW_FORMAL_FINDING", "finding_ids": [], "evidence": "Deterministic bounded alert-only path; no response authority found.", "recommendation": "Expose per-rule coverage counters and clickable evidence details."},
+    {"file": "file_integrity.py", "lines": "1-443", "disposition": "FINDING", "finding_ids": ["C27-R1-B17"], "evidence": "Startup TOFU, silent exclusions, and metadata-cache bypass confirmed.", "recommendation": "Authenticated reviewed baseline and complete coverage accounting."},
+    {"file": "flight_cache.py", "lines": "1-251", "disposition": "NO_NEW_FORMAL_FINDING", "finding_ids": [], "evidence": "SELECT/WITH verb filter prevents direct writes; arbitrary recursive/expensive read query remains a resource tune-up.", "recommendation": "SQLite authorizer/progress deadline and row cap."},
+    {"file": "forensics.py", "lines": "1-200", "disposition": "FINDING", "finding_ids": ["C27-R1-B13"], "evidence": "Unbounded region allocation/output and unrelated shell-history collection; A-05 argv-list mitigation verified.", "recommendation": "Handle-bound admission plus memory/disk/privacy quotas."},
+    {"file": "frz_heartbeat.py", "lines": "1-322", "disposition": "FINDING", "finding_ids": ["C27-R1-B01"], "evidence": "Authenticated v2 record is sound; sidecar object identity is not pinned.", "recommendation": "Manifest/object-bound trust and minimal environment."},
+    {"file": "hardware_crypto.py", "lines": "1-215", "disposition": "FINDING", "finding_ids": ["C27-R1-B03"], "evidence": "DPAPI works but TPM sealing is absent from aggregate health.", "recommendation": "Capability-specific health."},
+    {"file": "hermetic_packager.py", "lines": "1-201", "disposition": "FINDING", "finding_ids": ["C27-R1-B02"], "evidence": "Current image and build object are not pinned to reviewed identity.", "recommendation": "OS image identity, signed manifest, confirmation, minimal non-elevated launch."},
+    {"file": "identity_session_guard.py", "lines": "1-345", "disposition": "NO_NEW_FORMAL_FINDING", "finding_ids": [], "evidence": "Supplied-only bounded tokenized analytics and observe-only outputs held; EventBus centrally deduplicates subscriptions.", "recommendation": "Add source freshness and evidence drill-down."},
+    {"file": "immutable_recovery_guard.py", "lines": "1-177", "disposition": "NO_NEW_FORMAL_FINDING", "finding_ids": [], "evidence": "Signed-manifest/recovery checks fail closed in reviewed paths.", "recommendation": "Retained-handle and external-freshness defense in depth."},
+    {"file": "intel_sync.py", "lines": "1-718", "disposition": "FINDING", "finding_ids": ["C27-R1-B04"], "evidence": "IOC snapshot bounds are present; Judgment text is not activation proof.", "recommendation": "Authenticated child receipt and truthful staged/active state."},
+    {"file": "ipc_guard.py", "lines": "1-486", "disposition": "FINDING", "finding_ids": ["C27-R1-B20"], "evidence": "Loopback HMAC/caps/generation shutdown are strong; accept-thread liveness is not health-gated.", "recommendation": "Latch terminal thread state until verified restart."},
+    {"file": "kernel_bridge.py", "lines": "1-274", "disposition": "FINDING", "finding_ids": ["C27-R1-B05"], "evidence": "Device open is mistaken for protocol/driver/live-stream proof.", "recommendation": "Pinned driver handshake and telemetry health receipt."},
+    {"file": "kernel_posture_ledger.py", "lines": "1-468", "disposition": "FINDING", "finding_ids": ["C27-R1-B06"], "evidence": "Authenticated chain is useful; driver collector completeness is unrepresented.", "recommendation": "Typed complete/partial/unknown driver receipt."},
+    {"file": "linux_observe.py", "lines": "1-122", "disposition": "NO_NEW_FORMAL_FINDING", "finding_ids": [], "evidence": "Read-only observation and unavailable-source degradation held.", "recommendation": "Per-collector freshness and coverage fields."},
+    {"file": "lsass_guard.py", "lines": "1-252", "disposition": "FINDING", "finding_ids": ["C27-R1-B16"], "evidence": "Narrow response scope and emitted create time are positive; dedup remains PID-only.", "recommendation": "Use process-generation identity."},
+    {"file": "macos_observe.py", "lines": "1-95", "disposition": "NO_NEW_FORMAL_FINDING", "finding_ids": [], "evidence": "Observe-only bounded parsing and explicit unsupported states held.", "recommendation": "Per-source last-success epoch."},
+    {"file": "mem_inject_scanner.py", "lines": "1-507", "disposition": "FINDING", "finding_ids": ["C27-R1-B07"], "evidence": "Unverified basename skips scanning; enumeration/coverage can fail green.", "recommendation": "Scan all processes and report native coverage."},
+    {"file": "memory_timemachine.py", "lines": "1-318", "disposition": "FINDING", "finding_ids": ["C27-R1-B08"], "evidence": "Bounded storage exists but loss is silent and dedup precedes admission.", "recommendation": "Loss-aware durable admission and protected/redacted persistence."},
+    {"file": "mobile_bridge.py", "lines": "1-841", "disposition": "FINDING", "finding_ids": ["C27-R1-B09", "C27-R1-B10"], "evidence": "Remote sender and process response bindings help; local CLI and state-change authorization remain weak.", "recommendation": "Pin CLI, remove inherited secrets, strengthen all command authorization."},
+    {"file": "network_monitor.py", "lines": "1-349", "disposition": "FINDING", "finding_ids": ["C27-R1-B11"], "evidence": "IPv4-mapped public endpoints are discarded as local; novelty identity is PID-only.", "recommendation": "Canonical IP and process-generation identity."},
+    {"file": "network_protocol_decoder.py", "lines": "1-237", "disposition": "NO_NEW_FORMAL_FINDING", "finding_ids": [], "evidence": "Bounded parser and alert-only authority held.", "recommendation": "Differentiate subscription/input-flow proof from idle health."},
+    {"file": "network_trust_monitor.py", "lines": "1-1280", "disposition": "NO_NEW_FORMAL_FINDING", "finding_ids": [], "evidence": "Completeness/independence scoring and response ineligibility are explicit; prior A-06 and C23 remain open/deferred.", "recommendation": "Finish independent fresh-baseline source and trusted host-command resolution."},
+    {"file": "packet_sniffer.py", "lines": "1-259", "disposition": "FINDING", "finding_ids": ["C27-R1-B12"], "evidence": "Crash isolation exists; undrained pipe has no hard deadline.", "recommendation": "Concurrent bounded drain, deadline, job limits, end receipt."},
+    {"file": "packet_sniffer_worker.py", "lines": "1-105", "disposition": "FINDING", "finding_ids": ["C27-R1-B12"], "evidence": "Secret values are not emitted and records are capped; flushed stdout can block callback/exit.", "recommendation": "Nonblocking bounded transport with explicit loss/end record."},
+    {"file": "peripheral_dma_guard.py", "lines": "1-154", "disposition": "NO_NEW_FORMAL_FINDING", "finding_ids": [], "evidence": "Read-only Windows posture and explicit UNKNOWN/limited states held.", "recommendation": "Add device-instance evidence links and freshness."},
+    {"file": "persistence_sweep.py", "lines": "1-651", "disposition": "FINDING", "finding_ids": ["C27-R1-B18"], "evidence": "Coverage receipts and unreviewed health are good; oversized startup content is metadata-only; prior A-06 remains.", "recommendation": "Budgeted streaming hashes and trusted host commands."},
+    {"file": "platform_attestation_guard.py", "lines": "1-396", "disposition": "NO_NEW_FORMAL_FINDING", "finding_ids": [], "evidence": "Multi-signal fail-closed evidence-only boundary held; prior A-06 ExecutionPolicy/command trust remains open.", "recommendation": "Remove ExecutionPolicy bypass and pin command paths without weakening evidence semantics."},
+    {"file": "posture_hardening.py", "lines": "1-1042", "disposition": "FINDING", "finding_ids": ["C27-R1-B04", "C27-R1-B14", "C27-R1-B15"], "evidence": "Advice is inert and vetted changes are gated; child proof, pathname schema, and evidence-health semantics fail.", "recommendation": "Authenticated receipts, canonical IDs/containment, and evidence-state health."},
+    {"file": "process_egress_guard.py", "lines": "1-233", "disposition": "NO_NEW_FORMAL_FINDING", "finding_ids": [], "evidence": "Exact process-generation binding, bounded state, and fail-closed policy held.", "recommendation": "Expose collector denials and last-complete snapshot."},
+    {"file": "process_monitor.py", "lines": "1-162", "disposition": "FINDING", "finding_ids": ["C27-R1-B16"], "evidence": "Creation event contains birth time but state identity remains PID-only.", "recommendation": "Key creation state by process generation."}
+  ],
+  "prior_reconciliation": {
+    "verified_resolved_or_mitigated_count": 2,
+    "verified_resolved_or_mitigated": [
+      {"id": "A-01", "status": "MITIGATED", "evidence": "Evolution remains proposal-only and never auto-activates generated rules."},
+      {"id": "A-05", "status": "RESOLVED", "evidence": "Forensics invokes netstat as an argv list and performs PID filtering in Python at forensics.py:183-190."}
+    ],
+    "verified_still_open_or_deferred_count": 2,
+    "verified_still_open_or_deferred": [
+      {"id": "A-06", "status": "OPEN", "evidence": "Owned persistence/platform/posture collectors retain broad PowerShell/host-command trust patterns; not re-reported as new."},
+      {"id": "C23-R2-01", "status": "DEFERRED", "evidence": "Network Trust Monitor still labels its baseline local-auth-only pending an independently fresh source."}
+    ],
+    "not_reassessed_note": "Other prior findings are outside this shard or were not re-adjudicated and are not counted."
+  },
+  "validation": [
+    {"kind": "manual_context_review", "result": "PASS", "evidence": "All 31 assigned files read in full; each has one review row."},
+    {"kind": "inert_locality_probe", "result": "CONFIRMED", "evidence": "_is_local('::ffff:8.8.8.8') == True and _is_local('8.8.8.8') == False."},
+    {"kind": "inert_scanner_flow", "result": "CONFIRMED", "evidence": "Allowlisted basename is skipped before _scan_pid; non-allowlisted process reaches scan."},
+    {"kind": "inert_verification_flow", "result": "CONFIRMED", "evidence": "BLOCKED marker with nonzero return code follows current certification logic."},
+    {"kind": "scope_safety", "result": "PASS", "evidence": "No exploit payload, web research, network scan, host mutation, source edit, shared log edit, commit, or publication."}
+  ]
+}

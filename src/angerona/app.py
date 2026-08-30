@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QApplication
 
 from angerona.core.config import Config
 from angerona.core.eventbus import Event, EventBus, Severity
+from angerona.core.independent_high_water import IndependentHighWater
 from angerona.core.storage import AsyncFlightRecorder, FlightRecorder
 from angerona.core.module_manager import ModuleManager
 from angerona.core.platforms import current_platform
@@ -55,7 +56,13 @@ def _mark_dashboard_ready(config) -> bool:
 class AngeronaApp:
     """Owns the lifecycle of every long-lived service."""
 
-    def __init__(self, qt: QApplication, *, force_chill: bool = False) -> None:
+    def __init__(
+        self,
+        qt: QApplication,
+        *,
+        force_chill: bool = False,
+        high_water_provider: IndependentHighWater | None = None,
+    ) -> None:
         self.qt = qt
         self.config = Config.load()
         # Native logon/launcher entry points pass --chill. This is a runtime
@@ -167,7 +174,31 @@ class AngeronaApp:
         from angerona.core.attack_tracker import init_tracker
         self.bus.subscribe(init_tracker().on_event)
 
-        self.manager  = ModuleManager(self.bus, self.config)
+        self.manager  = ModuleManager(
+            self.bus,
+            self.config,
+            recorder=self.storage,
+            high_water_provider=high_water_provider,
+        )
+        # SentinelLens is an additive, local-only read model. Its EventBus
+        # subscriber performs only a bounded put_nowait; deterministic parsing,
+        # graph construction, and anomaly scoring run on the owned worker.
+        self.sentinel_lens_service = None
+        try:
+            from angerona.core.sentinel_lens import SentinelLensService
+
+            self.sentinel_lens_service = SentinelLensService(self.bus)
+            self.sentinel_lens_service.start()
+            # Tool windows already receive the manager. Publish only the safe
+            # read-side service facade there, not an execution capability.
+            self.manager.sentinel_lens_service = self.sentinel_lens_service
+        except Exception as exc:
+            self.sentinel_lens_service = None
+            self._record_startup_degradation(
+                "SentinelLens",
+                "continuous local hunt snapshots are unavailable; protection remains active",
+                exc,
+            )
         self.reporter = StatusReporter(
             self.bus, self.storage, self.manager, self.config,
             telemetry_coverage=self.telemetry_coverage,
@@ -899,6 +930,13 @@ class AngeronaApp:
             self._admin_audit = None
         self._endpoint_identity = None
         self.manager.stop_all()
+        # Producers stop first so the bounded SentinelLens queue has a stable
+        # terminal suffix to drain and analyze. It never executes remediation.
+        try:
+            if self.sentinel_lens_service is not None:
+                self.sentinel_lens_service.stop(timeout=3.0)
+        except Exception:
+            pass
         try:
             if self.process_baseline is not None:
                 self.process_baseline.stop(timeout=2.0)

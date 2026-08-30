@@ -1,0 +1,39 @@
+[
+  {
+    "original_id": "C27-R1-A01",
+    "verdict": "REOPENED_PARTIAL",
+    "residual_severity": "HIGH",
+    "components": [
+      "src/angerona/modules/adversary_combat.py:1828-1843",
+      "src/angerona/modules/adversary_combat.py:1644-1657",
+      "src/angerona/modules/adversary_combat.py:1979-1982"
+    ],
+    "evidence": "An inert fake process completed its kill marker and then raised during postcondition observation; the journal became [intent,failure], mutation_blocked remained false, and health remained 100.",
+    "recommendation": "After a non-reversible mutation-start phase, leave every exception or non-definitive postcondition non-terminal, trip the mutation circuit, and require the authenticated operator disposition to close it."
+  },
+  {
+    "original_id": "C27-R1-A10",
+    "verdict": "REOPENED_PARTIAL",
+    "residual_severity": "HIGH",
+    "components": [
+      "src/angerona/modules/chaos_harness.py:124-179",
+      "src/angerona/core/eventbus.py:301-305",
+      "src/angerona/core/module_base.py:327-335",
+      "src/angerona/modules/network_protocol_decoder.py:163-170"
+    ],
+    "evidence": "An unrelated in-process EventBus publisher claimed the allowlisted APID tuple and its centrally bus-signed record was accepted. No real APID/NDRD/FIM/AMSI producer implements the new receipt schema.",
+    "recommendation": "Use enrolled detector-specific receipt authority bound to registered module identity and lifecycle generation, implement all producer paths, and prove siblings with shared bus access cannot forge receipts."
+  },
+  {
+    "original_id": "C27-R1-A16",
+    "verdict": "REOPENED_PARTIAL",
+    "residual_severity": "HIGH",
+    "components": [
+      "src/angerona/modules/etw_listener.py:58-68",
+      "src/angerona/modules/etw_listener.py:137-178",
+      "src/angerona/modules/etw_listener.py:231-246"
+    ],
+    "evidence": "A new listener instance after an inert clear/refill replayed replacement records 1-4 but reported health 100, generation 1, and no continuity gap because the prior bookmark and anchor were memory-only.",
+    "recommendation": "Persist an authenticated atomic channel-generation cursor and keep missing, rolled-back, mismatched, or retained-history-loss state below 100 until explicit acknowledgement."
+  }
+]

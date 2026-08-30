@@ -1,0 +1,88 @@
+{
+  "cycle": 27,
+  "round": 1,
+  "remediation": "high-ac-ninth",
+  "date": "2026-08-28",
+  "status": "REMEDIATED_PENDING_INDEPENDENT_REATTACK",
+  "scope": [
+    "C27-R1-A01",
+    "C27-R1-A16",
+    "C27-R1-C03",
+    "C27-R1-C13"
+  ],
+  "red_gates_closed": 14,
+  "findings": [
+    {
+      "id": "C27-R1-A01",
+      "status": "FIXED",
+      "closed_gates": [
+        "authenticated recovery numeric authority requires exact integer types",
+        "undo terminal durability loss opens the current-process mutation circuit",
+        "restart orphan compensation retains pinned journal custody through the host effect"
+      ],
+      "files": [
+        "src/angerona/modules/adversary_combat.py",
+        "tests/test_cycle27_high_ac_ninth_remediation.py"
+      ]
+    },
+    {
+      "id": "C27-R1-A16",
+      "status": "FIXED",
+      "closed_gates": [
+        "acknowledgement cleanup is bound to the twice-authenticated custody object",
+        "cursor-new plus missing unacknowledged outbox is a visible non-green gap"
+      ],
+      "files": [
+        "src/angerona/modules/etw_listener.py",
+        "tests/test_cycle27_high_ac_ninth_remediation.py"
+      ]
+    },
+    {
+      "id": "C27-R1-C03",
+      "status": "FIXED",
+      "closed_gates": [
+        "deep state authority JSON is normalized to fail-closed OSError",
+        "stop and deadline are checked before requesting the next held entry",
+        "short remaining budgets refuse a potentially blocking next request",
+        "genesis transition failure cannot strand a key-only authority",
+        "stale writers cannot overwrite a competing adjacent commit"
+      ],
+      "files": [
+        "src/angerona/modules/ransomware_heuristics.py",
+        "tests/test_cycle27_high_ac_ninth_remediation.py"
+      ]
+    },
+    {
+      "id": "C27-R1-C13",
+      "status": "FIXED",
+      "closed_gates": [
+        "deep transition authority JSON is normalized to fail-closed OSError",
+        "local-only crash after key creation is restart-reconcilable",
+        "oversize local head is rejected before JSON allocation",
+        "SQLite ledger authentication is streamed and row-bounded"
+      ],
+      "files": [
+        "src/angerona/modules/smart_deception.py",
+        "tests/test_cycle27_high_ac_ninth_remediation.py"
+      ]
+    }
+  ],
+  "gates": {
+    "immutable_eighth_independent_reattack": "PASS: 22",
+    "ninth_regressions": "PASS: 15",
+    "direct_compatibility_matrix": "PASS: 160",
+    "additional_cycle27_matrix": "139 passed, 2 expected skips, 5 unrelated pre-existing/concurrent red gates (A02, A03, A07 x2, A14)",
+    "py_compile": "PASS",
+    "ruff": "PASS",
+    "self_tests": "PASS: 4/4",
+    "diff_check": "PASS"
+  },
+  "honest_boundaries": [
+    "Python cannot safely cancel an already-running synchronous platform directory call; pre-next admission and incomplete coverage remain authoritative.",
+    "Rollback of every local genesis/signing authority together requires TPM monotonic state or an independently administered witness to distinguish from a first install.",
+    "ETW acknowledgement proves in-process EventBus publication, not durable processing by every downstream consumer; delivery remains at-least-once.",
+    "The external custody head proves monotonic freshness rather than remote/WORM preservation of local evidence bytes."
+  ],
+  "live_host_mutation": false,
+  "commit_or_publication_performed": false
+}

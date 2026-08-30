@@ -1,24 +1,19 @@
-"""sys_bridge.py — Indirect Syscall Fallback Bridge (Code: SYS).
+"""sys_bridge.py — authenticated native-bridge boundary (Code: SYS).
 
 Purpose
-    Wrap the compiled ``syscall_bridge.pyd`` C extension so Angerona's SOAR
-    containment layer (kill / suspend / resume) can route process-management
-    operations *past* hooked ntdll exports.
+    Provide a safe process-control fallback while reserving a private native
+    bridge boundary for a future release-manifest-sealed broker.  An ambient
+    top-level ``syscall_bridge`` import is never attempted.
 
     Standard SOAR containment path:
         Python os.kill() / psutil → kernel32.TerminateProcess
             → ntdll.NtTerminateProcess  ← hooked here by an attacker
 
-    SYS path (this module):
-        syscall_bridge.terminate_process()
-            → SSN from on-disk ntdll (unhooked)
-            → inline `mov eax,<SSN>; jmp syscall_gadget`
-            → kernel mode directly
-
-    Fallback chain (degraded mode):
-        If the .pyd is not compiled yet, SYS falls back to the standard
-        ctypes / psutil path and emits a LOW health warning.  The SOAR module
-        should query ``SysBridgeModule.available`` before using the bridge.
+Fallback chain (degraded mode):
+        Until a fixed private namespace, release-manifest digest/publisher and
+        broker ABI are all available, SYS uses explicit-prototype ctypes/psutil
+        calls and reports degraded health.  The SOAR module should query
+        ``SysBridgeModule.available`` before claiming indirect-syscall coverage.
 
 Drop-in contract
     BaseModule subclass + CODE/NAME/state/health_pct/self_test + register().
@@ -34,17 +29,19 @@ from __future__ import annotations
 
 import ctypes
 import os
-import time
 
 from angerona.core.module_base import BaseModule, Severity
 
-# ── attempt to import the compiled C extension ───────────────────────────────
-try:
-    import syscall_bridge as _SC_BRIDGE  # type: ignore
-    _BRIDGE_AVAILABLE = True
-except ImportError:
-    _SC_BRIDGE = None
-    _BRIDGE_AVAILABLE = False
+# Native loading deliberately stays off unless Angerona gains a fixed private
+# package namespace, release-manifest publisher/digest validation, no-reparse
+# object binding and an authenticated broker ABI.  Importing a top-level module
+# from ambient ``sys.path`` is never an acceptable availability probe.
+_SC_BRIDGE = None
+_BRIDGE_AVAILABLE = False
+_BRIDGE_REASON = (
+    "native bridge unavailable: no release-manifest-sealed private broker; "
+    "explicit ctypes/psutil fallback active"
+)
 
 # ── ctypes fallback implementations ─────────────────────────────────────────
 _k32 = None
@@ -52,11 +49,32 @@ _k32 = None
 def _k32_lib():
     global _k32
     if _k32 is None and os.name == "nt":
-        _k32 = ctypes.windll.kernel32  # type: ignore
+        # LOAD_LIBRARY_SEARCH_SYSTEM32 avoids current-directory/PATH DLL search.
+        try:
+            kernel = ctypes.WinDLL(
+                "kernel32.dll", use_last_error=True, winmode=0x00000800
+            )
+        except (AttributeError, OSError, TypeError):
+            return None
+        kernel.OpenProcess.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_int,
+            ctypes.c_uint32,
+        ]
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        kernel.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        kernel.TerminateProcess.restype = ctypes.c_int
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel.CloseHandle.restype = ctypes.c_int
+        _k32 = kernel
     return _k32
 
 
 def _ct_terminate(pid: int, exit_code: int = 1) -> bool:
+    if type(pid) is not int or not 1 <= pid <= 0xFFFFFFFF:
+        return False
+    if type(exit_code) is not int or not 0 <= exit_code <= 0xFFFFFFFF:
+        return False
     k = _k32_lib()
     if k is None:
         return False
@@ -64,9 +82,10 @@ def _ct_terminate(pid: int, exit_code: int = 1) -> bool:
     h = k.OpenProcess(PROCESS_TERMINATE, False, pid)
     if not h:
         return False
-    ok = bool(k.TerminateProcess(h, exit_code))
-    k.CloseHandle(h)
-    return ok
+    try:
+        return bool(k.TerminateProcess(h, exit_code))
+    finally:
+        k.CloseHandle(h)
 
 
 def _ct_suspend(pid: int) -> bool:
@@ -108,13 +127,12 @@ class SysBridgeModule(BaseModule):
 
     name = "Indirect Syscall Bridge"
     description = (
-        "Wraps the compiled syscall_bridge.pyd C extension to route critical "
-        "SOAR containment actions (terminate / suspend / resume) via indirect "
-        "NT syscalls, bypassing hooked ntdll exports.  Falls back to ctypes/psutil "
-        "if the .pyd is not compiled."
+        "Uses explicit-prototype ctypes/psutil process controls and exposes a "
+        "truthful unavailable state for the native indirect-syscall bridge until "
+        "a fixed private, release-manifest-sealed broker is installed."
     )
     category = "Response"
-    version = "1.0.0"
+    version = "1.12.1"
     enabled_by_default = True
 
     def __init__(self) -> None:
@@ -124,6 +142,8 @@ class SysBridgeModule(BaseModule):
         self.available: bool = _BRIDGE_AVAILABLE
         self._ops: int = 0
         self._fallback_ops: int = 0
+        if not self.available:
+            self.set_health(55, _BRIDGE_REASON)
 
     # ── dual-contract ────────────────────────────────────────────────────────
     @property
@@ -136,7 +156,7 @@ class SysBridgeModule(BaseModule):
 
     # ── public API ───────────────────────────────────────────────────────────
     def terminate(self, pid: int, exit_code: int = 1) -> bool:
-        """Terminate process.  Prefers indirect syscall; falls back to ctypes."""
+        """Terminate a process through the safe fallback boundary."""
         if _BRIDGE_AVAILABLE:
             try:
                 result = _SC_BRIDGE.terminate_process(pid, exit_code)
@@ -203,13 +223,14 @@ class SysBridgeModule(BaseModule):
                 ssn_probes={k: hex(v) if v is not None else None for k, v in probes.items()},
             )
         else:
-            self.set_health(55, "syscall_bridge.pyd not compiled — ctypes fallback")
+            self.set_health(55, _BRIDGE_REASON)
             self.emit(
-                "SYS: syscall_bridge.pyd not found.  SOAR containment using ctypes "
-                "(vulnerable to ntdll hook bypass).  Compile: "
-                "cd syscall_bridge && python setup.py build_ext --inplace",
+                "SYS: native bridge is not admitted. SOAR containment uses the "
+                "explicit ctypes/psutil fallback and does not claim hook-bypass coverage.",
                 Severity.LOW,
                 mode="ctypes_fallback",
+                native_bridge_admitted=False,
+                native_bridge_reason=_BRIDGE_REASON,
             )
 
         while not self.stopping:
@@ -225,8 +246,8 @@ class SysBridgeModule(BaseModule):
         if not _BRIDGE_AVAILABLE:
             return (
                 True,
-                "syscall_bridge.pyd absent — ctypes fallback active.  "
-                "Compile syscall_bridge/ for full hardening.",
+                "No sealed private native bridge admitted; explicit ctypes/psutil "
+                "fallback active and health is truthfully degraded.",
             )
         # Probe SSNs for the three core functions
         results = {}

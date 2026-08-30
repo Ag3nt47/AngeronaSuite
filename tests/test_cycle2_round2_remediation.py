@@ -8,10 +8,17 @@ import threading
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from angerona.connectors.research import Research
 from angerona.connectors.research_fetchers import register_research_tool
 from angerona.core.assistant import Assistant, Tool, ToolKind
+from angerona.core.eventbus import BusAuthority, EventBus
+from angerona.core.storage import FlightRecorder
+from angerona.modules.purple_guard import (
+    PurpleGuard,
+    acquire_redteam_validation_lease,
+)
 from angerona.shark.red_team import RedTeamEngine
 from angerona.shark.shark_attack import SharkAttackEngine
 
@@ -30,7 +37,9 @@ def _stop_during_jitter(engine, start, waiting: threading.Event) -> float:
     return time.monotonic() - began
 
 
-def test_stop_cancels_both_drills_before_later_side_effects(tmp_path: Path) -> None:
+def test_stop_cancels_both_drills_before_later_side_effects(
+    tmp_path: Path, monkeypatch
+) -> None:
     red_waiting = threading.Event()
     red_events: list[str] = []
 
@@ -40,9 +49,37 @@ def test_stop_cancels_both_drills_before_later_side_effects(tmp_path: Path) -> N
             red_waiting.set()
 
     red_dir = tmp_path / "red"
-    red = RedTeamEngine(tmp_path / "red-data", documents_dir=red_dir, on_event=on_red)
-    red_elapsed = _stop_during_jitter(
-        red, lambda: red.start(jitter_range=(5.0, 5.0), noise_chance=0.0), red_waiting)
+    red_root = tmp_path / "red-data"
+    monkeypatch.setattr(
+        BusAuthority,
+        "_key_path",
+        staticmethod(lambda: red_root / "bus.key"),
+    )
+    bus = EventBus()
+    recorder = FlightRecorder(red_root / "flight-recorder.db")
+    bus.arm(recorder.authority)
+    bus.subscribe(recorder.record_bus, delivery_budget_ms=60_000)
+    guard = PurpleGuard(red_root)
+    guard.bind(bus)
+    manager = SimpleNamespace(modules={guard.name: guard}, bus=bus)
+    lease = acquire_redteam_validation_lease(
+        manager, bus, recorder, red_root, red_dir, timeout=3
+    )
+    red = RedTeamEngine(red_root, documents_dir=red_dir, on_event=on_red)
+    try:
+        red_elapsed = _stop_during_jitter(
+            red,
+            lambda: red.start(
+                jitter_range=(5.0, 5.0),
+                noise_chance=0.0,
+                validation_lease=lease,
+            ),
+            red_waiting,
+        )
+    finally:
+        lease.release()
+        guard.stop()
+        recorder.close()
     assert red_elapsed < 1.0 and not red.is_running and not red._thread.is_alive()
     assert red.steps == [] and not list(red_dir.glob("_redteam_*"))
     assert not any("Attack complete" in message for message in red_events)

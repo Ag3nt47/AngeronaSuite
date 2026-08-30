@@ -105,31 +105,23 @@ def test_kill_verify_distinguishes_access_denied_from_target_exit(monkeypatch) -
     assert actions.KillProcessAction().verify({}, record) is True
 
 
-def test_driver_action_requires_success_and_restores_exact_prior_mode(monkeypatch, tmp_path: Path) -> None:
+def test_driver_action_rejects_untyped_service_name_without_mutation(monkeypatch, tmp_path: Path) -> None:
     calls: list[list[str]] = []
-    replies = iter(
-        [
-            SimpleNamespace(returncode=0, stdout="START_TYPE : 2 AUTO_START", stderr=""),
-            SimpleNamespace(returncode=0, stdout="", stderr=""),
-            SimpleNamespace(returncode=0, stdout="START_TYPE : 4 DISABLED", stderr=""),
-            SimpleNamespace(returncode=0, stdout="", stderr=""),
-        ]
-    )
 
     def run(command, **kwargs):
         del kwargs
         calls.append(command)
-        return next(replies)
+        raise AssertionError("an untyped driver name must never reach service control")
 
     monkeypatch.setattr(actions, "run_hidden", run)
     action = actions.DisableDriverServiceAction()
     record = action.apply({"driver": "bad.sys"}, tmp_path)
 
-    assert record["ok"] is True
-    assert record["prior_start"] == "auto"
-    assert action.verify({}, record) is True
-    assert action.rollback(record)["ok"] is True
-    assert calls[-1][-1] == "auto"
+    assert record["ok"] is False
+    assert record["changed"] is False
+    assert "authenticated exact-target" in record["error"]
+    assert action.matches({"driver": "bad.sys"}) is False
+    assert calls == []
 
 
 def test_network_isolation_partial_apply_fails_and_rolls_back(monkeypatch, tmp_path: Path) -> None:
@@ -139,13 +131,15 @@ def test_network_isolation_partial_apply_fails_and_rolls_back(monkeypatch, tmp_p
     def run(command, **kwargs):
         del kwargs
         calls.append(command)
+        if "show" in command:
+            return SimpleNamespace(returncode=1, stdout="No rules match", stderr="")
         if "add" in command:
             return SimpleNamespace(returncode=next(add_codes), stdout="", stderr="denied")
         return SimpleNamespace(returncode=0, stdout="deleted", stderr="")
 
     monkeypatch.setattr(actions, "run_hidden", run)
     action = actions.NetworkIsolationAction()
-    record = action.apply({"remote_ip": "203.0.113.25"}, tmp_path)
+    record = action.apply({"remote_ip": "8.8.8.8"}, tmp_path)
 
     assert record["ok"] is False
     assert action.verify({}, record) is False

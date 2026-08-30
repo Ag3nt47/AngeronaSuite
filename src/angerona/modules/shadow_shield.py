@@ -63,7 +63,7 @@ class ShadowShield(BaseModule):
     CODE = "SHDW"
     description = "Ransomware file shielding via a delta version cache and VSS snapshots."
     category = "Response"
-    version = "1.0.0"
+    version = "1.12.1"
 
     def __init__(self) -> None:
         super().__init__()
@@ -273,53 +273,32 @@ class ShadowShield(BaseModule):
     # ── Rollback (called by RANS / SOAR) ─────────────────────────────────────
     def trigger_rollback(self, before_ts: Optional[float] = None,
                          paths: Optional[list[str]] = None) -> dict:
-        """Restore cached file versions in place.
+        """Retired unsafe bulk rollback entry point; never mutates host files.
 
-        Args:
-            before_ts: if given, restore the newest cached version whose mtime is
-                       *older* than this timestamp — i.e. the last clean copy from
-                       before an encryption event. If None, restore the newest.
-            paths:     limit to these source paths; None = every cached file.
-
-        Returns {'restored': [...], 'failed': [...]}. Never raises.
+        Cache pathnames and ``_source.txt`` metadata are not response authority.
+        Callers must enumerate a reviewed artifact with ``list_artifacts`` and
+        pass that exact signed/digested artifact to ``restore_artifact``.  This
+        compatibility method remains so older integrations fail closed instead
+        of silently regaining the former pathname-based mutation behavior.
         """
-        restored, failed = [], []
-        try:
-            keydirs = ([self._keydir(p) for p in paths] if paths
-                       else [d for d in self._cache_dir.iterdir() if d.is_dir()])
-        except Exception:
-            keydirs = []
-
-        cutoff_ns = int(before_ts * 1e9) if before_ts else None
-        for kd in keydirs:
-            try:
-                src_idx = kd / "_source.txt"
-                if not src_idx.exists():
-                    continue
-                src = src_idx.read_text(encoding="utf-8").strip()
-                versions = sorted(kd.glob("*.bak"),
-                                  key=lambda p: int(p.stem), reverse=True)
-                chosen = None
-                for v in versions:
-                    if cutoff_ns is None or int(v.stem) < cutoff_ns:
-                        chosen = v
-                        break
-                if chosen is None:
-                    failed.append(src)
-                    continue
-                os.makedirs(os.path.dirname(src), exist_ok=True)
-                shutil.copy2(chosen, src)
-                restored.append(src)
-            except Exception:
-                failed.append(str(kd))
-
-        self._rollbacks += 1
+        requested = [str(path) for path in (paths or [])][:50]
         self.emit(
-            f"Rollback executed: {len(restored)} file(s) restored, {len(failed)} failed.",
-            Severity.HIGH if restored else Severity.MEDIUM,
-            restored=restored[:50], failed=failed[:50], before_ts=before_ts,
+            "Legacy bulk rollback refused: select one exact cache artifact and "
+            "use the scoped restore workflow.",
+            Severity.HIGH,
+            restored=[],
+            failed=requested,
+            before_ts=before_ts,
+            response_authorized=False,
+            proposal_only=True,
+            remediation="Review list_artifacts() evidence and call restore_artifact().",
         )
-        return {"restored": restored, "failed": failed}
+        return {
+            "restored": [],
+            "failed": requested,
+            "refused": True,
+            "reason": "legacy pathname rollback retired; exact artifact required",
+        }
 
     # ── VSS ───────────────────────────────────────────────────────────────────
     def _take_vss_snapshot(self, drive: str = "C:\\") -> Optional[str]:

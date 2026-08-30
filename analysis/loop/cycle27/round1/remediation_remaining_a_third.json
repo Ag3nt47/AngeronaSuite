@@ -1,0 +1,73 @@
+{
+  "schema": "angerona.cycle27.remaining-a-third-remediation.v1",
+  "date": "2026-08-28",
+  "scope": ["A02", "A03", "A07", "A14"],
+  "versions": {
+    "AdversaryCombat": "1.12.1",
+    "AVTelemetryBridgeModule": "1.12.1",
+    "DeceptionModule": "1.12.1",
+    "DriverProvenanceGuard": "1.12.1"
+  },
+  "frozen_gate_modified": false,
+  "deception_modified_by_this_remediation": false,
+  "closures": [
+    {
+      "id": "C27-R1-A02-THIRD-01",
+      "severity": "HIGH",
+      "status": "closed",
+      "control": "Canonical HMAC of all nested retained records, exact-object index verification, and deep-copy egress",
+      "files": ["src/angerona/modules/adversary_combat.py"]
+    },
+    {
+      "id": "C27-R1-A03-THIRD-01",
+      "severity": "MEDIUM",
+      "status": "closed-for-frozen-ntfs-boundary",
+      "control": "Terminal exact-object proof executes inside the retained final journal writer before applied append",
+      "files": ["src/angerona/modules/adversary_combat.py"]
+    },
+    {
+      "id": "C27-R1-A07-THIRD-01",
+      "severity": "HIGH",
+      "status": "closed",
+      "control": "Authenticated v2 independent full-row outbox witness rejects older database replay and missing enrollment",
+      "files": ["src/angerona/modules/av_telemetry_bridge.py"]
+    },
+    {
+      "id": "C27-R1-A07-THIRD-02",
+      "severity": "HIGH",
+      "status": "closed",
+      "control": "Cursor/anchor preflight and durable claim witness both precede downstream publication",
+      "files": ["src/angerona/modules/av_telemetry_bridge.py"]
+    },
+    {
+      "id": "C27-R1-A14-THIRD-01",
+      "severity": "HIGH",
+      "status": "closed-in-process",
+      "control": "Locked bounded receipt-consumption registry shared by authority/host/install/boot trust domain",
+      "files": ["src/angerona/modules/driver_provenance_guard.py"]
+    }
+  ],
+  "validation": {
+    "frozen_second_independent_reattack": {"passed": 19, "failed": 0},
+    "third_remediation": {"passed": 8, "failed": 0},
+    "combined_scoped_compatibility": {"passed": 109, "failed": 0},
+    "compileall": "passed",
+    "ruff": "passed",
+    "diff_check": "passed-with-line-ending-notices",
+    "self_tests": {
+      "AVTelemetryBridgeModule": "passed",
+      "DriverProvenanceGuard": "passed",
+      "AdversaryCombat": "not-running-status-only"
+    }
+  },
+  "inert_fixtures_only": true,
+  "host_mutation_performed": false,
+  "commit_performed": false,
+  "publication_performed": false,
+  "residuals": [
+    "Private Python memory and its key are not isolated from arbitrary same-process code.",
+    "NTFS namespace topology and a JSONL journal append are not one atomic kernel transaction; exact object custody and proof cover the retained writer boundary.",
+    "Crash between separate outbox and witness commits fails closed; coordinated rollback of both needs an external monotonic witness.",
+    "Driver receipt consumption is shared across in-process instances, not persisted across process or reboot boundaries."
+  ]
+}

@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import subprocess
 from collections import deque
 from typing import Dict, Optional, Set, Tuple
@@ -63,7 +64,7 @@ _BAD_CMD_HINTS = ("powershell", "-enc", "-encodedcommand", "-w hidden", "-window
                   "mshta", "rundll32", "regsvr32", "wscript", "cscript", "certutil",
                   "bitsadmin", "frombase64string", "iex", "invoke-expression", "curl ", "wget ")
 _SUBPROCESS_FLAGS = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
-_MAX_STARTUP_HASH_BYTES = 32 * 1024 * 1024
+_MAX_STARTUP_HASH_BYTES = 512 * 1024 * 1024
 _HASH_CHUNK_BYTES = 1024 * 1024
 _MAX_REPORTED_CHANGES = 10_000
 _MAX_COLLECTOR_OUTPUT_BYTES = 8 * 1024 * 1024
@@ -107,7 +108,7 @@ class PersistenceSweepModule(BaseModule):
                   "services, scheduled tasks, WMI subscriptions, startup folders); "
                   "flags new and suspicious entries.")
     category = "Persistence"
-    version = "1.1.0"
+    version = "1.12.1"
     supported_platforms = ("windows",)
     capability_mode = "detect"
     capability_inputs = (
@@ -250,6 +251,7 @@ class PersistenceSweepModule(BaseModule):
             self._surface_complete(label, names)
 
     def _collect_startup(self) -> None:
+        hash_budget = _MAX_STARTUP_HASH_BYTES
         folders = []
         appdata = os.environ.get("APPDATA")
         programdata = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
@@ -264,40 +266,19 @@ class PersistenceSweepModule(BaseModule):
                     if e.is_file():
                         names.add(e.name)
                         try:
-                            stat_result = e.stat(follow_symlinks=False)
-                            digest = ""
-                            if (
-                                e.is_file(follow_symlinks=False)
-                                and 0 <= stat_result.st_size <= _MAX_STARTUP_HASH_BYTES
-                            ):
-                                hasher = hashlib.sha256()
-                                with open(e.path, "rb") as handle:
-                                    remaining = stat_result.st_size
-                                    while remaining:
-                                        chunk = handle.read(
-                                            min(_HASH_CHUNK_BYTES, remaining)
-                                        )
-                                        if not chunk:
-                                            raise OSError(
-                                                "startup file changed while hashing"
-                                            )
-                                        hasher.update(chunk)
-                                        remaining -= len(chunk)
-                                    if handle.read(1):
-                                        raise OSError(
-                                            "startup file grew while hashing"
-                                        )
-                                digest = hasher.hexdigest()
-                            self._values[f"{label}\x00{e.name}"] = json.dumps(
-                                {
-                                    "path": e.path,
-                                    "size": stat_result.st_size,
-                                    "mtime_ns": stat_result.st_mtime_ns,
-                                    "sha256": digest or "not-hashed-size-bound",
-                                },
-                                sort_keys=True,
-                                separators=(",", ":"),
+                            record, consumed, verified = self._startup_file_record(
+                                e.path,
+                                budget_bytes=hash_budget,
                             )
+                            hash_budget -= consumed
+                            self._values[f"{label}\x00{e.name}"] = json.dumps(
+                                record, sort_keys=True, separators=(",", ":")
+                            )
+                            if not verified:
+                                partial_error = (
+                                    f"startup hash budget deferred {e.name!r} "
+                                    f"({record.get('size', 'unknown')} bytes)"
+                                )
                         except OSError as exc:
                             partial_error = str(exc) or "startup file metadata/hash changed"
                             self._values[f"{label}\x00{e.name}"] = e.path
@@ -311,6 +292,82 @@ class PersistenceSweepModule(BaseModule):
                 self._surface_unknown(label, partial_error, partial=True)
             else:
                 self._surface_complete(label, names)
+
+    @staticmethod
+    def _startup_file_record(
+        path: str,
+        *,
+        budget_bytes: int,
+    ) -> tuple[dict[str, object], int, bool]:
+        """Hash one no-follow, identity-held startup file within a sweep budget.
+
+        Returning ``verified=False`` is never equivalent to a clean digest: the
+        caller marks the whole surface PARTIAL so preserved size/mtime metadata
+        cannot hide oversized content replacement behind health 100.
+        """
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise OSError("startup entry is not a regular file")
+            if bool(getattr(before, "st_file_attributes", 0) & 0x400):
+                raise OSError("startup entry is a reparse point")
+            identity = {
+                "path": str(path),
+                "size": int(before.st_size),
+                "mtime_ns": int(before.st_mtime_ns),
+                "device": int(before.st_dev),
+                "inode": int(before.st_ino),
+            }
+            if before.st_size < 0 or before.st_size > max(0, int(budget_bytes)):
+                return (
+                    {
+                        **identity,
+                        "sha256": "",
+                        "integrity_status": "pending-hash-budget",
+                    },
+                    0,
+                    False,
+                )
+            hasher = hashlib.sha256()
+            remaining = int(before.st_size)
+            while remaining:
+                chunk = os.read(descriptor, min(_HASH_CHUNK_BYTES, remaining))
+                if not chunk:
+                    raise OSError("startup file changed while hashing")
+                hasher.update(chunk)
+                remaining -= len(chunk)
+            if os.read(descriptor, 1):
+                raise OSError("startup file grew while hashing")
+            after = os.fstat(descriptor)
+            if (
+                before.st_dev != after.st_dev
+                or before.st_ino != after.st_ino
+                or before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns
+            ):
+                raise OSError("startup file identity changed while hashing")
+            current = os.stat(path, follow_symlinks=False)
+            if (
+                current.st_dev != after.st_dev
+                or current.st_ino != after.st_ino
+                or current.st_size != after.st_size
+                or current.st_mtime_ns != after.st_mtime_ns
+                or bool(getattr(current, "st_file_attributes", 0) & 0x400)
+            ):
+                raise OSError("startup path changed after hashing")
+            return (
+                {
+                    **identity,
+                    "sha256": hasher.hexdigest(),
+                    "integrity_status": "verified",
+                },
+                int(before.st_size),
+                True,
+            )
+        finally:
+            os.close(descriptor)
 
     def _collect_services(self) -> None:
         if psutil is None or not hasattr(psutil, "win_service_iter"):

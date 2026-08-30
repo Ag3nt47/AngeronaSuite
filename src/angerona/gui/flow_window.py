@@ -231,18 +231,68 @@ class FlowWindow(QDialog):
         tele_toggle.toggled.connect(self._toggle_tele_panel)
         tele_toggle.toggled.connect(
             lambda on: tele_toggle.setText("Host telemetry ▲" if on else "Host telemetry ▼"))
+        sentinel = QPushButton("SentinelLens")
+        sentinel.setObjectName("SentinelLensButton")
+        sentinel.setAccessibleName("Open SentinelLens threat-hunting graph")
+        sentinel.setToolTip(
+            "Open the local-only, clickable attack-chain and log-anomaly explorer."
+        )
+        sentinel.clicked.connect(self._open_sentinel_lens)
         fit = QPushButton("Fit")
-        fit.clicked.connect(lambda: self.view.fitInView(self.scene.itemsBoundingRect(), Qt.KeepAspectRatio))
+        fit.clicked.connect(self._fit_scene)
         close = QPushButton("Close")
         close.clicked.connect(self.close)
-        row.addWidget(tele_toggle); row.addWidget(fit); row.addWidget(close)
+        row.addWidget(tele_toggle); row.addWidget(sentinel); row.addWidget(fit); row.addWidget(close)
         root.addLayout(row)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(2000)
         self._refresh()
-        QTimer.singleShot(0, lambda: self.view.fitInView(self.scene.itemsBoundingRect(), Qt.KeepAspectRatio))
+        # A parented one-shot is cancelled automatically if a short-lived test
+        # or operator action deletes World View before the next event-loop turn.
+        # A context-free singleShot lambda used to retain the deleted wrapper
+        # and later raise "Internal C++ object (FlowWindow) already deleted".
+        self._initial_fit_timer = QTimer(self)
+        self._initial_fit_timer.setSingleShot(True)
+        self._initial_fit_timer.timeout.connect(self._fit_scene)
+        self._initial_fit_timer.start(0)
+
+    def _fit_scene(self) -> None:
+        self.view.fitInView(
+            self.scene.itemsBoundingRect(), Qt.KeepAspectRatio
+        )
+
+    def _open_sentinel_lens(self) -> None:
+        """Open one reusable local-first hunt workspace from World View."""
+        current = getattr(self, "_sentinel_lens", None)
+        if current is not None:
+            try:
+                current.show()
+                current.raise_()
+                current.activateWindow()
+                return
+            except RuntimeError:
+                self._sentinel_lens = None
+        from angerona.gui.sentinel_lens import SentinelLensDialog
+
+        # Parent to the main application window when possible so closing World
+        # View cannot destroy a still-running local-AI QThread in SentinelLens.
+        owner = self.parentWidget() or self
+        dialog = SentinelLensDialog(
+            self.bus,
+            self.manager,
+            owner,
+            config=self.config,
+            service=getattr(self.manager, "sentinel_lens_service", None),
+        )
+        dialog.setStyleSheet(self.styleSheet())
+        # Keep the Python reference until the next open. The guarded reuse path
+        # above recognizes a deleted Qt wrapper. Connecting destroyed to a
+        # lambda that captures this WA_DeleteOnClose window can itself fire
+        # after FlowWindow's C++ object has gone away in combined test order.
+        self._sentinel_lens = dialog
+        dialog.show()
 
     def _build_scene(self):
         pos = {n[0]: QPointF(float(n[3]), float(n[4])) for n in _NODES}

@@ -253,6 +253,8 @@ class UsbApprovalPolicy:
         lockout_seconds: float = 300.0,
         max_mounts: int = 64,
         pin_writer: Callable[[str], None] | None = None,
+        identity_provider: Callable[[str], str] | None = None,
+        require_identity: bool = False,
     ) -> None:
         if not 1 <= int(max_attempts) <= 10:
             raise ValueError("max_attempts must be between 1 and 10")
@@ -262,6 +264,8 @@ class UsbApprovalPolicy:
             raise ValueError("max_mounts must be between 1 and 512")
         self._pin_loader = pin_loader or _protected_usb_pin
         self._pin_writer = pin_writer
+        self._identity_provider = identity_provider
+        self._require_identity = bool(require_identity)
         self._clock = clock
         self._max_attempts = int(max_attempts)
         self._lockout_seconds = float(lockout_seconds)
@@ -388,6 +392,13 @@ class UsbApprovalPolicy:
                 record.state = "enrollment_required"
                 record.attempts_remaining = 0
                 return self._decision(record, False, "pin_not_configured")
+            if self._require_identity and not record.volume_id:
+                # A mount letter alone is transferable across insertions.  The
+                # production USB monitor therefore cannot turn a transient
+                # identity-probe failure into trusted scanning authority.
+                record.state = "identity_unavailable"
+                record.attempts_remaining = 1
+                return self._decision(record, False, "identity_unavailable")
             if matched and _PIN_RE.fullmatch(candidate):
                 record.state = "trusted"
                 record.attempts_remaining = 1
@@ -417,7 +428,9 @@ class UsbApprovalPolicy:
         with self._lock:
             rows = []
             for record in self._by_id.values():
-                if record.state in {"enrollment_required", "pending", "locked"}:
+                if record.state in {
+                    "enrollment_required", "pending", "locked", "identity_unavailable"
+                }:
                     rows.append(record.view())
             return tuple(sorted(rows, key=lambda item: item.detected_at))
 
@@ -430,6 +443,15 @@ class UsbApprovalPolicy:
             token = self._by_mount.get(key)
             record = self._by_id.get(token or "")
             return record.state if record is not None else "untrusted"
+
+    def approval_binding(self, approval_id: object) -> tuple[str, str] | None:
+        """Return the secret-free mount/identity bound to one live approval."""
+        token = str(approval_id or "")
+        with self._lock:
+            record = self._by_id.get(token)
+            if record is None:
+                return None
+            return record.mountpoint, record.volume_id
 
     def _trust_state_for_target(self, target: object) -> str | None:
         """Return state when ``target`` belongs to a mount owned by this policy."""
@@ -445,7 +467,27 @@ class UsbApprovalPolicy:
             mountpoint = max(matches, key=len)
             token = self._by_mount.get(mountpoint, "")
             record = self._by_id.get(token)
-            return record.state if record is not None else "untrusted"
+            if record is None:
+                return "untrusted"
+            state = record.state
+            expected_identity = record.volume_id
+        if state != "trusted" or self._identity_provider is None:
+            return state
+        try:
+            current_identity = str(self._identity_provider(mountpoint) or "").strip().casefold()
+        except Exception:
+            current_identity = ""
+        if current_identity and hmac.compare_digest(current_identity, expected_identity):
+            return "trusted"
+        # Recheck the exact record before revoking; removal/reinsertion may have
+        # replaced the mount's approval while the OS identity query ran.
+        with self._lock:
+            current_token = self._by_mount.get(mountpoint, "")
+            current = self._by_id.get(current_token)
+            if current is record and current.state == "trusted":
+                current.state = "identity_unavailable"
+                current.attempts_remaining = 1
+            return current.state if current is not None else "untrusted"
 
     def remove(self, mountpoint: object) -> bool:
         """Forget every decision when media is removed; trust never persists."""

@@ -1,0 +1,67 @@
+[
+  {
+    "original_id": "C27-R1-A01",
+    "verdict": "REOPENED_PARTIAL",
+    "residual_severity": "MEDIUM",
+    "components": [
+      "src/angerona/modules/adversary_combat.py:1679-1954",
+      "src/angerona/modules/adversary_combat.py:2098-2328",
+      "src/angerona/modules/adversary_combat.py:2583-2608"
+    ],
+    "controls_verified": [
+      "A surviving schema-2 witness rejects copied schema-1 anchor/journal replay without changing the witness.",
+      "Current-schema witness loss, older-witness substitution, and journal-key substitution fail closed at health 0.",
+      "Interruptions before protected-anchor advance or before witness advance restart at health 0 with the corresponding transaction mismatch.",
+      "Cross-thread and cross-process writer contention is rejected, a crashed process releases the lease, and a static two-link journal is rejected before append.",
+      "Complete terminal semantics, selected disposition/reason binding, monotonic expiry, restart invalidation, and one-time consumption remain effective."
+    ],
+    "residuals": [
+      {
+        "severity": "MEDIUM",
+        "title": "Witness deletion re-enables schema-1 migration and lowers Combat authority",
+        "evidence": "After an irreversible intent/orphan advanced current state, deleting the current witness and restoring a copied HMAC-valid schema-1 empty anchor plus matching empty journal made reconcile return true at health 100 with mutation_blocked=false, pending={}, and a recreated lower witness. The stable signing key was retained; no witness was restored or forged."
+      },
+      {
+        "severity": "LOW",
+        "title": "Journal path removal after the final reread still returns durable-intent success",
+        "evidence": "Removing the canonical journal immediately after the final strict reread returned its verified in-memory list made _journal_intent return success while the journal path was absent and the protected anchor was at sequence 1. Restart failed closed, but the irreversible caller can cross its mutation boundary after exact durable intent custody is already lost. A between-read/append swap also wrote 552 signed bytes to an inert alternate single-link file before final verification rejected it."
+      },
+      {
+        "severity": "LOW",
+        "title": "Unbounded pre-authentication journal parsing can crash Combat",
+        "evidence": "The complete journal is read, joined, decoded, split, and JSON-parsed without byte/line/depth budgets. An 8,002-byte nested unsigned prefix raised RecursionError out of _reconcile_state; arbitrarily large unsigned prefixes amplify memory before authentication."
+      }
+    ],
+    "architectural_boundary": "Restoring the journal, protected anchor, and recovery witness together while retaining the stable signing key is accepted at health 100. This disclosed all-local schema-2 rollback requires TPM monotonic state or an external append-only witness to distinguish.",
+    "exploitability_boundary": "The legacy downgrade requires a copied authentic pre-upgrade anchor/journal and privileged state-root modification, but no HMAC forgery, current-key change, witness restoration, or human recovery decision. Path-race and parser residuals require state-root write/race access and primarily affect integrity availability, so they are LOW.",
+    "recommendation": "Disable automatic schema-1 migration in the runtime and require an explicit audited upgrade/recovery transaction. Retain a descriptor-pinned journal and writer lease through the host mutation and terminal append, binding append to the initially read object. Add strict byte, line, record, nesting, and decode-time budgets and fail health 0 on parser/resource errors."
+  },
+  {
+    "original_id": "C27-R1-A16",
+    "verdict": "REOPENED_PARTIAL",
+    "residual_severity": "HIGH",
+    "components": [
+      "src/angerona/modules/etw_listener.py:147-240",
+      "src/angerona/modules/etw_listener.py:509-770",
+      "src/angerona/modules/etw_listener.py:948-1577",
+      "src/angerona/modules/etw_listener.py:1589-2144"
+    ],
+    "controls_verified": [
+      "A surviving current authority witness rejects copied schema-1 anchor/cursor/high-water/channel replay without changing the witness.",
+      "Current-schema witness deletion, older-witness substitution, and EventBus/cursor-key substitution fail incomplete at health 45 and replay records.",
+      "Interruptions after high-water append, cursor replacement, or protected-anchor replacement restart at health 45 and replay the retained channel.",
+      "Complete length-delimited event identity and exact insertion, byte, retained-record, and elapsed-time budgets remain fail-incomplete above their limits.",
+      "The state-root process/OS writer lease rejects a competing process, releases after crash, and preserves the directly tested duplicate-writer/hard-link cases."
+    ],
+    "residuals": [
+      {
+        "severity": "HIGH",
+        "title": "Witness deletion is misclassified as a pre-upgrade Security authority",
+        "evidence": "After records 4-6 advanced current schema-2 state, deleting the current witness and restoring a copied HMAC-valid schema-1 anchor with matching cursor/high-water/channel at record 3 caused automatic migration to recreate a lower witness. Restart emitted [], loaded cursor sequence 1/bookmark 3, retained gap='', and reported health 100."
+      }
+    ],
+    "architectural_boundary": "Restoring the channel and every schema-2 local object, including cursor, high-water, protected anchor, authority witness, and stable signing identity, is accepted at health 100. TPM NV or an independent witness is required for complete host-snapshot rollback proof.",
+    "exploitability_boundary": "The residual needs an authentic pre-upgrade snapshot plus privileged Security-channel/protected-state rollback. It does not need the current cursor key, a forged HMAC, a restored old witness, or a new enrollment approval, preserving HIGH severity for the original telemetry-erasure threat model.",
+    "recommendation": "Reject schema 1 in the running sensor even when the witness is absent. Perform legitimate migration only through an explicit installer/operator transaction that establishes a new schema-2 authority and requires complete replay or audited enrollment before health can recover. Preserve the full identity, honest budgets, transaction ordering, live verification, and writer lease."
+  }
+]

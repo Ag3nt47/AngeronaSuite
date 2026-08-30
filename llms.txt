@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
-Version: 1.12.0
-Date: 2026-08-28
+Version: 1.12.1
+Date: 2026-08-29
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -22,7 +22,54 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST: v1.12.0 / Cycle 25
+## LATEST: v1.12.1 / Cycles 26-30
+
+- Inventory truth: 81 Windows-target built-in capabilities, six native v12
+  contracts and 75 explicit compatibility adapters. Every built-in module
+  implementation label is 1.12.1; this does not turn compatibility metadata
+  into native declarations or claim detection efficacy.
+- SentinelLens is a bounded in-memory threat-hunting graph over explicit
+  Syslog, Windows Event JSON/JSONL, NetFlow JSON/JSONL, and live EventBus
+  evidence. An app-owned background service performs bounded non-blocking
+  ingestion, reports queue/parser/analysis loss, and maintains deterministic
+  snapshots without delaying sensors. It shows anomaly reasons, exact node
+  evidence, and proposal-only remediation. Optional model explanation is
+  restricted to a strict loopback endpoint; no cloud fallback or public/LAN
+  listening socket is created.
+- Guided Auto Adapt combines security-intent choices, complete-evidence gates,
+  immutable exact planning, no-write simulation, recovery-baseline custody,
+  and separate final approval. The recovery baseline covers complete Windows
+  Firewall policy only, not the whole host.
+- Every sub-100 module state requires a bounded reason. When provenance is
+  provable, Capability Center/Module Inspector show a governed repository path,
+  SHA-256 source identity, exact line, public source link, and red read-only line
+  highlight. A missing field anchors explicitly to its owning class declaration;
+  unavailable or untrusted runtime source is disclosed instead of guessed.
+  Unknown, stale, lossy, unsupported, or untrusted evidence cannot be complete.
+- Five three-round defensive loops (26-30) reviewed all built-in module files,
+  compared primary-source upstream projects, added per-module gates, and used
+  repeated independent hostile re-attacks. Tests are inert and temporary; no
+  live exploitation, credential collection, persistence, hack-back, or remote
+  target scanning is performed.
+- Red Team Simulation binds the complete mandatory plan/denominator, exact
+  process and detector generations, object custody, native receipts, and the
+  signed AAR display/action handoff. The GUI defaults to 38 mandatory stages and
+  37 simulation-validation contracts, including 24 fixed inert marker probes;
+  native analytic catches remain separately reported. It is not a penetration-
+  testing engine and executes none of the named ATT&CK behaviors.
+- GitHub security scans were green. The prior Windows CI failure was isolated
+  to CRLF conversion of a byte-canonical fixture and an incomplete symlink-test
+  trust pin; the fixes preserve strict production validation.
+- Terminal release evidence on the exact v1.12.1 tree:
+  2659 passed / 13 intentional host-platform
+  skips / 0 failed; `compileall`, Ruff, selfcheck 26/26, workflow-policy,
+  dependency-audit, documentation-drift, and diff gates passed. Canonical-main
+  publication and public README-asset verification remain a separate guarded
+  proof until `publication_done` becomes true.
+- Detailed evidence: `analysis/loop/cycles26-30-summary.md` and
+  `analysis/loop/cycle26/` through `analysis/loop/cycle30/`.
+
+## PRIOR: v1.12.0 / Cycle 25
 
 ### Capability and version truth
 
@@ -353,7 +400,18 @@ Development:
     python run_aria_selftests.py
     run-adversary-combat-validation.bat
 
-Current focused Cycle 25 evidence:
+Current v1.12.1 terminal evidence:
+
+- Authoritative serial release gate: 2659 passed,
+  13 intentional host-platform skips, 0 failed.
+- Static discovery: 81 capabilities, comprising six native contracts and 75
+  compatibility adapters; all built-in implementation labels are 1.12.1.
+- `compileall`, Ruff, selfcheck 26/26, workflow policy, dependency audit,
+  documentation drift, and diff checks pass on the release tree.
+- Canonical public-main and README-image byte proof is recorded only after the
+  guarded publisher completes.
+
+Prior v1.12.0 / Cycle 25 evidence:
 
 - Authoritative serial release gate including all final-performance tests:
   1,811 passed, 6 expected host-platform skips, 0 failed.
@@ -489,6 +547,7 @@ prove attribution, product efficacy, or completeness.
 - Human manual: `Angerona_Master_Manual.docx`
 - Public overview and screenshots: `README.md`
 - Current capability sheet: `ANGERONA_CAPABILITIES.md`
+- Cycles 26-30 release summary: `analysis/loop/cycles26-30-summary.md`
 - Cycle 25 summary: `analysis/loop/cycle25/summary.md`
 - Cycle 25 finding reconciliation:
   `analysis/loop/cycle25/prior_findings.md`

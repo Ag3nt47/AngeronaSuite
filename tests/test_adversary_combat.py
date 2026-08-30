@@ -211,9 +211,14 @@ def test_shark_network_evidence_and_combat_action_correlate_exactly():
     detection = Event(
         "Network Monitor",
         "first contact",
-        Severity.LOW,
+        Severity.MEDIUM,
         started + 0.2,
-        {"pid": 4242, "raddr": "203.0.113.10:443"},
+        {
+            "pid": 4242,
+            "raddr": "203.0.113.10:443",
+            "evidence_type": "native_analytic_detection",
+            "detector_verdict": "positive",
+        },
     )
     response = Event(
         "Adversary Combat",
