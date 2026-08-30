@@ -67,11 +67,12 @@ kernel component is a product capability.
 - Terminal release evidence on the exact v1.12.1 tree:
   2669 passed / 13 intentional host-platform
   skips / 0 failed; `compileall`, Ruff, selfcheck 26/26, workflow-policy,
-  dependency-audit, documentation-drift, and diff gates passed. Prior guarded
-  publication verified release commit `0906e5bf8598379a7e7ed1477c180378c41d8e73`,
-  completion commit `dca1adebd4a8d5b37d0f9b28487e4d33c5d1adca`, and
-  all 4/4 README images. The remediated candidate is awaiting guarded
-  republication and exact-SHA CI/Security assurance.
+  dependency-audit, documentation-drift, and diff gates passed. Guarded
+  publication verified the remediated release commit
+  `6fb06498e2ae631913db58f2d12b7489acfa1b9e` on canonical public `main` and
+  all 4/4 README images byte-for-byte. The completion record is published by a
+  second guarded fast-forward; exact-final-SHA CI and Security assurance are
+  checked on GitHub rather than inferred locally.
 - Detailed evidence: `analysis/loop/cycles26-30-summary.md` and
   `analysis/loop/cycle26/` through `analysis/loop/cycle30/`.
 
@@ -414,9 +415,10 @@ Current v1.12.1 terminal evidence:
   compatibility adapters; all built-in implementation labels are 1.12.1.
 - `compileall`, Ruff, selfcheck 26/26, workflow policy, dependency audit,
   documentation drift, and diff checks pass on the release tree.
-- Prior guarded publication verified canonical public `main` at completion
-  commit `dca1adebd4a8d5b37d0f9b28487e4d33c5d1adca`; all 4/4 README images matched
-  byte-for-byte. The post-CI remediation candidate is pending republication.
+- Guarded post-CI publication verified canonical public `main` at remediated
+  release commit `6fb06498e2ae631913db58f2d12b7489acfa1b9e`; all 4/4 README images
+  matched byte-for-byte. This completion record is published through the
+  required second guarded fast-forward.
 
 Prior v1.12.0 / Cycle 25 evidence:
 

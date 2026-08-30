@@ -3344,3 +3344,18 @@ boundaries, and primary-source citations are in
   `READY_FOR_PUBLICATION`; public completion requires a fresh guarded publish,
   completion-state commit, second guarded publish, and exact-final-SHA CI plus
   Security assurance success.
+
+## Post-CI remediation guarded publication
+
+- Reviewed remediation commit
+  `6fb06498e2ae631913db58f2d12b7489acfa1b9e` contains only the two Windows
+  fail-closed fixes, deterministic hostile regressions, corrected 2669-test
+  evidence, and reopened publication state.
+- The guarded publisher proved the exact canonical
+  `https://github.com/Ag3nt47/AngeronaSuite.git` origin, clean reviewed tree,
+  fast-forward-only parity between `codex/enterprise-cycle7` and public `main`,
+  and all **4/4** README images byte-identical at that release commit.
+- This completion-state record is published through the repository-required
+  second guarded fast-forward. CI and Security assurance are then evaluated on
+  that exact terminal completion SHA; neither is inferred from the green local
+  suite or from the earlier security-only run.

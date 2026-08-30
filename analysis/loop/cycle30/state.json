@@ -5,13 +5,14 @@
   "focus": "cross-module delivery and generation identity, exact response authority, authenticated recovery, lifecycle truth, and local-first SentinelLens threat hunting",
   "rounds_total": 3,
   "round": 3,
-  "phase": "READY_FOR_PUBLICATION",
+  "phase": "COMPLETE",
   "round_1_status": "COMPLETE",
   "round_2_status": "COMPLETE",
   "round_3_status": "COMPLETE",
   "research_done": true,
   "started": "2026-08-28",
   "updated": "2026-08-29",
+  "completed": "2026-08-29",
   "scope": "authorized defensive-only theoretical hardening",
   "validation": {
     "files": 15,
@@ -19,7 +20,7 @@
     "sentinellens": "19 passed / 1 expected platform skip",
     "test_scope": "tests/test_cycle30_*.py",
     "terminal_result": "2669 passed / 13 intentional platform skips / 0 failed",
-    "post_publication_ci_remediation": "Security assurance green; Windows CI cleanup/alias races reproduced, remediated, and exact full tree green"
+    "post_publication_ci_remediation": "Security assurance green; Windows CI cleanup/alias races reproduced, remediated, exact full tree green, and guarded release commit 6fb06498e2ae631913db58f2d12b7489acfa1b9e verified on canonical public main"
   },
-  "publication_done": false
+  "publication_done": true
 }

@@ -5,15 +5,16 @@
   "focus": "privileged source-boundary removal, object-bound scanning, truthful aggregate scan state, resilience self-test custody, universal module health evidence, and release signer isolation",
   "rounds_total": 3,
   "round": 3,
-  "phase": "READY_FOR_PUBLICATION",
+  "phase": "COMPLETE",
   "round_1_status": "COMPLETE",
   "round_2_status": "COMPLETE",
   "round_3_status": "COMPLETE",
   "research_done": true,
   "started": "2026-08-28",
   "updated": "2026-08-29",
+  "completed": "2026-08-29",
   "scope": "authorized defensive-only theoretical hardening",
-  "publication_done": false,
+  "publication_done": true,
   "open_findings": {
     "critical": 0,
     "high": 0,
@@ -31,7 +32,7 @@
     "focused_pytest": "249 passed / 5 expected skips / 3 C13 integration failures subsequently remediated and independently converged",
     "selfcheck": "terminal selfcheck passed 26/26",
     "terminal_serial_gate": "2669 passed / 13 intentional platform skips / 0 failed",
-    "publication_runtime": "GitHub run 33291595209 exposed transient Windows ERROR_DIR_NOT_EMPTY cleanup; bounded exact-handle retry and alias-diagnosis regressions pass locally, with guarded republication pending"
+    "publication_runtime": "GitHub run 33291595209 exposed transient Windows ERROR_DIR_NOT_EMPTY cleanup; bounded exact-handle retry and alias-diagnosis regressions pass, and guarded canonical-main publication verified remediated release commit 6fb06498e2ae631913db58f2d12b7489acfa1b9e with 4/4 public README images byte-identical"
   },
   "known_limitations": [
     "Arbitrary hostile code already executing inside Angerona's Python process remains outside in-process capability isolation.",

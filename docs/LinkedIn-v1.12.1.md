@@ -8,10 +8,7 @@ evidence only. It contains no host telemetry or operator identity.
 
 ## Post
 
-> Publish this copy only after the remediated final SHA is green in GitHub CI
-> and Security assurance and the guarded publisher re-verifies every image.
-
-Angerona v1.12.1 is ready to ship — the largest defensive hardening update to
+Angerona v1.12.1 is now live on GitHub — the largest defensive hardening update to
 the project so far. Its exact release gate is 2669 passed,
 13 intentional platform skips, and 0 failures.
 

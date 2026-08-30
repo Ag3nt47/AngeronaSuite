@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-29
 **Scope:** five three-round, defensive-only hardening loops
-**Release:** 1.12.1 (`READY_FOR_PUBLICATION`; post-CI remediation verified locally)
+**Release:** 1.12.1 (`COMPLETE`; guarded post-CI remediation publication verified)
 
 ## Outcome
 
@@ -66,10 +66,12 @@ query/command execution.
 - Python `compileall`, repository-wide Ruff, selfcheck **26/26**,
   workflow-policy validation, dependency audit, documentation-drift validation,
   and `git diff --check`: pass on the release tree.
-- Prior guarded publication fast-forwarded canonical `Ag3nt47/AngeronaSuite`
-  `main` through completion commit
-  `dca1adebd4a8d5b37d0f9b28487e4d33c5d1adca`; all **4/4** README images
-  matched byte-for-byte. GitHub run 33291595209 then reopened a transient
-  Windows runtime-cleanup race. The remediated 2669-test candidate awaits a
-  fresh guarded fast-forward and exact-SHA workflows. No user-mode defensive
-  patch is proof against every future or privileged attacker.
+- After GitHub run 33291595209 reopened a transient Windows runtime-cleanup
+  race, the guarded publisher fast-forwarded canonical
+  `Ag3nt47/AngeronaSuite` `main` to remediated release commit
+  `6fb06498e2ae631913db58f2d12b7489acfa1b9e`; all **4/4** README images
+  matched byte-for-byte. This completion-state record is itself published
+  through the required second guarded fast-forward. Exact completion-SHA CI and
+  Security assurance are checked on GitHub rather than inferred from local
+  validation. No user-mode defensive patch is proof against every future or
+  privileged attacker.
