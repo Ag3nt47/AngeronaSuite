@@ -239,14 +239,21 @@ def _minimal_git_environment(
 
 
 def _shell_quote_helper(credential_helper: Path) -> str:
-    """Quote one absolute helper command for Git's POSIX-shell parser."""
+    """Build one exact absolute helper command for Git's POSIX-shell parser.
+
+    Git only recognizes an unquoted absolute helper path as a literal command.
+    A safely quoted path starts with a quote instead, so Git would otherwise
+    prefix it with ``git credential-``.  The documented ``!`` form selects an
+    explicit shell command while the single quotes keep the trusted absolute
+    path (including spaces and metacharacters) one literal token.
+    """
 
     helper = credential_helper.as_posix()
     if not credential_helper.is_absolute() or any(
         character in helper for character in ("\0", "\r", "\n")
     ):
         raise PublicationTransportError("Git Credential Manager path is invalid")
-    return "'" + helper.replace("'", "'\\''") + "'"
+    return "!'" + helper.replace("'", "'\\''") + "'"
 
 
 def _configuration_arguments(*, credential_helper: Path | None) -> list[str]:

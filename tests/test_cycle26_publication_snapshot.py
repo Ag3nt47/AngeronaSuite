@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import inspect
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -856,7 +858,72 @@ def test_private_stage_acl_seals_files_and_handle_cleanup_is_exact(
 def test_absolute_gcm_helper_quotes_whitespace_metacharacters_and_apostrophe() -> None:
     helper = Path(r"C:\Program Files\Git & Reviewer's Build\gcm.exe")
     quoted = transport._shell_quote_helper(helper)
-    assert quoted == "'C:/Program Files/Git & Reviewer'\\''s Build/gcm.exe'"
+    assert quoted == "!'C:/Program Files/Git & Reviewer'\\''s Build/gcm.exe'"
+    # Git's documented ! form prevents the safely quoted path from being
+    # rewritten as `git credential-<path>`.  Its shell still receives exactly
+    # one executable token plus Git's bounded operation argument.
+    assert shlex.split(quoted[1:] + " get", posix=True) == [
+        helper.as_posix(),
+        "get",
+    ]
     assert transport._configuration_arguments(credential_helper=helper).count(
         f"credential.helper={quoted}"
     ) == 1
+    assert transport._configuration_arguments(credential_helper=helper).count(
+        f"credential.https://github.com.helper={quoted}"
+    ) == 1
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Git for Windows helper parser")
+def test_absolute_gcm_helper_reaches_git_shell_without_credential_prefix(
+    tmp_path: Path,
+) -> None:
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("Git for Windows is unavailable")
+
+    helper = (tmp_path / "Review & Reviewer's missing helper.exe").resolve()
+    assert not helper.exists()
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name.upper()
+        in {
+            "COMSPEC",
+            "PATH",
+            "PATHEXT",
+            "SYSTEMROOT",
+            "TEMP",
+            "TMP",
+            "WINDIR",
+        }
+    }
+    environment.update({
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GCM_INTERACTIVE": "Never",
+        "LANG": "C",
+        "LC_ALL": "C",
+    })
+    result = subprocess.run(
+        [
+            git,
+            "--no-pager",
+            *transport._configuration_arguments(credential_helper=helper),
+            "credential",
+            "reject",
+        ],
+        input="protocol=https\nhost=github.invalid\n\n",
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+        timeout=15,
+    )
+
+    error = result.stderr.replace("\\", "/")
+    assert result.returncode == 0
+    assert "credential-C:/" not in error
+    assert helper.as_posix() in error
+    assert " erase:" in error
