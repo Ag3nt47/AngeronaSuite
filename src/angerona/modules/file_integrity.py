@@ -14,6 +14,7 @@ import stat
 import threading
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -182,6 +183,64 @@ _MAX_BASELINE_BYTES = 32 * 1024 * 1024
 _MAX_SCAN_FILES = 100_000
 _MAX_FILE_BYTES = 1024 * 1024 * 1024
 _MAX_SCAN_CONTENT_BYTES = 8 * 1024 * 1024 * 1024
+_FSCTL_READ_FILE_USN_DATA = 0x000900EB
+_WINDOWS_USN_OUTPUT_BYTES = 1024
+
+
+@lru_cache(maxsize=1)
+def _windows_usn_api():
+    """Return the cached ctypes USN binding on Windows only."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class READ_FILE_USN_DATA(ctypes.Structure):
+        _fields_ = [
+            ("MinMajorVersion", wintypes.WORD),
+            ("MaxMajorVersion", wintypes.WORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    device_io = kernel32.DeviceIoControl
+    device_io.restype = wintypes.BOOL
+    device_io.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.c_void_p,
+    ]
+    return ctypes, msvcrt, wintypes, READ_FILE_USN_DATA, device_io
+
+
+def _parse_windows_file_usn(raw: bytes) -> int | None:
+    """Validate and parse one V2/V3 ``FSCTL_READ_FILE_USN_DATA`` record."""
+    if len(raw) < 8:
+        return None
+    record_length = int.from_bytes(raw[0:4], "little")
+    major_version = int.from_bytes(raw[4:6], "little")
+    layout = {
+        2: (60, 24),
+        3: (76, 40),
+    }.get(major_version)
+    if layout is None:
+        return None
+    fixed_length, usn_offset = layout
+    if (
+        record_length < fixed_length
+        or record_length > len(raw)
+        or record_length % 8
+    ):
+        return None
+    usn = int.from_bytes(
+        raw[usn_offset : usn_offset + 8], "little", signed=True
+    )
+    return usn if usn > 0 else None
 
 
 def _fim_proof_digest(value: object) -> str:
@@ -241,10 +300,10 @@ class _FIMScanCustody:
     coverage_sha256: str
 
 # ── BL-13: paranoid content-hash for high-value paths ─────────────────────────
-# The fast path in _scan() reuses a file's cached hash when (mtime, size) is
-# unchanged. An attacker can rewrite a watched file while PRESERVING mtime+size
-# to slip past that stat-only check. So high-value targets are ALWAYS re-read and
-# re-hashed, ignoring the cache — you can't evade content hashing by faking stat.
+# The fast path in _scan() reuses a file's cached hash only when its complete
+# object identity and a filesystem-owned mutation token remain unchanged. On
+# Windows that token must be a nonzero per-file USN; timestamp equality is not
+# accepted as proof. High-value targets are ALWAYS re-read and re-hashed.
 _HIGH_VALUE_DIRS = [
     # the hosts / networks files — a classic silent-redirect target
     os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "drivers", "etc"),
@@ -537,20 +596,36 @@ class FileIntegrityModule(BaseModule):
         )
 
     @staticmethod
-    def _filesystem_change_token(path: str) -> int:
-        """Return the filesystem-managed change time, not user-settable mtime.
+    def _handle_usn(descriptor: int) -> int | None:
+        """Return a nonzero per-file Windows USN, or ``None`` when unavailable.
 
-        CPython on Windows exposes creation time as ``st_ctime``. NTFS also
-        maintains a distinct ChangeTime that advances when content/metadata is
-        changed and is not restored by ordinary ``SetFileTime``/``os.utime``.
+        ``FILE_BASIC_INFO.ChangeTime`` is a timestamp, not a collision-free
+        mutation counter. Rapid writes can therefore retain an equal value.
+        ``FSCTL_READ_FILE_USN_DATA`` returns the file's latest journal USN and
+        supports both the V2 and V3 layouts used by NTFS/ReFS. Cache reuse is
+        disabled whenever this proof is absent, zero, malformed, or unsupported.
         """
-        if os.name != "nt":
-            return int(os.lstat(path).st_ctime_ns)
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
-        try:
-            return FileIntegrityModule._handle_change_token(descriptor)
-        finally:
-            os.close(descriptor)
+        api = _windows_usn_api()
+        if api is None:
+            return None
+        ctypes, msvcrt, wintypes, read_file_usn_data, device_io = api
+        versions = read_file_usn_data(2, 3)
+        output = ctypes.create_string_buffer(_WINDOWS_USN_OUTPUT_BYTES)
+        returned = wintypes.DWORD()
+        handle = wintypes.HANDLE(msvcrt.get_osfhandle(descriptor))
+        if not device_io(
+            handle,
+            _FSCTL_READ_FILE_USN_DATA,
+            ctypes.byref(versions),
+            ctypes.sizeof(versions),
+            output,
+            ctypes.sizeof(output),
+            ctypes.byref(returned),
+            None,
+        ):
+            return None
+        raw = output.raw[: int(returned.value)]
+        return _parse_windows_file_usn(raw)
 
     @staticmethod
     def _handle_change_token(descriptor: int) -> int:
@@ -612,6 +687,7 @@ class FileIntegrityModule(BaseModule):
                 if self._file_identity(opened) != self._file_identity(before):
                     return ""
                 opened_change = self._handle_change_token(f.fileno())
+                opened_usn = self._handle_usn(f.fileno())
                 for chunk in iter(lambda: f.read(65536), b""):
                     h.update(chunk)
                 after = os.fstat(f.fileno())
@@ -619,13 +695,53 @@ class FileIntegrityModule(BaseModule):
                     return ""
                 if self._handle_change_token(f.fileno()) != opened_change:
                     return ""
+                after_usn = self._handle_usn(f.fileno())
+                if (
+                    (opened_usn is not None or after_usn is not None)
+                    and after_usn != opened_usn
+                ):
+                    return ""
             return h.hexdigest()
         except Exception:
             return ""
 
-    def _stat(self, path: str) -> Optional[Tuple[int, int, int, int, int]]:
+    def _stat(
+        self, path: str
+    ) -> Optional[Tuple[int, int, int, int, int]]:
         try:
-            return (*self._file_identity(os.lstat(path)), self._filesystem_change_token(path))
+            before = os.lstat(path)
+            descriptor = os.open(
+                path, os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            )
+            try:
+                opened = os.fstat(descriptor)
+                identity = self._file_identity(opened)
+                if identity != self._file_identity(before):
+                    return None
+                if os.name == "nt":
+                    change_time = self._handle_change_token(descriptor)
+                    usn = self._handle_usn(descriptor)
+                    final_change_time = self._handle_change_token(descriptor)
+                    final_usn = self._handle_usn(descriptor)
+                    if final_change_time != change_time or final_usn != usn:
+                        return None
+                    token = (
+                        (final_usn << 64)
+                        | (final_change_time & ((1 << 64) - 1))
+                        if final_usn is not None
+                        else -1
+                    )
+                else:
+                    token = int(opened.st_ctime_ns)
+                after = os.fstat(descriptor)
+                if self._file_identity(after) != identity:
+                    return None
+            finally:
+                os.close(descriptor)
+            current = os.lstat(path)
+            if self._file_identity(current) != identity:
+                return None
+            return (*identity, token)
         except Exception:
             return None
 
@@ -747,8 +863,12 @@ class FileIntegrityModule(BaseModule):
                         _error(f"file identity failed: {full}: {exc}")
                         continue
                     cached_st = stat_cache_at_start.get(full)
-                    if (cached_st == st and full in baseline_at_start
-                            and not self._is_high_value(full)):
+                    if (
+                        st[4] > 0
+                        and cached_st == st
+                        and full in baseline_at_start
+                        and not self._is_high_value(full)
+                    ):
                         digest = baseline_at_start[full]
                         reused += 1
                     else:
@@ -800,7 +920,13 @@ class FileIntegrityModule(BaseModule):
                 dict(sorted(baseline_at_start.items()))
             ),
             "cache_assurance": (
-                "full-content" if _FIM_PARANOID_ALL else "identity-bound-cache"
+                "full-content"
+                if _FIM_PARANOID_ALL
+                else (
+                    "usn-backed-or-full-content"
+                    if os.name == "nt"
+                    else "identity-bound-cache"
+                )
             ),
         }
         coverage_sha256 = _fim_proof_digest(receipt)

@@ -82,7 +82,11 @@ class _Controller:
         return self.current_coverage
 
 
-def test_sensitive_remote_flow_emits_exact_full_tuple_and_never_claims_wfp() -> None:
+def test_sensitive_remote_flow_emits_exact_full_tuple_and_never_claims_wfp(
+    monkeypatch,
+) -> None:
+    clock = [42.0]
+    monkeypatch.setattr(wfp_controller.time, "monotonic", lambda: clock[0])
     bus = EventBus()
     module = WFPControllerModule()
     module.bind(bus)
@@ -98,6 +102,18 @@ def test_sensitive_remote_flow_emits_exact_full_tuple_and_never_claims_wfp() -> 
     assert event.details["process_birth"] == 1010.0
     assert event.details["telemetry_source"] == "ip-helper-snapshot"
     assert event.details["response_authorized"] is False
+
+    clock[0] = 341.999
+    module._scan_suspicious()
+    assert sum(
+        event.details.get("remote_port") == 443 for event in bus.recent(20)
+    ) == 1
+
+    clock[0] = 342.0
+    module._scan_suspicious()
+    assert sum(
+        event.details.get("remote_port") == 443 for event in bus.recent(20)
+    ) == 2
 
 
 def test_listener_without_remote_endpoint_is_not_described_as_outbound() -> None:

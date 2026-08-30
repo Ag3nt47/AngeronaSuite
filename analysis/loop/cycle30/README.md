@@ -2,7 +2,7 @@
 
 **Scope:** authorized defensive-only theoretical hardening
 **Release target:** 1.12.1
-**Disposition:** COMPLETE
+**Disposition:** READY_FOR_PUBLICATION
 
 ## Round 1 — cursor, generation, and CAS re-attack
 
@@ -28,7 +28,7 @@ clickable evidence; strict-loopback optional local AI; and proposal-only
 remediation. It opens no public/LAN listener and stores explicit imports only in
 memory.
 
-The Cycle 30 gate passes **66 tests with 1 expected platform skip** across 15
+The Cycle 30 gate passes **72 tests with 1 expected platform skip** across 15
 files; SentinelLens-focused coverage passes **19 with 1 expected skip**. Exact
 terminal full-tree results and publication proof are in
 ../cycles26-30-summary.md.

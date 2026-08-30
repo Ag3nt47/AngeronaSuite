@@ -5,20 +5,20 @@
   "focus": "broad module-by-module identity, durability, loss accounting, authenticated baselines, resource bounds, liveness, and typed authorization upgrades",
   "rounds_total": 3,
   "round": 3,
-  "phase": "COMPLETE",
+  "phase": "READY_FOR_PUBLICATION",
   "round_1_status": "COMPLETE",
   "round_2_status": "COMPLETE",
   "round_3_status": "COMPLETE",
   "research_done": true,
   "started": "2026-08-28",
   "updated": "2026-08-30",
-  "completed": "2026-08-30",
   "scope": "authorized defensive-only theoretical hardening",
   "validation": {
     "files": 25,
-    "collected_tests": 118,
+    "collected_tests": 121,
     "test_scope": "tests/test_cycle29_*.py",
-    "terminal_result": "2669 passed / 13 intentional platform skips / 0 failed"
+    "terminal_result": "2678 passed / 13 intentional platform skips / 0 failed",
+    "post_publication_ci_remediation": "CI 33296804448 exposed WFP first-flow suppression on low monotonic uptime and unsafe Windows FIM metadata-cache reuse; both are locally remediated with deterministic regressions and pass the fresh terminal gate"
   },
-  "publication_done": true
+  "publication_done": false
 }

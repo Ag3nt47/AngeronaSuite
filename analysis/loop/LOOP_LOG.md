@@ -3415,3 +3415,51 @@ boundaries, and primary-source citations are in
   fast-forward. GitHub CI and Security assurance are evaluated against that
   exact final completion SHA, not inferred from the local suite or an earlier
   workflow run.
+
+## Exact-final GitHub re-attack — third reopen
+
+- Guarded publication placed completion SHA
+  `45c114b99c0f071fb0c2d13de2a78928a35ee514` on canonical public `main` with
+  all **4/4** README images byte-identical. Exact-SHA Security assurance run
+  [`33296804422`](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/33296804422)
+  passed CodeQL, secret scan, and Scorecard. CI run
+  [`33296804448`](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/33296804448)
+  passed Python 3.10/3.12, README integrity, dependency audit, and Windows,
+  Linux, and macOS platform contracts, but Python 3.11 and 3.13 each exposed one
+  genuine product race.
+- Python 3.11 reproduced WFP first-flow suppression: the deduplication default
+  treated a never-seen flow as timestamp zero, so a first observation during
+  the host's first 300 monotonic seconds could be discarded. Deduplication now
+  applies only to an identity that was actually retained and only across a
+  nonnegative interval below the exact five-minute boundary.
+- Python 3.13 reproduced stale Windows FIM hashing authority. FILE_BASIC_INFO
+  ChangeTime is a timestamp rather than a unique mutation counter. The cache
+  now requires a stable, positive per-file USN combined with ChangeTime across
+  handle-bound before/after samples; unavailable, malformed, zero, negative,
+  or changing tokens force bounded full-content hashing. Regressions cover V2
+  and V3 USN records, binding failure/malformed output, and rapid
+  metadata-preserving rewrites without assuming every write advances raw USN.
+- The exact local serial order also reopened T1059. Purple Guard's installed-
+  policy sleep ignored the process-evidence wake under an 8x supported throttle,
+  and process-challenge binding silently accepted a false/exceptional exact
+  observation. The candidate uses throttle-preserving event waits, reserves a
+  bounded 64-row native receipt lane against nonce-shaped queue flooding, and
+  requires a cryptographically verified two-phase observation before binding.
+  Polling threads reject pending observations; false/exceptional preparation is
+  terminal; lease release remains responsive even while a synchronous event
+  subscriber is deliberately blocked. Full receipt verification remains off
+  the publisher thread and no simulated probe executes the named attack.
+- Focused WFP/FIM/T1059 gates are green, including the polling, blocked-
+  subscriber, forged-envelope, and queue-flood regressions. The authoritative
+  serial tree is **2678 passed / 13 intentional platform skips / 0 failed**
+  across **2691 collected tests** in **418.46 seconds**. `compileall`,
+  repository-wide Ruff, selfcheck **26/26**, workflow policy **3/3**, dependency
+  audit, documentation drift, JSON parsing, and diff hygiene also pass. The
+  dependency audit found no known vulnerabilities and disclosed that the local
+  `angerona` and bundled `srt` identities are not available on PyPI. Guarded
+  publication remains pending. All six state records return to
+  `READY_FOR_PUBLICATION` with `publication_done: false`.
+- Completion requires a reviewed remediation commit and guarded fast-forward,
+  a completion-state commit and second guarded fast-forward, then fresh CI and
+  Security assurance success on the exact final SHA. Prior publication and run
+  evidence remains historical and is not relabeled green.

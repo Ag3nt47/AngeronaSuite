@@ -5,7 +5,7 @@
   "focus": "five completed three-round defensive hardening cycles, universal capability evidence, safe automation, comprehensive inert Red Team Simulation, and local-first SentinelLens",
   "rounds_total": 3,
   "round": 3,
-  "phase": "COMPLETE",
+  "phase": "READY_FOR_PUBLICATION",
   "round_1_status": "COMPLETE",
   "round_2_status": "COMPLETE",
   "round_3_status": "COMPLETE",
@@ -14,18 +14,17 @@
   "docs_update_round": 3,
   "docs_update_done": true,
   "manual_update_done": false,
-  "publication_done": true,
+  "publication_done": false,
   "started": "2026-08-28",
   "updated": "2026-08-30",
-  "completed": "2026-08-30",
   "planned_cycles": [26, 27, 28, 29, 30],
   "scope": "authorized defensive-only theoretical hardening",
   "final_results": {
-    "serial_pytest": "2669 passed / 13 intentional platform skips / 0 failed",
-    "cycles_26_30_focused": "819 passed / 6 expected platform skips / 0 failed",
+    "serial_pytest": "2678 passed / 13 intentional platform skips / 0 failed",
+    "cycles_26_30_focused_prior_snapshot": "819 passed / 6 expected platform skips / 0 failed",
     "selfcheck": "26 passed / 0 failed",
     "static_discovery": "81 capabilities; 6 native contracts; 75 compatibility adapters",
     "other_gates": "compileall, Ruff, workflow policy, dependency audit, documentation drift, and diff checks passed"
   },
-  "notes": "Cycle 25/v1.12.0 remains preserved under analysis/loop/cycle25. Exact-completion CI run 33294618414 exposed enabled-Administrator plus implicit-owner DACL authority and two mutable/elevated hosted-runner test couplings; all were remediated. Guarded publication verified release commit 96b55f7d7a2305216cc68b804c72dc720ce6c88f and all 4/4 README images. This terminal record is carried by the required second guarded fast-forward; exact-final-SHA CI and Security assurance are checked on GitHub. The Word manual was not changed in this maintenance release."
+  "notes": "Cycle 25/v1.12.0 remains preserved under analysis/loop/cycle25. Guarded publication previously placed completion SHA 45c114b99c0f071fb0c2d13de2a78928a35ee514 on canonical public main with all 4/4 README images verified. Exact-SHA CI run 33296804448 then failed Python 3.11 and 3.13 while Security assurance run 33296804422 passed. WFP first-flow uptime suppression, Windows FIM metadata-cache authority, and T1059 receipt scheduling/direct-observation gaps are remediated locally; the 2678/13/0 serial tree and all offline release gates are green. Two guarded publications and exact-final-SHA CI plus Security assurance remain pending. The Word manual was not changed in this maintenance release."
 }

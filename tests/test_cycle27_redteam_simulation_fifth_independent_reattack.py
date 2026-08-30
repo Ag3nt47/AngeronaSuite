@@ -17,7 +17,11 @@ from angerona.core.eventbus import BusAuthority, Event, EventBus, Severity
 from angerona.core.storage import FlightRecorder
 from angerona.modules import purple_guard
 from angerona.modules.file_integrity import FileIntegrityModule
-from angerona.modules.purple_guard import RedTeamValidationLease
+from angerona.modules.process_monitor import ProcessMonitorModule
+from angerona.modules.purple_guard import (
+    RedTeamValidationError,
+    RedTeamValidationLease,
+)
 from angerona.shark import aar_report
 from angerona.shark.aar_report import AARReportResult, generate_aar
 from angerona.shark.red_team import REDTEAM_STAGE_CATEGORY
@@ -195,12 +199,16 @@ def test_t1059_readiness_and_os_receipt_reject_receipt_free_exact_tuple(
             pid=int(child.pid),
             run_id="independent-t1059",
         )
+        assert bound["state"] == "bound"
+        authority = purple_guard._lease_authority(lease)
+        assert (authority.process_challenges or {})[token] == bound
         source = next(
             row
             for row in reversed(bus.recent(100))
             if row.module == "Process Monitor"
             and (row.details or {}).get("receipt_type")
             == "native_process_observation"
+            and token in str((row.details or {}).get("cmdline") or "")
         )
         assert RedTeamValidationLease.verify_process_observation(
             lease, source, require_live=True
@@ -230,6 +238,366 @@ def test_t1059_readiness_and_os_receipt_reject_receipt_free_exact_tuple(
                 child.wait(timeout=3)
         RedTeamValidationLease.release(lease)
         assert "Process Monitor" not in manager.modules
+        guard.stop()
+        recorder.close()
+
+
+@pytest.mark.parametrize("observer_outcome", ["false", "exception"])
+def test_t1059_binding_fails_closed_when_exact_observation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    observer_outcome: str,
+) -> None:
+    bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
+    target = tmp_path / "target"
+    lease = purple_guard.acquire_redteam_validation_lease(
+        manager, bus, recorder, tmp_path, target, timeout=3
+    )
+    child: subprocess.Popen | None = None
+    original_observer = ProcessMonitorModule.observe_validation_process
+    injected = RuntimeError("injected exact observation failure")
+    try:
+        run_id = f"independent-t1059-{observer_outcome}"
+        RedTeamValidationLease.consume_for_run(
+            lease, run_id=run_id, target=target, data_root=tmp_path
+        )
+        process_module = manager.modules["Process Monitor"]
+        token = (
+            "ANGERONA_REDTEAM_8c3f120a"
+            if observer_outcome == "false"
+            else "ANGERONA_REDTEAM_b70e4d91"
+        )
+        RedTeamValidationLease.enroll_process_challenge(
+            lease, token=token, run_id=run_id
+        )
+        child = subprocess.Popen(  # noqa: S603 - fixed interpreter, inert sleep
+            [sys.executable, "-c", "import time; time.sleep(10)", token],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+        if observer_outcome == "false":
+            monkeypatch.setattr(
+                ProcessMonitorModule,
+                "observe_validation_process",
+                lambda self, pid, **_kwargs: False,
+            )
+        else:
+            def _raise_observer(
+                self: object, pid: int, **_kwargs: object
+            ) -> bool:
+                del self, pid, _kwargs
+                raise injected
+
+            monkeypatch.setattr(
+                ProcessMonitorModule,
+                "observe_validation_process",
+                _raise_observer,
+            )
+
+        with pytest.raises(RedTeamValidationError) as raised:
+            RedTeamValidationLease.bind_process_challenge(
+                lease,
+                token=token,
+                pid=int(child.pid),
+                run_id=run_id,
+            )
+        if observer_outcome == "exception":
+            assert raised.value.__cause__ is injected
+        else:
+            assert raised.value.__cause__ is None
+
+        authority = purple_guard._lease_authority(lease)
+        failed = (authority.process_challenges or {})[token]
+        assert failed["state"] == "observation_failed"
+        assert failed["pid"] == int(child.pid)
+        assert failed["run_id"] == run_id
+        assert failed["identity_sha256"]
+        assert failed["observation_failure"] == (
+            "observer_rejected"
+            if observer_outcome == "false"
+            else "observer_exception"
+        )
+
+        # Restoring the canonical producer cannot turn a terminal failed
+        # challenge into delayed polling credit while the child is still live.
+        monkeypatch.setattr(
+            ProcessMonitorModule,
+            "observe_validation_process",
+            original_observer,
+        )
+        assert not original_observer(process_module, int(child.pid))
+        assert not any(
+            row.module == "Process Monitor"
+            and (row.details or {}).get("receipt_type")
+            == "native_process_observation"
+            and token in str((row.details or {}).get("cmdline") or "")
+            for row in bus.recent(200)
+        )
+    finally:
+        if child is not None:
+            child.terminate()
+            try:
+                child.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=3)
+        RedTeamValidationLease.release(lease)
+        assert "Process Monitor" not in manager.modules
+        guard.stop()
+        recorder.close()
+
+
+def test_t1059_pending_observation_rejects_a_polling_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
+    target = tmp_path / "target"
+    lease = purple_guard.acquire_redteam_validation_lease(
+        manager, bus, recorder, tmp_path, target, timeout=3
+    )
+    child: subprocess.Popen | None = None
+    bind_thread: threading.Thread | None = None
+    prepare_entered = threading.Event()
+    allow_prepare = threading.Event()
+    errors: list[BaseException] = []
+    original_observer = ProcessMonitorModule.observe_validation_process
+    token = "ANGERONA_REDTEAM_c62a9e14"
+    try:
+        run_id = "independent-t1059-pending-poll"
+        RedTeamValidationLease.consume_for_run(
+            lease, run_id=run_id, target=target, data_root=tmp_path
+        )
+        process_module = manager.modules["Process Monitor"]
+        RedTeamValidationLease.enroll_process_challenge(
+            lease, token=token, run_id=run_id
+        )
+        child = subprocess.Popen(  # noqa: S603 - fixed interpreter, inert sleep
+            [sys.executable, "-c", "import time; time.sleep(10)", token],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+        def _blocked_prepare(
+            self: object,
+            pid: int,
+            *,
+            _prepare_only: bool = False,
+        ) -> bool | dict[str, object]:
+            if _prepare_only:
+                prepare_entered.set()
+                assert allow_prepare.wait(5.0)
+                return False
+            return original_observer(self, pid)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(
+            ProcessMonitorModule,
+            "observe_validation_process",
+            _blocked_prepare,
+        )
+
+        def _bind() -> None:
+            try:
+                RedTeamValidationLease.bind_process_challenge(
+                    lease, token=token, pid=int(child.pid), run_id=run_id
+                )
+            except BaseException as exc:  # captured for the test thread
+                errors.append(exc)
+
+        bind_thread = threading.Thread(target=_bind, daemon=True)
+        bind_thread.start()
+        assert prepare_entered.wait(3.0)
+
+        # A Process Monitor inventory caller on another thread sees the exact
+        # live tuple, but cannot mint while the binder owns observation_pending.
+        assert not original_observer(process_module, int(child.pid))
+        assert not any(
+            row.module == "Process Monitor"
+            and (row.details or {}).get("receipt_type")
+            == "native_process_observation"
+            and token in str((row.details or {}).get("cmdline") or "")
+            for row in bus.recent(200)
+        )
+        allow_prepare.set()
+        bind_thread.join(3.0)
+        assert not bind_thread.is_alive()
+        assert len(errors) == 1
+        assert isinstance(errors[0], RedTeamValidationError)
+        failed = (
+            purple_guard._lease_authority(lease).process_challenges or {}
+        )[token]
+        assert failed["state"] == "observation_failed"
+        assert failed["observation_failure"] == "observer_rejected"
+    finally:
+        allow_prepare.set()
+        if bind_thread is not None:
+            bind_thread.join(3.0)
+        if child is not None:
+            child.terminate()
+            try:
+                child.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=3)
+        RedTeamValidationLease.release(lease)
+        guard.stop()
+        recorder.close()
+
+
+def test_t1059_publication_does_not_hold_lease_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
+    target = tmp_path / "target"
+    lease = purple_guard.acquire_redteam_validation_lease(
+        manager, bus, recorder, tmp_path, target, timeout=3
+    )
+    child: subprocess.Popen | None = None
+    bind_thread: threading.Thread | None = None
+    publication_entered = threading.Event()
+    allow_publication = threading.Event()
+    errors: list[BaseException] = []
+    token = "ANGERONA_REDTEAM_1f84d3b7"
+
+    def _blocking_subscriber(event: Event) -> None:
+        if (
+            event.module == "Process Monitor"
+            and (event.details or {}).get("receipt_type")
+            == "native_process_observation"
+            and token in str((event.details or {}).get("cmdline") or "")
+        ):
+            publication_entered.set()
+            allow_publication.wait(5.0)
+
+    bus.subscribe(_blocking_subscriber, delivery_budget_ms=10_000)
+    try:
+        run_id = "independent-t1059-release-during-publish"
+        RedTeamValidationLease.consume_for_run(
+            lease, run_id=run_id, target=target, data_root=tmp_path
+        )
+        RedTeamValidationLease.enroll_process_challenge(
+            lease, token=token, run_id=run_id
+        )
+        child = subprocess.Popen(  # noqa: S603 - fixed interpreter, inert sleep
+            [sys.executable, "-c", "import time; time.sleep(10)", token],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+        def _bind() -> None:
+            try:
+                RedTeamValidationLease.bind_process_challenge(
+                    lease, token=token, pid=int(child.pid), run_id=run_id
+                )
+            except BaseException as exc:  # captured for the test thread
+                errors.append(exc)
+
+        bind_thread = threading.Thread(target=_bind, daemon=True)
+        bind_thread.start()
+        assert publication_entered.wait(3.0)
+        started = time.monotonic()
+        RedTeamValidationLease.release(lease)
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0
+        assert bind_thread.is_alive()
+
+        allow_publication.set()
+        bind_thread.join(3.0)
+        assert not bind_thread.is_alive()
+        assert len(errors) == 1
+        assert isinstance(errors[0], RedTeamValidationError)
+        assert "authority ended" in str(errors[0])
+    finally:
+        allow_publication.set()
+        if bind_thread is not None:
+            bind_thread.join(3.0)
+        if child is not None:
+            child.terminate()
+            try:
+                child.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=3)
+        RedTeamValidationLease.release(lease)
+        guard.stop()
+        recorder.close()
+
+
+def test_t1059_concurrent_sensor_rebind_cannot_silently_drop_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
+    target = tmp_path / "target"
+    lease = purple_guard.acquire_redteam_validation_lease(
+        manager, bus, recorder, tmp_path, target, timeout=3
+    )
+    child: subprocess.Popen | None = None
+    process_module = manager.modules["Process Monitor"]
+    replacement_bus = EventBus()
+    original_publish = EventBus.publish
+    token = "ANGERONA_REDTEAM_96c0e2a5"
+    try:
+        run_id = "independent-t1059-concurrent-rebind"
+        RedTeamValidationLease.consume_for_run(
+            lease, run_id=run_id, target=target, data_root=tmp_path
+        )
+        RedTeamValidationLease.enroll_process_challenge(
+            lease, token=token, run_id=run_id
+        )
+        child = subprocess.Popen(  # noqa: S603 - fixed interpreter, inert sleep
+            [sys.executable, "-c", "import time; time.sleep(10)", token],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+        def _rebind_during_publish(self: EventBus, event: Event) -> None:
+            if (
+                event.module == "Process Monitor"
+                and token in str((event.details or {}).get("cmdline") or "")
+            ):
+                process_module._bus = replacement_bus
+            original_publish(self, event)
+
+        monkeypatch.setattr(
+            EventBus,
+            "publish",
+            _rebind_during_publish,
+        )
+        with pytest.raises(
+            RedTeamValidationError,
+            match="authority ended during publication",
+        ):
+            RedTeamValidationLease.bind_process_challenge(
+                lease, token=token, pid=int(child.pid), run_id=run_id
+            )
+
+        source = next(
+            row
+            for row in reversed(bus.recent(200))
+            if row.module == "Process Monitor"
+            and (row.details or {}).get("receipt_type")
+            == "native_process_observation"
+            and token in str((row.details or {}).get("cmdline") or "")
+        )
+        assert source
+        assert replacement_bus.recent(20) == []
+        failed = (
+            purple_guard._lease_authority(lease).process_challenges or {}
+        )[token]
+        assert failed["state"] == "observation_failed"
+        assert (
+            failed["observation_failure"]
+            == "authority_changed_after_publication"
+        )
+        assert not RedTeamValidationLease.verify_process_observation(
+            lease, source, require_live=True
+        )
+    finally:
+        process_module._bus = bus
+        if child is not None:
+            child.terminate()
+            try:
+                child.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=3)
+        RedTeamValidationLease.release(lease)
         guard.stop()
         recorder.close()
 

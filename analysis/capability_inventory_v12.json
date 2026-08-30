@@ -6658,10 +6658,10 @@
           "reason": "Lifecycle status is 'stopped'; the capability is not currently live.",
           "remediation": "Start the module and verify a completed work cycle.",
           "source_anchor": "module-class-declaration",
-          "source_line": 263,
+          "source_line": 322,
           "source_path": "src/angerona/modules/file_integrity.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "35472c63c4d365fa83de1a8f9d9268d30a838427f44f5cf628ab932a4edb13df",
+          "source_sha256": "b23b442edb1a062c0b328a336d675a3c4ebeb7a813a0eb72f51699e58c2d5a11",
           "source_state": "available"
         },
         {
@@ -6671,10 +6671,10 @@
           "reason": "The module does not explicitly declare 'data_classes'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'data_classes' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 263,
+          "source_line": 322,
           "source_path": "src/angerona/modules/file_integrity.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "35472c63c4d365fa83de1a8f9d9268d30a838427f44f5cf628ab932a4edb13df",
+          "source_sha256": "b23b442edb1a062c0b328a336d675a3c4ebeb7a813a0eb72f51699e58c2d5a11",
           "source_state": "available"
         },
         {
@@ -6684,10 +6684,10 @@
           "reason": "The module does not explicitly declare 'egress'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'egress' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 263,
+          "source_line": 322,
           "source_path": "src/angerona/modules/file_integrity.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "35472c63c4d365fa83de1a8f9d9268d30a838427f44f5cf628ab932a4edb13df",
+          "source_sha256": "b23b442edb1a062c0b328a336d675a3c4ebeb7a813a0eb72f51699e58c2d5a11",
           "source_state": "available"
         },
         {
@@ -6697,10 +6697,10 @@
           "reason": "The module does not explicitly declare 'inputs'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'inputs' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 263,
+          "source_line": 322,
           "source_path": "src/angerona/modules/file_integrity.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "35472c63c4d365fa83de1a8f9d9268d30a838427f44f5cf628ab932a4edb13df",
+          "source_sha256": "b23b442edb1a062c0b328a336d675a3c4ebeb7a813a0eb72f51699e58c2d5a11",
           "source_state": "available"
         },
         {
@@ -6710,10 +6710,10 @@
           "reason": "The module does not explicitly declare 'loss_behavior'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'loss_behavior' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 263,
+          "source_line": 322,
           "source_path": "src/angerona/modules/file_integrity.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "35472c63c4d365fa83de1a8f9d9268d30a838427f44f5cf628ab932a4edb13df",
+          "source_sha256": "b23b442edb1a062c0b328a336d675a3c4ebeb7a813a0eb72f51699e58c2d5a11",
           "source_state": "available"
         },
         {
@@ -6723,10 +6723,10 @@
           "reason": "The module does not explicitly declare 'mode'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'mode' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 263,
+          "source_line": 322,
           "source_path": "src/angerona/modules/file_integrity.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "35472c63c4d365fa83de1a8f9d9268d30a838427f44f5cf628ab932a4edb13df",
+          "source_sha256": "b23b442edb1a062c0b328a336d675a3c4ebeb7a813a0eb72f51699e58c2d5a11",
           "source_state": "available"
         },
         {
@@ -6736,10 +6736,10 @@
           "reason": "The module does not explicitly declare 'outputs'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'outputs' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 263,
+          "source_line": 322,
           "source_path": "src/angerona/modules/file_integrity.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "35472c63c4d365fa83de1a8f9d9268d30a838427f44f5cf628ab932a4edb13df",
+          "source_sha256": "b23b442edb1a062c0b328a336d675a3c4ebeb7a813a0eb72f51699e58c2d5a11",
           "source_state": "available"
         },
         {
@@ -6749,10 +6749,10 @@
           "reason": "The module does not explicitly declare 'permissions'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'permissions' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 263,
+          "source_line": 322,
           "source_path": "src/angerona/modules/file_integrity.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "35472c63c4d365fa83de1a8f9d9268d30a838427f44f5cf628ab932a4edb13df",
+          "source_sha256": "b23b442edb1a062c0b328a336d675a3c4ebeb7a813a0eb72f51699e58c2d5a11",
           "source_state": "available"
         },
         {
@@ -6762,10 +6762,10 @@
           "reason": "The module does not explicitly declare 'resource_budget'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'resource_budget' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 263,
+          "source_line": 322,
           "source_path": "src/angerona/modules/file_integrity.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "35472c63c4d365fa83de1a8f9d9268d30a838427f44f5cf628ab932a4edb13df",
+          "source_sha256": "b23b442edb1a062c0b328a336d675a3c4ebeb7a813a0eb72f51699e58c2d5a11",
           "source_state": "available"
         },
         {
@@ -6775,10 +6775,10 @@
           "reason": "The module does not explicitly declare 'response_authority'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'response_authority' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 263,
+          "source_line": 322,
           "source_path": "src/angerona/modules/file_integrity.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "35472c63c4d365fa83de1a8f9d9268d30a838427f44f5cf628ab932a4edb13df",
+          "source_sha256": "b23b442edb1a062c0b328a336d675a3c4ebeb7a813a0eb72f51699e58c2d5a11",
           "source_state": "available"
         },
         {
@@ -6788,10 +6788,10 @@
           "reason": "The module does not explicitly declare 'restart_policy'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'restart_policy' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 263,
+          "source_line": 322,
           "source_path": "src/angerona/modules/file_integrity.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "35472c63c4d365fa83de1a8f9d9268d30a838427f44f5cf628ab932a4edb13df",
+          "source_sha256": "b23b442edb1a062c0b328a336d675a3c4ebeb7a813a0eb72f51699e58c2d5a11",
           "source_state": "available"
         },
         {
@@ -6801,10 +6801,10 @@
           "reason": "The module does not explicitly declare 'retention'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'retention' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 263,
+          "source_line": 322,
           "source_path": "src/angerona/modules/file_integrity.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "35472c63c4d365fa83de1a8f9d9268d30a838427f44f5cf628ab932a4edb13df",
+          "source_sha256": "b23b442edb1a062c0b328a336d675a3c4ebeb7a813a0eb72f51699e58c2d5a11",
           "source_state": "available"
         },
         {
@@ -6814,10 +6814,10 @@
           "reason": "The module does not explicitly declare 'settings_schema'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'settings_schema' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 263,
+          "source_line": 322,
           "source_path": "src/angerona/modules/file_integrity.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "35472c63c4d365fa83de1a8f9d9268d30a838427f44f5cf628ab932a4edb13df",
+          "source_sha256": "b23b442edb1a062c0b328a336d675a3c4ebeb7a813a0eb72f51699e58c2d5a11",
           "source_state": "available"
         },
         {
@@ -6827,10 +6827,10 @@
           "reason": "The module does not explicitly declare 'supported_platforms'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'supported_platforms' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 263,
+          "source_line": 322,
           "source_path": "src/angerona/modules/file_integrity.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "35472c63c4d365fa83de1a8f9d9268d30a838427f44f5cf628ab932a4edb13df",
+          "source_sha256": "b23b442edb1a062c0b328a336d675a3c4ebeb7a813a0eb72f51699e58c2d5a11",
           "source_state": "available"
         }
       ],
@@ -13080,7 +13080,7 @@
           "source_line": 50,
           "source_path": "src/angerona/modules/process_monitor.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "08ccca7ea665df520e60ee24cfb40469848fc5f7f2b706669b4fe4a566c39479",
+          "source_sha256": "f5a6f84e3b6e344156d8d748129cdbd8ec44c9dba0c3ddd61780ab5cf14c9500",
           "source_state": "available"
         },
         {
@@ -13093,7 +13093,7 @@
           "source_line": 50,
           "source_path": "src/angerona/modules/process_monitor.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "08ccca7ea665df520e60ee24cfb40469848fc5f7f2b706669b4fe4a566c39479",
+          "source_sha256": "f5a6f84e3b6e344156d8d748129cdbd8ec44c9dba0c3ddd61780ab5cf14c9500",
           "source_state": "available"
         },
         {
@@ -13106,7 +13106,7 @@
           "source_line": 50,
           "source_path": "src/angerona/modules/process_monitor.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "08ccca7ea665df520e60ee24cfb40469848fc5f7f2b706669b4fe4a566c39479",
+          "source_sha256": "f5a6f84e3b6e344156d8d748129cdbd8ec44c9dba0c3ddd61780ab5cf14c9500",
           "source_state": "available"
         },
         {
@@ -13119,7 +13119,7 @@
           "source_line": 50,
           "source_path": "src/angerona/modules/process_monitor.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "08ccca7ea665df520e60ee24cfb40469848fc5f7f2b706669b4fe4a566c39479",
+          "source_sha256": "f5a6f84e3b6e344156d8d748129cdbd8ec44c9dba0c3ddd61780ab5cf14c9500",
           "source_state": "available"
         },
         {
@@ -13132,7 +13132,7 @@
           "source_line": 50,
           "source_path": "src/angerona/modules/process_monitor.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "08ccca7ea665df520e60ee24cfb40469848fc5f7f2b706669b4fe4a566c39479",
+          "source_sha256": "f5a6f84e3b6e344156d8d748129cdbd8ec44c9dba0c3ddd61780ab5cf14c9500",
           "source_state": "available"
         },
         {
@@ -13145,7 +13145,7 @@
           "source_line": 50,
           "source_path": "src/angerona/modules/process_monitor.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "08ccca7ea665df520e60ee24cfb40469848fc5f7f2b706669b4fe4a566c39479",
+          "source_sha256": "f5a6f84e3b6e344156d8d748129cdbd8ec44c9dba0c3ddd61780ab5cf14c9500",
           "source_state": "available"
         },
         {
@@ -13158,7 +13158,7 @@
           "source_line": 50,
           "source_path": "src/angerona/modules/process_monitor.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "08ccca7ea665df520e60ee24cfb40469848fc5f7f2b706669b4fe4a566c39479",
+          "source_sha256": "f5a6f84e3b6e344156d8d748129cdbd8ec44c9dba0c3ddd61780ab5cf14c9500",
           "source_state": "available"
         },
         {
@@ -13171,7 +13171,7 @@
           "source_line": 50,
           "source_path": "src/angerona/modules/process_monitor.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "08ccca7ea665df520e60ee24cfb40469848fc5f7f2b706669b4fe4a566c39479",
+          "source_sha256": "f5a6f84e3b6e344156d8d748129cdbd8ec44c9dba0c3ddd61780ab5cf14c9500",
           "source_state": "available"
         },
         {
@@ -13184,7 +13184,7 @@
           "source_line": 50,
           "source_path": "src/angerona/modules/process_monitor.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "08ccca7ea665df520e60ee24cfb40469848fc5f7f2b706669b4fe4a566c39479",
+          "source_sha256": "f5a6f84e3b6e344156d8d748129cdbd8ec44c9dba0c3ddd61780ab5cf14c9500",
           "source_state": "available"
         },
         {
@@ -13197,7 +13197,7 @@
           "source_line": 50,
           "source_path": "src/angerona/modules/process_monitor.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "08ccca7ea665df520e60ee24cfb40469848fc5f7f2b706669b4fe4a566c39479",
+          "source_sha256": "f5a6f84e3b6e344156d8d748129cdbd8ec44c9dba0c3ddd61780ab5cf14c9500",
           "source_state": "available"
         },
         {
@@ -13210,7 +13210,7 @@
           "source_line": 50,
           "source_path": "src/angerona/modules/process_monitor.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "08ccca7ea665df520e60ee24cfb40469848fc5f7f2b706669b4fe4a566c39479",
+          "source_sha256": "f5a6f84e3b6e344156d8d748129cdbd8ec44c9dba0c3ddd61780ab5cf14c9500",
           "source_state": "available"
         },
         {
@@ -13223,7 +13223,7 @@
           "source_line": 50,
           "source_path": "src/angerona/modules/process_monitor.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "08ccca7ea665df520e60ee24cfb40469848fc5f7f2b706669b4fe4a566c39479",
+          "source_sha256": "f5a6f84e3b6e344156d8d748129cdbd8ec44c9dba0c3ddd61780ab5cf14c9500",
           "source_state": "available"
         },
         {
@@ -13236,7 +13236,7 @@
           "source_line": 50,
           "source_path": "src/angerona/modules/process_monitor.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "08ccca7ea665df520e60ee24cfb40469848fc5f7f2b706669b4fe4a566c39479",
+          "source_sha256": "f5a6f84e3b6e344156d8d748129cdbd8ec44c9dba0c3ddd61780ab5cf14c9500",
           "source_state": "available"
         },
         {
@@ -13249,7 +13249,7 @@
           "source_line": 50,
           "source_path": "src/angerona/modules/process_monitor.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "08ccca7ea665df520e60ee24cfb40469848fc5f7f2b706669b4fe4a566c39479",
+          "source_sha256": "f5a6f84e3b6e344156d8d748129cdbd8ec44c9dba0c3ddd61780ab5cf14c9500",
           "source_state": "available"
         }
       ],
@@ -13589,10 +13589,10 @@
           "reason": "Lifecycle status is 'stopped'; the capability is not currently live.",
           "remediation": "Start the module and verify a completed work cycle.",
           "source_anchor": "module-class-declaration",
-          "source_line": 3112,
+          "source_line": 3356,
           "source_path": "src/angerona/modules/purple_guard.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "c5bc17d948101e0b4174593466be7f0e11787967de3a2ac651e7e721ff0cbbb1",
+          "source_sha256": "8bfa6114c975846a6c69a97040aee803f509eba23a73a7b71b4ede74494f51b3",
           "source_state": "available"
         },
         {
@@ -13602,10 +13602,10 @@
           "reason": "The module does not explicitly declare 'data_classes'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'data_classes' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 3112,
+          "source_line": 3356,
           "source_path": "src/angerona/modules/purple_guard.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "c5bc17d948101e0b4174593466be7f0e11787967de3a2ac651e7e721ff0cbbb1",
+          "source_sha256": "8bfa6114c975846a6c69a97040aee803f509eba23a73a7b71b4ede74494f51b3",
           "source_state": "available"
         },
         {
@@ -13615,10 +13615,10 @@
           "reason": "The module does not explicitly declare 'egress'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'egress' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 3112,
+          "source_line": 3356,
           "source_path": "src/angerona/modules/purple_guard.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "c5bc17d948101e0b4174593466be7f0e11787967de3a2ac651e7e721ff0cbbb1",
+          "source_sha256": "8bfa6114c975846a6c69a97040aee803f509eba23a73a7b71b4ede74494f51b3",
           "source_state": "available"
         },
         {
@@ -13628,10 +13628,10 @@
           "reason": "The module does not explicitly declare 'inputs'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'inputs' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 3112,
+          "source_line": 3356,
           "source_path": "src/angerona/modules/purple_guard.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "c5bc17d948101e0b4174593466be7f0e11787967de3a2ac651e7e721ff0cbbb1",
+          "source_sha256": "8bfa6114c975846a6c69a97040aee803f509eba23a73a7b71b4ede74494f51b3",
           "source_state": "available"
         },
         {
@@ -13641,10 +13641,10 @@
           "reason": "The module does not explicitly declare 'loss_behavior'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'loss_behavior' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 3112,
+          "source_line": 3356,
           "source_path": "src/angerona/modules/purple_guard.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "c5bc17d948101e0b4174593466be7f0e11787967de3a2ac651e7e721ff0cbbb1",
+          "source_sha256": "8bfa6114c975846a6c69a97040aee803f509eba23a73a7b71b4ede74494f51b3",
           "source_state": "available"
         },
         {
@@ -13654,10 +13654,10 @@
           "reason": "The module does not explicitly declare 'mode'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'mode' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 3112,
+          "source_line": 3356,
           "source_path": "src/angerona/modules/purple_guard.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "c5bc17d948101e0b4174593466be7f0e11787967de3a2ac651e7e721ff0cbbb1",
+          "source_sha256": "8bfa6114c975846a6c69a97040aee803f509eba23a73a7b71b4ede74494f51b3",
           "source_state": "available"
         },
         {
@@ -13667,10 +13667,10 @@
           "reason": "The module does not explicitly declare 'outputs'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'outputs' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 3112,
+          "source_line": 3356,
           "source_path": "src/angerona/modules/purple_guard.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "c5bc17d948101e0b4174593466be7f0e11787967de3a2ac651e7e721ff0cbbb1",
+          "source_sha256": "8bfa6114c975846a6c69a97040aee803f509eba23a73a7b71b4ede74494f51b3",
           "source_state": "available"
         },
         {
@@ -13680,10 +13680,10 @@
           "reason": "The module does not explicitly declare 'permissions'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'permissions' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 3112,
+          "source_line": 3356,
           "source_path": "src/angerona/modules/purple_guard.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "c5bc17d948101e0b4174593466be7f0e11787967de3a2ac651e7e721ff0cbbb1",
+          "source_sha256": "8bfa6114c975846a6c69a97040aee803f509eba23a73a7b71b4ede74494f51b3",
           "source_state": "available"
         },
         {
@@ -13693,10 +13693,10 @@
           "reason": "The module does not explicitly declare 'resource_budget'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'resource_budget' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 3112,
+          "source_line": 3356,
           "source_path": "src/angerona/modules/purple_guard.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "c5bc17d948101e0b4174593466be7f0e11787967de3a2ac651e7e721ff0cbbb1",
+          "source_sha256": "8bfa6114c975846a6c69a97040aee803f509eba23a73a7b71b4ede74494f51b3",
           "source_state": "available"
         },
         {
@@ -13706,10 +13706,10 @@
           "reason": "The module does not explicitly declare 'response_authority'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'response_authority' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 3112,
+          "source_line": 3356,
           "source_path": "src/angerona/modules/purple_guard.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "c5bc17d948101e0b4174593466be7f0e11787967de3a2ac651e7e721ff0cbbb1",
+          "source_sha256": "8bfa6114c975846a6c69a97040aee803f509eba23a73a7b71b4ede74494f51b3",
           "source_state": "available"
         },
         {
@@ -13719,10 +13719,10 @@
           "reason": "The module does not explicitly declare 'restart_policy'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'restart_policy' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 3112,
+          "source_line": 3356,
           "source_path": "src/angerona/modules/purple_guard.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "c5bc17d948101e0b4174593466be7f0e11787967de3a2ac651e7e721ff0cbbb1",
+          "source_sha256": "8bfa6114c975846a6c69a97040aee803f509eba23a73a7b71b4ede74494f51b3",
           "source_state": "available"
         },
         {
@@ -13732,10 +13732,10 @@
           "reason": "The module does not explicitly declare 'retention'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'retention' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 3112,
+          "source_line": 3356,
           "source_path": "src/angerona/modules/purple_guard.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "c5bc17d948101e0b4174593466be7f0e11787967de3a2ac651e7e721ff0cbbb1",
+          "source_sha256": "8bfa6114c975846a6c69a97040aee803f509eba23a73a7b71b4ede74494f51b3",
           "source_state": "available"
         },
         {
@@ -13745,10 +13745,10 @@
           "reason": "The module does not explicitly declare 'settings_schema'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'settings_schema' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 3112,
+          "source_line": 3356,
           "source_path": "src/angerona/modules/purple_guard.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "c5bc17d948101e0b4174593466be7f0e11787967de3a2ac651e7e721ff0cbbb1",
+          "source_sha256": "8bfa6114c975846a6c69a97040aee803f509eba23a73a7b71b4ede74494f51b3",
           "source_state": "available"
         },
         {
@@ -13758,10 +13758,10 @@
           "reason": "The module does not explicitly declare 'supported_platforms'; the class declaration line is shown because an absent field has no source line.",
           "remediation": "Declare and test 'supported_platforms' on this module instead of relying on the compatibility default.",
           "source_anchor": "module-class-declaration",
-          "source_line": 3112,
+          "source_line": 3356,
           "source_path": "src/angerona/modules/purple_guard.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "c5bc17d948101e0b4174593466be7f0e11787967de3a2ac651e7e721ff0cbbb1",
+          "source_sha256": "8bfa6114c975846a6c69a97040aee803f509eba23a73a7b71b4ede74494f51b3",
           "source_state": "available"
         }
       ],
@@ -18381,7 +18381,7 @@
           "source_line": 626,
           "source_path": "src/angerona/modules/wfp_controller.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "da24dfb094d62bfa512b9d11a7b12cc52c4a6656484c6fe92f3d688a7a42ea30",
+          "source_sha256": "ed7ab0b3bc34794b0a78d3599437db9459a0d5690880292c918cddcc226502af",
           "source_state": "available"
         },
         {
@@ -18394,7 +18394,7 @@
           "source_line": 626,
           "source_path": "src/angerona/modules/wfp_controller.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "da24dfb094d62bfa512b9d11a7b12cc52c4a6656484c6fe92f3d688a7a42ea30",
+          "source_sha256": "ed7ab0b3bc34794b0a78d3599437db9459a0d5690880292c918cddcc226502af",
           "source_state": "available"
         },
         {
@@ -18407,7 +18407,7 @@
           "source_line": 626,
           "source_path": "src/angerona/modules/wfp_controller.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "da24dfb094d62bfa512b9d11a7b12cc52c4a6656484c6fe92f3d688a7a42ea30",
+          "source_sha256": "ed7ab0b3bc34794b0a78d3599437db9459a0d5690880292c918cddcc226502af",
           "source_state": "available"
         },
         {
@@ -18420,7 +18420,7 @@
           "source_line": 626,
           "source_path": "src/angerona/modules/wfp_controller.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "da24dfb094d62bfa512b9d11a7b12cc52c4a6656484c6fe92f3d688a7a42ea30",
+          "source_sha256": "ed7ab0b3bc34794b0a78d3599437db9459a0d5690880292c918cddcc226502af",
           "source_state": "available"
         },
         {
@@ -18433,7 +18433,7 @@
           "source_line": 626,
           "source_path": "src/angerona/modules/wfp_controller.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "da24dfb094d62bfa512b9d11a7b12cc52c4a6656484c6fe92f3d688a7a42ea30",
+          "source_sha256": "ed7ab0b3bc34794b0a78d3599437db9459a0d5690880292c918cddcc226502af",
           "source_state": "available"
         },
         {
@@ -18446,7 +18446,7 @@
           "source_line": 626,
           "source_path": "src/angerona/modules/wfp_controller.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "da24dfb094d62bfa512b9d11a7b12cc52c4a6656484c6fe92f3d688a7a42ea30",
+          "source_sha256": "ed7ab0b3bc34794b0a78d3599437db9459a0d5690880292c918cddcc226502af",
           "source_state": "available"
         },
         {
@@ -18459,7 +18459,7 @@
           "source_line": 626,
           "source_path": "src/angerona/modules/wfp_controller.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "da24dfb094d62bfa512b9d11a7b12cc52c4a6656484c6fe92f3d688a7a42ea30",
+          "source_sha256": "ed7ab0b3bc34794b0a78d3599437db9459a0d5690880292c918cddcc226502af",
           "source_state": "available"
         },
         {
@@ -18472,7 +18472,7 @@
           "source_line": 626,
           "source_path": "src/angerona/modules/wfp_controller.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "da24dfb094d62bfa512b9d11a7b12cc52c4a6656484c6fe92f3d688a7a42ea30",
+          "source_sha256": "ed7ab0b3bc34794b0a78d3599437db9459a0d5690880292c918cddcc226502af",
           "source_state": "available"
         },
         {
@@ -18485,7 +18485,7 @@
           "source_line": 626,
           "source_path": "src/angerona/modules/wfp_controller.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "da24dfb094d62bfa512b9d11a7b12cc52c4a6656484c6fe92f3d688a7a42ea30",
+          "source_sha256": "ed7ab0b3bc34794b0a78d3599437db9459a0d5690880292c918cddcc226502af",
           "source_state": "available"
         },
         {
@@ -18498,7 +18498,7 @@
           "source_line": 626,
           "source_path": "src/angerona/modules/wfp_controller.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "da24dfb094d62bfa512b9d11a7b12cc52c4a6656484c6fe92f3d688a7a42ea30",
+          "source_sha256": "ed7ab0b3bc34794b0a78d3599437db9459a0d5690880292c918cddcc226502af",
           "source_state": "available"
         },
         {
@@ -18511,7 +18511,7 @@
           "source_line": 626,
           "source_path": "src/angerona/modules/wfp_controller.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "da24dfb094d62bfa512b9d11a7b12cc52c4a6656484c6fe92f3d688a7a42ea30",
+          "source_sha256": "ed7ab0b3bc34794b0a78d3599437db9459a0d5690880292c918cddcc226502af",
           "source_state": "available"
         },
         {
@@ -18524,7 +18524,7 @@
           "source_line": 626,
           "source_path": "src/angerona/modules/wfp_controller.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "da24dfb094d62bfa512b9d11a7b12cc52c4a6656484c6fe92f3d688a7a42ea30",
+          "source_sha256": "ed7ab0b3bc34794b0a78d3599437db9459a0d5690880292c918cddcc226502af",
           "source_state": "available"
         },
         {
@@ -18537,7 +18537,7 @@
           "source_line": 626,
           "source_path": "src/angerona/modules/wfp_controller.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "da24dfb094d62bfa512b9d11a7b12cc52c4a6656484c6fe92f3d688a7a42ea30",
+          "source_sha256": "ed7ab0b3bc34794b0a78d3599437db9459a0d5690880292c918cddcc226502af",
           "source_state": "available"
         },
         {
@@ -18550,7 +18550,7 @@
           "source_line": 626,
           "source_path": "src/angerona/modules/wfp_controller.py",
           "source_provenance": "verified-loaded-declaration",
-          "source_sha256": "da24dfb094d62bfa512b9d11a7b12cc52c4a6656484c6fe92f3d688a7a42ea30",
+          "source_sha256": "ed7ab0b3bc34794b0a78d3599437db9459a0d5690880292c918cddcc226502af",
           "source_state": "available"
         }
       ],

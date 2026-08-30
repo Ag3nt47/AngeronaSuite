@@ -2,7 +2,7 @@
 
 **Scope:** authorized defensive-only theoretical hardening
 **Release target:** 1.12.1
-**Disposition:** COMPLETE
+**Disposition:** READY_FOR_PUBLICATION
 
 ## Round 1 — module-by-module baseline audit
 
@@ -24,7 +24,7 @@ The final pass attacked stale approvals, generation reuse, forged state,
 rollback, missing acknowledgements, unbounded caches, and weakly typed mobile or
 remote authority. Remediation remains gated or proposal-only wherever identity
 or postcondition evidence is incomplete. The focused Cycle 29 gate contains
-**118 tests**; the exact terminal full-tree result is recorded in
+**121 tests**; the exact terminal full-tree result is recorded in
 ../cycles26-30-summary.md.
 
 All hostile fixtures are inert, local, bounded, and disposable.

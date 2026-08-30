@@ -154,11 +154,27 @@ def test_exact_process_receipt_wakes_idle_purple_guard_immediately(
         guard.start()
         assert first_cycle.wait(1.0)
         assert callable(bus.callback)
-        started = time.monotonic()
         bus.callback(SimpleNamespace(details={
             "event_type": "process_creation",
             "cmdline": "python -c pass ANGERONA_REDTEAM_deadbeef",
         }))
+        assert not second_cycle.wait(0.1)
+        started = time.monotonic()
+        bus.callback(SimpleNamespace(
+            module="Process Monitor",
+            details={
+                "event_type": "process_creation",
+                "cmdline": "python -c pass ANGERONA_REDTEAM_deadbeef",
+                "redteam_detector_receipt_version": 3,
+                "receipt_type": "native_process_observation",
+                "producer_module": "Process Monitor",
+                "producer_capability_id": "angerona.builtin.process_monitor",
+                "producer_trust_boundary": "same-process-simulation-validation",
+                "lease_id": "lease",
+                "receipt_id": "receipt",
+                "detector_receipt_mac": "00" * 64,
+            },
+        ))
         assert second_cycle.wait(1.0)
         assert time.monotonic() - started < 1.0
     finally:

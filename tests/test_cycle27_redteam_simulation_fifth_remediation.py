@@ -120,6 +120,9 @@ def test_t1059_requires_exact_process_monitor_source_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
+    # A security receipt must wake Purple Guard even when ordinary file-policy
+    # cadence is resource-throttled to its maximum supported multiplier.
+    guard.set_throttle(8.0)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
@@ -187,6 +190,50 @@ def test_t1059_requires_exact_process_monitor_source_receipt(
         RedTeamValidationLease.release(lease)
         guard.stop()
         recorder.close()
+
+
+def test_process_wake_requires_expected_native_source_envelope(tmp_path: Path) -> None:
+    guard = purple_guard.PurpleGuard(tmp_path)
+    guard.status = "running"
+    token = "ANGERONA_REDTEAM_540dce91"
+    forged = Event(
+        "Arbitrary Publisher",
+        "nonce-shaped process row",
+        Severity.INFO,
+        details={
+            "event_type": "process_creation",
+            "cmdline": f"python {token}",
+        },
+    )
+    guard._capture_process_event(forged)
+    assert list(guard._process_queue) == [forged]
+    assert not guard._process_wake.is_set()
+
+    native = Event(
+        "Process Monitor",
+        "native process observation",
+        Severity.INFO,
+        details={
+            "event_type": "process_creation",
+            "cmdline": f"python {token}",
+            "redteam_detector_receipt_version": 3,
+            "receipt_type": "native_process_observation",
+            "producer_module": "Process Monitor",
+            "producer_capability_id": "angerona.builtin.process_monitor",
+            "producer_trust_boundary": "same-process-simulation-validation",
+            "lease_id": "lease",
+            "receipt_id": "receipt",
+            "detector_receipt_mac": "00" * 64,
+        },
+    )
+    guard._capture_process_event(native)
+    assert list(guard._process_queue) == [forged]
+    assert list(guard._native_process_queue) == [native]
+    assert guard._process_wake.is_set()
+    for _index in range(300):
+        guard._capture_process_event(forged)
+    assert len(guard._process_queue) == 192
+    assert list(guard._native_process_queue) == [native]
 
 
 def test_public_fim_attester_and_mutable_legacy_dispatch_are_not_oracles(

@@ -730,7 +730,8 @@ class WFPControllerModule(BaseModule):
                     record.pid,
                     record.process_birth,
                 )
-                if now - self._seen_alerts.get(identity, 0.0) < 300.0:
+                previous = self._seen_alerts.get(identity)
+                if previous is not None and 0.0 <= now - previous < 300.0:
                     continue
                 self._seen_alerts[identity] = now
                 self.emit(

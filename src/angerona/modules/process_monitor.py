@@ -75,8 +75,20 @@ class ProcessMonitorModule(BaseModule):
                 return
             self._redteam_receipt_capability = capability
 
-    def observe_validation_process(self, pid: int) -> bool:
-        """Perform one exact, read-only OS observation for an enrolled child."""
+    def observe_validation_process(
+        self,
+        pid: int,
+        *,
+        _prepare_only: bool = False,
+    ) -> bool | dict[str, object]:
+        """Perform one exact, read-only OS observation for an enrolled child.
+
+        ``_prepare_only`` is used only by the validation lease's two-phase
+        binder: the native receipt is prepared without publishing while the
+        challenge is pending, then published only after the lease atomically
+        commits that exact receipt. Normal sensor polling retains the boolean
+        API and publishes immediately.
+        """
         if self.status != "running" or self.stopping:
             return False
         try:
@@ -103,16 +115,27 @@ class ProcessMonitorModule(BaseModule):
             if identity is not None:
                 self._redteam_receipted.add(identity)
             command = " ".join(str(value) for value in process["cmdline"])
+            prepared: dict[str, object] = {
+                "message": (
+                    f"Process created: {process['name'] or '?'} "
+                    f"(pid {int(process['pid'])})"
+                ),
+                "details": {
+                    "event_type": "process_creation",
+                    "pid": int(process["pid"]),
+                    "ppid": process["ppid"],
+                    "exe": process["exe"],
+                    "cmdline": command,
+                    "process_create_time": process["create_time"],
+                    **receipt,
+                },
+            }
+            if _prepare_only:
+                return prepared
             self.emit(
-                f"Process created: {process['name'] or '?'} (pid {pid})",
+                str(prepared["message"]),
                 Severity.INFO,
-                event_type="process_creation",
-                pid=int(pid),
-                ppid=process["ppid"],
-                exe=process["exe"],
-                cmdline=command,
-                process_create_time=process["create_time"],
-                **receipt,
+                **dict(prepared["details"]),
             )
             return True
         except (OSError, TypeError, ValueError):

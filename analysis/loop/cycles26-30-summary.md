@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-30
 **Scope:** five three-round, defensive-only hardening loops
-**Release:** 1.12.1 (`COMPLETE`; guarded remediation publication verified)
+**Release:** 1.12.1 (`READY_FOR_PUBLICATION`; third CI reopen)
 
 ## Outcome
 
@@ -18,8 +18,8 @@ regressions, and fail-closed response gates.
 | 26 | Source and signer boundaries, object-bound scanning, truthful aggregation, resilience custody, and universal sub-100 health evidence with trusted file/line disclosure | 50 findings remediated across three rounds; `cycle26/` |
 | 27 | Exhaustive 83-file/81-capability audit, assurance ledger, upstream comparison, repeated independent re-attacks, and Red Team Simulation custody repair | Sharded findings/remediations and independent gates under `cycle27/` |
 | 28 | API-patch completeness, hardware-root truth, canonical endpoint/process identity, safe posture paths, and temporal-health custody | 30 focused tests in five `test_cycle28_*` files |
-| 29 | Broad per-module upgrades for authenticated baselines, exact object/generation identity, delivery/loss accounting, liveness, typed authorization, forward secrecy, and bounded acquisition | 118 collected tests in 25 `test_cycle29_*` files |
-| 30 | Cross-module cursor/CAS/receipt hardening, lifecycle and crash-delivery repair, unsafe legacy response retirement, and SentinelLens | 66 passed / 1 expected skip across 15 `test_cycle30_*` files; SentinelLens-focused 19/1 |
+| 29 | Broad per-module upgrades for authenticated baselines, exact object/generation identity, delivery/loss accounting, liveness, typed authorization, forward secrecy, and bounded acquisition | 121 collected tests in 25 `test_cycle29_*` files |
+| 30 | Cross-module cursor/CAS/receipt hardening, lifecycle and crash-delivery repair, unsafe legacy response retirement, and SentinelLens | 72 passed / 1 expected skip across 15 `test_cycle30_*` files; SentinelLens-focused 19/1 |
 
 ## Major user-facing additions
 
@@ -56,23 +56,37 @@ typed response authority, authenticated content/state, and clickable
 provenance—without claiming upstream deployment scale or importing arbitrary
 query/command execution.
 
-## Terminal verification
+## Reopened terminal verification
 
-- Combined Cycle 26–30 focused gate: **819 passed / 6 expected platform skips /
-  0 failed** across 93 files. Focused groups overlap and are not added to the
-  full-suite total.
-- Exact v1.12.1 serial gate: **2669 passed /
-  13 intentional platform skips / 0 failed**.
-- Python `compileall`, repository-wide Ruff, selfcheck **26/26**,
-  workflow-policy validation, dependency audit, documentation-drift validation,
-  and `git diff --check`: pass on the release tree.
-- Exact-completion CI run 33294618414 exposed enabled-Administrator and
-  implicit-owner DACL authority plus two mutable/elevated hosted-runner test
-  couplings; Security assurance run 33294618400 passed. All three findings were
-  remediated with production fail-closed behavior retained.
-- Guarded publication verified remediated release commit
-  `96b55f7d7a2305216cc68b804c72dc720ce6c88f`, canonical public `main` parity,
-  a clean worktree, and all **4/4** README images. This completion-state record
-  is carried by the required second guarded fast-forward; CI and Security
-  assurance are evaluated on that exact final SHA. No user-mode defensive
-  patch is proof against every future or privileged attacker.
+- The prior combined Cycle 26–30 focused result was **819 passed / 6 expected
+  platform skips / 0 failed** across 93 overlapping files. New Cycle 27 and 29
+  nodes were added after that snapshot, so it is historical rather than the
+  current terminal gate.
+- The current tree's fresh authoritative serial gate is **2678 passed / 13
+  intentional platform skips / 0 failed** across **2691 collected tests** in
+  **418.46 seconds**.
+- Guarded publication previously placed completion SHA
+  `45c114b99c0f071fb0c2d13de2a78928a35ee514` on canonical public `main` with a
+  clean tree and all **4/4** README images verified. Exact-SHA Security assurance
+  run [33296804422](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/33296804422)
+  passed CodeQL, secret scan, and Scorecard.
+- Exact-SHA CI run
+  [33296804448](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/33296804448)
+  passed Python 3.10/3.12, README integrity, dependency audit, and all three
+  platform contracts, but failed Python 3.11 and 3.13. The failures exposed a
+  first-ever WFP flow suppressed during low monotonic uptime and Windows FIM
+  cache reuse based on insufficient metadata authority.
+- Local serial re-attack also exposed T1059 source-to-consumer cadence and
+  direct-observation fail-closed gaps. The candidate now has throttle-preserving
+  exact-receipt wakeup, a bounded reserved native queue, and two-phase signed
+  observation binding that never holds lease authority across OS or subscriber
+  I/O. WFP, FIM, and T1059 regressions plus the full serial gate are green.
+- Python `compileall`, repository-wide Ruff, selfcheck **26/26**, workflow policy
+  **3/3**, dependency audit, documentation drift, JSON state parsing, and diff
+  hygiene pass. The dependency audit reports no known vulnerabilities and
+  explicitly cannot map the local `angerona` and bundled `srt` distributions to
+  PyPI identities.
+- Remaining completion requires a reviewed release commit, guarded fast-forward, a
+  completion-evidence commit, a second guarded fast-forward, then green CI and
+  Security assurance on that exact final SHA. No user-mode defensive patch is
+  proof against every future or privileged attacker.

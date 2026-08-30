@@ -34,7 +34,7 @@ from typing import Any, TypeAlias
 
 from angerona.core.atomic_io import replace_with_retry
 from angerona.core.data_paths import data_dir as canonical_data_dir
-from angerona.core.eventbus import Event
+from angerona.core.eventbus import Event, EventBus
 from angerona.core.module_base import BaseModule, Severity
 from angerona.shark.run_manifest import (
     MAX_ADMITTED_DRILL_SECONDS,
@@ -759,7 +759,11 @@ class _ProducerReceiptCapability:
                 pid=process.get("pid"),
                 token=token,
                 process_create_time=process.get("create_time"),
-                require_live=True,
+                # Process Monitor just completed the second direct OS read;
+                # compare it to the independently bound identity without
+                # repeating psutil while authority is held.
+                require_live=False,
+                allow_observation_pending=True,
             )
             if (
                 producer is not state._native_module(module_name)
@@ -1868,6 +1872,7 @@ class RedTeamValidationLease:
         state = _lease_authority(self)
         normalized = str(token)
         assert state.lock is not None
+        binding_id = secrets.token_hex(16)
         with state.lock:
             challenge = (state.process_challenges or {}).get(normalized)
             if (
@@ -1881,25 +1886,82 @@ class RedTeamValidationLease:
                 raise RedTeamValidationError(
                     "process challenge binding is stale, reused, or run-mismatched"
                 )
-            try:
-                process = psutil.Process(int(pid))
-                created = float(process.create_time())
-                command = [str(value) for value in process.cmdline()]
-                executable = str(process.exe() or "")
-                running = process.is_running()
-            except (psutil.Error, OSError, ValueError, TypeError) as exc:
-                raise RedTeamValidationError(
-                    "spawned process identity could not be verified"
-                ) from exc
+            assert state.process_challenges is not None
+            state.process_challenges[normalized] = {
+                **challenge,
+                "state": "binding_pending",
+                "binding_id": binding_id,
+                "binding_thread_id": threading.get_ident(),
+            }
+
+        def fail_binding(reason: str) -> None:
+            assert state.lock is not None
+            with state.lock:
+                current = (state.process_challenges or {}).get(normalized)
+                if (
+                    isinstance(current, dict)
+                    and current.get("state") == "binding_pending"
+                    and current.get("binding_id") == binding_id
+                ):
+                    assert state.process_challenges is not None
+                    state.process_challenges[normalized] = {
+                        "token": normalized,
+                        "state": "observation_failed",
+                        "observation_failure": reason,
+                        "run_id": str(run_id),
+                    }
+
+        # Resolve the child identity without holding lease authority across
+        # psutil. Release/cancellation can proceed while the exact token remains
+        # terminally unavailable to polling in binding_pending.
+        try:
+            process = psutil.Process(int(pid))
+            created = float(process.create_time())
+            command = [str(value) for value in process.cmdline()]
+            executable = str(process.exe() or "")
+            running = process.is_running()
+        except (psutil.Error, OSError, ValueError, TypeError) as exc:
+            fail_binding("identity_read_failed")
+            raise RedTeamValidationError(
+                "spawned process identity could not be verified"
+            ) from exc
+        if (
+            int(pid) <= 0
+            or not math.isfinite(created)
+            or created <= 0
+            or not running
+            or normalized not in command
+        ):
+            fail_binding("identity_mismatch")
+            raise RedTeamValidationError(
+                "spawned process does not carry the enrolled exact token"
+            )
+
+        with state.lock:
+            current = (state.process_challenges or {}).get(normalized)
             if (
-                int(pid) <= 0
-                or not math.isfinite(created)
-                or created <= 0
-                or not running
-                or normalized not in command
+                state.released
+                or not state.consumed
+                or str(run_id) != state.bound_run_id
+                or not isinstance(current, dict)
+                or current.get("state") != "binding_pending"
+                or current.get("binding_id") != binding_id
+                or not RedTeamValidationLease._state_matches(self)
             ):
+                if (
+                    isinstance(current, dict)
+                    and current.get("state") == "binding_pending"
+                    and current.get("binding_id") == binding_id
+                ):
+                    assert state.process_challenges is not None
+                    state.process_challenges[normalized] = {
+                        "token": normalized,
+                        "state": "observation_failed",
+                        "observation_failure": "authority_changed",
+                        "run_id": str(run_id),
+                    }
                 raise RedTeamValidationError(
-                    "spawned process does not carry the enrolled exact token"
+                    "process challenge authority changed during identity binding"
                 )
             core: dict[str, object] = {
                 "token": normalized,
@@ -1915,22 +1977,178 @@ class RedTeamValidationLease:
                 "state": "bound",
                 "identity_sha256": _sha256(core),
             }
+            observation_id = secrets.token_hex(16)
+            pending = {
+                **bound,
+                "state": "observation_pending",
+                "observation_id": observation_id,
+                "observation_thread_id": threading.get_ident(),
+            }
             assert state.process_challenges is not None
-            state.process_challenges[normalized] = bound
+            state.process_challenges[normalized] = pending
             result = copy.deepcopy(bound)
             observer = state.process_module
-        # The exact producer performs a second independent OS read and emits
-        # its object-capability receipt. The lease's enrollment read alone is
-        # never detector credit.
+
+        def fail_pending(reason: str) -> None:
+            assert state.lock is not None
+            with state.lock:
+                current = (state.process_challenges or {}).get(normalized)
+                if (
+                    isinstance(current, dict)
+                    and current.get("state") == "observation_pending"
+                    and current.get("observation_id") == observation_id
+                ):
+                    assert state.process_challenges is not None
+                    state.process_challenges[normalized] = {
+                        **bound,
+                        "state": "observation_failed",
+                        "observation_failure": reason,
+                    }
+
+        # Prepare the exact native receipt without holding authority across
+        # psutil reads or synchronous EventBus subscribers. Only this binder
+        # thread can mint while the challenge is observation_pending; polling
+        # threads reject it. Publication follows the atomic pending -> bound
+        # commit, so consumers never drain an uncommitted receipt.
         try:
             from angerona.modules.process_monitor import ProcessMonitorModule
 
-            if type(observer) is ProcessMonitorModule:
-                ProcessMonitorModule.observe_validation_process(
-                    observer, int(pid)
+            if type(observer) is not ProcessMonitorModule:
+                fail_pending("exact_producer_unavailable")
+                raise RedTeamValidationError(
+                    "exact process observation producer is unavailable"
                 )
-        except Exception:
-            pass
+            prepared = ProcessMonitorModule.observe_validation_process(
+                observer,
+                int(pid),
+                _prepare_only=True,
+            )
+        except RedTeamValidationError:
+            raise
+        except Exception as exc:
+            fail_pending("observer_exception")
+            raise RedTeamValidationError(
+                "exact process observation raised an exception"
+            ) from exc
+        if not isinstance(prepared, dict):
+            fail_pending("observer_rejected")
+            raise RedTeamValidationError(
+                "exact process observation did not produce a receipt"
+            )
+        prepared_details = prepared.get("details")
+        if not isinstance(prepared_details, dict):
+            fail_pending("receipt_shape_invalid")
+            raise RedTeamValidationError(
+                "exact process observation produced an invalid receipt"
+            )
+        prepared_event = Event(
+            "Process Monitor",
+            str(prepared.get("message") or "native process observation"),
+            Severity.INFO,
+            details=copy.deepcopy(prepared_details),
+        )
+        if not RedTeamValidationLease.verify_process_observation(
+            self,
+            prepared_event,
+            # The initial binding and exact producer preparation are two
+            # independent live reads. This pass verifies the signed prepared
+            # receipt without another OS call under authority.
+            require_live=False,
+            _allow_observation_pending=True,
+        ):
+            fail_pending("receipt_verification_failed")
+            raise RedTeamValidationError(
+                "exact process observation receipt could not be verified"
+            )
+
+        assert state.lock is not None
+        with state.lock:
+            current = (state.process_challenges or {}).get(normalized)
+            if (
+                state.released
+                or not state.consumed
+                or not isinstance(current, dict)
+                or current.get("state") != "observation_pending"
+                or current.get("observation_id") != observation_id
+                or not RedTeamValidationLease._state_matches(self)
+            ):
+                if (
+                    isinstance(current, dict)
+                    and current.get("state") == "observation_pending"
+                    and current.get("observation_id") == observation_id
+                ):
+                    assert state.process_challenges is not None
+                    state.process_challenges[normalized] = {
+                        **bound,
+                        "state": "observation_failed",
+                        "observation_failure": "authority_changed",
+                    }
+                raise RedTeamValidationError(
+                    "process challenge authority changed during observation"
+                )
+            assert state.process_challenges is not None
+            state.process_challenges[normalized] = copy.deepcopy(bound)
+
+        try:
+            EventBus.publish(
+                state.bus,
+                Event(
+                    "Process Monitor",
+                    str(
+                        prepared.get("message")
+                        or "native process observation"
+                    ),
+                    Severity.INFO,
+                    details=copy.deepcopy(prepared_details),
+                ),
+            )
+        except Exception as exc:
+            with state.lock:
+                current = (state.process_challenges or {}).get(normalized)
+                if (
+                    isinstance(current, dict)
+                    and current.get("state") == "bound"
+                    and current.get("identity_sha256")
+                    == bound["identity_sha256"]
+                ):
+                    assert state.process_challenges is not None
+                    state.process_challenges[normalized] = {
+                        **bound,
+                        "state": "observation_failed",
+                        "observation_failure": "publication_exception",
+                    }
+            raise RedTeamValidationError(
+                "exact process observation could not be published"
+            ) from exc
+
+        with state.lock:
+            current = (state.process_challenges or {}).get(normalized)
+            if (
+                state.released
+                or not state.consumed
+                or time.monotonic() > state.run_deadline_monotonic
+                or not RedTeamValidationLease._state_matches(self)
+                or not isinstance(current, dict)
+                or current.get("state") != "bound"
+                or current.get("identity_sha256") != bound["identity_sha256"]
+                or state._native_module("Process Monitor") is not observer
+                or getattr(observer, "_bus", None) is not state.bus
+            ):
+                if (
+                    isinstance(current, dict)
+                    and current.get("state") == "bound"
+                    and current.get("identity_sha256")
+                    == bound["identity_sha256"]
+                ):
+                    assert state.process_challenges is not None
+                    state.process_challenges[normalized] = {
+                        **bound,
+                        "state": "observation_failed",
+                        "observation_failure": "authority_changed_after_publication",
+                    }
+                raise RedTeamValidationError(
+                    "process challenge authority ended during publication"
+                )
         return result
 
     @staticmethod
@@ -1941,6 +2159,7 @@ class RedTeamValidationLease:
         token: object,
         process_create_time: object,
         require_live: bool,
+        allow_observation_pending: bool = False,
     ) -> dict[str, object]:
         try:
             normalized_pid = int(pid)
@@ -1948,9 +2167,25 @@ class RedTeamValidationLease:
         except (TypeError, ValueError, OverflowError):
             return {}
         challenge = (state.process_challenges or {}).get(str(token))
+        challenge_state = (
+            str(challenge.get("state") or "")
+            if isinstance(challenge, dict)
+            else ""
+        )
+        pending_is_authorized = (
+            bool(
+                allow_observation_pending
+                and challenge_state == "observation_pending"
+                and challenge.get("observation_thread_id") == threading.get_ident()
+                and isinstance(challenge.get("observation_id"), str)
+                and bool(challenge.get("observation_id"))
+            )
+            if isinstance(challenge, dict)
+            else False
+        )
         if (
             not isinstance(challenge, dict)
-            or challenge.get("state") != "bound"
+            or (challenge_state != "bound" and not pending_is_authorized)
             or int(challenge.get("pid", -1)) != normalized_pid
             or not math.isfinite(normalized_created)
             or challenge.get("run_id") != state.bound_run_id
@@ -2260,6 +2495,7 @@ class RedTeamValidationLease:
         event: object,
         *,
         require_live: bool,
+        _allow_observation_pending: bool = False,
     ) -> bool:
         """Verify a T1059 source receipt minted inside exact Process Monitor."""
         details = getattr(event, "details", {}) or {}
@@ -2291,6 +2527,7 @@ class RedTeamValidationLease:
                 ),
                 process_create_time=details.get("process_create_time"),
                 require_live=require_live,
+                allow_observation_pending=_allow_observation_pending,
             )
             command = str(
                 details.get("cmdline") or details.get("command_line") or ""
@@ -3129,15 +3366,17 @@ class PurpleGuard(BaseModule):
         self.sandbox = self.data_root / "drill-sandbox"
         self._seen: set[tuple[str, int, int]] = set()
         self._seen_events: set[tuple[float, str, object, str]] = set()
-        # Retain only exact nonce-tagged drill process observations. General
-        # INFO traffic can no longer evict T1059 validation before this module's
-        # one-second work cycle consumes it.
-        self._process_queue: deque[object] = deque(maxlen=256)
+        # Keep total callback retention at 256 while reserving 64 slots for
+        # native receipt envelopes. Merely nonce-shaped rows cannot evict every
+        # exact T1059 source receipt before the verifier consumes it.
+        self._process_queue: deque[object] = deque(maxlen=192)
+        self._native_process_queue: deque[object] = deque(maxlen=64)
         self._process_queue_lock = threading.Lock()
-        # An exact nonce-tagged process receipt must not wait behind the idle
-        # five-second file-scan cadence. The EventBus callback sets this only
-        # after classification; the run loop consumes it without polling or
-        # doing work on the publisher thread.
+        # An exact native process receipt must not wait behind the idle
+        # five-second file-scan cadence. The EventBus callback queues every
+        # classified nonce but sets this wake signal only for the expected
+        # Process Monitor envelope; the run loop still performs full receipt
+        # verification off the publisher thread.
         self._process_wake = threading.Event()
         self._process_subscription_active = False
         self._policy_cache_key: object = _POLICY_CACHE_UNSET
@@ -3217,14 +3456,42 @@ class PurpleGuard(BaseModule):
             return
         if classify_process_event(event) is None:
             return
+        details = getattr(event, "details", None)
+        native_envelope = bool(
+            getattr(event, "module", None) == "Process Monitor"
+            and isinstance(details, dict)
+            and details.get("event_type") == "process_creation"
+            and details.get("redteam_detector_receipt_version") == 3
+            and details.get("receipt_type") == "native_process_observation"
+            and details.get("producer_module") == "Process Monitor"
+            and details.get("producer_capability_id")
+            == "angerona.builtin.process_monitor"
+            and details.get("producer_trust_boundary")
+            == "same-process-simulation-validation"
+            and isinstance(details.get("lease_id"), str)
+            and bool(details.get("lease_id"))
+            and isinstance(details.get("receipt_id"), str)
+            and bool(details.get("receipt_id"))
+            and re.fullmatch(
+                r"[0-9a-f]{128}",
+                str(details.get("detector_receipt_mac") or ""),
+            )
+            is not None
+        )
         with self._process_queue_lock:
-            self._process_queue.append(event)
-        self._process_wake.set()
+            if native_envelope:
+                self._native_process_queue.append(event)
+            else:
+                self._process_queue.append(event)
+        if native_envelope:
+            self._process_wake.set()
 
     def _process_events(self) -> list[object]:
         if self._process_subscription_active:
             with self._process_queue_lock:
-                events = list(self._process_queue)
+                events = list(self._native_process_queue)
+                self._native_process_queue.clear()
+                events.extend(self._process_queue)
                 self._process_queue.clear()
             return events
         if self._bus is None:
@@ -3510,6 +3777,20 @@ class PurpleGuard(BaseModule):
             response_authorized=False,
         )
 
+    def _wait_for_process_evidence(self, seconds: float) -> None:
+        """Wait stop-aware until the cadence expires or exact process evidence arrives."""
+        with self._throttle_lock:
+            throttle = float(self._throttle)
+        interval = max(0.0, float(seconds)) * throttle
+        self.mark_cycle_complete(interval_seconds=interval)
+        deadline = time.monotonic() + interval
+        while not self.stopping:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or self._process_wake.wait(
+                timeout=min(0.25, remaining)
+            ):
+                return
+
     def run(self) -> None:
         if self._bus is not None:
             self._bus.subscribe(self._capture_process_event)
@@ -3523,21 +3804,17 @@ class PurpleGuard(BaseModule):
             _file_hits, _process_hits, count = self.work_cycle()
             self._update_policy_health(count)
             if count:
-                self.sleep(1.0)
+                # The reviewed file policy keeps its one-second cadence, but a
+                # nonce-tagged native process receipt must wake the detector
+                # immediately rather than landing just after a scan and waiting
+                # a full interval before its lease-bound promotion.
+                self._wait_for_process_evidence(1.0)
                 continue
             # Idle file evidence remains on the low-cost five-second cadence,
             # while an exact process receipt wakes the module immediately. Small
             # stop-aware slices preserve responsive stop/restart semantics and
             # the explicit watchdog deadline without rescanning four times/sec.
-            idle_seconds = 5.0
-            self.mark_cycle_complete(interval_seconds=idle_seconds)
-            deadline = time.monotonic() + idle_seconds
-            while not self.stopping:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0 or self._process_wake.wait(
-                    timeout=min(0.25, remaining)
-                ):
-                    break
+            self._wait_for_process_evidence(5.0)
 
     def self_test(self) -> tuple[bool, str]:
         import tempfile
