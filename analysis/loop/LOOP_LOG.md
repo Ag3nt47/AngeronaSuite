@@ -3359,3 +3359,44 @@ boundaries, and primary-source citations are in
   second guarded fast-forward. CI and Security assurance are then evaluated on
   that exact terminal completion SHA; neither is inferred from the green local
   suite or from the earlier security-only run.
+
+## Exact-completion GitHub re-attack — second reopen
+
+- Guarded publication placed terminal completion commit
+  `06ef4fafe82cd5eccfe3dd51df3ff9abe3a1ea5d` on canonical public `main` with
+  all 4/4 README images byte-identical. Exact-SHA Security assurance run
+  [`33294618400`](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/33294618400)
+  passed CodeQL, secret scan, and Scorecard. CI run
+  [`33294618414`](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/33294618414)
+  passed README integrity, dependency audit, and Windows/Linux/macOS contracts,
+  but all four Windows Python matrices failed in `Test`.
+- A credential-safe, in-memory GCM request to GitHub's official job-log API
+  exposed only failure excerpts; no credential, authorization header, signed
+  URL, or secret was emitted. Python 3.11 reported **2672 passed / 5 skipped / 2
+  failed / 3 setup errors**. The other matrices reproduced the same causes.
+- The genuine product flaw was effective DACL authority: the staged current-user
+  ACE was read/execute, but the sealed ACL also granted `BA` full access. An
+  enabled Administrator token therefore created an unprofiled DLL. Independent
+  review then proved the current owner could also reopen `WRITE_DAC` implicitly.
+  The exact ACL now omits `BA` in both states, retains SYSTEM recovery, and adds
+  explicit `OWNER_RIGHTS` (`S-1-3-4`) alongside the current SID: both are exact
+  read/execute while sealed and exact full access only during staging/cleanup.
+  Secondary file and directory `WRITE_DAC` opens must fail with Windows error 5;
+  retained pre-seal handles still clean up exactly. This does not claim immunity
+  from SYSTEM, an administrator explicitly enabling take-ownership/restore
+  privileges, or compromise already inside the publisher process.
+- Three setup errors were correct production fail-closed behavior against the
+  hosted runner's mutable Git 2.55.0.windows.5, while the reviewed publisher is
+  byte-pinned to 2.55.0.windows.4. Unrelated snapshot/config/argv assertions now
+  use closed hermetic boundaries; the real guarded publisher remains the live
+  exact-profile gate and still executed and cleaned the reviewed 191 MB runtime.
+- The isolated Judgment receipt test forced non-elevated data resolution only in
+  its pytest parent. On elevated runners its real `-I` child correctly reloaded
+  production resolution, selected the protected source root, and used another
+  HMAC key. The test-only bootstrap now applies the same disposable resolver on
+  both sides; no production environment bypass was added.
+- Targeted formerly failing cases: **5 passed**. Publication/authentication gate:
+  **89 passed / 3 expected skips**. Judgment gate: **6 passed**. Exact serial
+  tree: **2669 passed / 13 intentional platform skips / 0 failed** in **409.61
+  s**. State returns to `READY_FOR_PUBLICATION` pending two guarded
+  fast-forwards and fresh exact-final-SHA CI plus Security assurance.

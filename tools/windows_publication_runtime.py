@@ -395,6 +395,8 @@ if os.name == "nt":
     _DELETE = 0x00010000
     _READ_CONTROL = 0x00020000
     _WRITE_DAC = 0x00040000
+    _FILE_READ_EXECUTE_ACCESS = 0x001200A9
+    _FILE_ALL_ACCESS = 0x001F01FF
     _FILE_SHARE_READ = 0x00000001
     _FILE_SHARE_WRITE = 0x00000002
     _FILE_SHARE_DELETE = 0x00000004
@@ -979,11 +981,19 @@ def _sid_text(sid: int) -> str:
 
 def _private_descriptor(current_sid: str, *, writable: bool) -> int:
     current_rights = "FA" if writable else "GRGX"
-    descriptor_text = (
-        f"O:{current_sid}G:{current_sid}D:P"
-        "(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+    owner_rights = "FA" if writable else "GRGX"
+    # An enabled Administrator token receives BA allow ACEs in addition to its
+    # user-SID ACE. Keeping BA:FA here therefore made a nominally read-only
+    # staged tree writable on elevated hosts. OWNER_RIGHTS must also be explicit:
+    # Windows otherwise grants the current owner implicit WRITE_DAC even when its
+    # ordinary SID ACE is read-only. Cleanup needs neither path authority because
+    # every object is already retained through a WRITE_DAC handle before sealing.
+    access_entries = (
+        "(A;OICI;FA;;;SY)"
         f"(A;OICI;{current_rights};;;{current_sid})"
+        f"(A;OICI;{owner_rights};;;S-1-3-4)"
     )
+    descriptor_text = f"O:{current_sid}G:{current_sid}D:P{access_entries}"
     advapi32 = _advapi32()
     descriptor = wintypes.LPVOID()
     convert = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
@@ -1116,9 +1126,8 @@ def _assert_private_directory_acl(
         if not int(control.value) & _SE_DACL_PROTECTED:
             raise WindowsRuntimeError("private publication DACL inherits authority")
         acl = ctypes.cast(dacl, ctypes.POINTER(_ACL)).contents
-        if int(acl.AceCount) != 3:
-            raise WindowsRuntimeError("private publication DACL has extra trustees")
-        allowed = {current_sid, "S-1-5-18", "S-1-5-32-544"}
+        allowed = {current_sid, "S-1-3-4", "S-1-5-18"}
+        ace_count = int(acl.AceCount)
         observed: dict[str, int] = {}
         get_ace = advapi32.GetAce
         get_ace.argtypes = [
@@ -1136,25 +1145,29 @@ def _assert_private_directory_acl(
             ).contents
             if int(ace.Header.AceType) != _ACCESS_ALLOWED_ACE_TYPE:
                 raise WindowsRuntimeError("private publication DACL contains a deny/unknown ACE")
+            if int(ace.Header.AceFlags) != 0x03:  # OBJECT_INHERIT | CONTAINER_INHERIT
+                raise WindowsRuntimeError("private publication DACL ACE flags are not exact")
             sid_address = int(ace_pointer.value) + _ACCESS_ALLOWED_ACE.SidStart.offset
             observed[_sid_text(sid_address)] = int(ace.Mask)
-        if set(observed) != allowed:
+        if not writable and "S-1-5-32-544" in observed:
+            raise WindowsRuntimeError(
+                "private publication DACL retains administrator-group authority"
+            )
+        if ace_count != len(allowed) or set(observed) != allowed:
             raise WindowsRuntimeError("private publication DACL trustees are not exact")
-        current_mask = observed[current_sid]
-        dangerous = (
-            0x40000000  # GENERIC_WRITE
-            | 0x10000000  # GENERIC_ALL
-            | _DELETE
-            | _WRITE_DAC
-            | 0x00080000  # WRITE_OWNER
-            | 0x00000002  # FILE_WRITE_DATA / FILE_ADD_FILE
-            | 0x00000004  # FILE_APPEND_DATA / FILE_ADD_SUBDIRECTORY
-            | 0x00000040  # FILE_DELETE_CHILD
+        expected_current = (
+            _FILE_ALL_ACCESS if writable else _FILE_READ_EXECUTE_ACCESS
         )
-        if writable and not current_mask & dangerous:
-            raise WindowsRuntimeError("private publication DACL is not writable for staging")
-        if not writable and current_mask & dangerous:
-            raise WindowsRuntimeError("private publication DACL retains write authority")
+        if observed[current_sid] != expected_current:
+            raise WindowsRuntimeError(
+                "private publication DACL current-user rights are not exact"
+            )
+        if observed["S-1-3-4"] != expected_current:
+            raise WindowsRuntimeError(
+                "private publication DACL owner rights are not exact"
+            )
+        if observed["S-1-5-18"] != _FILE_ALL_ACCESS:
+            raise WindowsRuntimeError("private publication SYSTEM rights are not exact")
     finally:
         kernel32.LocalFree(descriptor)
 

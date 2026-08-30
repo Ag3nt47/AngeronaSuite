@@ -4,6 +4,7 @@
   "date": "2026-08-28",
   "scope": "defensive-only theoretical hardening",
   "status": "CONFIRMED_PENDING_REMEDIATION",
+  "status_semantics": "discovery-time aggregate; per-finding status and closure_evidence are current",
   "findings": [
     {
       "id": "C26-R1-A01",

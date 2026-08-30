@@ -1,8 +1,8 @@
 # Angerona v1.12.1 — Cycles 26–30 consolidation
 
-**Date:** 2026-08-29
+**Date:** 2026-08-30
 **Scope:** five three-round, defensive-only hardening loops
-**Release:** 1.12.1 (`COMPLETE`; guarded post-CI remediation publication verified)
+**Release:** 1.12.1 (`READY_FOR_PUBLICATION`; final-SHA runner findings remediated locally)
 
 ## Outcome
 
@@ -66,12 +66,13 @@ query/command execution.
 - Python `compileall`, repository-wide Ruff, selfcheck **26/26**,
   workflow-policy validation, dependency audit, documentation-drift validation,
   and `git diff --check`: pass on the release tree.
-- After GitHub run 33291595209 reopened a transient Windows runtime-cleanup
-  race, the guarded publisher fast-forwarded canonical
-  `Ag3nt47/AngeronaSuite` `main` to remediated release commit
-  `6fb06498e2ae631913db58f2d12b7489acfa1b9e`; all **4/4** README images
-  matched byte-for-byte. This completion-state record is itself published
-  through the required second guarded fast-forward. Exact completion-SHA CI and
-  Security assurance are checked on GitHub rather than inferred from local
-  validation. No user-mode defensive patch is proof against every future or
-  privileged attacker.
+- Guarded publication verified remediated release commit
+  `6fb06498e2ae631913db58f2d12b7489acfa1b9e`, completion commit
+  `06ef4fafe82cd5eccfe3dd51df3ff9abe3a1ea5d`, and all **4/4** README images.
+  Exact-completion CI run 33294618414 then exposed enabled-Administrator and
+  implicit-owner DACL authority plus two mutable/elevated hosted-runner test
+  couplings; Security
+  assurance run 33294618400 passed. The three findings are remediated locally,
+  the 2669-test serial gate is green, and fresh guarded publication plus
+  exact-final-SHA workflows remain pending. No user-mode defensive patch is
+  proof against every future or privileged attacker.

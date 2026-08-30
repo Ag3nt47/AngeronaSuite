@@ -14,6 +14,7 @@ from angerona.core.judgment_gate import (
     parse_judgment_receipt,
     run_judgment_verification,
 )
+from angerona.core.win import popen_hidden
 from angerona.modules.intel_sync import IntelSyncModule
 from angerona.modules.posture_hardening import PostureHardening
 
@@ -183,7 +184,30 @@ def test_isolated_child_returns_authentic_complete_bypass_receipt(
     monkeypatch.setenv("ANGERONA_DATA", str(tmp_path))
     BusAuthority.generate()
 
-    result = run_judgment_verification("T1055", settle=4.0)
+    def isolated_test_process(command, **kwargs):
+        # The repository fixture forces the pytest parent into a disposable,
+        # non-elevated source-data mode.  That in-process patch cannot cross the
+        # real ``-I`` child boundary on an elevated hosted runner, so reproduce
+        # the same test-only resolver inside the bootstrap.  No production
+        # environment switch or elevated data-root bypass is introduced.
+        isolated = list(command)
+        assert isolated[1:3] == ["-I", "-c"]
+        marker = "sys.path.insert(0,r);"
+        assert isolated[3].count(marker) == 1
+        isolated[3] = isolated[3].replace(
+            marker,
+            marker
+            + "from angerona.core import data_paths;"
+            + "data_paths._elevated_source_runtime=lambda:False;",
+            1,
+        )
+        return popen_hidden(isolated, **kwargs)
+
+    result = run_judgment_verification(
+        "T1055",
+        settle=4.0,
+        process_factory=isolated_test_process,
+    )
 
     assert result.outcome == "SUCCESS"
     assert result.receipt["schema"] == RECEIPT_SCHEMA

@@ -43,19 +43,16 @@ class _FixtureGitBoundary:
         self.closed = True
 
 
-@pytest.fixture(scope="module")
-def shared_publication_git_boundary():
-    """Stage the reviewed 191 MB runtime once for the three live-boundary tests."""
+@pytest.fixture
+def unit_publication_git_boundary():
+    """Use ambient Git only for inert temporary-repository orchestration tests.
 
-    boundary = transport.resolve_trusted_git_boundary(
-        source_environment={
-            "PATH": "C:/caller-selected-bin",
-            "HTTPS_PROXY": "http://credential-bearing-proxy.invalid",
-            "SSL_CERT_FILE": "C:/caller-selected-ca.pem",
-            "INERT_API_SECRET": "must-not-cross",
-            "GIT_PAGER": "caller-selected-pager",
-        }
-    )
+    Production publication never enters this fixture. Its exact machine runtime
+    remains byte-profiled and is exercised by the guarded publisher; unit tests
+    must not couple their unrelated assertions to a mutable hosted-runner image.
+    """
+
+    boundary = _FixtureGitBoundary()
     try:
         yield boundary
     finally:
@@ -87,7 +84,7 @@ def _committed_fixture(root: Path) -> tuple[str, bytes, bytes]:
 
 
 def test_asset_verifier_uses_captured_commit_not_mutable_worktree(
-    tmp_path: Path, monkeypatch, shared_publication_git_boundary
+    tmp_path: Path, monkeypatch, unit_publication_git_boundary
 ) -> None:
     commit, committed_readme, committed_image = _committed_fixture(tmp_path)
     (tmp_path / "README.md").write_text(
@@ -114,7 +111,7 @@ def test_asset_verifier_uses_captured_commit_not_mutable_worktree(
         expected_commit=commit,
         attempts=1,
         timeout=1.0,
-        git_boundary=shared_publication_git_boundary,
+        git_boundary=unit_publication_git_boundary,
     )
     assert verified == ["docs/fixture.png"]
     assert any(url.endswith("/README.md") for url in requested)
@@ -417,10 +414,44 @@ def test_regular_git_default_deadline_remains_30_seconds() -> None:
 
 
 def test_git_boundary_uses_absolute_git_literal_argv_and_fresh_environment(
+    tmp_path: Path,
     monkeypatch,
-    shared_publication_git_boundary,
 ) -> None:
-    boundary = shared_publication_git_boundary
+    if sys.platform == "win32":
+        source = tmp_path / "source"
+        profile = _fixture_runtime_profile(source)
+        staged = windows_runtime.stage_pinned_runtime(
+            source.resolve(),
+            profile=profile,
+            staging_parent=tmp_path.resolve(),
+        )
+        executable = staged.executable
+        helper = staged.credential_helper
+        environment = transport._minimal_git_environment(
+            staged.root,
+            staged=staged,
+        )
+        execution_directory = staged.root
+    else:
+        discovered = shutil.which("git")
+        if discovered is None:
+            pytest.skip("Git is unavailable for the POSIX boundary contract")
+        staged = None
+        executable = Path(discovered).resolve(strict=True)
+        helper = None
+        execution_directory = executable.parent
+        environment = transport._minimal_git_environment(execution_directory)
+    boundary = transport.TrustedGitBoundary(
+        executable=executable,
+        executable_identity=transport._file_identity(executable),
+        credential_helper=helper,
+        credential_helper_identity=(
+            transport._file_identity(helper) if helper is not None else None
+        ),
+        environment_items=tuple(sorted(environment.items())),
+        execution_directory=execution_directory,
+        staged_runtime=staged,
+    )
     captured: dict[str, object] = {}
 
     def _run(arguments, **kwargs):
@@ -485,6 +516,7 @@ def test_git_boundary_uses_absolute_git_literal_argv_and_fresh_environment(
             assert str(ROOT) not in environment["PATH"]
     finally:
         boundary.revalidate()
+        boundary.close()
 
 
 @pytest.mark.parametrize(
@@ -513,7 +545,7 @@ def test_publication_accepts_only_the_exact_canonical_origin() -> None:
 
 def test_local_url_rewrite_is_rejected_even_when_origin_remains_canonical(
     tmp_path: Path,
-    shared_publication_git_boundary,
+    unit_publication_git_boundary,
 ) -> None:
     _committed_fixture(tmp_path)
     _git(
@@ -532,7 +564,7 @@ def test_local_url_rewrite_is_rejected_even_when_origin_remains_canonical(
     assert _git(tmp_path, "config", "--get", "remote.origin.url") == (
         publisher.CANONICAL_ORIGIN
     )
-    token = publisher._ACTIVE_GIT_BOUNDARY.set(shared_publication_git_boundary)
+    token = publisher._ACTIVE_GIT_BOUNDARY.set(unit_publication_git_boundary)
     try:
         with pytest.raises(publisher.PublicationError, match="authority is forbidden"):
             publisher._assert_local_configuration_policy(tmp_path)
@@ -1073,6 +1105,19 @@ def test_private_stage_acl_seals_files_and_handle_cleanup_is_exact(
         (root / "cmd" / "git.exe").write_bytes(b"replacement")
     with pytest.raises(OSError):
         (root / "mingw64" / "bin" / "unreviewed.dll").write_bytes(b"addition")
+    for path, directory in (
+        (root / "cmd" / "git.exe", False),
+        (root / "mingw64" / "bin", True),
+    ):
+        with pytest.raises(
+            windows_runtime.WindowsRuntimeError,
+            match=r"object could not be sealed \(5\)",
+        ):
+            windows_runtime._open_handle(
+                path,
+                directory=directory,
+                acl_control=True,
+            )
     staged.close()
     assert not root.exists()
 

@@ -64,15 +64,24 @@ kernel component is a product capability.
   diagnosis were reproduced locally, fixed with bounded fail-closed object
   custody, and retained as hostile regressions. Final-SHA workflow status is
   verified on GitHub rather than inferred locally.
+- A second exact-completion run, CI 33294618414, passed README integrity,
+  dependency audit, and all platform contracts but reopened the four Python
+  matrices. Security assurance 33294618400 passed. The failures proved that a
+  sealed DACL still granted effective write through enabled Administrators
+  membership and implicit owner `WRITE_DAC`, while two tests coupled unrelated
+  assertions to mutable hosted Git and an elevation mismatch. The DACL now
+  omits BA in both states and gives exact OWNER_RIGHTS read/execute while sealed;
+  ordinary tests are hermetic, and the real publisher retains its byte-exact
+  live profile.
 - Terminal release evidence on the exact v1.12.1 tree:
   2669 passed / 13 intentional host-platform
   skips / 0 failed; `compileall`, Ruff, selfcheck 26/26, workflow-policy,
-  dependency-audit, documentation-drift, and diff gates passed. Guarded
-  publication verified the remediated release commit
-  `6fb06498e2ae631913db58f2d12b7489acfa1b9e` on canonical public `main` and
-  all 4/4 README images byte-for-byte. The completion record is published by a
-  second guarded fast-forward; exact-final-SHA CI and Security assurance are
-  checked on GitHub rather than inferred locally.
+  dependency-audit, documentation-drift, and diff gates passed. Prior guarded
+  publication verified release commit
+  `6fb06498e2ae631913db58f2d12b7489acfa1b9e`, completion commit
+  `06ef4fafe82cd5eccfe3dd51df3ff9abe3a1ea5d`, and all 4/4 README images.
+  The final runner findings are remediated locally; guarded republication and
+  exact-final-SHA CI/Security assurance are pending.
 - Detailed evidence: `analysis/loop/cycles26-30-summary.md` and
   `analysis/loop/cycle26/` through `analysis/loop/cycle30/`.
 
@@ -415,10 +424,10 @@ Current v1.12.1 terminal evidence:
   compatibility adapters; all built-in implementation labels are 1.12.1.
 - `compileall`, Ruff, selfcheck 26/26, workflow policy, dependency audit,
   documentation drift, and diff checks pass on the release tree.
-- Guarded post-CI publication verified canonical public `main` at remediated
-  release commit `6fb06498e2ae631913db58f2d12b7489acfa1b9e`; all 4/4 README images
-  matched byte-for-byte. This completion record is published through the
-  required second guarded fast-forward.
+- Prior guarded post-CI publication verified canonical public `main` through
+  completion commit `06ef4fafe82cd5eccfe3dd51df3ff9abe3a1ea5d`; all 4/4 README
+  images matched byte-for-byte. Run 33294618414 reopened hosted-runner findings;
+  the corrected candidate is pending guarded republication.
 
 Prior v1.12.0 / Cycle 25 evidence:
 

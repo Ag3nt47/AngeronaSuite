@@ -2,7 +2,7 @@
 
 **Scope:** authorized defensive-only theoretical hardening
 **Release target:** 1.12.1
-**Disposition:** COMPLETE
+**Disposition:** READY_FOR_PUBLICATION
 
 ## Round 1 — cursor, generation, and CAS re-attack
 
