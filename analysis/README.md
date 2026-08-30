@@ -11,7 +11,8 @@ The authoritative v1.13.0 five-check release gate on exact commit
 `edefd8b07b94da4d682a35ace23057e7b22c3790` passed **2790 tests / 13
 intentional platform skips / 0 failures in 325.19 seconds**. Evidence-manifest
 SHA-256: `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`.
-Validation is complete; guarded publication remains pending.
+Validation is complete; repository policy requires the guarded publisher for
+release completion.
 
 **Local-first Endpoint Detection and Response (EDR), Network Detection and
 Response (NDR), and Security Orchestration, Automation, and Response (SOAR):

@@ -333,7 +333,10 @@ native Linux/macOS, or independent efficacy proof.
   After correction, the authoritative five-check release gate on commit
   `edefd8b07b94da4d682a35ace23057e7b22c3790` passed **2790 tests with 13
   intentional platform skips and 0 failures in 325.19 seconds**. Validation is
-  complete; guarded publication remains pending.
+  complete; repository policy requires the guarded publisher for release completion.
+- Reproduced the hosted Gitleaks 8.30.1 signal locally. Two public inert
+  identifiers are suppressed only by exact historical fingerprints; the failed
+  push range and the complete 132-commit history both scan with zero findings.
 - Boundaries remain explicit: Fleet Fabric implements no remote transport,
   dispatch, HA, distributed quota, or production mTLS service; DetectionForge
   is local governed evaluation; AegisPath provider/absence authority is local
@@ -466,6 +469,6 @@ is an engineering inference, not an attribution claim.
 MIT licensed. See [LICENSE](LICENSE), [SECURITY.md](SECURITY.md), and
 [SUPPORT.md](SUPPORT.md).
 
-**Final Cycle 33 verification.** The authoritative five-check release gate on exact commit `edefd8b07b94da4d682a35ace23057e7b22c3790` passes **2790 tests with 13 intentional platform skips** and reports 0 failures in 325.19 seconds. Its evidence-manifest SHA-256 is `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`. Validation is complete; guarded publication remains pending.
+**Final Cycle 33 verification.** The authoritative five-check release gate on exact commit `edefd8b07b94da4d682a35ace23057e7b22c3790` passes **2790 tests with 13 intentional platform skips** and reports 0 failures in 325.19 seconds. Its evidence-manifest SHA-256 is `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`. Validation is complete; repository policy requires the guarded publisher for release completion.
 
 <!-- ANGERONA_DOC_STATUS tests=2790 skips=13 modules=84 -->

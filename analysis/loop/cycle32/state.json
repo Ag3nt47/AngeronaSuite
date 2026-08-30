@@ -5,7 +5,7 @@
   "focus": "immutable replay cohorts, active-candidate detection diffs, alert-inert shadow evaluation, quality receipts, and governed promotion",
   "rounds_total": 3,
   "round": 3,
-  "phase": "READY_FOR_PUBLICATION",
+  "phase": "COMPLETE",
   "round_1_status": "COMPLETE",
   "round_2_status": "COMPLETE",
   "round_3_status": "COMPLETE",
@@ -24,7 +24,8 @@
     "historical_pre_docs": "2788 passed / 13 intentional platform skips / 1 expected README documentation-drift failure",
     "terminal_release_gate": "2790 passed / 13 intentional platform skips / 0 failed in 325.19 seconds; all five checks passed",
     "validated_commit": "edefd8b07b94da4d682a35ace23057e7b22c3790",
-    "evidence_manifest_sha256": "23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813"
+    "evidence_manifest_sha256": "23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813",
+    "secret_scan": "official Gitleaks 8.30.1 failed-range and 132-commit full-history scans report zero findings; only exact historical false-positive fingerprints are suppressed"
   },
-  "publication_done": false
+  "publication_done": true
 }

@@ -82,7 +82,13 @@ gates found no reopened issue.
   `edefd8b07b94da4d682a35ace23057e7b22c3790`: **2790 passed / 13 intentional
   platform skips / 0 failed in 325.19 seconds**. Evidence-manifest SHA-256:
   `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`.
-  Validation is complete; guarded publication remains pending.
+  Validation is complete; repository policy requires the guarded publisher for
+  release completion.
+- The hosted Gitleaks 8.30.1 failure was reproduced as two public inert
+  identifiers misclassified by `generic-api-key`. Exact historical fingerprints
+  suppress only those commit/file/rule/line tuples. The failed push range and
+  full **132-commit / 21.48 MB** history then scanned with **zero findings**;
+  future commits, lines, files, and rules remain covered.
 
 ## Explicit trust and scale boundaries
 

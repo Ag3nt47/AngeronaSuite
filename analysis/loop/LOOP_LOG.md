@@ -3526,7 +3526,15 @@ boundaries, and primary-source citations are in
   13 intentional platform skips / 0 failures in 325.19 seconds**. The release
   evidence-manifest SHA-256 is
   `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`.
-  Validation is complete; guarded publication remains pending.
+  Validation is complete; repository policy requires the guarded publisher for
+  release completion.
+- **Hosted secret-scan repair:** Security assurance first reported one Gitleaks
+  8.30.1 finding. Exact reproduction identified the public
+  `ed25519-health-envelope-v1` identifier, while a full-history run found the
+  public inert `exfil_c2_probe` marker. Both use exact historical fingerprints
+  in `.gitleaksignore`; the original push range and full 132-commit / 21.48 MB
+  history now report zero findings without excluding any future commit, line,
+  file, or rule.
 - **Honest boundary:** these are enterprise-inspired local programs, not
   commercial EDR/XDR parity. Fleet authority remains local and has no remote
   transport; DetectionForge is local governed evaluation; AegisPath provider

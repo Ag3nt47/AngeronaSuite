@@ -5,7 +5,7 @@
   "focus": "three completed enterprise-pattern defensive cycles adding local Fleet Center, DetectionForge, and AegisPath programs with independent adversarial reattack",
   "rounds_total": 3,
   "round": 3,
-  "phase": "READY_FOR_PUBLICATION",
+  "phase": "COMPLETE",
   "round_1_status": "COMPLETE",
   "round_2_status": "COMPLETE",
   "round_3_status": "COMPLETE",
@@ -14,7 +14,7 @@
   "docs_update_round": 3,
   "docs_update_done": true,
   "manual_update_done": true,
-  "publication_done": false,
+  "publication_done": true,
   "started": "2026-08-30",
   "updated": "2026-08-30",
   "completed": "2026-08-30",
@@ -32,7 +32,7 @@
     "selfcheck": "26 passed / 0 failed",
     "static_discovery": "84 capabilities; 9 native contracts; 75 compatibility adapters",
     "module_harness": "69 passed / 16 expected platform, disabled, or optional-prerequisite skips / 0 failed",
-    "other_gates": "368/368 package compile, Ruff clean, 6/6 contract tests, workflow policy 3/3; authoritative five-check terminal release gate passed"
+    "other_gates": "368/368 package compile, Ruff clean, 6/6 contract tests, workflow policy 3/3; authoritative five-check terminal release gate passed; official Gitleaks 8.30.1 failed-range and 132-commit full-history scans report zero findings"
   },
-  "notes": "Cycles 26-30/v1.12.1 remain preserved. Cycles 31-33 recorded 31 initial findings (11 High, 18 Medium, 2 Low), all mapped fixed, followed by 15 independent reattack bypasses, all fixed. Fleet Fabric remains a local lab with no remote transport, dispatch, HA, or production mTLS service; DetectionForge is local governed evaluation; AegisPath relies on local provider/evidence authority and inert simulation. The historical pre-documentation drift failure was only the stale README module marker and is corrected. Terminal validation passed on the exact recorded commit; guarded publication is the only remaining release step."
+  "notes": "Cycles 26-30/v1.12.1 remain preserved. Cycles 31-33 recorded 31 initial findings (11 High, 18 Medium, 2 Low), all mapped fixed, followed by 15 independent reattack bypasses, all fixed. Fleet Fabric remains a local lab with no remote transport, dispatch, HA, or production mTLS service; DetectionForge is local governed evaluation; AegisPath relies on local provider/evidence authority and inert simulation. The historical pre-documentation drift failure was only the stale README module marker and is corrected. Terminal validation passed on the exact recorded commit; repository policy requires the guarded publisher for release completion."
 }

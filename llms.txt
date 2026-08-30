@@ -57,7 +57,12 @@ kernel component is a product capability.
   passed 2790 / skipped 13 intentional platform cases / failed 0 in 325.19 s.
   Evidence-manifest SHA-256:
   `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`.
-  Validation is complete; guarded publication remains pending.
+  Validation is complete; repository policy requires the guarded publisher for
+  release completion.
+- Hosted secret-scan closure: official Gitleaks 8.30.1 reports zero findings on
+  the failed push range and the full 132-commit history. Two public inert
+  identifiers use exact historical fingerprints only; future commits, lines,
+  files, and rules remain scanned.
 - Detailed evidence: `analysis/loop/cycles31-33-summary.md` and
   `analysis/loop/cycle31/` through `analysis/loop/cycle33/`.
 
@@ -466,7 +471,8 @@ Current v1.13.0 terminal release evidence:
   `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`.
 - The historical pre-documentation run was 2788 passed / 13 intentional skips /
   1 expected stale-marker drift failure. The marker is corrected. Validation is
-  complete; guarded publication remains pending.
+  complete; repository policy requires the guarded publisher for release
+  completion.
 - Static discovery: 84 capabilities, comprising nine native contracts and 75
   compatibility adapters; built-in implementation labels are 1.13.0.
 - Package compile 368/368; contract tests 6/6; module harness 69 passed / 16

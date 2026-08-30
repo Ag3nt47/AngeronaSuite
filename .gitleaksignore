@@ -11,3 +11,11 @@ e1fc5e4fce1147eb8fdbc5062d9c9215ab2d92ce:tests/test_app_control_monitor.py:gener
 e1fc5e4fce1147eb8fdbc5062d9c9215ab2d92ce:tests/test_app_control_monitor.py:generic-api-key:226
 e1fc5e4fce1147eb8fdbc5062d9c9215ab2d92ce:tests/test_app_control_monitor.py:generic-api-key:243
 e1fc5e4fce1147eb8fdbc5062d9c9215ab2d92ce:tests/test_app_control_monitor.py:generic-api-key:260
+
+# Exact historical false positive for a public Ed25519 envelope identifier.
+# This fingerprint cannot suppress the same rule on future commits or lines.
+a0d42b428f828873dc651ffaeed7d9970dd339da:src/angerona/core/fleet_fabric.py:generic-api-key:1982
+
+# Exact historical false positive for a public inert red-team marker token.
+# This fingerprint cannot suppress the same rule on future commits or lines.
+a8d69c382f579c62e6e0ed86fee79a203139974d:src/angerona/shark/run_manifest.py:generic-api-key:224
