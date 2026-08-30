@@ -74,11 +74,15 @@ gates found no reopened issue.
 - Module harness: **69 passed / 16 expected platform, disabled, or optional-
   prerequisite skips / 0 failed**.
 - Supported selfcheck: **26/26**; Ruff clean; workflow policy **3/3**.
-- Full serial pre-documentation gate: **2788 passed / 13 intentional platform
+- Historical pre-documentation gate: **2788 passed / 13 intentional platform
   skips / 1 expected documentation-drift failure**. The sole failure was the
-  stale README marker (`81` versus discovery `84`); this documentation update
-  corrects that marker. A final post-documentation release rerun remains a
-  separate gate.
+  stale README marker (`81` versus discovery `84`), which the v1.13.0
+  documentation corrected.
+- Authoritative terminal five-check release gate on exact commit
+  `edefd8b07b94da4d682a35ace23057e7b22c3790`: **2790 passed / 13 intentional
+  platform skips / 0 failed in 325.19 seconds**. Evidence-manifest SHA-256:
+  `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`.
+  Validation is complete; guarded publication remains pending.
 
 ## Explicit trust and scale boundaries
 

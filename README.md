@@ -252,17 +252,20 @@ Packaged Windows installs prefer protected `D:\AngeronaData` and use protected
 
 ## Validation status
 
-The v1.13.0 pre-documentation serial result is recorded at the end of this
-document. The final release gate still requires all of the following to pass on
-the same post-documentation tree:
+The authoritative v1.13.0 five-check release gate passed on exact commit
+`edefd8b07b94da4d682a35ace23057e7b22c3790`. The full serial result is **2790
+passed / 13 intentional platform skips / 0 failed in 325.19 seconds**. The
+release evidence manifest SHA-256 is
+`23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`.
 
-- Python `compileall` and repository-wide Ruff validation.
-- Static discovery of **84** capabilities: **9 native contracts** and **75
-  compatibility adapters**, without duplicate identity.
-- The **26/26** supported headless self-check, workflow-policy validation,
-  dependency audit, documentation-drift validation, and `git diff --check`.
-- Guarded fast-forward publication to canonical public `main`, followed by
-  byte-for-byte verification of every README image from that public commit.
+Supporting evidence includes Python compilation and repository-wide Ruff,
+static discovery of **84** capabilities (**9 native contracts** and **75
+compatibility adapters**) without duplicate identity, the **26/26** supported
+headless self-check, workflow-policy validation, dependency audit,
+documentation-drift validation, and `git diff --check`. Validation is complete;
+guarded fast-forward publication to canonical public `main`, including
+byte-for-byte public verification of every README image, is the only remaining
+release step.
 
 Focused groups overlap and are not a clean-machine deployment, privileged-host,
 native Linux/macOS, or independent efficacy proof.
@@ -324,10 +327,13 @@ native Linux/macOS, or independent efficacy proof.
   custody scan and reuses verified head evidence; AegisPath counts paths in one
   bounded pass, moves initial large analysis off the UI thread, and avoids a
   duplicate Local SOC refresh.
-- Pre-documentation validation recorded **2788 passed / 13 intentional platform
-  skips / 1 expected documentation-drift failure**. The only failure was the
-  stale README module marker (`81` versus discovery `84`), corrected here. A
-  final post-documentation full release rerun remains required.
+- Historical pre-documentation validation recorded **2788 passed / 13
+  intentional platform skips / 1 expected documentation-drift failure**. The
+  only failure was the stale README module marker (`81` versus discovery `84`).
+  After correction, the authoritative five-check release gate on commit
+  `edefd8b07b94da4d682a35ace23057e7b22c3790` passed **2790 tests with 13
+  intentional platform skips and 0 failures in 325.19 seconds**. Validation is
+  complete; guarded publication remains pending.
 - Boundaries remain explicit: Fleet Fabric implements no remote transport,
   dispatch, HA, distributed quota, or production mTLS service; DetectionForge
   is local governed evaluation; AegisPath provider/absence authority is local
@@ -460,6 +466,6 @@ is an engineering inference, not an attribution claim.
 MIT licensed. See [LICENSE](LICENSE), [SECURITY.md](SECURITY.md), and
 [SUPPORT.md](SUPPORT.md).
 
-**Final Cycle 33 verification.** The pre-documentation serial gate passes **2788 tests with 13 intentional platform skips**; one additional expected documentation-drift check failed solely because the README marker still reported 81 rather than the discovered 84 modules. This update corrects that marker. Final post-documentation release validation remains pending.
+**Final Cycle 33 verification.** The authoritative five-check release gate on exact commit `edefd8b07b94da4d682a35ace23057e7b22c3790` passes **2790 tests with 13 intentional platform skips** and reports 0 failures in 325.19 seconds. Its evidence-manifest SHA-256 is `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`. Validation is complete; guarded publication remains pending.
 
-<!-- ANGERONA_DOC_STATUS tests=2788 skips=13 modules=84 -->
+<!-- ANGERONA_DOC_STATUS tests=2790 skips=13 modules=84 -->

@@ -3517,10 +3517,16 @@ boundaries, and primary-source citations are in
   native / 75 adapters / 0 errors**; module harness **69 pass / 16 expected
   prerequisite-platform skips / 0 fail**; selfcheck **26/26**; Ruff clean;
   workflow policy **3/3**.
-- **Pre-documentation full serial:** **2788 passed / 13 intentional platform
-  skips / 1 expected documentation-drift failure**. The only failure was the
-  stale README marker (`81` versus discovery `84`); the v1.13.0 documentation
-  phase corrects it. A final post-documentation release rerun remains pending.
+- **Historical pre-documentation full serial:** **2788 passed / 13 intentional
+  platform skips / 1 expected documentation-drift failure**. The only failure
+  was the stale README marker (`81` versus discovery `84`); the v1.13.0
+  documentation phase corrected it.
+- **Terminal release validation:** the authoritative five-check release gate on
+  exact commit `edefd8b07b94da4d682a35ace23057e7b22c3790` passed **2790 tests /
+  13 intentional platform skips / 0 failures in 325.19 seconds**. The release
+  evidence-manifest SHA-256 is
+  `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`.
+  Validation is complete; guarded publication remains pending.
 - **Honest boundary:** these are enterprise-inspired local programs, not
   commercial EDR/XDR parity. Fleet authority remains local and has no remote
   transport; DetectionForge is local governed evaluation; AegisPath provider

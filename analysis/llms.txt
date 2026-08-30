@@ -42,10 +42,13 @@ Python package metadata supports 3.10–3.13; the hardened Windows source bootst
   Cycle33 40/40; integrated 110/110; performance/integration 113/113;
   GUI/integration 86/86; compile 368/368; contract tests 6/6; discovery 84 with
   no errors; module harness 69 pass / 16 expected skips / 0 fail; selfcheck
-  26/26; Ruff clean; workflow policy 3/3. The full serial pre-doc gate recorded
-  2788 passed / 13 intentional skips / one expected stale README-marker failure
-  (81 versus 84). This documentation update corrects it; final post-doc release
-  validation and publication remain pending.
+  26/26; Ruff clean; workflow policy 3/3. Historical pre-doc evidence was 2788
+  passed / 13 intentional skips / one expected stale README-marker failure (81
+  versus 84). After correction, the authoritative five-check release gate on
+  exact commit `edefd8b07b94da4d682a35ace23057e7b22c3790` passed 2790 / skipped
+  13 intentional platform cases / failed 0 in 325.19 s. Evidence-manifest
+  SHA-256 is `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`.
+  Validation is complete; guarded publication remains pending.
 - Evidence map: `analysis/loop/cycles31-33-summary.md`.
 
 ## PRIOR (v1.12.1 — Cycles 26-30 defensive hardening and SentinelLens)

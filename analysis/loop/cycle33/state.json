@@ -5,7 +5,7 @@
   "focus": "evidence-bound exposure graphs, bounded attack paths and choke points, inert counterfactuals, and explainable KEV/EPSS priority",
   "rounds_total": 3,
   "round": 3,
-  "phase": "COMPLETE",
+  "phase": "READY_FOR_PUBLICATION",
   "round_1_status": "COMPLETE",
   "round_2_status": "COMPLETE",
   "round_3_status": "COMPLETE",
@@ -21,7 +21,10 @@
   "validation": {
     "focused": "40 passed",
     "module_self_test": "passed",
-    "terminal_pre_docs": "2788 passed / 13 intentional platform skips / 1 expected README documentation-drift failure"
+    "historical_pre_docs": "2788 passed / 13 intentional platform skips / 1 expected README documentation-drift failure",
+    "terminal_release_gate": "2790 passed / 13 intentional platform skips / 0 failed in 325.19 seconds; all five checks passed",
+    "validated_commit": "edefd8b07b94da4d682a35ace23057e7b22c3790",
+    "evidence_manifest_sha256": "23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813"
   },
   "publication_done": false
 }
