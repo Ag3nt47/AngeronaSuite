@@ -30,7 +30,7 @@ websockets==16.1
 comtypes==1.4.16
 pypiwin32==223
 setuptools==83.0.0
-wheel==0.47.0
+wheel==0.48.0
 PyInstaller==6.21.0
 cyclonedx-bom==7.3.0
 pytest==9.1.1
