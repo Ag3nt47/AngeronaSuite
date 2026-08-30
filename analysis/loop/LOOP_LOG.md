@@ -3266,17 +3266,23 @@ boundaries, and primary-source citations are in
 - The publisher failed closed twice on its initial complete-worktree proof
   after the fixed 30-second local Git deadline was exhausted by unrelated
   installation-drive I/O pressure. A status-specific, non-configurable
-  120-second safety deadline
-  now covers only the two complete `status --porcelain=v1
+  120-second safety deadline now covers only the two complete `status --porcelain=v1
   --untracked-files=all` call sites; all other local Git operations retain the
   30-second default, every status proof remains mandatory, and no timeout is
   treated as success or retried automatically.
 - A separate push attempt exposed an absolute Credential Manager dispatch bug:
   POSIX quoting made the first helper byte a quote, so Git prepended
   `git credential-` instead of executing the sealed helper. The value now uses
-  Git's documented `!'<absolute-path>'` form, preserving literal handling of
-  spaces and metacharacters. A credential-free real-Git regression proves the
-  exact helper path receives only Git's bounded operation argument.
+  Git's documented `!` shell form with a fixed get-only facade, preserving
+  literal handling of spaces and metacharacters while making `store` and
+  `erase` inert. A credential-free real-Git regression proves the exact helper
+  path receives only the bounded `get` operation.
+- A shape-only Windows credential probe then confirmed the available GitHub
+  credential is host-scoped while repository-path credentials are absent. The
+  publisher now performs host-scoped lookup only inside the byte-exact
+  canonical Angerona credential context, pins username `Ag3nt47`, keeps ambient
+  helpers disabled, and never exposes credential values. Off-repository helper
+  dispatch and shared-credential deletion are regression-tested as inert.
 - Timeout and launch failures now remain path/output-free but distinguishable.
   All failed attempts withheld publication success; the next guarded run must
   freshly prove remote ancestry, atomic fast-forward, exact ref equality, clean

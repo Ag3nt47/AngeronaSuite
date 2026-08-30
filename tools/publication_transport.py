@@ -28,6 +28,7 @@ from tools.windows_publication_runtime import (
 
 
 CANONICAL_GITHUB_ORIGIN = "https://github.com/Ag3nt47/AngeronaSuite.git"
+CANONICAL_GITHUB_USERNAME = "Ag3nt47"
 _MAX_ERROR_TEXT = 500
 _WINDOWS_REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
@@ -239,13 +240,15 @@ def _minimal_git_environment(
 
 
 def _shell_quote_helper(credential_helper: Path) -> str:
-    """Build one exact absolute helper command for Git's POSIX-shell parser.
+    """Build one exact get-only helper command for Git's POSIX-shell parser.
 
     Git only recognizes an unquoted absolute helper path as a literal command.
     A safely quoted path starts with a quote instead, so Git would otherwise
     prefix it with ``git credential-``.  The documented ``!`` form selects an
     explicit shell command while the single quotes keep the trusted absolute
-    path (including spaces and metacharacters) one literal token.
+    path (including spaces and metacharacters) one literal token.  The fixed
+    shell facade delegates only ``get``; ``store`` and ``erase`` are inert so a
+    failed publication cannot mutate a shared host-scoped credential.
     """
 
     helper = credential_helper.as_posix()
@@ -253,13 +256,19 @@ def _shell_quote_helper(credential_helper: Path) -> str:
         character in helper for character in ("\0", "\r", "\n")
     ):
         raise PublicationTransportError("Git Credential Manager path is invalid")
-    return "!'" + helper.replace("'", "'\\''") + "'"
+    quoted = "'" + helper.replace("'", "'\\''") + "'"
+    return (
+        '!f() { case "$1" in '
+        f"get) exec {quoted} get ;; "
+        "store|erase) exit 0 ;; *) exit 1 ;; esac; }; f"
+    )
 
 
 def _configuration_arguments(*, credential_helper: Path | None) -> list[str]:
     null_path = os.devnull.replace("\\", "/")
     origin = CANONICAL_GITHUB_ORIGIN
     exact_http = f"http.{origin}"
+    exact_credential = f"credential.{origin}"
     arguments = [
         "-c", f"core.hooksPath={null_path}",
         "-c", "core.fsmonitor=false",
@@ -280,9 +289,10 @@ def _configuration_arguments(*, credential_helper: Path | None) -> list[str]:
         "-c", f"{exact_http}.sslVerify=true",
         "-c", f"{exact_http}.extraHeader=",
         "-c", "credential.helper=",
-        "-c", "credential.https://github.com.helper=",
+        "-c", f"{exact_credential}.helper=",
         "-c", "credential.interactive=never",
-        "-c", "credential.https://github.com.useHttpPath=true",
+        "-c", f"{exact_credential}.useHttpPath=false",
+        "-c", f"{exact_credential}.username={CANONICAL_GITHUB_USERNAME}",
     ]
     if os.name == "nt":
         arguments.extend([
@@ -292,11 +302,11 @@ def _configuration_arguments(*, credential_helper: Path | None) -> list[str]:
         ])
     if credential_helper is not None:
         # Empty entries above reset all lower-priority helper lists.  The exact
-        # machine-installation manager is then the sole allowed helper.
+        # machine-installation manager is then available only to the canonical
+        # repository credential context.
         helper = _shell_quote_helper(credential_helper)
         arguments.extend([
-            "-c", f"credential.helper={helper}",
-            "-c", f"credential.https://github.com.helper={helper}",
+            "-c", f"{exact_credential}.helper={helper}",
         ])
     return arguments
 

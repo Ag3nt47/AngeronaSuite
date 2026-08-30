@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import inspect
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -457,7 +456,14 @@ def test_git_boundary_uses_absolute_git_literal_argv_and_fresh_environment(
         assert arguments[arguments.index("-C") + 1] == str(ROOT)
         if boundary.credential_helper is not None:
             quoted = transport._shell_quote_helper(boundary.credential_helper)
-            assert f"credential.helper={quoted}" in arguments
+            context = f"credential.{transport.CANONICAL_GITHUB_ORIGIN}"
+            assert f"{context}.helper={quoted}" in arguments
+            assert f"credential.helper={quoted}" not in arguments
+            assert f"{context}.useHttpPath=false" in arguments
+            assert (
+                f"{context}.username={transport.CANONICAL_GITHUB_USERNAME}"
+                in arguments
+            )
         else:
             assert "credential.helper=" in arguments
         assert f"url.{transport.CANONICAL_GITHUB_ORIGIN}.insteadOf=" + (
@@ -938,20 +944,17 @@ def test_private_stage_acl_seals_files_and_handle_cleanup_is_exact(
 def test_absolute_gcm_helper_quotes_whitespace_metacharacters_and_apostrophe() -> None:
     helper = Path(r"C:\Program Files\Git & Reviewer's Build\gcm.exe")
     quoted = transport._shell_quote_helper(helper)
-    assert quoted == "!'C:/Program Files/Git & Reviewer'\\''s Build/gcm.exe'"
-    # Git's documented ! form prevents the safely quoted path from being
-    # rewritten as `git credential-<path>`.  Its shell still receives exactly
-    # one executable token plus Git's bounded operation argument.
-    assert shlex.split(quoted[1:] + " get", posix=True) == [
-        helper.as_posix(),
-        "get",
-    ]
-    assert transport._configuration_arguments(credential_helper=helper).count(
-        f"credential.helper={quoted}"
-    ) == 1
-    assert transport._configuration_arguments(credential_helper=helper).count(
-        f"credential.https://github.com.helper={quoted}"
-    ) == 1
+    assert quoted == (
+        '!f() { case "$1" in get) exec '
+        "'C:/Program Files/Git & Reviewer'\\''s Build/gcm.exe' get ;; "
+        "store|erase) exit 0 ;; *) exit 1 ;; esac; }; f"
+    )
+    arguments = transport._configuration_arguments(credential_helper=helper)
+    context = f"credential.{transport.CANONICAL_GITHUB_ORIGIN}"
+    assert f"credential.helper={quoted}" not in arguments
+    assert arguments.count(f"{context}.helper={quoted}") == 1
+    assert f"{context}.useHttpPath=false" in arguments
+    assert f"{context}.username={transport.CANONICAL_GITHUB_USERNAME}" in arguments
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Git for Windows helper parser")
@@ -986,15 +989,19 @@ def test_absolute_gcm_helper_reaches_git_shell_without_credential_prefix(
         "LANG": "C",
         "LC_ALL": "C",
     })
+    command = [
+        git,
+        "--no-pager",
+        *transport._configuration_arguments(credential_helper=helper),
+        "credential",
+    ]
+    canonical = (
+        "protocol=https\nhost=github.com\n"
+        "path=Ag3nt47/AngeronaSuite.git\n\n"
+    )
     result = subprocess.run(
-        [
-            git,
-            "--no-pager",
-            *transport._configuration_arguments(credential_helper=helper),
-            "credential",
-            "reject",
-        ],
-        input="protocol=https\nhost=github.invalid\n\n",
+        [*command, "fill"],
+        input=canonical,
         capture_output=True,
         text=True,
         check=False,
@@ -1003,7 +1010,31 @@ def test_absolute_gcm_helper_reaches_git_shell_without_credential_prefix(
     )
 
     error = result.stderr.replace("\\", "/")
-    assert result.returncode == 0
+    assert result.returncode != 0
     assert "credential-C:/" not in error
     assert helper.as_posix() in error
-    assert " erase:" in error
+    assert "get" in error
+
+    rejected = subprocess.run(
+        [*command, "reject"],
+        input=canonical,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+        timeout=15,
+    )
+    assert rejected.returncode == 0
+    assert helper.as_posix() not in rejected.stderr.replace("\\", "/")
+
+    off_scope = subprocess.run(
+        [*command, "fill"],
+        input="protocol=https\nhost=github.com\npath=someone/else.git\n\n",
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+        timeout=15,
+    )
+    assert off_scope.returncode != 0
+    assert helper.as_posix() not in off_scope.stderr.replace("\\", "/")
