@@ -5,7 +5,7 @@
   "focus": "five completed three-round defensive hardening cycles, universal capability evidence, safe automation, comprehensive inert Red Team Simulation, and local-first SentinelLens",
   "rounds_total": 3,
   "round": 3,
-  "phase": "READY_FOR_PUBLICATION",
+  "phase": "COMPLETE",
   "round_1_status": "COMPLETE",
   "round_2_status": "COMPLETE",
   "round_3_status": "COMPLETE",
@@ -14,9 +14,10 @@
   "docs_update_round": 3,
   "docs_update_done": true,
   "manual_update_done": false,
-  "publication_done": false,
+  "publication_done": true,
   "started": "2026-08-28",
   "updated": "2026-08-30",
+  "completed": "2026-08-30",
   "planned_cycles": [26, 27, 28, 29, 30],
   "scope": "authorized defensive-only theoretical hardening",
   "final_results": {
@@ -26,5 +27,5 @@
     "static_discovery": "81 capabilities; 6 native contracts; 75 compatibility adapters",
     "other_gates": "compileall, Ruff, workflow policy, dependency audit, documentation drift, and diff checks passed"
   },
-  "notes": "Cycle 25/v1.12.0 remains preserved under analysis/loop/cycle25. Guarded publication previously placed completion SHA 45c114b99c0f071fb0c2d13de2a78928a35ee514 on canonical public main with all 4/4 README images verified. Exact-SHA CI run 33296804448 then failed Python 3.11 and 3.13 while Security assurance run 33296804422 passed. WFP first-flow uptime suppression, Windows FIM metadata-cache authority, and T1059 receipt scheduling/direct-observation gaps are remediated locally; the 2678/13/0 serial tree and all offline release gates are green. Two guarded publications and exact-final-SHA CI plus Security assurance remain pending. The Word manual was not changed in this maintenance release."
+  "notes": "Cycle 25/v1.12.0 remains preserved under analysis/loop/cycle25. Historical completion SHA 45c114b99c0f071fb0c2d13de2a78928a35ee514 passed Security assurance 33296804422, while CI 33296804448 exposed WFP first-flow uptime suppression and Windows FIM metadata-cache authority; local re-attack also exposed T1059 receipt scheduling/direct-observation gaps. All are remediated, and the 2678/13/0 serial tree plus all offline release gates are green. Guarded publication verified remediation release commit f6c5a6da709ef45b9c95bfe700ed3367c2f00675 on canonical public main with all 4/4 README images. This completion record is carried by the required second guarded fast-forward; exact-final-SHA CI and Security assurance are evaluated on that exact SHA. The Word manual was not changed in this maintenance release."
 }

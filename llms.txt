@@ -73,13 +73,17 @@ kernel component is a product capability.
   omits BA in both states and gives exact OWNER_RIGHTS read/execute while sealed;
   ordinary tests are hermetic, and the real publisher retains its byte-exact
   live profile.
-- Reopened release evidence on the current v1.12.1 candidate:
+- Terminal release evidence on the exact v1.12.1 tree:
   2678 passed / 13 intentional host-platform skips / 0 failed across 2691
   tests. Completion SHA `45c114b99c0f071fb0c2d13de2a78928a35ee514`
-  has green Security assurance 33296804422, while CI 33296804448 reopened WFP
-  and FIM races on Python 3.11/3.13. Those findings plus a local T1059
-  cadence/direct-observation reattack are remediated. Static/offline gates pass;
-  two guarded publications and green exact-final-SHA workflows remain required.
+  historically passed Security assurance 33296804422 while CI 33296804448
+  reopened WFP and FIM races on Python 3.11/3.13; a local T1059 reattack found
+  additional cadence/direct-observation gaps. All are remediated, and guarded
+  publication verified remediation release commit
+  `f6c5a6da709ef45b9c95bfe700ed3367c2f00675`, canonical public `main`, a clean
+  tree, and all 4/4 README images. This terminal record is carried by the
+  required second guarded fast-forward; exact-SHA workflows are checked on
+  GitHub.
 - Detailed evidence: `analysis/loop/cycles26-30-summary.md` and
   `analysis/loop/cycle26/` through `analysis/loop/cycle30/`.
 
@@ -414,7 +418,7 @@ Development:
     python run_aria_selftests.py
     run-adversary-combat-validation.bat
 
-Current v1.12.1 release-candidate evidence:
+Current v1.12.1 terminal release evidence:
 
 - Authoritative serial release gate: 2678 passed,
   13 intentional host-platform skips, 0 failed.
@@ -422,12 +426,13 @@ Current v1.12.1 release-candidate evidence:
   compatibility adapters; all built-in implementation labels are 1.12.1.
 - `compileall`, Ruff, selfcheck 26/26, workflow policy, dependency audit,
   documentation drift, JSON state parsing, and diff checks pass.
-- Prior guarded publication verified canonical public `main` through completion
-  commit `45c114b99c0f071fb0c2d13de2a78928a35ee514`; all 4/4 README images
-  matched byte-for-byte. Security assurance 33296804422 passed on that SHA; CI
-  33296804448 reopened WFP and FIM races. The corrected candidate has green
-  offline gates and is pending guarded republication plus fresh exact-final-SHA
-  workflows.
+- Historical guarded publication placed completion commit
+  `45c114b99c0f071fb0c2d13de2a78928a35ee514` on canonical public `main`; Security
+  assurance 33296804422 passed while CI 33296804448 reopened WFP/FIM races.
+  Guarded publication now verifies remediation release commit
+  `f6c5a6da709ef45b9c95bfe700ed3367c2f00675`, public `main` parity, a clean tree,
+  and all 4/4 README images. The completion record is carried by the required
+  second guarded fast-forward; exact-final-SHA workflows are checked on GitHub.
 
 Prior v1.12.0 / Cycle 25 evidence:
 

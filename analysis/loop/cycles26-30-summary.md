@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-30
 **Scope:** five three-round, defensive-only hardening loops
-**Release:** 1.12.1 (`READY_FOR_PUBLICATION`; third CI reopen)
+**Release:** 1.12.1 (`COMPLETE`; guarded remediation publication verified)
 
 ## Outcome
 
@@ -86,7 +86,9 @@ query/command execution.
   hygiene pass. The dependency audit reports no known vulnerabilities and
   explicitly cannot map the local `angerona` and bundled `srt` distributions to
   PyPI identities.
-- Remaining completion requires a reviewed release commit, guarded fast-forward, a
-  completion-evidence commit, a second guarded fast-forward, then green CI and
-  Security assurance on that exact final SHA. No user-mode defensive patch is
-  proof against every future or privileged attacker.
+- Guarded publication verified remediation release commit
+  `f6c5a6da709ef45b9c95bfe700ed3367c2f00675`, canonical public `main` parity, a
+  clean worktree, and all **4/4** README images. This completion-state record is
+  carried by the required second guarded fast-forward; CI and Security assurance
+  are evaluated on that exact final SHA. No user-mode defensive patch is proof
+  against every future or privileged attacker.

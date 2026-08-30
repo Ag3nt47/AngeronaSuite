@@ -3463,3 +3463,19 @@ boundaries, and primary-source citations are in
   a completion-state commit and second guarded fast-forward, then fresh CI and
   Security assurance success on the exact final SHA. Prior publication and run
   evidence remains historical and is not relabeled green.
+
+## Third-reopen remediation guarded publication
+
+- Reviewed remediation release commit
+  `f6c5a6da709ef45b9c95bfe700ed3367c2f00675` contains the WFP first-flow fix,
+  USN-backed-or-full-content FIM cache authority, and two-phase wakeable T1059
+  observation custody with the terminal **2678 passed / 13 intentional platform
+  skips / 0 failed** evidence.
+- The guarded publisher proved the canonical
+  `https://github.com/Ag3nt47/AngeronaSuite.git` origin, fast-forward-only parity
+  between the topic branch and public `main`, a clean worktree, and all **4/4**
+  README images byte-identical.
+- All six Cycle 26–30 records return to `COMPLETE` with
+  `publication_done: true`. This completion record is carried by the required
+  second guarded fast-forward. GitHub CI and Security assurance are evaluated on
+  that exact final completion SHA; any genuine failure reopens the release.

@@ -5,15 +5,16 @@
   "focus": "privileged source-boundary removal, object-bound scanning, truthful aggregate scan state, resilience self-test custody, universal module health evidence, and release signer isolation",
   "rounds_total": 3,
   "round": 3,
-  "phase": "READY_FOR_PUBLICATION",
+  "phase": "COMPLETE",
   "round_1_status": "COMPLETE",
   "round_2_status": "COMPLETE",
   "round_3_status": "COMPLETE",
   "research_done": true,
   "started": "2026-08-28",
   "updated": "2026-08-30",
+  "completed": "2026-08-30",
   "scope": "authorized defensive-only theoretical hardening",
-  "publication_done": false,
+  "publication_done": true,
   "open_findings": {
     "critical": 0,
     "high": 0,
@@ -31,7 +32,7 @@
     "focused_pytest": "249 passed / 5 expected skips / 3 C13 integration failures subsequently remediated and independently converged",
     "selfcheck": "terminal selfcheck passed 26/26",
     "terminal_serial_gate": "2678 passed / 13 intentional platform skips / 0 failed",
-    "publication_runtime": "GitHub run 33294618414 exposed enabled-Administrator and implicit-owner WRITE_DAC authority plus mutable hosted Git 2.55.0.windows.5 coupling; BA is absent, exact OWNER_RIGHTS limits the owner to read/execute while sealed, unrelated tests use hermetic exact fixtures, the local reviewed 2.55.0.windows.4 runtime executes/cleans exactly, and guarded publication verified release commit 96b55f7d7a2305216cc68b804c72dc720ce6c88f"
+    "publication_runtime": "GitHub run 33294618414 exposed enabled-Administrator and implicit-owner WRITE_DAC authority plus mutable hosted Git 2.55.0.windows.5 coupling; BA is absent, exact OWNER_RIGHTS limits the owner to read/execute while sealed, unrelated tests use hermetic exact fixtures, the local reviewed 2.55.0.windows.4 runtime executes/cleans exactly, and final guarded publication verified remediation release commit f6c5a6da709ef45b9c95bfe700ed3367c2f00675"
   },
   "known_limitations": [
     "Arbitrary hostile code already executing inside Angerona's Python process remains outside in-process capability isolation.",

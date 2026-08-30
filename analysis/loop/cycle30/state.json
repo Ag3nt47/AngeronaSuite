@@ -5,13 +5,14 @@
   "focus": "cross-module delivery and generation identity, exact response authority, authenticated recovery, lifecycle truth, and local-first SentinelLens threat hunting",
   "rounds_total": 3,
   "round": 3,
-  "phase": "READY_FOR_PUBLICATION",
+  "phase": "COMPLETE",
   "round_1_status": "COMPLETE",
   "round_2_status": "COMPLETE",
   "round_3_status": "COMPLETE",
   "research_done": true,
   "started": "2026-08-28",
   "updated": "2026-08-30",
+  "completed": "2026-08-30",
   "scope": "authorized defensive-only theoretical hardening",
   "validation": {
     "files": 15,
@@ -19,7 +20,7 @@
     "sentinellens": "19 passed / 1 expected platform skip",
     "test_scope": "tests/test_cycle30_*.py",
     "terminal_result": "2678 passed / 13 intentional platform skips / 0 failed",
-    "post_publication_ci_remediation": "completion SHA 45c114b99c0f071fb0c2d13de2a78928a35ee514 has green Security assurance 33296804422 but CI 33296804448 failed Python 3.11/3.13; WFP, FIM, and local T1059 reattack findings are remediated and pass local serial/offline gates, pending guarded republication and exact-final workflows"
+    "post_publication_ci_remediation": "completion SHA 45c114b99c0f071fb0c2d13de2a78928a35ee514 has green Security assurance 33296804422 but CI 33296804448 failed Python 3.11/3.13; WFP, FIM, and local T1059 reattack findings are remediated, pass serial/offline gates, and are published in guarded release commit f6c5a6da709ef45b9c95bfe700ed3367c2f00675; exact-final workflows are evaluated on the completion SHA"
   },
-  "publication_done": false
+  "publication_done": true
 }

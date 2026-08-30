@@ -35,14 +35,17 @@ Python package metadata supports 3.10–3.13; the hardened Windows source bootst
   attacker immunity, external certification, fleet parity, or state/agency
   attribution. No live offensive probes or host attacks are part of the gates.
 - **Verification:** 2678 passed / 13 intentional host-platform skips / 0 failed
-  across 2691 tests on the reopened v1.12.1 candidate. Completion SHA
-  `45c114b99c0f071fb0c2d13de2a78928a35ee514` has green Security assurance run
-  33296804422, while CI run 33296804448 reopened Python 3.11 WFP and Python 3.13
-  FIM races. Those findings and a local T1059 cadence/direct-observation
-  reattack are remediated with deterministic regressions. `compileall`, Ruff,
-  selfcheck 26/26, workflow policy, dependency audit, documentation drift, JSON,
-  and diff gates pass. Two guarded publications and green exact-final-SHA CI
-  plus Security assurance are required before the candidate returns to COMPLETE.
+  across 2691 tests on the exact v1.12.1 release tree. Completion SHA
+  `45c114b99c0f071fb0c2d13de2a78928a35ee514` historically passed Security
+  assurance 33296804422 while CI 33296804448 reopened Python 3.11 WFP and Python
+  3.13 FIM races; a local T1059 reattack found additional cadence and direct-
+  observation gaps. All are remediated with deterministic regressions.
+  `compileall`, Ruff, selfcheck 26/26, workflow policy, dependency audit,
+  documentation drift, JSON, and diff gates pass. Guarded publication verified
+  remediation release commit `f6c5a6da709ef45b9c95bfe700ed3367c2f00675`,
+  canonical public `main`, a clean tree, and all 4/4 README images. This terminal
+  record is carried by the required second guarded fast-forward; exact-SHA
+  workflows are checked on GitHub.
 - Evidence map: `analysis/loop/cycles26-30-summary.md`.
 
 ## PRIOR (v1.12.0 — Cycle 25 capability, adaptation, and reliability loop)
