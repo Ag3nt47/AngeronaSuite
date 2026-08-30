@@ -335,7 +335,7 @@ Angerona host
 ## Validation snapshot
 
 - Authoritative v1.12.1 serial release suite:
-  **2665 passed; 13 intentional host-platform
+  **2669 passed; 13 intentional host-platform
   skips; 0 failed**.
 - Static platform discovery: **81 Windows / 14 Linux / 13 macOS modules**.
 - Product `compileall`: pass.

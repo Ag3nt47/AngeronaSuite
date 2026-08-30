@@ -3305,3 +3305,42 @@ boundaries, and primary-source citations are in
   fast-forward so the public repository carries both the reviewed release tree
   and its terminal evidence. GitHub CI and Security assurance are verified
   against that final completion SHA rather than inferred from local results.
+
+## Post-publication GitHub CI re-attack — reopened and remediated
+
+- Exact-SHA GitHub run
+  [`33291595209`](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/33291595209)
+  passed Public README integrity, Windows/Linux/macOS platform contracts, and
+  dependency audit, but all four Windows Python matrices failed in `Test`.
+  Security assurance run
+  [`33291595229`](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/33291595229)
+  passed CodeQL, secret scan, and Scorecard.
+- The CI failure reproduced locally at
+  `test_profiled_hardlink_alias_swap_is_denied_or_detected`: files were marked
+  delete-pending, but immediate parent disposition intermittently returned
+  Win32 `ERROR_DIR_NOT_EMPTY` (145). Later inspection found the held tree empty,
+  proving a namespace-finalization race rather than unexpected durable content.
+- Runtime cleanup now freezes the profiled directory set, keeps each retained
+  and DELETE-capable cleanup handle open, revalidates stable object identity,
+  exact canonical path, and no reparse point on every pass, and retries only
+  structured error 145 under both a two-second monotonic deadline and a
+  512-attempt global cap. No rescan, recursive sweep, path substitution, or
+  retry of access/share/identity errors is permitted. This follows Microsoft's
+  handle-based deletion contract for
+  [`SetFileInformationByHandle`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle)
+  and [`FILE_DISPOSITION_INFO`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_disposition_info).
+- The exact full-suite order also exposed a timing branch where an injected
+  authentication-baseline hard link plus a failed `ReplaceFileW` call could
+  replace the precise alias diagnosis with a generic custody error. The fix
+  observes the compromised canonical name without trusting it, requires a
+  regular non-reparse object with the exact retained volume/file identity and
+  link count greater than one, removes only that canonical name, and leaves the
+  attacker-created alias untrusted. Non-alias replacement errors retain their
+  original type and are never retried.
+- Deterministic transient, exhaustion, non-145, failed-replace alias, and
+  original hostile regressions pass. Combined high-risk gate: **80 passed / 3
+  expected skips**. Exact patched serial tree: **2669 passed / 13 intentional
+  platform skips / 0 failed** in **566.32 s**. State returns to
+  `READY_FOR_PUBLICATION`; public completion requires a fresh guarded publish,
+  completion-state commit, second guarded publish, and exact-final-SHA CI plus
+  Security assurance success.

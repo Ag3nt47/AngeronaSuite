@@ -769,6 +769,143 @@ def test_exact_profiled_hardlink_pair_stages_as_independent_copies(
     assert not root.exists()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows cleanup boundary")
+def test_runtime_cleanup_retries_transient_directory_finalization(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source"
+    profile = _fixture_runtime_profile(source)
+    staged = windows_runtime.stage_pinned_runtime(
+        source.resolve(),
+        profile=profile,
+        staging_parent=tmp_path.resolve(),
+    )
+    root = staged.root
+    root_identity = staged._directory_handles["."][1]
+    original = windows_runtime._mark_delete
+    root_attempts = 0
+
+    def _transient(handle: int) -> None:
+        nonlocal root_attempts
+        actual = windows_runtime._handle_identity(handle)
+        if (
+            actual.volume == root_identity.volume
+            and actual.index == root_identity.index
+        ):
+            root_attempts += 1
+            if root_attempts <= 2:
+                raise windows_runtime._DeleteDispositionError(
+                    windows_runtime._ERROR_DIR_NOT_EMPTY
+                )
+        original(handle)
+
+    monkeypatch.setattr(windows_runtime, "_mark_delete", _transient)
+    staged.close()
+
+    assert root_attempts == 3
+    assert not root.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows cleanup boundary")
+def test_runtime_cleanup_bounds_persistent_directory_finalization(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source"
+    profile = _fixture_runtime_profile(source)
+    staged = windows_runtime.stage_pinned_runtime(
+        source.resolve(),
+        profile=profile,
+        staging_parent=tmp_path.resolve(),
+    )
+    root = staged.root
+    root_identity = staged._directory_handles["."][1]
+    directory_count = len(staged._directory_handles)
+    original = windows_runtime._mark_delete
+    root_attempts = 0
+
+    def _persistent(handle: int) -> None:
+        nonlocal root_attempts
+        actual = windows_runtime._handle_identity(handle)
+        if (
+            actual.volume == root_identity.volume
+            and actual.index == root_identity.index
+        ):
+            root_attempts += 1
+            raise windows_runtime._DeleteDispositionError(
+                windows_runtime._ERROR_DIR_NOT_EMPTY
+            )
+        original(handle)
+
+    monkeypatch.setattr(windows_runtime, "_mark_delete", _persistent)
+    monkeypatch.setattr(
+        windows_runtime,
+        "_DIRECTORY_CLEANUP_MAX_ATTEMPTS",
+        directory_count + 2,
+    )
+    monkeypatch.setattr(
+        windows_runtime,
+        "_DIRECTORY_CLEANUP_RETRY_DELAY_SECONDS",
+        0.0,
+    )
+    try:
+        with pytest.raises(
+            windows_runtime.WindowsRuntimeError,
+            match="could not be removed exactly",
+        ):
+            staged.close()
+    finally:
+        if root.exists():
+            root.rmdir()
+
+    assert root_attempts == 3
+    assert not root.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows cleanup boundary")
+def test_runtime_cleanup_never_retries_nontransient_disposition_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source"
+    profile = _fixture_runtime_profile(source)
+    staged = windows_runtime.stage_pinned_runtime(
+        source.resolve(),
+        profile=profile,
+        staging_parent=tmp_path.resolve(),
+    )
+    root = staged.root
+    root_identity = staged._directory_handles["."][1]
+    original = windows_runtime._mark_delete
+    root_attempts = 0
+
+    def _access_denied(handle: int) -> None:
+        nonlocal root_attempts
+        actual = windows_runtime._handle_identity(handle)
+        if (
+            actual.volume == root_identity.volume
+            and actual.index == root_identity.index
+        ):
+            root_attempts += 1
+            raise windows_runtime._DeleteDispositionError(5)
+        original(handle)
+
+    monkeypatch.setattr(windows_runtime, "_mark_delete", _access_denied)
+    try:
+        with pytest.raises(
+            windows_runtime.WindowsRuntimeError,
+            match="could not be removed exactly",
+        ):
+            staged.close()
+    finally:
+        if root.exists():
+            root.rmdir()
+
+    assert root_attempts == 1
+    assert not root.exists()
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows hard-link boundary")
 def test_profiled_source_with_outside_hardlink_alias_fails_closed(
     tmp_path: Path,

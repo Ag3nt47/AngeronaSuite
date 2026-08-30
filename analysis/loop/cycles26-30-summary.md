@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-29
 **Scope:** five three-round, defensive-only hardening loops
-**Release:** 1.12.1 (`COMPLETE`; guarded canonical-main publication verified)
+**Release:** 1.12.1 (`READY_FOR_PUBLICATION`; post-CI remediation verified locally)
 
 ## Outcome
 
@@ -61,14 +61,15 @@ query/command execution.
 - Combined Cycle 26–30 focused gate: **819 passed / 6 expected platform skips /
   0 failed** across 93 files. Focused groups overlap and are not added to the
   full-suite total.
-- Exact v1.12.1 serial gate: **2665 passed /
+- Exact v1.12.1 serial gate: **2669 passed /
   13 intentional platform skips / 0 failed**.
 - Python `compileall`, repository-wide Ruff, selfcheck **26/26**,
   workflow-policy validation, dependency audit, documentation-drift validation,
   and `git diff --check`: pass on the release tree.
-- The guarded publisher fast-forwarded canonical `Ag3nt47/AngeronaSuite`
-  `codex/enterprise-cycle7` and `main` to release commit
-  `0906e5bf8598379a7e7ed1477c180378c41d8e73`; all **4/4** README images
-  matched byte-for-byte. This completion-state record is itself published
-  through the required second guarded fast-forward. No user-mode defensive
+- Prior guarded publication fast-forwarded canonical `Ag3nt47/AngeronaSuite`
+  `main` through completion commit
+  `dca1adebd4a8d5b37d0f9b28487e4d33c5d1adca`; all **4/4** README images
+  matched byte-for-byte. GitHub run 33291595209 then reopened a transient
+  Windows runtime-cleanup race. The remediated 2669-test candidate awaits a
+  fresh guarded fast-forward and exact-SHA workflows. No user-mode defensive
   patch is proof against every future or privileged attacker.

@@ -34,12 +34,15 @@ Python package metadata supports 3.10–3.13; the hardened Windows source bootst
 - **Honest boundary:** no claim of complete attack coverage, privileged-
   attacker immunity, external certification, fleet parity, or state/agency
   attribution. No live offensive probes or host attacks are part of the gates.
-- **Verification:** 2665 passed / 13 intentional
+- **Verification:** 2669 passed / 13 intentional
   host-platform skips / 0 failed on the exact v1.12.1 tree. `compileall`, Ruff,
   selfcheck 26/26, workflow-policy, dependency-audit, documentation-drift, and
-  diff gates pass. The guarded publisher verified release commit
-  `0906e5bf8598379a7e7ed1477c180378c41d8e73` on canonical public `main` and
-  proved all 4/4 README images byte-identical to the checked-out files.
+  diff gates pass. The prior guarded publisher verified release commit
+  `0906e5bf8598379a7e7ed1477c180378c41d8e73` and completion commit
+  `dca1adebd4a8d5b37d0f9b28487e4d33c5d1adca` on canonical public `main`, with
+  all 4/4 README images byte-identical. GitHub run 33291595209 then exposed a
+  transient Windows delete-pending cleanup race; the remediated candidate and
+  exact-SHA workflows remain pending guarded republication.
 - Evidence map: `analysis/loop/cycles26-30-summary.md`.
 
 ## PRIOR (v1.12.0 — Cycle 25 capability, adaptation, and reliability loop)

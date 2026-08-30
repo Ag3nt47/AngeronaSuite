@@ -5,7 +5,7 @@
   "focus": "five completed three-round defensive hardening cycles, universal capability evidence, safe automation, comprehensive inert Red Team Simulation, and local-first SentinelLens",
   "rounds_total": 3,
   "round": 3,
-  "phase": "COMPLETE",
+  "phase": "READY_FOR_PUBLICATION",
   "round_1_status": "COMPLETE",
   "round_2_status": "COMPLETE",
   "round_3_status": "COMPLETE",
@@ -14,18 +14,17 @@
   "docs_update_round": 3,
   "docs_update_done": true,
   "manual_update_done": false,
-  "publication_done": true,
+  "publication_done": false,
   "started": "2026-08-28",
   "updated": "2026-08-29",
-  "completed": "2026-08-29",
   "planned_cycles": [26, 27, 28, 29, 30],
   "scope": "authorized defensive-only theoretical hardening",
   "final_results": {
-    "serial_pytest": "2665 passed / 13 intentional platform skips / 0 failed",
+    "serial_pytest": "2669 passed / 13 intentional platform skips / 0 failed",
     "cycles_26_30_focused": "819 passed / 6 expected platform skips / 0 failed",
     "selfcheck": "26 passed / 0 failed",
     "static_discovery": "81 capabilities; 6 native contracts; 75 compatibility adapters",
     "other_gates": "compileall, Ruff, workflow policy, dependency audit, documentation drift, and diff checks passed"
   },
-  "notes": "Cycle 25/v1.12.0 remains preserved under analysis/loop/cycle25. Guarded canonical-main publication verified release commit 0906e5bf8598379a7e7ed1477c180378c41d8e73 and all 4/4 README images byte-for-byte; the completion-state record is published through the required second guarded fast-forward. The Word manual was not changed in this maintenance release."
+  "notes": "Cycle 25/v1.12.0 remains preserved under analysis/loop/cycle25. Prior guarded publication verified completion commit dca1adebd4a8d5b37d0f9b28487e4d33c5d1adca and all 4/4 README images. GitHub run 33291595209 reopened a Windows cleanup race; the exact remediated tree is ready for guarded republication. The Word manual was not changed in this maintenance release."
 }

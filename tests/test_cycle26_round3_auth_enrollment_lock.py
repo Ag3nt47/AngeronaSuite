@@ -411,6 +411,31 @@ def test_hard_link_injected_at_atomic_replace_is_detected_and_not_trusted(
         )
 
 
+def test_hard_link_injected_when_replace_fails_keeps_exact_alias_diagnosis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _baseline_path(tmp_path)
+    alias = tmp_path / "failed-replace-alias.json"
+    store = _provisional(tmp_path)
+    calls = 0
+
+    def linked_failure(temporary, destination, *, parent_descriptor):
+        nonlocal calls
+        del temporary, parent_descriptor
+        calls += 1
+        os.link(destination, alias)
+        raise OSError(5, "simulated replacement failure after alias injection")
+
+    monkeypatch.setattr(auth_extensions, "_replace_baseline_file", linked_failure)
+    with pytest.raises(BaselineEnrollmentError, match="aliased or ambiguous"):
+        _enroll(store)
+
+    assert calls == 1
+    assert not path.exists()
+    assert b'"state":"provisional"' in alias.read_bytes()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="ReplaceFileW reconciliation is Windows-only")
 def test_windows_1175_retries_only_after_exact_unchanged_reconciliation(
     tmp_path: Path,

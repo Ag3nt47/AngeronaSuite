@@ -57,18 +57,21 @@ kernel component is a product capability.
   37 simulation-validation contracts, including 24 fixed inert marker probes;
   native analytic catches remain separately reported. It is not a penetration-
   testing engine and executes none of the named ATT&CK behaviors.
-- GitHub CI and Security assurance workflows are required post-publication
-  gates. The prior Windows CI failure was isolated to CRLF conversion of a
-  byte-canonical fixture and an incomplete symlink-test trust pin; the fixes
-  preserve strict production validation. Final-SHA workflow status is verified
-  on GitHub rather than inferred from local tests.
+- GitHub CI run 33291595209 passed integrity, audit, and platform-contract jobs
+  but failed all four Windows Python matrices on a transient delete-pending
+  publication-runtime cleanup race. Security assurance run 33291595229 passed.
+  The exact failure and a second timing-dependent authentication-baseline alias
+  diagnosis were reproduced locally, fixed with bounded fail-closed object
+  custody, and retained as hostile regressions. Final-SHA workflow status is
+  verified on GitHub rather than inferred locally.
 - Terminal release evidence on the exact v1.12.1 tree:
-  2665 passed / 13 intentional host-platform
+  2669 passed / 13 intentional host-platform
   skips / 0 failed; `compileall`, Ruff, selfcheck 26/26, workflow-policy,
-  dependency-audit, documentation-drift, and diff gates passed. The guarded
-  publisher verified release commit
-  `0906e5bf8598379a7e7ed1477c180378c41d8e73` on canonical public `main` and
-  proved all 4/4 README images byte-identical to the checked-out files.
+  dependency-audit, documentation-drift, and diff gates passed. Prior guarded
+  publication verified release commit `0906e5bf8598379a7e7ed1477c180378c41d8e73`,
+  completion commit `dca1adebd4a8d5b37d0f9b28487e4d33c5d1adca`, and
+  all 4/4 README images. The remediated candidate is awaiting guarded
+  republication and exact-SHA CI/Security assurance.
 - Detailed evidence: `analysis/loop/cycles26-30-summary.md` and
   `analysis/loop/cycle26/` through `analysis/loop/cycle30/`.
 
@@ -405,15 +408,15 @@ Development:
 
 Current v1.12.1 terminal evidence:
 
-- Authoritative serial release gate: 2665 passed,
+- Authoritative serial release gate: 2669 passed,
   13 intentional host-platform skips, 0 failed.
 - Static discovery: 81 capabilities, comprising six native contracts and 75
   compatibility adapters; all built-in implementation labels are 1.12.1.
 - `compileall`, Ruff, selfcheck 26/26, workflow policy, dependency audit,
   documentation drift, and diff checks pass on the release tree.
-- The guarded publisher verified canonical public `main` at release commit
-  `0906e5bf8598379a7e7ed1477c180378c41d8e73`; all 4/4 README images matched
-  the checked-out files byte-for-byte.
+- Prior guarded publication verified canonical public `main` at completion
+  commit `dca1adebd4a8d5b37d0f9b28487e4d33c5d1adca`; all 4/4 README images matched
+  byte-for-byte. The post-CI remediation candidate is pending republication.
 
 Prior v1.12.0 / Cycle 25 evidence:
 

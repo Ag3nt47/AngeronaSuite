@@ -2382,7 +2382,37 @@ class AuthExtensionBaselineStore:
                 self.path.chmod(0o600)
             except OSError:
                 pass
-        except BaseException:
+        except BaseException as operation_error:
+            alias_removed = False
+            if provisional_descriptor >= 0:
+                try:
+                    retained = os.fstat(provisional_descriptor)
+                    current = os.lstat(self.path)
+                    if (
+                        stat.S_ISREG(current.st_mode)
+                        and not stat.S_ISLNK(current.st_mode)
+                        and not bool(
+                            int(getattr(current, "st_file_attributes", 0))
+                            & _REPARSE_POINT
+                        )
+                        and _object_identity(retained) == custody.baseline_identity
+                        and _same_filesystem_object(retained, current)
+                        and int(current.st_nlink) > 1
+                    ):
+                        if os.name != "nt":
+                            os.unlink(
+                                self.path.name,
+                                dir_fd=custody.parent_descriptor,
+                            )
+                        else:
+                            self.path.unlink()
+                        try:
+                            _safe_regular_stat(self.path)
+                        except FileNotFoundError:
+                            custody.baseline_identity = None
+                            alias_removed = True
+                except (BaselineIntegrityError, OSError):
+                    pass
             if replaced and temporary_identity is not None:
                 try:
                     current = os.lstat(self.path)
@@ -2394,6 +2424,10 @@ class AuthExtensionBaselineStore:
                         custody.baseline_identity = None
                 except OSError:
                     pass
+            if alias_removed:
+                raise BaselineEnrollmentError(
+                    "baseline promotion left an aliased or ambiguous object"
+                ) from operation_error
             raise
         finally:
             try:

@@ -19,6 +19,7 @@ import json
 import os
 import secrets
 import stat
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Iterator, Mapping
@@ -79,10 +80,25 @@ _MAX_FILE_BYTES = 64 * 1024 * 1024
 _MAX_TREE_BYTES = 512 * 1024 * 1024
 _COPY_CHUNK = 1024 * 1024
 _WINDOWS_REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_ERROR_DIR_NOT_EMPTY = 145
+_DIRECTORY_CLEANUP_DEADLINE_SECONDS = 2.0
+_DIRECTORY_CLEANUP_RETRY_DELAY_SECONDS = 0.02
+_DIRECTORY_CLEANUP_MAX_ATTEMPTS = 512
 
 
 class WindowsRuntimeError(RuntimeError):
     """Raised when the reviewed publication runtime cannot be proven exact."""
+
+
+class _DeleteDispositionError(WindowsRuntimeError):
+    """Structured failure from one exact handle-based delete disposition."""
+
+    def __init__(self, error_code: int) -> None:
+        self.error_code = int(error_code)
+        super().__init__(
+            "private publication runtime cleanup could not be authorized "
+            f"({self.error_code})"
+        )
 
 
 @dataclass(frozen=True)
@@ -1472,8 +1488,37 @@ def _mark_delete(handle: int) -> None:
         ctypes.sizeof(info),
     ):
         error = ctypes.get_last_error()
+        raise _DeleteDispositionError(error)
+
+
+def _require_exact_cleanup_handle(
+    handle: int,
+    expected: _HandleIdentity,
+    expected_path: Path,
+    *,
+    kind: str,
+) -> None:
+    """Prove a cleanup handle still names the retained profiled object."""
+
+    actual = _handle_identity(handle)
+    if kind == "file":
+        identity_matches = actual == expected
+    elif kind == "directory":
+        # Directory allocation size can change while already-marked children
+        # finish deletion.  Volume + file index are the stable object key.
+        identity_matches = (
+            actual.volume == expected.volume
+            and actual.index == expected.index
+        )
+    else:
+        raise WindowsRuntimeError("private publication cleanup kind is invalid")
+    if (
+        not identity_matches
+        or actual.attributes & _WINDOWS_REPARSE
+        or str(_final_path_from_handle(handle)) != str(expected_path)
+    ):
         raise WindowsRuntimeError(
-            f"private publication runtime cleanup could not be authorized ({error})"
+            f"private publication runtime {kind} changed during cleanup"
         )
 
 
@@ -1609,42 +1654,63 @@ class StagedWindowsRuntime:
             return
         self._closed = True
         errors: list[Exception] = []
-        for relative, (handle, _identity) in sorted(self._file_handles.items()):
+        for relative, (handle, identity) in sorted(self._file_handles.items()):
+            cleanup = 0
             try:
+                path = self.root / Path(*PurePosixPath(relative).parts)
+                _require_exact_cleanup_handle(
+                    handle,
+                    identity,
+                    path,
+                    kind="file",
+                )
                 _set_handle_private_acl(
                     handle,
                     self._current_sid,
                     writable=True,
                 )
                 cleanup = _open_handle(
-                    self.root / Path(*PurePosixPath(relative).parts),
+                    path,
                     directory=False,
                     delete_access=True,
                     share_delete=True,
                 )
-                try:
-                    _mark_delete(cleanup)
-                finally:
-                    _close_handle(cleanup)
+                _require_exact_cleanup_handle(
+                    cleanup,
+                    identity,
+                    path,
+                    kind="file",
+                )
+                _mark_delete(cleanup)
             except Exception as exc:  # Cleanup must still close every retained handle.
                 errors.append(exc)
             finally:
+                _close_handle(cleanup)
                 _close_handle(handle)
-        for relative, (handle, _identity) in sorted(
+
+        pending_directories: list[tuple[int, int, _HandleIdentity, Path]] = []
+        for relative, (handle, identity) in sorted(
             self._directory_handles.items(),
             key=lambda item: (
                 -(item[0].count("/") if item[0] != "." else -1),
                 item[0],
             ),
         ):
+            cleanup = 0
             try:
+                path = self.root if relative == "." else (
+                    self.root / Path(*PurePosixPath(relative).parts)
+                )
+                _require_exact_cleanup_handle(
+                    handle,
+                    identity,
+                    path,
+                    kind="directory",
+                )
                 _set_handle_private_acl(
                     handle,
                     self._current_sid,
                     writable=True,
-                )
-                path = self.root if relative == "." else (
-                    self.root / Path(*PurePosixPath(relative).parts)
                 )
                 cleanup = _open_handle(
                     path,
@@ -1652,14 +1718,70 @@ class StagedWindowsRuntime:
                     delete_access=True,
                     share_delete=True,
                 )
-                try:
-                    _mark_delete(cleanup)
-                finally:
-                    _close_handle(cleanup)
+                _require_exact_cleanup_handle(
+                    cleanup,
+                    identity,
+                    path,
+                    kind="directory",
+                )
             except Exception as exc:
                 errors.append(exc)
-            finally:
+                _close_handle(cleanup)
                 _close_handle(handle)
+            else:
+                pending_directories.append(
+                    (handle, cleanup, identity, path)
+                )
+
+        cleanup_deadline = (
+            time.monotonic() + _DIRECTORY_CLEANUP_DEADLINE_SECONDS
+        )
+        cleanup_attempts = 0
+        while pending_directories:
+            deferred: list[tuple[int, int, _HandleIdentity, Path]] = []
+            exhausted = False
+            for index, item in enumerate(pending_directories):
+                handle, cleanup, identity, path = item
+                if cleanup_attempts >= _DIRECTORY_CLEANUP_MAX_ATTEMPTS:
+                    deferred.extend(pending_directories[index:])
+                    exhausted = True
+                    break
+                cleanup_attempts += 1
+                try:
+                    _require_exact_cleanup_handle(
+                        handle,
+                        identity,
+                        path,
+                        kind="directory",
+                    )
+                    _require_exact_cleanup_handle(
+                        cleanup,
+                        identity,
+                        path,
+                        kind="directory",
+                    )
+                    _mark_delete(cleanup)
+                except _DeleteDispositionError as exc:
+                    if exc.error_code == _ERROR_DIR_NOT_EMPTY:
+                        deferred.append(item)
+                        continue
+                    errors.append(exc)
+                except Exception as exc:
+                    errors.append(exc)
+                _close_handle(cleanup)
+                _close_handle(handle)
+
+            if not deferred:
+                break
+            if exhausted or time.monotonic() >= cleanup_deadline:
+                for handle, cleanup, _identity, _path in deferred:
+                    errors.append(_DeleteDispositionError(_ERROR_DIR_NOT_EMPTY))
+                    _close_handle(cleanup)
+                    _close_handle(handle)
+                break
+            time.sleep(_DIRECTORY_CLEANUP_RETRY_DELAY_SECONDS)
+            pending_directories = deferred
+
         _close_handle(self._scratch_handle)
         try:
             _remove_private_scratch(self.scratch_root)
