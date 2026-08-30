@@ -57,15 +57,18 @@ kernel component is a product capability.
   37 simulation-validation contracts, including 24 fixed inert marker probes;
   native analytic catches remain separately reported. It is not a penetration-
   testing engine and executes none of the named ATT&CK behaviors.
-- GitHub security scans were green. The prior Windows CI failure was isolated
-  to CRLF conversion of a byte-canonical fixture and an incomplete symlink-test
-  trust pin; the fixes preserve strict production validation.
+- GitHub CI and Security assurance workflows are required post-publication
+  gates. The prior Windows CI failure was isolated to CRLF conversion of a
+  byte-canonical fixture and an incomplete symlink-test trust pin; the fixes
+  preserve strict production validation. Final-SHA workflow status is verified
+  on GitHub rather than inferred from local tests.
 - Terminal release evidence on the exact v1.12.1 tree:
   2665 passed / 13 intentional host-platform
   skips / 0 failed; `compileall`, Ruff, selfcheck 26/26, workflow-policy,
-  dependency-audit, documentation-drift, and diff gates passed. Canonical-main
-  publication and public README-asset verification remain a separate guarded
-  proof until `publication_done` becomes true.
+  dependency-audit, documentation-drift, and diff gates passed. The guarded
+  publisher verified release commit
+  `0906e5bf8598379a7e7ed1477c180378c41d8e73` on canonical public `main` and
+  proved all 4/4 README images byte-identical to the checked-out files.
 - Detailed evidence: `analysis/loop/cycles26-30-summary.md` and
   `analysis/loop/cycle26/` through `analysis/loop/cycle30/`.
 
@@ -408,8 +411,9 @@ Current v1.12.1 terminal evidence:
   compatibility adapters; all built-in implementation labels are 1.12.1.
 - `compileall`, Ruff, selfcheck 26/26, workflow policy, dependency audit,
   documentation drift, and diff checks pass on the release tree.
-- Canonical public-main and README-image byte proof is recorded only after the
-  guarded publisher completes.
+- The guarded publisher verified canonical public `main` at release commit
+  `0906e5bf8598379a7e7ed1477c180378c41d8e73`; all 4/4 README images matched
+  the checked-out files byte-for-byte.
 
 Prior v1.12.0 / Cycle 25 evidence:
 

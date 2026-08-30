@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-29
 **Scope:** five three-round, defensive-only hardening loops
-**Release:** 1.12.1 (`READY_FOR_PUBLICATION`; guarded publication pending)
+**Release:** 1.12.1 (`COMPLETE`; guarded canonical-main publication verified)
 
 ## Outcome
 
@@ -66,7 +66,9 @@ query/command execution.
 - Python `compileall`, repository-wide Ruff, selfcheck **26/26**,
   workflow-policy validation, dependency audit, documentation-drift validation,
   and `git diff --check`: pass on the release tree.
-- Public proof remains pending until the guarded publisher fast-forwards
-  canonical `Ag3nt47/AngeronaSuite` `main` to the reviewed release commit and
-  verifies every README image byte-for-byte. No user-mode defensive patch is a
-  proof against every future or privileged attacker.
+- The guarded publisher fast-forwarded canonical `Ag3nt47/AngeronaSuite`
+  `codex/enterprise-cycle7` and `main` to release commit
+  `0906e5bf8598379a7e7ed1477c180378c41d8e73`; all **4/4** README images
+  matched byte-for-byte. This completion-state record is itself published
+  through the required second guarded fast-forward. No user-mode defensive
+  patch is proof against every future or privileged attacker.

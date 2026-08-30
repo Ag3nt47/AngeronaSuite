@@ -37,8 +37,9 @@ Python package metadata supports 3.10–3.13; the hardened Windows source bootst
 - **Verification:** 2665 passed / 13 intentional
   host-platform skips / 0 failed on the exact v1.12.1 tree. `compileall`, Ruff,
   selfcheck 26/26, workflow-policy, dependency-audit, documentation-drift, and
-  diff gates pass. Canonical public-main and README-image byte proof remains a
-  separate guarded publication step until `publication_done` becomes true.
+  diff gates pass. The guarded publisher verified release commit
+  `0906e5bf8598379a7e7ed1477c180378c41d8e73` on canonical public `main` and
+  proved all 4/4 README images byte-identical to the checked-out files.
 - Evidence map: `analysis/loop/cycles26-30-summary.md`.
 
 ## PRIOR (v1.12.0 — Cycle 25 capability, adaptation, and reliability loop)

@@ -3287,3 +3287,21 @@ boundaries, and primary-source citations are in
   All failed attempts withheld publication success; the next guarded run must
   freshly prove remote ancestry, atomic fast-forward, exact ref equality, clean
   local state, and public README asset byte identity.
+
+## Cycles 26–30 guarded release publication — verified
+
+- `python tools/publish_github_update.py` verified the byte-exact canonical
+  HTTPS origin `https://github.com/Ag3nt47/AngeronaSuite.git`, GitHub default
+  branch `main`, and reviewed release commit
+  `0906e5bf8598379a7e7ed1477c180378c41d8e73`.
+- Canonical public `main` and local topic branch `codex/enterprise-cycle7`
+  both resolved to that release commit after a fast-forward-only advance. The
+  publisher proved the complete local worktree clean before and after the
+  operation; no force, merge, rebase, or reset path exists in the publisher.
+- Every repository-relative README image was tracked and reachable from public
+  `main`; all **4/4** public bytes matched the checked-out files exactly.
+- Cycle states are now `COMPLETE` with `publication_done: true`. This
+  completion-state record is published through the required second guarded
+  fast-forward so the public repository carries both the reviewed release tree
+  and its terminal evidence. GitHub CI and Security assurance are verified
+  against that final completion SHA rather than inferred from local results.
