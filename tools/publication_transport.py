@@ -392,8 +392,10 @@ class TrustedGitBoundary:
                     else 0
                 ),
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise PublicationTransportError("trusted Git process failed") from exc
+        except subprocess.TimeoutExpired:
+            raise PublicationTransportError("trusted Git process timed out") from None
+        except OSError:
+            raise PublicationTransportError("trusted Git process failed") from None
         self.revalidate()
         return result
 

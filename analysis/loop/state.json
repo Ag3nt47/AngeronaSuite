@@ -20,7 +20,7 @@
   "planned_cycles": [26, 27, 28, 29, 30],
   "scope": "authorized defensive-only theoretical hardening",
   "final_results": {
-    "serial_pytest": "2659 passed / 13 intentional platform skips / 0 failed",
+    "serial_pytest": "2665 passed / 13 intentional platform skips / 0 failed",
     "cycles_26_30_focused": "819 passed / 6 expected platform skips / 0 failed",
     "selfcheck": "26 passed / 0 failed",
     "static_discovery": "81 capabilities; 6 native contracts; 75 compatibility adapters",

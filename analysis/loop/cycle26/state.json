@@ -30,7 +30,7 @@
     "top_level_self_tests": "37/37 passed",
     "focused_pytest": "249 passed / 5 expected skips / 3 C13 integration failures subsequently remediated and independently converged",
     "selfcheck": "terminal selfcheck passed 26/26",
-    "terminal_serial_gate": "2659 passed / 13 intentional platform skips / 0 failed",
+    "terminal_serial_gate": "2665 passed / 13 intentional platform skips / 0 failed",
     "publication_runtime": "C13 exact topology 5/5 and adjacent 6/6 passed; guarded canonical-main publication proof pending"
   },
   "known_limitations": [

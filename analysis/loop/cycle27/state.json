@@ -22,7 +22,7 @@
   "closure": {
     "capability_assurance": "all 81 discovered capabilities audited with bounded sub-100 evidence",
     "red_team_simulation": "readiness, exact generation, marker custody, detector receipts, and AAR handoff independently re-attacked and converged",
-    "terminal_serial_gate": "2659 passed / 13 intentional platform skips / 0 failed"
+    "terminal_serial_gate": "2665 passed / 13 intentional platform skips / 0 failed"
   },
   "publication_done": false
 }

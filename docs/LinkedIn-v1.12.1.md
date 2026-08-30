@@ -12,7 +12,7 @@ evidence only. It contains no host telemetry or operator identity.
 > `main` and every README image. The release counts below match the final local gate.
 
 Angerona v1.12.1 is ready to ship — the largest defensive hardening update to
-the project so far. Its exact release gate is 2659 passed,
+the project so far. Its exact release gate is 2665 passed,
 13 intentional platform skips, and 0 failures.
 
 The headline addition is **SentinelLens**, a local-first autonomous threat-

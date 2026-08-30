@@ -34,7 +34,7 @@ Python package metadata supports 3.10–3.13; the hardened Windows source bootst
 - **Honest boundary:** no claim of complete attack coverage, privileged-
   attacker immunity, external certification, fleet parity, or state/agency
   attribution. No live offensive probes or host attacks are part of the gates.
-- **Verification:** 2659 passed / 13 intentional
+- **Verification:** 2665 passed / 13 intentional
   host-platform skips / 0 failed on the exact v1.12.1 tree. `compileall`, Ruff,
   selfcheck 26/26, workflow-policy, dependency-audit, documentation-drift, and
   diff gates pass. Canonical public-main and README-image byte proof remains a

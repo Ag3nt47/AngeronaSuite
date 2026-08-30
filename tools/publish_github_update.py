@@ -89,6 +89,29 @@ def _git(
     return result
 
 
+_FULL_TREE_STATUS_TIMEOUT = 120.0
+
+
+def _worktree_status(root: Path) -> str:
+    """Return the complete porcelain status within a fixed fail-closed budget."""
+
+    try:
+        return _git(
+            root,
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            timeout=_FULL_TREE_STATUS_TIMEOUT,
+        ).stdout
+    except PublicationError as exc:
+        if str(exc) == "trusted Git process timed out":
+            raise PublicationError(
+                "local worktree status exceeded the 120-second safety deadline; "
+                "publication remains unverified"
+            ) from None
+        raise
+
+
 def github_repository_from_origin(origin: str) -> str:
     """Parse a credential-free canonical github.com HTTPS remote."""
 
@@ -406,7 +429,7 @@ def _assert_local_snapshot(root: Path, expected_head: str) -> None:
     current = _git(root, "rev-parse", "HEAD").stdout.strip().lower()
     if current != expected_head:
         raise PublicationError("local HEAD changed during publication")
-    if _git(root, "status", "--porcelain=v1", "--untracked-files=all").stdout:
+    if _worktree_status(root):
         raise PublicationError("working tree changed during publication")
 
 
@@ -488,7 +511,7 @@ def _publish_with_trusted_git(
     top = Path(_git(root, "rev-parse", "--show-toplevel").stdout.strip()).resolve()
     if top != root:
         raise PublicationError("publication must run from the repository root")
-    if _git(root, "status", "--porcelain=v1", "--untracked-files=all").stdout:
+    if _worktree_status(root):
         raise PublicationError("working tree must be clean before publication")
 
     branch = _git(root, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()

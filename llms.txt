@@ -61,7 +61,7 @@ kernel component is a product capability.
   to CRLF conversion of a byte-canonical fixture and an incomplete symlink-test
   trust pin; the fixes preserve strict production validation.
 - Terminal release evidence on the exact v1.12.1 tree:
-  2659 passed / 13 intentional host-platform
+  2665 passed / 13 intentional host-platform
   skips / 0 failed; `compileall`, Ruff, selfcheck 26/26, workflow-policy,
   dependency-audit, documentation-drift, and diff gates passed. Canonical-main
   publication and public README-asset verification remain a separate guarded
@@ -402,7 +402,7 @@ Development:
 
 Current v1.12.1 terminal evidence:
 
-- Authoritative serial release gate: 2659 passed,
+- Authoritative serial release gate: 2665 passed,
   13 intentional host-platform skips, 0 failed.
 - Static discovery: 81 capabilities, comprising six native contracts and 75
   compatibility adapters; all built-in implementation labels are 1.12.1.

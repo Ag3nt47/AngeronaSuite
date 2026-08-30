@@ -337,6 +337,86 @@ def test_git_boundary_rejects_ambient_authority(name: str) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("failure_kind", "expected"),
+    (
+        ("timeout", "trusted Git process timed out"),
+        ("launch", "trusted Git process failed"),
+    ),
+)
+def test_git_boundary_sanitizes_timeout_and_launch_failures(
+    tmp_path: Path,
+    monkeypatch,
+    failure_kind: str,
+    expected: str,
+) -> None:
+    boundary = transport.TrustedGitBoundary(
+        executable=(tmp_path / "git.exe").resolve(),
+        executable_identity=transport._FileIdentity(1, 2, 3, 4),
+        credential_helper=None,
+        credential_helper_identity=None,
+        environment_items=(),
+        execution_directory=tmp_path.resolve(),
+    )
+    monkeypatch.setattr(boundary, "revalidate", lambda: None)
+
+    def _fail(*_args, **_kwargs):
+        if failure_kind == "timeout":
+            raise subprocess.TimeoutExpired(
+                ["C:/sensitive/git.exe", "status", "credential-bearing-argument"],
+                120,
+                output="sensitive output",
+                stderr="sensitive error",
+            )
+        raise OSError("C:/sensitive/launch/path")
+
+    monkeypatch.setattr(transport.subprocess, "run", _fail)
+    with pytest.raises(transport.PublicationTransportError) as caught:
+        boundary.run(ROOT, ["status"], text=True, timeout=120.0)
+
+    assert str(caught.value) == expected
+    assert caught.value.__cause__ is None
+    assert "sensitive" not in str(caught.value)
+
+
+def test_full_worktree_status_has_a_dedicated_fixed_deadline(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _capture(root: Path, *arguments: str, **kwargs):
+        captured["root"] = root
+        captured["arguments"] = arguments
+        captured["timeout"] = kwargs.get("timeout")
+        return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(publisher, "_git", _capture)
+    assert publisher._worktree_status(ROOT) == ""
+    assert captured == {
+        "root": ROOT,
+        "arguments": ("status", "--porcelain=v1", "--untracked-files=all"),
+        "timeout": 120.0,
+    }
+    assert publisher._FULL_TREE_STATUS_TIMEOUT == 120.0
+
+
+def test_worktree_status_timeout_stays_fail_closed_and_path_free(monkeypatch) -> None:
+    def _timeout(*_args, **_kwargs):
+        raise publisher.PublicationError("trusted Git process timed out")
+
+    monkeypatch.setattr(publisher, "_git", _timeout)
+    with pytest.raises(publisher.PublicationError) as caught:
+        publisher._worktree_status(ROOT)
+
+    assert str(caught.value) == (
+        "local worktree status exceeded the 120-second safety deadline; "
+        "publication remains unverified"
+    )
+    assert str(ROOT) not in str(caught.value)
+
+
+def test_regular_git_default_deadline_remains_30_seconds() -> None:
+    assert inspect.signature(publisher._git).parameters["timeout"].default == 30.0
+
+
 def test_git_boundary_uses_absolute_git_literal_argv_and_fresh_environment(
     monkeypatch,
     shared_publication_git_boundary,

@@ -61,7 +61,7 @@ query/command execution.
 - Combined Cycle 26–30 focused gate: **819 passed / 6 expected platform skips /
   0 failed** across 93 files. Focused groups overlap and are not added to the
   full-suite total.
-- Exact v1.12.1 serial gate: **2659 passed /
+- Exact v1.12.1 serial gate: **2665 passed /
   13 intentional platform skips / 0 failed**.
 - Python `compileall`, repository-wide Ruff, selfcheck **26/26**,
   workflow-policy validation, dependency audit, documentation-drift validation,

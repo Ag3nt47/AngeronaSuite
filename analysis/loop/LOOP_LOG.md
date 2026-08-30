@@ -3252,7 +3252,7 @@ boundaries, and primary-source citations are in
 
 - Combined focused gate: **819 passed / 6 expected platform skips / 0 failed**
   across 93 overlapping files.
-- Exact serial tree: **2659 passed / 13
+- Exact serial tree: **2665 passed / 13
   intentional platform skips / 0 failed**. `compileall`, Ruff, selfcheck 26/26,
   workflow policy, dependency audit, documentation drift, and diff hygiene pass.
 - State is `READY_FOR_PUBLICATION`; `publication_done` remains false until the
@@ -3260,3 +3260,24 @@ boundaries, and primary-source citations are in
   A separate completion-state commit and guarded publication will record that
   proof. No patch is represented as proof against every future or privileged
   attacker.
+
+## Guarded publication preflight remediation
+
+- The publisher failed closed twice on its initial complete-worktree proof
+  after the fixed 30-second local Git deadline was exhausted by unrelated
+  installation-drive I/O pressure. A status-specific, non-configurable
+  120-second safety deadline
+  now covers only the two complete `status --porcelain=v1
+  --untracked-files=all` call sites; all other local Git operations retain the
+  30-second default, every status proof remains mandatory, and no timeout is
+  treated as success or retried automatically.
+- A separate push attempt exposed an absolute Credential Manager dispatch bug:
+  POSIX quoting made the first helper byte a quote, so Git prepended
+  `git credential-` instead of executing the sealed helper. The value now uses
+  Git's documented `!'<absolute-path>'` form, preserving literal handling of
+  spaces and metacharacters. A credential-free real-Git regression proves the
+  exact helper path receives only Git's bounded operation argument.
+- Timeout and launch failures now remain path/output-free but distinguishable.
+  All failed attempts withheld publication success; the next guarded run must
+  freshly prove remote ancestry, atomic fast-forward, exact ref equality, clean
+  local state, and public README asset byte identity.
