@@ -47,7 +47,7 @@ class IdentitySessionGuardModule(BaseModule):
         "RMM, and privilege-transition analytics over supplied evidence only."
     )
     category = "Identity"
-    version = "1.12.1"
+    version = "1.13.0"
     supported_platforms = frozenset(SUPPORTED_PLATFORMS)
     capability_mode = "observe"
     platform_requirements = (

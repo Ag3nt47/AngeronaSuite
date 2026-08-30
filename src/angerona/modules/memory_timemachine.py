@@ -136,7 +136,7 @@ class MemoryTimeMachineModule(BaseModule):
     description = ("SPSC mmap ring + per-PID sliding hash cache; forwards only the "
                    "delta slice of newly-observed process strings to the LLM queue.")
     category = "Performance"
-    version = "1.12.1"
+    version = "1.13.0"
 
     _WINDOW = 4096          # sliding hash-cache size per PID
     _MAX_PIDS = 256         # cap tracked processes (LRU)

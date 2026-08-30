@@ -98,7 +98,7 @@ class EbpfSensorNode(BaseModule):
     description = ("Native Linux kernel telemetry (execve + tcp_sendmsg) via BCC/eBPF; "
                    "forwards to the main instance over the Remote Bridge. Linux-only, opt-in.")
     category = "Sensor"
-    version = "1.12.1"
+    version = "1.13.0"
     supported_platforms = SUPPORTED_PLATFORMS
     capability_mode = "observe"
     platform_requirements = ("Linux", "BCC", "eBPF-capable kernel")

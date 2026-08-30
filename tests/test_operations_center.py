@@ -102,3 +102,30 @@ def test_inventory_is_minimized_and_unsigned_detection_cannot_activate(
         assert service.audit.health("local")["chain_verified"] is True
     finally:
         service.close()
+
+
+def test_enterprise_programs_are_local_bounded_and_fail_closed(tmp_path: Path) -> None:
+    service = LocalOperationsCenter(tmp_path, master_key=b"p" * 32)
+    fleet_path = service.root / "fleet-fabric.db"
+    try:
+        status = service.enterprise_program_status()
+        assert status == {
+            "schema": "angerona.enterprise-program-status.v1",
+            "local_only": True,
+            "fleet_fabric": True,
+            "detection_runtime": True,
+            "detection_quality": True,
+            "detection_promotion": True,
+            "exposure_snapshot": False,
+            "errors": {},
+            "remote_shell": False,
+            "coordinator_transport": False,
+            "path_simulation_host_actions": False,
+        }
+        assert fleet_path.is_file()
+        assert service.fleet_fabric is not None
+        assert service.fleet_fabric.tenant_ids == ("local",)
+        assert service.exposure_snapshot is None
+    finally:
+        service.close()
+    assert service.fleet_fabric is None

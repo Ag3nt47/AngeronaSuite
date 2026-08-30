@@ -483,7 +483,7 @@ class RansomwareHeuristicsModule(BaseModule):
     CODE = "RANS"
     NAME = "Ransomware Heuristics"
     name = "Ransomware Heuristics"
-    version = "1.12.1"
+    version = "1.13.0"
     description = (
         "Detects ransomware (T1486) via Shannon entropy scanning of recently "
         "modified files and rename-storm rate tracking in user directories."

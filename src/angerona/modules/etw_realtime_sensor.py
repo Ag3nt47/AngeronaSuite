@@ -379,7 +379,7 @@ class EtwRealtimeSensorModule(BaseModule):
                    "ETW provider (pywintrace); closes the polling blind spot. "
                    "Requires elevation; defers to polling sensors when unavailable.")
     category = "Telemetry"
-    version = "1.12.1"
+    version = "1.13.0"
 
     # How often the run-loop wakes to refresh health while the ETW session
     # streams events asynchronously on its own thread.

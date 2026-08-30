@@ -328,7 +328,7 @@ class SmartDeception(BaseModule):
     CODE = "SDEC"
     description = "AI-generated contextual honeytokens; CRITICAL alert on tamper."
     category = "Deception"
-    version = "1.12.1"
+    version = "1.13.0"
 
     MONITOR_S = 2.5          # decoy tamper-check cadence. 2.5s (was 1s) roughly
                              # halves idle wake-ups; a token-loss/lock is still

@@ -40,7 +40,7 @@ class AITriageModule(BaseModule):
     name = "AI Triage (Ollama)"
     description = "Explains and scores serious events using a local LLM (Ollama)."
     category = "AI"
-    version = "1.12.1"
+    version = "1.13.0"
     supported_platforms = SUPPORTED_PLATFORMS
     capability_mode = "detect"
     # Restarting this worker cannot install a model or start the external

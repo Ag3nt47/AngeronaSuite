@@ -51,7 +51,7 @@ class SpeculativeTriageModule(BaseModule):
     description = ("Detects high-risk early markers and pre-streams a snapshot to "
                    "Ollama so the final triage verdict returns with no cold start.")
     category = "Performance"
-    version = "1.12.1"
+    version = "1.13.0"
 
     _MAX_INFLIGHT = 2          # concurrent prewarm workers
     _COOLDOWN = 8.0            # per-PID re-prewarm cooldown (s)

@@ -165,7 +165,7 @@ class ApiPatchDetectorModule(BaseModule):
     description = ("Reads pristine ntdll/kernel32 from disk and compares export "
                    "prologues against live memory to catch inline sensor hooks.")
     category = "Integrity"
-    version = "1.12.1"
+    version = "1.13.0"
     enabled_by_default = True
 
     # BL-14: a much shorter (jittered) interval shrinks the hook→act→unhook window

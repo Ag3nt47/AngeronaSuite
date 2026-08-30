@@ -63,7 +63,7 @@ class ShadowShield(BaseModule):
     CODE = "SHDW"
     description = "Ransomware file shielding via a delta version cache and VSS snapshots."
     category = "Response"
-    version = "1.12.1"
+    version = "1.13.0"
 
     def __init__(self) -> None:
         super().__init__()

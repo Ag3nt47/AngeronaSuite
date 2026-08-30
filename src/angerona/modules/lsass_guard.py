@@ -182,7 +182,7 @@ class LsassGuardModule(BaseModule):
     description = ("Detects LSASS credential-dumping (Mimikatz/procdump/comsvcs MiniDump, "
                    "T1003.001) by process command line + artifact signatures. Read-only.")
     category = "Detection"
-    version = "1.12.1"
+    version = "1.13.0"
 
     _POLL = 3.0
 

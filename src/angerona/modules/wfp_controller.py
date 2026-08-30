@@ -627,7 +627,7 @@ class WFPControllerModule(BaseModule):
     CODE = "WFPC"
     NAME = "WFP Controller"
     name = "WFP Controller"
-    version = "1.12.1"
+    version = "1.13.0"
     description = (
         "WFP-aware containment planner plus full-tuple IP Helper ownership "
         "snapshots; health explicitly reports when native WFP net-event telemetry is absent."

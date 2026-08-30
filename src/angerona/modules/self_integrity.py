@@ -431,7 +431,7 @@ class SelfIntegrityMonitor(BaseModule):
                    "enforcement functions with mandatory dependency/source coverage and "
                    "an explicitly approved baseline boundary.")
     category = "Integrity"
-    version = "1.12.1"
+    version = "1.13.0"
     enabled_by_default = True
 
     _INTERVAL = 15.0

@@ -97,7 +97,7 @@ class SIEMForwarderModule(BaseModule):
     description = ("Forwards detections to a central SIEM as CEF over Syslog "
                    "(UDP/TCP). Opt-in: idle until ANGERONA_SIEM_HOST is set.")
     category = "Integration"
-    version = "1.12.1"
+    version = "1.13.0"
     supported_platforms = ("windows", "macos", "linux")
     capability_mode = "observe"
     capability_inputs = ("authenticated-eventbus-event",)

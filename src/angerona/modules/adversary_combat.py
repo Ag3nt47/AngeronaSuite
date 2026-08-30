@@ -1090,7 +1090,7 @@ class AdversaryCombat(BaseModule):
         "isolates, and activates honeypots with undo receipts."
     )
     category = "Response"
-    version = "1.12.1"
+    version = "1.13.0"
     enabled_by_default = True
 
     def __init__(

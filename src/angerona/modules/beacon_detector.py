@@ -81,7 +81,7 @@ class BeaconDetectorModule(BaseModule):
     description = ("Flags regular-interval outbound callbacks (command-and-control "
                    "beaconing, T1071/T1571) by timing per-process connections to a host.")
     category = "Detection"
-    version = "1.12.1"
+    version = "1.13.0"
 
     _POLL = 5.0
     _HISTORY = 12          # keep up to this many callback timestamps per (name,ip)

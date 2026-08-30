@@ -94,7 +94,7 @@ def _decode_records(output: str) -> tuple[dict[str, Any], ...]:
 
 class PacketSnifferModule(BaseModule):
     name = "Packet Sniffer"
-    version = "1.12.1"
+    version = "1.13.0"
     description = (
         "Inspects network packets for cleartext credentials in a crash-isolated "
         "capture worker."

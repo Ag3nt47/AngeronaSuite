@@ -3357,7 +3357,7 @@ class PurpleGuard(BaseModule):
     name = "Purple Remediation Guard"
     description = "Turns reviewed red-team misses into exact, rerun-verifiable detector signatures."
     category = "Detection"
-    version = "1.12.1"
+    version = "1.13.0"
     enabled_by_default = True
 
     def __init__(self, data_root: Path | None = None) -> None:

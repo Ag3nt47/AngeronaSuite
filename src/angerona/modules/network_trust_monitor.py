@@ -764,7 +764,7 @@ class NetworkTrustMonitorModule(BaseModule):
         "observes tokenized DNS, DHCP, route, gateway, profile, and epoch drift."
     )
     category = "Network"
-    version = "1.12.1"
+    version = "1.13.0"
     supported_platforms = SUPPORTED_PLATFORMS
     capability_mode = "observe"
 

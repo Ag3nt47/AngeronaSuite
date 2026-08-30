@@ -329,7 +329,7 @@ class IntelSyncModule(BaseModule):
     description = ("Correlates the CISA KEV catalog against this host's OS + running "
                    "services; stages review-gated remediation, never auto-applies.")
     category = "Threat Intel"
-    version = "1.12.1"
+    version = "1.13.0"
 
     _INTERVAL = 6 * 3600.0     # re-sync every 6h
 

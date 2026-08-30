@@ -448,7 +448,7 @@ class MobileResponseBridge(BaseModule):
     description = ("E2EE (Signal) state-gated remote orchestration: posture queries "
                    "and token+PIN-gated containment from the operator's phone.")
     category = "Response"
-    version = "1.12.1"
+    version = "1.13.0"
     # The thread always runs but self-gates on config.mobile_enabled (idles cheaply
     # when off) so flipping the Settings toggle takes effect without a restart.
     enabled_by_default = True

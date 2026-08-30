@@ -51,7 +51,7 @@ class ForensicsModule(BaseModule):
     category = "Forensics"
     adaptive_throttle_allowed = True
     adaptive_throttle_max = 2.0
-    version = "1.12.1"
+    version = "1.13.0"
     enabled_by_default = False
 
     def __init__(self) -> None:

@@ -286,7 +286,7 @@ class SysmonListenerModule(BaseModule):
     CODE = "SYSL"
     NAME = "Sysmon Event Bridge"
     name = "Sysmon Event Bridge"
-    version = "1.12.1"
+    version = "1.13.0"
     description = (
         "Reads the current Microsoft-Windows-Sysmon/Operational event range "
         "and emits them onto the Angerona bus. Falls back to psutil process-diff "

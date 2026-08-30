@@ -59,7 +59,7 @@ class ActiveResponseSOAR(BaseModule):
     name = "Active Response SOAR"
     description = "Opt-in: terminates the offending process and rolls back its file artifact on real CRITICAL alerts."
     category = "Response"
-    version = "1.12.1"
+    version = "1.13.0"
     supported_platforms = ("windows",)
     capability_mode = "respond"
     capability_inputs = ("authenticated-critical-event", "operator-response-scope")

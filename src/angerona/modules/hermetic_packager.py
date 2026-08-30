@@ -173,7 +173,7 @@ class HermeticPackagerModule(BaseModule):
         "Exposes trigger_build() for review-gated rebuild — never auto-executes."
     )
     category = "Resilience"
-    version = "1.12.1"
+    version = "1.13.0"
     enabled_by_default = True
 
     _POLL = 300.0   # recheck every 5 minutes

@@ -3479,3 +3479,49 @@ boundaries, and primary-source citations are in
   `publication_done: true`. This completion record is carried by the required
   second guarded fast-forward. GitHub CI and Security assurance are evaluated on
   that exact final completion SHA; any genuine failure reopens the release.
+
+## Cycles 31-33 — enterprise-pattern defensive programs (2026-08-30)
+
+- **Cycle 31 / Fleet Fabric Lab:** added sealed enrollment grants, durable
+  device bindings, authenticated health/loss evidence, governed rollout and
+  canary evaluation, proposal-only rollback, and a Fleet Center Local SOC tab.
+  The initial audit recorded 9 findings (3 High, 5 Medium, 1 Low); independent
+  re-attack found `C31-NEW-01..03` (2 Medium, 1 Low). All 12 are fixed. Focused
+  gates passed **23/23** and **148/148**. Remote transport, dispatch, HA,
+  distributed quotas, and production mTLS coordination are not implemented.
+- **Cycle 32 / DetectionForge:** added immutable replay cohorts, exact
+  active-candidate diffs, an alert-inert shadow lane, chained quality receipts,
+  one-use promotion/rollback receipts, and a DetectionForge Local SOC tab. The
+  initial audit recorded 13 findings (6 High, 7 Medium); independent re-attack
+  found `C32-RA-01..05` (3 Medium, 2 Low). All 18 are fixed, and a final bounded
+  re-attack found no new issue. Focused gates passed **47/47** and **60/60**.
+- **Cycle 33 / AegisPath:** added evidence-bound exposure graphs, bounded
+  confirmed/speculative paths, choke/blast analysis, inert breakpoint
+  counterfactuals, and explainable KEV/EPSS/criticality priority in a Local SOC
+  tab. The initial audit recorded 9 findings (2 High, 6 Medium, 1 Low);
+  independent re-attack found `C33-RA-01..07` (2 High, 3 Medium, 2 Low). All 16
+  are fixed. The final focused gate passed **40/40** with Ruff, compile, and
+  module self-test green.
+- **Adversarial total:** 31 initial findings (11 High, 18 Medium, 2 Low), all
+  mapped fixed, followed by 15 independently discovered bypasses, all fixed.
+  Re-attacks remain in the evidence record rather than being erased by closure.
+- **Performance:** Fleet replaces per-device custody queries with one ordered
+  tenant scan, reuses verified head evidence, and removes redundant dashboard
+  custody work. AegisPath summary counting is O(paths), bounded initial large
+  analysis runs off the GUI thread, and duplicate Local SOC/widget refresh was
+  removed. DetectionForge retains bounded evaluator, lane, cohort, and ledger
+  work without weakening receipt or shadow-inertness semantics.
+- **Integrated evidence:** six-cycle-file root selection **110/110**;
+  performance/integration **113/113**; GUI/integration **86/86**; package compile
+  **368/368**; capability contracts **6/6**; discovery **84 capabilities / 9
+  native / 75 adapters / 0 errors**; module harness **69 pass / 16 expected
+  prerequisite-platform skips / 0 fail**; selfcheck **26/26**; Ruff clean;
+  workflow policy **3/3**.
+- **Pre-documentation full serial:** **2788 passed / 13 intentional platform
+  skips / 1 expected documentation-drift failure**. The only failure was the
+  stale README marker (`81` versus discovery `84`); the v1.13.0 documentation
+  phase corrects it. A final post-documentation release rerun remains pending.
+- **Honest boundary:** these are enterprise-inspired local programs, not
+  commercial EDR/XDR parity. Fleet authority remains local and has no remote
+  transport; DetectionForge is local governed evaluation; AegisPath provider
+  and absence authority remain local trust and its simulation is inert.

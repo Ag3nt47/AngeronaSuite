@@ -357,7 +357,7 @@ class AIModelIntegrityGuardModule(BaseModule):
     description = ("Cryptographically attests local LLM weights (Ollama blobs) "
                    "against a pinned baseline; flags tampering/poisoning before load.")
     category = "AI Defense"
-    version = "1.12.1"
+    version = "1.13.0"
 
     _INTERVAL = 30 * 60.0     # re-attest every 30 min
 

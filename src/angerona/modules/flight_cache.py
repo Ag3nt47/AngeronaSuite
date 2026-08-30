@@ -161,7 +161,7 @@ class FlightCacheModule(BaseModule):
     description = ("Bounded sqlite :memory: mirror of the flight recorder for fast, "
                    "low-I/O reads of hot recent events.")
     category = "Performance"
-    version = "1.12.1"
+    version = "1.13.0"
 
     CAP = 5000
 

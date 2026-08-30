@@ -107,7 +107,7 @@ class CounterAgenticModule(BaseModule):
                    "rhythm, discovery→action chains, and anomalous inference-port "
                    "access. Detection-only; no active/offensive response.")
     category = "Detection"
-    version = "1.12.1"
+    version = "1.13.0"
 
     _POLL = 2.5      # governed cadence (Adaptive Resource Governor scales this)
 

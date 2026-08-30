@@ -15,7 +15,7 @@ portfolios—not offensive intrusion or hack-back.
 ![Python](https://img.shields.io/badge/Python-3.10--3.13-3776AB)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-Current version: **v1.12.1**
+Current version: **v1.13.0**
 
 [Master Manual](Angerona_Master_Manual.docx) ·
 [Current capabilities](ANGERONA_CAPABILITIES.md) ·
@@ -25,11 +25,13 @@ Current version: **v1.12.1**
 
 ## Dashboard and major features
 
-| SentinelLens local-first hunt graph | Main defensive dashboard |
+| v1.13.0 enterprise-pattern Local SOC programs | SentinelLens local-first hunt graph |
 | --- | --- |
-| [![Angerona v1.12.1 SentinelLens synthetic threat-hunting graph](docs/screenshots/angerona-v1.12-sentinel-lens.png)](docs/screenshots/angerona-v1.12-sentinel-lens.png) | [![Angerona v1.11.0 main dashboard](docs/screenshots/angerona-v1.11-dashboard.png)](docs/screenshots/angerona-v1.11-dashboard.png) |
-| Human-reviewed SOAR queue | Scan Center |
-| [![Angerona v1.11.0 SOAR review](docs/screenshots/angerona-v1.11-soar-review.png)](docs/screenshots/angerona-v1.11-soar-review.png) | [![Angerona v1.11.0 Scan Center](docs/screenshots/angerona-v1.11-scan-center.png)](docs/screenshots/angerona-v1.11-scan-center.png) |
+| [![Angerona v1.13.0 Fleet Center, DetectionForge, and AegisPath synthetic Local SOC views](docs/screenshots/angerona-v1.13-enterprise-programs.png)](docs/screenshots/angerona-v1.13-enterprise-programs.png) | [![Angerona v1.12.1 SentinelLens synthetic threat-hunting graph](docs/screenshots/angerona-v1.12-sentinel-lens.png)](docs/screenshots/angerona-v1.12-sentinel-lens.png) |
+| Main defensive dashboard | Human-reviewed SOAR queue |
+| [![Angerona v1.11.0 main dashboard](docs/screenshots/angerona-v1.11-dashboard.png)](docs/screenshots/angerona-v1.11-dashboard.png) | [![Angerona v1.11.0 SOAR review](docs/screenshots/angerona-v1.11-soar-review.png)](docs/screenshots/angerona-v1.11-soar-review.png) |
+| Scan Center |  |
+| [![Angerona v1.11.0 Scan Center](docs/screenshots/angerona-v1.11-scan-center.png)](docs/screenshots/angerona-v1.11-scan-center.png) |  |
 
 These are reproducible public demonstrations. All displayed telemetry,
 identifiers, timestamps, and counts are synthetic.
@@ -112,7 +114,8 @@ identifiers, timestamps, and counts are synthetic.
   and reversible where the operating system permits.
 - Live Alerts, Resolve Center, SOAR Queue, Scan Center, Flow Dashboard / Local
   SOC, cases, hunts, evidence custody, ATT&CK views, threat intelligence, and
-  forensic exports.
+  forensic exports. Local SOC also hosts Fleet Center, DetectionForge, and
+  AegisPath as bounded, clickable enterprise-pattern programs.
 - Non-destructive Red Team, Shark Attack, and Adversary Combat validation use
   bounded reversible markers—not exploits, credentials, persistence, outbound
   attack traffic, or remote infrastructure. The default comprehensive Red Team
@@ -134,9 +137,9 @@ identifiers, timestamps, and counts are synthetic.
   startup reconciliation and compensation.
 - **Run safe automatic checkup** audits once and simulates every registered
   profile without writing.
-- All 81 discovered capabilities receive a validated v12 machine-readable
+- All 84 discovered capabilities receive a validated v12 machine-readable
   contract and a common lifecycle/freshness/loss snapshot. The inventory is
-  explicit: six native contracts and 75 compatibility adapters; product and
+  explicit: nine native contracts and 75 compatibility adapters; product and
   module implementation versions are independent.
 - Capability Center, Module Inspector, adaptation, alerts, Live Defense,
   Context Info, CVE, and SOAR surfaces provide typed sorting and bounded
@@ -177,11 +180,11 @@ identifiers, timestamps, and counts are synthetic.
 
 | Platform | Current contract | Static platform discovery |
 | --- | --- | ---: |
-| Windows | **Protect:** supported user-mode telemetry and governed response from the signed installed authority. Source checkouts are unelevated Observe/development only. | **81 modules** |
+| Windows | **Protect:** supported user-mode telemetry and governed response from the signed installed authority. Source checkouts are unelevated Observe/development only. | **84 modules** |
 | Linux | **Observe + optional eBPF:** rootless process/flow/posture monitoring; BCC/eBPF is an explicit privileged supplement. | **14 modules** |
 | macOS | **Observe preview:** privacy-minimized shared-core process/flow visibility; no Endpoint Security or Network Extension enforcement claim. | **13 modules** |
 
-Static discovery reports **81 modules** on the primary Windows contract. No
+Static discovery reports **84 modules** on the primary Windows contract. No
 unsigned kernel driver is shipped.
 
 ## 🚀 One-click Windows install
@@ -249,12 +252,12 @@ Packaged Windows installs prefer protected `D:\AngeronaData` and use protected
 
 ## Validation status
 
-The terminal v1.12.1 serial result is recorded at the end of this document on
-the exact publication tree. The release gate also requires all of the following
-to pass on that same tree:
+The v1.13.0 pre-documentation serial result is recorded at the end of this
+document. The final release gate still requires all of the following to pass on
+the same post-documentation tree:
 
 - Python `compileall` and repository-wide Ruff validation.
-- Static discovery of **81** capabilities: **6 native contracts** and **75
+- Static discovery of **84** capabilities: **9 native contracts** and **75
   compatibility adapters**, without duplicate identity.
 - The **26/26** supported headless self-check, workflow-policy validation,
   dependency audit, documentation-drift validation, and `git diff --check`.
@@ -298,6 +301,40 @@ native Linux/macOS, or independent efficacy proof.
 - No hack-back, remote exploitation, credential theft, arbitrary response
   shell, log deletion/evasion, downloaded executable skill, unverified model,
   or unsigned kernel component is part of the product.
+
+## What changed in v1.13.0
+
+- Added three native, embeddable Local SOC programs. **Fleet Center** provides
+  sealed enrollment, durable device binding, authenticated health/loss evidence,
+  and governed rollout/canary evaluation. **DetectionForge** provides immutable
+  replay cohorts, exact active-candidate diffs, an alert-inert shadow lane,
+  chained quality receipts, and one-use promotion/rollback receipts.
+  **AegisPath** provides evidence-bound exposure graphs, bounded confirmed and
+  speculative paths, choke/blast analysis, inert breakpoint counterfactuals,
+  and explainable KEV/EPSS/criticality priority.
+- Completed three adversarial/visionary cycles. Initial audits recorded 31
+  findings (11 High, 18 Medium, 2 Low), all fixed; independent re-attacks then
+  found 15 additional bypasses, all fixed. Re-attack evidence remains retained
+  rather than being erased by closure.
+- Increased the Windows-target inventory to **84 capabilities: 9 native
+  contracts and 75 explicit compatibility adapters**. All built-in
+  implementation labels are 1.13.0; this is not a claim that adapters are
+  native or that tests prove real-world detection efficacy.
+- Applied behavior-preserving performance work: Fleet uses one ordered tenant
+  custody scan and reuses verified head evidence; AegisPath counts paths in one
+  bounded pass, moves initial large analysis off the UI thread, and avoids a
+  duplicate Local SOC refresh.
+- Pre-documentation validation recorded **2788 passed / 13 intentional platform
+  skips / 1 expected documentation-drift failure**. The only failure was the
+  stale README module marker (`81` versus discovery `84`), corrected here. A
+  final post-documentation full release rerun remains required.
+- Boundaries remain explicit: Fleet Fabric implements no remote transport,
+  dispatch, HA, distributed quota, or production mTLS service; DetectionForge
+  is local governed evaluation; AegisPath provider/absence authority is local
+  trust and its simulation proves neither reachability nor remediation.
+
+Detailed evidence is in
+[`analysis/loop/cycles31-33-summary.md`](analysis/loop/cycles31-33-summary.md).
 
 ## What changed in v1.12.1
 
@@ -423,6 +460,6 @@ is an engineering inference, not an attribution claim.
 MIT licensed. See [LICENSE](LICENSE), [SECURITY.md](SECURITY.md), and
 [SUPPORT.md](SUPPORT.md).
 
-**Final Cycle 30 verification.** The authoritative v1.12.1 serial gate passes **2678 tests with 13 intentional platform skips** and 0 failures. Current static discovery reports **81 modules**.
+**Final Cycle 33 verification.** The pre-documentation serial gate passes **2788 tests with 13 intentional platform skips**; one additional expected documentation-drift check failed solely because the README marker still reported 81 rather than the discovered 84 modules. This update corrects that marker. Final post-documentation release validation remains pending.
 
-<!-- ANGERONA_DOC_STATUS tests=2678 skips=13 modules=81 -->
+<!-- ANGERONA_DOC_STATUS tests=2788 skips=13 modules=84 -->

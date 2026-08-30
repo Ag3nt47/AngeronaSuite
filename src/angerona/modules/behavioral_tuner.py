@@ -87,7 +87,7 @@ class BehavioralTuner(BaseModule):
     CODE = "TUNE"
     description = "Approval-gated behavioural learning; downgrades exact known-good process/file/network events."
     category = "Performance"
-    version = "1.12.1"
+    version = "1.13.0"
 
     # Event producers use human names while older integrations used codes.
     # Normalize both to one stable baseline identity.

@@ -196,7 +196,7 @@ class IpcGuardModule(BaseModule):
     description = ("Diagnostic HMAC-SHA256 admission probe on 127.0.0.1:65432; "
                    "authenticates and closes, with no production payload consumer.")
     category = "Integrity"
-    version = "1.12.1"
+    version = "1.13.0"
     supported_platforms = ("windows", "macos", "linux")
     capability_mode = "observe"
     maturity_channel = "preview"

@@ -1,11 +1,11 @@
 # 🛡️ Angerona — Cyber Security Suite
 
 > **Archived historical analysis snapshot.** This long-form record preserves
-> earlier Cycle 5–23 design notes and counts. For the current v1.12.1 product,
-> 81-capability inventory, validation result, screenshots, and safety boundary,
+> earlier Cycle 5–23 design notes and counts. For the current v1.13.0 product,
+> 84-capability inventory, validation result, screenshots, and safety boundary,
 > use the repository-root [`README.md`](../README.md),
 > [`ANGERONA_CAPABILITIES.md`](../ANGERONA_CAPABILITIES.md), and
-> [`cycles26-30-summary.md`](loop/cycles26-30-summary.md).
+> [`cycles31-33-summary.md`](loop/cycles31-33-summary.md).
 
 **Local-first Endpoint Detection and Response (EDR), Network Detection and
 Response (NDR), and Security Orchestration, Automation, and Response (SOAR):

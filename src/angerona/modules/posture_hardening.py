@@ -147,7 +147,7 @@ class PostureHardening(BaseModule):
     name = "Posture Hardening"
     description = "Self-healing loop: turns red-team SUCCESS into staged, review-gated OS hardening."
     category = "SOAR"
-    version = "1.12.1"
+    version = "1.13.0"
     enabled_by_default = True
 
     def __init__(self, data_dir=None) -> None:

@@ -268,7 +268,7 @@ class EtwListenerModule(BaseModule):
     description = ("Captures process-creation (4688) + logon (4624/4672) telemetry "
                    "from the Windows Security channel; psutil fallback.")
     category = "Telemetry"
-    version = "1.12.1"
+    version = "1.13.0"
 
     _POLL = 3.0
 

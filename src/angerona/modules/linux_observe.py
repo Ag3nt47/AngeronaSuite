@@ -18,7 +18,7 @@ class LinuxObserveModule(BaseModule):
         "observation; optional eBPF adds privileged kernel telemetry separately."
     )
     category = "Endpoint"
-    version = "1.12.1"
+    version = "1.13.0"
     supported_platforms = SUPPORTED_PLATFORMS
     capability_mode = "detect"
     platform_requirements = (

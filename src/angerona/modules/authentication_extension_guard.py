@@ -45,7 +45,7 @@ class AuthenticationExtensionIntegrityGuardModule(BaseModule):
         "and security packages; credential providers and filters; and network providers."
     )
     category = "Identity"
-    version = "1.12.1"
+    version = "1.13.0"
     supported_platforms = frozenset({"windows"})
     capability_mode = "observe"
     maturity_channel = "preview"

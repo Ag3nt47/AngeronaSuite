@@ -256,7 +256,7 @@ class MemInjectScannerModule(BaseModule):
     CODE = "MINJ"
     NAME = "Memory Injection Scanner"
     name = "Memory Injection Scanner"
-    version = "1.12.1"
+    version = "1.13.0"
     description = (
         "Scans running process address spaces via VirtualQueryEx for anonymous "
         "RWX memory regions that indicate T1055 injection (shellcode, process "

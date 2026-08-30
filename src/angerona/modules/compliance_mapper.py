@@ -170,7 +170,7 @@ class ComplianceMapperModule(BaseModule):
     category = "Compliance"
     adaptive_throttle_allowed = True
     adaptive_throttle_max = 4.0
-    version = "1.12.1"
+    version = "1.13.0"
 
     _INTERVAL = 5 * 60.0      # regenerate artifact every 5 min
 

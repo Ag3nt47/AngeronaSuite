@@ -108,7 +108,7 @@ class PersistenceSweepModule(BaseModule):
                   "services, scheduled tasks, WMI subscriptions, startup folders); "
                   "flags new and suspicious entries.")
     category = "Persistence"
-    version = "1.12.1"
+    version = "1.13.0"
     supported_platforms = ("windows",)
     capability_mode = "detect"
     capability_inputs = (

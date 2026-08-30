@@ -44,7 +44,7 @@ class WatchdogMonitor(BaseModule):
     name = "Watchdog Monitor"
     description = "Self-healing supervisor: detects crashed/hung modules and restarts them (throttled)."
     category = "Resilience"
-    version = "1.12.1"
+    version = "1.13.0"
     enabled_by_default = True
 
     MAX_RESTARTS = 3

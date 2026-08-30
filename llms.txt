@@ -1,6 +1,6 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
-Version: 1.12.1
+Version: 1.13.0
 Date: 2026-08-30
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
@@ -22,7 +22,42 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST: v1.12.1 / Cycles 26-30
+## LATEST: v1.13.0 / Cycles 31-33
+
+- Inventory truth: 84 Windows-target built-in capabilities, nine native
+  contracts and 75 explicit compatibility adapters. Built-in implementation
+  labels are 1.13.0; contract maturity and efficacy remain separate claims.
+- Fleet Center/Fleet Fabric Lab provides sealed enrollment grants, durable
+  device bindings, bounded authenticated health/loss evidence, and governed
+  rollout/canary evaluation. It has no remote coordinator transport, dispatch,
+  HA, distributed quotas, or production mTLS service.
+- DetectionForge provides immutable replay cohorts, exact active-candidate
+  diffs, an alert-inert shadow lane, chained quality receipts, and fresh one-use
+  promotion/rollback receipts. It is local governed evaluation, not a
+  distributed content service.
+- AegisPath provides evidence-bound exposure graphs, bounded confirmed and
+  speculative paths, choke/blast analysis, inert breakpoint counterfactuals,
+  and explainable KEV/EPSS/criticality priority. Provider and absence authority
+  remain local trust; simulation proves neither reachability nor remediation.
+- All three programs are clickable Local SOC tabs. The reproducible synthetic
+  capture is `docs/screenshots/angerona-v1.13-enterprise-programs.png`.
+- Initial adversarial audits recorded 31 findings (11 High, 18 Medium, 2 Low),
+  all fixed. Independent re-attacks found 15 additional bypasses, all fixed.
+  Cycle 32's terminal bounded re-attack found no new issue; Cycle 31 and 33
+  second-repair/root gates found no reopened issue.
+- Focused evidence: Cycle 31 23/23 and 148/148; Cycle 32 47/47 and 60/60;
+  Cycle 33 40/40; integrated 110/110; performance/integration 113/113;
+  GUI/integration 86/86. Package compile is 368/368, discovery is 84 with no
+  errors, module harness is 69 pass / 16 expected skips / 0 fail, selfcheck is
+  26/26, Ruff is clean, and workflow policy is 3/3.
+- Full serial pre-documentation evidence is 2788 passed / 13 intentional
+  platform skips / 1 expected docs-drift failure caused only by the stale
+  README marker (81 versus 84). This documentation update corrects the marker;
+  the final post-documentation release rerun and publication remain pending.
+- Detailed evidence: `analysis/loop/cycles31-33-summary.md` and
+  `analysis/loop/cycle31/` through `analysis/loop/cycle33/`.
+
+## PRIOR: v1.12.1 / Cycles 26-30
 
 - Inventory truth: 81 Windows-target built-in capabilities, six native v12
   contracts and 75 explicit compatibility adapters. Every built-in module
@@ -418,7 +453,18 @@ Development:
     python run_aria_selftests.py
     run-adversary-combat-validation.bat
 
-Current v1.12.1 terminal release evidence:
+Current v1.13.0 pre-documentation evidence:
+
+- Full serial gate: 2788 passed, 13 intentional host-platform skips, and one
+  expected documentation-drift failure caused solely by README `modules=81`
+  versus discovery 84. The v1.13.0 docs correct that marker; a post-doc full
+  rerun remains pending.
+- Static discovery: 84 capabilities, comprising nine native contracts and 75
+  compatibility adapters; built-in implementation labels are 1.13.0.
+- Package compile 368/368; contract tests 6/6; module harness 69 passed / 16
+  expected skips / 0 failed; selfcheck 26/26; Ruff clean; workflow policy 3/3.
+
+Prior v1.12.1 terminal release evidence:
 
 - Authoritative serial release gate: 2678 passed,
   13 intentional host-platform skips, 0 failed.

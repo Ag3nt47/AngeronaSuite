@@ -76,7 +76,7 @@ class ChaosHarness(BaseModule):
     CODE = "CHAOS"
     description = "Periodically fires safe synthetic probes and verifies detectors echo back."
     category = "Resilience"
-    version = "1.12.1"
+    version = "1.13.0"
 
     ECHO_TIMEOUT_S = 20.0     # how long to wait for a detector to react
 

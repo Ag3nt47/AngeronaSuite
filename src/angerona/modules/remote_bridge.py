@@ -244,7 +244,7 @@ class RemoteBridge(BaseModule):
         "X25519, HKDF, and AES-256-GCM. Off by default."
     )
     category = "Integrity"
-    version = "1.12.1"
+    version = "1.13.0"
     supported_platforms = SUPPORTED_PLATFORMS
     capability_mode = "observe"
     capability_inputs = ("authenticated-high-severity-event", "mutually-authenticated-frame")

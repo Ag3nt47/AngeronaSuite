@@ -69,7 +69,7 @@ class AuditLogIntegrityGuard(BaseModule):
         "retention gaps, record reuse, and authenticated cursor tampering."
     )
     category = "Telemetry"
-    version = "1.12.1"
+    version = "1.13.0"
     supported_platforms = frozenset({"windows"})
     capability_mode = "observe"
     platform_requirements = ("Windows Event Log read access",)

@@ -139,7 +139,7 @@ class WLANMonitorModule(BaseModule):
     CODE = "WLAN"
     NAME = "WLAN Monitor"
     name = "WLAN Monitor"
-    version = "1.12.1"
+    version = "1.13.0"
     description = (
         "Detects Evil Twin / rogue AP attacks by monitoring SSID and BSSID "
         "changes on the active wireless interface via netsh."

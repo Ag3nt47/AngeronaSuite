@@ -106,7 +106,7 @@ class HardwareCrypto(BaseModule):
     description = ("Verifies OS-protected IPC key storage and DPAPI primitives; "
                    "TPM database-key sealing remains an explicit unsupported outline.")
     category = "Integrity"
-    version = "1.12.1"
+    version = "1.13.0"
 
     _ENTROPY = b"Angerona-HWID-v1"   # app-specific secondary entropy for DPAPI
 

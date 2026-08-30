@@ -63,7 +63,7 @@ class _TraversalBatch:
 
 class YaraScannerModule(BaseModule):
     name = "YARA Scanner"
-    version = "1.12.1"
+    version = "1.13.0"
     description = "Scans Downloads and the isolated drill sandbox with in-process YARA."
     category = "Signatures"
     enabled_by_default = True

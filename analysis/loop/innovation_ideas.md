@@ -1,3 +1,46 @@
+# Angerona Cycles 31-33 Enterprise-Pattern Innovation Review — 2026-08-30
+
+## Delivered bounded programs
+
+Three research tracks were selected because they extend Angerona's local-first
+architecture without adding offensive behavior, arbitrary remote execution, or
+an unsupported enterprise-parity claim.
+
+1. **Fleet Fabric Lab / Fleet Center.** OpAMP, Elastic Fleet, Wazuh, SPIRE, and
+   Velociraptor informed a local governed design for sealed enrollment grants,
+   durable device bindings, bounded health evidence, and desired-versus-effective
+   rollout evaluation. Remote transport, dispatch, HA, distributed quotas, and
+   production mTLS coordination remain proposed, not shipped.
+2. **DetectionForge.** Google SecOps retrohunt/observability, Elastic rule
+   preview/history and `detection-rules`, and Microsoft Sentinel execution
+   health informed immutable replay cohorts, active-candidate diffs, an
+   alert-inert shadow lane, chained quality receipts, and exact promotion or
+   rollback. The shipped scope is local governed evaluation.
+3. **AegisPath.** Microsoft and Tenable attack-path guidance, FIRST EPSS, CISA
+   KEV, and NIST CSF 2.0 informed evidence-bound exposure graphs, bounded
+   confirmed/speculative paths, choke points, inert breakpoint simulations,
+   and explainable priority. It does not claim exploitability, breach
+   probability, reachability proof, or remediation proof.
+
+All three programs expose clickable evidence in Local SOC and retain explicit
+loss, freshness, provenance, authority, and resource limits. Full adversarial,
+performance, QA, and trust-boundary disposition is in
+`analysis/loop/cycles31-33-summary.md` and the `cycle31` through `cycle33`
+records below it.
+
+## Proposed / backlog after v1.13.0
+
+- Independently administered fleet identity, transport, key rotation,
+  distributed quota, HA, and remote policy dispatch.
+- Out-of-process detection evaluation with forcible CPU/time termination and an
+  independent ledger/rollback anchor.
+- Externally signed exposure-provider manifests and absence evidence, plus a
+  bounded backend job interface for very large counterfactual runs.
+- Clean-machine deployment, long-running scale/false-positive trials, and
+  independent efficacy evaluation for all three programs.
+
+---
+
 # Angerona Cycle 26 Defensive Innovation Review — 2026-08-28
 
 ## Decision

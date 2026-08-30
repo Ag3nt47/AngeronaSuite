@@ -87,8 +87,8 @@ def build_inventory() -> dict:
             }
         )
     rows.sort(key=lambda row: row["capability_id"])
-    if len(rows) != 81:
-        raise RuntimeError(f"expected 81 built-in capabilities, discovered {len(rows)}")
+    if len(rows) != 84:
+        raise RuntimeError(f"expected 84 built-in capabilities, discovered {len(rows)}")
     identifiers = [row["capability_id"] for row in rows]
     if len(set(identifiers)) != len(identifiers):
         raise RuntimeError("capability inventory contains duplicate identifiers")

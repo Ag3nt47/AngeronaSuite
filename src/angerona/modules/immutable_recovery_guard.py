@@ -59,7 +59,7 @@ class ImmutableRecoveryGuardModule(BaseModule):
         "air-gap, offsite, encryption, source-revision, and restore-test evidence."
     )
     category = "Resilience"
-    version = "1.12.1"
+    version = "1.13.0"
     supported_platforms = frozenset(SUPPORTED_PLATFORMS)
     capability_mode = "observe"
     platform_requirements = (

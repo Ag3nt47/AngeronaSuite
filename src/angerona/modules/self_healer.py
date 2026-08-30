@@ -129,7 +129,7 @@ class SelfHealer(BaseModule):
     CODE = "HEAL"
     description = "Diagnoses crashed modules and stages LLM-proposed patches for operator review."
     category = "Resilience"
-    version = "1.12.1"
+    version = "1.13.0"
 
     POLL_S = 10.0
     _source_selection = threading.local()

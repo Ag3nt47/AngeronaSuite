@@ -51,7 +51,7 @@ class ProcessMonitorModule(BaseModule):
     name = "Process Monitor"
     description = "Flags suspicious process spawns and execution from risky locations."
     category = "Processes"
-    version = "1.12.1"
+    version = "1.13.0"
 
     def __init__(self) -> None:
         super().__init__()

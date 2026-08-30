@@ -1,0 +1,27 @@
+{
+  "loop": "angerona-improvement",
+  "active_cycle": "cycle32",
+  "release_target": "1.13.0",
+  "focus": "immutable replay cohorts, active-candidate detection diffs, alert-inert shadow evaluation, quality receipts, and governed promotion",
+  "rounds_total": 3,
+  "round": 3,
+  "phase": "COMPLETE",
+  "round_1_status": "COMPLETE",
+  "round_2_status": "COMPLETE",
+  "round_3_status": "COMPLETE",
+  "research_done": true,
+  "started": "2026-08-30",
+  "updated": "2026-08-30",
+  "completed": "2026-08-30",
+  "scope": "authorized defensive-only theoretical hardening",
+  "findings": {
+    "initial": "13 total: 6 High, 7 Medium; all fixed",
+    "reattack": "C32-RA-01..05: 3 Medium, 2 Low; all fixed; final bounded reattack found no new issue"
+  },
+  "validation": {
+    "focused": "47 passed",
+    "compatibility": "60 passed",
+    "terminal_pre_docs": "2788 passed / 13 intentional platform skips / 1 expected README documentation-drift failure"
+  },
+  "publication_done": false
+}

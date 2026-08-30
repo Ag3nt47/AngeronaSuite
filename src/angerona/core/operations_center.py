@@ -36,18 +36,29 @@ from angerona.core.case_management import (
     EvidenceReference,
 )
 from angerona.core.detection_registry import DetectionPackageRegistry, ValidationReport
+from angerona.core.detection_promotion import (
+    DetectionPromotionCoordinator,
+    PromotionAuthority,
+)
+from angerona.core.detection_quality_store import (
+    DetectionQualityStore,
+    QualityInputAuthority,
+)
 from angerona.core.evidence_store import (
     EvidenceEnvelope,
     HuntPredicate,
     HuntQuery,
     HuntResult,
 )
+from angerona.core.exposure_graph import ExposureSnapshot, verify_snapshot_digest
+from angerona.core.fleet_fabric import FleetFabricStore
 from angerona.core.security_interop import (
     EvidenceImportResult,
     import_json_evidence,
     parity_summary,
     run_osquery_template,
 )
+from angerona.modules.detection_runtime import DetectionRuntimeEngine
 
 _MASTER_KEY_NAME = "ANGERONA_INTERNAL_SOC_MASTER_KEY_V1"
 _TENANT = "local"
@@ -148,6 +159,75 @@ class LocalOperationsCenter:
             trusted_keys=trust if trust.is_file() else None,
             require_signed=True,
         )
+        # Enterprise-pattern program services remain local, bounded, and
+        # independently fail closed. A damaged preview store must not hide the
+        # case/audit workspace, so its exact initialization error is retained
+        # for the clickable program surface instead of weakening validation.
+        self.program_errors: dict[str, str] = {}
+        self.fleet_fabric: FleetFabricStore | None = None
+        try:
+            self.fleet_fabric = FleetFabricStore(
+                self.root / "fleet-fabric.db",
+                {_TENANT: _derive(key, b"fleet-fabric/local-tenant")},
+            )
+        except Exception as exc:
+            self.program_errors["fleet_fabric"] = (
+                f"{type(exc).__name__}: {str(exc)[:400]}"
+            )
+
+        self.detection_runtime = DetectionRuntimeEngine()
+        self.detection_quality: DetectionQualityStore | None = None
+        self.detection_promotion: DetectionPromotionCoordinator | None = None
+        try:
+            input_authority = QualityInputAuthority(
+                _derive(key, b"detection-quality-input")
+            )
+            self.detection_quality = DetectionQualityStore(
+                self.root / "detection-quality.jsonl",
+                key=_derive(key, b"detection-quality-ledger"),
+                input_authority=input_authority,
+            )
+            self.detection_promotion = DetectionPromotionCoordinator(
+                self.detections,
+                self.detection_quality,
+                PromotionAuthority(_derive(key, b"detection-promotion")),
+                state_path=self.root / "detection-promotion-state.json",
+            )
+        except Exception as exc:
+            # Existing pre-v1.13 registries may not have a durable promotion
+            # checkpoint. They stay observable, but transitions fail closed
+            # until an explicit migration establishes that authority.
+            self.program_errors["detection_governance"] = (
+                f"{type(exc).__name__}: {str(exc)[:400]}"
+            )
+            self.detection_promotion = None
+
+        self.exposure_snapshot: ExposureSnapshot | None = None
+
+    def bind_exposure_snapshot(self, snapshot: ExposureSnapshot | None) -> None:
+        """Bind one immutable local-provider snapshot; never invent coverage."""
+        if snapshot is not None and (
+            not isinstance(snapshot, ExposureSnapshot)
+            or not verify_snapshot_digest(snapshot)
+        ):
+            raise ValueError("exposure snapshot receipt is invalid")
+        self.exposure_snapshot = snapshot
+
+    def enterprise_program_status(self) -> dict[str, object]:
+        """Return exact readiness without claiming remote enterprise scale."""
+        return {
+            "schema": "angerona.enterprise-program-status.v1",
+            "local_only": True,
+            "fleet_fabric": self.fleet_fabric is not None,
+            "detection_runtime": True,
+            "detection_quality": self.detection_quality is not None,
+            "detection_promotion": self.detection_promotion is not None,
+            "exposure_snapshot": self.exposure_snapshot is not None,
+            "errors": dict(self.program_errors),
+            "remote_shell": False,
+            "coordinator_transport": False,
+            "path_simulation_host_actions": False,
+        }
 
     def _append_audit(
         self,
@@ -533,6 +613,9 @@ class LocalOperationsCenter:
         return target
 
     def close(self) -> None:
+        if self.fleet_fabric is not None:
+            self.fleet_fabric.close()
+            self.fleet_fabric = None
         self.cases.close()
         self.audit.close()
 

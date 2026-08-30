@@ -10,7 +10,45 @@
 ## STACK / LAUNCH
 Python package metadata supports 3.10–3.13; the hardened Windows source bootstrap and launcher require the reviewed **CPython 3.12 x64** ABI and hash-locked wheels. PySide6 GUI · local Ollama (llama3) triage; sanitized cloud fallback is opt-in and default-off. Windows editable install: `pip install -e .[windows,voice]`; Linux/macOS source editions use target extras through the hash-locked installer. Entry `python -m angerona` → `app.py:AngeronaApp` builds core services + `gui/main_window.py:MainWindow`. First-run install, SETUP, `--setup`, and `angerona-setup` enter the same 16-step Full Setup. Self-elevating source launchers overwrite inherited `ANGERONA_DATA` with the sibling `<install-folder>\..\AngeronaData` on D: before elevation; frozen Windows builds prefer protected `D:\AngeronaData`. DB: `flight-recorder.db`. TEMP/TMP, watchdog state, reports, diagnostics, scanner evidence, legacy engine status/telemetry, and incident staging use canonical data/temp helpers rather than the checkout.
 
-## LATEST (v1.12.1 — Cycles 26-30 defensive hardening and SentinelLens)
+## LATEST (v1.13.0 — Cycles 31-33 enterprise-pattern defensive programs)
+
+- **Inventory and UI truth:** 84 Windows-target capabilities; nine native
+  contracts and 75 compatibility adapters. Built-in implementation labels are
+  1.13.0. Fleet Center, DetectionForge, and AegisPath are native, clickable
+  Local SOC tabs; the synthetic demonstration is
+  `docs/screenshots/angerona-v1.13-enterprise-programs.png`.
+- **Fleet Center / Fleet Fabric Lab:** sealed enrollment grants, durable device
+  bindings, bounded authenticated health/loss evidence, and governed rollout/
+  canary evaluation. Remote transport, dispatch, HA, distributed quotas, and a
+  production mTLS coordination service are not implemented.
+- **DetectionForge:** immutable replay cohorts, exact active-candidate diffs,
+  an alert-inert shadow lane, chained quality receipts, and one-use exact
+  promotion/rollback receipts. It is local governed evaluation; one in-process
+  evaluator call cannot be forcibly preempted without process isolation.
+- **AegisPath:** evidence-bound exposure graphs, bounded confirmed/speculative
+  paths, choke/blast analysis, inert breakpoint counterfactuals, and explainable
+  KEV/EPSS/criticality priority. Local provider/absence authority is not
+  external PKI, and simulation is not reachability or remediation proof.
+- **Adversarial convergence:** 31 initial findings (11 High, 18 Medium, 2 Low)
+  were fixed; independent re-attacks then found 15 bypasses, all fixed. Cycle
+  32's final bounded re-attack found no new issue and retained every original
+  closure; Cycle 31/33 root gates found no reopened issue.
+- **Performance:** Fleet replaces per-device custody queries with one ordered
+  tenant scan and reuses verified head evidence. AegisPath counts paths in one
+  bounded pass, runs initial large analysis off the UI thread, and removes a
+  duplicate Local SOC refresh. Receipt, loss, and shadow-inert semantics remain
+  unchanged.
+- **Verification:** Cycle31 23/23 and 148/148; Cycle32 47/47 and 60/60;
+  Cycle33 40/40; integrated 110/110; performance/integration 113/113;
+  GUI/integration 86/86; compile 368/368; contract tests 6/6; discovery 84 with
+  no errors; module harness 69 pass / 16 expected skips / 0 fail; selfcheck
+  26/26; Ruff clean; workflow policy 3/3. The full serial pre-doc gate recorded
+  2788 passed / 13 intentional skips / one expected stale README-marker failure
+  (81 versus 84). This documentation update corrects it; final post-doc release
+  validation and publication remain pending.
+- Evidence map: `analysis/loop/cycles31-33-summary.md`.
+
+## PRIOR (v1.12.1 — Cycles 26-30 defensive hardening and SentinelLens)
 
 - **Inventory and UI truth:** 81 Windows-target capabilities; six native
   contracts and 75 compatibility adapters. Built-in implementation labels are

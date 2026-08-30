@@ -356,7 +356,7 @@ class ProvenanceGraphModule(BaseModule):
     description = ("Builds a PROC/FIM/NET provenance DAG from the flight recorder + "
                    "live events; exposes ancestry()/subtree() for blast-radius views.")
     category = "Forensics"
-    version = "1.12.1"
+    version = "1.13.0"
 
     _REBUILD_INTERVAL = 20.0
     _DB_PAGE = 1_000

@@ -37,12 +37,16 @@ def test_flow_dashboard_exposes_all_local_operations_tabs(tmp_path: Path) -> Non
         labels = [dialog.tabs.tabText(index) for index in range(dialog.tabs.count())]
         assert labels == [
             "Overview", "Cases", "Hunt", "Assets", "Detection Content",
+            "Fleet Center", "DetectionForge", "AegisPath",
             "Parity & Interop", "Audit", "Info",
         ]
         assert dialog.deck.cards.keys() == {
             "cases", "evidence", "audit", "assets", "detections"
         }
         assert "LOCAL ONLY" in dialog.boundary.text()
+        assert dialog.fleet_center.fabric is service.fleet_fabric
+        assert dialog.detection_forge.service.registry is service.detections
+        assert "UNKNOWN" in dialog.aegis_path.status_label.text()
         dialog.close()
         dialog.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)

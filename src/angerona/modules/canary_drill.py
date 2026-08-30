@@ -121,7 +121,7 @@ class CanaryDrillModule(BaseModule):
         "hooking) and raises a CRITICAL alert."
     )
     category = "Resilience"
-    version = "1.12.1"
+    version = "1.13.0"
     enabled_by_default = True
 
     def __init__(self) -> None:

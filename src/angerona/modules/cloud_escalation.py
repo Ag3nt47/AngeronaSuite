@@ -56,7 +56,7 @@ class CloudEscalationModule(BaseModule):
     name = "Cloud CTI Escalation"
     description = "Opt-in: corroborates CRITICAL events with a cloud model (uses your own key)."
     category = "AI"
-    version = "1.12.1"
+    version = "1.13.0"
     enabled_by_default = False
 
     def __init__(self) -> None:

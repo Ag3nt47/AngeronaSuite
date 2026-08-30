@@ -30,7 +30,7 @@ class RAGProvenanceGuardModule(BaseModule):
         "and inert taint labeling for future retrieval sources."
     )
     category = "AI Security"
-    version = "1.12.1"
+    version = "1.13.0"
     supported_platforms = frozenset(SUPPORTED_PLATFORMS)
     capability_mode = "observe"
     platform_requirements = (

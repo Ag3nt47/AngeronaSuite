@@ -53,7 +53,10 @@ from PySide6.QtWidgets import (
 
 from angerona.core.operations_center import LocalOperationsCenter
 from angerona.core.security_interop import OSQUERY_TEMPLATES, discover_osquery
+from angerona.gui.aegis_path import AegisPathWidget
 from angerona.gui.animations import begin_loading, finish_loading
+from angerona.gui.detection_forge import DetectionForgeService, DetectionForgeWidget
+from angerona.gui.fleet_center import FleetCenterWidget
 from angerona.gui.header_controls import motion_allowed
 
 _CASE_STATUSES = ("open", "investigating", "contained", "resolved", "closed")
@@ -276,6 +279,7 @@ class OperationsCenterDialog(QDialog):
         self._tasks: set[str] = set()
         self._task_loading: dict[str, str] = {}
         self._hunt_rows: tuple[Any, ...] = ()
+        self._has_refreshed = False
         self.setWindowTitle("Angerona Flow Dashboard — Local SOC")
         self.setMinimumSize(820, 590)
         self.resize(1320, 860)
@@ -313,6 +317,35 @@ class OperationsCenterDialog(QDialog):
         self.tabs.addTab(self._build_hunt(), "Hunt")
         self.tabs.addTab(self._build_assets(), "Assets")
         self.tabs.addTab(self._build_detections(), "Detection Content")
+        self.fleet_center = FleetCenterWidget(
+            service.fleet_fabric, self, auto_refresh=False
+        )
+        fleet_error = service.program_errors.get("fleet_fabric")
+        if fleet_error:
+            self.fleet_center.status.setText(f"FAIL CLOSED · {fleet_error}")
+        self.tabs.addTab(self.fleet_center, "Fleet Center")
+
+        self.detection_forge_service = DetectionForgeService(
+            registry=service.detections,
+            runtime=service.detection_runtime,
+            quality_store=service.detection_quality,
+            promotion=service.detection_promotion,
+        )
+        self.detection_forge = DetectionForgeWidget(
+            self.detection_forge_service, self, auto_refresh=False
+        )
+        governance_error = service.program_errors.get("detection_governance")
+        if governance_error:
+            self.detection_forge.details.setPlainText(
+                "DETECTION GOVERNANCE FAIL-CLOSED\n\n" + governance_error
+            )
+        self.tabs.addTab(self.detection_forge, "DetectionForge")
+
+        self.aegis_path = AegisPathWidget(service.exposure_snapshot, self)
+        self._aegis_digest = (
+            service.exposure_snapshot.digest if service.exposure_snapshot else ""
+        )
+        self.tabs.addTab(self.aegis_path, "AegisPath")
         self.tabs.addTab(self._build_interoperability(), "Parity & Interop")
         self.tabs.addTab(self._build_audit(), "Audit")
         from angerona.gui.context_info import attach_context_info
@@ -700,7 +733,7 @@ class OperationsCenterDialog(QDialog):
 
     def _open_metric(self, key: str) -> None:
         destination = {
-            "cases": 1, "evidence": 2, "audit": 6, "assets": 3, "detections": 4,
+            "cases": 1, "evidence": 2, "audit": 9, "assets": 3, "detections": 4,
         }.get(key, 0)
         self.tabs.setCurrentIndex(destination)
 
@@ -788,8 +821,21 @@ class OperationsCenterDialog(QDialog):
             self._refresh_cases()
             self._refresh_assets()
             self._refresh_detections()
+            self.fleet_center.refresh()
+            self.detection_forge.refresh()
+            snapshot = self.service.exposure_snapshot
+            digest = snapshot.digest if snapshot is not None else ""
+            if digest != self._aegis_digest:
+                if snapshot is None:
+                    self.aegis_path.clear_snapshot(
+                        "no trusted local exposure provider has bound a snapshot"
+                    )
+                else:
+                    self.aegis_path.set_snapshot(snapshot)
+                self._aegis_digest = digest
             self._refresh_parity()
             self._refresh_audit()
+            self._has_refreshed = True
         except Exception as exc:
             self.boundary.setText(f"LOCAL SOC UNAVAILABLE · {exc}")
             self.boundary.setStyleSheet("color:#fb7185")
@@ -1154,7 +1200,8 @@ class OperationsCenterDialog(QDialog):
         super().showEvent(event)
         if motion_allowed(getattr(self.service, "config", None)) and not self.deck._timer.isActive():
             self.deck._timer.start()
-        QTimer.singleShot(0, self.refresh_all)
+        if not self._has_refreshed:
+            QTimer.singleShot(0, self.refresh_all)
 
     def closeEvent(self, event) -> None:
         self.deck.stop()

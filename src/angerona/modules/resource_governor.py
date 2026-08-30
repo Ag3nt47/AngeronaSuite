@@ -55,7 +55,7 @@ class ResourceGovernor(BaseModule):
                    "loops under load (Eco + normal); relaxes them when idle. "
                    "Never slows the real-time protection path.")
     category = "Performance"
-    version = "1.12.1"
+    version = "1.13.0"
     supported_platforms = SUPPORTED_PLATFORMS
     capability_mode = "protect"
 

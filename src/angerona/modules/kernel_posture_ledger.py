@@ -469,7 +469,7 @@ class KernelBoundaryPostureLedger(BaseModule):
         "Code Integrity telemetry, and kernel-driver-service drift."
     )
     category = "Integrity"
-    version = "1.12.1"
+    version = "1.13.0"
     enabled_by_default = True
     _INTERVAL = 300.0
 
