@@ -65,3 +65,23 @@ def test_check_evidence_has_fixed_commands_and_bounded_status():
         QualityCheckEvidence(
             "bytecode", "pass", 1, 1, "a" * 64, "", "b" * 64,
         )
+
+
+def test_check_evidence_retains_redacted_terminal_result():
+    terminal = b"2788 passed, 13 skipped in 347.65s"
+    evidence = QualityCheckEvidence.from_output(
+        "unit-tests",
+        command=("python", "-m", "pytest", "-q"),
+        exit_code=0,
+        duration_seconds=347.65,
+        output=(
+            b"password=must-not-survive\n"
+            + (b"." * 20_000)
+            + b"\napi_key=also-must-not-survive\n"
+            + terminal
+        ),
+    )
+
+    assert evidence.summary.endswith(terminal.decode("ascii"))
+    assert "must-not-survive" not in evidence.summary
+    assert len(evidence.summary) <= 2_000

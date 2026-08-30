@@ -23,6 +23,8 @@ REQUIRED_RELEASE_CHECKS = (
 _STATUS = {"pass", "fail", "unknown"}
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
+_SUMMARY_SOURCE_LIMIT = 16_384
+_SUMMARY_LIMIT = 2_000
 
 
 def _canonical(value: Any) -> bytes:
@@ -62,7 +64,15 @@ class QualityCheckEvidence:
             raise ValueError("invalid release check output digest")
         if not _SHA256.fullmatch(self.command_fingerprint):
             raise ValueError("invalid release check command fingerprint")
-        object.__setattr__(self, "summary", redact_text(self.summary, limit=2_000))
+        # Release tools put the decisive result/footer at the end of their
+        # output. Keep a bounded overlap before redaction so a sensitive token
+        # cannot straddle the retained boundary, then preserve the terminal
+        # status instead of silently truncating it away.
+        source_tail = str(self.summary or "")[-_SUMMARY_SOURCE_LIMIT:]
+        redacted_tail = redact_text(
+            source_tail, limit=_SUMMARY_SOURCE_LIMIT * 2
+        )
+        object.__setattr__(self, "summary", redacted_tail[-_SUMMARY_LIMIT:])
 
     @classmethod
     def from_output(
@@ -82,7 +92,7 @@ class QualityCheckEvidence:
             status = "unknown"
         else:
             status = "pass" if exit_code == 0 else "fail"
-        tail = output[-16_384:].decode("utf-8", errors="replace")
+        tail = output[-_SUMMARY_SOURCE_LIMIT:].decode("utf-8", errors="replace")
         return cls(
             check_id=check_id,
             status=status,
