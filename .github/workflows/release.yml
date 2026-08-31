@@ -273,14 +273,14 @@ jobs:
             --invocation-id $env:ANGERONA_INVOCATION_ID
           if ($LASTEXITCODE -ne 0) { throw 'Signing request preparation failed.' }
       - name: Upload immutable prepared Windows payload
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: prepared-windows-payload
           if-no-files-found: error
           path: dist/Angerona
           retention-days: 3
       - name: Upload canonical statement for an external release authority
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: prepared-release-signing-request
           if-no-files-found: error
@@ -413,7 +413,7 @@ jobs:
           Copy-Item -LiteralPath dist/Angerona/Angerona-SBOM.json -Destination Angerona-SBOM.json
           Copy-Item -LiteralPath dist/Angerona/Verify-Angerona-Release.ps1 -Destination Verify-Angerona-Release.ps1
       - name: Upload unsigned Windows publisher request
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: prepared-windows-publisher-request
           if-no-files-found: error
@@ -566,7 +566,7 @@ jobs:
           python -m pip freeze --all > "Angerona-dependencies-$ARTIFACT.txt"
 
       - name: Upload platform release assets
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: angerona-${{ matrix.artifact }}
           if-no-files-found: error
