@@ -206,6 +206,15 @@ def test_resilience_sidecars_start_before_module_discovery(monkeypatch) -> None:
         _ECO_HEAVY_MODULES = ()
         startup_eco_requested = FakeSignal()
 
+        @staticmethod
+        def _mark_operations_modules_discovered():
+            trace.append("operations-discovered")
+
+        @staticmethod
+        def _ensure_operations_service(**_kwargs):
+            trace.append("operations-ready")
+            return object()
+
     class FakeReporter:
         def start(self):
             trace.append("reporter")

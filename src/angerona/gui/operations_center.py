@@ -612,20 +612,25 @@ class OperationsCenterDialog(QDialog):
         root = QVBoxLayout(page)
         info, box = self._panel(
             "Detection content lifecycle",
-            "Packages are immutable, staged in quarantine, and cannot activate without a trusted publisher signature.",
+            "Packages are immutable and staged here. Active transitions require "
+            "DetectionForge quality gates plus an exact fresh one-use receipt.",
         )
         controls = QHBoxLayout()
         stage = QPushButton("Stage package…")
         stage.clicked.connect(self._stage_detection)
         activate = QPushButton("Activate selected")
         activate.clicked.connect(self._activate_detection)
+        activate.setEnabled(False)
+        activate.setToolTip("Use DetectionForge with a quality-gated promotion receipt")
         rollback = QPushButton("Rollback selected package")
         rollback.clicked.connect(self._rollback_detection)
+        rollback.setEnabled(False)
+        rollback.setToolTip("Use DetectionForge with a fresh one-use rollback receipt")
         controls.addWidget(stage)
         controls.addWidget(activate)
         controls.addWidget(rollback)
         controls.addStretch()
-        self.detection_policy = QLabel("POLICY: TRUSTED SIGNATURE REQUIRED")
+        self.detection_policy = QLabel("POLICY: DETECTIONFORGE RECEIPT REQUIRED")
         self.detection_policy.setStyleSheet("color:#34d399;font-weight:700")
         controls.addWidget(self.detection_policy)
         box.addLayout(controls)

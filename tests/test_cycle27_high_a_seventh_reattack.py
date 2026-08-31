@@ -268,7 +268,10 @@ def test_cross_process_writer_contention_and_crash_release(
         daemon=True,
     )
     process.start()
-    assert ready.wait(10.0)
+    # Windows ``spawn`` can spend more than ten seconds importing the full test
+    # environment on a contended host.  Keep this bounded while avoiding a
+    # false lease failure before the child has reached the lease acquisition.
+    assert ready.wait(30.0)
     try:
         if kind == "combat":
             from angerona.modules.adversary_combat import (
@@ -286,7 +289,7 @@ def test_cross_process_writer_contention_and_crash_release(
                     pass
     finally:
         process.terminate()
-        process.join(10.0)
+        process.join(30.0)
     assert not process.is_alive()
 
     if kind == "combat":

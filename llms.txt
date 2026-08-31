@@ -22,7 +22,57 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST: v1.13.0 / Cycles 31-33
+## LATEST (v1.13.0 — Cycle 34 improvement loop)
+
+- Cycle 34 is post-release maintenance, not a version or module-count change.
+  Inventory remains 84 Windows-target capabilities: nine native contracts and
+  75 compatibility adapters.
+- Round 1 fixed five findings (3 High, 1 Medium, 1 Low): broad flow-canvas
+  repository serving, a CDN dependency without integrity binding, legacy
+  detection-registry governance bypass, detached DetectionForge runtime,
+  multi-package live-rule
+  eviction, and an unbound Fleet Health Monitor. The canvas is now a
+  loopback-only, Host-checked exact allowlist with descriptor/final-path checks,
+  bounded fresh metrics, safe text rendering, and an operating-system-selected
+  port. AegisPath uses immutable path/node selection indexes.
+- DetectionForge now binds one exact live Detection Runtime and complete active
+  set. Atomic transaction recovery, nondecreasing authority time, a lifetime
+  PID-bound cross-process root-owner lease tied to the immutable registry,
+  state, quality, policy, clock, path, and runtime authority, a durable
+  governance anchor, and journaled quarantine convergence close downgrade,
+  split-brain, crash, stale-runtime, replay, revocation, and stranded-binding
+  paths. Published-v2/floorless-v3 migration proves complete authenticated
+  history or fails closed.
+- Fleet custody v2 authenticates every retained health row and prune boundary.
+  Guarded exact-row projections and a generation/SQLite-change-checked cache
+  remove the 3N+1 decode/signature path. Clock advance and quota reservations
+  commit atomically, exact retry precedes quota, and bounded admission state is
+  rebuilt from custody after restart. Retention is 5,000 rows × 8 KiB, about a
+  40.96 MB encoded-cache ceiling.
+- Registry validation uses a bounded immutable publisher-key snapshot, stable
+  package/signature generation proofs, and exit identity/hash checks, closing a
+  High key-rotation time-of-check/time-of-use race. Detection Runtime benchmark
+  decodes fell 1,920→30 (about 4×); governance reads fell 64→2 (about 2×);
+  trust reads fell N→2. Fleet N=250 final mutation was about 0.0188 seconds;
+  cached N=5,000 was about 0.289 seconds and deliberate full startup verification
+  about 4.475 seconds.
+- Current overlapping gates: Cycle 34 targeted 91 passed / 2 expected Windows
+  host-capability skips (symlink creation and POSIX fork) / 0 failed; adjacent
+  128 passed; package compile
+  368/368; standalone self-tests 93 passed / 0 failed plus 16 expected skips;
+  supported selfcheck 26/26. Full serial pytest, the authoritative release gate,
+  validated commit/evidence digest, and guarded publication remain pending.
+- Residuals: full detection-root plus local-key rollback needs an independent or
+  hardware witness; ambiguous legacy history requires operator recovery; an
+  already governed prepublication/work-in-progress root cannot silently mint a
+  missing anchor; Fleet is a local lab with conservative post-prune restart
+  refill and no remote transport, dispatch, HA, distributed quota authority, or
+  production mTLS coordinator.
+- Round 1 researched 11 ranked primary-source proposals but retained no exact
+  titles and shipped no MVP. The eight Round 3 architecture ideas are all
+  proposal-only. Evidence: `analysis/loop/cycle34/README.md`.
+
+## PRIOR (v1.13.0 — Cycles 31-33)
 
 - Inventory truth: 84 Windows-target built-in capabilities, nine native
   contracts and 75 explicit compatibility adapters. Built-in implementation
@@ -462,7 +512,18 @@ Development:
     python run_aria_selftests.py
     run-adversary-combat-validation.bat
 
-Current v1.13.0 terminal release evidence:
+Current Cycle 34 maintenance evidence:
+
+- Targeted: 91 passed, 2 expected Windows host-capability skips (symlink
+  creation and POSIX fork), 0 failed.
+- Adjacent compatibility/integration: 128 passed. Package compile: 368/368.
+- Standalone self-tests: 93 passed, 0 failed, plus 16 expected platform,
+  disabled, or optional-prerequisite skips. Supported selfcheck: 26/26.
+- Full serial pytest, the authoritative five-check release gate, validated
+  commit, evidence-manifest digest, guarded publication, and public README-asset
+  verification are pending.
+
+Prior Cycles 31-33 v1.13.0 terminal release evidence:
 
 - Authoritative five-check release gate on exact commit
   `edefd8b07b94da4d682a35ace23057e7b22c3790`: 2790 passed, 13 intentional
@@ -470,9 +531,9 @@ Current v1.13.0 terminal release evidence:
 - Release evidence-manifest SHA-256:
   `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`.
 - The historical pre-documentation run was 2788 passed / 13 intentional skips /
-  1 expected stale-marker drift failure. The marker is corrected. Validation is
-  complete; repository policy requires the guarded publisher for release
-  completion.
+  1 expected stale-marker drift failure. The marker was corrected for that
+  release tree; this evidence does not validate the later Cycle 34 maintenance
+  changes.
 - Static discovery: 84 capabilities, comprising nine native contracts and 75
   compatibility adapters; built-in implementation labels are 1.13.0.
 - Package compile 368/368; contract tests 6/6; module harness 69 passed / 16

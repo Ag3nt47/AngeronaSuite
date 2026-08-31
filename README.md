@@ -252,20 +252,27 @@ Packaged Windows installs prefer protected `D:\AngeronaData` and use protected
 
 ## Validation status
 
-The authoritative v1.13.0 five-check release gate passed on exact commit
+The Cycles 31–33 v1.13.0 five-check release gate passed on exact commit
 `edefd8b07b94da4d682a35ace23057e7b22c3790`. The full serial result is **2790
 passed / 13 intentional platform skips / 0 failed in 325.19 seconds**. The
 release evidence manifest SHA-256 is
 `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`.
 
-Supporting evidence includes Python compilation and repository-wide Ruff,
+That result is the pre-Cycle 34 baseline, not terminal evidence for the current
+maintenance tree. Cycle 34's completed targeted gate passed **91 tests with two
+expected Windows host-capability skips** (symlink creation and POSIX `fork`);
+adjacent compatibility/integration
+selection passed **128 tests**; package compile passed **368/368**; standalone
+self-tests passed **93 with 0 failures**, plus **16 expected platform, disabled,
+or optional-prerequisite skips**; and supported selfcheck passed **26/26**. The
+full serial pytest run, authoritative five-check release gate, validated commit,
+evidence-manifest digest, and guarded publication remain pending.
+
+The earlier v1.13.0 supporting evidence includes repository-wide Ruff,
 static discovery of **84** capabilities (**9 native contracts** and **75
 compatibility adapters**) without duplicate identity, the **26/26** supported
 headless self-check, workflow-policy validation, dependency audit,
-documentation-drift validation, and `git diff --check`. Validation is complete;
-guarded fast-forward publication to canonical public `main`, including
-byte-for-byte public verification of every README image, is the only remaining
-release step.
+documentation-drift validation, and `git diff --check`.
 
 Focused groups overlap and are not a clean-machine deployment, privileged-host,
 native Linux/macOS, or independent efficacy proof.
@@ -294,6 +301,15 @@ native Linux/macOS, or independent efficacy proof.
   crash. Local row HMACs do not independently witness deletion or rollback of
   the whole SQLite database; transport-key coordination still uses restart
   epochs.
+- DetectionForge's local state, checkpoint, governance anchor, and journal do
+  not prove rollback of the complete detection root together with its local
+  key. That requires an independent service or hardware witness. Ambiguous or
+  truncated legacy promotion history fails closed and requires operator
+  recovery.
+- Fleet Fabric remains local-only and retains at most 5,000 health rows of at
+  most 8 KiB each. After a pruned-history restart, admission capacity begins
+  conservatively and refills from elapsed trusted time; startup still verifies
+  the complete retained set.
 - ATT&CK coverage is curated. OCSF 1.8 and Sigma are deliberately constrained
   mappings/evaluation subsets, not complete upstream implementations.
 - IPC Guard is an authenticated loopback diagnostic admission preview—not a
@@ -304,6 +320,41 @@ native Linux/macOS, or independent efficacy proof.
 - No hack-back, remote exploitation, credential theft, arbitrary response
   shell, log deletion/evasion, downloaded executable skill, unverified model,
   or unsigned kernel component is part of the product.
+
+## Cycle 34 maintenance update (release validation pending)
+
+- Replaced the flow canvas's broad repository server with a loopback-only,
+  Host-checked exact allowlist. Descriptor/final-path validation, bounded fresh
+  metrics, text-only rendering, bounded clients/headers, and an operating-
+  system-selected port close the serving and lifecycle gaps.
+- Bound DetectionForge to the exact live Detection Runtime and complete active
+  set. Promotion now uses atomic recovery, nondecreasing authority time, a
+  PID-bound cross-process owner lease tied to the immutable registry, state,
+  quality, policy, clock, path, and runtime authority, durable governance
+  anchoring, and journaled quarantine convergence. Bounded immutable trust
+  snapshots and stable signed-artifact generation proofs close publisher-key
+  rotation races.
+- Extended Fleet custody to every retained health row. Guarded incremental
+  exact-row projections remove the 3N+1 signature/decode path; persistent
+  admission state, replay-before-quota handling, and transactional quota
+  reservations close restart, replay, and rollback gaps. On the N=250 benchmark
+  fixture, the final mutation path fell from about 0.7446 seconds to about
+  0.0188 seconds.
+- Made Local Operations Center composition nonblocking, cancellable, single-
+  flight, and readiness-reserved before dependent modules start. AegisPath
+  selection now uses immutable path/node indexes. Detection Runtime benchmark
+  decoding fell from 1,920 operations to 30 without changing per-rule budget or
+  malformed-input visibility.
+- The Windows-target inventory remains **84 capabilities: 9 native contracts
+  and 75 compatibility adapters**. No Cycle 34 visionary proposal shipped; all
+  eight Round 3 architecture ideas remain backlog.
+- Targeted Cycle 34 evidence is **91 passed / 2 expected skips**, adjacent
+  **128 passed**, compile **368/368**, standalone self-tests **93 passed / 0
+  failed plus 16 expected skips**, and selfcheck **26/26**. Full serial/release
+  validation and guarded publication are pending.
+
+Detailed evidence is in
+[`analysis/loop/cycle34/README.md`](analysis/loop/cycle34/README.md).
 
 ## What changed in v1.13.0
 
@@ -333,7 +384,8 @@ native Linux/macOS, or independent efficacy proof.
   After correction, the authoritative five-check release gate on commit
   `edefd8b07b94da4d682a35ace23057e7b22c3790` passed **2790 tests with 13
   intentional platform skips and 0 failures in 325.19 seconds**. Validation is
-  complete; repository policy requires the guarded publisher for release completion.
+  complete for that Cycles 31–33 tree; repository policy requires the guarded
+  publisher for release completion.
 - Reproduced the hosted Gitleaks 8.30.1 signal locally. Two public inert
   identifiers are suppressed only by exact historical fingerprints; the failed
   push range and the complete 132-commit history both scan with zero findings.
@@ -469,6 +521,6 @@ is an engineering inference, not an attribution claim.
 MIT licensed. See [LICENSE](LICENSE), [SECURITY.md](SECURITY.md), and
 [SUPPORT.md](SUPPORT.md).
 
-**Final Cycle 33 verification.** The authoritative five-check release gate on exact commit `edefd8b07b94da4d682a35ace23057e7b22c3790` passes **2790 tests with 13 intentional platform skips** and reports 0 failures in 325.19 seconds. Its evidence-manifest SHA-256 is `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`. Validation is complete; repository policy requires the guarded publisher for release completion.
+**Final Cycle 33 verification.** The authoritative five-check release gate on exact commit `edefd8b07b94da4d682a35ace23057e7b22c3790` passes **2790 tests with 13 intentional platform skips** and reports 0 failures in 325.19 seconds. Its evidence-manifest SHA-256 is `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`. Validation is complete for that Cycle 33 tree; Cycle 34 has separate pending terminal gates.
 
 <!-- ANGERONA_DOC_STATUS tests=2790 skips=13 modules=84 -->

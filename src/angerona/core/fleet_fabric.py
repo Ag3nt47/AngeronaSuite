@@ -11,6 +11,7 @@ socket or dispatch authority.
 from __future__ import annotations
 
 import hashlib
+import heapq
 import hmac
 import ipaddress
 import json
@@ -32,13 +33,24 @@ from urllib.parse import urlsplit
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from angerona.core.fleet_control_plane import FleetControlPlane
+from angerona.core.fleet_control_plane import (
+    FleetControlPlane,
+    FleetIngestionRateLimiter,
+    FleetRateLimitError,
+)
 from angerona.core.policy_bundle import EffectivePolicy
 
 SCHEMA_ID = "angerona.fleet-fabric.v1"
 CUSTODY_SCHEMA_ID = "angerona.fleet-fabric-custody.v1"
+CUSTODY_MANIFEST_SCHEMA_ID = "angerona.fleet-fabric-custody.v2"
+_HEALTH_PROJECTION_MODE = "xor-sha256-exact-row-v1"
 MAX_GRANT_TTL_SECONDS = 15 * 60
 MAX_HEALTH_REASON_BYTES = 2_048
+MAX_HEALTH_EVIDENCE_BYTES = 8 * 1024
+MAX_RETAINED_HEALTH_EVIDENCE = 5_000
+_MAX_HEALTH_CACHE_ENCODED_BYTES = (
+    MAX_RETAINED_HEALTH_EVIDENCE * MAX_HEALTH_EVIDENCE_BYTES
+)
 MAX_TARGET_DEVICES = 10_000
 MAX_DASHBOARD_ROWS = 500
 MAX_TRANSPORT_FILE_BYTES = 4 * 1024 * 1024
@@ -543,6 +555,71 @@ class FleetHealthEvidence:
 
 
 @dataclass(frozen=True)
+class _HealthCustodyCache:
+    """One process-local snapshot guarded by SQLite and custody generations."""
+
+    manifest: dict[str, Any]
+    records: dict[tuple[str, str], tuple[str, FleetHealthEvidence]]
+    heads: dict[str, FleetHealthEvidence]
+    retained_counts: dict[str, int]
+    rate_state: _HealthRateState
+    total_changes: int
+    data_version: int
+
+
+@dataclass(frozen=True)
+class _HealthRateBucket:
+    """Compact restart-safe token state derived from authenticated evidence."""
+
+    tokens: float
+    last_seen: float | None
+
+
+@dataclass(frozen=True)
+class _HealthRateState:
+    tenant_id: str
+    tenant: _HealthRateBucket
+    devices: dict[str, _HealthRateBucket]
+
+
+@dataclass
+class _VolatileHealthRateReservation:
+    """Exclusive quota decision applied only after the durable commit."""
+
+    limiter: FleetIngestionRateLimiter
+    tenant_id: str
+    total: int
+    now: float
+    available: tuple[tuple[tuple[str, str], float, int], ...]
+    active: bool = True
+
+    def commit(self) -> None:
+        if not self.active:
+            raise RuntimeError("fleet health quota reservation is no longer active")
+        try:
+            for key, tokens, required in self.available:
+                self.limiter._buckets.pop(key, None)  # noqa: SLF001
+                self.limiter._buckets[key] = (  # noqa: SLF001
+                    tokens - required,
+                    self.now,
+                )
+            stats = self.limiter._stats.setdefault(  # noqa: SLF001
+                self.tenant_id,
+                [0, 0],
+            )
+            stats[0] += self.total
+        finally:
+            self.active = False
+            self.limiter._lock.release()  # noqa: SLF001
+
+    def cancel(self) -> None:
+        if not self.active:
+            return
+        self.active = False
+        self.limiter._lock.release()  # noqa: SLF001
+
+
+@dataclass(frozen=True)
 class HealthSnapshot:
     tenant_id: str
     items: tuple[FleetHealthEvidence, ...]
@@ -715,7 +792,7 @@ class FleetFabricStore:
         transport_config: CoordinatorTransportConfig | None = None,
         max_grants: int = 10_000,
         max_enrolled_devices: int = 100_000,
-        max_health_evidence: int = 50_000,
+        max_health_evidence: int = MAX_RETAINED_HEALTH_EVIDENCE,
         max_rollouts: int = 5_000,
         health_freshness_seconds: int = DEFAULT_HEALTH_FRESHNESS_SECONDS,
         clock: Callable[[], float] = time.time,
@@ -730,8 +807,11 @@ class FleetFabricStore:
             self._keys[tenant] = bytes(key)
         if not 1 <= int(max_grants) <= 500_000:
             raise ValueError("grant bound must be between 1 and 500000")
-        if not 1 <= int(max_health_evidence) <= 500_000:
-            raise ValueError("health evidence bound must be between 1 and 500000")
+        if not 1 <= int(max_health_evidence) <= MAX_RETAINED_HEALTH_EVIDENCE:
+            raise ValueError(
+                "health evidence bound must be between 1 and 5000; larger "
+                "retained sets exceed the authenticated intake cadence budget"
+            )
         if not 1 <= int(max_enrolled_devices) <= 500_000:
             raise ValueError("enrolled device bound must be between 1 and 500000")
         if not 1 <= int(max_rollouts) <= 100_000:
@@ -753,8 +833,16 @@ class FleetFabricStore:
         self._max_rollouts = int(max_rollouts)
         self._health_freshness = health_freshness_seconds
         self._clock = clock
+        self._health_rate_limiter = FleetIngestionRateLimiter(
+            tenant_rate=10.0,
+            tenant_burst=40,
+            device_rate=0.2,
+            device_burst=4,
+            max_buckets=min(self._max_enrolled_devices, 50_000),
+        )
         self._last_clock: float | None = None
         self._lock = threading.RLock()
+        self._health_custody_cache: dict[str, _HealthCustodyCache] = {}
         self._db = sqlite3.connect(str(self.path), check_same_thread=False)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=FULL")
@@ -875,7 +963,28 @@ class FleetFabricStore:
             self._db.execute(
                 "ALTER TABLE fabric_stats ADD COLUMN stats_hmac TEXT NOT NULL DEFAULT ''"
             )
+        bootstrap_health_cache: dict[
+            str,
+            tuple[
+                Mapping[str, Any],
+                dict[tuple[str, str], tuple[str, FleetHealthEvidence]],
+                dict[str, FleetHealthEvidence],
+            ],
+        ] = {}
         for tenant_id in self._keys:
+            retained_health_count = int(self._db.execute(
+                "SELECT COUNT(*) FROM fabric_health WHERE tenant_id=?",
+                (tenant_id,),
+            ).fetchone()[0])
+            if retained_health_count > self._max_health:
+                raise OverflowError(
+                    "retained health evidence exceeds the configured cadence bound; "
+                    "offline authenticated retention repair is required"
+                )
+            verified_health_records: dict[
+                tuple[str, str], tuple[str, FleetHealthEvidence]
+            ] = {}
+            verified_health_heads: dict[str, FleetHealthEvidence] = {}
             domain_rows = self._tenant_domain_row_count_locked(tenant_id)
             established = self._db.execute(
                 "SELECT 1 FROM fabric_authority WHERE tenant_id=?",
@@ -943,12 +1052,16 @@ class FleetFabricStore:
                         _hmac(self._key(tenant_id), b"fabric-authority", authority_core),
                     ),
                 )
-                self._write_custody_locked(tenant_id)
+                verified_manifest = self._write_custody_locked(tenant_id)
             else:
                 self._verify_authority_locked(tenant_id)
                 if not has_custody:
                     raise RuntimeError("fleet custody checkpoint is unavailable")
-                self._verify_custody_locked(tenant_id)
+                verified_manifest = self._verify_custody_locked(
+                    tenant_id,
+                    verified_health_heads=verified_health_heads,
+                    verified_health_records=verified_health_records,
+                )
 
             authenticated_floor = self._authenticated_timestamp_floor_locked(tenant_id)
             floor_row = self._db.execute(
@@ -970,7 +1083,19 @@ class FleetFabricStore:
                         tenant_id,
                     ),
                 )
+            bootstrap_health_cache[tenant_id] = (
+                verified_manifest,
+                verified_health_records,
+                verified_health_heads,
+            )
         self._db.commit()
+        for tenant_id, (manifest, records, heads) in bootstrap_health_cache.items():
+            self._install_health_custody_cache_locked(
+                tenant_id,
+                manifest,
+                records,
+                heads,
+            )
 
     @property
     def tenant_ids(self) -> tuple[str, ...]:
@@ -986,6 +1111,302 @@ class FleetFabricStore:
             return self._keys[tenant]
         except KeyError as exc:
             raise PermissionError("tenant is not authorized") from exc
+
+    def _sqlite_data_version_locked(self) -> int:
+        row = self._db.execute("PRAGMA data_version").fetchone()
+        if row is None or type(row[0]) is not int or int(row[0]) < 1:
+            raise RuntimeError("fleet database change generation is unavailable")
+        return int(row[0])
+
+    @staticmethod
+    def _refill_health_rate_bucket(
+        bucket: _HealthRateBucket,
+        *,
+        stamp: float,
+        rate: float,
+        burst: int,
+    ) -> float:
+        if bucket.last_seen is None:
+            return min(float(burst), bucket.tokens)
+        if stamp < bucket.last_seen:
+            raise RuntimeError("fleet health admission clock moved backwards")
+        return min(
+            float(burst),
+            bucket.tokens + ((stamp - bucket.last_seen) * rate),
+        )
+
+    def _health_rate_state_from_records_locked(
+        self,
+        tenant_id: str,
+        manifest: Mapping[str, Any],
+        records: Mapping[
+            tuple[str, str], tuple[str, FleetHealthEvidence]
+        ],
+    ) -> _HealthRateState:
+        """Rebuild bounded rate state only from custody-verified evidence.
+
+        A pruned history has an unknown bucket balance at its retained boundary.
+        Starting it with exactly the one token required by the first accepted
+        record is fail-safe: restart can never mint credit that was not proven
+        by retained, custody-authenticated history.  A sufficiently long idle
+        interval naturally refills the bucket back to its configured burst.
+        """
+        stats = manifest.get("stats")
+        if not isinstance(stats, Mapping):
+            raise RuntimeError("fleet custody rate history is unavailable")
+        history_pruned = int(stats.get("health_retention_drops", -1)) > 0
+        tenant_initial = (
+            1.0
+            if history_pruned and records
+            else float(self._health_rate_limiter.tenant_burst)
+        )
+        tenant_bucket = _HealthRateBucket(tenant_initial, None)
+        device_buckets: dict[str, _HealthRateBucket] = {}
+        ordered = sorted(
+            (evidence for _encoded, evidence in records.values()),
+            key=lambda evidence: (
+                evidence.recorded_at,
+                evidence.sample.device_id,
+                evidence.sequence,
+                evidence.sample.sample_id,
+            ),
+        )
+        for evidence in ordered:
+            sample = evidence.sample
+            if sample.tenant_id != tenant_id:
+                raise RuntimeError("fleet custody rate history crossed tenant authority")
+            stamp = float(evidence.recorded_at)
+            tenant_tokens = self._refill_health_rate_bucket(
+                tenant_bucket,
+                stamp=stamp,
+                rate=self._health_rate_limiter.tenant_rate,
+                burst=self._health_rate_limiter.tenant_burst,
+            )
+            tenant_bucket = _HealthRateBucket(tenant_tokens - 1.0, stamp)
+            device_bucket = device_buckets.get(sample.device_id)
+            if device_bucket is None:
+                device_bucket = _HealthRateBucket(
+                    1.0
+                    if history_pruned
+                    else float(self._health_rate_limiter.device_burst),
+                    None,
+                )
+            device_tokens = self._refill_health_rate_bucket(
+                device_bucket,
+                stamp=stamp,
+                rate=self._health_rate_limiter.device_rate,
+                burst=self._health_rate_limiter.device_burst,
+            )
+            device_buckets[sample.device_id] = _HealthRateBucket(
+                device_tokens - 1.0,
+                stamp,
+            )
+        return _HealthRateState(tenant_id, tenant_bucket, device_buckets)
+
+    def _admit_persistent_health_rate_locked(
+        self,
+        tenant_id: str,
+        device_id: str,
+        stamp: float,
+        state: _HealthRateState,
+    ) -> _HealthRateState:
+        """Apply one accepted event to custody-derived restart-safe buckets."""
+        if state.tenant_id != tenant_id:
+            raise RuntimeError("fleet health rate state crossed tenant authority")
+        tenant_tokens = self._refill_health_rate_bucket(
+            state.tenant,
+            stamp=stamp,
+            rate=self._health_rate_limiter.tenant_rate,
+            burst=self._health_rate_limiter.tenant_burst,
+        )
+        device_bucket = state.devices.get(
+            device_id,
+            _HealthRateBucket(
+                float(self._health_rate_limiter.device_burst),
+                None,
+            ),
+        )
+        device_tokens = self._refill_health_rate_bucket(
+            device_bucket,
+            stamp=stamp,
+            rate=self._health_rate_limiter.device_rate,
+            burst=self._health_rate_limiter.device_burst,
+        )
+        retry_seconds = 0.0
+        if tenant_tokens < 1.0:
+            retry_seconds = max(
+                retry_seconds,
+                (1.0 - tenant_tokens) / self._health_rate_limiter.tenant_rate,
+            )
+        if device_tokens < 1.0:
+            retry_seconds = max(
+                retry_seconds,
+                (1.0 - device_tokens) / self._health_rate_limiter.device_rate,
+            )
+        if retry_seconds > 0.0:
+            raise FleetRateLimitError(math.ceil(retry_seconds * 1000.0))
+        devices = dict(state.devices)
+        devices[device_id] = _HealthRateBucket(device_tokens - 1.0, stamp)
+        return _HealthRateState(
+            tenant_id,
+            _HealthRateBucket(tenant_tokens - 1.0, stamp),
+            devices,
+        )
+
+    def _reserve_volatile_health_rate_locked(
+        self,
+        tenant_id: str,
+        device_id: str,
+    ) -> _VolatileHealthRateReservation:
+        """Hold an exact volatile quota decision until SQLite commits.
+
+        The limiter lock stays held for the short commit boundary.  No bucket
+        or accepted-event counter changes before commit, so every transaction
+        failure can cancel the reservation without reconstructing approximate
+        token state or racing another consumer.
+        """
+        limiter = self._health_rate_limiter
+        requirements = (
+            (
+                (tenant_id, ""),
+                1,
+                limiter.tenant_rate,
+                limiter.tenant_burst,
+            ),
+            (
+                (tenant_id, device_id),
+                1,
+                limiter.device_rate,
+                limiter.device_burst,
+            ),
+        )
+        limiter._lock.acquire()  # noqa: SLF001
+        try:
+            now = float(limiter._clock())  # noqa: SLF001
+            if not math.isfinite(now):
+                raise RuntimeError("fleet admission clock is unavailable")
+            missing = sum(
+                1
+                for key, _required, _rate, _burst in requirements
+                if key not in limiter._buckets  # noqa: SLF001
+            )
+            if len(limiter._buckets) + missing > limiter.max_buckets:  # noqa: SLF001
+                stats = limiter._stats.setdefault(tenant_id, [0, 0])  # noqa: SLF001
+                stats[1] += 1
+                raise FleetRateLimitError(1000)
+            available: list[tuple[tuple[str, str], float, int]] = []
+            retry_seconds = 0.0
+            for key, required, rate, burst in requirements:
+                prior = limiter._buckets.get(key)  # noqa: SLF001
+                if prior is None:
+                    tokens = float(burst)
+                else:
+                    tokens = min(
+                        float(burst),
+                        prior[0] + max(0.0, now - prior[1]) * rate,
+                    )
+                available.append((key, tokens, required))
+                if tokens < required:
+                    retry_seconds = max(
+                        retry_seconds,
+                        (required - tokens) / rate,
+                    )
+            if retry_seconds > 0.0:
+                stats = limiter._stats.setdefault(tenant_id, [0, 0])  # noqa: SLF001
+                stats[1] += 1
+                raise FleetRateLimitError(math.ceil(retry_seconds * 1000.0))
+            return _VolatileHealthRateReservation(
+                limiter,
+                tenant_id,
+                1,
+                now,
+                tuple(available),
+            )
+        except Exception:
+            limiter._lock.release()  # noqa: SLF001
+            raise
+
+    def _commit_health_transaction_locked(self) -> None:
+        """Small seam for deterministic commit-failure regression coverage."""
+        self._db.commit()
+
+    def _install_health_custody_cache_locked(
+        self,
+        tenant_id: str,
+        manifest: Mapping[str, Any],
+        records: Mapping[tuple[str, str], tuple[str, FleetHealthEvidence]],
+        heads: Mapping[str, FleetHealthEvidence],
+        *,
+        rate_state: _HealthRateState | None = None,
+    ) -> None:
+        if manifest.get("health_projection_mode") != _HEALTH_PROJECTION_MODE:
+            self._health_custody_cache.pop(tenant_id, None)
+            return
+        if len(records) > self._max_health:
+            raise OverflowError(
+                "retained health evidence exceeds the configured authenticated bound"
+            )
+        encoded_bytes = sum(
+            len(encoded.encode("utf-8")) for encoded, _evidence in records.values()
+        )
+        if encoded_bytes > _MAX_HEALTH_CACHE_ENCODED_BYTES:
+            raise OverflowError(
+                "verified health cache exceeds its fixed encoded-byte budget"
+            )
+        retained_counts: dict[str, int] = {}
+        for device_id, _sample_id in records:
+            retained_counts[device_id] = retained_counts.get(device_id, 0) + 1
+        if set(retained_counts) != set(heads):
+            raise RuntimeError("verified health cache does not match custody heads")
+        self._health_custody_cache[tenant_id] = _HealthCustodyCache(
+            manifest=dict(manifest),
+            records=dict(records),
+            heads=dict(heads),
+            retained_counts=retained_counts,
+            rate_state=(
+                rate_state
+                if rate_state is not None
+                else self._health_rate_state_from_records_locked(
+                    tenant_id,
+                    manifest,
+                    records,
+                )
+            ),
+            total_changes=int(self._db.total_changes),
+            data_version=self._sqlite_data_version_locked(),
+        )
+
+    @staticmethod
+    def _health_exact_row_projection(
+        encoded: str,
+        evidence: FleetHealthEvidence,
+    ) -> dict[str, Any]:
+        return {
+            "device_id": evidence.sample.device_id,
+            "sample_id": evidence.sample.sample_id,
+            "observed_at": float(evidence.sample.observed_at),
+            "encoded_sha256": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+        }
+
+    @staticmethod
+    def _health_head_projection(
+        evidence: FleetHealthEvidence,
+        retained_count: int,
+    ) -> dict[str, Any]:
+        return {
+            "head": {
+                "tenant_id": evidence.sample.tenant_id,
+                "device_id": evidence.sample.device_id,
+                "binding_generation": evidence.binding_generation,
+                "sequence": evidence.sequence,
+                "evidence_digest": evidence.digest,
+                "accepted_total": evidence.sample.accepted_total,
+                "dropped_total": evidence.sample.dropped_total,
+                "rejected_total": evidence.sample.rejected_total,
+            },
+            "retained_count": retained_count,
+            "retained_head_sample_id": evidence.sample.sample_id,
+        }
 
     def _tenant_domain_row_count_locked(self, tenant_id: str) -> int:
         """Count durable tenant data without treating bootstrap rows as evidence."""
@@ -1031,8 +1452,20 @@ class FleetFabricStore:
     def _projection_digest(value: Any) -> str:
         return hashlib.sha256(_canonical(value)).hexdigest()
 
+    @staticmethod
+    def _xor_projection_digest(domain: bytes, values: list[Mapping[str, Any]]) -> str:
+        """Return an order-independent 256-bit digest for unique bounded rows."""
+        accumulator = bytearray(32)
+        for value in values:
+            item = hashlib.sha256(domain + b"\x00" + _canonical(value)).digest()
+            for index, byte in enumerate(item):
+                accumulator[index] ^= byte
+        return bytes(accumulator).hex()
+
     def _verified_tombstone_state_locked(
-        self, tenant_id: str
+        self,
+        tenant_id: str,
+        domain_row_counts: dict[str, int] | None = None,
     ) -> tuple[int, str, float]:
         rows = self._db.execute(
             "SELECT sequence,domain,subject_id,row_count,projection_digest,pruned_at,"
@@ -1074,6 +1507,10 @@ class FleetFabricStore:
                 raise RuntimeError("fleet prune tombstone integrity verification failed")
             previous = self._projection_digest(core)
             newest = max(newest, core["pruned_at"])
+            if domain_row_counts is not None:
+                domain_row_counts[core["domain"]] = (
+                    domain_row_counts.get(core["domain"], 0) + core["row_count"]
+                )
         return len(rows), previous, newest
 
     def _append_prune_tombstone_locked(
@@ -1085,8 +1522,15 @@ class FleetFabricStore:
         row_count: int,
         projection: Any,
         pruned_at: float,
+        verified_state: tuple[int, str] | None = None,
     ) -> str:
-        count, previous, _newest = self._verified_tombstone_state_locked(tenant_id)
+        if verified_state is None:
+            count, previous, _newest = self._verified_tombstone_state_locked(tenant_id)
+        else:
+            count, previous = verified_state
+            if type(count) is not int or count < 0:
+                raise RuntimeError("verified prune tombstone count is invalid")
+            _digest(previous, "verified prune tombstone head")
         subject = _identifier(subject_id, "prune subject ID")
         if domain not in {"enrollment-grant", "health-evidence", "rollout"}:
             raise ValueError("invalid prune tombstone domain")
@@ -1164,10 +1608,188 @@ class FleetFabricStore:
             raise RuntimeError("retained health evidence head projection is inconsistent")
         return evidence
 
+    def _verified_retained_health_locked(
+        self,
+        tenant_id: str,
+        retained_rows: list[tuple[Any, ...]],
+        bindings: Mapping[str, Mapping[str, Any]],
+        heads: Mapping[str, Mapping[str, Any]],
+        *,
+        health_retention_drops: int,
+        health_tombstone_rows: int,
+        preverified_rows: (
+            Mapping[tuple[str, str], tuple[str, FleetHealthEvidence]] | None
+        ) = None,
+        verified_records: (
+            dict[tuple[str, str], tuple[str, FleetHealthEvidence]] | None
+        ) = None,
+        verify_device_signatures: bool = True,
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        dict[str, FleetHealthEvidence],
+        list[FleetHealthEvidence],
+    ]:
+        """Authenticate every retained health row and its surviving chain suffix."""
+        if health_tombstone_rows != health_retention_drops:
+            raise RuntimeError("health prune boundary does not match authenticated stats")
+        grouped: dict[str, list[tuple[FleetHealthEvidence, dict[str, Any]]]] = {}
+        seen_rows: set[tuple[str, str]] = set()
+        for encoded, device_id_raw, sample_id_raw, observed_at_raw in retained_rows:
+            device_id = str(device_id_raw)
+            sample_id = str(sample_id_raw)
+            row_key = (device_id, sample_id)
+            encoded_text = str(encoded)
+            binding = bindings.get(device_id)
+            if binding is None:
+                raise RuntimeError("health evidence device binding is unavailable")
+            cached = preverified_rows.get(row_key) if preverified_rows is not None else None
+            if preverified_rows is None:
+                evidence = self._decode_health(
+                    encoded_text,
+                    tenant_id,
+                    expected_device_id=device_id,
+                    expected_sample_id=sample_id,
+                    expected_observed_at=float(observed_at_raw),
+                    verified_binding=binding,
+                    verify_device_signature=verify_device_signatures,
+                )
+            elif (
+                cached is None
+                or cached[0] != encoded_text
+                or cached[1].sample.tenant_id != tenant_id
+                or cached[1].sample.device_id != device_id
+                or cached[1].sample.sample_id != sample_id
+                or cached[1].sample.observed_at != float(observed_at_raw)
+                or cached[1].binding_generation != binding["binding_generation"]
+                or not hmac.compare_digest(
+                    cached[1].sample.device_public_key_sha256,
+                    str(binding["device_public_key_sha256"]),
+                )
+            ):
+                raise RuntimeError(
+                    "verified health transaction snapshot changed unexpectedly"
+                )
+            else:
+                # The exact encoded row and binding were authenticated earlier in
+                # this BEGIN IMMEDIATE transaction.  Reuse that immutable result;
+                # a mismatch fails closed instead of silently blessing new state.
+                evidence = cached[1]
+            if row_key in seen_rows:
+                raise RuntimeError("health retained chain contains duplicate row")
+            seen_rows.add(row_key)
+            if verified_records is not None:
+                verified_records[row_key] = (encoded_text, evidence)
+            projection = {
+                "device_id": device_id,
+                "sample_id": sample_id,
+                "observed_at": float(observed_at_raw),
+                "recorded_at": evidence.recorded_at,
+                "binding_generation": evidence.binding_generation,
+                "sequence": evidence.sequence,
+                "sequence_gap": evidence.sequence_gap,
+                "previous_evidence_digest": evidence.previous_evidence_digest,
+                "evidence_digest": evidence.digest,
+                "encoded_sha256": hashlib.sha256(
+                    encoded_text.encode("utf-8")
+                ).hexdigest(),
+            }
+            grouped.setdefault(device_id, []).append((evidence, projection))
+
+        if preverified_rows is not None and seen_rows != set(preverified_rows):
+            raise RuntimeError("verified health transaction snapshot changed unexpectedly")
+
+        if set(grouped) != set(heads):
+            raise RuntimeError("retained health rows and authenticated heads disagree")
+        head_projections: list[dict[str, Any]] = []
+        row_projections: list[dict[str, Any]] = []
+        verified_latest: dict[str, FleetHealthEvidence] = {}
+        verified_all: list[FleetHealthEvidence] = []
+        for device_id in sorted(heads):
+            device_rows = sorted(
+                grouped[device_id],
+                key=lambda item: (item[0].sequence, item[0].sample.sample_id),
+            )
+            first = device_rows[0][0]
+            if first.sequence == 1:
+                if (
+                    first.previous_evidence_digest != ZERO_DIGEST
+                    or first.sequence_gap != 0
+                ):
+                    raise RuntimeError("health chain origin is invalid")
+            elif (
+                first.previous_evidence_digest == ZERO_DIGEST
+                or health_retention_drops < 1
+                or health_tombstone_rows < 1
+            ):
+                raise RuntimeError("health retained-chain prune boundary is invalid")
+
+            previous: FleetHealthEvidence | None = None
+            seen_sequences: set[int] = set()
+            for evidence, projection in device_rows:
+                if evidence.sequence in seen_sequences:
+                    raise RuntimeError("health retained chain contains duplicate sequence")
+                seen_sequences.add(evidence.sequence)
+                if previous is not None:
+                    if (
+                        evidence.binding_generation != previous.binding_generation
+                        or evidence.previous_evidence_digest != previous.digest
+                        or evidence.sequence
+                        != previous.sequence + evidence.sequence_gap + 1
+                    ):
+                        raise RuntimeError("health retained chain continuity failed")
+                    for field in ("accepted_total", "dropped_total", "rejected_total"):
+                        if getattr(evidence.sample, field) < getattr(
+                            previous.sample, field
+                        ):
+                            raise RuntimeError("health retained counters regressed")
+                    if (
+                        evidence.sample.dropped_since_previous
+                        != evidence.sample.dropped_total
+                        - previous.sample.dropped_total
+                    ):
+                        raise RuntimeError("health retained loss delta is inconsistent")
+                previous = evidence
+                row_projections.append(projection)
+                verified_all.append(evidence)
+
+            latest = device_rows[-1][0]
+            head = dict(heads[device_id])
+            if (
+                latest.digest != head["evidence_digest"]
+                or latest.binding_generation != int(head["binding_generation"])
+                or latest.sequence != int(head["sequence"])
+                or latest.sample.accepted_total != int(head["accepted_total"])
+                or latest.sample.dropped_total != int(head["dropped_total"])
+                or latest.sample.rejected_total != int(head["rejected_total"])
+            ):
+                raise RuntimeError("retained health evidence head projection is inconsistent")
+            verified_latest[device_id] = latest
+            head_projections.append({
+                "head": head,
+                "retained_count": len(device_rows),
+                "retained_head_sample_id": latest.sample.sample_id,
+            })
+        return head_projections, row_projections, verified_latest, verified_all
+
     def _custody_projection_locked(
         self,
         tenant_id: str,
         verified_health_heads: dict[str, FleetHealthEvidence] | None = None,
+        verified_grants: list[tuple[EnrollmentGrant, dict[str, Any]]] | None = None,
+        verified_rollouts: (
+            dict[str, tuple[FleetRolloutPlan, dict[str, Any]]] | None
+        ) = None,
+        verified_health_rows: list[FleetHealthEvidence] | None = None,
+        verified_health_records: (
+            dict[tuple[str, str], tuple[str, FleetHealthEvidence]] | None
+        ) = None,
+        preverified_health_records: (
+            Mapping[tuple[str, str], tuple[str, FleetHealthEvidence]] | None
+        ) = None,
+        verify_health_signatures: bool = True,
+        health_projection_mode: str | None = _HEALTH_PROJECTION_MODE,
+        custody_schema: str = CUSTODY_MANIFEST_SCHEMA_ID,
     ) -> dict[str, Any]:
         stats = self._verified_stats_locked(tenant_id)
         grant_rows = self._db.execute(
@@ -1175,62 +1797,80 @@ class FleetFabricStore:
             "FROM fabric_grants WHERE tenant_id=? ORDER BY grant_id",
             (tenant_id,),
         ).fetchall()
-        grant_projections = [
-            self._verified_grant_row_locked(tenant_id, row)[1] for row in grant_rows
-        ]
+        grant_projections = []
+        for row in grant_rows:
+            grant, projection = self._verified_grant_row_locked(tenant_id, row)
+            grant_projections.append(projection)
+            if verified_grants is not None:
+                verified_grants.append((grant, projection))
 
         binding_rows = self._db.execute(
-            "SELECT device_id FROM fabric_enrolled_devices WHERE tenant_id=? "
-            "ORDER BY device_id",
+            "SELECT device_id,device_public_key_sha256,enrolled_at,binding_hmac,"
+            "device_public_key_ed25519,binding_generation "
+            "FROM fabric_enrolled_devices WHERE tenant_id=? ORDER BY device_id",
             (tenant_id,),
         ).fetchall()
         binding_projections = []
+        verified_bindings: dict[str, dict[str, Any]] = {}
         for row in binding_rows:
-            binding = self._local_device_binding_locked(tenant_id, str(row[0]))
-            if binding is None:
-                raise RuntimeError("enrolled device custody projection is unavailable")
+            device_id = str(row[0])
+            binding = self._decode_device_binding_row_locked(
+                tenant_id, device_id, tuple(row[1:])
+            )
             binding_projections.append(binding)
+            verified_bindings[device_id] = binding
 
         head_rows = self._db.execute(
-            "SELECT device_id FROM fabric_health_heads WHERE tenant_id=? ORDER BY device_id",
+            "SELECT device_id,binding_generation,sequence,evidence_digest,"
+            "accepted_total,dropped_total,rejected_total,head_hmac "
+            "FROM fabric_health_heads WHERE tenant_id=? ORDER BY device_id",
             (tenant_id,),
         ).fetchall()
+        verified_heads = {
+            str(row[0]): self._decode_health_head_row_locked(
+                tenant_id, str(row[0]), tuple(row[1:])
+            )
+            for row in head_rows
+        }
         retained_rows = self._db.execute(
             "SELECT evidence_json,device_id,sample_id,observed_at FROM fabric_health "
             "WHERE tenant_id=? ORDER BY device_id,observed_at,sample_id",
             (tenant_id,),
         ).fetchall()
-        retained_by_device: dict[str, list[tuple[Any, ...]]] = {}
-        for encoded, device_id, sample_id, observed_at in retained_rows:
-            retained_by_device.setdefault(str(device_id), []).append(
-                (encoded, sample_id, observed_at)
+        tombstone_domain_rows: dict[str, int] = {}
+        tombstone_count, tombstone_head, _newest = (
+            self._verified_tombstone_state_locked(
+                tenant_id, tombstone_domain_rows
             )
-        health_projections = []
-        for row in head_rows:
-            device_id = str(row[0])
-            head = self._health_head_locked(tenant_id, device_id)
-            if head is None:
-                raise RuntimeError("health chain custody projection is unavailable")
-            device_rows = retained_by_device.get(device_id, [])
-            evidence = self._retained_head_evidence_locked(
-                tenant_id, device_id, head, device_rows
+        )
+        (
+            health_projections,
+            health_row_projections,
+            verified_latest,
+            verified_all_health,
+        ) = (
+            self._verified_retained_health_locked(
+                tenant_id,
+                list(retained_rows),
+                verified_bindings,
+                verified_heads,
+                health_retention_drops=int(stats["health_retention_drops"]),
+                health_tombstone_rows=tombstone_domain_rows.get(
+                    "health-evidence", 0
+                ),
+                preverified_rows=preverified_health_records,
+                verified_records=verified_health_records,
+                verify_device_signatures=verify_health_signatures,
             )
-            if verified_health_heads is not None:
-                verified_health_heads[device_id] = evidence
-            retained_count = len(device_rows)
-            health_projections.append({
-                "head": head,
-                "retained_count": retained_count,
-                "retained_head_sample_id": evidence.sample.sample_id,
-            })
+        )
+        if verified_health_heads is not None:
+            verified_health_heads.update(verified_latest)
+        if verified_health_rows is not None:
+            verified_health_rows.extend(verified_all_health)
 
-        rollout_rows = self._db.execute(
-            "SELECT rollout_id FROM fabric_rollouts WHERE tenant_id=? ORDER BY rollout_id",
-            (tenant_id,),
-        ).fetchall()
+        rollout_rows, rollout_history_count = self._load_rollouts_locked(tenant_id)
         rollout_projections = []
-        for row in rollout_rows:
-            plan, record = self._load_rollout_locked(tenant_id, str(row[0]))
+        for plan, record in rollout_rows:
             rollout_projections.append({
                 "rollout_id": plan.rollout_id,
                 "plan_digest": plan.digest,
@@ -1240,33 +1880,58 @@ class FleetFabricStore:
                 "history_length": record["history_length"],
                 "history_head_digest": record["history_head_digest"],
             })
-        tombstone_count, tombstone_head, _newest = (
-            self._verified_tombstone_state_locked(tenant_id)
-        )
+            if verified_rollouts is not None:
+                verified_rollouts[plan.rollout_id] = (plan, record)
         counts = {
             "grants": len(grant_rows),
             "enrolled_devices": len(binding_rows),
             "health_evidence": len(retained_rows),
             "health_heads": len(head_rows),
             "rollouts": len(rollout_rows),
-            "rollout_history": int(self._db.execute(
-                "SELECT COUNT(*) FROM fabric_rollout_history WHERE tenant_id=?",
-                (tenant_id,),
-            ).fetchone()[0]),
+            "rollout_history": rollout_history_count,
             "prune_tombstones": tombstone_count,
         }
-        return {
-            "schema": CUSTODY_SCHEMA_ID,
+        if health_projection_mode == _HEALTH_PROJECTION_MODE:
+            health_heads_digest = self._xor_projection_digest(
+                b"fleet-health-head-projection-v1",
+                health_projections,
+            )
+            health_evidence_digest = self._xor_projection_digest(
+                b"fleet-health-exact-row-projection-v1",
+                [
+                    {
+                        "device_id": item["device_id"],
+                        "sample_id": item["sample_id"],
+                        "observed_at": item["observed_at"],
+                        "encoded_sha256": item["encoded_sha256"],
+                    }
+                    for item in health_row_projections
+                ],
+            )
+        elif health_projection_mode is None:
+            health_heads_digest = self._projection_digest(health_projections)
+            health_evidence_digest = self._projection_digest(
+                health_row_projections
+            )
+        else:
+            raise RuntimeError("fleet custody health projection mode is unsupported")
+        projection = {
+            "schema": custody_schema,
             "tenant_id": tenant_id,
             "install_epoch": self._verify_authority_locked(tenant_id),
             "counts": counts,
             "stats": stats,
             "grant_lifecycle_digest": self._projection_digest(grant_projections),
             "device_bindings_digest": self._projection_digest(binding_projections),
-            "health_heads_digest": self._projection_digest(health_projections),
+            "health_heads_digest": health_heads_digest,
             "rollout_history_heads_digest": self._projection_digest(rollout_projections),
             "prune_tombstone_head": tombstone_head,
         }
+        if custody_schema != CUSTODY_SCHEMA_ID:
+            projection["health_evidence_digest"] = health_evidence_digest
+        if health_projection_mode is not None:
+            projection["health_projection_mode"] = health_projection_mode
+        return projection
 
     def _verified_custody_manifest_locked(self, tenant_id: str) -> dict[str, Any]:
         row = self._db.execute(
@@ -1284,8 +1949,19 @@ class FleetFabricStore:
             not isinstance(manifest, dict)
             or int(row[0]) < 1
             or manifest.get("generation") != int(row[0])
-            or manifest.get("schema") != CUSTODY_SCHEMA_ID
+            or manifest.get("schema") not in {
+                CUSTODY_SCHEMA_ID,
+                CUSTODY_MANIFEST_SCHEMA_ID,
+            }
             or manifest.get("tenant_id") != tenant_id
+            or (
+                manifest.get("schema") == CUSTODY_SCHEMA_ID
+                and "health_projection_mode" in manifest
+            )
+            or manifest.get("health_projection_mode") not in {
+                None,
+                _HEALTH_PROJECTION_MODE,
+            }
             or _canonical(manifest).decode("utf-8") != str(row[1])
             or not hmac.compare_digest(
                 str(row[2]),
@@ -1295,38 +1971,293 @@ class FleetFabricStore:
             raise RuntimeError("fleet custody checkpoint integrity verification failed")
         return manifest
 
+    def _legacy_custody_projection(
+        self,
+        projection: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Build the exact v1 projection used by authenticated migration tests."""
+        tenant_id = _identifier(projection.get("tenant_id"), "tenant ID")
+        legacy = self._custody_projection_locked(
+            tenant_id,
+            health_projection_mode=None,
+            custody_schema=CUSTODY_SCHEMA_ID,
+        )
+        if "generation" in projection:
+            legacy["generation"] = int(projection["generation"])
+        return legacy
+
+    def _seal_migrated_custody_locked(
+        self,
+        tenant_id: str,
+        legacy_manifest: Mapping[str, Any],
+        verified_health_records: Mapping[
+            tuple[str, str], tuple[str, FleetHealthEvidence]
+        ],
+    ) -> dict[str, Any]:
+        """Upgrade legacy custody only after every retained row has verified."""
+        verified_projection = self._custody_projection_locked(
+            tenant_id,
+            preverified_health_records=verified_health_records,
+            health_projection_mode=_HEALTH_PROJECTION_MODE,
+            custody_schema=CUSTODY_MANIFEST_SCHEMA_ID,
+        )
+        migrated = {
+            **dict(verified_projection),
+            "generation": int(legacy_manifest["generation"]) + 1,
+        }
+        encoded = _canonical(migrated).decode("utf-8")
+        seal = _hmac(self._key(tenant_id), b"fabric-custody", migrated)
+        cursor = self._db.execute(
+            "UPDATE fabric_custody SET generation=?,manifest_json=?,manifest_hmac=? "
+            "WHERE tenant_id=? AND generation=? AND manifest_hmac=?",
+            (
+                migrated["generation"],
+                encoded,
+                seal,
+                tenant_id,
+                legacy_manifest["generation"],
+                _hmac(self._key(tenant_id), b"fabric-custody", legacy_manifest),
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError("fleet custody migration changed concurrently")
+        return migrated
+
     def _verify_custody_locked(
         self,
         tenant_id: str,
         verified_health_heads: dict[str, FleetHealthEvidence] | None = None,
+        verified_grants: list[tuple[EnrollmentGrant, dict[str, Any]]] | None = None,
+        verified_rollouts: (
+            dict[str, tuple[FleetRolloutPlan, dict[str, Any]]] | None
+        ) = None,
+        verified_health_rows: list[FleetHealthEvidence] | None = None,
+        verified_health_records: (
+            dict[tuple[str, str], tuple[str, FleetHealthEvidence]] | None
+        ) = None,
+        verify_health_signatures: bool | None = None,
     ) -> Mapping[str, Any]:
         manifest = self._verified_custody_manifest_locked(tenant_id)
-        expected = {
-            **self._custody_projection_locked(tenant_id, verified_health_heads),
-            "generation": int(manifest["generation"]),
-        }
+        projection_mode = manifest.get("health_projection_mode")
+        legacy_projection = (
+            manifest["schema"] == CUSTODY_SCHEMA_ID
+            or projection_mode is None
+        )
+        if verify_health_signatures is None:
+            # V2's tenant-key custody seal covers the exact canonical row hash,
+            # row binding, HMAC-authenticated core, and retained chain.  Device
+            # signatures were verified at intake; legacy migration rechecks them
+            # before the first V2 seal.  Avoid repeating public-key work on every
+            # steady-state mutation without trusting any unauthenticated row.
+            verify_health_signatures = legacy_projection
+        health_records = (
+            verified_health_records
+            if verified_health_records is not None
+            else {}
+        )
+        projection = self._custody_projection_locked(
+            tenant_id,
+            verified_health_heads,
+            verified_grants,
+            verified_rollouts,
+            verified_health_rows,
+            health_records,
+            verify_health_signatures=verify_health_signatures,
+            health_projection_mode=projection_mode,
+            custody_schema=str(manifest["schema"]),
+        )
+        expected = {**projection, "generation": int(manifest["generation"])}
         if manifest != expected:
             raise RuntimeError("fleet custody checkpoint does not match retained evidence")
+        if legacy_projection:
+            return self._seal_migrated_custody_locked(
+                tenant_id, manifest, health_records
+            )
         return manifest
 
-    def _write_custody_locked(self, tenant_id: str) -> Mapping[str, Any]:
-        row = self._db.execute(
-            "SELECT generation FROM fabric_custody WHERE tenant_id=?", (tenant_id,)
-        ).fetchone()
-        if row is None:
-            generation = 1
+    def _write_custody_locked(
+        self,
+        tenant_id: str,
+        *,
+        verified_manifest: Mapping[str, Any] | None = None,
+        preverified_health_records: (
+            Mapping[tuple[str, str], tuple[str, FleetHealthEvidence]] | None
+        ) = None,
+    ) -> Mapping[str, Any]:
+        if verified_manifest is None:
+            row = self._db.execute(
+                "SELECT generation FROM fabric_custody WHERE tenant_id=?", (tenant_id,)
+            ).fetchone()
+            if row is None:
+                generation = 1
+            else:
+                current = self._verified_custody_manifest_locked(tenant_id)
+                generation = int(current["generation"]) + 1
         else:
-            current = self._verified_custody_manifest_locked(tenant_id)
-            generation = int(current["generation"]) + 1
-        manifest = {**self._custody_projection_locked(tenant_id), "generation": generation}
+            if (
+                verified_manifest.get("schema") != CUSTODY_MANIFEST_SCHEMA_ID
+                or verified_manifest.get("tenant_id") != tenant_id
+                or type(verified_manifest.get("generation")) is not int
+                or int(verified_manifest["generation"]) < 1
+            ):
+                raise RuntimeError("verified fleet custody transaction state is invalid")
+            generation = int(verified_manifest["generation"]) + 1
+        manifest = {
+            **self._custody_projection_locked(
+                tenant_id,
+                preverified_health_records=preverified_health_records,
+            ),
+            "generation": generation,
+        }
         encoded = _canonical(manifest).decode("utf-8")
         seal = _hmac(self._key(tenant_id), b"fabric-custody", manifest)
-        self._db.execute(
-            "INSERT INTO fabric_custody VALUES (?,?,?,?) "
-            "ON CONFLICT(tenant_id) DO UPDATE SET generation=excluded.generation,"
-            "manifest_json=excluded.manifest_json,manifest_hmac=excluded.manifest_hmac",
-            (tenant_id, generation, encoded, seal),
+        if verified_manifest is None:
+            self._db.execute(
+                "INSERT INTO fabric_custody VALUES (?,?,?,?) "
+                "ON CONFLICT(tenant_id) DO UPDATE SET generation=excluded.generation,"
+                "manifest_json=excluded.manifest_json,manifest_hmac=excluded.manifest_hmac",
+                (tenant_id, generation, encoded, seal),
+            )
+        else:
+            cursor = self._db.execute(
+                "UPDATE fabric_custody SET generation=?,manifest_json=?,manifest_hmac=? "
+                "WHERE tenant_id=? AND generation=? AND manifest_hmac=?",
+                (
+                    generation,
+                    encoded,
+                    seal,
+                    tenant_id,
+                    verified_manifest["generation"],
+                    _hmac(
+                        self._key(tenant_id),
+                        b"fabric-custody",
+                        verified_manifest,
+                    ),
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("fleet custody checkpoint changed during mutation")
+        return manifest
+
+    def _write_incremental_health_custody_locked(
+        self,
+        tenant_id: str,
+        verified_manifest: Mapping[str, Any],
+        *,
+        old_heads: Mapping[str, FleetHealthEvidence],
+        old_retained_counts: Mapping[str, int],
+        new_heads: Mapping[str, FleetHealthEvidence],
+        new_retained_counts: Mapping[str, int],
+        added_record: tuple[str, FleetHealthEvidence],
+        pruned_records: tuple[tuple[str, FleetHealthEvidence], ...],
+        tombstone_head: str | None,
+        sequence_gap: int,
+    ) -> dict[str, Any]:
+        """Advance a guarded V2 projection using only the known health delta."""
+        if (
+            verified_manifest.get("schema") != CUSTODY_MANIFEST_SCHEMA_ID
+            or verified_manifest.get("health_projection_mode")
+            != _HEALTH_PROJECTION_MODE
+            or verified_manifest.get("tenant_id") != tenant_id
+        ):
+            raise RuntimeError("verified fleet custody transaction state is invalid")
+        evidence_accumulator = int(
+            _digest(
+                verified_manifest["health_evidence_digest"],
+                "health evidence projection digest",
+            ),
+            16,
         )
+        for encoded, evidence in (added_record, *pruned_records):
+            evidence_accumulator ^= int(
+                self._xor_projection_digest(
+                    b"fleet-health-exact-row-projection-v1",
+                    [self._health_exact_row_projection(encoded, evidence)],
+                ),
+                16,
+            )
+
+        head_accumulator = int(
+            _digest(
+                verified_manifest["health_heads_digest"],
+                "health head projection digest",
+            ),
+            16,
+        )
+        affected_devices = {
+            added_record[1].sample.device_id,
+            *(evidence.sample.device_id for _encoded, evidence in pruned_records),
+        }
+        for device_id in affected_devices:
+            old_head = old_heads.get(device_id)
+            old_count = int(old_retained_counts.get(device_id, 0))
+            if old_head is not None:
+                head_accumulator ^= int(
+                    self._xor_projection_digest(
+                        b"fleet-health-head-projection-v1",
+                        [self._health_head_projection(old_head, old_count)],
+                    ),
+                    16,
+                )
+            new_head = new_heads.get(device_id)
+            new_count = int(new_retained_counts.get(device_id, 0))
+            if new_head is None or new_count < 1:
+                raise RuntimeError("health mutation cannot discard an authenticated head")
+            head_accumulator ^= int(
+                self._xor_projection_digest(
+                    b"fleet-health-head-projection-v1",
+                    [self._health_head_projection(new_head, new_count)],
+                ),
+                16,
+            )
+
+        counts = dict(verified_manifest["counts"])
+        counts["health_evidence"] = (
+            int(counts["health_evidence"]) + 1 - len(pruned_records)
+        )
+        counts["health_heads"] = len(new_heads)
+        if tombstone_head is not None:
+            counts["prune_tombstones"] = int(counts["prune_tombstones"]) + 1
+        stats = dict(verified_manifest["stats"])
+        stats["health_retention_drops"] = (
+            int(stats["health_retention_drops"]) + len(pruned_records)
+        )
+        stats["health_sequence_gaps"] = (
+            int(stats["health_sequence_gaps"]) + sequence_gap
+        )
+        manifest = {
+            **dict(verified_manifest),
+            "generation": int(verified_manifest["generation"]) + 1,
+            "counts": counts,
+            "stats": stats,
+            "health_heads_digest": f"{head_accumulator:064x}",
+            "health_evidence_digest": f"{evidence_accumulator:064x}",
+            "prune_tombstone_head": (
+                tombstone_head
+                if tombstone_head is not None
+                else verified_manifest["prune_tombstone_head"]
+            ),
+        }
+        encoded = _canonical(manifest).decode("utf-8")
+        seal = _hmac(self._key(tenant_id), b"fabric-custody", manifest)
+        cursor = self._db.execute(
+            "UPDATE fabric_custody SET generation=?,manifest_json=?,manifest_hmac=? "
+            "WHERE tenant_id=? AND generation=? AND manifest_hmac=?",
+            (
+                manifest["generation"],
+                encoded,
+                seal,
+                tenant_id,
+                verified_manifest["generation"],
+                _hmac(
+                    self._key(tenant_id),
+                    b"fabric-custody",
+                    verified_manifest,
+                ),
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError("fleet custody checkpoint changed during mutation")
         return manifest
 
     def _authenticated_timestamp_floor_locked(self, tenant_id: str) -> float:
@@ -1378,34 +2309,69 @@ class FleetFabricStore:
         _count, _head, newest_prune = self._verified_tombstone_state_locked(tenant_id)
         return max(floor, newest_prune)
 
+    def _verified_clock_floor_locked(self, tenant_id: str) -> float:
+        tenant = _identifier(tenant_id, "tenant ID")
+        key = self._key(tenant)
+        row = self._db.execute(
+            "SELECT last_seen,clock_hmac FROM fabric_clock_floor WHERE tenant_id=?",
+            (tenant,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("fleet fabric clock floor is unavailable")
+        floor = float(row[0])
+        core = {"tenant_id": tenant, "last_seen": floor}
+        if not hmac.compare_digest(
+            str(row[1]), _hmac(key, b"clock-floor", core)
+        ):
+            raise RuntimeError("fleet fabric clock floor integrity failed")
+        return floor
+
+    def _peek_now_locked(self, tenant_id: str) -> float:
+        """Read and verify time without changing durable or process state."""
+        tenant = _identifier(tenant_id, "tenant ID")
+        stamp = _timestamp(self._clock(), "fleet fabric time")
+        if self._last_clock is not None and stamp < self._last_clock:
+            raise RuntimeError("fleet fabric clock moved backwards")
+        if stamp < self._verified_clock_floor_locked(tenant):
+            raise RuntimeError("fleet fabric clock moved backwards")
+        return stamp
+
+    def _advance_clock_floor_locked(self, tenant_id: str, stamp: float) -> None:
+        """Advance the authenticated floor as part of the caller's transaction."""
+        if not self._db.in_transaction:
+            raise RuntimeError("fleet fabric clock floor requires an active transaction")
+        tenant = _identifier(tenant_id, "tenant ID")
+        key = self._key(tenant)
+        verified_stamp = _timestamp(stamp, "fleet fabric time")
+        if self._last_clock is not None and verified_stamp < self._last_clock:
+            raise RuntimeError("fleet fabric clock moved backwards")
+        if verified_stamp < self._verified_clock_floor_locked(tenant):
+            raise RuntimeError("fleet fabric clock moved backwards")
+        replacement = {"tenant_id": tenant, "last_seen": verified_stamp}
+        cursor = self._db.execute(
+            "UPDATE fabric_clock_floor SET last_seen=?,clock_hmac=? "
+            "WHERE tenant_id=?",
+            (
+                verified_stamp,
+                _hmac(key, b"clock-floor", replacement),
+                tenant,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError("fleet fabric clock floor changed unexpectedly")
+
     def _now(self, tenant_id: str) -> float:
         with self._lock:
-            tenant = _identifier(tenant_id, "tenant ID")
-            key = self._key(tenant)
-            stamp = _timestamp(self._clock(), "fleet fabric time")
-            if self._last_clock is not None and stamp < self._last_clock:
-                raise RuntimeError("fleet fabric clock moved backwards")
-            row = self._db.execute(
-                "SELECT last_seen,clock_hmac FROM fabric_clock_floor WHERE tenant_id=?",
-                (tenant,),
-            ).fetchone()
-            if row is None:
-                raise RuntimeError("fleet fabric clock floor is unavailable")
-            floor = float(row[0])
-            core = {"tenant_id": tenant, "last_seen": floor}
-            if not hmac.compare_digest(
-                str(row[1]), _hmac(key, b"clock-floor", core)
-            ):
-                raise RuntimeError("fleet fabric clock floor integrity failed")
-            if stamp < floor:
-                raise RuntimeError("fleet fabric clock moved backwards")
-            replacement = {"tenant_id": tenant, "last_seen": stamp}
-            self._db.execute(
-                "UPDATE fabric_clock_floor SET last_seen=?,clock_hmac=? "
-                "WHERE tenant_id=?",
-                (stamp, _hmac(key, b"clock-floor", replacement), tenant),
-            )
-            self._db.commit()
+            stamp = self._peek_now_locked(tenant_id)
+            try:
+                if not self._db.in_transaction:
+                    self._db.execute("BEGIN IMMEDIATE")
+                self._advance_clock_floor_locked(tenant_id, stamp)
+                self._db.commit()
+            except Exception:
+                if self._db.in_transaction:
+                    self._db.rollback()
+                raise
             self._last_clock = stamp
             return stamp
 
@@ -1477,17 +2443,12 @@ class FleetFabricStore:
             ),
         )
 
-    def _local_device_binding_locked(
-        self, tenant_id: str, device_id: str
-    ) -> dict[str, Any] | None:
-        row = self._db.execute(
-            "SELECT device_public_key_sha256,enrolled_at,binding_hmac,"
-            "device_public_key_ed25519,binding_generation "
-            "FROM fabric_enrolled_devices WHERE tenant_id=? AND device_id=?",
-            (tenant_id, device_id),
-        ).fetchone()
-        if row is None:
-            return None
+    def _decode_device_binding_row_locked(
+        self,
+        tenant_id: str,
+        device_id: str,
+        row: tuple[Any, ...],
+    ) -> dict[str, Any]:
         core = {
             "tenant_id": tenant_id,
             "device_id": device_id,
@@ -1506,6 +2467,21 @@ class FleetFabricStore:
         ):
             raise RuntimeError("enrolled device binding integrity verification failed")
         return core
+
+    def _local_device_binding_locked(
+        self, tenant_id: str, device_id: str
+    ) -> dict[str, Any] | None:
+        row = self._db.execute(
+            "SELECT device_public_key_sha256,enrolled_at,binding_hmac,"
+            "device_public_key_ed25519,binding_generation "
+            "FROM fabric_enrolled_devices WHERE tenant_id=? AND device_id=?",
+            (tenant_id, device_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._decode_device_binding_row_locked(
+            tenant_id, device_id, tuple(row)
+        )
 
     def _verified_control_plane_devices_locked(
         self, tenant_id: str
@@ -1984,17 +2960,12 @@ class FleetFabricStore:
             "response_authority": "none",
         }
 
-    def _health_head_locked(
-        self, tenant_id: str, device_id: str
-    ) -> dict[str, Any] | None:
-        row = self._db.execute(
-            "SELECT binding_generation,sequence,evidence_digest,accepted_total,"
-            "dropped_total,rejected_total,head_hmac FROM fabric_health_heads "
-            "WHERE tenant_id=? AND device_id=?",
-            (tenant_id, device_id),
-        ).fetchone()
-        if row is None:
-            return None
+    def _decode_health_head_row_locked(
+        self,
+        tenant_id: str,
+        device_id: str,
+        row: tuple[Any, ...],
+    ) -> dict[str, Any]:
         core = {
             "tenant_id": tenant_id,
             "device_id": device_id,
@@ -2010,6 +2981,19 @@ class FleetFabricStore:
         if not hmac.compare_digest(str(row[6]), expected):
             raise RuntimeError("health chain head integrity verification failed")
         return core
+
+    def _health_head_locked(
+        self, tenant_id: str, device_id: str
+    ) -> dict[str, Any] | None:
+        row = self._db.execute(
+            "SELECT binding_generation,sequence,evidence_digest,accepted_total,"
+            "dropped_total,rejected_total,head_hmac FROM fabric_health_heads "
+            "WHERE tenant_id=? AND device_id=?",
+            (tenant_id, device_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._decode_health_head_row_locked(tenant_id, device_id, tuple(row))
 
     def _write_health_head_locked(self, evidence: FleetHealthEvidence) -> None:
         sample = evidence.sample
@@ -2050,16 +3034,24 @@ class FleetFabricStore:
         if not isinstance(envelope, SignedFleetHealthEnvelope):
             raise TypeError(
                 "health intake requires a device-signed SignedFleetHealthEnvelope"
-            )
+        )
         sample = envelope.sample
         key = self._key(sample.tenant_id)
-        stamp = self._now(sample.tenant_id)
-        if sample.observed_at > stamp:
-            raise ValueError("health observation may not be in the future")
         with self._lock:
+            cached_custody = self._health_custody_cache.get(sample.tenant_id)
+            changes_before_admission = int(self._db.total_changes)
+            data_version_before_admission = self._sqlite_data_version_locked()
+            cache_candidate = bool(
+                cached_custody is not None
+                and cached_custody.total_changes == changes_before_admission
+                and cached_custody.data_version == data_version_before_admission
+            )
+            stamp = self._peek_now_locked(sample.tenant_id)
+            if sample.observed_at > stamp:
+                raise ValueError("health observation may not be in the future")
+            volatile_reservation: _VolatileHealthRateReservation | None = None
             try:
                 self._db.execute("BEGIN IMMEDIATE")
-                self._verify_custody_locked(sample.tenant_id)
                 binding = self._active_device_binding_locked(
                     sample.tenant_id, sample.device_id
                 )
@@ -2112,6 +3104,7 @@ class FleetFabricStore:
                         expected_device_id=sample.device_id,
                         expected_sample_id=sample.sample_id,
                         expected_observed_at=sample.observed_at,
+                        verified_binding=binding,
                     )
                     if (
                         stored.sample == sample
@@ -2122,6 +3115,9 @@ class FleetFabricStore:
                         and stored.device_signature_ed25519
                         == envelope.signature_ed25519
                     ):
+                        # An exact, independently authenticated replay exposes no
+                        # aggregate state and performs no mutation, so it does not
+                        # need to force a retained-set scan.
                         self._db.rollback()
                         return stored
                     raise ValueError("health sample ID conflicts with another observation")
@@ -2150,6 +3146,57 @@ class FleetFabricStore:
                     ):
                         raise ValueError("health loss delta does not match cumulative history")
                     sequence_gap = envelope.sequence - int(head["sequence"]) - 1
+
+                # Cheap row/binding/signature/replay admission above prevents an
+                # unauthenticated submission from forcing an O(retained) custody
+                # walk.  No state changes until the complete custody boundary has
+                # verified inside the same BEGIN IMMEDIATE transaction.
+                verified_health_heads: dict[str, FleetHealthEvidence] = {}
+                verified_health_records: dict[
+                    tuple[str, str], tuple[str, FleetHealthEvidence]
+                ] = {}
+                current_manifest = self._verified_custody_manifest_locked(
+                    sample.tenant_id
+                )
+                if (
+                    cache_candidate
+                    and cached_custody is not None
+                    and int(self._db.total_changes) == changes_before_admission
+                    and self._sqlite_data_version_locked()
+                    == data_version_before_admission
+                    and current_manifest == cached_custody.manifest
+                ):
+                    verified_manifest = current_manifest
+                    verified_health_heads.update(cached_custody.heads)
+                    verified_health_records.update(cached_custody.records)
+                    retained_counts = dict(cached_custody.retained_counts)
+                    verified_rate_state = cached_custody.rate_state
+                else:
+                    verified_manifest = self._verify_custody_locked(
+                        sample.tenant_id,
+                        verified_health_heads=verified_health_heads,
+                        verified_health_records=verified_health_records,
+                    )
+                    retained_counts: dict[str, int] = {}
+                    for device_id, _sample_id in verified_health_records:
+                        retained_counts[device_id] = (
+                            retained_counts.get(device_id, 0) + 1
+                        )
+                    verified_rate_state = (
+                        self._health_rate_state_from_records_locked(
+                            sample.tenant_id,
+                            verified_manifest,
+                            verified_health_records,
+                        )
+                    )
+                updated_rate_state = self._admit_persistent_health_rate_locked(
+                    sample.tenant_id,
+                    sample.device_id,
+                    stamp,
+                    verified_rate_state,
+                )
+                old_heads = dict(verified_health_heads)
+                old_retained_counts = dict(retained_counts)
                 core = {
                     "sample": asdict(sample),
                     "recorded_at": stamp,
@@ -2170,6 +3217,10 @@ class FleetFabricStore:
                     evidence_hmac=_hmac(key, b"health-evidence", core),
                 )
                 encoded = _canonical(asdict(evidence)).decode("utf-8")
+                if len(encoded.encode("utf-8")) > MAX_HEALTH_EVIDENCE_BYTES:
+                    raise ValueError("health evidence exceeds its storage byte budget")
+                mutation_changes = int(self._db.total_changes)
+                self._advance_clock_floor_locked(sample.tenant_id, stamp)
                 self._db.execute(
                     "INSERT INTO fabric_health VALUES (?,?,?,?,?)",
                     (
@@ -2181,82 +3232,245 @@ class FleetFabricStore:
                     ),
                 )
                 self._write_health_head_locked(evidence)
+                verified_health_records[(sample.device_id, sample.sample_id)] = (
+                    encoded,
+                    evidence,
+                )
+                verified_health_heads[sample.device_id] = evidence
+                retained_counts[sample.device_id] = (
+                    retained_counts.get(sample.device_id, 0) + 1
+                )
                 if sequence_gap:
                     self._increment_stat_locked(
                         sample.tenant_id, "health_sequence_gaps", sequence_gap
                     )
-                self._prune_health_locked(sample.tenant_id, stamp)
-                self._write_custody_locked(sample.tenant_id)
-                self._db.commit()
+                pruned, tombstone_head = self._prune_health_locked(
+                    sample.tenant_id,
+                    stamp,
+                    preverified_health_records=verified_health_records,
+                    preverified_health_heads=verified_health_heads,
+                    verified_custody=verified_manifest,
+                )
+                pruned_records = tuple(
+                    verified_health_records[row_key] for row_key in pruned
+                )
+                for row_key in pruned:
+                    del verified_health_records[row_key]
+                    retained_counts[row_key[0]] -= 1
+                expected_changes = 3 + (1 if sequence_gap else 0)
+                if pruned:
+                    expected_changes += len(pruned) + 2
+                if int(self._db.total_changes) != mutation_changes + expected_changes:
+                    raise RuntimeError("fleet health mutation changed unexpected rows")
+                updated_manifest = self._write_incremental_health_custody_locked(
+                    sample.tenant_id,
+                    verified_manifest,
+                    old_heads=old_heads,
+                    old_retained_counts=old_retained_counts,
+                    new_heads=verified_health_heads,
+                    new_retained_counts=retained_counts,
+                    added_record=(encoded, evidence),
+                    pruned_records=pruned_records,
+                    tombstone_head=tombstone_head,
+                    sequence_gap=sequence_gap,
+                )
+                if (
+                    int(self._db.total_changes)
+                    != mutation_changes + expected_changes + 1
+                ):
+                    raise RuntimeError("fleet custody mutation changed unexpected rows")
+                volatile_reservation = (
+                    self._reserve_volatile_health_rate_locked(
+                        sample.tenant_id,
+                        sample.device_id,
+                    )
+                )
+                self._commit_health_transaction_locked()
+                volatile_reservation.commit()
+                volatile_reservation = None
+                self._last_clock = stamp
+                self._install_health_custody_cache_locked(
+                    sample.tenant_id,
+                    updated_manifest,
+                    verified_health_records,
+                    verified_health_heads,
+                    rate_state=updated_rate_state,
+                )
                 return evidence
             except Exception:
                 if self._db.in_transaction:
                     self._db.rollback()
                 raise
+            finally:
+                if volatile_reservation is not None:
+                    volatile_reservation.cancel()
 
-    def _prune_health_locked(self, tenant_id: str, pruned_at: float) -> None:
+    def _prune_health_locked(
+        self,
+        tenant_id: str,
+        pruned_at: float,
+        *,
+        preverified_health_records: (
+            Mapping[tuple[str, str], tuple[str, FleetHealthEvidence]] | None
+        ) = None,
+        preverified_health_heads: Mapping[str, FleetHealthEvidence] | None = None,
+        verified_custody: Mapping[str, Any] | None = None,
+    ) -> tuple[tuple[tuple[str, str], ...], str | None]:
         count = int(self._db.execute(
             "SELECT COUNT(*) FROM fabric_health WHERE tenant_id=?", (tenant_id,)
         ).fetchone()[0])
         excess = count - self._max_health
         if excess <= 0:
-            return
-        rows = self._db.execute(
-            "SELECT evidence_json,device_id,sample_id,observed_at FROM fabric_health "
-            "WHERE tenant_id=? ORDER BY observed_at,device_id,sample_id",
-            (tenant_id,),
-        ).fetchall()
-        head_rows = self._db.execute(
-            "SELECT device_id FROM fabric_health_heads WHERE tenant_id=?",
-            (tenant_id,),
-        ).fetchall()
-        retained_heads = {
-            str(head["evidence_digest"])
-            for row in head_rows
-            if (head := self._health_head_locked(tenant_id, str(row[0]))) is not None
-        }
-        candidates: list[tuple[tuple[str, str, str], Mapping[str, Any]]] = []
-        for encoded, device_id, sample_id, observed_at in rows:
-            evidence = self._decode_health(
-                str(encoded),
-                tenant_id,
-                expected_device_id=str(device_id),
-                expected_sample_id=str(sample_id),
-                expected_observed_at=float(observed_at),
-            )
-            if evidence.digest in retained_heads:
-                continue
-            candidates.append((
-                (tenant_id, str(device_id), str(sample_id)),
-                {
-                    "device_id": str(device_id),
-                    "sample_id": str(sample_id),
-                    "evidence_digest": evidence.digest,
-                    "sequence": evidence.sequence,
-                    "observed_at": evidence.sample.observed_at,
-                    "recorded_at": evidence.recorded_at,
-                },
-            ))
-        if len(candidates) < excess:
+            return (), None
+        candidates_by_device: dict[
+            str,
+            list[tuple[tuple[str, str, str], Mapping[str, Any], FleetHealthEvidence]],
+        ] = {}
+        if preverified_health_records is not None:
+            if (
+                preverified_health_heads is None
+                or count != len(preverified_health_records)
+            ):
+                raise RuntimeError(
+                    "verified health transaction snapshot changed unexpectedly"
+                )
+            grouped: dict[str, list[FleetHealthEvidence]] = {}
+            for (device_id, sample_id), (_encoded, evidence) in (
+                preverified_health_records.items()
+            ):
+                if (
+                    evidence.sample.tenant_id != tenant_id
+                    or evidence.sample.device_id != device_id
+                    or evidence.sample.sample_id != sample_id
+                ):
+                    raise RuntimeError("verified health transaction state is invalid")
+                grouped.setdefault(device_id, []).append(evidence)
+            if set(grouped) != set(preverified_health_heads):
+                raise RuntimeError(
+                    "verified health transaction snapshot changed unexpectedly"
+                )
+            for device_id, evidence_rows in grouped.items():
+                evidence_rows.sort(
+                    key=lambda evidence: (
+                        evidence.sequence,
+                        evidence.sample.sample_id,
+                    )
+                )
+                head = preverified_health_heads[device_id]
+                if evidence_rows[-1].digest != head.digest:
+                    raise RuntimeError(
+                        "verified health transaction snapshot changed unexpectedly"
+                    )
+                for evidence in evidence_rows[:-1]:
+                    candidates_by_device.setdefault(device_id, []).append((
+                        (tenant_id, device_id, evidence.sample.sample_id),
+                        {
+                            "device_id": device_id,
+                            "sample_id": evidence.sample.sample_id,
+                            "evidence_digest": evidence.digest,
+                            "sequence": evidence.sequence,
+                            "observed_at": evidence.sample.observed_at,
+                            "recorded_at": evidence.recorded_at,
+                        },
+                        evidence,
+                    ))
+        else:
+            rows = self._db.execute(
+                "SELECT evidence_json,device_id,sample_id,observed_at FROM fabric_health "
+                "WHERE tenant_id=? ORDER BY observed_at,device_id,sample_id",
+                (tenant_id,),
+            ).fetchall()
+            head_rows = self._db.execute(
+                "SELECT device_id FROM fabric_health_heads WHERE tenant_id=?",
+                (tenant_id,),
+            ).fetchall()
+            retained_heads = {
+                str(head["evidence_digest"])
+                for row in head_rows
+                if (head := self._health_head_locked(tenant_id, str(row[0]))) is not None
+            }
+            for encoded, device_id, sample_id, observed_at in rows:
+                evidence = self._decode_health(
+                    str(encoded),
+                    tenant_id,
+                    expected_device_id=str(device_id),
+                    expected_sample_id=str(sample_id),
+                    expected_observed_at=float(observed_at),
+                )
+                if evidence.digest in retained_heads:
+                    continue
+                candidates_by_device.setdefault(str(device_id), []).append((
+                    (tenant_id, str(device_id), str(sample_id)),
+                    {
+                        "device_id": str(device_id),
+                        "sample_id": str(sample_id),
+                        "evidence_digest": evidence.digest,
+                        "sequence": evidence.sequence,
+                        "observed_at": evidence.sample.observed_at,
+                        "recorded_at": evidence.recorded_at,
+                    },
+                    evidence,
+                ))
+        for device_rows in candidates_by_device.values():
+            device_rows.sort(key=lambda item: item[2].sequence)
+        if sum(len(items) for items in candidates_by_device.values()) < excess:
             raise OverflowError(
                 "health evidence bound cannot discard authenticated device chain heads"
             )
-        selected = candidates[:excess]
+        heap: list[tuple[float, str, str, int]] = []
+        for device_id, device_rows in candidates_by_device.items():
+            first = device_rows[0]
+            heapq.heappush(
+                heap,
+                (float(first[1]["observed_at"]), device_id, first[0][2], 0),
+            )
+        selected: list[tuple[tuple[str, str, str], Mapping[str, Any]]] = []
+        while len(selected) < excess:
+            if not heap:
+                raise OverflowError(
+                    "health evidence bound cannot preserve retained chain continuity"
+                )
+            _observed_at, device_id, _sample_id, index = heapq.heappop(heap)
+            primary_key, projection, _evidence = candidates_by_device[device_id][index]
+            selected.append((primary_key, projection))
+            next_index = index + 1
+            if next_index < len(candidates_by_device[device_id]):
+                next_row = candidates_by_device[device_id][next_index]
+                heapq.heappush(
+                    heap,
+                    (
+                        float(next_row[1]["observed_at"]),
+                        device_id,
+                        next_row[0][2],
+                        next_index,
+                    ),
+                )
         projection = [item[1] for item in selected]
         batch_digest = self._projection_digest(projection)
-        self._append_prune_tombstone_locked(
+        verified_tombstone_state = None
+        if verified_custody is not None:
+            verified_tombstone_state = (
+                int(verified_custody["counts"]["prune_tombstones"]),
+                str(verified_custody["prune_tombstone_head"]),
+            )
+        tombstone_head = self._append_prune_tombstone_locked(
             tenant_id,
             domain="health-evidence",
             subject_id=f"health-{batch_digest[:32]}",
             row_count=len(selected),
             projection=projection,
             pruned_at=pruned_at,
+            verified_state=verified_tombstone_state,
         )
         self._db.executemany(
             "DELETE FROM fabric_health WHERE tenant_id=? AND device_id=? AND sample_id=?",
             [item[0] for item in selected],
         )
         self._increment_stat_locked(tenant_id, "health_retention_drops", len(selected))
+        return (
+            tuple((item[0][1], item[0][2]) for item in selected),
+            tombstone_head,
+        )
 
     def _decode_health(
         self,
@@ -2266,8 +3480,15 @@ class FleetFabricStore:
         expected_device_id: str | None = None,
         expected_sample_id: str | None = None,
         expected_observed_at: float | None = None,
+        verified_binding: Mapping[str, Any] | None = None,
+        verify_device_signature: bool = True,
     ) -> FleetHealthEvidence:
         try:
+            if (
+                not isinstance(encoded, str)
+                or len(encoded.encode("utf-8")) > MAX_HEALTH_EVIDENCE_BYTES
+            ):
+                raise ValueError("health evidence exceeds its storage byte budget")
             value = json.loads(encoded)
             if not isinstance(value, dict) or set(value) != {
                 "sample",
@@ -2291,6 +3512,8 @@ class FleetFabricStore:
                 device_signature_ed25519=str(value["device_signature_ed25519"]),
                 evidence_hmac=str(value["evidence_hmac"]),
             )
+            if _canonical(asdict(evidence)).decode("utf-8") != encoded:
+                raise ValueError("health evidence encoding is not canonical")
             if sample.tenant_id != tenant_id:
                 raise ValueError("health tenant binding mismatch")
             if expected_device_id is not None and sample.device_id != expected_device_id:
@@ -2309,9 +3532,15 @@ class FleetFabricStore:
                 evidence.evidence_hmac, expected
             ):
                 raise ValueError("health authenticator mismatch")
-            binding = self._local_device_binding_locked(tenant_id, sample.device_id)
+            binding = (
+                dict(verified_binding)
+                if verified_binding is not None
+                else self._local_device_binding_locked(tenant_id, sample.device_id)
+            )
             if (
                 binding is None
+                or binding.get("tenant_id") != tenant_id
+                or binding.get("device_id") != sample.device_id
                 or binding["binding_generation"] != evidence.binding_generation
                 or not hmac.compare_digest(
                     str(binding["device_public_key_sha256"]),
@@ -2319,23 +3548,26 @@ class FleetFabricStore:
                 )
             ):
                 raise ValueError("health device binding is unavailable")
-            Ed25519PublicKey.from_public_bytes(
-                _decode_b64(
-                    binding["device_public_key_ed25519"], 32, "Ed25519 public key"
+            if verify_device_signature:
+                Ed25519PublicKey.from_public_bytes(
+                    _decode_b64(
+                        binding["device_public_key_ed25519"],
+                        32,
+                        "Ed25519 public key",
+                    )
+                ).verify(
+                    _decode_b64(
+                        evidence.device_signature_ed25519,
+                        64,
+                        "Ed25519 health signature",
+                    ),
+                    health_possession_payload(
+                        sample,
+                        binding_generation=evidence.binding_generation,
+                        sequence=evidence.sequence,
+                        previous_evidence_digest=evidence.previous_evidence_digest,
+                    ),
                 )
-            ).verify(
-                _decode_b64(
-                    evidence.device_signature_ed25519,
-                    64,
-                    "Ed25519 health signature",
-                ),
-                health_possession_payload(
-                    sample,
-                    binding_generation=evidence.binding_generation,
-                    sequence=evidence.sequence,
-                    previous_evidence_digest=evidence.previous_evidence_digest,
-                ),
-            )
             return evidence
         except (
             InvalidSignature,
@@ -2354,32 +3586,65 @@ class FleetFabricStore:
         stamp = self._now(tenant)
         with self._lock:
             verified_latest: dict[str, FleetHealthEvidence] = {}
-            self._verify_custody_locked(tenant, verified_latest)
-            roster = self._active_device_roster_locked(tenant)
+            verified_rows: list[FleetHealthEvidence] = []
+            custody = self._verify_custody_locked(
+                tenant,
+                verified_health_heads=verified_latest,
+                verified_health_rows=verified_rows,
+            )
+            return self._health_snapshot_locked(
+                tenant,
+                limit=limit,
+                stamp=stamp,
+                verified_latest=verified_latest,
+                stats=dict(custody["stats"]),
+                verified_evidence=verified_rows,
+            )
+
+    def _health_snapshot_locked(
+        self,
+        tenant_id: str,
+        *,
+        limit: int,
+        stamp: float,
+        verified_latest: Mapping[str, FleetHealthEvidence],
+        stats: Mapping[str, Any],
+        verified_evidence: list[FleetHealthEvidence] | None = None,
+    ) -> HealthSnapshot:
+        """Build a health view from one already-verified custody snapshot."""
+        roster = self._active_device_roster_locked(tenant_id)
+        if verified_evidence is None:
             total = int(self._db.execute(
-                "SELECT COUNT(*) FROM fabric_health WHERE tenant_id=?", (tenant,)
+                "SELECT COUNT(*) FROM fabric_health WHERE tenant_id=?", (tenant_id,)
             ).fetchone()[0])
             rows = self._db.execute(
                 "SELECT evidence_json,device_id,sample_id,observed_at "
                 "FROM fabric_health WHERE tenant_id=? "
                 "ORDER BY observed_at DESC,device_id,sample_id LIMIT ?",
-                (tenant, limit),
+                (tenant_id, limit),
             ).fetchall()
-            stats = self._verified_stats_locked(tenant)
             evidence = tuple(self._decode_health(
                 str(row[0]),
-                tenant,
+                tenant_id,
                 expected_device_id=str(row[1]),
                 expected_sample_id=str(row[2]),
                 expected_observed_at=float(row[3]),
+            ) for row in rows)
+        else:
+            ordered = sorted(
+                verified_evidence,
+                key=lambda item: (
+                    item.sample.device_id,
+                    item.sample.sample_id,
+                ),
             )
-            for row in rows
-            )
-            latest_evidence = verified_latest
+            ordered.sort(key=lambda item: item.sample.observed_at, reverse=True)
+            total = len(ordered)
+            evidence = tuple(ordered[:limit])
         roster_set = set(roster)
         latest = {
             device_id: item
-            for device_id, item in latest_evidence.items()
+            for device_id, item in verified_latest.items()
             if device_id in roster_set
         }
         missing_ids = tuple(sorted(roster_set - set(latest)))
@@ -2413,7 +3678,7 @@ class FleetFabricStore:
             else "authenticated-local-chain-heads-contiguous"
         )
         return HealthSnapshot(
-            tenant,
+            tenant_id,
             evidence,
             total,
             total > len(evidence),
@@ -2638,6 +3903,15 @@ class FleetFabricStore:
             "WHERE tenant_id=? AND rollout_id=? ORDER BY version",
             (plan.tenant_id, plan.rollout_id),
         ).fetchall()
+        return self._verify_rollout_history_rows_locked(plan, current, rows)
+
+    def _verify_rollout_history_rows_locked(
+        self,
+        plan: FleetRolloutPlan,
+        current: Mapping[str, Any],
+        rows: list[tuple[Any, ...]],
+    ) -> tuple[int, str]:
+        """Verify one complete preloaded rollout chain without per-row queries."""
         previous_digest = ZERO_DIGEST
         last_record: Mapping[str, Any] | None = None
         for expected_version, row in enumerate(rows, start=1):
@@ -2670,17 +3944,15 @@ class FleetFabricStore:
             raise RuntimeError("rollout state is not bound to its authenticated history")
         return len(rows), previous_digest
 
-    def _load_rollout_locked(
-        self, tenant_id: str, rollout_id: str
+    def _decode_rollout_row_locked(
+        self,
+        tenant_id: str,
+        rollout_id: str,
+        row: tuple[Any, ...],
+        *,
+        history_rows: list[tuple[Any, ...]] | None = None,
     ) -> tuple[FleetRolloutPlan, dict[str, Any]]:
-        row = self._db.execute(
-            "SELECT plan_json,state,version,reason,updated_at,record_hmac,evaluation_json,"
-            "canary_started_at,canary_generation "
-            "FROM fabric_rollouts WHERE tenant_id=? AND rollout_id=?",
-            (tenant_id, rollout_id),
-        ).fetchone()
-        if row is None:
-            raise KeyError(rollout_id)
+        """Decode and authenticate one rollout row and its complete history."""
         try:
             raw = json.loads(row[0])
             raw["target_device_ids"] = tuple(raw["target_device_ids"])
@@ -2717,15 +3989,122 @@ class FleetFabricStore:
                 ):
                     raise ValueError("rollout evaluation row binding mismatch")
                 record["evaluation"] = asdict(evaluation)
-            history_length, history_head = self._verify_rollout_history_locked(
-                plan, record
-            )
+            if history_rows is None:
+                history_length, history_head = self._verify_rollout_history_locked(
+                    plan, record
+                )
+            else:
+                history_length, history_head = self._verify_rollout_history_rows_locked(
+                    plan, record, history_rows
+                )
             record["history_length"] = history_length
             record["history_head_digest"] = history_head
             record["history_chain_status"] = "authenticated-contiguous-local-history"
             return plan, record
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise RuntimeError("fleet rollout integrity verification failed") from exc
+
+    def _load_rollouts_locked(
+        self,
+        tenant_id: str,
+        *,
+        limit: int | None = None,
+    ) -> tuple[tuple[tuple[FleetRolloutPlan, dict[str, Any]], ...], int]:
+        """Batch-load rollout rows and histories with constant query count."""
+        columns = (
+            "rollout_id,plan_json,state,version,reason,updated_at,record_hmac,"
+            "evaluation_json,canary_started_at,canary_generation"
+        )
+        if limit is None:
+            rollout_rows = self._db.execute(
+                f"SELECT {columns} FROM fabric_rollouts WHERE tenant_id=? "  # nosec B608
+                "ORDER BY rollout_id",
+                (tenant_id,),
+            ).fetchall()
+        else:
+            rollout_rows = self._db.execute(
+                f"SELECT {columns} FROM fabric_rollouts WHERE tenant_id=? "  # nosec B608
+                "ORDER BY updated_at DESC,rollout_id LIMIT ?",
+                (tenant_id, limit),
+            ).fetchall()
+        if not rollout_rows:
+            if limit is None:
+                history_count = int(self._db.execute(
+                    "SELECT COUNT(*) FROM fabric_rollout_history WHERE tenant_id=?",
+                    (tenant_id,),
+                ).fetchone()[0])
+                if history_count:
+                    raise RuntimeError(
+                        "rollout history exists without a retained rollout parent"
+                    )
+                return (), history_count
+            return (), 0
+
+        rollout_ids = tuple(str(row[0]) for row in rollout_rows)
+        if limit is None:
+            history_cursor = iter(self._db.execute(
+                "SELECT rollout_id,version,state,record_json,evaluation_digest,"
+                "previous_history_digest,history_hmac FROM fabric_rollout_history "
+                "WHERE tenant_id=? ORDER BY rollout_id,version",
+                (tenant_id,),
+            ))
+            pending = next(history_cursor, None)
+            history_count = 0
+            decoded_rows: list[tuple[FleetRolloutPlan, dict[str, Any]]] = []
+            for row in rollout_rows:
+                rollout_id = str(row[0])
+                if pending is not None and str(pending[0]) < rollout_id:
+                    raise RuntimeError(
+                        "rollout history exists without a retained rollout parent"
+                    )
+                rollout_history: list[tuple[Any, ...]] = []
+                while pending is not None and str(pending[0]) == rollout_id:
+                    history_count += 1
+                    rollout_history.append(tuple(pending[1:]))
+                    pending = next(history_cursor, None)
+                decoded_rows.append(self._decode_rollout_row_locked(
+                    tenant_id,
+                    rollout_id,
+                    tuple(row[1:]),
+                    history_rows=rollout_history,
+                ))
+            if pending is not None:
+                raise RuntimeError(
+                    "rollout history exists without a retained rollout parent"
+                )
+            return tuple(decoded_rows), history_count
+
+        placeholders = ",".join("?" for _item in rollout_ids)
+        history_rows = self._db.execute(
+            "SELECT rollout_id,version,state,record_json,evaluation_digest,"
+            "previous_history_digest,history_hmac FROM fabric_rollout_history "
+            f"WHERE tenant_id=? AND rollout_id IN ({placeholders}) "  # nosec B608
+            "ORDER BY rollout_id,version",
+            (tenant_id, *rollout_ids),
+        ).fetchall()
+        histories: dict[str, list[tuple[Any, ...]]] = {}
+        for history_row in history_rows:
+            histories.setdefault(str(history_row[0]), []).append(tuple(history_row[1:]))
+        decoded = tuple(self._decode_rollout_row_locked(
+            tenant_id,
+            str(row[0]),
+            tuple(row[1:]),
+            history_rows=histories.get(str(row[0]), []),
+        ) for row in rollout_rows)
+        return decoded, len(history_rows)
+
+    def _load_rollout_locked(
+        self, tenant_id: str, rollout_id: str
+    ) -> tuple[FleetRolloutPlan, dict[str, Any]]:
+        row = self._db.execute(
+            "SELECT plan_json,state,version,reason,updated_at,record_hmac,evaluation_json,"
+            "canary_started_at,canary_generation "
+            "FROM fabric_rollouts WHERE tenant_id=? AND rollout_id=?",
+            (tenant_id, rollout_id),
+        ).fetchone()
+        if row is None:
+            raise KeyError(rollout_id)
+        return self._decode_rollout_row_locked(tenant_id, rollout_id, tuple(row))
 
     def start_canary(
         self,
@@ -3021,25 +4400,40 @@ class FleetFabricStore:
         if type(limit) is not int or not 1 <= limit <= MAX_DASHBOARD_ROWS:
             raise ValueError("rollout snapshot limit must be from 1 through 500")
         with self._lock:
-            self._verify_custody_locked(tenant)
-            identities = self._db.execute(
-                "SELECT rollout_id FROM fabric_rollouts WHERE tenant_id=? "
-                "ORDER BY updated_at DESC,rollout_id LIMIT ?",
-                (tenant, limit),
-            ).fetchall()
-            result = []
-            for row in identities:
-                plan, record = self._load_rollout_locked(tenant, str(row[0]))
-                result.append({
-                    **record,
-                    "policy_bundle_id": plan.policy_bundle_id,
-                    "group_id": plan.group_id,
-                    "desired_policy_hash": plan.desired_policy_hash,
-                    "previous_policy_hash": plan.previous_policy_hash,
-                    "target_count": len(plan.target_device_ids),
-                    "canary_count": len(plan.canary_device_ids),
-                })
-        return tuple(result)
+            verified: dict[str, tuple[FleetRolloutPlan, dict[str, Any]]] = {}
+            self._verify_custody_locked(tenant, verified_rollouts=verified)
+            return self._rollout_snapshot_locked(
+                tenant, limit=limit, verified_rollouts=verified
+            )
+
+    def _rollout_snapshot_locked(
+        self,
+        tenant_id: str,
+        *,
+        limit: int,
+        verified_rollouts: (
+            Mapping[str, tuple[FleetRolloutPlan, dict[str, Any]]] | None
+        ) = None,
+    ) -> tuple[Mapping[str, Any], ...]:
+        if verified_rollouts is None:
+            loaded, _history_count = self._load_rollouts_locked(
+                tenant_id, limit=limit
+            )
+        else:
+            ordered = sorted(
+                verified_rollouts.values(), key=lambda item: item[0].rollout_id
+            )
+            ordered.sort(key=lambda item: float(item[1]["updated_at"]), reverse=True)
+            loaded = tuple(ordered[:limit])
+        return tuple({
+            **record,
+            "policy_bundle_id": plan.policy_bundle_id,
+            "group_id": plan.group_id,
+            "desired_policy_hash": plan.desired_policy_hash,
+            "previous_policy_hash": plan.previous_policy_hash,
+            "target_count": len(plan.target_device_ids),
+            "canary_count": len(plan.canary_device_ids),
+        } for plan, record in loaded)
 
     def enrollment_snapshot(
         self, tenant_id: str, *, limit: int = 200
@@ -3049,28 +4443,46 @@ class FleetFabricStore:
         if type(limit) is not int or not 1 <= limit <= MAX_DASHBOARD_ROWS:
             raise ValueError("enrollment snapshot limit must be from 1 through 500")
         with self._lock:
-            self._verify_custody_locked(tenant)
+            verified: list[tuple[EnrollmentGrant, dict[str, Any]]] = []
+            self._verify_custody_locked(tenant, verified_grants=verified)
+            return self._enrollment_snapshot_locked(
+                tenant, limit=limit, verified_grants=verified
+            )
+
+    def _enrollment_snapshot_locked(
+        self,
+        tenant_id: str,
+        *,
+        limit: int,
+        verified_grants: list[tuple[EnrollmentGrant, dict[str, Any]]] | None = None,
+    ) -> tuple[Mapping[str, Any], ...]:
+        if verified_grants is None:
             rows = self._db.execute(
                 "SELECT grant_json,state,redeemed_at,receipt_json,state_hmac,grant_id,device_id "
                 "FROM fabric_grants "
                 "WHERE tenant_id=? ORDER BY redeemed_at DESC,grant_id LIMIT ?",
-                (tenant, limit),
+                (tenant_id, limit),
             ).fetchall()
-            result: list[Mapping[str, Any]] = []
-            for row in rows:
-                grant, lifecycle = self._verified_grant_row_locked(tenant, row)
-                result.append({
-                    "tenant_id": tenant,
-                    "device_id": grant.device_id,
-                    "grant_id": grant.grant_id,
-                    "state": lifecycle["state"],
-                    "issued_at": grant.issued_at,
-                    "expires_at": grant.expires_at,
-                    "redeemed_at": lifecycle["redeemed_at"],
-                    "device_public_key_sha256": grant.device_public_key_sha256,
-                    "grant_digest": grant.digest,
-                })
-        return tuple(result)
+            grants = tuple(
+                self._verified_grant_row_locked(tenant_id, row) for row in rows
+            )
+        else:
+            ordered = sorted(verified_grants, key=lambda item: item[0].grant_id)
+            ordered.sort(
+                key=lambda item: float(item[1]["redeemed_at"]), reverse=True
+            )
+            grants = tuple(ordered[:limit])
+        return tuple({
+            "tenant_id": tenant_id,
+            "device_id": grant.device_id,
+            "grant_id": grant.grant_id,
+            "state": lifecycle["state"],
+            "issued_at": grant.issued_at,
+            "expires_at": grant.expires_at,
+            "redeemed_at": lifecycle["redeemed_at"],
+            "device_public_key_sha256": grant.device_public_key_sha256,
+            "grant_digest": grant.digest,
+        } for grant, lifecycle in grants)
 
     def custody_snapshot(self, tenant_id: str) -> Mapping[str, Any]:
         tenant = _identifier(tenant_id, "tenant ID")
@@ -3080,19 +4492,49 @@ class FleetFabricStore:
 
     def dashboard_snapshot(self, tenant_id: str) -> Mapping[str, Any]:
         tenant = _identifier(tenant_id, "tenant ID")
-        health = self.health_snapshot(tenant)
+        self._key(tenant)
+        stamp = self._now(tenant)
         with self._lock:
-            stats = self._verified_stats_locked(tenant)
-            # health_snapshot just proved the full database projection. Read the
-            # same sealed manifest here; enrollment/rollout reads below perform
-            # their own full custody verification before rendering.
-            custody = dict(self._verified_custody_manifest_locked(tenant))
+            # One SQLite read transaction gives the dashboard a stable view while
+            # the single full custody pass authenticates every retained domain.
+            self._db.execute("BEGIN")
+            try:
+                verified_latest: dict[str, FleetHealthEvidence] = {}
+                verified_health_rows: list[FleetHealthEvidence] = []
+                verified_grants: list[tuple[EnrollmentGrant, dict[str, Any]]] = []
+                verified_rollouts: dict[
+                    str, tuple[FleetRolloutPlan, dict[str, Any]]
+                ] = {}
+                custody = dict(self._verify_custody_locked(
+                    tenant,
+                    verified_latest,
+                    verified_grants,
+                    verified_rollouts,
+                    verified_health_rows,
+                ))
+                stats = dict(custody["stats"])
+                health = self._health_snapshot_locked(
+                    tenant,
+                    limit=200,
+                    stamp=stamp,
+                    verified_latest=verified_latest,
+                    stats=stats,
+                    verified_evidence=verified_health_rows,
+                )
+                enrollments = self._enrollment_snapshot_locked(
+                    tenant, limit=200, verified_grants=verified_grants
+                )
+                rollouts = self._rollout_snapshot_locked(
+                    tenant, limit=200, verified_rollouts=verified_rollouts
+                )
+            finally:
+                self._db.rollback()
         return {
             "schema": SCHEMA_ID,
             "tenant_id": tenant,
             "transport": asdict(self.transport_readiness),
-            "enrollments": self.enrollment_snapshot(tenant),
-            "rollouts": self.rollout_snapshot(tenant),
+            "enrollments": enrollments,
+            "rollouts": rollouts,
             "health": health,
             "authenticated_local_stats": stats,
             "authenticated_custody_checkpoint": custody,

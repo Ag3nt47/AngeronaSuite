@@ -127,15 +127,29 @@ def _stack(tmp_path, *, policy=None):
     return registry, quality, chosen_policy, coordinator, input_authority, clock
 
 
-def _stage_pair(tmp_path, registry):
+def _stage_pair(
+    tmp_path,
+    registry,
+    quality,
+    policy,
+    coordinator,
+    input_authority,
+):
     first_document = _write(tmp_path / "first.json", "1.0.0")
     second_document = _write(tmp_path / "second.json", "1.1.0")
     first = registry.stage(tmp_path / "first.json")
     second = registry.stage(tmp_path / "second.json")
     assert first.ok and second.ok
-    assert registry.activate(first_document["id"], first_document["digest"]).ok
+    active = _promote_baseline(
+        registry,
+        quality,
+        policy,
+        coordinator,
+        input_authority,
+        first_document,
+    )
     return (
-        DetectionPackage(first_document),
+        active,
         DetectionPackage(second_document),
         first_document["digest"],
         second_document["digest"],
@@ -171,6 +185,36 @@ def _receipt(
         input_attestation=attestation,
     )
     return receipt, tuning
+
+
+def _promote_baseline(
+    registry,
+    quality,
+    policy,
+    coordinator,
+    input_authority,
+    document,
+):
+    candidate = DetectionPackage(document)
+    quality_receipt, tuning = _receipt(
+        quality,
+        input_authority,
+        policy,
+        None,
+        candidate,
+    )
+    approval = coordinator.issue_promotion_receipt(
+        quality_receipt,
+        signer="analyst-1",
+        tuning_digest=tuning,
+        resource_coverage=("process.creation", "windows-event"),
+    )
+    assert approval.active_digest is None
+    promoted = coordinator.promote(approval)
+    assert promoted.ok
+    assert promoted.previous_digest is None
+    assert registry.active(candidate.package_id).document["digest"] == document["digest"]
+    return candidate
 
 
 def test_quality_receipts_are_hmac_chained_and_exact_members(tmp_path):
@@ -220,7 +264,9 @@ def test_incomplete_crashed_or_truncated_evaluation_cannot_get_authority(tmp_pat
 
 def test_fixture_only_success_is_insufficient_for_promotion(tmp_path):
     registry, quality, policy, coordinator, input_authority, _clock = _stack(tmp_path)
-    active, candidate, active_digest, _candidate_digest = _stage_pair(tmp_path, registry)
+    active, candidate, active_digest, _candidate_digest = _stage_pair(
+        tmp_path, registry, quality, policy, coordinator, input_authority
+    )
     quality_receipt, tuning = _receipt(
         quality, input_authority, policy, active, candidate, source_kind="fixtures"
     )
@@ -249,7 +295,9 @@ def test_fixture_only_success_is_insufficient_for_promotion(tmp_path):
 )
 def test_promotion_receipt_rejects_every_bound_field_substitution(tmp_path, field, value):
     registry, quality, policy, coordinator, input_authority, _clock = _stack(tmp_path)
-    active, candidate, active_digest, _candidate_digest = _stage_pair(tmp_path, registry)
+    active, candidate, active_digest, _candidate_digest = _stage_pair(
+        tmp_path, registry, quality, policy, coordinator, input_authority
+    )
     quality_receipt, tuning = _receipt(
         quality, input_authority, policy, active, candidate
     )
@@ -271,7 +319,9 @@ def test_stale_receipt_rejected_then_exact_promotion_and_rollback_are_one_use(tm
     registry, quality, policy, coordinator, input_authority, clock = _stack(
         tmp_path, policy=policy
     )
-    active, candidate, active_digest, candidate_digest = _stage_pair(tmp_path, registry)
+    active, candidate, active_digest, candidate_digest = _stage_pair(
+        tmp_path, registry, quality, policy, coordinator, input_authority
+    )
     quality_receipt, tuning = _receipt(
         quality, input_authority, policy, active, candidate
     )
@@ -294,7 +344,7 @@ def test_stale_receipt_rejected_then_exact_promotion_and_rollback_are_one_use(tm
     clock.set(2001.0)
     promoted = coordinator.promote(approval)
     assert promoted.ok
-    assert promoted.activation_epoch == 1
+    assert promoted.activation_epoch == 2
     assert registry.active(candidate.package_id).document["digest"] == candidate_digest
     clock.set(2002.0)
     assert not coordinator.promote(approval).ok
@@ -309,7 +359,7 @@ def test_stale_receipt_rejected_then_exact_promotion_and_rollback_are_one_use(tm
     clock.set(2004.0)
     rolled_back = coordinator.rollback(rollback)
     assert rolled_back.ok
-    assert rolled_back.activation_epoch == 2
+    assert rolled_back.activation_epoch == 3
     assert registry.active(candidate.package_id).document["digest"] == active_digest
     clock.set(2005.0)
     assert not coordinator.rollback(rollback).ok
@@ -324,8 +374,14 @@ def test_concurrent_candidates_have_exactly_one_winner(tmp_path):
     candidate_b_document = _write(tmp_path / "b.json", "1.2.0")
     for name in ("first.json", "a.json", "b.json"):
         assert registry.stage(tmp_path / name).ok
-    assert registry.activate(active_document["id"], active_document["digest"]).ok
-    active = DetectionPackage(active_document)
+    active = _promote_baseline(
+        registry,
+        quality,
+        policy,
+        coordinator,
+        input_authority,
+        active_document,
+    )
     approvals = []
     for document in (candidate_a_document, candidate_b_document):
         candidate = DetectionPackage(document)
@@ -345,9 +401,13 @@ def test_concurrent_candidates_have_exactly_one_winner(tmp_path):
     assert active_digest in {candidate_a_document["digest"], candidate_b_document["digest"]}
 
 
-def test_registry_crash_is_rejected_without_false_completion(tmp_path, monkeypatch):
+def test_transaction_journal_crash_is_rejected_without_false_completion(
+    tmp_path, monkeypatch,
+):
     registry, quality, policy, coordinator, input_authority, _clock = _stack(tmp_path)
-    active, candidate, active_digest, _candidate_digest = _stage_pair(tmp_path, registry)
+    active, candidate, active_digest, _candidate_digest = _stage_pair(
+        tmp_path, registry, quality, policy, coordinator, input_authority
+    )
     receipt, tuning = _receipt(quality, input_authority, policy, active, candidate)
     approval = coordinator.issue_promotion_receipt(
         receipt,
@@ -359,7 +419,7 @@ def test_registry_crash_is_rejected_without_false_completion(tmp_path, monkeypat
     def crash(*_args, **_kwargs):
         raise RuntimeError("simulated activation crash")
 
-    monkeypatch.setattr(registry, "activate", crash)
+    monkeypatch.setattr(coordinator, "_write_transaction", crash)
     result = coordinator.promote(approval)
     assert not result.ok and "simulated activation crash" in result.errors[0]
     assert registry.active(candidate.package_id).document["digest"] == active_digest
@@ -387,7 +447,9 @@ def test_self_attested_source_signer_and_coverage_are_explicitly_non_promotable(
     tmp_path,
 ):
     registry, quality, policy, coordinator, _input_authority, _clock = _stack(tmp_path)
-    active, candidate, active_digest, _candidate_digest = _stage_pair(tmp_path, registry)
+    active, candidate, active_digest, _candidate_digest = _stage_pair(
+        tmp_path, registry, quality, policy, coordinator, _input_authority
+    )
     comparison = _comparison(active, candidate)
     tuning = digest_tuning({"threshold": 7})
     receipt = quality.append_evaluation(
@@ -442,7 +504,9 @@ def test_quality_age_uses_injected_clock_and_cannot_be_overridden_by_caller(tmp_
     registry, quality, policy, coordinator, input_authority, clock = _stack(
         tmp_path, policy=policy
     )
-    active, candidate, active_digest, _candidate_digest = _stage_pair(tmp_path, registry)
+    active, candidate, active_digest, _candidate_digest = _stage_pair(
+        tmp_path, registry, quality, policy, coordinator, input_authority
+    )
     receipt, tuning = _receipt(quality, input_authority, policy, active, candidate)
     approval = coordinator.issue_promotion_receipt(
         receipt,
@@ -464,7 +528,9 @@ def test_evaluated_at_is_attested_receipted_one_use_and_drives_oldest_age(tmp_pa
     registry, quality, policy, coordinator, input_authority, _clock = _stack(
         tmp_path, policy=policy
     )
-    active, candidate, active_digest, _candidate_digest = _stage_pair(tmp_path, registry)
+    active, candidate, active_digest, _candidate_digest = _stage_pair(
+        tmp_path, registry, quality, policy, coordinator, input_authority
+    )
     comparison = _comparison(active, candidate, evaluated_at=900.0)
     tuning = digest_tuning({"threshold": 7})
     attestation = input_authority.issue(
@@ -520,7 +586,9 @@ def test_valid_state_and_checkpoint_rollback_is_detected_by_independent_anchor(t
     registry, quality, policy, coordinator, input_authority, clock = _stack(tmp_path)
     original_state = coordinator.state_path.read_bytes()
     original_checkpoint = coordinator.checkpoint_path.read_bytes()
-    active, candidate, _active_digest, _candidate_digest = _stage_pair(tmp_path, registry)
+    active, candidate, _active_digest, _candidate_digest = _stage_pair(
+        tmp_path, registry, quality, policy, coordinator, input_authority
+    )
     receipt, tuning = _receipt(quality, input_authority, policy, active, candidate)
     approval = coordinator.issue_promotion_receipt(
         receipt,
@@ -546,7 +614,9 @@ def test_valid_state_and_checkpoint_rollback_is_detected_by_independent_anchor(t
 
 def test_missing_state_or_checkpoint_fails_closed_and_used_ids_survive_restart(tmp_path):
     registry, quality, policy, coordinator, input_authority, clock = _stack(tmp_path)
-    active, candidate, _active_digest, _candidate_digest = _stage_pair(tmp_path, registry)
+    active, candidate, _active_digest, _candidate_digest = _stage_pair(
+        tmp_path, registry, quality, policy, coordinator, input_authority
+    )
     receipt, tuning = _receipt(quality, input_authority, policy, active, candidate)
     approval = coordinator.issue_promotion_receipt(
         receipt,
@@ -556,9 +626,10 @@ def test_missing_state_or_checkpoint_fails_closed_and_used_ids_survive_restart(t
     )
     assert coordinator.promote(approval).ok
     state = json.loads(coordinator.state_path.read_text(encoding="utf-8"))
-    assert state["used_receipts"] == [
+    assert len(state["used_receipts"]) == 2
+    assert state["used_receipts"][-1] == (
         {"receipt_id": approval.receipt_id, "expires_at": approval.expires_at}
-    ]
+    )
     restarted = DetectionPromotionCoordinator(
         registry,
         quality,

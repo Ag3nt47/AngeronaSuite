@@ -306,6 +306,8 @@ def test_chill_starts_resilience_backends_without_redundant_status_windows(
     app.window = SimpleNamespace(
         _ECO_HEAVY_MODULES=(),
         startup_eco_requested=SimpleNamespace(emit=lambda: None),
+        _mark_operations_modules_discovered=lambda: None,
+        _ensure_operations_service=lambda **_kwargs: object(),
     )
     app.reporter = SimpleNamespace(start=lambda: None)
     app._mcp = None

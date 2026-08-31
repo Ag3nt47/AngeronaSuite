@@ -19,6 +19,21 @@ From the comprehensive security self-assessment (analysis/Angerona_Security_Asse
 |---|---|---|
 | C23-R2-01 | Independent freshness for authenticated audit/network state | DEFERRED external dependency — the strict injected high-water contract and fail-visible behind/fork/clone/offline/migration/crash states are shipped, but no separately administered monotonic server or policy-bound hardware authority is bundled. Default state remains `local-authenticity-only`; do not promote the Personal Sentinel compact receipt, another same-host HMAC file, or an in-memory fixture to independent custody. |
 
+## Cycle 34 retained boundaries
+
+| ID | Title | Status |
+|---|---|---|
+| C34-EXT-01 | Independent anti-rollback witness for DetectionForge authority | DEFERRED external dependency — state, checkpoint, anchor, registry governance, receipt history, and transaction recovery are locally authenticated, but a privileged rollback of the complete detection root together with its local key can roll back all software witnesses. Independent service or hardware custody is required. |
+| C34-MIG-01 | Ambiguous legacy detection-state migration | FAIL-CLOSED operational boundary — published-v2 and floorless-v3 histories migrate only when the complete authenticated transition chain, times, predecessors, receipt identities, head, and active set agree. Truncated or contradictory history requires operator recovery; do not add a permissive migration fallback. |
+| C34-GOV-01 | Missing governance anchor compatibility | FAIL-CLOSED prepublication/WIP boundary — only a genuinely legacy manifest with no governance record can mint its first anchor. An already governed root whose anchor is missing is not silently treated as legacy and requires operator recovery. |
+| C34-FLT-01 | Fleet Fabric deployment and retention boundary | OPEN architectural residual — Fleet remains a local lab with no remote transport, dispatch, HA, distributed quota authority, or production mTLS coordinator. Health custody retains at most 5,000 rows of at most 8 KiB each; after pruned-history restart, quota state begins conservatively and refills from elapsed trusted time. |
+
+## Cycle 34 fixed publication-bound findings
+
+| ID | Title | Status |
+|---|---|---|
+| C34-LEASE-01 | Promotion owner-lease alias, lifecycle, path, and fork bypass cluster | FIXED — the lifetime lease captures creator PID plus exact canonical registry/state/quality paths, governance configuration, policy, clock, transition capability, authority, and runtime identities. Checks run under the coordinator lock; POSIX children discard inherited descriptors without unlocking the parent. Exact sibling references remain supported, and the final bounded re-attack was clean. |
+
 Recently added (already present — do not propose as "new"): core/alert_ack.py + threat-level exclusion, gui/resolve_center.py, gui/red_team_console.py (intensity/campaign/history), gui/incident_timeline_page.py, gui/attack_heatmap.py (Coverage/Top tabs), core/cve_ignore.py, core/cve_fix_advisor.py, core/ir_bundle.py, modules/daily_briefing.py, modules/lsass_guard/beacon_detector/shadowcopy_guard/usb_monitor.
 
 Round 2 visionary addition (already present — do not re-propose):

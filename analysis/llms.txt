@@ -10,7 +10,55 @@
 ## STACK / LAUNCH
 Python package metadata supports 3.10–3.13; the hardened Windows source bootstrap and launcher require the reviewed **CPython 3.12 x64** ABI and hash-locked wheels. PySide6 GUI · local Ollama (llama3) triage; sanitized cloud fallback is opt-in and default-off. Windows editable install: `pip install -e .[windows,voice]`; Linux/macOS source editions use target extras through the hash-locked installer. Entry `python -m angerona` → `app.py:AngeronaApp` builds core services + `gui/main_window.py:MainWindow`. First-run install, SETUP, `--setup`, and `angerona-setup` enter the same 16-step Full Setup. Self-elevating source launchers overwrite inherited `ANGERONA_DATA` with the sibling `<install-folder>\..\AngeronaData` on D: before elevation; frozen Windows builds prefer protected `D:\AngeronaData`. DB: `flight-recorder.db`. TEMP/TMP, watchdog state, reports, diagnostics, scanner evidence, legacy engine status/telemetry, and incident staging use canonical data/temp helpers rather than the checkout.
 
-## LATEST (v1.13.0 — Cycles 31-33 enterprise-pattern defensive programs)
+## LATEST (v1.13.0 — Cycle 34 improvement loop)
+
+- **Release truth:** post-release maintenance only; product remains v1.13.0 and
+  inventory remains 84 Windows-target capabilities (nine native contracts, 75
+  adapters). No Cycle 34 visionary proposal shipped.
+- **Canvas and composition:** the flow canvas is loopback-only and Host-checked,
+  serves an exact allowlist through descriptor/final-path validation, accepts a
+  bounded fresh metrics schema, renders values as text, and uses an operating-
+  system-selected port. Local Operations Center construction is nonblocking,
+  cancellable, single-flight, and reserves readiness before dependent modules
+  start. Detection Runtime and Fleet Health Monitor bind the exact authorities.
+- **Detection authority:** complete active-set reconciliation, atomic recovery,
+  exact live-runtime lifecycle guards, nondecreasing authority time, a lifetime
+  PID-bound cross-process owner lease tied to immutable registry, state,
+  quality, policy, clock, path, and runtime authority, durable governance
+  anchoring, and journaled quarantine close the Cycle 34 downgrade,
+  split-brain, crash, stale-runtime, replay, revocation, and stranded-binding
+  paths. Legacy published-v2 and floorless-v3 state migrates only with complete
+  unambiguous authenticated history; otherwise it fails closed for operator
+  recovery.
+- **Fleet custody/admission:** custody v2 authenticates every retained row and
+  prune boundary. Guarded incremental exact-row projections remove the 3N+1
+  verification path. Exact retries precede quota, clock/quota changes commit
+  atomically, rollback cancels volatile reservation, and restart state derives
+  from authenticated retained evidence. The contract is 5,000 rows × 8 KiB,
+  with about a 40.96 MB encoded-cache ceiling and conservative refill after a
+  pruned-history restart.
+- **Trust and performance:** registry validation uses one bounded immutable
+  trust snapshot, stable package/signature generation proofs, and exit
+  identity/hash checks. Benchmark work: Detection Runtime decodes 1,920→30
+  (about 4×); governance reads 64→2 (about 2×); trust reads N→2; Fleet N=250
+  final mutation about 0.0188 seconds, cached N=5,000 about 0.289 seconds, full
+  startup verification about 4.475 seconds. AegisPath selection uses immutable
+  path/node indexes.
+- **Current verification:** targeted Cycle 34 91 passed / 2 expected Windows
+  host-capability skips (symlink creation and POSIX fork) / 0 failed; adjacent
+  128 passed; package compile
+  368/368; standalone self-tests 93 passed / 0 failed plus 16 expected skips;
+  supported selfcheck 26/26. Full serial pytest, authoritative five-check
+  release validation, commit/evidence identity, and guarded publication remain
+  pending.
+- **Residuals:** a full detection-root plus local-key rollback needs an
+  independent/hardware witness; already governed prepublication/WIP roots do
+  not silently recreate a missing governance anchor; Fleet remains a local lab
+  with no remote transport, dispatch, HA, distributed quota authority, or
+  production mTLS coordinator.
+- Evidence map: `analysis/loop/cycle34/README.md`.
+
+## PRIOR (v1.13.0 — Cycles 31-33 enterprise-pattern defensive programs)
 
 - **Inventory and UI truth:** 84 Windows-target capabilities; nine native
   contracts and 75 compatibility adapters. Built-in implementation labels are

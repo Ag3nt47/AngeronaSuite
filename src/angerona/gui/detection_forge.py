@@ -123,7 +123,10 @@ class DetectionForgeService:
         self.runtime = runtime
         self.quality_store = quality_store
         self.promotion = promotion
+        if promotion is not None:
+            promotion.assert_runtime_identity(runtime)
         self._lock = threading.RLock()
+        self._transition_lock = threading.RLock()
         self._cohort: ReplayCohort | None = None
         self._comparison: DetectionComparison | None = None
         self._quality_receipt: QualityReceipt | None = None
@@ -218,8 +221,8 @@ class DetectionForgeService:
     def promote(self, receipt: PromotionReceipt) -> PromotionResult:
         if self.promotion is None:
             raise RuntimeError("DetectionForge promotion coordinator is unavailable")
-        result = self.promotion.promote(receipt)
-        if result.ok:
+        with self._transition_lock:
+            result = self.promotion.promote(receipt)
             result = self._reconcile_transition(result)
         with self._lock:
             self._last_transition = result
@@ -228,26 +231,54 @@ class DetectionForgeService:
     def rollback(self, receipt: PromotionReceipt) -> PromotionResult:
         if self.promotion is None:
             raise RuntimeError("DetectionForge promotion coordinator is unavailable")
-        result = self.promotion.rollback(receipt)
-        if result.ok:
+        with self._transition_lock:
+            result = self.promotion.rollback(receipt)
             result = self._reconcile_transition(result)
         with self._lock:
             self._last_transition = result
         return result
 
     def _reconcile_transition(self, result: PromotionResult) -> PromotionResult:
+        observed = self.runtime.snapshot()
         try:
-            self.runtime.sync_active_from_registry(
+            if self.promotion is None:  # pragma: no cover - guarded by callers
+                raise RuntimeError("promotion coordinator is unavailable")
+            if bool(getattr(self.promotion, "runtime_managed", False)):
+                self.promotion.reconcile_runtime()
+                return result
+            bindings, activation_epoch = self.promotion.authoritative_runtime_bindings()
+            if activation_epoch == 0:
+                if self.runtime.snapshot().active_digests:
+                    raise RuntimeError("runtime is active without promotion authority")
+                return result
+            self.runtime.sync_active_set_from_registry(
                 self.registry,
-                package_id=result.package_id,
-                expected_digest=result.target_digest,
-                activation_epoch=result.activation_epoch,
+                expected_bindings=dict(bindings),
+                activation_epoch=activation_epoch,
             )
             return result
         except Exception:
             # The registry transition is durable, so never continue evaluating
             # its now-retired predecessor when runtime binding cannot reconcile.
-            self.runtime.fail_closed_active(activation_epoch=result.activation_epoch)
+            failed_epoch = max(
+                1,
+                result.activation_epoch,
+                observed.active_activation_epoch,
+            )
+            if self.promotion is not None and bool(
+                getattr(self.promotion, "runtime_managed", False)
+            ):
+                self.promotion.fail_closed_runtime(
+                    activation_epoch=failed_epoch,
+                    expected_current_epoch=observed.active_activation_epoch,
+                    expected_current_digests=observed.active_digests,
+                )
+            else:
+                self.runtime.fail_closed_active(
+                    activation_epoch=failed_epoch,
+                    expected_current_epoch=observed.active_activation_epoch,
+                    expected_current_digests=observed.active_digests,
+                )
             return PromotionResult(
                 ok=False,
                 action=result.action,
@@ -255,7 +286,7 @@ class DetectionForgeService:
                 target_digest=result.target_digest,
                 previous_digest=result.previous_digest,
                 state="runtime-fail-closed",
-                activation_epoch=result.activation_epoch,
+                activation_epoch=failed_epoch,
                 errors=("runtime reconciliation failed closed",),
             )
 

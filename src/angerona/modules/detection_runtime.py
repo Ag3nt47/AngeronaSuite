@@ -239,6 +239,7 @@ class DetectionRuntimeEngine:
         active_sink: Callable[[RuntimeFinding], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
         work_clock: Callable[[], float] = time.perf_counter,
+        authority_revalidation_seconds: float = 1.0,
     ) -> None:
         self.active_capacity = max(8, min(int(active_capacity), 8192))
         self.shadow_capacity = max(8, min(int(shadow_capacity), 8192))
@@ -249,6 +250,9 @@ class DetectionRuntimeEngine:
         self._active_sink = active_sink
         self._clock = clock
         self._work_clock = work_clock
+        self._authority_revalidation_seconds = max(
+            0.05, min(float(authority_revalidation_seconds), 5.0)
+        )
         self._lock = threading.RLock()
         # Evaluation itself is deliberately single-flight. Queue operations
         # remain concurrent, but a second caller cannot start shadow work while
@@ -283,6 +287,186 @@ class DetectionRuntimeEngine:
         self._shadow_epoch = 0
         self._active_epoch_drops = 0
         self._shadow_epoch_drops = 0
+        self._active_registry: DetectionPackageRegistry | None = None
+        self._active_bindings: dict[str, str] = {}
+        self._active_authority_deadline = 0.0
+        # Once a manager-owned engine is sealed, active-lane mutation requires
+        # the coordinator-held identity capability and the exact registry and
+        # module lifecycle generation bound here. Standalone engines are
+        # deliberately unsealed for explicit development/test workflows.
+        self.__runtime_authority: object | None = None
+        self.__authority_registry: DetectionPackageRegistry | None = None
+        self.__authority_registry_root: object | None = None
+        self.__authority_module: object | None = None
+        self.__authority_manager: object | None = None
+        self.__authority_generation = -1
+
+    def seal_active_authority(
+        self,
+        registry: DetectionPackageRegistry,
+        module: object | None,
+        *,
+        transition_capability: object,
+        authority_generation: int | None = None,
+        manager: object | None = None,
+    ) -> object:
+        """Rotate the production active-lane capability for one exact generation."""
+        if not isinstance(registry, DetectionPackageRegistry) or not registry.root_governed:
+            raise DetectionRuntimeError(
+                "manager-owned active authority requires a root-governed registry"
+            )
+        registry.assert_transition_authority(transition_capability)
+        if module is None:
+            generation = 0
+            if authority_generation not in {None, 0} or manager is not None:
+                raise DetectionRuntimeError(
+                    "standalone runtime authority generation is invalid"
+                )
+        else:
+            if getattr(module, "engine", None) is not self:
+                raise DetectionRuntimeError("runtime module does not own this engine")
+            current_generation = getattr(module, "lifecycle_generation", None)
+            if type(current_generation) is not int or current_generation < 0:
+                raise DetectionRuntimeError("runtime module lifecycle generation is invalid")
+            generation = (
+                current_generation
+                if authority_generation is None
+                else authority_generation
+            )
+            if type(generation) is not int or generation < 0:
+                raise DetectionRuntimeError("runtime authority generation is invalid")
+            if generation != current_generation and not self._pending_first_start(
+                module, generation
+            ):
+                raise DetectionRuntimeError(
+                    "runtime authority cannot bind an unobserved lifecycle generation"
+                )
+            if manager is not None:
+                modules = getattr(manager, "modules", None)
+                module_name = getattr(module, "name", None)
+                if (
+                    not isinstance(modules, Mapping)
+                    or modules.get(module_name) is not module
+                    or getattr(manager, "bus", None) is None
+                    or getattr(module, "_bus", None) is not getattr(manager, "bus", None)
+                ):
+                    raise DetectionRuntimeError(
+                        "runtime manager does not own the exact module and EventBus"
+                    )
+        with self._process_lock:
+            with self._lock:
+                if (
+                    self.__authority_registry_root is not None
+                    and self.__authority_registry_root != registry.root
+                ):
+                    raise DetectionRuntimeError(
+                        "sealed runtime registry root cannot be substituted"
+                    )
+                if (
+                    self.__authority_module is not None
+                    and module is not self.__authority_module
+                ):
+                    raise DetectionRuntimeError(
+                        "sealed runtime module cannot be substituted"
+                    )
+                if (
+                    self.__authority_manager is not None
+                    and manager is not self.__authority_manager
+                ):
+                    raise DetectionRuntimeError(
+                        "sealed runtime manager cannot be substituted"
+                    )
+                capability = object()
+                self.__runtime_authority = capability
+                self.__authority_registry = registry
+                self.__authority_registry_root = registry.root
+                self.__authority_module = module
+                self.__authority_manager = manager
+                self.__authority_generation = generation
+                return capability
+
+    @staticmethod
+    def _pending_first_start(module: object, generation: int) -> bool:
+        """Recognize only a fresh registered module's imminent first start."""
+        thread = getattr(module, "_thread", None)
+        return bool(
+            getattr(module, "lifecycle_generation", None) == 0
+            and generation == 1
+            and getattr(module, "status", None) == "stopped"
+            and (thread is None or not thread.is_alive())
+            and not bool(getattr(module, "_subscribed", False))
+            and not bool(getattr(module, "stopping", True))
+        )
+
+    def _assert_active_authority(
+        self,
+        registry: DetectionPackageRegistry | None,
+        runtime_authority: object | None,
+        *,
+        allow_pending_start: bool = False,
+        require_live_owner: bool = False,
+    ) -> None:
+        capability = self.__runtime_authority
+        if capability is None:
+            if runtime_authority is not None:
+                raise DetectionRuntimeError(
+                    "unsealed standalone runtime rejects an authority capability"
+                )
+            return
+        if runtime_authority is not capability:
+            raise DetectionRuntimeError("active runtime authority capability is invalid")
+        if registry is not None and registry is not self.__authority_registry:
+            raise DetectionRuntimeError("active runtime registry identity is invalid")
+        module = self.__authority_module
+        if module is not None:
+            if getattr(module, "engine", None) is not self:
+                raise DetectionRuntimeError("active runtime module identity changed")
+            if (
+                getattr(module, "lifecycle_generation", None)
+                != self.__authority_generation
+                and not (
+                    allow_pending_start
+                    and self._pending_first_start(
+                        module, self.__authority_generation
+                    )
+                )
+            ):
+                raise DetectionRuntimeError("active runtime authority generation is stale")
+            manager = self.__authority_manager
+            if manager is not None:
+                modules = getattr(manager, "modules", None)
+                if (
+                    not isinstance(modules, Mapping)
+                    or modules.get(getattr(module, "name", None)) is not module
+                    or getattr(manager, "bus", None) is None
+                    or getattr(module, "_bus", None) is not getattr(manager, "bus", None)
+                ):
+                    raise DetectionRuntimeError(
+                        "active runtime manager identity changed"
+                    )
+            if require_live_owner:
+                thread = getattr(module, "_thread", None)
+                if (
+                    getattr(module, "status", None) != "running"
+                    or thread is None
+                    or not thread.is_alive()
+                    or not bool(getattr(module, "_subscribed", False))
+                    or bool(getattr(module, "stopping", True))
+                ):
+                    raise DetectionRuntimeError(
+                        "active runtime owner is not live and subscribed"
+                    )
+
+    def assert_active_authority(
+        self,
+        registry: DetectionPackageRegistry,
+        runtime_authority: object,
+    ) -> None:
+        """Read-only proof that a coordinator still owns the current seal."""
+        with self._process_lock:
+            self._assert_active_authority(
+                registry, runtime_authority, require_live_owner=True
+            )
 
     def set_active_sink(self, sink: Callable[[RuntimeFinding], None] | None) -> None:
         with self._lock:
@@ -310,64 +494,116 @@ class DetectionRuntimeEngine:
         package_id: str,
         expected_digest: str,
         activation_epoch: int,
+        runtime_authority: object | None = None,
     ) -> tuple[str, ...]:
-        """Bind only an exact package that the authoritative registry reports active.
+        """Compatibility wrapper for an exact one-package active registry."""
+        return self.sync_active_set_from_registry(
+            registry,
+            expected_bindings={package_id: expected_digest},
+            activation_epoch=activation_epoch,
+            runtime_authority=runtime_authority,
+        )
+
+    def sync_active_set_from_registry(
+        self,
+        registry: DetectionPackageRegistry,
+        *,
+        expected_bindings: Mapping[str, str],
+        activation_epoch: int,
+        runtime_authority: object | None = None,
+    ) -> tuple[str, ...]:
+        """Atomically bind the complete exact active registry set.
 
         A caller-owned ``DetectionPackage`` can never enter the active lane.  The
-        registry is inspected both before and after its trust-validating
-        ``active()`` read so a concurrent manifest transition fails closed.
+        registry holds its process lock across all trust-validating reads and
+        compares the manifest again afterward, so a concurrent or out-of-band
+        transition fails closed without building a mixed active set.
         ``activation_epoch`` is the durable promotion serial and prevents an old
         transition from replacing a newer runtime binding.
         """
         with self._process_lock:
-            return self._sync_active_from_registry(
+            self._assert_active_authority(
+                registry, runtime_authority, require_live_owner=True
+            )
+            return self._sync_active_set_from_registry(
                 registry,
-                package_id=package_id,
-                expected_digest=expected_digest,
+                expected_bindings=expected_bindings,
                 activation_epoch=activation_epoch,
             )
 
-    def _sync_active_from_registry(
+    def restore_active_set_for_startup(
         self,
         registry: DetectionPackageRegistry,
         *,
-        package_id: str,
-        expected_digest: str,
+        expected_bindings: Mapping[str, str],
+        activation_epoch: int,
+        runtime_authority: object,
+    ) -> tuple[str, ...]:
+        """Restore a sealed active set for an exact module's imminent first start."""
+        with self._process_lock:
+            self._assert_active_authority(
+                registry,
+                runtime_authority,
+                allow_pending_start=True,
+            )
+            return self._sync_active_set_from_registry(
+                registry,
+                expected_bindings=expected_bindings,
+                activation_epoch=activation_epoch,
+            )
+
+    def _sync_active_set_from_registry(
+        self,
+        registry: DetectionPackageRegistry,
+        *,
+        expected_bindings: Mapping[str, str],
         activation_epoch: int,
     ) -> tuple[str, ...]:
         if not isinstance(registry, DetectionPackageRegistry):
             raise DetectionRuntimeError("active synchronization requires a registry")
+        if not isinstance(expected_bindings, Mapping):
+            raise DetectionRuntimeError("active bindings must be a package-to-digest mapping")
+        if len(expected_bindings) > MAX_RUNTIME_RULES:
+            raise DetectionRuntimeError("active binding set exceeds 128 rules")
         if type(activation_epoch) is not int or activation_epoch < 1:
             raise DetectionRuntimeError("activation epoch must be a positive integer")
+        normalized: dict[str, str] = {}
+        for package_id, digest in expected_bindings.items():
+            if (
+                not isinstance(package_id, str)
+                or not 1 <= len(package_id) <= 128
+                or "\x00" in package_id
+            ):
+                raise DetectionRuntimeError("active package identifier is invalid")
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 71
+                or not digest.startswith("sha256:")
+                or any(character not in "0123456789abcdef" for character in digest[7:])
+            ):
+                raise DetectionRuntimeError("active package digest is invalid")
+            normalized[package_id] = digest
+        if len(normalized) != len(expected_bindings):
+            raise DetectionRuntimeError("active package identifier is duplicated")
+        normalized = dict(sorted(normalized.items()))
 
-        def authoritative_digest() -> str:
-            inventory = registry.inventory()
-            versions = inventory.get(package_id)
-            if not isinstance(versions, Mapping):
-                raise DetectionRuntimeError("registry package is unavailable")
-            active = [
-                digest
-                for digest, record in versions.items()
-                if isinstance(record, Mapping) and record.get("state") == "active"
-            ]
-            if active != [expected_digest]:
-                raise DetectionRuntimeError(
-                    "registry active digest does not match the promoted transition"
-                )
-            return active[0]
-
-        authoritative_digest()
-        package = registry.active(package_id)
-        if package is None or package.document.get("digest") != expected_digest:
-            raise DetectionRuntimeError("registry did not return the exact trusted active package")
-        rules = self._bind_rules(package)
-        authoritative_digest()
+        try:
+            packages = registry.active_set(normalized)
+        except Exception as exc:
+            raise DetectionRuntimeError(str(exc)) from exc
+        rules = self._bind_rules(packages)
         with self._lock:
             if activation_epoch < self._active_epoch:
                 raise DetectionRuntimeError("stale activation epoch rejected")
             if activation_epoch == self._active_epoch:
                 current = tuple(rule.package_digest for rule in self._active_rules)
-                if current == (expected_digest,):
+                expected = tuple(normalized.values())
+                if current == expected:
+                    self._active_registry = registry
+                    self._active_bindings = normalized
+                    self._active_authority_deadline = (
+                        self._clock() + self._authority_revalidation_seconds
+                    )
                     return current
                 if current:
                     raise DetectionRuntimeError("activation epoch substitution detected")
@@ -378,6 +614,11 @@ class DetectionRuntimeEngine:
             self._active_queue.clear()
             self._active_rules = rules
             self._active_epoch = activation_epoch
+            self._active_registry = registry
+            self._active_bindings = normalized
+            self._active_authority_deadline = (
+                self._clock() + self._authority_revalidation_seconds
+            )
             self._active_seen.clear()
             self._active_inflight.clear()
             self._rate_windows = {
@@ -385,23 +626,214 @@ class DetectionRuntimeEngine:
             }
         return tuple(rule.package_digest for rule in rules)
 
-    def fail_closed_active(self, *, activation_epoch: int) -> None:
+    def fail_closed_active(
+        self,
+        *,
+        activation_epoch: int,
+        expected_current_epoch: int | None = None,
+        expected_current_digests: Sequence[str] | None = None,
+        runtime_authority: object | None = None,
+    ) -> bool:
         """Clear active work after a registry/runtime reconciliation failure."""
         if type(activation_epoch) is not int or activation_epoch < 1:
             raise DetectionRuntimeError("activation epoch must be a positive integer")
         with self._process_lock:
-            with self._lock:
-                self._active_epoch_drops += len(self._active_queue)
-                self._active_queue.clear()
-                self._active_rules = ()
-                self._active_epoch = max(self._active_epoch, activation_epoch)
-                self._active_seen.clear()
-                self._active_inflight.clear()
-                self._rate_windows = {
-                    key: value
-                    for key, value in self._rate_windows.items()
-                    if key[0] != "active"
-                }
+            self._assert_active_authority(None, runtime_authority)
+            return self._fail_closed_active_locked(
+                activation_epoch=activation_epoch,
+                expected_current_epoch=expected_current_epoch,
+                expected_current_digests=expected_current_digests,
+            )
+
+    def _fail_closed_active_locked(
+        self,
+        *,
+        activation_epoch: int,
+        expected_current_epoch: int | None,
+        expected_current_digests: Sequence[str] | None,
+    ) -> bool:
+        """Clear the lane while the caller holds the process serialization lock."""
+        if type(activation_epoch) is not int or activation_epoch < 1:
+            raise DetectionRuntimeError("activation epoch must be a positive integer")
+        with self._lock:
+            if (
+                expected_current_epoch is not None
+                and self._active_epoch != expected_current_epoch
+            ):
+                return False
+            if expected_current_digests is not None and tuple(
+                rule.package_digest for rule in self._active_rules
+            ) != tuple(expected_current_digests):
+                return False
+            self._active_epoch_drops += len(self._active_queue)
+            self._active_queue.clear()
+            self._active_rules = ()
+            self._active_epoch = max(self._active_epoch, activation_epoch)
+            self._active_registry = None
+            self._active_bindings = {}
+            self._active_authority_deadline = 0.0
+            self._active_seen.clear()
+            self._active_inflight.clear()
+            self._rate_windows = {
+                key: value
+                for key, value in self._rate_windows.items()
+                if key[0] != "active"
+            }
+            return True
+
+    def _ensure_active_authority_valid(self) -> bool:
+        """Revalidate expiry and publisher authority on a short bounded cadence."""
+        with self._lock:
+            registry = self._active_registry
+            bindings = dict(self._active_bindings)
+            epoch = self._active_epoch
+            deadline = self._active_authority_deadline
+            current_digests = tuple(
+                rule.package_digest for rule in self._active_rules
+            )
+            authority_module = self.__authority_module
+            authority_manager = self.__authority_manager
+            authority_generation = self.__authority_generation
+        if registry is None or not bindings or not current_digests:
+            return True
+        authority_thread = (
+            getattr(authority_module, "_thread", None)
+            if authority_module is not None
+            else None
+        )
+        if authority_module is not None and (
+            getattr(authority_module, "engine", None) is not self
+            or getattr(authority_module, "status", None) != "running"
+            or authority_thread is None
+            or not authority_thread.is_alive()
+            or not bool(getattr(authority_module, "_subscribed", False))
+            or bool(getattr(authority_module, "stopping", True))
+            or (
+                authority_manager is not None
+                and (
+                    not isinstance(getattr(authority_manager, "modules", None), Mapping)
+                    or getattr(authority_manager, "modules").get(
+                        getattr(authority_module, "name", None)
+                    )
+                    is not authority_module
+                    or getattr(authority_manager, "bus", None) is None
+                    or getattr(authority_module, "_bus", None)
+                    is not getattr(authority_manager, "bus", None)
+                )
+            )
+        ):
+            # A stop can be signalled after the module loop condition but
+            # before its process call. Do no work in that final iteration and
+            # preserve the exact binding for a same-instance restart. Any
+            # external caller while stopped still reaches the CAS clear below.
+            if (
+                threading.current_thread() is authority_thread
+                and bool(getattr(authority_module, "stopping", True))
+            ):
+                return False
+            cleared = self._fail_closed_active_locked(
+                activation_epoch=max(1, epoch),
+                expected_current_epoch=epoch,
+                expected_current_digests=current_digests,
+            )
+            if cleared:
+                with self._lock:
+                    self._rule_integrity_failures += 1
+            return False
+        if (
+            authority_module is not None
+            and getattr(authority_module, "lifecycle_generation", None)
+            != authority_generation
+        ):
+            if self._adopt_exact_running_generation(
+                authority_module, authority_generation
+            ):
+                # A restart never inherits the prior cadence window. Re-check
+                # expiry, registry state, and publisher trust before any rule
+                # from the retained exact binding can evaluate again.
+                deadline = 0.0
+            else:
+                cleared = self._fail_closed_active_locked(
+                    activation_epoch=max(1, epoch),
+                    expected_current_epoch=epoch,
+                    expected_current_digests=current_digests,
+                )
+                if cleared:
+                    with self._lock:
+                        self._rule_integrity_failures += 1
+                return False
+        now = self._clock()
+        if now < deadline:
+            return True
+        try:
+            packages = registry.active_set(bindings)
+            validated = tuple(
+                str(package.document["digest"]) for package in packages
+            )
+            if validated != tuple(bindings.values()):
+                raise DetectionRuntimeError(
+                    "authoritative active package order or digest changed"
+                )
+        except Exception:
+            cleared = self._fail_closed_active_locked(
+                activation_epoch=max(1, epoch),
+                expected_current_epoch=epoch,
+                expected_current_digests=current_digests,
+            )
+            if cleared:
+                with self._lock:
+                    self._rule_integrity_failures += 1
+            return False
+        with self._lock:
+            if (
+                self._active_epoch == epoch
+                and self._active_registry is registry
+                and self._active_bindings == bindings
+            ):
+                self._active_authority_deadline = (
+                    now + self._authority_revalidation_seconds
+                )
+        return True
+
+    def _adopt_exact_running_generation(
+        self, module: object, previous_generation: int
+    ) -> bool:
+        """Rotate the seal for a newer live generation of the exact module."""
+        generation = getattr(module, "lifecycle_generation", None)
+        thread = getattr(module, "_thread", None)
+        manager = self.__authority_manager
+        if (
+            type(generation) is not int
+            or generation <= previous_generation
+            or getattr(module, "engine", None) is not self
+            or getattr(module, "status", None) != "running"
+            or thread is None
+            or not thread.is_alive()
+            or not bool(getattr(module, "_subscribed", False))
+            or bool(getattr(module, "stopping", True))
+        ):
+            return False
+        if manager is not None:
+            modules = getattr(manager, "modules", None)
+            if (
+                not isinstance(modules, Mapping)
+                or modules.get(getattr(module, "name", None)) is not module
+                or getattr(manager, "bus", None) is None
+                or getattr(module, "_bus", None) is not getattr(manager, "bus", None)
+            ):
+                return False
+        with self._lock:
+            if (
+                self.__authority_module is not module
+                or self.__authority_generation != previous_generation
+                or getattr(module, "lifecycle_generation", None) != generation
+            ):
+                return False
+            # No external holder learns this capability. The coordinator will
+            # re-seal on its next live operation; every prior token is stale.
+            self.__runtime_authority = object()
+            self.__authority_generation = generation
+            return True
 
     def bind_shadow(
         self, packages: DetectionPackage | Sequence[DetectionPackage] | None
@@ -614,6 +1046,9 @@ class DetectionRuntimeEngine:
     ) -> list[tuple[RuntimeFinding, Callable[[RuntimeFinding], None] | None]]:
         published: list[tuple[RuntimeFinding, Callable[[RuntimeFinding], None] | None]] = []
         queued = work.event
+        event_fields: dict[str, Any] | None = None
+        event_decode_error: Exception | None = None
+        event_decode_ms = 0.0
         for rule in rules:
             key = self._dedupe_key(queued, rule, work.activation_epoch)
             with self._lock:
@@ -631,14 +1066,30 @@ class DetectionRuntimeEngine:
                         self._rule_integrity_failures += 1
                     continue
                 started = self._work_clock()
+                decoded_this_rule = False
                 try:
-                    matched = bool(rule.package.evaluate(queued.event()))
+                    if event_fields is None and event_decode_error is None:
+                        decoded_this_rule = True
+                        decode_started = self._work_clock()
+                        try:
+                            event_fields = queued.event()
+                        except Exception as exc:
+                            event_decode_error = exc
+                        event_decode_ms = (
+                            self._work_clock() - decode_started
+                        ) * 1000.0
+                    if event_decode_error is not None:
+                        raise event_decode_error
+                    matched = bool(rule.package.evaluate(event_fields))
                     evaluated = True
                 except Exception:
                     with self._lock:
                         self._evaluation_failures += 1
                     continue
-                elapsed_ms = (self._work_clock() - started) * 1000.0
+                elapsed_ms = (
+                    (self._work_clock() - started) * 1000.0
+                    + (0.0 if decoded_this_rule else event_decode_ms)
+                )
             finally:
                 self._finish_claim(
                     self._active_seen,
@@ -677,6 +1128,9 @@ class DetectionRuntimeEngine:
     ) -> tuple[int, int]:
         # Intentionally no publisher/evidence/incident/SOAR/response argument.
         queued = work.event
+        event_fields: dict[str, Any] | None = None
+        event_decode_error: Exception | None = None
+        event_decode_ms = 0.0
         evaluations = 0
         for index in range(work.next_rule, len(rules)):
             with self._lock:
@@ -704,9 +1158,22 @@ class DetectionRuntimeEngine:
                         self._rule_integrity_failures += 1
                     continue
                 started = self._work_clock()
+                decoded_this_rule = False
                 evaluations += 1
                 try:
-                    matched = bool(rule.package.evaluate(queued.event()))
+                    if event_fields is None and event_decode_error is None:
+                        decoded_this_rule = True
+                        decode_started = self._work_clock()
+                        try:
+                            event_fields = queued.event()
+                        except Exception as exc:
+                            event_decode_error = exc
+                        event_decode_ms = (
+                            self._work_clock() - decode_started
+                        ) * 1000.0
+                    if event_decode_error is not None:
+                        raise event_decode_error
+                    matched = bool(rule.package.evaluate(event_fields))
                     disposition = "matched" if matched else "not-matched"
                     evaluated = True
                 except Exception:
@@ -715,7 +1182,10 @@ class DetectionRuntimeEngine:
                     with self._lock:
                         self._evaluation_failures += 1
                     continue
-                elapsed_ms = (self._work_clock() - started) * 1000.0
+                elapsed_ms = (
+                    (self._work_clock() - started) * 1000.0
+                    + (0.0 if decoded_this_rule else event_decode_ms)
+                )
             finally:
                 self._finish_claim(
                     self._shadow_seen,
@@ -762,6 +1232,8 @@ class DetectionRuntimeEngine:
         max_shadow_evaluations: int = MAX_SHADOW_EVALUATIONS_PER_PROCESS,
         shadow_slice_ms: float = MAX_SHADOW_SLICE_MS,
     ) -> tuple[int, int]:
+        if not self._ensure_active_authority_valid():
+            return 0, 0
         active_limit = max(0, min(int(max_active), self.active_capacity))
         shadow_limit = max(0, min(int(max_shadow), self.shadow_capacity))
         shadow_work_limit = max(

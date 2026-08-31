@@ -1,11 +1,14 @@
 @echo off
 REM ============================================================================
-REM  Serve the flow-visualization canvas over http so it can fetch live metrics
-REM  (diagnostics/flow_metrics.json, written by the running Angerona app).
-REM  Opens http://localhost:8009/flow_canvas.html in your browser.
+REM  Serve only the flow canvas and its bounded metrics artifact over loopback.
+REM  The repository root is never exposed or directory-listed.
+REM  The Python helper binds an OS-selected loopback port before opening it.
 REM ============================================================================
-cd /d "%~dp0"
-set "PY=venv\Scripts\python.exe"
-if not exist "%PY%" set "PY=py -3"
-start "" http://localhost:8009/flow_canvas.html
-%PY% -m http.server 8009
+set "ANGERONA_CANVAS_PY=%~dp0venv\Scripts\python.exe"
+if exist "%ANGERONA_CANVAS_PY%" (
+    "%ANGERONA_CANVAS_PY%" "%~dp0tools\serve_canvas.py"
+) else (
+    echo Angerona's repository virtual environment is required. 1>&2
+    echo Expected: "%ANGERONA_CANVAS_PY%" 1>&2
+    exit /b 2
+)

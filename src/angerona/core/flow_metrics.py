@@ -141,7 +141,9 @@ def build_metrics(manager, bus, config) -> dict:
         return {"state": "err" if state else "ok", "metrics": metrics}
 
     return {
-        "generated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "schema_version": 1,
+        "generated_at_epoch": now,
+        "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
         "live":      True,
         # ── Per-edge pipeline telemetry ─────────────────────────────────────
         # Consumed by FlowWindow._refresh() to update edge label text in-place.

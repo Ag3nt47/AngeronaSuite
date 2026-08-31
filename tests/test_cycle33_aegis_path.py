@@ -633,6 +633,39 @@ def test_embeddable_ui_is_sortable_clickable_red_for_unknown_and_inert() -> None
     widget.close()
 
 
+def test_ui_reuses_immutable_snapshot_indexes_for_selection_details() -> None:
+    snapshot = _golden_graph()
+    widget = AegisPathWidget(snapshot)
+    node_index = widget._node_index
+    edge_index = widget._edge_index
+    adjacent_edges = widget._adjacent_edges
+    path_index = widget._path_index
+    breakpoint_index = widget._breakpoint_index
+
+    assert tuple(node_index) == tuple(node.node_id for node in snapshot.nodes)
+    assert tuple(edge_index) == tuple(edge.edge_id for edge in snapshot.edges)
+    assert tuple(edge.edge_id for edge in adjacent_edges["choke"]) == tuple(
+        edge.edge_id
+        for edge in snapshot.edges
+        if "choke" in {edge.source_id, edge.target_id}
+    )
+    assert tuple(path_index) == tuple(path.path_id for path in widget.analysis.all_paths)
+    assert tuple(breakpoint_index) == tuple(
+        candidate.candidate_id
+        for candidate in widget.priority_analysis.breakpoints
+    )
+
+    widget._show_node("choke")
+    widget.path_table.selectRow(0)
+    widget.breakpoint_table.selectRow(0)
+    assert widget._node_index is node_index
+    assert widget._edge_index is edge_index
+    assert widget._adjacent_edges is adjacent_edges
+    assert widget._path_index is path_index
+    assert widget._breakpoint_index is breakpoint_index
+    widget.close()
+
+
 def test_ui_missing_snapshot_is_red_unknown_and_does_not_infer_safety() -> None:
     widget = AegisPathWidget()
     assert "UNKNOWN" in widget.status_label.text()

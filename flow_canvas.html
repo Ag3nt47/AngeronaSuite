@@ -4,7 +4,9 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Angerona — System Architecture Canvas</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.9/dist/vis-network.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.9/dist/vis-network.min.js"
+        integrity="sha384-6ox9IspbVlrc5vabD45kZcCJ8HeSwMAQjf9Iq48U/+srTVTNzsB7EqDC5oYpA0WC"
+        crossorigin="anonymous"></script>
 <style>
   :root{ --bg:#0b0e14; --panel:#111725; --line:#1f2937; --txt:#cbd5e1; --accent:#38bdf8; }
   *{box-sizing:border-box}
@@ -114,18 +116,27 @@ const net = new vis.Network(document.getElementById("net"),
 
 function repaint(n){ visNodes.update({id:n.id, color:nodeColor(n)}); }
 
+function renderMetrics(container, metrics){
+  container.replaceChildren();
+  Object.entries(metrics).forEach(([key,value])=>{
+    const row=document.createElement("div"); row.className="metric";
+    const label=document.createElement("div"); label.className="k";
+    const rendered=document.createElement("div"); rendered.className="v";
+    label.textContent=String(key); rendered.textContent=String(value);
+    row.append(label, rendered); container.appendChild(row);
+  });
+}
+
 // ── click-to-focus → detail panel ────────────────────────────────────────────
 net.on("click", p=>{
   if(!p.nodes.length){ closePanel(); return; }
   const n = NODES.find(x=>x.id===p.nodes[0]); if(!n) return;
-  document.getElementById("p-title").innerHTML =
-     n.label.split("\n")[0] + (errored.has(n.id) ? ' <span class="tag err">ERROR</span>' : ' <span class="tag">OK</span>');
+  const title=document.getElementById("p-title"); title.replaceChildren();
+  title.appendChild(document.createTextNode(n.label.split("\n")[0]+" "));
+  const tag=document.createElement("span"); tag.className=errored.has(n.id)?"tag err":"tag";
+  tag.textContent=errored.has(n.id)?"ERROR":"OK"; title.appendChild(tag);
   document.getElementById("p-desc").textContent = n.desc;
-  const m = document.getElementById("p-metrics"); m.innerHTML="";
-  Object.entries(n.metrics).forEach(([k,v])=>{
-    const d=document.createElement("div"); d.className="metric";
-    d.innerHTML=`<div class="k">${k}</div><div class="v">${v}</div>`; m.appendChild(d);
-  });
+  renderMetrics(document.getElementById("p-metrics"), n.metrics);
   document.getElementById("panel").classList.add("open");
 });
 function closePanel(){ document.getElementById("panel").classList.remove("open"); }
@@ -150,8 +161,45 @@ const liveBadge = document.getElementById("live");
 let openNodeId = null;
 net.on("click", p => { openNodeId = p.nodes.length ? p.nodes[0] : null; });
 
+const LIVE_NODE_METRICS = Object.freeze({
+  capture:["Events/sec","Queue depth","Sensors up"],
+  detect:["Detectors up","Queue depth","Modules total"],
+  triage:["Audit events","Model","GPU tier"],
+  respond:["SOAR port","Redacts","Gate"],
+  attack:["Red-team up","Mode","Trigger"],
+  harden:["Threat level","Harden mods","Watchdog"],
+});
+function exactKeys(value, expected){
+  return value!==null && typeof value==="object" && !Array.isArray(value) &&
+    Object.keys(value).sort().join("\u0000") === [...expected].sort().join("\u0000");
+}
+function safePrimitive(value){
+  if(typeof value==="string") return value.length<=128;
+  if(typeof value==="boolean") return true;
+  return typeof value==="number" && Number.isFinite(value) && Math.abs(value)<=100000000;
+}
+function validLiveFeed(data){
+  if(!exactKeys(data,["schema_version","generated_at_epoch","generated","live","pipeline","nodes"])) return false;
+  if(data.schema_version!==1 || data.live!==true || typeof data.generated!=="string" || data.generated.length<1 || data.generated.length>40) return false;
+  if(typeof data.generated_at_epoch!=="number" || !Number.isFinite(data.generated_at_epoch)) return false;
+  const age=Date.now()/1000-data.generated_at_epoch;
+  if(age>120 || age< -10) return false;
+  if(!exactKeys(data.pipeline,["cap_det","det_tri","dropped"]) || !safePrimitive(data.pipeline.dropped)) return false;
+  for(const edgeName of ["cap_det","det_tri"]){
+    const edge=data.pipeline[edgeName];
+    if(!exactKeys(edge,["queue","latency_ms"]) || !Object.values(edge).every(safePrimitive)) return false;
+  }
+  if(!exactKeys(data.nodes,Object.keys(LIVE_NODE_METRICS))) return false;
+  for(const [nodeId,metricKeys] of Object.entries(LIVE_NODE_METRICS)){
+    const node=data.nodes[nodeId];
+    if(!exactKeys(node,["state","metrics"]) || !["ok","err"].includes(node.state)) return false;
+    if(!exactKeys(node.metrics,metricKeys) || !Object.values(node.metrics).every(safePrimitive)) return false;
+  }
+  return true;
+}
+
 function applyLive(data){
-  if(!data || !data.nodes) return;
+  if(!validLiveFeed(data)) return;
   for(const [id, nd] of Object.entries(data.nodes)){
     const n = NODES.find(x=>x.id===id); if(!n) continue;
     if(nd.metrics) n.metrics = nd.metrics;
@@ -163,11 +211,7 @@ function applyLive(data){
     net.emit; // no-op; re-render panel manually:
     const n = NODES.find(x=>x.id===cur);
     if(n){
-      const m=document.getElementById("p-metrics"); m.innerHTML="";
-      Object.entries(n.metrics).forEach(([k,v])=>{
-        const d=document.createElement("div"); d.className="metric";
-        d.innerHTML=`<div class="k">${k}</div><div class="v">${v}</div>`; m.appendChild(d);
-      });
+      renderMetrics(document.getElementById("p-metrics"), n.metrics);
     }
   }
   liveBadge.textContent = "● LIVE  " + (data.generated||"");

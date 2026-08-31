@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 import time
 
 from angerona.core.fleet_fabric import (
@@ -87,6 +88,7 @@ class FleetHealthMonitorModule(BaseModule):
 
     def __init__(self) -> None:
         super().__init__()
+        self._fabric_lock = threading.RLock()
         self._fabric: FleetFabricStore | None = None
         self._tenant_id = ""
         self._last_finding = ""
@@ -104,29 +106,39 @@ class FleetHealthMonitorModule(BaseModule):
             raise TypeError("Fleet Health Monitor requires FleetFabricStore")
         if tenant_id not in fabric.tenant_ids:
             raise PermissionError("Fleet Health Monitor tenant is not authorized")
-        self._fabric = fabric
-        self._tenant_id = tenant_id
+        with self._fabric_lock:
+            self._fabric = fabric
+            self._tenant_id = tenant_id
+
+    def unbind_fabric(self, fabric: FleetFabricStore) -> None:
+        """Detach one exact store only after any in-flight observation finishes."""
+        with self._fabric_lock:
+            if self._fabric is fabric:
+                self._fabric = None
+                self._tenant_id = ""
 
     def observe_once(self) -> tuple[int, str, dict[str, object]]:
-        fabric = self._fabric
-        if fabric is None or not self._tenant_id:
-            return 35, "local Fleet Fabric store is not bound", {
-                "evidence_rows": 0,
-                "retention_drops": 0,
-                "reported_drops": 0,
-                "backpressure_devices": 0,
-                "unhealthy_devices": 0,
-                "enrolled_devices": 0,
-                "fresh_devices": 0,
-                "missing_devices": 0,
-                "stale_devices": 0,
-                "transport_enabled": False,
-                "transport_available": False,
-            }
-        snapshot = fabric.health_snapshot(self._tenant_id)
-        transport = fabric.transport_readiness
+        with self._fabric_lock:
+            fabric = self._fabric
+            tenant_id = self._tenant_id
+            if fabric is None or not tenant_id:
+                return 35, "local Fleet Fabric store is not bound", {
+                    "evidence_rows": 0,
+                    "retention_drops": 0,
+                    "reported_drops": 0,
+                    "backpressure_devices": 0,
+                    "unhealthy_devices": 0,
+                    "enrolled_devices": 0,
+                    "fresh_devices": 0,
+                    "missing_devices": 0,
+                    "stale_devices": 0,
+                    "transport_enabled": False,
+                    "transport_available": False,
+                }
+            snapshot = fabric.health_snapshot(tenant_id)
+            transport = fabric.transport_readiness
         details: dict[str, object] = {
-            "tenant_id": self._tenant_id,
+            "tenant_id": tenant_id,
             "evidence_rows": snapshot.total_rows,
             "snapshot_truncated": snapshot.truncated,
             "retention_drops": snapshot.retention_drops,

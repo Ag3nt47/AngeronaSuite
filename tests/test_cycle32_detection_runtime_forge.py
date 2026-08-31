@@ -398,15 +398,60 @@ def test_registry_transition_sync_failure_clears_retired_active_rules(
         path = tmp_path / name
         path.write_text(json.dumps(package.document), encoding="utf-8")
         assert registry.stage(path).ok
-    assert registry.activate(active.package_id, active.document["digest"]).ok
+    initial_cohort = capture_replay_cohort(
+        [
+            {
+                "event_id": "hit", "revision": 1,
+                "event": {"cmdline": "tool suspicious"},
+                "label": True, "label_source": "curator",
+            },
+            {
+                "event_id": "miss", "revision": 2,
+                "event": {"cmdline": "notepad"},
+                "label": False, "label_source": "curator",
+            },
+        ],
+        source_id="local-host",
+        source_kind="curated-replay",
+        high_water=2,
+        captured_at=1000.0,
+    )
+    tuning = digest_tuning({"threshold": 7})
+    initial_comparison = compare_detection_packages(
+        initial_cohort, active=None, candidate=active, evaluated_at=1001.0,
+    )
+    initial_attestation = input_authority.issue(
+        initial_comparison,
+        package_id=active.package_id,
+        signer="analyst-1",
+        policy_digest=policy.digest,
+        tuning_digest=tuning,
+        resource_coverage=("process.creation",),
+    )
+    initial_quality = quality.append_evaluation(
+        initial_comparison,
+        package_id=active.package_id,
+        signer="analyst-1",
+        policy_digest=policy.digest,
+        tuning_digest=tuning,
+        resource_coverage=("process.creation",),
+        input_attestation=initial_attestation,
+    )
+    initial_result = coordinator.promote(coordinator.issue_promotion_receipt(
+        initial_quality,
+        signer="analyst-1",
+        tuning_digest=tuning,
+        resource_coverage=("process.creation",),
+    ))
+    assert initial_result.ok
     runtime = DetectionRuntimeEngine()
     runtime.sync_active_from_registry(
         registry,
         package_id=active.package_id,
         expected_digest=active.document["digest"],
-        activation_epoch=1,
+        activation_epoch=initial_result.activation_epoch,
     )
-    original_sync = runtime.sync_active_from_registry
+    original_sync = runtime.sync_active_set_from_registry
     cohort = capture_replay_cohort(
         [
             {
@@ -428,7 +473,6 @@ def test_registry_transition_sync_failure_clears_retired_active_rules(
     comparison = compare_detection_packages(
         cohort, active=active, candidate=candidate, evaluated_at=1001.0
     )
-    tuning = digest_tuning({"threshold": 7})
     attestation = input_authority.issue(
         comparison,
         package_id=candidate.package_id,
@@ -462,7 +506,7 @@ def test_registry_transition_sync_failure_clears_retired_active_rules(
     def fail_sync(*_args, **_kwargs):
         raise RuntimeError("simulated runtime reconciliation failure")
 
-    monkeypatch.setattr(runtime, "sync_active_from_registry", fail_sync)
+    monkeypatch.setattr(runtime, "sync_active_set_from_registry", fail_sync)
     result = service.promote(approval)
     assert not result.ok and result.state == "runtime-fail-closed"
     assert registry.active(candidate.package_id).document["digest"] == candidate.document["digest"]
@@ -471,8 +515,7 @@ def test_registry_transition_sync_failure_clears_retired_active_rules(
     # binding fault, but only against the authoritative registry digest.
     assert original_sync(
         registry,
-        package_id=candidate.package_id,
-        expected_digest=candidate.document["digest"],
+        expected_bindings={candidate.package_id: candidate.document["digest"]},
         activation_epoch=result.activation_epoch,
     ) == (candidate.document["digest"],)
 

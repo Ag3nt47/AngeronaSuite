@@ -1,3 +1,29 @@
+# Angerona Cycle 34 Defensive Innovation Review — 2026-08-30
+
+## Decision
+
+Cycle 34 shipped no research MVP. Round 1 ranked 11 proposals from current
+primary sources, but the loop did not retain their exact titles and this record
+does not invent them. Three High-severity findings and the subsequent authority,
+custody, lifecycle, admission, and trust-store re-attacks took priority.
+
+Round 3 recorded eight local architecture ideas, all **proposed / backlog**:
+
+1. Runtime Custody Lease Broker — preferred bounded MVP.
+2. Domain Writer Fencing Tokens.
+3. View-Bound Action Receipts.
+4. Invariant Failure Capsules.
+5. Disposable Authority Recovery Rehearsal.
+6. Authoritative Mutation Inventory Gate.
+7. Cross-Domain Commit Envelope.
+8. Forward-Integrity Ledger Epochs.
+
+None is a shipped capability. Scope and acceptance work remain separate. The
+canonical Cycle 34 proposal record is
+[`cycle34/innovation_ideas.md`](cycle34/innovation_ideas.md).
+
+---
+
 # Angerona Cycles 31-33 Enterprise-Pattern Innovation Review — 2026-08-30
 
 ## Delivered bounded programs

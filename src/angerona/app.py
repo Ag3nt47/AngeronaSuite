@@ -2,6 +2,8 @@
 together. Keep this thin — real logic lives in core/ and modules/."""
 from __future__ import annotations
 
+import threading
+
 from PySide6.QtWidgets import QApplication
 
 from angerona.core.config import Config
@@ -64,6 +66,9 @@ class AngeronaApp:
         high_water_provider: IndependentHighWater | None = None,
     ) -> None:
         self.qt = qt
+        self._shutdown_requested = threading.Event()
+        self._shutdown_gate = threading.Lock()
+        self._startup_lifecycle_lock = threading.Lock()
         self.config = Config.load()
         # Native logon/launcher entry points pass --chill. This is a runtime
         # safety profile, not a rewrite of the operator's saved manual-launch
@@ -491,7 +496,8 @@ class AngeronaApp:
         """Called on the main thread after the first event-loop cycle.
         Spawns a background thread for the slow work so the GUI stays
         responsive while modules import and start."""
-        import threading
+        if self._startup_cancelled():
+            return
         from angerona.gui.animations import begin_loading
 
         token = begin_loading("Preparing protection services…")
@@ -502,7 +508,13 @@ class AngeronaApp:
     def _load_modules_guarded(self, loading_token: str | None = None) -> None:
         """Keep a loader failure observable instead of losing a daemon thread."""
         try:
-            self._load_modules()
+            lifecycle_lock = getattr(self, "_startup_lifecycle_lock", None)
+            if lifecycle_lock is None:
+                self._load_modules()
+            else:
+                with lifecycle_lock:
+                    if not self._startup_cancelled():
+                        self._load_modules()
         except Exception as exc:
             self._record_startup_degradation(
                 "Protection Module Loader",
@@ -520,11 +532,18 @@ class AngeronaApp:
                 finish_loading(loading_token)
                 self._startup_loading_token = None
 
+    def _startup_cancelled(self) -> bool:
+        requested = getattr(self, "_shutdown_requested", None)
+        return bool(requested is not None and requested.is_set())
+
     def _load_modules(self) -> None:
         """Background thread — no Qt widget access here, only thread-safe
         bus/manager calls. Qt signals emitted by modules are automatically
         queued to the main thread by the Qt runtime."""
         from angerona.gui.animations import update_loading
+
+        if self._startup_cancelled():
+            return
 
         loading_token = getattr(self, "_startup_loading_token", None)
 
@@ -576,8 +595,44 @@ class AngeronaApp:
                     Severity.HIGH,
                 )
 
+        if self._startup_cancelled():
+            return
+
         _loading("Discovering protection modules…")
         self.manager.discover()        # find built-in + drop-in modules
+        if self._startup_cancelled():
+            return
+        mark_operations_discovered = getattr(
+            self.window, "_mark_operations_modules_discovered", None
+        )
+        compose_operations = getattr(
+            self.window, "_ensure_operations_service", None
+        )
+        # Discovery and composition are a single startup barrier. The service
+        # publishes UI readiness only after both live module bindings succeed.
+        if not callable(mark_operations_discovered) or not callable(
+            compose_operations
+        ):
+            self._record_startup_degradation(
+                "Local SOC Runtime Composition",
+                "authoritative fleet and detection binding is unavailable",
+                RuntimeError("operations composition boundary is unavailable"),
+                Severity.HIGH,
+            )
+            return
+        mark_operations_discovered()
+        try:
+            compose_operations(startup_owner=True, wait=True)
+        except Exception as exc:
+            self._record_startup_degradation(
+                "Local SOC Runtime Composition",
+                "fleet and detection observers could not bind authoritative local stores",
+                exc,
+                Severity.HIGH,
+            )
+            return
+        if self._startup_cancelled():
+            return
         # In startup Chill Mode, do not start deep scanners merely to stop them a
         # moment later. Their first scans were racing at boot and starving Qt.
         deferred = set()
@@ -605,14 +660,20 @@ class AngeronaApp:
             # Lightweight test/dry-run managers may implement the older,
             # narrower call surface. Production always uses ModuleManager.
             self.manager.start_enabled(deferred_names=deferred)
+        if self._startup_cancelled():
+            return
         # Establish the saved Chill policy now (sentinel cadence + model release)
         # (hops to the GUI thread via a queued signal — no widget access here).
         try:
             self.window.startup_eco_requested.emit()
         except Exception:
             pass
+        if self._startup_cancelled():
+            return
         _loading("Starting status reporting…")
         self.reporter.start()          # begin writing diagnostics/status.txt
+        if self._startup_cancelled():
+            return
         # Start MCP server after modules are loaded so all tools have live data
         if self._mcp is not None:
             try:
@@ -624,6 +685,8 @@ class AngeronaApp:
                     "the optional local tool server could not start",
                     exc,
                 )
+        if self._startup_cancelled():
+            return
         _loading("Finalizing protection services…")
         self._start_fleet_service()
 
@@ -887,6 +950,31 @@ class AngeronaApp:
         }
 
     def shutdown(self) -> None:
+        """Mark cancellation immediately, then serialize startup teardown."""
+        shutdown_gate = getattr(self, "_shutdown_gate", None)
+        if shutdown_gate is None:
+            shutdown_gate = threading.Lock()
+            self._shutdown_gate = shutdown_gate
+        requested = getattr(self, "_shutdown_requested", None)
+        if requested is None:
+            requested = threading.Event()
+            self._shutdown_requested = requested
+        with shutdown_gate:
+            if requested.is_set():
+                return
+            requested.set()
+        window = getattr(self, "window", None)
+        signal_operations = getattr(window, "_begin_operations_shutdown", None)
+        if callable(signal_operations):
+            signal_operations()
+        lifecycle_lock = getattr(self, "_startup_lifecycle_lock", None)
+        if lifecycle_lock is None:
+            lifecycle_lock = threading.Lock()
+            self._startup_lifecycle_lock = lifecycle_lock
+        with lifecycle_lock:
+            self._shutdown_owned()
+
+    def _shutdown_owned(self) -> None:
         # Clean shutdown: tell the ecosystem to STAND DOWN so the watchdog does
         # not resurrect the core, then stop the child processes. (A crash — with
         # no stand-down — leaves the watchdog free to restart everything.)
@@ -930,6 +1018,12 @@ class AngeronaApp:
             self._admin_audit = None
         self._endpoint_identity = None
         self.manager.stop_all()
+        # Fleet Health is a module consumer of the eager Local SOC fabric.
+        # Stop all consumers first, then close that shared store exactly once.
+        try:
+            self.window._close_operations_service()
+        except Exception:
+            pass
         # Producers stop first so the bounded SentinelLens queue has a stable
         # terminal suffix to drain and analyze. It never executes remediation.
         try:

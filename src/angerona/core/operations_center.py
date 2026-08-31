@@ -58,7 +58,11 @@ from angerona.core.security_interop import (
     parity_summary,
     run_osquery_template,
 )
-from angerona.modules.detection_runtime import DetectionRuntimeEngine
+from angerona.modules.detection_runtime import (
+    DetectionRuntimeEngine,
+    DetectionRuntimeModule,
+)
+from angerona.modules.fleet_health_monitor import FleetHealthMonitorModule
 
 _MASTER_KEY_NAME = "ANGERONA_INTERNAL_SOC_MASTER_KEY_V1"
 _TENANT = "local"
@@ -140,6 +144,7 @@ class LocalOperationsCenter:
         self.root = self.data_root / "operations-center"
         self.root.mkdir(parents=True, exist_ok=True)
         self._clock = clock
+        self._closed = False
         self.evidence_store = evidence_store
         self.manager = manager
         self.config = config
@@ -154,16 +159,21 @@ class LocalOperationsCenter:
         )
         self.inventory_store = InventoryStore(self.root / "asset-inventory.json")
         trust = self.root / "trusted-detection-publishers.json"
+        detection_transition_capability = _derive(
+            key, b"detection-registry-governance"
+        )
         self.detections = DetectionPackageRegistry(
             self.root / "detection-registry",
-            trusted_keys=trust if trust.is_file() else None,
+            trusted_keys=trust,
             require_signed=True,
+            transition_authority=detection_transition_capability,
         )
         # Enterprise-pattern program services remain local, bounded, and
         # independently fail closed. A damaged preview store must not hide the
         # case/audit workspace, so its exact initialization error is retained
         # for the clickable program surface instead of weakening validation.
         self.program_errors: dict[str, str] = {}
+        self._fleet_health_monitor: FleetHealthMonitorModule | None = None
         self.fleet_fabric: FleetFabricStore | None = None
         try:
             self.fleet_fabric = FleetFabricStore(
@@ -175,10 +185,59 @@ class LocalOperationsCenter:
                 f"{type(exc).__name__}: {str(exc)[:400]}"
             )
 
-        self.detection_runtime = DetectionRuntimeEngine()
+        if manager is not None and self.fleet_fabric is not None:
+            modules = getattr(manager, "modules", None)
+            fleet_monitor = (
+                modules.get(FleetHealthMonitorModule.name)
+                if isinstance(modules, Mapping)
+                else None
+            )
+            if isinstance(fleet_monitor, FleetHealthMonitorModule):
+                try:
+                    fleet_monitor.bind_fabric(self.fleet_fabric, _TENANT)
+                    self._fleet_health_monitor = fleet_monitor
+                except Exception as exc:
+                    self.program_errors["fleet_health_monitor"] = (
+                        f"{type(exc).__name__}: {str(exc)[:400]}"
+                    )
+            else:
+                self.program_errors["fleet_health_monitor"] = (
+                    "authoritative registered Fleet Health Monitor module is unavailable"
+                )
+
+        self._detection_runtime_authoritative = False
+        if manager is None:
+            # Standalone tools have no registered live module; this engine is
+            # the only runtime in their explicitly local process.
+            self.detection_runtime = DetectionRuntimeEngine()
+            self._detection_runtime_authoritative = True
+        else:
+            modules = getattr(manager, "modules", None)
+            registered = (
+                modules.get(DetectionRuntimeModule.name)
+                if isinstance(modules, Mapping)
+                else None
+            )
+            if isinstance(registered, DetectionRuntimeModule) and isinstance(
+                registered.engine, DetectionRuntimeEngine
+            ):
+                # DetectionForge must mutate the exact engine subscribed to the
+                # application's EventBus, never a facade-owned lookalike.
+                self.detection_runtime = registered.engine
+                self._detection_runtime_authoritative = True
+            else:
+                self.detection_runtime = DetectionRuntimeEngine()
+                self.program_errors["detection_runtime"] = (
+                    "authoritative registered Detection Runtime module is unavailable"
+                )
         self.detection_quality: DetectionQualityStore | None = None
         self.detection_promotion: DetectionPromotionCoordinator | None = None
+        promotion: DetectionPromotionCoordinator | None = None
         try:
+            if not self._detection_runtime_authoritative:
+                raise RuntimeError(
+                    "DetectionForge cannot bind the registered live detection runtime"
+                )
             input_authority = QualityInputAuthority(
                 _derive(key, b"detection-quality-input")
             )
@@ -187,12 +246,26 @@ class LocalOperationsCenter:
                 key=_derive(key, b"detection-quality-ledger"),
                 input_authority=input_authority,
             )
-            self.detection_promotion = DetectionPromotionCoordinator(
+            promotion = DetectionPromotionCoordinator(
                 self.detections,
                 self.detection_quality,
                 PromotionAuthority(_derive(key, b"detection-promotion")),
                 state_path=self.root / "detection-promotion-state.json",
+                transition_capability=detection_transition_capability,
+                runtime_module=(registered if manager is not None else None),
+                runtime_manager=manager,
+                runtime_engine=self.detection_runtime,
             )
+            bindings, activation_epoch = promotion.authoritative_runtime_bindings()
+            if activation_epoch == 0:
+                snapshot = self.detection_runtime.snapshot()
+                if bindings or snapshot.active_digests:
+                    raise RuntimeError(
+                        "live detection runtime has active content without promotion authority"
+                    )
+            else:
+                promotion.restore_runtime_for_startup()
+            self.detection_promotion = promotion
         except Exception as exc:
             # Existing pre-v1.13 registries may not have a durable promotion
             # checkpoint. They stay observable, but transitions fail closed
@@ -200,6 +273,22 @@ class LocalOperationsCenter:
             self.program_errors["detection_governance"] = (
                 f"{type(exc).__name__}: {str(exc)[:400]}"
             )
+            try:
+                snapshot = self.detection_runtime.snapshot()
+                if promotion is not None and promotion.runtime_managed:
+                    promotion.fail_closed_runtime(
+                        activation_epoch=max(1, snapshot.active_activation_epoch),
+                        expected_current_epoch=snapshot.active_activation_epoch,
+                        expected_current_digests=snapshot.active_digests,
+                    )
+                else:
+                    self.detection_runtime.fail_closed_active(
+                        activation_epoch=max(1, snapshot.active_activation_epoch)
+                    )
+            except Exception:
+                pass
+            if promotion is not None:
+                promotion.close()
             self.detection_promotion = None
 
         self.exposure_snapshot: ExposureSnapshot | None = None
@@ -219,7 +308,7 @@ class LocalOperationsCenter:
             "schema": "angerona.enterprise-program-status.v1",
             "local_only": True,
             "fleet_fabric": self.fleet_fabric is not None,
-            "detection_runtime": True,
+            "detection_runtime": self._detection_runtime_authoritative,
             "detection_quality": self.detection_quality is not None,
             "detection_promotion": self.detection_promotion is not None,
             "exposure_snapshot": self.exposure_snapshot is not None,
@@ -288,7 +377,7 @@ class LocalOperationsCenter:
                 "cloud_required": False,
                 "remote_shell": False,
                 "arbitrary_query_language": False,
-                "detection_activation": "trusted-signature-required",
+                "detection_activation": "detection-forge-one-use-receipt-required",
                 "raw_evidence_in_case_database": False,
             },
         }
@@ -572,19 +661,41 @@ class LocalOperationsCenter:
         return report
 
     def activate_detection(self, package_id: str, digest: str) -> ValidationReport:
-        report = self.detections.activate(package_id, digest)
+        report = ValidationReport(
+            False,
+            "activate",
+            "governance-required",
+            package_id or None,
+            digest or None,
+            (
+                "legacy activation is disabled; DetectionForge requires an exact "
+                "quality-gated one-use promotion receipt",
+            ),
+        )
         self._append_audit(
             "detection.activate", f"detection/{package_id}",
-            result="success" if report.ok else "failure",
+            result="failure",
+            decision="denied",
             after=report.to_dict(),
         )
         return report
 
     def rollback_detection(self, package_id: str) -> ValidationReport:
-        report = self.detections.rollback(package_id)
+        report = ValidationReport(
+            False,
+            "rollback",
+            "governance-required",
+            package_id or None,
+            None,
+            (
+                "legacy rollback is disabled; DetectionForge requires an exact "
+                "fresh one-use rollback receipt",
+            ),
+        )
         self._append_audit(
             "detection.rollback", f"detection/{package_id}",
-            result="success" if report.ok else "failure",
+            result="failure",
+            decision="denied",
             after=report.to_dict(),
         )
         return report
@@ -613,7 +724,16 @@ class LocalOperationsCenter:
         return target
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self.detection_promotion is not None:
+            self.detection_promotion.close()
+            self.detection_promotion = None
         if self.fleet_fabric is not None:
+            if self._fleet_health_monitor is not None:
+                self._fleet_health_monitor.unbind_fabric(self.fleet_fabric)
+                self._fleet_health_monitor = None
             self.fleet_fabric.close()
             self.fleet_fabric = None
         self.cases.close()

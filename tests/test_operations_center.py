@@ -59,7 +59,7 @@ def test_local_soc_case_hunt_custody_and_audit(tmp_path: Path) -> None:
             "cloud_required": False,
             "remote_shell": False,
             "arbitrary_query_language": False,
-            "detection_activation": "trusted-signature-required",
+            "detection_activation": "detection-forge-one-use-receipt-required",
             "raw_evidence_in_case_database": False,
         }
         assert summary["audit"]["ok"] is True

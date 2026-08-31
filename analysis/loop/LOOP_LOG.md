@@ -3539,3 +3539,92 @@ boundaries, and primary-source citations are in
   commercial EDR/XDR parity. Fleet authority remains local and has no remote
   transport; DetectionForge is local governed evaluation; AegisPath provider
   and absence authority remain local trust and its simulation is inert.
+
+## Cycle 34 Round 1 — authority binding and canvas boundary (2026-08-30)
+
+- The audit recorded **5 findings (3 High, 1 Medium, 1 Low)** and fixed all
+  five: wildcard repository canvas serving/a CDN dependency without integrity
+  binding, legacy registry governance bypass, a detached DetectionForge engine,
+  multi-package live-rule eviction, and an unbound Fleet Health Monitor.
+- The flow canvas now uses a Host-checked loopback exact-allowlist server,
+  bounded fresh metrics contract, descriptor/final-path checks, text-only value
+  insertion, and an operating-system-selected port. Detection/Fleet composition
+  binds exact live modules and authorities before start.
+- AegisPath added immutable path/node selection indexes; selection work is now
+  proportional to the selected path or incident degree rather than the whole
+  graph.
+- One primary-source research pass ranked 11 defensive proposals. No MVP
+  shipped because High-severity convergence took priority; exact titles were
+  not retained and are not reconstructed in documentation.
+
+## Cycle 34 Round 2 — atomic lifecycle and Fleet custody (2026-08-30)
+
+- Detection `D01..D05` closed same-root downgrade/reopen/runtime injection,
+  stopped/detached split brain, non-atomic authority documents, stale runtime
+  reconciliation, and active-rule expiry/revocation/quarantine gaps.
+  Authenticated transaction recovery covers each commit boundary; exact
+  lifecycle generation and complete active-set authority are revalidated.
+- Canvas re-attack added descriptor-only single-link and platform final-path
+  validation, post-read identity, exact schema/freshness, bounded connections
+  and headers, safe rendering, and exact-interpreter launch. Local Operations
+  Center construction became nonblocking, cancellable, single-flight, and
+  readiness-reserved before module start.
+- Fleet follow-up **F1** extended custody to every retained health row and
+  authenticated v1 migration. **F2 (High)** removed the 3N+1 retained decode/
+  signature path with guarded incremental exact-row projections. Retention is
+  bounded to 5,000 rows × 8 KiB (about 40.96 MB encoded cache ceiling).
+- Benchmark fixture: N=250 mutation about 0.7446 s → 0.0216 s, final
+  transactional path about 0.0188 s; cached N=5,000 about 0.289 s; deliberate
+  full startup verification about 4.475 s.
+
+## Cycle 34 Round 3 — temporal, admission, and trust closure (2026-08-30)
+
+- Detection re-attack fixed receipt replay after clock/prune/rollback (High),
+  cross-process root split brain (High), stranded invalid binding/quarantine
+  convergence (Medium), and process-local governance-policy floor (Low) with a
+  nondecreasing authority-time floor, lifetime owner lease, journaled
+  quarantine, and durable governance anchor.
+- A fresh-process published-v2/floorless-v3 migration replay then forced
+  complete authenticated-history proof, nondecreasing/current authorization
+  time, exact predecessor/head/active set, unique receipts, and 86,400-second
+  receipt tombstones. The malformed-history matrix passed 16/16; lease crash/
+  reopen and quarantine recovery re-attacks found no new issue.
+- A publication-bound owner-lease re-attack then fixed same-process authority
+  aliasing, the close/use check-to-lock race, mutable registry/state-lock
+  rebinding, and POSIX fork inheritance. The lifetime lease is now creator-PID
+  bound and captures the exact canonical registry/state/quality paths,
+  governance settings, policy, clock, capability, and runtime identities.
+  Forked children discard inherited descriptors without `LOCK_UN`; exact
+  sibling reference sharing remains supported. Final bounded re-attack was
+  clean.
+- Fleet re-attack fixed invalid pre-admission clock/cache denial of service and
+  exact-replay burst consumption (2 High), plus restart limiter reset, an
+  identity/bucket bound mismatch, and rolled-back volatile quota consumption
+  (3 Medium). Clock advance and quota reservation now commit atomically;
+  restart state derives from custody-authenticated retained evidence.
+- A High registry trust-store time-of-check/time-of-use re-attack was fixed by
+  one bounded immutable trust snapshot, stable package/signature generation
+  proofs, and exit identity/hash checks. Runtime benchmark decodes fell 1,920 →
+  30 (about 4×); 32-package governance reads fell 64 → 2 (about 2×); trust reads
+  fell from N to 2.
+- All eight Round 3 visionary ideas remain proposal-only. No Cycle 34 research
+  feature shipped.
+
+## Cycle 34 documentation checkpoint (2026-08-30)
+
+- Code-round targeted gate: **91 passed / 2 expected Windows host-capability
+  skips (symlink creation and POSIX fork) / 0 failed**. Adjacent selection:
+  **128 passed**. Package compile:
+  **368/368**. Standalone self-tests: **93 passed / 0 failed**, plus **16
+  expected platform, disabled, or optional-prerequisite skips**. Supported
+  selfcheck: **26/26**.
+- The consolidated Word manual was rebuilt from its pristine snapshot and all
+  41 rendered pages passed structural and visual QA.
+- Full serial pytest, authoritative five-check release validation, validated
+  commit/evidence digest, guarded publication, and public README-asset proof
+  remain pending.
+- Retained boundaries: full detection-root plus local-key rollback needs an
+  independent/hardware witness; ambiguous legacy history requires operator
+  recovery; an already governed root cannot silently recreate a missing anchor;
+  Fleet remains local-only with a 5,000-row cap and conservative post-prune
+  restart refill.

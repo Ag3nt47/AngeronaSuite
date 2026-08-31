@@ -2,17 +2,22 @@
 
 > **Archived historical analysis snapshot.** This long-form record preserves
 > earlier Cycle 5–23 design notes and counts. For the current v1.13.0 product,
-> 84-capability inventory, validation result, screenshots, and safety boundary,
+> 84-capability inventory, current maintenance status, screenshots, and safety boundary,
 > use the repository-root [`README.md`](../README.md),
 > [`ANGERONA_CAPABILITIES.md`](../ANGERONA_CAPABILITIES.md), and
-> [`cycles31-33-summary.md`](loop/cycles31-33-summary.md).
+> [`cycle34/README.md`](loop/cycle34/README.md).
 
-The authoritative v1.13.0 five-check release gate on exact commit
+The Cycles 31–33 v1.13.0 five-check release gate on exact commit
 `edefd8b07b94da4d682a35ace23057e7b22c3790` passed **2790 tests / 13
 intentional platform skips / 0 failures in 325.19 seconds**. Evidence-manifest
 SHA-256: `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`.
-Validation is complete; repository policy requires the guarded publisher for
-release completion.
+That is pre-Cycle 34 evidence. The current maintenance tree's targeted gate is
+**91 passed / 2 expected Windows host-capability skips / 0 failed**; adjacent
+selection is **128 passed**; compile is **368/368**; standalone self-tests are
+**93 passed / 0 failed plus 16 expected skips**; and selfcheck is **26/26**.
+The reconciled 41-page Word manual passed full-page visual and structural QA.
+Full serial/release validation, commit/evidence identity, and guarded
+publication remain pending.
 
 **Local-first Endpoint Detection and Response (EDR), Network Detection and
 Response (NDR), and Security Orchestration, Automation, and Response (SOAR):
@@ -28,6 +33,23 @@ Materials (SBOM), Supply-chain Levels for Software Artifacts (SLSA), and
 Hash-based Message Authentication Code (HMAC), Application Programming
 Interface (API), JavaScript Object Notation (JSON), Mutual Transport Layer
 Security (mTLS), Single Sign-On (SSO), and OpenID Connect (OIDC).
+
+## Current v1.13.0 maintenance — Cycle 34
+
+Cycle 34 hardened the flow-canvas serving boundary, exact Local Operations
+Center module binding, DetectionForge promotion/recovery/time/owner/quarantine
+authority, Fleet retained-row custody and restart-safe admission, and registry
+publisher-key validation. It also added immutable AegisPath selection indexes,
+coalesced Detection Runtime event decoding, and removed Fleet's 3N+1 retained
+verification path. The inventory remains 84 capabilities; no research proposal
+shipped.
+
+The retained limits are material: Fleet is still a local lab with 5,000-row
+health retention and conservative post-prune restart refill; ambiguous legacy
+detection history fails closed for operator recovery; an already governed
+prepublication/work-in-progress registry does not silently recreate a missing
+governance anchor; and complete detection-root plus local-key rollback needs an
+independent or hardware witness.
 
 ![Windows](https://img.shields.io/badge/Windows-Protect-0078D6)
 ![macOS](https://img.shields.io/badge/macOS-Observe%20preview-555555)

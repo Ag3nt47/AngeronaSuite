@@ -23,10 +23,13 @@ from PySide6.QtWidgets import (
 from angerona.core.exposure_graph import (
     CoverageStatus,
     EvidenceFreshness,
+    ExposureEdge,
+    ExposureNode,
     ExposureSnapshot,
     ResourceStatus,
 )
 from angerona.core.exposure_paths import (
+    ExposurePath,
     PathAnalysis,
     PathClassification,
     PathLimits,
@@ -160,6 +163,14 @@ class AegisPathWidget(QWidget):
         self._snapshot: ExposureSnapshot | None = None
         self._analysis: PathAnalysis | None = None
         self._priority: PriorityAnalysis | None = None
+        # ExposureSnapshot is immutable.  Index its bounded contents once when
+        # a verified analysis is accepted instead of rebuilding full maps (or
+        # rescanning every edge) on each operator selection.
+        self._node_index: dict[str, ExposureNode] = {}
+        self._edge_index: dict[str, ExposureEdge] = {}
+        self._adjacent_edges: dict[str, tuple[ExposureEdge, ...]] = {}
+        self._path_index: dict[str, ExposurePath] = {}
+        self._breakpoint_index: dict[str, BreakpointCandidate] = {}
         self._limits = _interactive_limits(limits)
         self._analysis_token = 0
         self._analysis_pending = False
@@ -261,6 +272,11 @@ class AegisPathWidget(QWidget):
         self._snapshot = None
         self._analysis = None
         self._priority = None
+        self._node_index.clear()
+        self._edge_index.clear()
+        self._adjacent_edges.clear()
+        self._path_index.clear()
+        self._breakpoint_index.clear()
         for table in (
             self.path_table,
             self.target_table,
@@ -355,6 +371,22 @@ class AegisPathWidget(QWidget):
         snapshot, analysis, priority = self._snapshot, self._analysis, self._priority
         if snapshot is None or analysis is None or priority is None:
             return
+        node_index = {node.node_id: node for node in snapshot.nodes}
+        edge_index = {edge.edge_id: edge for edge in snapshot.edges}
+        adjacent: dict[str, list[ExposureEdge]] = {}
+        for edge in snapshot.edges:
+            adjacent.setdefault(edge.source_id, []).append(edge)
+            if edge.target_id != edge.source_id:
+                adjacent.setdefault(edge.target_id, []).append(edge)
+        self._node_index = node_index
+        self._edge_index = edge_index
+        self._adjacent_edges = {
+            node_id: tuple(edges) for node_id, edges in adjacent.items()
+        }
+        self._path_index = {path.path_id: path for path in analysis.all_paths}
+        self._breakpoint_index = {
+            candidate.candidate_id: candidate for candidate in priority.breakpoints
+        }
         incomplete = (
             snapshot.status is ResourceStatus.INCOMPLETE_RESOURCE_LIMIT
             or analysis.status is ResourceStatus.INCOMPLETE_RESOURCE_LIMIT
@@ -427,13 +459,12 @@ class AegisPathWidget(QWidget):
         self.path_table.setSortingEnabled(True)
         self.path_table.resizeColumnsToContents()
 
-        node_map = {node.node_id: node for node in snapshot.nodes}
         self.target_table.setSortingEnabled(False)
         rendered_targets = analysis.target_ids[:_GUI_MAX_TABLE_ROWS]
         self.target_table.setRowCount(len(rendered_targets))
         for row_index, node_id in enumerate(rendered_targets):
             confirmed, speculative = target_counts.get(node_id, [0, 0])
-            node = node_map[node_id]
+            node = node_index[node_id]
             unknown = confirmed == 0
             self.target_table.setItem(
                 row_index, 0, _text_item(node_id, unknown=unknown, payload=node_id)
@@ -456,7 +487,7 @@ class AegisPathWidget(QWidget):
         self.entry_table.setRowCount(len(rendered_entries))
         for row_index, node_id in enumerate(rendered_entries):
             confirmed, speculative = entry_counts.get(node_id, [0, 0])
-            node = node_map[node_id]
+            node = node_index[node_id]
             self.entry_table.setItem(
                 row_index, 0, _text_item(node_id, unknown=confirmed == 0, payload=node_id)
             )
@@ -518,11 +549,9 @@ class AegisPathWidget(QWidget):
         if self._snapshot is None or self._analysis is None:
             return
         path_id = self._selected_payload(self.path_table)
-        path = next((row for row in self._analysis.all_paths if row.path_id == path_id), None)
+        path = self._path_index.get(str(path_id))
         if path is None:
             return
-        nodes = {node.node_id: node for node in self._snapshot.nodes}
-        edges = {edge.edge_id: edge for edge in self._snapshot.edges}
         document = {
             "path_id": path.path_id,
             "classification": path.classification.value,
@@ -531,14 +560,17 @@ class AegisPathWidget(QWidget):
             "nodes": [
                 {
                     "id": node_id,
-                    "kind": nodes[node_id].kind.value,
-                    "label": nodes[node_id].label,
-                    "criticality": nodes[node_id].criticality or "UNKNOWN",
-                    "cve_id": nodes[node_id].cve_id or None,
+                    "kind": self._node_index[node_id].kind.value,
+                    "label": self._node_index[node_id].label,
+                    "criticality": self._node_index[node_id].criticality or "UNKNOWN",
+                    "cve_id": self._node_index[node_id].cve_id or None,
                 }
                 for node_id in path.node_ids
             ],
-            "edges": [self._edge_document(edges[edge_id]) for edge_id in path.edge_ids],
+            "edges": [
+                self._edge_document(self._edge_index[edge_id])
+                for edge_id in path.edge_ids
+            ],
             "receipt": {
                 "snapshot_digest": self._analysis.receipt.snapshot_digest,
                 "generation": self._analysis.receipt.generation,
@@ -581,18 +613,15 @@ class AegisPathWidget(QWidget):
     def _show_node(self, node_id) -> None:
         if self._snapshot is None or node_id is None:
             return
-        try:
-            node = self._snapshot.node(str(node_id))
-        except KeyError:
+        node = self._node_index.get(str(node_id))
+        if node is None:
             return
-        related: list[dict] = []
-        related_total = 0
-        for edge in self._snapshot.edges:
-            if node.node_id not in {edge.source_id, edge.target_id}:
-                continue
-            related_total += 1
-            if len(related) < _GUI_MAX_DETAIL_EDGES:
-                related.append(self._edge_document(edge))
+        related_edges = self._adjacent_edges.get(node.node_id, ())
+        related = [
+            self._edge_document(edge)
+            for edge in related_edges[:_GUI_MAX_DETAIL_EDGES]
+        ]
+        related_total = len(related_edges)
         self.details.setPlainText(json.dumps({
             "node_id": node.node_id,
             "kind": node.kind.value,
@@ -612,10 +641,7 @@ class AegisPathWidget(QWidget):
         if self._priority is None:
             return None
         candidate_id = self._selected_payload(self.breakpoint_table)
-        return next(
-            (row for row in self._priority.breakpoints if row.candidate_id == candidate_id),
-            None,
-        )
+        return self._breakpoint_index.get(str(candidate_id))
 
     def _show_selected_breakpoint(self) -> None:
         candidate = self._selected_breakpoint()

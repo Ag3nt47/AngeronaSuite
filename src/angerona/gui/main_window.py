@@ -169,6 +169,15 @@ class MainWindow(QMainWindow):
         self.evidence_store = evidence_store
         self.process_baseline = process_baseline
         self._operations_service = None
+        self._operations_service_lock = threading.Lock()
+        self._operations_service_shutdown = False
+        self._operations_service_cancel = threading.Event()
+        self._operations_service_state = "waiting"
+        self._operations_service_build_token = None
+        self._operations_service_completion = threading.Event()
+        self._operations_service_error = ""
+        self._operations_modules_discovered = threading.Event()
+        self._operations_modules_ready = threading.Event()
         self._operations_dialog = None
         self._voice_loop_lock = threading.Lock()
         self._voice_loop_thread: threading.Thread | None = None
@@ -4102,22 +4111,197 @@ class MainWindow(QMainWindow):
         self._show_classic_dashboard()
         self._right_tabs.setCurrentWidget(self.scan_center)
 
+    def _construct_operations_service(self, build_token: object):
+        """Build outside the state lock, then atomically publish or orphan it."""
+        with self._operations_service_lock:
+            if (
+                self._operations_service_build_token is not build_token
+                or self._operations_service_cancel.is_set()
+                or self._operations_service_shutdown
+            ):
+                raise RuntimeError("Local SOC service composition was cancelled")
+        try:
+            from angerona.core.operations_center import LocalOperationsCenter
+
+            service = LocalOperationsCenter(
+                self.config.data_dir,
+                evidence_store=self.evidence_store,
+                manager=self.manager,
+                config=self.config,
+            )
+        except BaseException as exc:
+            with self._operations_service_lock:
+                if self._operations_service_build_token is build_token:
+                    self._operations_service_build_token = None
+                    self._operations_service_state = (
+                        "shutdown"
+                        if self._operations_service_cancel.is_set()
+                        else "failed"
+                    )
+                    self._operations_service_error = type(exc).__name__[:120]
+                    self._operations_service_completion.set()
+            raise
+
+        publish = False
+        with self._operations_service_lock:
+            if (
+                self._operations_service_build_token is build_token
+                and not self._operations_service_cancel.is_set()
+                and not self._operations_service_shutdown
+            ):
+                self._operations_service = service
+                self._operations_service_build_token = None
+                self._operations_service_state = "ready"
+                self._operations_service_error = ""
+                self._operations_modules_ready.set()
+                self._operations_service_completion.set()
+                publish = True
+        if not publish:
+            try:
+                service.close()
+            except Exception:
+                pass
+            raise RuntimeError("Local SOC service composition was cancelled")
+        return service
+
+    def _run_operations_service_builder(self, build_token: object) -> None:
+        """Background UI reservation worker; failures stay observable in state."""
+        try:
+            MainWindow._construct_operations_service(self, build_token)
+        except BaseException:
+            return
+
+    def _wait_for_operations_service(
+        self,
+        build_token: object,
+        *,
+        timeout: float = 30.0,
+    ):
+        deadline = time.monotonic() + timeout
+        while not self._operations_service_completion.wait(timeout=0.05):
+            if self._operations_service_cancel.is_set():
+                raise RuntimeError("Local SOC services are shutting down")
+            if time.monotonic() >= deadline:
+                with self._operations_service_lock:
+                    if self._operations_service_build_token is build_token:
+                        self._operations_service_build_token = None
+                        self._operations_service_state = "failed"
+                        self._operations_service_error = "TimeoutError"
+                        self._operations_service_completion.set()
+                raise RuntimeError("Local SOC service composition timed out")
+        with self._operations_service_lock:
+            if (
+                self._operations_service_state == "shutdown"
+                or self._operations_service_shutdown
+                or self._operations_service_cancel.is_set()
+            ):
+                raise RuntimeError("Local SOC services are shutting down")
+            if self._operations_service is not None:
+                return self._operations_service
+            error_type = self._operations_service_error or "unknown error"
+        raise RuntimeError(f"Local SOC service composition failed ({error_type})")
+
+    def _ensure_operations_service(
+        self,
+        *,
+        startup_owner: bool = False,
+        wait: bool = False,
+    ):
+        """Reserve one constructor; UI returns promptly while startup may await."""
+        if not self._operations_modules_discovered.is_set():
+            raise RuntimeError("protection module discovery is still in progress")
+        acquired = self._operations_service_lock.acquire(
+            blocking=bool(startup_owner or wait)
+        )
+        if not acquired:
+            raise RuntimeError("Local SOC service composition is already in progress")
+        claimed = False
+        try:
+            if (
+                self._operations_service_shutdown
+                or self._operations_service_cancel.is_set()
+            ):
+                raise RuntimeError("Local SOC services are shutting down")
+            if self._operations_service is not None:
+                return self._operations_service
+            if self._operations_service_state == "failed":
+                error_type = self._operations_service_error or "unknown error"
+                raise RuntimeError(
+                    f"Local SOC service composition failed ({error_type})"
+                )
+            if self._operations_service_state == "building":
+                build_token = self._operations_service_build_token
+            else:
+                build_token = object()
+                self._operations_service_build_token = build_token
+                self._operations_service_state = "building"
+                self._operations_service_error = ""
+                self._operations_service_completion.clear()
+                claimed = True
+        finally:
+            self._operations_service_lock.release()
+
+        if build_token is None:
+            raise RuntimeError("Local SOC service composition state is invalid")
+        if claimed and startup_owner:
+            return MainWindow._construct_operations_service(self, build_token)
+        if claimed:
+            threading.Thread(
+                target=MainWindow._run_operations_service_builder,
+                args=(self, build_token),
+                daemon=True,
+                name="OperationsServiceBuilder",
+            ).start()
+        if wait:
+            return MainWindow._wait_for_operations_service(self, build_token)
+        raise RuntimeError("Local SOC service composition is already in progress")
+
+    def _mark_operations_modules_discovered(self) -> None:
+        """Allow one constructor reservation without publishing UI readiness."""
+        if not self._operations_service_cancel.is_set():
+            self._operations_modules_discovered.set()
+
+    def _mark_operations_modules_ready(self) -> None:
+        """Compatibility alias: discovery alone does not mean binding is ready."""
+        MainWindow._mark_operations_modules_discovered(self)
+
+    def _begin_operations_shutdown(self) -> None:
+        """Signal cancellation before waiting for any lifecycle cleanup."""
+        self._operations_service_cancel.set()
+        self._operations_service_shutdown = True
+        self._operations_service_completion.set()
+        with self._operations_service_lock:
+            self._operations_service_state = "shutdown"
+            self._operations_service_build_token = None
+            self._operations_modules_ready.clear()
+            self._operations_service_completion.set()
+
+    def _close_operations_service(self) -> None:
+        """Idempotently detach and close stores after module consumers stop."""
+        MainWindow._begin_operations_shutdown(self)
+        with self._operations_service_lock:
+            self._operations_service_shutdown = True
+            self._operations_service_state = "shutdown"
+            self._operations_service_build_token = None
+            self._operations_modules_ready.clear()
+            self._operations_service_completion.set()
+            service = self._operations_service
+            self._operations_service = None
+        if service is not None:
+            try:
+                service.close()
+            except Exception:
+                pass
+
     def _open_operations_center(self) -> None:
         """Open the shared, local-only case/hunt/asset operations workspace."""
         try:
-            from angerona.core.operations_center import LocalOperationsCenter
             from angerona.gui.operations_center import OperationsCenterDialog
 
-            if self._operations_service is None:
-                self._operations_service = LocalOperationsCenter(
-                    self.config.data_dir,
-                    evidence_store=self.evidence_store,
-                    manager=self.manager,
-                    config=self.config,
-                )
+            service = self._ensure_operations_service()
             if self._operations_dialog is None:
                 self._operations_dialog = OperationsCenterDialog(
-                    self._operations_service,
+                    service,
                     callbacks={
                         "scan": self._show_scan_center,
                         "forensics": self._open_forensics_hub,
@@ -4918,21 +5102,19 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         try:
-            if self._operations_service is not None:
-                self._operations_service.close()
-                self._operations_service = None
-        except Exception:
-            pass
-        try:
             for engine in (self.red_team_engine, self.shark_engine):
                 engine.stop_and_clean()
             self._release_redteam_validation_lease()
         except Exception:
             pass
+        modules_stopped = False
         try:
             self.manager.stop_all()
+            modules_stopped = True
         except Exception:
             pass
+        if modules_stopped:
+            self._close_operations_service()
         # This path ends with os._exit(), so QApplication.aboutToQuit may not
         # get enough event-loop time to run AngeronaApp.shutdown(). Explicitly
         # release the resident local model here as well; this covers the red
