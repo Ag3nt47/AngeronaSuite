@@ -252,21 +252,22 @@ Packaged Windows installs prefer protected `D:\AngeronaData` and use protected
 
 ## Validation status
 
-The Cycles 31–33 v1.13.0 five-check release gate passed on exact commit
-`edefd8b07b94da4d682a35ace23057e7b22c3790`. The full serial result is **2790
-passed / 13 intentional platform skips / 0 failed in 325.19 seconds**. The
-release evidence manifest SHA-256 is
-`23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`.
+The Cycle 34 v1.13.0 maintenance five-check release gate passed on exact commit
+`7eef1f0a0c400b34f170cbd1463cd3c6a454de3b`. The full serial result is **2882
+passed / 15 intentional platform skips / 0 failed in 977.10 seconds**. The
+canonical release-evidence manifest SHA-256 is
+`8a6b294ea04157f9232fee5567ac2fb8cb45664cb8f3c74b73c08717ba816d8c`;
+all five bytecode, dependency-audit, documentation-drift, lint, and unit-test
+checks passed.
 
-That result is the pre-Cycle 34 baseline, not terminal evidence for the current
-maintenance tree. Cycle 34's completed targeted gate passed **91 tests with two
+Cycle 34's completed targeted gate passed **91 tests with two
 expected Windows host-capability skips** (symlink creation and POSIX `fork`);
 adjacent compatibility/integration
 selection passed **128 tests**; package compile passed **368/368**; standalone
 self-tests passed **93 with 0 failures**, plus **16 expected platform, disabled,
 or optional-prerequisite skips**; and supported selfcheck passed **26/26**. The
-full serial pytest run, authoritative five-check release gate, validated commit,
-evidence-manifest digest, and guarded publication remain pending.
+validated tree and this terminal completion record use the repository's guarded
+canonical GitHub fast-forward publication path.
 
 The earlier v1.13.0 supporting evidence includes repository-wide Ruff,
 static discovery of **84** capabilities (**9 native contracts** and **75
@@ -321,7 +322,7 @@ native Linux/macOS, or independent efficacy proof.
   shell, log deletion/evasion, downloaded executable skill, unverified model,
   or unsigned kernel component is part of the product.
 
-## Cycle 34 maintenance update (release validation pending)
+## Cycle 34 maintenance update (release validation complete)
 
 - Replaced the flow canvas's broad repository server with a loopback-only,
   Host-checked exact allowlist. Descriptor/final-path validation, bounded fresh
@@ -350,8 +351,10 @@ native Linux/macOS, or independent efficacy proof.
   eight Round 3 architecture ideas remain backlog.
 - Targeted Cycle 34 evidence is **91 passed / 2 expected skips**, adjacent
   **128 passed**, compile **368/368**, standalone self-tests **93 passed / 0
-  failed plus 16 expected skips**, and selfcheck **26/26**. Full serial/release
-  validation and guarded publication are pending.
+  failed plus 16 expected skips**, and selfcheck **26/26**. The authoritative
+  five-check gate passed **2882 / 15 intentional platform skips / 0 failed** on
+  exact commit `7eef1f0a0c400b34f170cbd1463cd3c6a454de3b`; guarded canonical publication
+  carries the validated tree and terminal record to public `main`.
 
 Detailed evidence is in
 [`analysis/loop/cycle34/README.md`](analysis/loop/cycle34/README.md).
@@ -521,6 +524,6 @@ is an engineering inference, not an attribution claim.
 MIT licensed. See [LICENSE](LICENSE), [SECURITY.md](SECURITY.md), and
 [SUPPORT.md](SUPPORT.md).
 
-**Final Cycle 33 verification.** The authoritative five-check release gate on exact commit `edefd8b07b94da4d682a35ace23057e7b22c3790` passes **2790 tests with 13 intentional platform skips** and reports 0 failures in 325.19 seconds. Its evidence-manifest SHA-256 is `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`. Validation is complete for that Cycle 33 tree; Cycle 34 has separate pending terminal gates.
+**Final Cycle 34 verification.** The authoritative five-check release gate on exact commit `7eef1f0a0c400b34f170cbd1463cd3c6a454de3b` passes **2882 tests with 15 intentional platform skips** and reports 0 failures in 977.10 seconds. Its canonical evidence-manifest SHA-256 is `8a6b294ea04157f9232fee5567ac2fb8cb45664cb8f3c74b73c08717ba816d8c`. Guarded publication advances the validated tree and terminal completion record to canonical public `main` by fast-forward only.
 
-<!-- ANGERONA_DOC_STATUS tests=2790 skips=13 modules=84 -->
+<!-- ANGERONA_DOC_STATUS tests=2882 skips=15 modules=84 -->

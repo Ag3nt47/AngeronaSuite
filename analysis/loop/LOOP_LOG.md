@@ -3628,3 +3628,22 @@ boundaries, and primary-source citations are in
   recovery; an already governed root cannot silently recreate a missing anchor;
   Fleet remains local-only with a 5,000-row cap and conservative post-prune
   restart refill.
+
+## Cycle 34 terminal release validation and publication (2026-08-31)
+
+- The authoritative five-check release gate on exact implementation commit
+  `7eef1f0a0c400b34f170cbd1463cd3c6a454de3b` passed **2882 tests / 15
+  intentional platform skips / 0 failed in 977.10 seconds (0:16:17)**.
+  Bytecode, dependency audit, documentation drift, Ruff, and unit tests all
+  passed.
+- The release-evidence pack independently verifies against canonical manifest
+  SHA-256 `8a6b294ea04157f9232fee5567ac2fb8cb45664cb8f3c74b73c08717ba816d8c`
+  and binds the exact validated commit.
+- The guarded publisher fast-forwarded the validated tree to canonical public
+  `main`; the required terminal-record fast-forward re-proves canonical origin,
+  topic/default-main parity, clean-tree state, and every repository-relative
+  README image as tracked, publicly reachable, and byte-identical.
+- Cycle 34 is `COMPLETE` with `publication_done: true`. Retained boundaries are
+  unchanged: full-root rollback needs an external witness; ambiguous legacy
+  history requires operator recovery; missing governed anchors fail closed;
+  Fleet remains a bounded local lab.

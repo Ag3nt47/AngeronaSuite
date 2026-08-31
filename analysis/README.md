@@ -7,17 +7,18 @@
 > [`ANGERONA_CAPABILITIES.md`](../ANGERONA_CAPABILITIES.md), and
 > [`cycle34/README.md`](loop/cycle34/README.md).
 
-The Cycles 31–33 v1.13.0 five-check release gate on exact commit
-`edefd8b07b94da4d682a35ace23057e7b22c3790` passed **2790 tests / 13
-intentional platform skips / 0 failures in 325.19 seconds**. Evidence-manifest
-SHA-256: `23fd1c70b5b227f45175570eee14774a1693d93f1fe4e8cb914b8ce9a5d2b813`.
-That is pre-Cycle 34 evidence. The current maintenance tree's targeted gate is
+The Cycle 34 v1.13.0 maintenance five-check release gate on exact commit
+`7eef1f0a0c400b34f170cbd1463cd3c6a454de3b` passed **2882 tests / 15
+intentional platform skips / 0 failures in 977.10 seconds**. Canonical
+evidence-manifest SHA-256:
+`8a6b294ea04157f9232fee5567ac2fb8cb45664cb8f3c74b73c08717ba816d8c`.
+The maintenance tree's targeted gate is
 **91 passed / 2 expected Windows host-capability skips / 0 failed**; adjacent
 selection is **128 passed**; compile is **368/368**; standalone self-tests are
 **93 passed / 0 failed plus 16 expected skips**; and selfcheck is **26/26**.
 The reconciled 41-page Word manual passed full-page visual and structural QA.
-Full serial/release validation, commit/evidence identity, and guarded
-publication remain pending.
+Guarded canonical publication carries the validated tree and terminal record
+to public `main` with byte-identical README-asset verification.
 
 **Local-first Endpoint Detection and Response (EDR), Network Detection and
 Response (NDR), and Security Orchestration, Automation, and Response (SOAR):

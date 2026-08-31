@@ -60,8 +60,12 @@ kernel component is a product capability.
   host-capability skips (symlink creation and POSIX fork) / 0 failed; adjacent
   128 passed; package compile
   368/368; standalone self-tests 93 passed / 0 failed plus 16 expected skips;
-  supported selfcheck 26/26. Full serial pytest, the authoritative release gate,
-  validated commit/evidence digest, and guarded publication remain pending.
+  supported selfcheck 26/26. The authoritative five-check gate on exact commit
+  `7eef1f0a0c400b34f170cbd1463cd3c6a454de3b` passed 2882 / 15 intentional
+  platform skips / 0 failed in 977.10 seconds. Canonical evidence-manifest
+  SHA-256: `8a6b294ea04157f9232fee5567ac2fb8cb45664cb8f3c74b73c08717ba816d8c`.
+  Guarded fast-forward publication carries the validated tree and completion
+  record to canonical public `main`.
 - Residuals: full detection-root plus local-key rollback needs an independent or
   hardware witness; ambiguous legacy history requires operator recovery; an
   already governed prepublication/work-in-progress root cannot silently mint a
@@ -519,9 +523,13 @@ Current Cycle 34 maintenance evidence:
 - Adjacent compatibility/integration: 128 passed. Package compile: 368/368.
 - Standalone self-tests: 93 passed, 0 failed, plus 16 expected platform,
   disabled, or optional-prerequisite skips. Supported selfcheck: 26/26.
-- Full serial pytest, the authoritative five-check release gate, validated
-  commit, evidence-manifest digest, guarded publication, and public README-asset
-  verification are pending.
+- Authoritative five-check release gate on exact commit
+  `7eef1f0a0c400b34f170cbd1463cd3c6a454de3b`: 2882 passed, 15 intentional
+  platform skips, 0 failed, in 977.10 seconds (0:16:17).
+- Canonical release evidence-manifest SHA-256:
+  `8a6b294ea04157f9232fee5567ac2fb8cb45664cb8f3c74b73c08717ba816d8c`.
+- Guarded canonical fast-forward publication includes public `main` parity and
+  byte-identical public README-asset verification.
 
 Prior Cycles 31-33 v1.13.0 terminal release evidence:
 

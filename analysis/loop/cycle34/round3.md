@@ -85,8 +85,12 @@ capability skips** (symlink creation and POSIX `fork`); the adjacent selection
 passed **128 tests**. Package compile
 passed **368/368**. Standalone self-tests passed **93 with 0 failures**, plus
 **16 expected platform, disabled, or optional-prerequisite skips**. Supported
-selfcheck passed **26/26**. The full serial run and authoritative release gate
-remain pending.
+selfcheck passed **26/26**. The authoritative five-check release gate on exact
+commit `7eef1f0a0c400b34f170cbd1463cd3c6a454de3b` passed **2882 / 15 intentional
+platform skips / 0 failed in 977.10 seconds**; canonical evidence-manifest
+SHA-256 is `8a6b294ea04157f9232fee5567ac2fb8cb45664cb8f3c74b73c08717ba816d8c`.
+The guarded canonical publisher advances the validated tree and completion
+record by fast-forward only.
 
 The canonical Word manual was regenerated from its pristine snapshot and all 41
 rendered pages passed structural, accessibility-high-severity, and visual QA.

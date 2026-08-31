@@ -4,7 +4,7 @@
   "focus": "three-round defensive convergence across Local SOC authority, Fleet custody and admission, lifecycle, canvas safety, and bounded performance",
   "rounds_total": 3,
   "round": 3,
-  "phase": "ROUND_3_DOCUMENTATION",
+  "phase": "COMPLETE",
   "round_1_status": "COMPLETE",
   "round_2_status": "COMPLETE",
   "round_3_status": "COMPLETE",
@@ -13,10 +13,10 @@
   "docs_update_round": 3,
   "docs_update_done": true,
   "manual_update_done": true,
-  "publication_done": false,
+  "publication_done": true,
   "started": "2026-08-30",
-  "updated": "2026-08-30",
-  "completed": null,
+  "updated": "2026-08-31",
+  "completed": "2026-08-31",
   "scope": "maintainer-authorized defensive-only hardening",
   "baseline": {
     "pytest_collection": "2803 tests collected",
@@ -50,10 +50,10 @@
     "package_compile": "368 passed / 0 failed",
     "self_tests": "93 passed / 0 failed / 16 expected platform, disabled, or optional-prerequisite skips",
     "selfcheck": "26 passed / 0 failed",
-    "full_serial_pytest": null,
-    "terminal_release_gate": null,
-    "validated_commit": null,
-    "evidence_manifest_sha256": null
+    "full_serial_pytest": "2882 passed / 15 intentional platform skips / 0 failed in 977.10 seconds (0:16:17)",
+    "terminal_release_gate": "PASS: bytecode, dependency audit, documentation drift, Ruff, and unit tests",
+    "validated_commit": "7eef1f0a0c400b34f170cbd1463cd3c6a454de3b",
+    "evidence_manifest_sha256": "8a6b294ea04157f9232fee5567ac2fb8cb45664cb8f3c74b73c08717ba816d8c"
   },
   "residual_boundaries": [
     "complete detection-root plus local-key rollback requires an independent or hardware witness",

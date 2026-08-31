@@ -48,9 +48,12 @@ Python package metadata supports 3.10–3.13; the hardened Windows source bootst
   host-capability skips (symlink creation and POSIX fork) / 0 failed; adjacent
   128 passed; package compile
   368/368; standalone self-tests 93 passed / 0 failed plus 16 expected skips;
-  supported selfcheck 26/26. Full serial pytest, authoritative five-check
-  release validation, commit/evidence identity, and guarded publication remain
-  pending.
+  supported selfcheck 26/26. The authoritative five-check release gate on exact
+  commit `7eef1f0a0c400b34f170cbd1463cd3c6a454de3b` passed 2882 / 15 intentional
+  platform skips / 0 failed in 977.10 seconds. Canonical evidence-manifest
+  SHA-256: `8a6b294ea04157f9232fee5567ac2fb8cb45664cb8f3c74b73c08717ba816d8c`.
+  Guarded canonical publication carries the validated tree and terminal record
+  to public `main` with README-asset byte verification.
 - **Residuals:** a full detection-root plus local-key rollback needs an
   independent/hardware witness; already governed prepublication/WIP roots do
   not silently recreate a missing governance anchor; Fleet remains a local lab

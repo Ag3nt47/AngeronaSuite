@@ -4,8 +4,8 @@ Date: 2026-08-30
 
 Release line: **v1.13.0 post-release maintenance**
 Scope: authorized defensive-only hardening
-Disposition: **three code rounds complete; final release gate and publication
-pending**
+Disposition: **three code rounds, terminal release gate, and guarded canonical
+publication complete**
 
 ## Net result
 
@@ -48,6 +48,9 @@ produced eight additional local design proposals; all remain backlog.
   Fleet admission, trust-store time-of-check/time-of-use closure, and the final
   publication-bound lease/fork re-attacks.
 - [Innovation record](innovation_ideas.md): proposal-only research disposition.
+- [LinkedIn update draft](../../../docs/LinkedIn-v1.13.0-Cycle34.md): public
+  summary with direct links to the code, this evidence record, and the updated
+  operator manual.
 
 ## Current verification
 
@@ -59,10 +62,15 @@ self-tests passed **93 with 0 failures**, plus **16 expected platform,
 disabled, or optional-prerequisite skips**. Supported selfcheck passed
 **26/26**.
 
-These are overlapping targeted gates. The full serial pytest run, authoritative
-five-check release gate, validated commit, evidence-manifest digest, guarded
-publication, and public README-asset proof remain pending and must not be
-inferred from the earlier Cycles 31–33 release evidence.
+These are overlapping targeted gates. The authoritative five-check release gate
+on exact commit `7eef1f0a0c400b34f170cbd1463cd3c6a454de3b` passed **2882 tests / 15
+intentional platform skips / 0 failed in 977.10 seconds (0:16:17)**. All five
+bytecode, dependency-audit, documentation-drift, lint, and unit-test checks
+passed. The canonical evidence-manifest SHA-256 is
+`8a6b294ea04157f9232fee5567ac2fb8cb45664cb8f3c74b73c08717ba816d8c`.
+Guarded fast-forward publication carries the validated tree and terminal
+completion record to canonical public `main` and verifies every public README
+asset byte.
 
 The canonical Word manual was rebuilt from its pristine pre-Cycle-34 snapshot,
 reconciled to this maintenance tree, and passed structural plus page-by-page
