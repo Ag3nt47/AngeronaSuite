@@ -246,15 +246,17 @@ def test_resilience_sidecars_start_before_module_discovery(monkeypatch) -> None:
     assert trace.index("discover") < trace.index("modules-start")
 
 
-def test_default_runtime_data_is_on_installation_drive(monkeypatch) -> None:
+def test_default_windows_source_runtime_uses_user_profile(monkeypatch, tmp_path) -> None:
     from angerona.core import data_paths
 
     data_paths._canonical_data_path.cache_clear()
     monkeypatch.delenv("ANGERONA_DATA", raising=False)
+    monkeypatch.setattr(data_paths.sys, "platform", "win32")
+    expected = tmp_path / "LocalAppData" / "Angerona" / "SourceData"
+    monkeypatch.setattr(data_paths, "_windows_source_data_root", lambda: expected)
     root = data_paths.data_dir(create=False)
-    assert root == data_paths.project_root().parent / "AngeronaData"
-    assert root.drive.casefold() == data_paths.project_root().drive.casefold()
-    # The security invariant is volume affinity, not a maintainer-specific drive letter.
+    assert root == expected.resolve()
+    assert root != data_paths.project_root().parent / "AngeronaData"
 
 
 def test_frozen_runtime_prefers_configured_fixed_data_drive(monkeypatch) -> None:

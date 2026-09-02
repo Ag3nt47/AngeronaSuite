@@ -80,16 +80,18 @@ REM its executable must still pass the PSF Authenticode + ABI checks below.
 set "ProgramData=%SAFE_SYSTEMDRIVE%\ProgramData"
 set "ProgramFiles=%SAFE_SYSTEMDRIVE%\Program Files"
 set "ProgramFiles(x86)=%SAFE_SYSTEMDRIVE%\Program Files (x86)"
-for /f "skip=2 tokens=2,*" %%A in ('"%SAFE_SYSTEM32%reg.exe" query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion" /v ProgramFilesDir /reg:64 2^>nul') do set "ProgramFiles=%%B"
+for /f "skip=2 tokens=2,*" %%A in ('call "%SAFE_SYSTEM32%reg.exe" query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion" /v ProgramFilesDir /reg:64 2^>nul') do set "ProgramFiles=%%B"
 set "ProgramW6432=%ProgramFiles%"
 set "LocalAppData="
-for /f "skip=2 tokens=2,*" %%A in ('"%SAFE_SYSTEM32%reg.exe" query "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders" /v "Local AppData" 2^>nul') do set "LocalAppData=%%B"
+for /f "skip=2 tokens=3,*" %%A in ('call "%SAFE_SYSTEM32%reg.exe" query "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders" /v "Local AppData" 2^>nul') do set "LocalAppData=%%B"
 
 REM Non-mutating regression hook: validate the trust-boundary scrub without UAC,
 REM installation, or application launch. Only this exact literal is accepted.
 if /i "%~1"=="--bootstrap-selftest" (
     if not "%SystemRoot%"=="%SAFE_WINDOWS%" exit /b 1
     if not "%ComSpec%"=="%SAFE_SYSTEM32%cmd.exe" exit /b 1
+    if not defined LocalAppData exit /b 1
+    if not exist "%LocalAppData%" exit /b 1
     if defined PYTHONPATH exit /b 1
     if defined ANGERONA_CORE_CMD exit /b 1
     if defined ANGERONA_FLEET_SERVICE_KEY exit /b 1

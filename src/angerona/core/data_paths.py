@@ -61,6 +61,13 @@ def _posix_default_data_root() -> Path:
     return base / "angerona"
 
 
+def _windows_source_data_root() -> Path:
+    """Return the unelevated source profile root from the Windows Shell API."""
+    from angerona.core.privilege import _windows_known_folder
+
+    return _windows_known_folder(0x1C) / "Angerona" / "SourceData"
+
+
 def _harden_posix_data_root(path: Path) -> None:
     """Require a current-user-owned, non-symlink state directory with mode 0700."""
     if sys.platform.startswith("win"):
@@ -397,11 +404,11 @@ def _canonical_data_path(
     elif frozen:
         path = _frozen_default_data_root()
     else:
-        # Keep mutable state outside the Git checkout. Windows source installs
-        # preserve the suite's D:-drive boundary; POSIX installs follow the XDG
-        # state directory or macOS Application Support convention.
+        # Keep mutable state outside the Git checkout. Unelevated Windows source
+        # starts (including Task Scheduler) share the launcher's per-user root;
+        # POSIX installs follow the platform-native user state convention.
         path = (
-            project_root().parent / "AngeronaData"
+            _windows_source_data_root()
             if sys.platform.startswith("win")
             else _posix_default_data_root()
         )
@@ -413,11 +420,11 @@ def _canonical_data_path(
 def data_dir(create: bool = True) -> Path:
     """Return the sole persistent runtime root.
 
-    Windows source installs use a sibling ``AngeronaData`` directory (D: in
-    this workspace); frozen Windows releases prefer protected
-    ``D:\\AngeronaData``. Linux follows ``XDG_STATE_HOME`` and macOS uses the
-    current user's Application Support directory. ``ANGERONA_DATA`` remains an
-    explicit override on every platform.
+    Unelevated Windows source installs use ``LocalAppData\\Angerona\\SourceData``;
+    elevated source custody remains the canonical sibling ``AngeronaData`` root.
+    Frozen Windows releases prefer protected ``D:\\AngeronaData``. Linux follows
+    ``XDG_STATE_HOME`` and macOS uses the current user's Application Support
+    directory. ``ANGERONA_DATA`` remains an explicit override on every platform.
     """
     frozen = getattr(sys, "frozen", False)
     elevated_source = _elevated_source_runtime()

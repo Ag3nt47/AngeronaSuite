@@ -37,6 +37,9 @@ def test_launchers_pin_cmd_owned_windows_root_before_redirect_or_local_code():
 
     assert 'set "ANGERONA_JARVIS_CONTROL_TOKEN="' in canonical
     assert canonical.index('set "ANGERONA_JARVIS_CONTROL_TOKEN="') < admin_refusal
+    assert 'tokens=3,*" %%A in (\'call "%SAFE_SYSTEM32%reg.exe" query' in canonical
+    assert 'if not defined LocalAppData exit /b 1' in canonical
+    assert 'if not exist "%LocalAppData%" exit /b 1' in canonical
     assert '"%SystemRoot%\\System32' not in canonical
     assert '"%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive' in canonical
     assert 'call "%~dp0start-angerona.bat" --bootstrap-selftest' in guarded
