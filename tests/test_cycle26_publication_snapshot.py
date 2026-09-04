@@ -720,10 +720,10 @@ def _fixture_hardlink_profile(
 
 def test_reviewed_windows_runtime_profile_is_closed_and_content_addressed() -> None:
     profile = windows_runtime.load_runtime_profile()
-    assert profile.git_version == "2.55.0.windows.4"
-    assert profile.git_build_commit == "a93524749d7806870fd2b4b00a3812da1d6e5f4a"
+    assert profile.git_version == "2.55.0.windows.5"
+    assert profile.git_build_commit == "32c4f7689275d233577576630e1ac5b7eb354eb0"
     assert len(profile.files) == 312
-    assert profile.total_bytes == 191_289_767
+    assert profile.total_bytes == 191_092_436
     assert profile.tree_sha256 == windows_runtime._tree_digest(
         profile.directories,
         profile.files,

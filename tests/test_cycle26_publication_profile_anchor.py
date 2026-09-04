@@ -90,7 +90,12 @@ def test_compiled_profile_anchor_matches_the_exact_lf_reviewed_bytes() -> None:
 
 def test_profile_mutation_and_internally_consistent_addition_fail_compiled_anchor() -> None:
     raw = runtime.PROFILE_PATH.read_bytes()
-    mutation = raw.replace(b'"reviewed_at": "2026-08-28"', b'"reviewed_at": "2026-08-29"')
+    reviewed = json.loads(raw)["reviewed_at"]
+    altered = ("0" if reviewed[0] != "0" else "1") + reviewed[1:]
+    mutation = raw.replace(
+        f'"reviewed_at": "{reviewed}"'.encode(),
+        f'"reviewed_at": "{altered}"'.encode(),
+    )
     assert len(mutation) == len(raw) and mutation != raw
     with pytest.raises(runtime.WindowsRuntimeError, match="compiled SHA-256"):
         runtime._parse_reviewed_profile(mutation)

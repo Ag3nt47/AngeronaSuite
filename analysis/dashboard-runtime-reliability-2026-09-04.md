@@ -57,3 +57,29 @@ protected response authority, or native driver coverage. Missing recovery-copy
 and restore-test attestations continue to report missing evidence. This update
 does not fabricate those prerequisites, discard journals, change recovery policy,
 or disable integrity checks. Historical diagnostics remain available for review.
+
+## Publication runtime review
+
+The first guarded publication correctly stopped because the installed Git had
+advanced to 2.55.0.windows.5 while the reviewed profile still pinned windows.4.
+The profile and compiled content pins now target build
+`32c4f7689275d233577576630e1ac5b7eb354eb0`; execution and custody checks are unchanged.
+
+The official [Git for Windows release](https://github.com/git-for-windows/git/releases/tag/v2.55.0.windows.5)
+publishes SHA-256
+`5aa8a20f6e9abb2c755f0e73c91c687701a46b309ad84a0ca6509380fa4ae290`
+for `PortableGit-2.55.0.5-64-bit.7z.exe`. The downloaded package matched that
+digest. All 312 scoped installation files were reviewed against its contents:
+the installed receive/upload aliases matched the official full Git executable;
+`aslr-manager.ps1` and `wintoast.exe` retained their existing reviewed hashes.
+The installer-specific `cmd/git-lfs.exe` had a valid Authenticode signature from
+Johannes Schindelin, matching the verified package's signer certificate
+`2A1E97CBF0DFCDA15B0DA0AC9745014F989D4AD0`; its exact new bytes are pinned too.
+
+The reviewed profile SHA-256 is
+`3126566f54ba955f1b36debc2bb292c9cfaefcab9094e1d801663d9442cb89ed`;
+the scoped tree is 191,092,436 bytes across 312 files and eight directories.
+This tooling-only follow-up is separate from the application regression run.
+The publication snapshot, profile-anchor, documentation, and backup safety
+regressions passed **83 tests with no failures in 32.38 seconds**. Ruff,
+tool compilation, and whitespace validation also passed.

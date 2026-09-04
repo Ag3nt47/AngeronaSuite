@@ -1,8 +1,8 @@
 {
   "schema": "angerona.publication-git-runtime/v1",
   "platform": "win32-x86_64",
-  "git_version": "2.55.0.windows.4",
-  "git_build_commit": "a93524749d7806870fd2b4b00a3812da1d6e5f4a",
+  "git_version": "2.55.0.windows.5",
+  "git_build_commit": "32c4f7689275d233577576630e1ac5b7eb354eb0",
   "tree_roots": [
     "cmd",
     "mingw64/bin",
@@ -30,38 +30,38 @@
     },
     {
       "path": "cmd/git-gui.exe",
-      "size": 138072,
-      "sha256": "f7f11ac50773c4db95cd12c4159a770640ce327954db596ba584f6463e5f42b4"
+      "size": 133992,
+      "sha256": "0d67b939803e26728ae00e060bfac8fe42b7f86981768f4d65f1541c092ebb1f"
     },
     {
       "path": "cmd/git-lfs.exe",
-      "size": 46920,
-      "sha256": "c470d205517c7a53ceca321df16a6e4549fcd52b576ab4d09536d36f26fda5a9"
+      "size": 43352,
+      "sha256": "78211c7ed73988da93a6d8a33d47ec6187f464d7ea2a9a00c182bbd7a1ecf30f"
     },
     {
       "path": "cmd/git-receive-pack.exe",
-      "size": 32908,
-      "sha256": "8c3bbddb62dc13bae92c3e959fd0011f74ad6519f70370a01376015a37acfc73"
+      "size": 29340,
+      "sha256": "1f4cbd37c9cf3c360ea4c200a61cf16e97b21959bd152836e44e8259fd1908a9"
     },
     {
       "path": "cmd/git-upload-pack.exe",
-      "size": 32908,
-      "sha256": "55095448c1ac3246d6b42a60ed294490af2c9e5000166d4876bd8a192caf40b3"
+      "size": 29340,
+      "sha256": "73ba0a089d9e67954d2f9a8ddb982dcba0b41e5aa6bbecb98f4c522db5cbb9e0"
     },
     {
       "path": "cmd/git.exe",
-      "size": 46920,
-      "sha256": "c470d205517c7a53ceca321df16a6e4549fcd52b576ab4d09536d36f26fda5a9"
+      "size": 43352,
+      "sha256": "78211c7ed73988da93a6d8a33d47ec6187f464d7ea2a9a00c182bbd7a1ecf30f"
     },
     {
       "path": "cmd/gitk.exe",
-      "size": 138056,
-      "sha256": "ccb91c3e5fdfcde519e1190d5fea46f034f600fc1f9b9ec266598c1371d94202"
+      "size": 133992,
+      "sha256": "8846a8047bebae2d4c587083a46673270c0a21bd2cdb43d59b660b388e1ffa32"
     },
     {
       "path": "cmd/scalar.exe",
-      "size": 46920,
-      "sha256": "c470d205517c7a53ceca321df16a6e4549fcd52b576ab4d09536d36f26fda5a9"
+      "size": 43352,
+      "sha256": "78211c7ed73988da93a6d8a33d47ec6187f464d7ea2a9a00c182bbd7a1ecf30f"
     },
     {
       "path": "cmd/start-ssh-agent.cmd",
@@ -75,228 +75,228 @@
     },
     {
       "path": "cmd/tig.exe",
-      "size": 47432,
-      "sha256": "fbc618e2fffdef699efbe52e64d2f49d0f49a0362e9246fa87eaadef26a330ba"
+      "size": 43352,
+      "sha256": "a7c911957308bd04c330b4ae3ad75d4d74a8bf6e9bc649d70270859da25513fd"
     },
     {
       "path": "mingw64/bin/Atlassian.Bitbucket.dll",
       "size": 105272,
-      "sha256": "d03ac1bb85265ed202cd47e3ef862f4ec7d4e23f4d9ca63202f75e5c6d0b26d8"
+      "sha256": "3a9dd735b3e0fc2e4b3f83ed94d11cbfe3e72b86e0a957a0c419f90ce12ab5f4"
     },
     {
       "path": "mingw64/bin/Avalonia.Base.dll",
       "size": 1922880,
-      "sha256": "392c2b56b7e07e637dfb75782676722b534e51e2e7fdf648847748accfe8d9f0"
+      "sha256": "ce1eda48b18fb19653e1a6c9a88dec3d9a5c6abd4f06bfd677c410b0de308a24"
     },
     {
       "path": "mingw64/bin/Avalonia.Controls.dll",
       "size": 1032000,
-      "sha256": "8c738676cba16b540da1f0ffe3e90a7e60ea1b557763093785add052f2f0e096"
+      "sha256": "40c47e611b9f95b32bbf0a6d95c6d84fc89507502a20d21fdb71edecbe77e17a"
     },
     {
       "path": "mingw64/bin/Avalonia.DesignerSupport.dll",
-      "size": 218464,
-      "sha256": "385a4549ce261e31f905db7c9ac21f6c397b10873ec29a68473d55139ff3c37c"
+      "size": 218424,
+      "sha256": "934339931173fcd6d6d1654e05b428b539ef341f7ca4e5acb4da734e0c2795ca"
     },
     {
       "path": "mingw64/bin/Avalonia.Dialogs.dll",
-      "size": 252768,
-      "sha256": "660c8c15560314b54ecfe73c3287f837a2dfd02ed128f17fa50a74b09a40c6b7"
+      "size": 252728,
+      "sha256": "747f439687eccf7e1118b1f127aa03f5bb22142d68cd6cec41d628eee85a2a71"
     },
     {
       "path": "mingw64/bin/Avalonia.Markup.Xaml.dll",
-      "size": 92992,
-      "sha256": "91ddf6050fb74d6a44eea6f863c376824090cc8568fd8af84da5e7455f05f891"
+      "size": 93024,
+      "sha256": "177df637eaf4e7ee5bad8b0d2d23db33e289035178bd2f3d2b505f62d69b383e"
     },
     {
       "path": "mingw64/bin/Avalonia.Markup.dll",
-      "size": 71008,
-      "sha256": "ac255cb78ab548689cb62933b155035105444f34a5b0ef5ebd3542a95988cea1"
+      "size": 71016,
+      "sha256": "5d07211022aff0ec79716ed7ba6f5cada7b42a0214fd17fd8cc6f9251a1b9e10"
     },
     {
       "path": "mingw64/bin/Avalonia.Metal.dll",
-      "size": 24416,
-      "sha256": "153deb3c0fe47c044dd46e855ca1368ff376bfb3f8719c63457a8c39fb9bf2db"
+      "size": 24376,
+      "sha256": "5ee3b9609227895cafd3cc8ea4928f64a29ab1a8be3d0d279db10b430c518063"
     },
     {
       "path": "mingw64/bin/Avalonia.MicroCom.dll",
-      "size": 25408,
-      "sha256": "bc018651648d1ef3da247cef78d5a9d27cb05146c635c193f42bff147a58dd39"
+      "size": 25448,
+      "sha256": "4a5074ccd8356f99e50b123f64ac846e491f543fa602eb965ef6666089f624b3"
     },
     {
       "path": "mingw64/bin/Avalonia.OpenGL.dll",
-      "size": 106336,
-      "sha256": "40480a32e90e6ad337aa1e69787bd3cd15830416f8b99e2c44fdc634ab3451bf"
+      "size": 106296,
+      "sha256": "9e76ad1503760dae0437abc5352c82cf247209af34cfe5037400065d45474b45"
     },
     {
       "path": "mingw64/bin/Avalonia.Remote.Protocol.dll",
-      "size": 82752,
-      "sha256": "3d493f4597d67e8dfe135be0f3b110d47f752150d355c5afd26b2c0fe683e3ca"
+      "size": 82744,
+      "sha256": "9d4b55a9aa9f8e8dd487e53c909d7f552319fc19df9b6734ee1344c229d5dcfe"
     },
     {
       "path": "mingw64/bin/Avalonia.Skia.dll",
       "size": 133440,
-      "sha256": "63349f9586d7442885658fec139d2f49b8b7cc9168dfb8863b0d8afca9cc93db"
+      "sha256": "ce8e860f42018a6c319402ae2c6e43a8dbbe52754a203265ce5b356c4a98781e"
     },
     {
       "path": "mingw64/bin/Avalonia.Themes.Fluent.dll",
       "size": 579896,
-      "sha256": "680fe2b42c264de4636ec6d43b4ffa35eed06d57b1b2d563706f8ad29a0bc315"
+      "sha256": "eb8e4ead3446893a2382ca08e2769274cd2eb27763c40af7f30e0f135928c997"
     },
     {
       "path": "mingw64/bin/Avalonia.Vulkan.dll",
-      "size": 186168,
-      "sha256": "482db3fb63b96f7a398d9b613299d0339321fe9c5c3777170ae3121c3ecd41b5"
+      "size": 186176,
+      "sha256": "9f726db10a8e4f1615c36092dba406e2bced5ae44759225fc444ea64a4a3e674"
     },
     {
       "path": "mingw64/bin/Avalonia.Win32.dll",
-      "size": 745792,
-      "sha256": "88acade75fe12b98320bbb8f689709b7e56f0a0bf100a8b7dff348feeb9cbd90"
+      "size": 745784,
+      "sha256": "65c2e5dbf921a953797b9332280c3c3220c53ebae635ecb96b5de0395d969114"
     },
     {
       "path": "mingw64/bin/Avalonia.dll",
-      "size": 14176,
-      "sha256": "9ea0559b46f6fa746e6de4cd05349f6b4d48efc387af469fb73917d540784d84"
+      "size": 14136,
+      "sha256": "06de78055dd7f7705a5514456a34b47bf52d1c8815c34149a4e5a4dfd376aadf"
     },
     {
       "path": "mingw64/bin/GitHub.dll",
-      "size": 154936,
-      "sha256": "73c1a5f230c0a385f1a2869a32240197ab63b8397c2f78b15bb0e3ed95dd0009"
+      "size": 154984,
+      "sha256": "e84351b4f90169c001ec2f88889a731308f286612dd03c7a2526ad013266fc8d"
     },
     {
       "path": "mingw64/bin/GitLab.dll",
-      "size": 71488,
-      "sha256": "11c203b995828bcb95a4949886a717933323ef63e40154f13fd179ca22443503"
+      "size": 71480,
+      "sha256": "c87e5ee958cf609ef4c2a027d12659d1e2c1ec7efcc7dbc15c9ec4518e4860f0"
     },
     {
       "path": "mingw64/bin/HarfBuzzSharp.dll",
-      "size": 215360,
-      "sha256": "70f931c39b6ef652da09c6a8cb3827581b71da8bd8bb5e92e0f3f411571829f9"
+      "size": 215352,
+      "sha256": "d37714e703cfd98fcabd01cf495a66c0acf5f99bc78c5372ff4752632deddb1e"
     },
     {
       "path": "mingw64/bin/MicroCom.Runtime.dll",
-      "size": 24384,
-      "sha256": "0d55f1e0708318e06616b7e8d03c125a184de0e44eb2d4f52727f02b6efbec05"
+      "size": 24376,
+      "sha256": "67fcbaa2bd582e79e2f3646c1a43bb86676a096cb17729cf946f69a5c07abaeb"
     },
     {
       "path": "mingw64/bin/Microsoft.AzureRepos.dll",
       "size": 69472,
-      "sha256": "4aced14747f4593be95e99b201b5c97a9e4ea76624ed905554795d235f0a977a"
+      "sha256": "3e7965775aa78682af5b0dce2516c5b1abd8b96d6af9419f540b7f17f66be5d6"
     },
     {
       "path": "mingw64/bin/Microsoft.Bcl.AsyncInterfaces.dll",
       "size": 26432,
-      "sha256": "ad14fdae478ec07ebaee5371c54960c51216d0f210d1c496a0804766a6b827ac"
+      "sha256": "18940307939380c25f2ea6467d9846bba566438320740fdd4c31184be46b709d"
     },
     {
       "path": "mingw64/bin/Microsoft.Identity.Client.Broker.dll",
       "size": 74048,
-      "sha256": "52e5ccfcb00d9b39e05d140f27f8b7bea7f03b7493358c2008b1fedd69e6ae4d"
+      "sha256": "2fa5fc6cfa093bb1cd9d67e2783212ccce0606987c043add43e588e93e5e51f4"
     },
     {
       "path": "mingw64/bin/Microsoft.Identity.Client.Extensions.Msal.dll",
-      "size": 65376,
-      "sha256": "248ffb23f827d2ee9a20020efcb9af2363ab0cc69ac41becbf97067242d1d88a"
+      "size": 65336,
+      "sha256": "c428de0dbf5a66afb09e3f11cc932ab0096c3559456b980ec0bc0cbd2d13f64c"
     },
     {
       "path": "mingw64/bin/Microsoft.Identity.Client.NativeInterop.dll",
-      "size": 92480,
-      "sha256": "ae60888ac537fcb2b08d9f6cd2a805fcfd3cf63286679ae63ea885d1f089607a"
+      "size": 92520,
+      "sha256": "5dcaf7095cb9a0115d39f00705643930f739d9b570eb45a3f51daedab5a369c3"
     },
     {
       "path": "mingw64/bin/Microsoft.Identity.Client.dll",
-      "size": 1260352,
-      "sha256": "568535d2e71c8bf2549633f390ee5a0b00d1a335e2059199fff2e3c6b157fb3f"
+      "size": 1260344,
+      "sha256": "8626e4695db1862b13ee7398b6ceaf77edf2818b4803f23665cba484454dd6dd"
     },
     {
       "path": "mingw64/bin/Microsoft.IdentityModel.Abstractions.dll",
-      "size": 19816,
-      "sha256": "b0175480115d48909ee2e62e19e4dff8043780fc270e3e2c8ecb0670eede7fe0"
+      "size": 19776,
+      "sha256": "692cc596ee7a620e899335be03a83229520aed5a3e1a450c37ebff7c93dfafa0"
     },
     {
       "path": "mingw64/bin/SkiaSharp.dll",
-      "size": 805696,
-      "sha256": "615a83216632ae4890b3e796778c7141bc6302edcade6d4dc4a78b7dfcf5853b"
+      "size": 805688,
+      "sha256": "1c0fdec5e90624fbe7a5afccea355eec112ca593576fd893ee424b22304e4eeb"
     },
     {
       "path": "mingw64/bin/System.Buffers.dll",
-      "size": 21816,
-      "sha256": "9b030d59d63c05adace41feaae2acead329340d29fa1d6b44636004921788f63"
+      "size": 21856,
+      "sha256": "322b7e92ef79d35821f7859ce04500819e819892e80bdb4872bcc8183120b07a"
     },
     {
       "path": "mingw64/bin/System.CommandLine.dll",
       "size": 206648,
-      "sha256": "8e8f736f4af5bc99d65066cf63d4e32123bdee0487e415e4dfffe8a326034def"
+      "sha256": "7013e24a56109cb1cdf2dbe493b03540ed9cf9e23b7b35d71f37237b0c9305e8"
     },
     {
       "path": "mingw64/bin/System.ComponentModel.Annotations.dll",
-      "size": 37176,
-      "sha256": "de85ecb2aade2402d84cecd726f53a16544975c5bced0f976d3409799b973a84"
+      "size": 37224,
+      "sha256": "46736b11724e6107112751fb20b013e9158fd9b335c19ee408b3df309b3c52b6"
     },
     {
       "path": "mingw64/bin/System.Diagnostics.DiagnosticSource.dll",
-      "size": 167744,
-      "sha256": "7947fd101dfeed137fae6f2cf60cbb2e796e281a58ba008b6876773f043c8ca8"
+      "size": 167736,
+      "sha256": "f539096f5e4bc3e018f00206da279a9a664b6e5a44b9c304d8949abf004205f4"
     },
     {
       "path": "mingw64/bin/System.Formats.Asn1.dll",
-      "size": 104768,
-      "sha256": "08a7d7f4b2ba67544c9825d61c6d91e3766f54f5e0b0153b0d1aa0963b875f8d"
+      "size": 104760,
+      "sha256": "52abac01da817aec9c53c1b4e683bcfc24ec22e86c7156a70678d3014d658c83"
     },
     {
       "path": "mingw64/bin/System.IO.FileSystem.AccessControl.dll",
-      "size": 29504,
-      "sha256": "07fdfc38ae85acc9de5623283a9d1398db7892bff35adcf9306b081cbe20e7a8"
+      "size": 29496,
+      "sha256": "03dca81b81188f83ef7621752c48417428ebb1c2e8550c3cb4c9d3aae713fb7b"
     },
     {
       "path": "mingw64/bin/System.Memory.dll",
-      "size": 142144,
-      "sha256": "948c3e0f9f5a4d6c4f25547a642e59ff7ba7a65cabe1f0abfa1eeaa077c70e52"
+      "size": 142136,
+      "sha256": "a538621e978f6559c96c401a0c35f9fbbbe85c18db496c33debe93d6865d71bb"
     },
     {
       "path": "mingw64/bin/System.Numerics.Vectors.dll",
       "size": 109880,
-      "sha256": "551dbffba34954023de72fd717ae9a434ca2418d5417627ccf040a0917bb8de8"
+      "sha256": "0dcbc9b6f7115e8aaa401850253aef651f47615e6e2006bc99840d836a1691f5"
     },
     {
       "path": "mingw64/bin/System.Runtime.CompilerServices.Unsafe.dll",
-      "size": 18752,
-      "sha256": "bd17d5fb3757afa224cb08a3c9aea423a5a5300ee0e55ae81d24f74b3ca58ea2"
+      "size": 18744,
+      "sha256": "cff361880bf7962e876c968bd7cc2144338e8d9dc84a0c9db933cfffc328df6c"
     },
     {
       "path": "mingw64/bin/System.Security.AccessControl.dll",
-      "size": 34624,
-      "sha256": "aef3a462702c2c812e1dda556ac07e66e9f962d698ca833cf88402e4b2ab871f"
+      "size": 34616,
+      "sha256": "40d981a0cafd6c07deacc0bafb93548d282b3faadb09c5e8cb222ba77a3e7feb"
     },
     {
       "path": "mingw64/bin/System.Security.Cryptography.ProtectedData.dll",
-      "size": 17760,
-      "sha256": "00fe403549fe78dd2b46559ff7faa93c3a1673d62dfa494052f335f66a8ff354"
+      "size": 17720,
+      "sha256": "95500dff838eec1e079bc94c4e0f8db3e7df6f1fc2dfdd0a18c3276baf63e62c"
     },
     {
       "path": "mingw64/bin/System.Security.Principal.Windows.dll",
-      "size": 19256,
-      "sha256": "d7bf314479447eb8dc267416673c5b5d654503678677679a8a77942abe612fa1"
+      "size": 19264,
+      "sha256": "0139ce79d7ec025724732f4c62e8d4008898942d18b8f040f067f7639ffd5b55"
     },
     {
       "path": "mingw64/bin/System.Text.Encodings.Web.dll",
-      "size": 78648,
-      "sha256": "7661f169c06130f86d9ed8b9d647d4d91b3dd097dbd19314bb6992a9c3e9072f"
+      "size": 78696,
+      "sha256": "5690c9873b767956258bba077d734a92cb0514721ad6801e01e1542530ed4297"
     },
     {
       "path": "mingw64/bin/System.Text.Json.dll",
-      "size": 644416,
-      "sha256": "d1bc1fb5a49ff10963b5cb9b9060d7bd7ba3e4688cf2f5f4605ee5c79209f3ce"
+      "size": 644408,
+      "sha256": "76a73b925787597c25456dbe27b7bed58d2fce89034fed323f08135c20f4ea55"
     },
     {
       "path": "mingw64/bin/System.Threading.Tasks.Extensions.dll",
       "size": 26936,
-      "sha256": "cb2a9e3866282eb10b389139e32a8daa2772526a8346c89889fe620297262455"
+      "sha256": "74f7f157ce574a131da14186964c347f6b3200cf745c67b28b52da51bf963e50"
     },
     {
       "path": "mingw64/bin/System.ValueTuple.dll",
-      "size": 19264,
-      "sha256": "c826148e98910e22085b7b7d0550ec4d79ebdfd20da90f44c0d61654ed06ccaf"
+      "size": 19256,
+      "sha256": "420fa431a72f24995c72a57b4b134c29fd0a11e56aad1b860a1e6905d268ecb1"
     },
     {
       "path": "mingw64/bin/WhoUses.exe",
@@ -305,13 +305,13 @@
     },
     {
       "path": "mingw64/bin/adig.exe",
-      "size": 74364,
-      "sha256": "da169efdf43f4f2e87937efaaaf328dd659e28740411d1904a5bd0908ea5e061"
+      "size": 73935,
+      "sha256": "3235e55ecd6b5d6a752ecc6b4e662cfecb7821469e453bc054616dc368dc7b45"
     },
     {
       "path": "mingw64/bin/ahost.exe",
-      "size": 53857,
-      "sha256": "b89936894123b94375375d88b294416552c5b16c3beace7f9e51675498ed95c1"
+      "size": 53909,
+      "sha256": "492e422c873b10dc8675b818c0aa04e48354b7db5e5e1b937ee50ddb3f03380b"
     },
     {
       "path": "mingw64/bin/antiword.exe",
@@ -320,8 +320,8 @@
     },
     {
       "path": "mingw64/bin/av_libglesv2.dll",
-      "size": 4450656,
-      "sha256": "619e19597f7305b1deed66e6320dcc779a4e81101fefac0118c7a0a6f106c350"
+      "size": 4450616,
+      "sha256": "a5e15a6b84c938c23816ed78475294bc28994582c3659965abc6ca3dceac8fed"
     },
     {
       "path": "mingw64/bin/blocked-file-util.exe",
@@ -335,13 +335,13 @@
     },
     {
       "path": "mingw64/bin/bunzip2.exe",
-      "size": 70978,
-      "sha256": "4dd06837ccca65bb3be00d9f10bf4350143551d22a068e29345acff290a4a6b6"
+      "size": 72466,
+      "sha256": "7dd96eaaa21e39f09b2b0fda34e8b3df9c7a800fd48c487ca5341162d542b831"
     },
     {
       "path": "mingw64/bin/bzcat.exe",
-      "size": 70978,
-      "sha256": "4dd06837ccca65bb3be00d9f10bf4350143551d22a068e29345acff290a4a6b6"
+      "size": 72466,
+      "sha256": "7dd96eaaa21e39f09b2b0fda34e8b3df9c7a800fd48c487ca5341162d542b831"
     },
     {
       "path": "mingw64/bin/bzcmp",
@@ -370,13 +370,13 @@
     },
     {
       "path": "mingw64/bin/bzip2.exe",
-      "size": 70978,
-      "sha256": "4dd06837ccca65bb3be00d9f10bf4350143551d22a068e29345acff290a4a6b6"
+      "size": 72466,
+      "sha256": "7dd96eaaa21e39f09b2b0fda34e8b3df9c7a800fd48c487ca5341162d542b831"
     },
     {
       "path": "mingw64/bin/bzip2recover.exe",
-      "size": 50679,
-      "sha256": "288e19b3b6aa826fd650c308f4c0756954e5ead10b4f4aa9dc0e8adc34b446bb"
+      "size": 51106,
+      "sha256": "bb4d99af508bcedc555b3a392ad6622761c254265d3f1da5654e8e5d25656b8a"
     },
     {
       "path": "mingw64/bin/bzless",
@@ -430,8 +430,8 @@
     },
     {
       "path": "mingw64/bin/gcmcore.dll",
-      "size": 463200,
-      "sha256": "96ab6d247b7ef299ef19e568e5bea6de530d59f8b9722d893c656cafa7690db3"
+      "size": 463208,
+      "sha256": "cb6a89c6f288117da4b77a902505643230b9e3cdba48cfe88719112a51da0690"
     },
     {
       "path": "mingw64/bin/gettext.exe",
@@ -461,7 +461,7 @@
     {
       "path": "mingw64/bin/git-credential-manager.exe",
       "size": 132920,
-      "sha256": "593dfd29885443e70255cdf4038988f831d939218aea950e32f2a356ac3b00f5"
+      "sha256": "a1e4f00c79b0c9c7f087e72eed50a892e833bdd403652f2b40da86e81f27e9dd"
     },
     {
       "path": "mingw64/bin/git-credential-manager.exe.config",
@@ -475,8 +475,8 @@
     },
     {
       "path": "mingw64/bin/git-receive-pack.exe",
-      "size": 4383560,
-      "sha256": "f83cb7f94f7c714f71ed4976c2c55ab35d80f392881ee586e5a0933424c135e6"
+      "size": 4378456,
+      "sha256": "d1b62b94aa15e5c3bbcdd6440d5f716f78daa2736a951b0f1fad11d38c5f16da"
     },
     {
       "path": "mingw64/bin/git-update-git-for-windows",
@@ -485,18 +485,18 @@
     },
     {
       "path": "mingw64/bin/git-upload-archive.exe",
-      "size": 4383560,
-      "sha256": "f83cb7f94f7c714f71ed4976c2c55ab35d80f392881ee586e5a0933424c135e6"
+      "size": 4378456,
+      "sha256": "d1b62b94aa15e5c3bbcdd6440d5f716f78daa2736a951b0f1fad11d38c5f16da"
     },
     {
       "path": "mingw64/bin/git-upload-pack.exe",
-      "size": 4383560,
-      "sha256": "f83cb7f94f7c714f71ed4976c2c55ab35d80f392881ee586e5a0933424c135e6"
+      "size": 4378456,
+      "sha256": "d1b62b94aa15e5c3bbcdd6440d5f716f78daa2736a951b0f1fad11d38c5f16da"
     },
     {
       "path": "mingw64/bin/git.exe",
-      "size": 4383560,
-      "sha256": "f83cb7f94f7c714f71ed4976c2c55ab35d80f392881ee586e5a0933424c135e6"
+      "size": 4378456,
+      "sha256": "d1b62b94aa15e5c3bbcdd6440d5f716f78daa2736a951b0f1fad11d38c5f16da"
     },
     {
       "path": "mingw64/bin/gitk",
@@ -505,13 +505,13 @@
     },
     {
       "path": "mingw64/bin/libHarfBuzzSharp.dll",
-      "size": 1607008,
-      "sha256": "1732b538093aaeb30bd64ad98ff332d42e771e262de597d750b429af31bbf417"
+      "size": 1606968,
+      "sha256": "8449848dd71c47bebfb16892d56918f2e26706d67138133fdb940831fd9f09e3"
     },
     {
       "path": "mingw64/bin/libSkiaSharp.dll",
-      "size": 9413952,
-      "sha256": "ff8d668624fc67df43333ceb2e9a5a03cb02da06a1081eb78ab05ec4132fcf6b"
+      "size": 9413944,
+      "sha256": "8dc867e29f3dacca41e15af5d557542f4982c59f770ba6ac811ed6026fd2874e"
     },
     {
       "path": "mingw64/bin/libbrotlicommon.dll",
@@ -530,13 +530,13 @@
     },
     {
       "path": "mingw64/bin/libbz2-1.dll",
-      "size": 100964,
-      "sha256": "b79cd3a7102e359ef6324e98966a67939e58ec2b651ae2847cae84a4dfa453f7"
+      "size": 108633,
+      "sha256": "a4fbb97c26662d2b8a80bf4597ed3effb69b12048b0cb1eef2c3f211e2e66673"
     },
     {
       "path": "mingw64/bin/libcares-2.dll",
-      "size": 287704,
-      "sha256": "450368a12802c1fd8bdcb5edf9eb93746a77748e7f9444363de1e88fbea0f8e9"
+      "size": 278136,
+      "sha256": "0acf48c38681e40d13288e9dc0215cbaed214e2458651328d1b78ea113066214"
     },
     {
       "path": "mingw64/bin/libcrypto-3-x64.dll",
@@ -555,18 +555,18 @@
     },
     {
       "path": "mingw64/bin/libexpat-1.dll",
-      "size": 237603,
-      "sha256": "92ae866c6c58dd2d8366aa0e6230ba8d434d5306e8d8c3a08b7e61750fc16153"
+      "size": 237567,
+      "sha256": "1ace13a4460a04cccb4b1e532af98a8e4610581f7ed55413a5ccb615e7d1e1ca"
     },
     {
       "path": "mingw64/bin/libffi-8.dll",
-      "size": 40402,
-      "sha256": "13df092703772121ab4922a98e44f2eb4008d5c421f6d150cd682071a0245c49"
+      "size": 39699,
+      "sha256": "b649c515907436a3299326f83aea0e8d75c61853eb1609602603bbcb9b00b4db"
     },
     {
       "path": "mingw64/bin/libgcc_s_seh-1.dll",
-      "size": 151732,
-      "sha256": "278f1101f2371c58b6b412a3206718e22343940a5164aceb4fb75f2bf3b38ed4"
+      "size": 150998,
+      "sha256": "b37c1770c8ca092700875845b34918803ee6311573eba1c32ff4b1166e4a0e1e"
     },
     {
       "path": "mingw64/bin/libgmp-10.dll",
@@ -574,9 +574,9 @@
       "sha256": "37248cda33845e7c5c35a574e57da762dd0a8268f0270d179f30a33746809681"
     },
     {
-      "path": "mingw64/bin/libhogweed-6.dll",
-      "size": 284313,
-      "sha256": "cc3a8a5ecbc172aba4ad72423979ca115c1ef8e21ba3fa2afc9e5e7e5b785b8e"
+      "path": "mingw64/bin/libhogweed-7.dll",
+      "size": 275389,
+      "sha256": "8a4785b98e5418c32035f570904f65360c89825358702954b53c77ee2df8c97d"
     },
     {
       "path": "mingw64/bin/libiconv-2.dll",
@@ -599,19 +599,19 @@
       "sha256": "dc9edb9bd83b0371fe68d96cb3e70cd17b7a5aba958326a18f8210cb812432e9"
     },
     {
-      "path": "mingw64/bin/libnettle-8.dll",
-      "size": 345008,
-      "sha256": "0dad1e4809abe704b2cf57fc32b494b35da2ac35d1c478a78d150cd40f1a41fc"
+      "path": "mingw64/bin/libnettle-9.dll",
+      "size": 360977,
+      "sha256": "208002d990684946c7923a87022bedea588fef8e31286598c08805e37be2a95a"
     },
     {
       "path": "mingw64/bin/libnghttp2-14.dll",
-      "size": 214551,
-      "sha256": "52edb463eddb5e7186a858789d33a2e46f1929a963f09dc0a4fa3d30bcd9b8db"
+      "size": 215032,
+      "sha256": "25e6516899fd5021df8c67b92e9f7246249fb03bb7bdf56a08260a8dded06b00"
     },
     {
       "path": "mingw64/bin/libp11-kit-0.dll",
-      "size": 1634240,
-      "sha256": "d3e6ed3caab6ab95bcb4b81c5ed3bc8ccd0ae5d3713b40837afd6be326eac506"
+      "size": 1594910,
+      "sha256": "ada3949f3763db47a754eec56388f3305c41c259eb3bbae188a820fd01c5445b"
     },
     {
       "path": "mingw64/bin/libpcre2-8-0.dll",
@@ -640,8 +640,8 @@
     },
     {
       "path": "mingw64/bin/libstdc++-6.dll",
-      "size": 2667040,
-      "sha256": "3529d11c422b2aaf0bbad7221bf62ba7b5a39f854e89a015bb58b6b55a677da1"
+      "size": 2661299,
+      "sha256": "887c21dbe2a211ac4d1a790e4f608b7dee27fae12352856963004e7a715d2e6c"
     },
     {
       "path": "mingw64/bin/libtasn1-6.dll",
@@ -655,8 +655,8 @@
     },
     {
       "path": "mingw64/bin/libwinpthread-1.dll",
-      "size": 66467,
-      "sha256": "1bbd639c9be4bc7517beb0fac9ac13502d270e9bf07fcd223de8cc40d9c15408"
+      "size": 63875,
+      "sha256": "8d7a192a8fbbccb0cebeac272701f66a580f493eff2336739a96144119260723"
     },
     {
       "path": "mingw64/bin/libzstd.dll",
@@ -675,8 +675,8 @@
     },
     {
       "path": "mingw64/bin/msalruntime.dll",
-      "size": 3060544,
-      "sha256": "f1d1ddf6b32dbea8c4a0495746c1fc07871914d67222dae4575d32528a87c1cc"
+      "size": 3060536,
+      "sha256": "ad1b1935ccbbde75e544641bd9159e7b5bd6d394ddcf4c81aeb7cfad1ebba07a"
     },
     {
       "path": "mingw64/bin/odt2txt.exe",
@@ -690,8 +690,8 @@
     },
     {
       "path": "mingw64/bin/p11-kit.exe",
-      "size": 260568,
-      "sha256": "7f0fec9949be2ebea3027ab4b2dc6a5c8a4d3ceabdec7e85d7f1b0fe3461f8f3"
+      "size": 257676,
+      "sha256": "2f3442f79ace8f664dacadaf113394861d73ebd44f0b6d0fd7867ba5d264a64a"
     },
     {
       "path": "mingw64/bin/pcre2-config",
@@ -705,8 +705,8 @@
     },
     {
       "path": "mingw64/bin/pkcs1-conv.exe",
-      "size": 61460,
-      "sha256": "138452ac38683b855dd9f17afbc67a7f4a6f4fb37a7910528cfb0c56631ac4fd"
+      "size": 62018,
+      "sha256": "ce40e6c0b9c458a4890d77ecca32628a6eaeb0595e11e7483379dd209ed95dca"
     },
     {
       "path": "mingw64/bin/printf_gettext.exe",
@@ -735,13 +735,13 @@
     },
     {
       "path": "mingw64/bin/scalar.exe",
-      "size": 2483324,
-      "sha256": "9af4700e0e729e90bd7c5d563056b71a3decfc733a19da7cd5230bb6a2b031ea"
+      "size": 2479244,
+      "sha256": "82fd50f1a2f1602d7140d911d6a999d72c23b96beab2cfff923aebf83dc88de8"
     },
     {
       "path": "mingw64/bin/sexp-conv.exe",
-      "size": 67202,
-      "sha256": "5e1dbb245fad6f9f8300268eaf1d18d6a410912f02bf4c07f9abf422ab729747"
+      "size": 68548,
+      "sha256": "25fbbf322fc4e76f74c4d5a60a36cff46ef287b88f4b172942fa1fb73bd8cd15"
     },
     {
       "path": "mingw64/bin/sqlite3_analyzer.sh",
@@ -770,8 +770,8 @@
     },
     {
       "path": "mingw64/bin/trust.exe",
-      "size": 285029,
-      "sha256": "3f090f33f76f08f9b254fd660323ecd503fc0fdad027580b996388ffe31cd8ea"
+      "size": 283131,
+      "sha256": "1a2e0db2adb38795bedddcbc1ef6166798b05a778d1dace83597eb3f239d1be7"
     },
     {
       "path": "mingw64/bin/unxz.exe",
@@ -805,8 +805,8 @@
     },
     {
       "path": "mingw64/bin/xmlwf.exe",
-      "size": 90958,
-      "sha256": "30fae2d113597649f909ae780a4539512315d4593a0372a97690163a1ab608ba"
+      "size": 88843,
+      "sha256": "3823745c90aeb401c55b77a533b1b6510939abb165a5cef23056226539732e66"
     },
     {
       "path": "mingw64/bin/xz.exe",
@@ -866,227 +866,227 @@
     {
       "path": "mingw64/libexec/git-core/Atlassian.Bitbucket.dll",
       "size": 105272,
-      "sha256": "d03ac1bb85265ed202cd47e3ef862f4ec7d4e23f4d9ca63202f75e5c6d0b26d8"
+      "sha256": "3a9dd735b3e0fc2e4b3f83ed94d11cbfe3e72b86e0a957a0c419f90ce12ab5f4"
     },
     {
       "path": "mingw64/libexec/git-core/Avalonia.Base.dll",
       "size": 1922880,
-      "sha256": "392c2b56b7e07e637dfb75782676722b534e51e2e7fdf648847748accfe8d9f0"
+      "sha256": "ce1eda48b18fb19653e1a6c9a88dec3d9a5c6abd4f06bfd677c410b0de308a24"
     },
     {
       "path": "mingw64/libexec/git-core/Avalonia.Controls.dll",
       "size": 1032000,
-      "sha256": "8c738676cba16b540da1f0ffe3e90a7e60ea1b557763093785add052f2f0e096"
+      "sha256": "40c47e611b9f95b32bbf0a6d95c6d84fc89507502a20d21fdb71edecbe77e17a"
     },
     {
       "path": "mingw64/libexec/git-core/Avalonia.DesignerSupport.dll",
-      "size": 218464,
-      "sha256": "385a4549ce261e31f905db7c9ac21f6c397b10873ec29a68473d55139ff3c37c"
+      "size": 218424,
+      "sha256": "934339931173fcd6d6d1654e05b428b539ef341f7ca4e5acb4da734e0c2795ca"
     },
     {
       "path": "mingw64/libexec/git-core/Avalonia.Dialogs.dll",
-      "size": 252768,
-      "sha256": "660c8c15560314b54ecfe73c3287f837a2dfd02ed128f17fa50a74b09a40c6b7"
+      "size": 252728,
+      "sha256": "747f439687eccf7e1118b1f127aa03f5bb22142d68cd6cec41d628eee85a2a71"
     },
     {
       "path": "mingw64/libexec/git-core/Avalonia.Markup.Xaml.dll",
-      "size": 92992,
-      "sha256": "91ddf6050fb74d6a44eea6f863c376824090cc8568fd8af84da5e7455f05f891"
+      "size": 93024,
+      "sha256": "177df637eaf4e7ee5bad8b0d2d23db33e289035178bd2f3d2b505f62d69b383e"
     },
     {
       "path": "mingw64/libexec/git-core/Avalonia.Markup.dll",
-      "size": 71008,
-      "sha256": "ac255cb78ab548689cb62933b155035105444f34a5b0ef5ebd3542a95988cea1"
+      "size": 71016,
+      "sha256": "5d07211022aff0ec79716ed7ba6f5cada7b42a0214fd17fd8cc6f9251a1b9e10"
     },
     {
       "path": "mingw64/libexec/git-core/Avalonia.Metal.dll",
-      "size": 24416,
-      "sha256": "153deb3c0fe47c044dd46e855ca1368ff376bfb3f8719c63457a8c39fb9bf2db"
+      "size": 24376,
+      "sha256": "5ee3b9609227895cafd3cc8ea4928f64a29ab1a8be3d0d279db10b430c518063"
     },
     {
       "path": "mingw64/libexec/git-core/Avalonia.MicroCom.dll",
-      "size": 25408,
-      "sha256": "bc018651648d1ef3da247cef78d5a9d27cb05146c635c193f42bff147a58dd39"
+      "size": 25448,
+      "sha256": "4a5074ccd8356f99e50b123f64ac846e491f543fa602eb965ef6666089f624b3"
     },
     {
       "path": "mingw64/libexec/git-core/Avalonia.OpenGL.dll",
-      "size": 106336,
-      "sha256": "40480a32e90e6ad337aa1e69787bd3cd15830416f8b99e2c44fdc634ab3451bf"
+      "size": 106296,
+      "sha256": "9e76ad1503760dae0437abc5352c82cf247209af34cfe5037400065d45474b45"
     },
     {
       "path": "mingw64/libexec/git-core/Avalonia.Remote.Protocol.dll",
-      "size": 82752,
-      "sha256": "3d493f4597d67e8dfe135be0f3b110d47f752150d355c5afd26b2c0fe683e3ca"
+      "size": 82744,
+      "sha256": "9d4b55a9aa9f8e8dd487e53c909d7f552319fc19df9b6734ee1344c229d5dcfe"
     },
     {
       "path": "mingw64/libexec/git-core/Avalonia.Skia.dll",
       "size": 133440,
-      "sha256": "63349f9586d7442885658fec139d2f49b8b7cc9168dfb8863b0d8afca9cc93db"
+      "sha256": "ce8e860f42018a6c319402ae2c6e43a8dbbe52754a203265ce5b356c4a98781e"
     },
     {
       "path": "mingw64/libexec/git-core/Avalonia.Themes.Fluent.dll",
       "size": 579896,
-      "sha256": "680fe2b42c264de4636ec6d43b4ffa35eed06d57b1b2d563706f8ad29a0bc315"
+      "sha256": "eb8e4ead3446893a2382ca08e2769274cd2eb27763c40af7f30e0f135928c997"
     },
     {
       "path": "mingw64/libexec/git-core/Avalonia.Vulkan.dll",
-      "size": 186168,
-      "sha256": "482db3fb63b96f7a398d9b613299d0339321fe9c5c3777170ae3121c3ecd41b5"
+      "size": 186176,
+      "sha256": "9f726db10a8e4f1615c36092dba406e2bced5ae44759225fc444ea64a4a3e674"
     },
     {
       "path": "mingw64/libexec/git-core/Avalonia.Win32.dll",
-      "size": 745792,
-      "sha256": "88acade75fe12b98320bbb8f689709b7e56f0a0bf100a8b7dff348feeb9cbd90"
+      "size": 745784,
+      "sha256": "65c2e5dbf921a953797b9332280c3c3220c53ebae635ecb96b5de0395d969114"
     },
     {
       "path": "mingw64/libexec/git-core/Avalonia.dll",
-      "size": 14176,
-      "sha256": "9ea0559b46f6fa746e6de4cd05349f6b4d48efc387af469fb73917d540784d84"
+      "size": 14136,
+      "sha256": "06de78055dd7f7705a5514456a34b47bf52d1c8815c34149a4e5a4dfd376aadf"
     },
     {
       "path": "mingw64/libexec/git-core/GitHub.dll",
-      "size": 154936,
-      "sha256": "73c1a5f230c0a385f1a2869a32240197ab63b8397c2f78b15bb0e3ed95dd0009"
+      "size": 154984,
+      "sha256": "e84351b4f90169c001ec2f88889a731308f286612dd03c7a2526ad013266fc8d"
     },
     {
       "path": "mingw64/libexec/git-core/GitLab.dll",
-      "size": 71488,
-      "sha256": "11c203b995828bcb95a4949886a717933323ef63e40154f13fd179ca22443503"
+      "size": 71480,
+      "sha256": "c87e5ee958cf609ef4c2a027d12659d1e2c1ec7efcc7dbc15c9ec4518e4860f0"
     },
     {
       "path": "mingw64/libexec/git-core/HarfBuzzSharp.dll",
-      "size": 215360,
-      "sha256": "70f931c39b6ef652da09c6a8cb3827581b71da8bd8bb5e92e0f3f411571829f9"
+      "size": 215352,
+      "sha256": "d37714e703cfd98fcabd01cf495a66c0acf5f99bc78c5372ff4752632deddb1e"
     },
     {
       "path": "mingw64/libexec/git-core/MicroCom.Runtime.dll",
-      "size": 24384,
-      "sha256": "0d55f1e0708318e06616b7e8d03c125a184de0e44eb2d4f52727f02b6efbec05"
+      "size": 24376,
+      "sha256": "67fcbaa2bd582e79e2f3646c1a43bb86676a096cb17729cf946f69a5c07abaeb"
     },
     {
       "path": "mingw64/libexec/git-core/Microsoft.AzureRepos.dll",
       "size": 69472,
-      "sha256": "4aced14747f4593be95e99b201b5c97a9e4ea76624ed905554795d235f0a977a"
+      "sha256": "3e7965775aa78682af5b0dce2516c5b1abd8b96d6af9419f540b7f17f66be5d6"
     },
     {
       "path": "mingw64/libexec/git-core/Microsoft.Bcl.AsyncInterfaces.dll",
       "size": 26432,
-      "sha256": "ad14fdae478ec07ebaee5371c54960c51216d0f210d1c496a0804766a6b827ac"
+      "sha256": "18940307939380c25f2ea6467d9846bba566438320740fdd4c31184be46b709d"
     },
     {
       "path": "mingw64/libexec/git-core/Microsoft.Identity.Client.Broker.dll",
       "size": 74048,
-      "sha256": "52e5ccfcb00d9b39e05d140f27f8b7bea7f03b7493358c2008b1fedd69e6ae4d"
+      "sha256": "2fa5fc6cfa093bb1cd9d67e2783212ccce0606987c043add43e588e93e5e51f4"
     },
     {
       "path": "mingw64/libexec/git-core/Microsoft.Identity.Client.Extensions.Msal.dll",
-      "size": 65376,
-      "sha256": "248ffb23f827d2ee9a20020efcb9af2363ab0cc69ac41becbf97067242d1d88a"
+      "size": 65336,
+      "sha256": "c428de0dbf5a66afb09e3f11cc932ab0096c3559456b980ec0bc0cbd2d13f64c"
     },
     {
       "path": "mingw64/libexec/git-core/Microsoft.Identity.Client.NativeInterop.dll",
-      "size": 92480,
-      "sha256": "ae60888ac537fcb2b08d9f6cd2a805fcfd3cf63286679ae63ea885d1f089607a"
+      "size": 92520,
+      "sha256": "5dcaf7095cb9a0115d39f00705643930f739d9b570eb45a3f51daedab5a369c3"
     },
     {
       "path": "mingw64/libexec/git-core/Microsoft.Identity.Client.dll",
-      "size": 1260352,
-      "sha256": "568535d2e71c8bf2549633f390ee5a0b00d1a335e2059199fff2e3c6b157fb3f"
+      "size": 1260344,
+      "sha256": "8626e4695db1862b13ee7398b6ceaf77edf2818b4803f23665cba484454dd6dd"
     },
     {
       "path": "mingw64/libexec/git-core/Microsoft.IdentityModel.Abstractions.dll",
-      "size": 19816,
-      "sha256": "b0175480115d48909ee2e62e19e4dff8043780fc270e3e2c8ecb0670eede7fe0"
+      "size": 19776,
+      "sha256": "692cc596ee7a620e899335be03a83229520aed5a3e1a450c37ebff7c93dfafa0"
     },
     {
       "path": "mingw64/libexec/git-core/SkiaSharp.dll",
-      "size": 805696,
-      "sha256": "615a83216632ae4890b3e796778c7141bc6302edcade6d4dc4a78b7dfcf5853b"
+      "size": 805688,
+      "sha256": "1c0fdec5e90624fbe7a5afccea355eec112ca593576fd893ee424b22304e4eeb"
     },
     {
       "path": "mingw64/libexec/git-core/System.Buffers.dll",
-      "size": 21816,
-      "sha256": "9b030d59d63c05adace41feaae2acead329340d29fa1d6b44636004921788f63"
+      "size": 21856,
+      "sha256": "322b7e92ef79d35821f7859ce04500819e819892e80bdb4872bcc8183120b07a"
     },
     {
       "path": "mingw64/libexec/git-core/System.CommandLine.dll",
       "size": 206648,
-      "sha256": "8e8f736f4af5bc99d65066cf63d4e32123bdee0487e415e4dfffe8a326034def"
+      "sha256": "7013e24a56109cb1cdf2dbe493b03540ed9cf9e23b7b35d71f37237b0c9305e8"
     },
     {
       "path": "mingw64/libexec/git-core/System.ComponentModel.Annotations.dll",
-      "size": 37176,
-      "sha256": "de85ecb2aade2402d84cecd726f53a16544975c5bced0f976d3409799b973a84"
+      "size": 37224,
+      "sha256": "46736b11724e6107112751fb20b013e9158fd9b335c19ee408b3df309b3c52b6"
     },
     {
       "path": "mingw64/libexec/git-core/System.Diagnostics.DiagnosticSource.dll",
-      "size": 167744,
-      "sha256": "7947fd101dfeed137fae6f2cf60cbb2e796e281a58ba008b6876773f043c8ca8"
+      "size": 167736,
+      "sha256": "f539096f5e4bc3e018f00206da279a9a664b6e5a44b9c304d8949abf004205f4"
     },
     {
       "path": "mingw64/libexec/git-core/System.Formats.Asn1.dll",
-      "size": 104768,
-      "sha256": "08a7d7f4b2ba67544c9825d61c6d91e3766f54f5e0b0153b0d1aa0963b875f8d"
+      "size": 104760,
+      "sha256": "52abac01da817aec9c53c1b4e683bcfc24ec22e86c7156a70678d3014d658c83"
     },
     {
       "path": "mingw64/libexec/git-core/System.IO.FileSystem.AccessControl.dll",
-      "size": 29504,
-      "sha256": "07fdfc38ae85acc9de5623283a9d1398db7892bff35adcf9306b081cbe20e7a8"
+      "size": 29496,
+      "sha256": "03dca81b81188f83ef7621752c48417428ebb1c2e8550c3cb4c9d3aae713fb7b"
     },
     {
       "path": "mingw64/libexec/git-core/System.Memory.dll",
-      "size": 142144,
-      "sha256": "948c3e0f9f5a4d6c4f25547a642e59ff7ba7a65cabe1f0abfa1eeaa077c70e52"
+      "size": 142136,
+      "sha256": "a538621e978f6559c96c401a0c35f9fbbbe85c18db496c33debe93d6865d71bb"
     },
     {
       "path": "mingw64/libexec/git-core/System.Numerics.Vectors.dll",
       "size": 109880,
-      "sha256": "551dbffba34954023de72fd717ae9a434ca2418d5417627ccf040a0917bb8de8"
+      "sha256": "0dcbc9b6f7115e8aaa401850253aef651f47615e6e2006bc99840d836a1691f5"
     },
     {
       "path": "mingw64/libexec/git-core/System.Runtime.CompilerServices.Unsafe.dll",
-      "size": 18752,
-      "sha256": "bd17d5fb3757afa224cb08a3c9aea423a5a5300ee0e55ae81d24f74b3ca58ea2"
+      "size": 18744,
+      "sha256": "cff361880bf7962e876c968bd7cc2144338e8d9dc84a0c9db933cfffc328df6c"
     },
     {
       "path": "mingw64/libexec/git-core/System.Security.AccessControl.dll",
-      "size": 34624,
-      "sha256": "aef3a462702c2c812e1dda556ac07e66e9f962d698ca833cf88402e4b2ab871f"
+      "size": 34616,
+      "sha256": "40d981a0cafd6c07deacc0bafb93548d282b3faadb09c5e8cb222ba77a3e7feb"
     },
     {
       "path": "mingw64/libexec/git-core/System.Security.Cryptography.ProtectedData.dll",
-      "size": 17760,
-      "sha256": "00fe403549fe78dd2b46559ff7faa93c3a1673d62dfa494052f335f66a8ff354"
+      "size": 17720,
+      "sha256": "95500dff838eec1e079bc94c4e0f8db3e7df6f1fc2dfdd0a18c3276baf63e62c"
     },
     {
       "path": "mingw64/libexec/git-core/System.Security.Principal.Windows.dll",
-      "size": 19256,
-      "sha256": "d7bf314479447eb8dc267416673c5b5d654503678677679a8a77942abe612fa1"
+      "size": 19264,
+      "sha256": "0139ce79d7ec025724732f4c62e8d4008898942d18b8f040f067f7639ffd5b55"
     },
     {
       "path": "mingw64/libexec/git-core/System.Text.Encodings.Web.dll",
-      "size": 78648,
-      "sha256": "7661f169c06130f86d9ed8b9d647d4d91b3dd097dbd19314bb6992a9c3e9072f"
+      "size": 78696,
+      "sha256": "5690c9873b767956258bba077d734a92cb0514721ad6801e01e1542530ed4297"
     },
     {
       "path": "mingw64/libexec/git-core/System.Text.Json.dll",
-      "size": 644416,
-      "sha256": "d1bc1fb5a49ff10963b5cb9b9060d7bd7ba3e4688cf2f5f4605ee5c79209f3ce"
+      "size": 644408,
+      "sha256": "76a73b925787597c25456dbe27b7bed58d2fce89034fed323f08135c20f4ea55"
     },
     {
       "path": "mingw64/libexec/git-core/System.Threading.Tasks.Extensions.dll",
       "size": 26936,
-      "sha256": "cb2a9e3866282eb10b389139e32a8daa2772526a8346c89889fe620297262455"
+      "sha256": "74f7f157ce574a131da14186964c347f6b3200cf745c67b28b52da51bf963e50"
     },
     {
       "path": "mingw64/libexec/git-core/System.ValueTuple.dll",
-      "size": 19264,
-      "sha256": "c826148e98910e22085b7b7d0550ec4d79ebdfd20da90f44c0d61654ed06ccaf"
+      "size": 19256,
+      "sha256": "420fa431a72f24995c72a57b4b134c29fd0a11e56aad1b860a1e6905d268ecb1"
     },
     {
       "path": "mingw64/libexec/git-core/av_libglesv2.dll",
-      "size": 4450656,
-      "sha256": "619e19597f7305b1deed66e6320dcc779a4e81101fefac0118c7a0a6f106c350"
+      "size": 4450616,
+      "sha256": "a5e15a6b84c938c23816ed78475294bc28994582c3659965abc6ca3dceac8fed"
     },
     {
       "path": "mingw64/libexec/git-core/edit.dll",
@@ -1095,8 +1095,8 @@
     },
     {
       "path": "mingw64/libexec/git-core/gcmcore.dll",
-      "size": 463200,
-      "sha256": "96ab6d247b7ef299ef19e568e5bea6de530d59f8b9722d893c656cafa7690db3"
+      "size": 463208,
+      "sha256": "cb6a89c6f288117da4b77a902505643230b9e3cdba48cfe88719112a51da0690"
     },
     {
       "path": "mingw64/libexec/git-core/git-citool",
@@ -1105,13 +1105,13 @@
     },
     {
       "path": "mingw64/libexec/git-core/git-credential-wincred.exe",
-      "size": 67448,
-      "sha256": "99c37f9fdc6443e142feddfaa9e19c22d562d87040ddb142c4ddeb018ce89e6e"
+      "size": 64392,
+      "sha256": "de33d104d8ec15b606ec0617ae051167b7811d7de0b453e4af7d1f41fd737030"
     },
     {
       "path": "mingw64/libexec/git-core/git-daemon.exe",
-      "size": 2462552,
-      "sha256": "74d36cb9701e23d356a7815959486e5d1dc59a57dc5ee57d0b4dfe0416957341"
+      "size": 2458984,
+      "sha256": "4709ad3ddd063051065a9cd893024868100d7141476c7668dce5eebd7e585df3"
     },
     {
       "path": "mingw64/libexec/git-core/git-difftool--helper",
@@ -1145,23 +1145,23 @@
     },
     {
       "path": "mingw64/libexec/git-core/git-http-backend.exe",
-      "size": 2458456,
-      "sha256": "8753a3b0dfe202348bc6a63cab804a396a6b29f36906af348757377b65c07800"
+      "size": 2454376,
+      "sha256": "1e4878427da3e77f1d3b8b85ee6d0bebc5c4d754763bc902e059449f69f38351"
     },
     {
       "path": "mingw64/libexec/git-core/git-http-fetch.exe",
-      "size": 2512728,
-      "sha256": "264d8884c63d5166488316ba648602c790172d58f5dd127e11b8ae7d8d1329c9"
+      "size": 2509160,
+      "sha256": "243a6ee1a7d8f1c9d301ceeb5e44384a0d9b52d685c824c648361786aa26571d"
     },
     {
       "path": "mingw64/libexec/git-core/git-http-push.exe",
-      "size": 2522968,
-      "sha256": "639bdcdd3dbfaaa024678c79105e96acc08f2040a8b186b4629a12285763913b"
+      "size": 2518888,
+      "sha256": "b8588e3471dde76cf4d4a241716e88780cd746c90c4f579683f275693bde5706"
     },
     {
       "path": "mingw64/libexec/git-core/git-imap-send.exe",
-      "size": 2525016,
-      "sha256": "3b22213b330cba6415c9257e3a21af5b135569a7ff136206784681ed3b653754"
+      "size": 2521448,
+      "sha256": "cdb96c86200dd174bc85a2c78f23938903066a389f69fa763aaa58297fd6c971"
     },
     {
       "path": "mingw64/libexec/git-core/git-merge-octopus",
@@ -1195,23 +1195,23 @@
     },
     {
       "path": "mingw64/libexec/git-core/git-remote-ftp.exe",
-      "size": 2529624,
-      "sha256": "f5c00c686afc23cb7cb7e5345eab4889e84e14f491fc08df2a5833921a4ea697"
+      "size": 2526568,
+      "sha256": "cf698f7a84efc74ffa97526b8b22d7f5048aa311cf6101f537d44a9b73787795"
     },
     {
       "path": "mingw64/libexec/git-core/git-remote-ftps.exe",
-      "size": 2529624,
-      "sha256": "f5c00c686afc23cb7cb7e5345eab4889e84e14f491fc08df2a5833921a4ea697"
+      "size": 2526568,
+      "sha256": "cf698f7a84efc74ffa97526b8b22d7f5048aa311cf6101f537d44a9b73787795"
     },
     {
       "path": "mingw64/libexec/git-core/git-remote-http.exe",
-      "size": 2529624,
-      "sha256": "f5c00c686afc23cb7cb7e5345eab4889e84e14f491fc08df2a5833921a4ea697"
+      "size": 2526568,
+      "sha256": "cf698f7a84efc74ffa97526b8b22d7f5048aa311cf6101f537d44a9b73787795"
     },
     {
       "path": "mingw64/libexec/git-core/git-remote-https.exe",
-      "size": 2529624,
-      "sha256": "f5c00c686afc23cb7cb7e5345eab4889e84e14f491fc08df2a5833921a4ea697"
+      "size": 2526568,
+      "sha256": "cf698f7a84efc74ffa97526b8b22d7f5048aa311cf6101f537d44a9b73787795"
     },
     {
       "path": "mingw64/libexec/git-core/git-request-pull",
@@ -1221,7 +1221,7 @@
     {
       "path": "mingw64/libexec/git-core/git-send-email",
       "size": 73887,
-      "sha256": "227666bc3a15cf9b7377790ed0d641f6da4c0c3c46fae641a8e4859dfd4ec24b"
+      "sha256": "ba79fe31c44647737a52fca119fc2505f66f6f2b3ecee1366891db8410573fab"
     },
     {
       "path": "mingw64/libexec/git-core/git-sh-i18n",
@@ -1230,8 +1230,8 @@
     },
     {
       "path": "mingw64/libexec/git-core/git-sh-i18n--envsubst.exe",
-      "size": 2448216,
-      "sha256": "65162ef4b04732d022b1927ddfdf3e94bcc9052293ae273dabb70cb911d0c13d"
+      "size": 2444648,
+      "sha256": "226e20ce8d0cc78837874da423037489fee91ff265de14819acbbd0ba5e10227"
     },
     {
       "path": "mingw64/libexec/git-core/git-sh-setup",
@@ -1260,23 +1260,23 @@
     },
     {
       "path": "mingw64/libexec/git-core/git.exe",
-      "size": 4383560,
-      "sha256": "f83cb7f94f7c714f71ed4976c2c55ab35d80f392881ee586e5a0933424c135e6"
+      "size": 4378456,
+      "sha256": "d1b62b94aa15e5c3bbcdd6440d5f716f78daa2736a951b0f1fad11d38c5f16da"
     },
     {
       "path": "mingw64/libexec/git-core/headless-git.exe",
-      "size": 35160,
-      "sha256": "6a7d84f76467641bdd8403f9a5a8ad24129afea9946b90324bde12ff549fdc38"
+      "size": 31592,
+      "sha256": "e456e6f044fe03d24da91d6882934db9d0d79a2f64a1105bc43ed8fa96a83deb"
     },
     {
       "path": "mingw64/libexec/git-core/libHarfBuzzSharp.dll",
-      "size": 1607008,
-      "sha256": "1732b538093aaeb30bd64ad98ff332d42e771e262de597d750b429af31bbf417"
+      "size": 1606968,
+      "sha256": "8449848dd71c47bebfb16892d56918f2e26706d67138133fdb940831fd9f09e3"
     },
     {
       "path": "mingw64/libexec/git-core/libSkiaSharp.dll",
-      "size": 9413952,
-      "sha256": "ff8d668624fc67df43333ceb2e9a5a03cb02da06a1081eb78ab05ec4132fcf6b"
+      "size": 9413944,
+      "sha256": "8dc867e29f3dacca41e15af5d557542f4982c59f770ba6ac811ed6026fd2874e"
     },
     {
       "path": "mingw64/libexec/git-core/libbrotlicommon.dll",
@@ -1295,13 +1295,13 @@
     },
     {
       "path": "mingw64/libexec/git-core/libbz2-1.dll",
-      "size": 100964,
-      "sha256": "b79cd3a7102e359ef6324e98966a67939e58ec2b651ae2847cae84a4dfa453f7"
+      "size": 108633,
+      "sha256": "a4fbb97c26662d2b8a80bf4597ed3effb69b12048b0cb1eef2c3f211e2e66673"
     },
     {
       "path": "mingw64/libexec/git-core/libcares-2.dll",
-      "size": 287704,
-      "sha256": "450368a12802c1fd8bdcb5edf9eb93746a77748e7f9444363de1e88fbea0f8e9"
+      "size": 278136,
+      "sha256": "0acf48c38681e40d13288e9dc0215cbaed214e2458651328d1b78ea113066214"
     },
     {
       "path": "mingw64/libexec/git-core/libcrypto-3-x64.dll",
@@ -1320,18 +1320,18 @@
     },
     {
       "path": "mingw64/libexec/git-core/libexpat-1.dll",
-      "size": 237603,
-      "sha256": "92ae866c6c58dd2d8366aa0e6230ba8d434d5306e8d8c3a08b7e61750fc16153"
+      "size": 237567,
+      "sha256": "1ace13a4460a04cccb4b1e532af98a8e4610581f7ed55413a5ccb615e7d1e1ca"
     },
     {
       "path": "mingw64/libexec/git-core/libffi-8.dll",
-      "size": 40402,
-      "sha256": "13df092703772121ab4922a98e44f2eb4008d5c421f6d150cd682071a0245c49"
+      "size": 39699,
+      "sha256": "b649c515907436a3299326f83aea0e8d75c61853eb1609602603bbcb9b00b4db"
     },
     {
       "path": "mingw64/libexec/git-core/libgcc_s_seh-1.dll",
-      "size": 151732,
-      "sha256": "278f1101f2371c58b6b412a3206718e22343940a5164aceb4fb75f2bf3b38ed4"
+      "size": 150998,
+      "sha256": "b37c1770c8ca092700875845b34918803ee6311573eba1c32ff4b1166e4a0e1e"
     },
     {
       "path": "mingw64/libexec/git-core/libgmp-10.dll",
@@ -1339,9 +1339,9 @@
       "sha256": "37248cda33845e7c5c35a574e57da762dd0a8268f0270d179f30a33746809681"
     },
     {
-      "path": "mingw64/libexec/git-core/libhogweed-6.dll",
-      "size": 284313,
-      "sha256": "cc3a8a5ecbc172aba4ad72423979ca115c1ef8e21ba3fa2afc9e5e7e5b785b8e"
+      "path": "mingw64/libexec/git-core/libhogweed-7.dll",
+      "size": 275389,
+      "sha256": "8a4785b98e5418c32035f570904f65360c89825358702954b53c77ee2df8c97d"
     },
     {
       "path": "mingw64/libexec/git-core/libiconv-2.dll",
@@ -1364,19 +1364,19 @@
       "sha256": "dc9edb9bd83b0371fe68d96cb3e70cd17b7a5aba958326a18f8210cb812432e9"
     },
     {
-      "path": "mingw64/libexec/git-core/libnettle-8.dll",
-      "size": 345008,
-      "sha256": "0dad1e4809abe704b2cf57fc32b494b35da2ac35d1c478a78d150cd40f1a41fc"
+      "path": "mingw64/libexec/git-core/libnettle-9.dll",
+      "size": 360977,
+      "sha256": "208002d990684946c7923a87022bedea588fef8e31286598c08805e37be2a95a"
     },
     {
       "path": "mingw64/libexec/git-core/libnghttp2-14.dll",
-      "size": 214551,
-      "sha256": "52edb463eddb5e7186a858789d33a2e46f1929a963f09dc0a4fa3d30bcd9b8db"
+      "size": 215032,
+      "sha256": "25e6516899fd5021df8c67b92e9f7246249fb03bb7bdf56a08260a8dded06b00"
     },
     {
       "path": "mingw64/libexec/git-core/libp11-kit-0.dll",
-      "size": 1634240,
-      "sha256": "d3e6ed3caab6ab95bcb4b81c5ed3bc8ccd0ae5d3713b40837afd6be326eac506"
+      "size": 1594910,
+      "sha256": "ada3949f3763db47a754eec56388f3305c41c259eb3bbae188a820fd01c5445b"
     },
     {
       "path": "mingw64/libexec/git-core/libpcre2-8-0.dll",
@@ -1405,8 +1405,8 @@
     },
     {
       "path": "mingw64/libexec/git-core/libstdc++-6.dll",
-      "size": 2667040,
-      "sha256": "3529d11c422b2aaf0bbad7221bf62ba7b5a39f854e89a015bb58b6b55a677da1"
+      "size": 2661299,
+      "sha256": "887c21dbe2a211ac4d1a790e4f608b7dee27fae12352856963004e7a715d2e6c"
     },
     {
       "path": "mingw64/libexec/git-core/libtasn1-6.dll",
@@ -1420,8 +1420,8 @@
     },
     {
       "path": "mingw64/libexec/git-core/libwinpthread-1.dll",
-      "size": 66467,
-      "sha256": "1bbd639c9be4bc7517beb0fac9ac13502d270e9bf07fcd223de8cc40d9c15408"
+      "size": 63875,
+      "sha256": "8d7a192a8fbbccb0cebeac272701f66a580f493eff2336739a96144119260723"
     },
     {
       "path": "mingw64/libexec/git-core/libzstd.dll",
@@ -1550,13 +1550,13 @@
     },
     {
       "path": "mingw64/libexec/git-core/msalruntime.dll",
-      "size": 3060544,
-      "sha256": "f1d1ddf6b32dbea8c4a0495746c1fc07871914d67222dae4575d32528a87c1cc"
+      "size": 3060536,
+      "sha256": "ad1b1935ccbbde75e544641bd9159e7b5bd6d394ddcf4c81aeb7cfad1ebba07a"
     },
     {
       "path": "mingw64/libexec/git-core/scalar.exe",
-      "size": 2483324,
-      "sha256": "9af4700e0e729e90bd7c5d563056b71a3decfc733a19da7cd5230bb6a2b031ea"
+      "size": 2479244,
+      "sha256": "82fd50f1a2f1602d7140d911d6a999d72c23b96beab2cfff923aebf83dc88de8"
     },
     {
       "path": "mingw64/libexec/git-core/tcl86.dll",
@@ -1575,18 +1575,18 @@
     },
     {
       "path": "usr/bin/msys-2.0.dll",
-      "size": 3368543,
-      "sha256": "2ea49553e4c03055dcf1c4a2bef54668081a07663fba283f4b34cf70f2157191"
+      "size": 3371103,
+      "sha256": "e55be2d89f2756f540a8f2acf18cd14bf275d1187a32d5189946ee5c896bcf03"
     },
     {
       "path": "usr/bin/sh.exe",
-      "size": 2456832,
-      "sha256": "acf4ecb52e601f7b4a37db51b07650b5d0315eafd010590e98079fa026da4b7b"
+      "size": 2449886,
+      "sha256": "5490d0da5e7cf9d92068cc48fcc590f2bcf8564add8ff91c3b5fe541eb2d72e3"
     }
   ],
   "file_count": 312,
-  "total_bytes": 191289767,
-  "tree_sha256": "7151e168c3a919a5b63d42f432d38ebf51c1d05ee3eed821016e8c7349ce2356",
+  "total_bytes": 191092436,
+  "tree_sha256": "efc90e1480e2a0c66c726cbb721f77218bbe8516b863d6695ea3c089dcb16474",
   "system_dll_trust_boundary": "Windows System32 DLLs protected by the operating-system servicing boundary",
-  "reviewed_at": "2026-08-28"
+  "reviewed_at": "2026-09-04"
 }
