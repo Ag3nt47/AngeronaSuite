@@ -1261,12 +1261,19 @@ class AdversaryCombat(BaseModule):
             self.set_health(0, "event bus unavailable")
             return
         if not self._reconcile_state():
+            self._mutation_blocked = True
+            self.set_health(0, f"RECOVERY REQUIRED — {self._journal_error or 'journal unavailable'}")
             self.emit(
                 "Adversary Combat refused to arm: action journal integrity failed.",
                 Severity.CRITICAL,
                 disposition="health",
                 response_authorized=False,
             )
+            # A failed authority prerequisite is a blocked capability, not a
+            # crashed worker. Keep the original diagnosis and wait interruptibly
+            # for shutdown/operator repair instead of triggering restart storms.
+            while not self.stopping:
+                self.sleep(30.0)
             return
         self._bus.subscribe(self._submit)
         policy = self.policy()

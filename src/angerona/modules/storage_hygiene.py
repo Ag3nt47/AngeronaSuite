@@ -1,9 +1,9 @@
 """storage_hygiene.py — Storage Hygiene Enforcer (Code: SHYG).
 
 Purpose
-    Keeps Angerona's runtime data off the system drive. The suite resolves its
-    data root from ``ANGERONA_DATA`` (falling back to this installation's
-    ``runtime-data`` directory on D:). Stray data can still land at the old
+    Detects legacy data outside Angerona's configured runtime root. Source
+    launches may use the per-user ``Angerona/SourceData`` profile; elevated and
+    packaged launches use their protected runtime roots. Stray data can land at the old
     default location if something writes there before the env is applied. SHYG
     detects that spill and produces a reviewed relocation proposal.
 
@@ -17,8 +17,8 @@ Behaviour (safe by default)
     * PURGE (retired): ``purge_stray`` retains a safe compatibility surface but
       never deletes a pathname.
 
-The legacy C: path is treated only as a spill source and is never the normal
-default for this installation.
+The per-user SourceData profile is intentional and must never be proposed for
+relocation as spill from its own parent directory.
 
 Drop-in contract: BaseModule subclass + CODE/NAME/state/health_pct/self_test +
 module-level register().
@@ -54,7 +54,7 @@ def default_c_location() -> Path:
 
 
 def canonical_root() -> Path:
-    """The configured data root (D: runtime-data by default)."""
+    """The configured data root for the current launch profile."""
     return Path(_data_dir())
 
 
@@ -369,6 +369,14 @@ class StorageHygieneModule(BaseModule):
                 disposition="health",
                 collection_status="unavailable",
             )
+            return
+
+        if (
+            _same_path(dest, source / "SourceData")
+            and not _existing_path_has_reparse(source)
+            and not _existing_path_has_reparse(dest)
+        ):
+            self.set_health(100, "per-user source profile active; parent is not a spill source")
             return
 
         assessment = inspect_stray(source, dest)

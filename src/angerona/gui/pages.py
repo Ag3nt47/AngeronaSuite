@@ -76,7 +76,7 @@ SECURITY NOTES
 """
 
 from angerona import __version__
-from angerona.core.capability_assurance import assess_capability
+from angerona.core.capability_assurance import assess_capability, cached_declaration_anchor
 from angerona.core.eventbus import Severity
 from angerona.core.threat import active_threat_events, threat_label
 from angerona.gui.animations import begin_loading, finish_loading
@@ -244,6 +244,7 @@ def _module_assurance(manager, module, operational=None):
         operational=operational,
         platform=getattr(manager, "platform", None),
         enabled=_manager_enabled(manager, module),
+        source_anchor=cached_declaration_anchor(module),
     )
 
 
@@ -1716,8 +1717,12 @@ class EventsWindow(QDialog):
         evs = self._events()
         _fill_event_table(self.table, evs)
         qualifier = "most recent " if len(evs) >= self.MAX_ROWS else ""
+        duration = (
+            f"{self.window_s / 60:g} minutes" if self.window_s < 3600
+            else f"{self.window_s / 3600:g}h"
+        )
         self.count_lbl.setText(f"Showing {qualifier}{len(evs)} event(s) in the last "
-                               f"{int(self.window_s // 3600)}h")
+                               f"{duration}")
 
 
 # ── Modules status drill-down window ──────────────────────────────────────────
@@ -3028,6 +3033,10 @@ class ModulesPanel(QFrame):
                 assurance_item.setForeground(QColor(_assurance_color(assurance.score)))
                 assurance_item.setToolTip(_assurance_tooltip(assurance))
                 self.table.setItem(r, 3, assurance_item)
+                current_assurance = assurance_item
+            tooltip = _assurance_tooltip(assurance)
+            if current_assurance.toolTip() != tooltip:
+                current_assurance.setToolTip(tooltip)
         self.table.setUpdatesEnabled(True)
         self.table.setSortingEnabled(True)
         self.table.sortItems(sort_column, sort_order)
@@ -5156,7 +5165,7 @@ class AlertsPanel(QFrame):
 
     def _rebuild_event_rows(self, events, *, force: bool = False) -> None:
         """Reconcile by full event identity so equal timestamps cannot drop rows."""
-        visible = [event for event in events if not self._is_suppressed(event)]
+        visible = [event for event in events if not self._is_suppressed(event)][:self._MAX_ROWS]
         identities = tuple(_event_row_identities(visible, self.bus))
         if identities == self._rendered_event_ids and not force:
             return
@@ -5168,21 +5177,31 @@ class AlertsPanel(QFrame):
         previous_scroll = self.table.verticalScrollBar().value()
         self.table.setSortingEnabled(False)
         self.table.setUpdatesEnabled(False)
-        # The feed uses QTableWidgetItems rather than per-row widgets, so a
-        # bounded 120-row identity rebuild is predictable and avoids fragile
-        # timestamp/length incremental heuristics.
-        for row in range(self.table.rowCount()):
-            self._free_row_widgets(row)
-        self.table.setRowCount(0)
-        for event, identity in zip(visible, identities):
-            self._insert_row(self.table.rowCount(), event, identity)
-        self._trim_to_cap()
-        self.table.setSortingEnabled(True)
-        self.table.sortByColumn(sort_col, sort_ord)
-        _restore_alert_scroll(
-            self.table, sort_col, sort_ord, previous_scroll, has_new_identity
-        )
-        self.table.setUpdatesEnabled(True)
+        try:
+            wanted = set(identities)
+            # Keep unchanged items (and their selection) during an alert burst.
+            # A single incoming alert must not recreate 960 table items.
+            for row in range(self.table.rowCount() - 1, -1, -1):
+                item = self.table.item(row, 0)
+                if item is None or item.data(Qt.UserRole + 1) not in wanted:
+                    self._free_row_widgets(row)
+                    self.table.removeRow(row)
+            retained = {
+                self.table.item(row, 0).data(Qt.UserRole + 1): self.table.item(row, 0)
+                for row in range(self.table.rowCount())
+            }
+            for event, identity in zip(visible, identities):
+                if identity in retained:
+                    retained[identity].setData(Qt.UserRole, event)
+                else:
+                    self._insert_row(self.table.rowCount(), event, identity)
+        finally:
+            self.table.setSortingEnabled(True)
+            self.table.sortByColumn(sort_col, sort_ord)
+            _restore_alert_scroll(
+                self.table, sort_col, sort_ord, previous_scroll, has_new_identity
+            )
+            self.table.setUpdatesEnabled(True)
         self._rendered_event_ids = identities
 
 

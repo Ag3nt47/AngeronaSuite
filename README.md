@@ -246,11 +246,22 @@ and downloads every local README image to prove the public bytes match. Pull
 scans incoming commits before a fast-forward merge and refuses dirty/divergent
 trees, unsafe remotes, submodule recursion, and unreviewed workflow changes.
 
-Source/development runtime data uses the checkout's sibling `AngeronaData` directory.
+Unelevated Windows source launches use `%LOCALAPPDATA%\Angerona\SourceData`.
+Elevated source launches use the checkout's protected sibling `AngeronaData` directory.
 Packaged Windows installs prefer protected `D:\AngeronaData` and use protected
 `%ProgramData%\Angerona` only when D: is unavailable. Cloud integrations are optional and off by default.
 
 ## Validation status
+
+The September 4 dashboard reliability update moves capability source verification
+off the UI thread, preserves unchanged alert rows, bounds Sysmon retained-log
+replay, and fixes repeated Defender health-report queue conflicts. Blocked
+response prerequisites retain their diagnosis without restarting repeatedly;
+the per-user source profile is recognized by Storage Hygiene.
+Validation passed 2,891 regression tests with 15 expected skips, plus all 26
+headless self-check phases.
+See the [runtime reliability record](analysis/dashboard-runtime-reliability-2026-09-04.md)
+for validation and remaining host prerequisites.
 
 The Cycle 34 v1.13.0 maintenance five-check release gate passed on exact commit
 `7eef1f0a0c400b34f170cbd1463cd3c6a454de3b`. The full serial result is **2882

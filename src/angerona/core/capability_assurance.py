@@ -16,6 +16,9 @@ import os
 import re
 import stat
 import sys
+import threading
+import time
+from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -231,6 +234,12 @@ def _cached_declaration_anchor(
 
 def declaration_anchor(module: object) -> SourceAnchor:
     """Return an immutable verified source anchor for one bundled capability."""
+    anchor = _read_declaration_anchor(module)
+    _DISPLAY_ANCHORS.remember(module, anchor)
+    return anchor
+
+
+def _read_declaration_anchor(module: object) -> SourceAnchor:
     resolved = _safe_module_source(module)
     if resolved is None:
         return _unavailable_anchor(
@@ -251,6 +260,80 @@ def declaration_anchor(module: object) -> SourceAnchor:
         )
     except (OSError, RuntimeError, TypeError, ValueError):
         return _unavailable_anchor("source-stat-failed")
+
+
+class _DisplayAnchorCache:
+    """Bounded presentation snapshots; all filesystem work stays off the GUI.
+
+    Expired snapshots are unavailable until reverified, and are never used as
+    authority for source edits or response actions. One daemon drains requests
+    so a slow volume cannot create a thread per capability/refresh.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: OrderedDict = OrderedDict()
+        self._pending: OrderedDict = OrderedDict()
+        self._worker: threading.Thread | None = None
+
+    @staticmethod
+    def _key(module: object) -> tuple:
+        cls = type(module)
+        loaded = sys.modules.get(cls.__module__)
+        return (
+            cls, id(loaded), getattr(loaded, cls.__name__, None) is cls,
+            str(getattr(loaded, "__file__", "")),
+            str(getattr(getattr(loaded, "__spec__", None), "origin", "")),
+            bool(getattr(sys, "frozen", False)),
+        )
+
+    def remember(self, module: object, anchor: SourceAnchor) -> None:
+        self._remember_key(self._key(module), anchor)
+
+    def _remember_key(self, key: tuple, anchor: SourceAnchor) -> None:
+        with self._lock:
+            self._entries[key] = (time.monotonic(), anchor)
+            self._entries.move_to_end(key)
+            while len(self._entries) > 512:
+                self._entries.popitem(last=False)
+
+    def get(self, module: object) -> SourceAnchor:
+        key = self._key(module)
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is not None and time.monotonic() - entry[0] < 30.0:
+                return entry[1]
+            if key not in self._pending and len(self._pending) < 512:
+                self._pending[key] = module
+            if self._worker is None and self._pending:
+                self._worker = threading.Thread(
+                    target=self._drain, name="CapabilitySourceReader", daemon=True
+                )
+                self._worker.start()
+        return _unavailable_anchor("source-verification-pending")
+
+    def _drain(self) -> None:
+        while True:
+            with self._lock:
+                if not self._pending:
+                    self._worker = None
+                    return
+                key, module = next(iter(self._pending.items()))
+            try:
+                anchor = _read_declaration_anchor(module)
+            except Exception:
+                anchor = _unavailable_anchor("source-read-failed")
+            self._remember_key(key, anchor)
+            with self._lock:
+                self._pending.pop(key, None)
+
+
+_DISPLAY_ANCHORS = _DisplayAnchorCache()
+
+
+def cached_declaration_anchor(module: object) -> SourceAnchor:
+    """Return a recent display snapshot or queue verification without I/O."""
+    return _DISPLAY_ANCHORS.get(module)
 
 
 def _contract_value(contract: object, key: str, default: object = None) -> object:
@@ -345,11 +428,12 @@ def assess_capability(
     operational: Mapping[str, object] | None = None,
     platform: str | None = None,
     enabled: bool = True,
+    source_anchor: SourceAnchor | None = None,
 ) -> CapabilityAssurance:
     """Assess one capability without executing probes or changing host state."""
     contract = contract if contract is not None else getattr(module, "_angerona_contract", None)
     operational = dict(operational or {})
-    anchor = declaration_anchor(module)
+    anchor = source_anchor if source_anchor is not None else declaration_anchor(module)
     reasons: list[AssuranceReason] = []
     dimensions: list[AssuranceDimension] = []
 

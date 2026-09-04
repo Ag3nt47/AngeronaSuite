@@ -1074,13 +1074,21 @@ class AVTelemetryBridgeModule(BaseModule):
         if self._outbox is None:
             self.emit(str(message), Severity.HIGH, **payload_details)
             return
+        payload = {
+            "schema": "angerona.defender-delivery.v1",
+            "kind": "gap",
+            "message": str(message),
+            "severity": int(Severity.HIGH),
+            "details": payload_details,
+            "record_number": 0,
+            "record_anchor": "",
+        }
+        # Counters are evidence too. Repeated observations can share a reason
+        # while carrying different counters, including across process restarts.
+        # Bind the ID to the complete payload; never weaken outbox conflict checks.
         identity = hashlib.sha256(
             json.dumps(
-                {
-                    "message": str(message),
-                    "reason_code": reason_code,
-                    "details": details,
-                },
+                payload,
                 sort_keys=True,
                 separators=(",", ":"),
                 default=str,
@@ -1088,15 +1096,7 @@ class AVTelemetryBridgeModule(BaseModule):
         ).hexdigest()
         self._enqueue_outbox(
             f"defender-gap-{identity}",
-            {
-                "schema": "angerona.defender-delivery.v1",
-                "kind": "gap",
-                "message": str(message),
-                "severity": int(Severity.HIGH),
-                "details": payload_details,
-                "record_number": 0,
-                "record_anchor": "",
-            },
+            payload,
         )
         self._drain_outbox()
 

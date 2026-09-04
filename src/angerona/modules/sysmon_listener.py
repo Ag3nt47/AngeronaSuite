@@ -297,6 +297,8 @@ class SysmonListenerModule(BaseModule):
     # Polling interval between event-log reads (seconds).  Short enough not to
     # miss a burst, long enough not to burn CPU.
     _POLL_INTERVAL = 2.0
+    _MAX_RECORDS_PER_POLL = 256
+    _REPLAY_BUDGET_SECONDS = 1.0
 
     # How often to scan the process table in fallback mode (seconds).
     _FALLBACK_INTERVAL = 5.0
@@ -709,6 +711,7 @@ class SysmonListenerModule(BaseModule):
         expected: int,
         maximum: int,
         generation: dict[str, object] | None = None,
+        deadline: float | None = None,
     ) -> tuple[int, int, int | None]:
         """Checkpoint only the exact contiguous prefix of a retained range.
 
@@ -720,6 +723,8 @@ class SysmonListenerModule(BaseModule):
         next_expected = expected
         observed_gap: int | None = None
         for record in records or ():
+            if self.stopping or (deadline is not None and time.monotonic() >= deadline):
+                break
             if next_expected > maximum:
                 break
             number = self._record_number(record)
@@ -970,25 +975,34 @@ class SysmonListenerModule(BaseModule):
         """Establish continuity and explicitly reseek after every channel open."""
         cursor, newest = self._establish_continuity(backend)
         desired = cursor + 1
-        if not newest or desired > newest:
+        if self.stopping or not newest or desired > newest:
             return
+        maximum = min(newest, cursor + self._MAX_RECORDS_PER_POLL)
+        deadline = time.monotonic() + self._REPLAY_BUDGET_SECONDS
         records = backend.ReadEventLog(
             self._evtlog_handle, _EVTLOG_SEEK_FWD, desired
         )
         expected = desired
-        while records and expected <= newest:
+        while records and expected <= maximum:
             _last, expected, observed_gap = self._consume_contiguous_records(
                 records,
                 expected=expected,
-                maximum=newest,
+                maximum=maximum,
                 generation=self._channel_generation,
+                deadline=deadline,
             )
             if observed_gap is not None:
                 self._report_delivery_gap(
                     expected=expected, observed=observed_gap, newest=newest
                 )
                 return
-            if self._cursor_persist_failed or expected > newest:
+            if self._cursor_persist_failed:
+                return
+            if self.stopping or expected > maximum or time.monotonic() >= deadline:
+                # The consumed contiguous prefix is already durable. Leave the
+                # remainder for a fresh generation/anchor check on the next poll.
+                if expected <= newest and self.health > 70:
+                    self.set_health(70, "Sysmon retained replay pending; bounded batch saved")
                 return
             records = backend.ReadEventLog(
                 self._evtlog_handle, _EVTLOG_SEQ_FWD, 0
