@@ -31,7 +31,7 @@ _META_MODULES = {
     # primary modules already emitted. Scoring it too double-counts and lets a
     # burst of upstream noise cascade the level to Critical. The underlying
     # detections still score on their own.
-    "SOAR Automation", "Active Response SOAR",
+    "SOAR Automation", "Active Response SOAR", "Adversary Combat",
 }
 
 # Message fingerprints of module-lifecycle / self-health events. These can be

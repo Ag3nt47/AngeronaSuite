@@ -561,11 +561,18 @@ class PanelRevealOverlay(QWidget):
         return True
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt signature
-        if (
-            self._global_windows
-            and event.type() == QEvent.MouseButtonPress
-            and isinstance(watched, QWidget)
-        ):
+        # This filter sees every application event, including paint/layout and
+        # worker delivery bursts. Reject those before inspecting animation or
+        # window state; repeated PySide enum conversion here taxes every widget
+        # created while a destination window is being shown.
+        if not isinstance(watched, QWidget):
+            return False
+        event_type = event.type()
+        if event_type not in (QEvent.MouseButtonPress, QEvent.Close, QEvent.Show):
+            return False
+        if event_type == QEvent.MouseButtonPress:
+            if not self._global_windows:
+                return False
             try:
                 self._last_click_global = watched.mapToGlobal(
                     event.position().toPoint()
@@ -578,12 +585,13 @@ class PanelRevealOverlay(QWidget):
                 except RuntimeError:
                     self._last_click_global = QPoint()
             self._last_click_at = time.monotonic()
-        if (
-            event.type() == QEvent.Close
-            and isinstance(watched, QWidget)
-            and bool(getattr(watched, "_angerona_reverse_reveal_close", False))
-            and not bool(getattr(watched, "_angerona_close_bypass", False))
-        ):
+            return False
+        if event_type == QEvent.Close:
+            if (
+                not bool(getattr(watched, "_angerona_reverse_reveal_close", False))
+                or bool(getattr(watched, "_angerona_close_bypass", False))
+            ):
+                return False
             app = QApplication.instance()
             try:
                 shutting_down = bool(app is not None and app.closingDown())
@@ -598,25 +606,21 @@ class PanelRevealOverlay(QWidget):
                 or not motion_allowed(self._config())
                 or not watched.isVisible()
             ):
-                return super().eventFilter(watched, event)
+                return False
             event.ignore()
             self._start_target_close(watched)
             return True
-        if (
-            self._armed
-            and event.type() == QEvent.Show
-            and isinstance(watched, QWidget)
-            and self._is_reveal_destination(watched)
-        ):
+        # Only top-level Show events can reach the reveal machinery. In
+        # particular, an opted-out security prompt never waits behind another
+        # window's animation or acquires its temporary mask.
+        if not self._is_reveal_destination(watched):
+            return False
+        if self._armed:
             self._capture(watched)
         elif (
             self._global_windows
-            and not self._armed
             and self._target is not None
             and watched is not self._target
-            and event.type() == QEvent.Show
-            and isinstance(watched, QWidget)
-            and self._is_reveal_destination(watched)
             and motion_allowed(self._config())
         ):
             # Two destinations can appear in one action (or a confirmation can
@@ -626,12 +630,8 @@ class PanelRevealOverlay(QWidget):
             self._queue_pending_window(watched)
         elif (
             self._global_windows
-            and not self._armed
             and self._target is None
             and not self._animation_busy()
-            and event.type() == QEvent.Show
-            and isinstance(watched, QWidget)
-            and self._is_reveal_destination(watched)
             # A dialog may be intentionally hidden and reused. Its previous
             # transition marker is not an opt-out: every later Show receives a
             # fresh opening animation too.
@@ -649,13 +649,13 @@ class PanelRevealOverlay(QWidget):
                         watched.rect().center()
                     )
                 except RuntimeError:
-                    return super().eventFilter(watched, event)
+                    return False
             self._color = QColor(
                 getattr(watched, "_angerona_reveal_color", "#38bdf8")
             )
             self._armed = True
             self._capture(watched)
-        return super().eventFilter(watched, event)
+        return False
 
     def _capture(self, target: QWidget) -> None:
         if not self._armed:

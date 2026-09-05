@@ -1158,7 +1158,7 @@ class MainWindow(QMainWindow):
         self._update_threat_intel_pulse()
 
     def _handle_usb_approval_events(self, events) -> None:
-        """Open one PIN gate for each exact USB approval event.
+        """Present pending USB PIN gates one at a time.
 
         The EventBus payload is used only to locate a secret-free approval ID.
         The dialog receives the live approval object from the USB module, so a
@@ -1179,11 +1179,11 @@ class MainWindow(QMainWindow):
             if event_type == "usb_approval_required" and approval_id:
                 relevant.append((approval_id, mountpoint))
             elif event_type in {"usb_approval_decision", "usb_approval_rejected"}:
-                # Invalid attempts and temporary lockout intentionally keep the
-                # same prompt alive so the operator can use the remaining
-                # attempts. Only a real trust/deny terminal state closes it.
+                # The asynchronous dialog owns successful result delivery. A
+                # trusted event can precede that delivery and must not turn it
+                # into a cancellation. Explicit denial still closes promptly.
                 state = str(details.get("approval_state") or "").casefold()
-                if approval_id and state in {"trusted", "denied"}:
+                if approval_id and state == "denied":
                     terminal_ids.add(approval_id)
             elif event_type == "usb_media_removed" and mountpoint:
                 removed_mounts.add(mountpoint.casefold())
@@ -1220,6 +1220,33 @@ class MainWindow(QMainWindow):
         except Exception:
             return
 
+        # Reconcile removals/decisions from policy state too: informational bus
+        # events may be evicted during an alert burst. A stale prompt must not
+        # prevent the next live insertion from being presented.
+        for approval_id, dialog in tuple(self._usb_approval_dialogs.items()):
+            if approval_id not in pending:
+                # Verification marks policy trusted before its worker returns.
+                # Keep this exact live request until the dialog receives the
+                # result (or reaches its deadline); removal/replacement still
+                # cancels because the old binding no longer exists.
+                binding = getattr(
+                    getattr(usb_module, "_approval_policy", None),
+                    "approval_binding", None,
+                )
+                if (
+                    getattr(dialog, "_operation", None) == "approve"
+                    and callable(binding)
+                    and binding(approval_id) is not None
+                ):
+                    continue
+                try:
+                    dialog.close()
+                except RuntimeError:
+                    pass
+                self._usb_approval_dialogs.pop(approval_id, None)
+        if self._usb_approval_dialogs:
+            return
+
         # Pending policy state is authoritative.  Include it even if its
         # informational EventBus notification was evicted by an alert burst.
         requested_ids = {approval_id for approval_id, _mountpoint in relevant}
@@ -1234,14 +1261,17 @@ class MainWindow(QMainWindow):
 
         from angerona.gui.usb_approval_dialog import UsbApprovalDialog
 
-        for approval_id in requested_ids:
-            if approval_id in self._usb_approval_dialogs:
-                continue
-            approval = pending.get(approval_id)
-            if approval is None:
+        # The module orders pending state by insertion time. Keep that order
+        # and create at most one window per refresh; additional drives remain
+        # blocked while the operator handles the current prompt.
+        for approval_id, approval in pending.items():
+            if approval_id not in requested_ids or approval.state == "locked":
+                # A wrong PIN locks the session. Only Settings can reset it;
+                # repeatedly reopening its rejected prompt cannot help.
                 continue
             dialog = UsbApprovalDialog(usb_module, approval, self)
-            dialog.setStyleSheet(self._qss())
+            # Child windows inherit the dashboard stylesheet. Reapplying the
+            # entire theme here causes a second layout/style event cascade.
             dialog.finished.connect(
                 lambda _result, token=approval_id: self._usb_approval_dialogs.pop(
                     token, None
@@ -1260,6 +1290,7 @@ class MainWindow(QMainWindow):
                 )
             except Exception:
                 pass
+            break
 
     def _notify_critical(self, crits) -> None:
         now = time.time()

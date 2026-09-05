@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.13.0
-Date: 2026-08-30
+Date: 2026-09-05
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -22,7 +22,22 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST (v1.13.0 — Cycle 34 improvement loop)
+## LATEST MAINTENANCE (2026-09-05)
+
+- Response readiness and USB responsiveness remain on v1.13.0 / 84 capabilities.
+- Combat refreshes watchdog liveness after completed waits/work, isolates queue
+  admission from journal I/O, and rechecks current policy and evidence before action.
+- Settings shows memory-only response state, exact recovery reasons and bounded
+  session counters. Combat health and backup exposure do not become active attacks.
+- USB prompts use bounded workers, cancellation-safe insertion tokens, one visible
+  prompt at a time and no cosmetic reveal delay.
+- tools/recover_combat_startup.py inspects by default. Explicit, reviewed recovery
+  accepts only one interrupted startup-honeypot checkpoint with matching authority,
+  a stopped application and verified backups. It neither deletes history nor starts
+  response. General corruption and containment histories remain operator-recovery cases.
+- Evidence: analysis/response-readiness-2026-09-05.md.
+
+## PRIOR MAINTENANCE (v1.13.0 — Cycle 34 improvement loop)
 
 - Cycle 34 is post-release maintenance, not a version or module-count change.
   Inventory remains 84 Windows-target capabilities: nine native contracts and

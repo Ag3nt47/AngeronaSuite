@@ -33,6 +33,16 @@ Shared deadlines and six active module-test slots prevent timed-out checks
 from accumulating on repeated runs. Ordinary event classification also avoids
 filesystem path lookups when no registered practice artifact can match.
 
+**Response readiness and responsive USB approval.** Settings → Adversary Combat
+now explains whether automatic response is armed, starting, disabled or held for
+journal recovery, and shows queue and decision status without reading the journal
+on each refresh. Response liveness stays current during idle waits and detector
+publishers no longer wait on the action-journal lock. USB PIN/storage checks run
+in bounded background workers, with one cancellable prompt at a time. Recovery
+and backup-posture alerts no longer masquerade as active intrusions. A narrowly
+scoped, explicit startup-checkpoint repair preserves authenticated history.
+See [findings, recovery limits and validation](analysis/response-readiness-2026-09-05.md).
+
 [Master Manual](Angerona_Master_Manual.docx) ·
 [Current capabilities](ANGERONA_CAPABILITIES.md) ·
 [Architecture](docs/architecture.md) ·

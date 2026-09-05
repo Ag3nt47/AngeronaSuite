@@ -7572,6 +7572,10 @@ class SettingsDialog(QDialog):
         lay = QVBoxLayout(w)
         lay.setSpacing(10)
 
+        from angerona.gui.response_status import ResponseStatusPanel
+
+        self._combat_readiness = ResponseStatusPanel(self._combat_module, w)
+        lay.addWidget(self._combat_readiness)
         lay.addWidget(self._section("Standing autonomous response authority"))
         warning = QLabel(
             "When armed, Angerona acts on detector evidence immediately without "

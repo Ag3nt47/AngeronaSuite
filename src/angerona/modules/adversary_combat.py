@@ -1104,6 +1104,12 @@ class AdversaryCombat(BaseModule):
         self._explicit_data_root = Path(data_root) if data_root is not None else None
         self._queue: queue.Queue[Event] = queue.Queue(maxsize=2048)
         self._receipt_lock = threading.RLock()
+        # EventBus publishers must never wait behind journal fsync, firewall
+        # commands or rollback. Admission owns only bounded in-memory state.
+        self._admission_lock = threading.Lock()
+        self._response_initialized = False
+        self._response_counts: dict[str, int] = {}
+        self._last_response_decision = "waiting"
         self._seen_order: deque[str] = deque(maxlen=8192)
         self._seen: set[str] = set()
         self._active_events: deque[tuple[float, str]] = deque(maxlen=256)
@@ -1219,28 +1225,70 @@ class AdversaryCombat(BaseModule):
 
     def self_test(self) -> tuple[bool, str]:
         policy = self.policy()
-        ok = (
-            self.status == "running"
-            and policy.enabled
-            and not self._mutation_blocked
-        )
-        state = (
-            "armed"
-            if ok
-            else "RECOVERY REQUIRED"
-            if self._mutation_blocked
-            else f"status={self.status}"
-        )
+        snapshot = self.response_snapshot()
+        ok = snapshot["ready"]
+        state = "armed" if ok else snapshot["state"]
         detail = (
             f"{policy.mode.upper()} {state}; {policy.min_severity.label}+; "
             f"process={policy.process_action}; queue drops={self._dropped_events}"
         )
+        if not ok:
+            detail += f"; {snapshot['reason']}"
         return ok, detail
+
+    def response_snapshot(self) -> dict[str, Any]:
+        """Read worker readiness without touching keys, journals or the host.
+
+        This is diagnostic state, never an authorization receipt. The mutation
+        boundary continues to validate evidence, policy and journal custody.
+        """
+        policy = self.policy()
+        if self._mutation_blocked:
+            state = "RECOVERY REQUIRED"
+            reason = self._journal_error or "An earlier response needs verified recovery."
+        elif self._journal_saturated:
+            state = "JOURNAL FULL"
+            reason = "The action journal cannot reserve a complete response receipt."
+        elif self.status != "running" or self.stopping:
+            state = f"status={self.status}"
+            reason = "The response worker is stopped or restarting."
+        elif not policy.enabled:
+            state = "DISABLED"
+            reason = "Automatic response is disabled in the saved policy."
+        elif not self._response_initialized:
+            state = "STARTING"
+            reason = "The worker has not completed journal reconciliation."
+        elif self._queue.full():
+            state = "QUEUE FULL"
+            reason = "The response queue is full; new requests cannot be admitted."
+        else:
+            state = "ARMED"
+            reason = "Waiting for authenticated evidence with an exact response contract."
+        with self._admission_lock:
+            counts = dict(self._response_counts)
+            last_decision = self._last_response_decision
+        return {
+            "ready": state == "ARMED",
+            "state": state,
+            "reason": " ".join(str(reason).split())[:500],
+            "queue_depth": self._queue.qsize(),
+            "queue_capacity": self._queue.maxsize,
+            "queue_drops": self._dropped_events,
+            "counts": counts,
+            "last_decision": last_decision,
+        }
+
+    def _response_decision(self, reason: str) -> None:
+        # Callers supply fixed reason codes, never event text or target data.
+        with self._admission_lock:
+            self._response_counts[reason] = self._response_counts.get(reason, 0) + 1
+            self._last_response_decision = reason
 
     def response_ready(self) -> bool:
         """Return whether new host mutations may cross the Combat boundary."""
         if not (
             self.status == "running"
+            and self._response_initialized
             and self.policy().enabled
             and not self._mutation_blocked
             and not self._journal_saturated
@@ -1257,17 +1305,23 @@ class AdversaryCombat(BaseModule):
             return False
 
     def run(self) -> None:
+        self._response_initialized = False
         if self._bus is None:
             self.set_health(0, "event bus unavailable")
             return
         if not self._reconcile_state():
             self._mutation_blocked = True
             self.set_health(0, f"RECOVERY REQUIRED — {self._journal_error or 'journal unavailable'}")
+            recovery_error = " ".join(
+                (self._journal_error or "journal unavailable").split()
+            )[:500]
             self.emit(
-                "Adversary Combat refused to arm: action journal integrity failed.",
+                "Adversary Combat refused to arm: action journal integrity failed. "
+                f"{recovery_error}",
                 Severity.CRITICAL,
                 disposition="health",
                 response_authorized=False,
+                recovery_error=recovery_error,
             )
             # A failed authority prerequisite is a blocked capability, not a
             # crashed worker. Keep the original diagnosis and wait interruptibly
@@ -1276,14 +1330,15 @@ class AdversaryCombat(BaseModule):
                 self.sleep(30.0)
             return
         self._bus.subscribe(self._submit)
+        self._response_initialized = True
         policy = self.policy()
-        if policy.activate_honeypots and not self._mutation_blocked:
+        if policy.enabled and policy.activate_honeypots and not self._mutation_blocked:
             self._ensure_honeypots()
-        if self._mutation_blocked:
+        if self._mutation_blocked or self._journal_saturated:
             # Keep evidence collection online, but never overwrite the recovery
             # circuit's red health state or imply mutation authority was restored.
             self.set_health(0, "RECOVERY REQUIRED — Combat mutation circuit open")
-        else:
+        elif policy.enabled:
             self.set_health(100, "standing authority armed")
             self.emit(
                 "Adversary Combat online — standing authority is ARMED. Detector "
@@ -1292,17 +1347,29 @@ class AdversaryCombat(BaseModule):
                 action_policy=policy.mode,
                 minimum_severity=policy.min_severity.name,
             )
-        self.mark_cycle_complete()
+        else:
+            self.set_health(100, "automatic response disabled by policy")
+        # Queue.get wakes immediately on arrival. A one-second idle wait cuts
+        # empty wakeups without adding response latency, and each completed
+        # wait/work cycle renews the watchdog's bounded liveness deadline.
+        self.mark_cycle_complete(interval_seconds=1.0)
         stop = self.generation_stop_event()
-        while not stop.is_set():
-            try:
-                event = self._queue.get(timeout=0.25)
-            except queue.Empty:
-                continue
-            try:
-                self._handle(event)
-            finally:
-                self._queue.task_done()
+        try:
+            while not stop.is_set():
+                try:
+                    event = self._queue.get(timeout=1.0)
+                except queue.Empty:
+                    self.mark_cycle_complete(interval_seconds=1.0)
+                    continue
+                try:
+                    if stop.is_set():
+                        return
+                    self._handle(event)
+                    self.mark_cycle_complete(interval_seconds=1.0)
+                finally:
+                    self._queue.task_done()
+        finally:
+            self._response_initialized = False
 
     def _submit(self, event: Event) -> None:
         if self.status != "running" or self.stopping or self._mutation_blocked:
@@ -1313,12 +1380,23 @@ class AdversaryCombat(BaseModule):
         # Cross-host evidence and explicitly non-response audit records have no
         # authority to mutate this endpoint or contribute to its isolation
         # threshold.  Enforce this before queue/dedup state is touched.
-        if is_remote_observe_only(event) or not self._response_authorized(event):
+        if is_remote_observe_only(event):
             return
         if event.severity < policy.min_severity:
+            self._response_decision("below_threshold")
             return
-        disposition = event_disposition(event)
-        if disposition not in {"active", "practice"}:
+        details = event.details if isinstance(event.details, dict) else {}
+        if (
+            details.get("response_authorized") is not True
+            or not isinstance(details.get("response_contract"), dict)
+        ):
+            self._response_decision("missing_contract")
+            return
+        # Authenticate before deduplication so a rejected event cannot claim
+        # an operator request ID. Filesystem-dependent contract validation and
+        # practice classification belong to the response worker, not publishers.
+        if not self._integrity_ok(event):
+            self._response_decision("integrity_failed")
             return
         signature = str(getattr(event, "hmac_sig", "") or "")
         details = event.details if isinstance(event.details, dict) else {}
@@ -1331,7 +1409,7 @@ class AdversaryCombat(BaseModule):
             f"{event.module}\0{event.ts:.9f}\0{event.message}\0"
             f"{json.dumps(event.details or {}, sort_keys=True, default=str)}"
         )
-        with self._receipt_lock:
+        with self._admission_lock:
             if identity in self._seen:
                 return
             if len(self._seen_order) == self._seen_order.maxlen:
@@ -1344,13 +1422,14 @@ class AdversaryCombat(BaseModule):
             # Admission failed, so the dedup claim must fail with it. Keeping
             # the identity would poison this exact request forever even after
             # capacity returns.
-            with self._receipt_lock:
+            with self._admission_lock:
                 self._seen.discard(identity)
                 try:
                     self._seen_order.remove(identity)
                 except ValueError:
                     pass
             self._dropped_events += 1
+            self._response_decision("queue_saturated")
             self.set_health(30, "combat event queue saturated")
             self.emit(
                 "Adversary Combat could not admit a response request because "
@@ -1370,6 +1449,8 @@ class AdversaryCombat(BaseModule):
                 ),
                 failure_reason="combat_queue_saturated",
             )
+        else:
+            self._response_decision("queued")
 
     def _integrity_ok(self, event: Event) -> bool:
         if self._bus is None or not getattr(self._bus, "integrity_enabled", False):
@@ -1393,7 +1474,7 @@ class AdversaryCombat(BaseModule):
             "version", "actions", "targets"
         }:
             return None
-        if contract.get("version") != 1:
+        if type(contract.get("version")) is not int or contract["version"] != 1:
             return None
         raw_actions = contract.get("actions")
         targets = contract.get("targets")
@@ -1431,7 +1512,10 @@ class AdversaryCombat(BaseModule):
         })
         if process_actions:
             pid = details.get("pid")
-            if not isinstance(pid, int) or pid <= 0 or targets.get("pid") != pid:
+            if (
+                type(pid) is not int or pid <= 0
+                or type(targets.get("pid")) is not int or targets["pid"] != pid
+            ):
                 return None
             supplied, event_start = cls._expected_process_start(details)
             try:
@@ -1629,12 +1713,13 @@ class AdversaryCombat(BaseModule):
     def _handle(self, event: Event) -> None:
         # Recheck at the execution boundary because tests and internal callers
         # may invoke _handle directly without passing through the queue.
-        if self._mutation_blocked:
+        if self._mutation_blocked or self._journal_saturated:
+            self._response_decision("recovery_required")
             return
-        response_actions = self._response_actions(event)
-        if is_remote_observe_only(event) or response_actions is None:
+        if is_remote_observe_only(event) or event.module in _SELF_MODULES:
             return
         if not self._integrity_ok(event):
+            self._response_decision("integrity_failed")
             self.emit(
                 "Adversary Combat refused a tampered detector event.",
                 Severity.HIGH,
@@ -1644,8 +1729,19 @@ class AdversaryCombat(BaseModule):
             return
         policy = self.policy()
         if not policy.enabled:
+            self._response_decision("policy_disabled")
+            return
+        if event.severity < policy.min_severity:
+            self._response_decision("below_threshold")
             return
         disposition = event_disposition(event)
+        if disposition not in {"active", "practice"}:
+            self._response_decision("not_actionable")
+            return
+        response_actions = self._response_actions(event)
+        if response_actions is None:
+            self._response_decision("invalid_contract")
+            return
         combat_id = f"combat-{uuid.uuid4().hex[:12]}"
         actions: list[CombatAction] = []
         path = self._event_path(event)
@@ -1712,6 +1808,7 @@ class AdversaryCombat(BaseModule):
             for action in succeeded
         )
         summary = ", ".join(action.action for action in succeeded) or "no eligible target"
+        self._response_decision("executed" if succeeded else "no_eligible_target")
         self.emit(
             f"Adversary Combat executed {len(succeeded)} action(s) for "
             f"{event.module} {event.severity.label}: {summary}.",
@@ -4681,6 +4778,12 @@ class AdversaryCombat(BaseModule):
                     self._commit_after_mutation(action)
                     return None
                 return self._commit_after_mutation(action)
+        except JournalIntegrityError as exc:
+            # An interrupted startup intent can leave the journal ahead of its
+            # checkpoint before module.start() runs. Report the hold now, not
+            # "ARMED" until the next process restart discovers the mismatch.
+            self._trip_mutation_circuit(asdict(action), str(exc))
+            return None
         except Exception as exc:
             self._journal_failure(action, f"{type(exc).__name__}: {exc}")
             return None

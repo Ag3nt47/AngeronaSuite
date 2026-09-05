@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 import weakref
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Iterable
 
 
@@ -227,6 +227,7 @@ class _ApprovalRecord:
     locked_until: float
     policy_enforced: bool
     volume_id: str = ""
+    cancelled: bool = False
 
     def view(self) -> UsbApprovalView:
         return UsbApprovalView(
@@ -378,6 +379,8 @@ class UsbApprovalPolicy:
             record = self._by_id.get(token)
             if record is None:
                 return UsbApprovalDecision(False, "untrusted", "unknown_approval")
+            if record.cancelled:
+                return self._decision(record, False, "operator_denied")
             if record.state == "trusted":
                 return self._decision(record, True, "already_approved")
             if record.state == "denied":
@@ -420,6 +423,23 @@ class UsbApprovalPolicy:
             record = self._by_id.get(token)
             if record is None:
                 return UsbApprovalDecision(False, "untrusted", "unknown_approval")
+            record.state = "denied"
+            record.locked_until = 0.0
+            return self._decision(record, False, "operator_denied")
+
+    def cancel(self, approval_id: object) -> UsbApprovalDecision:
+        """Retire one UI request while keeping its mount explicitly untrusted.
+
+        A credential reset must not revive a verification still running for a
+        dismissed or timed-out prompt. Keep the denied record registered so
+        scanners continue to see this mount's gate until a new approval request.
+        """
+        token = str(approval_id or "")
+        with self._lock:
+            record = self._by_id.get(token)
+            if record is None:
+                return UsbApprovalDecision(False, "untrusted", "unknown_approval")
+            record.cancelled = True
             record.state = "denied"
             record.locked_until = 0.0
             return self._decision(record, False, "operator_denied")
@@ -477,17 +497,20 @@ class UsbApprovalPolicy:
             current_identity = str(self._identity_provider(mountpoint) or "").strip().casefold()
         except Exception:
             current_identity = ""
-        if current_identity and hmac.compare_digest(current_identity, expected_identity):
-            return "trusted"
         # Recheck the exact record before revoking; removal/reinsertion may have
         # replaced the mount's approval while the OS identity query ran.
         with self._lock:
             current_token = self._by_mount.get(mountpoint, "")
             current = self._by_id.get(current_token)
-            if current is record and current.state == "trusted":
-                current.state = "identity_unavailable"
-                current.attempts_remaining = 1
-            return current.state if current is not None else "untrusted"
+            if current is not record:
+                return "untrusted"
+            if current.state != "trusted":
+                return current.state
+            if current_identity and hmac.compare_digest(current_identity, expected_identity):
+                return "trusted"
+            current.state = "identity_unavailable"
+            current.attempts_remaining = 1
+            return current.state
 
     def remove(self, mountpoint: object) -> bool:
         """Forget every decision when media is removed; trust never persists."""
@@ -514,7 +537,23 @@ class UsbApprovalPolicy:
         """Revoke attached-media trust and clear only the session lock latch."""
         with self._lock:
             self._pin_reset_required = False
-            for record in self._by_id.values():
+            for record in tuple(self._by_id.values()):
+                if record.cancelled:
+                    # Explicit reset offers a new prompt without reviving work
+                    # still running for the dismissed token. Retain continuous
+                    # mount ownership while replacing its record under the lock.
+                    replacement = replace(
+                        record,
+                        approval_id=secrets.token_urlsafe(24),
+                        state="pending",
+                        attempts_remaining=1,
+                        locked_until=0.0,
+                        cancelled=False,
+                    )
+                    self._by_id.pop(record.approval_id)
+                    self._by_id[replacement.approval_id] = replacement
+                    self._by_mount[record.mountpoint] = replacement.approval_id
+                    continue
                 record.state = "pending"
                 record.attempts_remaining = 1
                 record.locked_until = 0.0

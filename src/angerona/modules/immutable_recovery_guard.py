@@ -143,6 +143,10 @@ class ImmutableRecoveryGuardModule(BaseModule):
                         source_revision_current=result.source_revision_current,
                         finding_codes=list(findings[:8]),
                         observation_only=True,
+                        # Backup assurance is posture evidence. Missing copies
+                        # must not manufacture an active hostile incident.
+                        disposition="exposure",
+                        response_authorized=False,
                         local_trust_root_replaceable_by_admin=True,
                     )
             except Exception as exc:
@@ -154,6 +158,7 @@ class ImmutableRecoveryGuardModule(BaseModule):
                         "Recovery assurance verification failed closed.",
                         Severity.CRITICAL,
                         error_type=type(exc).__name__, observation_only=True,
+                        disposition="exposure", response_authorized=False,
                     )
             self.sleep(self._INTERVAL)
 
