@@ -1,7 +1,53 @@
 # Red Team: GitHub Tool Library and isolated analysis
 
-Status: proposed product design, 2026-09-05. This document does not enable tool
-downloads or execution. Runtime remains v1.13.0 with 84 capabilities.
+Status: source import and review implemented, 2026-09-05. Isolated analyzer
+execution and external-analysis reports remain unimplemented. Runtime remains
+v1.13.0 with 84 capabilities. The sections below retain the intended full design;
+the implementation status here identifies the delivered subset.
+
+## Implementation status
+
+**Delivered:** Red Team -> GitHub Tools contains Source, Verification and Analysis
+Lab views. Resolve a public GitHub repository's branch, tag or full SHA, inspect
+the pinned commit, then import that source snapshot. Browse text, mark it reviewed
+or permanently revoke the exact import. Review status never enables execution.
+Gitleaks and Bandit are source URL shortcuts, not installed or approved binaries.
+
+The implementation lives in `src/angerona/core/github_tool_catalog.py` and
+`src/angerona/gui/github_tools.py`. Imports retain their ZIP bytes in a separate
+runtime `github-source-library` with an atomic index and OS single-writer lease.
+No archive is extracted. Raw ZIP directory names and entry counts are checked
+before the ZIP parser normalizes names or allocates entries. Every member is
+streamed through size/CRC checks before publication; browsing checks the stored
+archive SHA-256 again. Preview is UTF-8 text only, with inactive markup and
+invisible control characters removed.
+
+Current limits: 100 MiB download, 250 MiB expanded, 10,000 entries, compression
+ratio 512, 32 imports, 512 MiB cache including interrupted unindexed archives,
+and 256 KiB text preview. Acquisition uses public GitHub endpoints directly,
+rejects redirects and sends no credentials or ambient proxy configuration.
+Network reads have a ten-second socket timeout; phase checks use a 120-second
+deadline. Two background-worker permits bound outstanding work across panels.
+Cancellation before the index transaction leaves no ready entry; once the tiny
+durable save is sealed, the UI reports that it is finishing instead of claiming
+cancellation. Closing the console requests cancellation without waiting on I/O.
+
+**Remaining:** a dedicated unprivileged acquisition process for elevated Protect
+sessions, executable artifact/adapter approval, enforceable disposable-VM
+isolation and output transport, analyzer execution, and external-analysis
+receipts/history integration. Current acquisition and review mutations refuse an
+administrator/root session. Analysis Lab explicitly disables Run on all hosts;
+installing a VM feature alone does not enable it. Windows Sandbox and Hyper-V
+management tools were unavailable on the implementation host, so the required
+real-guest execution/isolation gates could not be completed. No host-subprocess
+fallback was added.
+
+**Evidence:** the public Bandit source at commit
+`1d3053df070c91fe0fde002a21536c277d67e5d9` was imported in an isolated development
+data root: 298 files, 4,331,346 archive bytes, README preview successful, no code
+executed. Core/UI regression checks use synthetic inert archives and fake network
+responses; the UI was rendered at normal and compact sizes. Full validation
+results are recorded in `analysis/github-source-review-2026-09-05.md`.
 
 ## Product decision
 
@@ -239,6 +285,5 @@ offline analyzers in the real disposable guest. No exploit pack is required.
 | UI | Import progress remains responsive; readiness and failures are readable with keyboard navigation and display scaling |
 | Regression | Existing benign Red Team drills, source-copy editing, Device Security Lab and response authorization retain their current contracts |
 
-This design is complete as an architecture and interaction specification. No
-GitHub tool was installed, no external program was run and no runtime isolation
-claim was tested as part of writing it.
+Source review is delivered as described at the top of this document. The remaining
+execution design is not an isolation claim or an enabled runtime capability.

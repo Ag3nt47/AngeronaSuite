@@ -160,6 +160,10 @@ class RedTeamConsole(QDialog):
         self._tabs.addTab(self._build_history_tab(), "🕑  History")
         self._tabs.addTab(self._build_device_lab_tab(), "🛰  Device Security Lab")
         self._tabs.addTab(self._build_editor_tab(), "🧪  Sandbox Editor")
+        from angerona.gui.github_tools import GitHubToolsPanel
+        self.github_tools = GitHubToolsPanel(self)
+        self._tabs.addTab(self.github_tools, "GitHub Tools")
+        self.finished.connect(lambda _result: self.github_tools.cancel_pending())
         self._tabs.currentChanged.connect(self._on_tab_changed)
         from angerona.gui.context_info import attach_context_info
         self._context_info = attach_context_info(self._tabs, "red-team")

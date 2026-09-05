@@ -37,11 +37,17 @@ kernel component is a product capability.
   response. General corruption and containment histories remain operator-recovery cases.
 - Evidence: analysis/response-readiness-2026-09-05.md.
 
-## PROPOSED DESIGN (2026-09-05; NOT IMPLEMENTED)
+## GITHUB SOURCE REVIEW (2026-09-05)
 
-- docs/design/red-team-github-tool-library.md specifies a GitHub Tool Library,
-  source-only imports and reviewed offline Gitleaks/Bandit analysis in a disposable
-  VM, with separate external-analysis receipts. No tool was installed or enabled.
+- Red Team -> GitHub Tools now resolves public repository revisions, imports pinned
+  ZIP snapshots and provides bounded text preview, digest checks, review labels
+  and permanent revocation of an exact import. Archives are never extracted or run.
+- Acquisition requires a non-administrator session. Downloads use fixed GitHub
+  endpoints without ambient credentials or proxies; imports and previews run on
+  bounded background workers. Storage has a single-writer OS lease.
+- docs/design/red-team-github-tool-library.md records delivered source review and
+  remaining VM execution/report work. Analysis Lab is unavailable: no verified
+  disposable-VM backend or approved executable catalog ships in this release.
 - The existing Sandbox Editor edits copies only; the installed-module self-test
   subprocess does not supply an OS security boundary for imported programs.
 - Runtime stays at v1.13.0 / 84 capabilities. Imported content cannot define an

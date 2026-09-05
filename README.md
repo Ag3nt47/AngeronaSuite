@@ -43,9 +43,13 @@ and backup-posture alerts no longer masquerade as active intrusions. A narrowly
 scoped, explicit startup-checkpoint repair preserves authenticated history.
 See [findings, recovery limits and validation](analysis/response-readiness-2026-09-05.md).
 
-**Proposed Red Team extension:** [GitHub Tool Library and isolated analysis design](docs/design/red-team-github-tool-library.md)
-covers pinned source imports, reviewed offline analyzers and sandbox result
-integration. This is a design specification; tool import and execution are not yet implemented.
+**Red Team GitHub source review.** The GitHub Tools tab resolves a public
+repository revision to an exact commit, imports a bounded source archive and
+provides plain-text browsing, integrity checks, review and revocation. Source
+stays inside its archive and requires a non-administrator session to import.
+Analysis Lab explains the remaining execution prerequisites: this release has
+no verified disposable-VM backend or approved executable catalog. See the
+[implementation status and isolated analysis design](docs/design/red-team-github-tool-library.md).
 
 [Master Manual](Angerona_Master_Manual.docx) ·
 [Current capabilities](ANGERONA_CAPABILITIES.md) ·
