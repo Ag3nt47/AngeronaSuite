@@ -27,7 +27,7 @@
   <Applications>
     <Application
       Id="Angerona"
-      Executable="Angerona.exe"
+      Executable="AngeronaStartup.exe"
       EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="Angerona"

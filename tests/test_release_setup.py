@@ -164,6 +164,78 @@ def test_release_powershell_and_every_workflow_pwsh_block_parse() -> None:
         )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell is required")
+@pytest.mark.parametrize("case", ["absent", "present", "directory", "unsigned", "unprotected"])
+def test_existing_startup_helper_requires_custody_and_signature(tmp_path, case) -> None:
+    target = tmp_path / "installed"
+    target.mkdir()
+    (target / "publisher-certificate.sha256").write_text("a" * 64, encoding="ascii")
+    helper = target / "AngeronaStartup.exe"
+    if case == "directory":
+        helper.mkdir()
+    elif case != "absent":
+        helper.write_bytes(b"test-only-placeholder")
+    powershell = shutil.which("powershell.exe")
+    assert powershell is not None
+    harness = r"""
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    $env:ANGERONA_CUSTODY_SCRIPT, [ref]$tokens, [ref]$parseErrors)
+if ($parseErrors.Count -ne 0) { throw ($parseErrors | Out-String) }
+foreach ($function in $ast.FindAll({
+        param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst]
+    }, $true)) {
+    Invoke-Expression $function.Extent.Text
+}
+$target = $env:ANGERONA_CUSTODY_TARGET
+$installedCustodyNames = @()
+$trustedAuthorizationVerifier = Join-Path $target 'AngeronaReleaseVerifier.exe'
+$script:helperProtected = $false
+$script:helperSigned = $false
+function Assert-ProtectedPath {
+    param([string]$Path, [bool]$Directory)
+    if ($Path.EndsWith('AngeronaStartup.exe')) {
+        $script:helperProtected = $true
+        if ($env:ANGERONA_CUSTODY_CASE -eq 'unprotected') { throw 'unprotected helper' }
+    }
+}
+function Assert-PublisherSignature {
+    param([string]$Path, [string]$Certificate)
+    if ($Path.EndsWith('AngeronaStartup.exe')) {
+        $script:helperSigned = $true
+        if ($env:ANGERONA_CUSTODY_CASE -eq 'unsigned') { throw 'unsigned helper' }
+    }
+}
+$rejected = $false
+try { $null = Assert-InstalledCustody } catch { $rejected = $true }
+$mustFail = $env:ANGERONA_CUSTODY_CASE -in @('directory', 'unsigned', 'unprotected')
+if ($rejected -ne $mustFail) { throw 'unexpected helper custody decision' }
+if ($env:ANGERONA_CUSTODY_CASE -eq 'present' -and
+        (-not $helperProtected -or -not $helperSigned)) {
+    throw 'present helper did not receive both custody and signature validation'
+}
+if ($env:ANGERONA_CUSTODY_CASE -eq 'absent' -and
+        ($helperProtected -or $helperSigned)) {
+    throw 'prior release without a helper was not accepted'
+}
+"""
+    env = os.environ.copy()
+    env["ANGERONA_CUSTODY_SCRIPT"] = str(ROOT / "Install-Angerona-Release.ps1")
+    env["ANGERONA_CUSTODY_TARGET"] = str(target)
+    env["ANGERONA_CUSTODY_CASE"] = case
+    result = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-Command", harness],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows path semantics are required")
 def test_protected_path_rejects_metadata_change_during_acl_inspection(tmp_path) -> None:
     candidate = tmp_path / "authority.json"
@@ -320,6 +392,16 @@ def test_release_workflow_never_publishes_or_attests_classic_setup() -> None:
         "      - name: Attest release archive", 1
     )[1]
     assert "--name AngeronaReleaseVerifier" in text
+    assert "--name AngeronaStartup" in text
+    assert "src/angerona/startup.py" in text
+    assert "Frozen startup helper was not created" in text
+    assert '--icon (Join-Path $PWD "assets/icons/blackbox.ico")' in text
+    assert text.count('--icon (Join-Path $PWD "assets/icons/angerona.ico")') == 2
+    assert '--icon "assets/icons/' not in text
+    assert '--add-data "assets;assets"' not in text
+    assert '--add-data "modules;modules"' not in text
+    assert '--add-data "$(Join-Path $PWD \'assets\');assets"' in text
+    assert '--add-data "$PWD/modules:modules"' in text
     assert "release-payload-manifest.json" in text
     assert "release-payload.cat" in text
     assert "release-build-provenance.json" in text
@@ -328,6 +410,14 @@ def test_release_workflow_never_publishes_or_attests_classic_setup() -> None:
     assert "release-trust.json" not in finalizer
     assert text.count("id: artifact_name") == 2
     assert "tools/release_artifact_tag.py" in text
+
+
+def test_local_startup_build_uses_checkout_absolute_icon() -> None:
+    text = (ROOT / "build.bat").read_text(encoding="utf-8")
+    assert '--icon "%~dp0assets\\icons\\angerona.ico"' in text
+    assert "--name AngeronaStartup" in text
+    assert "--distpath dist\\Angerona" in text
+    assert "pip install pyinstaller" not in text
 
 
 def test_release_workflow_builds_only_wheel_locked_posix_architectures() -> None:
@@ -461,6 +551,9 @@ def test_portable_release_installer_is_protected_upgrade_only() -> None:
         assert name in text
     assert "Assert-ProtectedPath $floor $false" in text
     assert "Assert-PublisherSignature $trustedAuthorizationVerifier" in text
+    assert "Assert-PublisherSignature $installedStartup $certificate" in text
+    assert "$shortcut.TargetPath = Join-Path $target 'AngeronaStartup.exe'" in text
+    assert "Start-Process -FilePath (Join-Path $target 'AngeronaStartup.exe')" in text
     assert "--candidate-root $payloadRoot" in text
     assert "--floor-output $nextFloor" in text
     assert "release-floor.json" in text

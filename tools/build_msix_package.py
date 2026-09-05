@@ -98,7 +98,7 @@ def validate_manifest(
     )
     if len(applications) != 1 or applications[0].attrib != {
         "Id": "Angerona",
-        "Executable": "Angerona.exe",
+        "Executable": "AngeronaStartup.exe",
         "EntryPoint": "Windows.FullTrustApplication",
     }:
         raise ValueError("AppxManifest.xml full-trust application is invalid")

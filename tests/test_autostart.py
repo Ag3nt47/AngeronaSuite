@@ -1,7 +1,10 @@
 from types import SimpleNamespace
 
+import pytest
+
 from angerona.core import autostart
 from angerona.core import data_paths
+from angerona.core import windows_package_identity
 
 
 def test_source_autostart_uses_windowed_python_and_project_working_directory(
@@ -13,13 +16,56 @@ def test_source_autostart_uses_windowed_python_and_project_working_directory(
     pythonw.write_bytes(b"")
 
     monkeypatch.setattr(autostart.sys, "executable", str(python))
+    monkeypatch.setattr(autostart.sys, "platform", "win32")
     monkeypatch.setattr(autostart.sys, "frozen", False, raising=False)
     monkeypatch.setattr(data_paths, "project_root", lambda: tmp_path)
 
     executable, arguments, working_directory = autostart._target_action()
     assert executable == str(pythonw)
-    assert arguments == "-m angerona --chill"
+    assert arguments == "-m angerona.startup --chill"
     assert working_directory == str(tmp_path)
+
+
+@pytest.mark.parametrize("condition", ["ready", "missing", "directory", "untrusted", "hardlink"])
+def test_frozen_windows_autostart_requires_bundled_trusted_helper(
+        tmp_path, monkeypatch, condition):
+    dashboard = tmp_path / "Angerona.exe"
+    dashboard.write_bytes(b"test-only-dashboard")
+    helper = tmp_path / "AngeronaStartup.exe"
+    if condition == "directory":
+        helper.mkdir()
+    elif condition == "hardlink":
+        helper.hardlink_to(dashboard)
+    elif condition != "missing":
+        helper.write_bytes(b"test-only-helper")
+    monkeypatch.setattr(autostart.sys, "executable", str(dashboard))
+    monkeypatch.setattr(autostart.sys, "platform", "win32")
+    monkeypatch.setattr(autostart.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(data_paths, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        windows_package_identity, "verify_current_msix_authority",
+        lambda: SimpleNamespace(trusted=condition != "untrusted", reason="test authority"),
+    )
+    if condition == "ready":
+        assert autostart._target_action() == (str(helper), "--chill", str(tmp_path))
+        assert autostart._windows_task_xml_is_current(_windows_task_xml(
+            command=str(helper), arguments="--chill", working_directory=str(tmp_path),
+        ))
+        assert not autostart._windows_task_xml_is_current(_windows_task_xml(
+            command=str(dashboard), arguments="--chill", working_directory=str(tmp_path),
+        ))
+    else:
+        with pytest.raises(RuntimeError, match="authority|Repair the signed installation"):
+            autostart._target_action()
+
+
+def test_posix_frozen_autostart_retains_native_dashboard_entry(tmp_path, monkeypatch):
+    dashboard = str(tmp_path / "Angerona")
+    monkeypatch.setattr(autostart.sys, "executable", dashboard)
+    monkeypatch.setattr(autostart.sys, "platform", "linux")
+    monkeypatch.setattr(autostart.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(data_paths, "project_root", lambda: tmp_path)
+    assert autostart._target_action() == (dashboard, "--chill", str(tmp_path))
 
 
 def test_enable_autostart_registers_hidden_resilient_task(monkeypatch):

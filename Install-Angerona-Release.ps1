@@ -14,6 +14,7 @@ $trustedVerifier = Join-Path $target 'Verify-Angerona-Release.ps1'
 $trustedAuthorizationVerifier = Join-Path $target 'AngeronaReleaseVerifier.exe'
 $requiredEvidence = @(
     'Angerona.exe',
+    'AngeronaStartup.exe',
     'AngeronaBlackBox.exe',
     'AngeronaReleaseVerifier.exe',
     'Angerona-SBOM.json',
@@ -225,6 +226,15 @@ function Assert-InstalledCustody {
         }
         Assert-ProtectedPath $path $false
     }
+    # Prior releases did not include the startup helper. When present it is
+    # executable authority and must have the same protected custody.
+    $installedStartup = Join-Path $target 'AngeronaStartup.exe'
+    if (Test-Path -LiteralPath $installedStartup) {
+        if (-not (Test-Path -LiteralPath $installedStartup -PathType Leaf)) {
+            throw 'The protected installed startup helper has an invalid path type.'
+        }
+        Assert-ProtectedPath $installedStartup $false
+    }
     $floor = Join-Path $target 'release-floor.json'
     if (Test-Path -LiteralPath $floor) {
         if (-not (Test-Path -LiteralPath $floor -PathType Leaf)) {
@@ -241,6 +251,9 @@ function Assert-InstalledCustody {
     }
     Assert-PublisherSignature $trustedAuthorizationVerifier $certificate
     Assert-PublisherSignature (Join-Path $target 'Angerona.exe') $certificate
+    if (Test-Path -LiteralPath $installedStartup -PathType Leaf) {
+        Assert-PublisherSignature $installedStartup $certificate
+    }
     Assert-PublisherSignature (Join-Path $target 'release-payload.cat') $certificate
     return $certificate
 }
@@ -373,7 +386,7 @@ try {
     }
 
     foreach ($name in @(
-            'Angerona.exe', 'AngeronaBlackBox.exe',
+            'Angerona.exe', 'AngeronaStartup.exe', 'AngeronaBlackBox.exe',
             'AngeronaReleaseVerifier.exe', 'release-payload.cat')) {
         Assert-PublisherSignature (
             Join-Path $payloadRoot $name) $publisherCertificate
@@ -429,7 +442,7 @@ try {
         }
     }
     foreach ($name in @(
-            'Angerona.exe', 'AngeronaBlackBox.exe',
+            'Angerona.exe', 'AngeronaStartup.exe', 'AngeronaBlackBox.exe',
             'AngeronaReleaseVerifier.exe', 'Angerona-SBOM.json',
             'publisher-certificate.sha256', 'Install-Angerona-Release.ps1',
             'Install-Angerona-Release.bat', 'Verify-Angerona-Release.ps1')) {
@@ -549,10 +562,10 @@ try {
 $shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Angerona.lnk'
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = Join-Path $target 'Angerona.exe'
+$shortcut.TargetPath = Join-Path $target 'AngeronaStartup.exe'
 $shortcut.WorkingDirectory = $target
 $shortcut.IconLocation = (Join-Path $target 'Angerona.exe') + ',0'
 $shortcut.Save()
 
 Write-Host "Verified Angerona upgrade installed to $target" -ForegroundColor Green
-Start-Process -FilePath (Join-Path $target 'Angerona.exe')
+Start-Process -FilePath (Join-Path $target 'AngeronaStartup.exe')

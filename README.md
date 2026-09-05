@@ -17,6 +17,15 @@ portfolios—not offensive intrusion or hack-back.
 
 Current version: **v1.13.0**
 
+**Windows Safe Startup.** `start-angerona.bat` now opens a separate startup
+assistant. Windows bundles include `AngeronaStartup.exe` as their normal launch
+entry. Its independent window prepares missing startup folders, verifies storage
+and source Python/Qt dependencies, clears inherited launch overrides, and opens
+the dashboard in Chill Mode. It closes automatically after that specific
+dashboard paints and responds. Failed launches remain visible with repair/log
+guidance; a timeout never starts another copy. Settings, evidence and security
+journals are preserved. See [startup details](docs/safe-startup.md).
+
 [Master Manual](Angerona_Master_Manual.docx) ·
 [Current capabilities](ANGERONA_CAPABILITIES.md) ·
 [Architecture](docs/architecture.md) ·

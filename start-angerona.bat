@@ -212,6 +212,7 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+if not defined ANGERONA_SETUP_ONLY goto launch
 "venv\Scripts\python.exe" -c "import angerona, PySide6; print('Angerona launcher preflight OK')" > "%ANGERONA_PREFLIGHT_LOG%" 2>&1
 if errorlevel 1 (
     echo [!] Angerona could not pass its startup check.
@@ -226,41 +227,24 @@ if defined ANGERONA_SETUP_ONLY (
     exit /b 0
 )
 
+
 :launch
-REM ── Launch (pythonw = no console window) ─────────────────────────────────────
-title Angerona launcher - opening dashboard
-echo [4/4] Opening the Angerona dashboard...
+REM The separate Tk assistant owns isolated dependency probes, bounded startup,
+REM and a per-launch nonce/PID handshake after the dashboard paints.
+title Angerona launcher - safe startup
+echo [4/4] Opening Angerona Safe Startup...
 set "ANGERONA_PYTHON=%~dp0venv\Scripts\python.exe"
 set "ANGERONA_STDOUT_LOG=%ANGERONA_DATA%\logs\launcher-stdout.log"
 set "ANGERONA_STDERR_LOG=%ANGERONA_DATA%\logs\launcher-stderr.log"
-set "ANGERONA_STARTUP_READY=%ANGERONA_DATA%\logs\dashboard-ready.signal"
-"%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "Remove-Item -LiteralPath $env:ANGERONA_STARTUP_READY -Force -ErrorAction SilentlyContinue"
-REM Source launch never invokes a watchdog or helper that could request a high-
-REM integrity token. Full protected resilience is a signed installed-build path.
-"%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "$p=Start-Process -FilePath $env:ANGERONA_PYTHON -ArgumentList @('-m','angerona','--chill') -WorkingDirectory $env:ANGERONA_INSTALL_ROOT -WindowStyle Hidden -RedirectStandardOutput $env:ANGERONA_STDOUT_LOG -RedirectStandardError $env:ANGERONA_STDERR_LOG -PassThru; $deadline=[DateTime]::UtcNow.AddSeconds(120); do {Start-Sleep -Milliseconds 250; if ($p.HasExited) {exit 1}; if (Test-Path -LiteralPath $env:ANGERONA_STARTUP_READY -PathType Leaf) {exit 0}} while ([DateTime]::UtcNow -lt $deadline); exit 2"
-if errorlevel 2 (
-    echo [!] Angerona is still running but the dashboard did not become ready.
-    echo     The launcher will remain open so this condition is visible.
-    echo     Error log: %ANGERONA_STDERR_LOG%
-    if exist "%ANGERONA_STDERR_LOG%" type "%ANGERONA_STDERR_LOG%"
-    pause
-    exit /b 2
-)
+"%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "$p=Start-Process -FilePath $env:ANGERONA_PYTHON -ArgumentList @('-m','angerona.startup') -WorkingDirectory $env:ANGERONA_INSTALL_ROOT -WindowStyle Hidden -RedirectStandardOutput $env:ANGERONA_STDOUT_LOG -RedirectStandardError $env:ANGERONA_STDERR_LOG -PassThru -Wait; exit $p.ExitCode"
 if errorlevel 1 (
-    echo [!] Angerona exited before its window opened.
-    echo     Error log: %ANGERONA_STDERR_LOG%
+    echo [!] The startup assistant did not complete. Review its message or this log:
+    echo     %ANGERONA_STDERR_LOG%
     if exist "%ANGERONA_STDERR_LOG%" type "%ANGERONA_STDERR_LOG%"
     pause
     exit /b 1
 )
-
-REM ── Black Box out-of-band recorder ─────────────────────────────────────────
-REM Detached, independent process (pythonw = no console window). --show opens
-REM the window immediately. Strictly read-only: it only tails diagnostic files
-REM and queries psutil, never touches the suite, so it survives even a fatal
-REM deadlock of the main Angerona process.
-REM The suite launches exactly one Black Box child after the GUI paints.
-exit /b
+exit /b %errorlevel%
 
 REM ── Fresh bootstrap uses the ABI-specific reviewed CPython 3.12 x64 lock ────
 :find_python

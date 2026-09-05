@@ -64,8 +64,12 @@ class AngeronaApp:
         *,
         force_chill: bool = False,
         high_water_provider: IndependentHighWater | None = None,
+        startup_endpoint: str | None = None,
     ) -> None:
         self.qt = qt
+        self._startup_endpoint = startup_endpoint
+        self._dashboard_ready_scheduled = False
+        self._dashboard_ready_sent = False
         self._shutdown_requested = threading.Event()
         self._shutdown_gate = threading.Lock()
         self._startup_lifecycle_lock = threading.Lock()
@@ -321,7 +325,7 @@ class AngeronaApp:
 
             def _show_dashboard():
                 self.window.show()
-                _mark_dashboard_ready(self.config)
+                self._schedule_dashboard_ready()
                 return self.window
 
             reveal.reveal(
@@ -331,7 +335,7 @@ class AngeronaApp:
             )
         else:
             self.window.show()
-            _mark_dashboard_ready(self.config)
+            self._schedule_dashboard_ready()
         self.qt.aboutToQuit.connect(self.shutdown)
         from PySide6.QtCore import QTimer
         # Let the window actually paint and become interactive before kicking off
@@ -352,6 +356,42 @@ class AngeronaApp:
             "0", "false", "no", "off"
         ):
             QTimer.singleShot(800, self._launch_blackbox)
+
+    def _schedule_dashboard_ready(self) -> None:
+        """Allow a shown dashboard to paint before reporting it to the helper."""
+        if getattr(self, "_dashboard_ready_scheduled", False):
+            return
+        self._dashboard_ready_scheduled = True
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(250, self._dashboard_ready_after_paint)
+
+    def _dashboard_ready_after_paint(self) -> None:
+        if getattr(self, "_dashboard_ready_sent", False):
+            return
+        if self._startup_cancelled():
+            return
+        try:
+            if not self.window.isVisible():
+                return
+        except RuntimeError:
+            # The native widget may have been destroyed while startup waited.
+            return
+        self._dashboard_ready_sent = True
+        threading.Thread(
+            target=self._publish_dashboard_ready,
+            name="DashboardReadyNotifier",
+            daemon=True,
+        ).start()
+
+    def _publish_dashboard_ready(self) -> None:
+        """Keep socket waits and legacy filesystem handshakes off the UI thread."""
+        from angerona.core.startup_protocol import notify_dashboard_ready
+
+        endpoint = getattr(self, "_startup_endpoint", None)
+        if endpoint is not None:
+            notify_dashboard_ready(endpoint)
+        _mark_dashboard_ready(self.config)
 
     def _ensure_autostart_async(self) -> None:
         import threading

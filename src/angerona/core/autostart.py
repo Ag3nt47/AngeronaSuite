@@ -19,6 +19,7 @@ import os
 import plistlib
 import secrets
 import shlex
+import stat
 import subprocess
 import sys
 from defusedxml import ElementTree as ET
@@ -66,9 +67,7 @@ Register-ScheduledTask `
 
 
 def _target_command() -> str:
-    """The exact command line Task Scheduler should launch at logon —
-    mirrors core/privilege.py's own packaged-vs-dev resolution logic, so
-    autostart always launches the same way a normal elevated run would."""
+    """The exact command line Task Scheduler should launch at logon."""
     executable, arguments, _ = _target_action()
     return f'"{executable}" {arguments}'.rstrip()
 
@@ -76,20 +75,45 @@ def _target_command() -> str:
 def _target_action() -> tuple[str, str, str]:
     """Return executable, arguments, and working directory for Task Scheduler.
 
-    Source builds use ``pythonw.exe``. ``python.exe`` creates a blank console at
-    logon, and closing that console terminates Angerona with a control-C status.
-    Frozen GUI builds already have no console.
+    Windows starts the independent startup assistant, which checks prerequisites
+    and closes after the dashboard confirms readiness. Source builds use
+    ``pythonw.exe`` to avoid a console whose closure would kill the application.
+    Frozen Windows builds require the existing package authority before selecting
+    their sibling helper; missing or redirected helpers never fall back to a
+    direct dashboard launch.
     """
     from angerona.core.data_paths import project_root
 
     working_directory = str(project_root())
     if getattr(sys, "frozen", False):
+        if sys.platform == "win32":
+            from angerona.core.windows_package_identity import verify_current_msix_authority
+
+            authority = verify_current_msix_authority()
+            if not authority.trusted:
+                raise RuntimeError(f"Startup package authority is unavailable: {authority.reason}")
+            helper = Path(sys.executable).absolute().with_name("AngeronaStartup.exe")
+            try:
+                if not helper.is_file():
+                    raise OSError("the startup helper is missing or not a file")
+                for path in (*helper.parents, helper):
+                    metadata = path.lstat()
+                    if stat.S_ISLNK(metadata.st_mode) or (
+                        getattr(metadata, "st_file_attributes", 0) & 0x400
+                    ) or (stat.S_ISREG(metadata.st_mode) and metadata.st_nlink > 1):
+                        raise OSError("the startup helper path is redirected")
+            except OSError as exc:
+                raise RuntimeError(
+                    "The bundled startup helper is unavailable. Repair the signed installation."
+                ) from exc
+            return str(helper), "--chill", str(helper.parent)
         return sys.executable, "--chill", working_directory
 
     interpreter = Path(sys.executable)
     windowed = interpreter.with_name("pythonw.exe")
     executable = windowed if windowed.is_file() else interpreter
-    return str(executable), "-m angerona --chill", working_directory
+    module = "angerona.startup" if sys.platform == "win32" else "angerona"
+    return str(executable), f"-m {module} --chill", working_directory
 
 
 def _target_argv() -> list[str]:

@@ -105,6 +105,15 @@ def main() -> int:
         )
         return 2
 
+    # Keep sys.argv intact for the UAC handoff above. The helper's loopback
+    # readiness option belongs to Angerona and must not reach Qt's parser.
+    from angerona.core.startup_protocol import parse_startup_arguments
+    try:
+        application_args, startup_endpoint = parse_startup_arguments(sys.argv)
+    except ValueError as error:
+        print(f"[Angerona] {error}.", flush=True)
+        return 2
+
     # Establish the canonical install-drive/ProgramData runtime boundary before
     # crash logging, singleton locks, Qt, or scanner imports can create files.
     from angerona.core.data_paths import configure_runtime_environment
@@ -164,7 +173,7 @@ def main() -> int:
     # parses arguments so the same dedicated setup shortcut works in source and
     # frozen releases without an unknown-option warning.
     qt = QApplication([
-        arg for arg in sys.argv if arg not in {"--setup", "--chill"}
+        arg for arg in application_args if arg not in {"--setup", "--chill"}
     ])
     qt.setApplicationName("Angerona")
 
@@ -187,7 +196,9 @@ def main() -> int:
     qt.setQuitOnLastWindowClosed(False)  # keep running in the system tray
 
     from angerona.app import AngeronaApp
-    app = AngeronaApp(qt, force_chill=chill_requested)
+    app = AngeronaApp(
+        qt, force_chill=chill_requested, startup_endpoint=startup_endpoint,
+    )
     app._instance_lock = lock  # keep the lock socket alive for the app's lifetime
     app.start()
     if setup_requested:

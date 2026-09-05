@@ -209,10 +209,12 @@ def test_source_launcher_is_bounded_and_reports_early_startup_failures():
     assert text.index(":validate") < text.index(":launch")
     assert "launcher-preflight.log" in text
     assert "launcher-stderr.log" in text
-    assert "AddSeconds(120)" in text
-    assert "dashboard-ready.signal" in text
-    assert "ANGERONA_STARTUP_READY" in text
-    assert "the dashboard did not become ready" in text
+    assert "angerona.startup" in text
+    assert "-PassThru -Wait" in text
+    helper = open(os.path.join(root, "src/angerona/startup.py"), encoding="utf-8").read()
+    assert "timeout: float = 120" in helper
+    assert "wait_dashboard(listener, process" in helper
+    assert "Startup will not retry" in helper
     assert "Start-Sleep -Milliseconds 1500" not in text
     assert "[IO.DriveInfo]::new([IO.Path]::GetPathRoot($r.FullName))" in text
     assert "$r.PSDrive.DriveType" not in text

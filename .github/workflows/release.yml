@@ -154,14 +154,15 @@ jobs:
         run: |
           pyinstaller --noconfirm --clean --windowed --onefile `
             --name AngeronaBlackBox `
-            --icon "assets/icons/blackbox.ico" `
+            --icon (Join-Path $PWD "assets/icons/blackbox.ico") `
             --distpath "dist/Angerona" `
             --workpath "build/AngeronaBlackBox" `
             --specpath "build" `
             --collect-all PySide6 `
             --collect-all psutil `
-            --add-data "assets;assets" `
+            --add-data "$(Join-Path $PWD 'assets');assets" `
             blackbox_recorder.py
+          if ($LASTEXITCODE -ne 0) { throw 'Black Box build failed.' }
 
           $blackBox = Resolve-Path "dist/Angerona/AngeronaBlackBox.exe"
           $blackBoxHash = (Get-FileHash -Algorithm SHA256 $blackBox).Hash.ToLowerInvariant()
@@ -187,7 +188,7 @@ jobs:
 
           pyinstaller --noconfirm --clean --windowed --onefile `
             --name Angerona `
-            --icon "assets/icons/angerona.ico" `
+            --icon (Join-Path $PWD "assets/icons/angerona.ico") `
             --distpath "dist/Angerona" `
             --workpath "build/AngeronaMain" `
             --specpath "build" `
@@ -198,12 +199,23 @@ jobs:
             --collect-all sounddevice `
             --collect-submodules angerona.modules `
             --collect-submodules angerona.resilience `
-            --add-data "modules;modules" `
-            --add-data "assets;assets" `
-            --add-data "rules.yar;." `
-            --add-data "build/bundled-runtime/models;runtime-data/models" `
+            --add-data "$(Join-Path $PWD 'modules');modules" `
+            --add-data "$(Join-Path $PWD 'assets');assets" `
+            --add-data "$(Join-Path $PWD 'rules.yar');." `
+            --add-data "$(Join-Path $PWD 'build/bundled-runtime/models');runtime-data/models" `
             --hidden-import angerona `
             src/angerona/__main__.py
+          if ($LASTEXITCODE -ne 0) { throw 'Dashboard build failed.' }
+
+          pyinstaller --noconfirm --clean --windowed --onefile `
+            --name AngeronaStartup `
+            --icon (Join-Path $PWD "assets/icons/angerona.ico") `
+            --distpath "dist/Angerona" `
+            --workpath "build/AngeronaStartup" `
+            --specpath "build" `
+            --paths src `
+            src/angerona/startup.py
+          if ($LASTEXITCODE -ne 0) { throw 'Startup helper build failed.' }
 
           pyinstaller --noconfirm --clean --console --onefile `
             --name AngeronaReleaseVerifier `
@@ -213,6 +225,7 @@ jobs:
             --paths src `
             --hidden-import angerona.core.update_authority `
             tools/verify_release_upgrade.py
+          if ($LASTEXITCODE -ne 0) { throw 'Release verifier build failed.' }
 
       - name: Verify frozen application contents
         shell: pwsh
@@ -229,6 +242,13 @@ jobs:
           }
           if (-not (Test-Path "dist/Angerona/frz_watchdog_v2.exe")) {
             throw 'Frozen FRZ watchdog sidecar was not created.'
+          }
+          if (-not (Test-Path "dist/Angerona/AngeronaStartup.exe")) {
+            throw 'Frozen startup helper was not created.'
+          }
+          $startupListing = (& pyi-archive_viewer --recursive "dist/Angerona/AngeronaStartup.exe" | Out-String)
+          if ($LASTEXITCODE -ne 0 -or $startupListing -notmatch 'tkinter') {
+            throw 'Frozen startup helper is missing its independent Tk interface.'
           }
 
       - name: Bundle release installer and documentation
@@ -529,9 +549,9 @@ jobs:
             --collect-all psutil \
             --collect-submodules angerona.modules \
             --collect-submodules angerona.resilience \
-            --add-data "modules:modules" \
-            --add-data "assets:assets" \
-            --add-data "rules.yar:." \
+            --add-data "$PWD/modules:modules" \
+            --add-data "$PWD/assets:assets" \
+            --add-data "$PWD/rules.yar:." \
             --hidden-import angerona \
             src/angerona/__main__.py
 
