@@ -263,7 +263,7 @@ class MainWindow(QMainWindow):
             "Checks every enabled defensive module and reports what passed, "
             "what failed, and what the operator can do next.",
         )
-        # Self-test reports progress in the header and does not open a window,
+        # Self-test reports progress in the header; completion opens modeless results,
         # so it uses the normal tactile button press without the window reveal.
         test_btn.clicked.connect(
             lambda _checked=False: self._run_self_test())
@@ -4781,81 +4781,103 @@ class MainWindow(QMainWindow):
         self.console._start_busy()
         self.run_spinner.start("Running self-test")
         self._selftest_btn.setEnabled(False)
+        dialog = getattr(self, "_selftest_results", None)
+        if dialog is not None:
+            dialog.set_busy("Running self-test…")
         try:
             threading.Thread(
                 target=self._self_test_worker,
                 name="AngeronaSelfTest",
                 daemon=True,
             ).start()
-        except Exception:
-            self._selftest_active.clear()
-            self._selftest_btn.setEnabled(True)
-            self.console._end_busy()
-            raise
+        except Exception as exc:
+            report = f"Self-test worker could not start: {type(exc).__name__}: {str(exc)[:2000]}"
+            self._on_selftest_done(report, [
+                {"module": "Self-test runner", "detail": report, "repairable": False},
+            ])
+            return False
         return True
 
     def _self_test_worker(self) -> None:
-        from angerona.core.selftest import SelfTestRunner
-        runner = SelfTestRunner(self.manager, self.bus)
         try:
+            from angerona.core.selftest import SelfTestRunner
+            runner = SelfTestRunner(self.manager, self.bus)
             report = runner.run(
                 progress_cb=lambda done, total: self._selftest_progress.emit(done, total))
             failures = list(runner.last_failures)
         except Exception as exc:
-            report, failures = f"self-test error: {exc}", []
-        self._selftest_done.emit(report, failures)
+            report = f"Self-test could not complete: {type(exc).__name__}: {str(exc)[:2000]}"
+            failures = [{"module": "Self-test runner", "detail": report, "repairable": False}]
+        try:
+            self._selftest_done.emit(report, failures)
+        except RuntimeError:
+            pass  # The dashboard was closed while the worker completed.
 
     def _on_selftest_done(self, report: str, failures) -> None:
         self._selftest_active.clear()
         self._selftest_btn.setEnabled(True)
         self.console._append(report)
         self.console._end_busy()
-        # Snap the wheel to a green 100% so the run visibly completes, then fade.
-        self.run_spinner.finish("Self-test complete")
-        if failures:
-            self._prompt_selftest_fix(failures)
+        self.run_spinner.finish(
+            f"Self-test complete: {len(failures)} need attention" if failures else "Self-test complete")
+        self._last_selftest_report = report
+        self._prompt_selftest_fix(failures)
 
     def _prompt_selftest_fix(self, failures) -> None:
-        repairable = [
-            f for f in failures
-            if bool(f.get("repairable", True))
-            and f.get("module") in self.manager.modules
-        ]
-        manual = [f for f in failures if f not in repairable]
-        if not repairable:
-            lst = "\n".join(
-                f"  • {f.get('module')} — {f.get('detail')}" for f in manual
-            )
-            QMessageBox.information(
-                self,
-                "Self-test needs operator attention",
-                f"Self-test reported {len(manual)} item(s) that cannot be "
-                f"repaired by restarting an Angerona module:\n\n{lst}\n\n"
-                "No automatic change was made. Review the listed dependency "
-                "or configuration, then re-run the self-test.",
-            )
+        from angerona.gui.selftest_results import SelfTestResultsDialog
+        old = getattr(self, "_selftest_results", None)
+        if old is not None:
+            old.close()
+        repairable = self._eligible_selftest_failures(failures)
+        dialog = SelfTestResultsDialog(
+            getattr(self, "_last_selftest_report", ""), failures, repairable,
+            self.manager.modules, self)
+        self._selftest_results = dialog
+        dialog.finished.connect(lambda _result: self._selftest_results_closed(dialog))
+        dialog.retry_requested.connect(self._retry_selftest_results)
+        dialog.restart_requested.connect(lambda: self._start_selftest_repairs(repairable))
+        dialog.module_requested.connect(self._open_module_window)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _selftest_results_closed(self, dialog) -> None:
+        if getattr(self, "_selftest_results", None) is dialog:
+            self._selftest_results = None
+
+    def _retry_selftest_results(self) -> None:
+        if self._selftest_active.is_set():
             return
-        lst = "\n".join(
-            f"  • {f.get('module')} — {f.get('detail')}" for f in repairable
-        )
-        manual_note = ""
-        if manual:
-            manual_note = (
-                f"\n\n{len(manual)} additional item(s) require manual attention "
-                "and will not be changed automatically."
-            )
-        if QMessageBox.question(
-                self, "Self-test found issues — fix now?",
-                f"Self-test reported {len(repairable)} restartable issue(s):\n\n"
-                f"{lst}{manual_note}\n\n"
-                "Attempt automatic recovery? Angerona will request a clean restart "
-                "of each listed module. Full details were saved to "
-                "diagnostics/selftest_failures.json.",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+        dialog = getattr(self, "_selftest_results", None)
+        if dialog is not None:
+            dialog.close()
+        QTimer.singleShot(0, self._run_self_test)
+
+    def _eligible_selftest_failures(self, failures):
+        from angerona.core.selftest import SelfTestRunner
+        eligible = []
+        for failure in failures:
+            module = self.manager.modules.get(failure.get("module"))
+            if (module is not None and failure.get("repairable") is True
+                    and SelfTestRunner._is_repairable(module, str(failure.get("detail", "")))):
+                eligible.append(dict(failure))
+        return eligible
+
+    def _start_selftest_repairs(self, failures) -> None:
+        if self._selftest_active.is_set():
+            return
+        repairable = self._eligible_selftest_failures(failures)
+        if not repairable:
+            dialog = getattr(self, "_selftest_results", None)
+            if dialog is not None:
+                dialog.recovery_finished([], ["No listed module is currently eligible for restart."])
             return
         self._selftest_active.set()
         self._selftest_btn.setEnabled(False)
         self.run_spinner.start("Restarting modules")
+        dialog = getattr(self, "_selftest_results", None)
+        if dialog is not None:
+            dialog.set_busy("Requesting approved restarts…")
         try:
             threading.Thread(
                 target=self._selftest_repair_worker,
@@ -4867,7 +4889,9 @@ class MainWindow(QMainWindow):
             self._selftest_active.clear()
             self._selftest_btn.setEnabled(True)
             self.run_spinner.finish("Recovery could not start")
-            raise
+            if dialog is not None:
+                dialog.recovery_finished([], ["The recovery worker could not start."])
+            return
 
     def _selftest_repair_worker(self, failures) -> None:
         try:
@@ -4876,12 +4900,18 @@ class MainWindow(QMainWindow):
             # Never strand the GUI in its "repair active" state if an
             # unexpected module implementation escapes the per-module guard.
             restarted, errors = [], [f"recovery worker failed safely: {exc}"]
-        self._selftest_repair_done.emit(restarted, errors)
+        try:
+            self._selftest_repair_done.emit(restarted, errors)
+        except RuntimeError:
+            pass  # The dashboard was closed while the worker completed.
 
     def _on_selftest_repair_done(self, restarted, errors) -> None:
         self._selftest_active.clear()
         self._selftest_btn.setEnabled(True)
         self.run_spinner.finish("Recovery requested")
+        dialog = getattr(self, "_selftest_results", None)
+        if dialog is not None:
+            dialog.recovery_finished(restarted, errors)
         self.console._append(
             f"[auto-fix] restart requested for {len(restarted)} module(s): "
             + (", ".join(restarted) if restarted else "none")
@@ -4893,6 +4923,7 @@ class MainWindow(QMainWindow):
 
     def _attempt_selftest_repairs(self, failures) -> tuple[list[str], list[str]]:
         """Sequentially restart audited failures without touching Qt/config."""
+        from angerona.core.selftest import SelfTestRunner, module_selftest_lock
         restarted: list[str] = []
         errors: list[str] = []
         for f in failures:
@@ -4900,8 +4931,13 @@ class MainWindow(QMainWindow):
             mod = self.manager.modules.get(nm)
             if (
                 mod is None
-                or not bool(f.get("repairable", True))
+                or f.get("repairable") is not True
+                or not SelfTestRunner._is_repairable(mod, str(f.get("detail", "")))
             ):
+                continue
+            test_lock = module_selftest_lock(mod)
+            if not test_lock.acquire(blocking=False):
+                errors.append(f"{nm}: a self-test is still running; restart was not requested")
                 continue
             try:
                 if getattr(mod, "status", "") in {"running", "restarting"}:
@@ -4914,6 +4950,8 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 errors.append(f"{nm}: {exc}")
                 continue
+            finally:
+                test_lock.release()
         return restarted, errors
 
     # ── Forensics: dashboard-level entry to the incident views ───────────────

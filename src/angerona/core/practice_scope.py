@@ -38,6 +38,8 @@ class PracticeProvenance:
 _lock = threading.RLock()
 _runs: dict[str, PracticeProvenance] = {}
 _artifacts: dict[str, PracticeProvenance] = {}
+_artifact_original_keys: dict[str, str] = {}
+_artifact_candidate_keys: set[str] = set()
 _process_tokens: dict[str, PracticeProvenance] = {}
 
 
@@ -69,11 +71,41 @@ def _path_key(value: object) -> str:
     return os.path.normcase(str(path))
 
 
+def _lexical_path_key(value: object) -> str:
+    """Normalize a candidate spelling without inspecting the filesystem.
+
+    This is only a rejection filter.  A matching spelling still needs a fresh
+    resolution before it can establish provenance, since a junction/symlink
+    may have changed since registration.
+    """
+    try:
+        raw = os.fspath(value)
+        if not isinstance(raw, str) or not raw or "\x00" in raw or len(raw) > 4096:
+            return ""
+        expanded = os.path.expandvars(os.path.expanduser(raw))
+        return os.path.normcase(os.path.abspath(expanded))
+    except (TypeError, OSError, RuntimeError, ValueError):
+        return ""
+
+
+def _rebuild_artifact_candidates_locked() -> None:
+    # Retain at most the original spelling and canonical path for each live
+    # registration.  Unregistered aliases deliberately fail closed.
+    for key in tuple(_artifact_original_keys):
+        if key not in _artifacts:
+            _artifact_original_keys.pop(key, None)
+    _artifact_candidate_keys.clear()
+    _artifact_candidate_keys.update(_artifacts)
+    _artifact_candidate_keys.update(_artifact_original_keys.values())
+
+
 def _prune_locked(now: float) -> None:
     for table in (_runs, _artifacts, _process_tokens):
         expired = [key for key, value in table.items() if value.expires_at <= now]
         for key in expired:
             table.pop(key, None)
+        if table is _artifacts and expired:
+            _rebuild_artifact_candidates_locked()
 
 
 def _bounded_put(table: dict, key: str, value: PracticeProvenance,
@@ -112,6 +144,8 @@ def register_artifact(path: object, run_id: object, *, kind: str = "practice",
     with _lock:
         _prune_locked(now)
         _bounded_put(_artifacts, key, record, _MAX_ARTIFACTS)
+        _artifact_original_keys[key] = _lexical_path_key(path)
+        _rebuild_artifact_candidates_locked()
     return key
 
 
@@ -149,6 +183,7 @@ def unregister_artifact(path: object, *, run_id: object = "") -> bool:
         if record is None or (expected and record.run_id != expected):
             return False
         _artifacts.pop(key, None)
+        _rebuild_artifact_candidates_locked()
         return True
 
 
@@ -185,7 +220,25 @@ def unregister_run(run_id: object) -> int:
             for key in keys:
                 table.pop(key, None)
                 removed += 1
+        _rebuild_artifact_candidates_locked()
     return removed
+
+
+def _registered_artifact(value: object) -> tuple[str, PracticeProvenance] | None:
+    candidate = _lexical_path_key(value)
+    with _lock:
+        if not candidate or candidate not in _artifact_candidate_keys:
+            return None
+
+    # Filesystem calls can block on a detached device or network path.  Most
+    # events never reach this point; do not hold the registry lock for those
+    # that require an actual registered-path check.
+    key = _path_key(value)
+    with _lock:
+        record = _artifacts.get(key) if key else None
+        if record is not None and record.expires_at > time.monotonic():
+            return key, record
+    return None
 
 
 def provenance_for_event(event: object) -> PracticeProvenance | None:
@@ -200,11 +253,15 @@ def provenance_for_event(event: object) -> PracticeProvenance | None:
     now = time.monotonic()
     with _lock:
         _prune_locked(now)
+        if not (_runs or _artifacts or _process_tokens):
+            return None
+        has_artifacts = bool(_artifacts)
+
+    if has_artifacts:
         for field in ("artifact_path", "path", "file_path"):
-            key = _path_key(details.get(field))
-            record = _artifacts.get(key) if key else None
-            if record is not None:
-                return record
+            match = _registered_artifact(details.get(field))
+            if match is not None:
+                return match[1]
 
         # Multi-resource detections are practice only when every local artifact
         # is registered to the same live run.  A mixed real+practice Defender
@@ -213,19 +270,26 @@ def provenance_for_event(event: object) -> PracticeProvenance | None:
         if isinstance(values, (list, tuple)) and values:
             records = []
             for value in values[:65]:
-                key = _path_key(value)
-                record = _artifacts.get(key) if key else None
-                if record is None:
+                match = _registered_artifact(value)
+                if match is None:
                     records = []
                     break
-                records.append(record)
+                records.append(match)
             if (
                 records
                 and len(records) == len(values)
-                and len({record.run_id for record in records}) == 1
+                and len({record.run_id for _, record in records}) == 1
             ):
-                return records[0]
+                with _lock:
+                    now = time.monotonic()
+                    if all(
+                        _artifacts.get(key) is record and record.expires_at > now
+                        for key, record in records
+                    ):
+                        return records[0][1]
 
+    with _lock:
+        _prune_locked(time.monotonic())
         token = _safe_token(details.get("correlation_token"))
         if token:
             record = _process_tokens.get(token)
@@ -274,4 +338,6 @@ def clear() -> None:
     with _lock:
         _runs.clear()
         _artifacts.clear()
+        _artifact_original_keys.clear()
+        _artifact_candidate_keys.clear()
         _process_tokens.clear()

@@ -10,6 +10,7 @@ Invoke from the console: ``test`` (all) or ``test <module>``.
 from __future__ import annotations
 
 import json
+import math
 import queue
 import threading
 import time
@@ -21,6 +22,61 @@ from angerona.core.module_base import BaseModule
 from angerona.core.platforms import availability_for
 
 
+# These permits belong to the process, not an individual drill. A timed-out
+# Python call cannot safely be killed, and retains its permit until it exits.
+_MODULE_CALLS = threading.BoundedSemaphore(6)
+_EVENT_CALLS = threading.BoundedSemaphore(1)
+_PROGRESS_CALLS = threading.BoundedSemaphore(1)
+_MODULE_LOCK_CREATION = threading.Lock()
+
+
+def module_selftest_lock(mod):
+    """Use one lock when the inspector and a drill first test a module."""
+    with _MODULE_LOCK_CREATION:
+        lock = getattr(mod, "_angerona_selftest_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            setattr(mod, "_angerona_selftest_lock", lock)
+        return lock
+
+
+def run_module_selftest(mod, timeout: float = 15.0) -> tuple[bool, str]:
+    """Run one inspector check under the drill's shared limits and lock."""
+    timeout = float(timeout)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("self-test timeout must be positive and finite")
+    return SelfTestRunner._test_module(mod, timeout, optional_kernel_policy=False)
+
+
+def _bounded_call(callback, permits, timeout: float, *, name: str):
+    """Return without abandoning an unlimited number of blocked callbacks."""
+    if not permits.acquire(blocking=False):
+        return False, "a previous call is still running", None
+    completed = threading.Event()
+    result: dict = {}
+
+    def work():
+        try:
+            result["value"] = callback()
+        except BaseException as exc:
+            result["error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            permits.release()
+            completed.set()
+
+    worker = threading.Thread(target=work, name=name, daemon=True)
+    try:
+        worker.start()
+    except Exception:
+        permits.release()
+        raise
+    if not completed.wait(timeout):
+        return False, f"timed out after {timeout:g}s; the call is still running", None
+    if "error" in result:
+        return False, result["error"], None
+    return True, "", result.get("value")
+
+
 def _failure_log_path() -> Path:
     # Repo diagnostics/ dir (mounted / user-visible). Best-effort.
     from angerona.core.data_paths import data_dir
@@ -29,6 +85,8 @@ def _failure_log_path() -> Path:
 
 class SelfTestRunner:
     _MAX_MODULE_WORKERS = 6
+    _PIPELINE_TIMEOUT = 3.0
+    _REPORT_TIMEOUT = 0.5
 
     def __init__(self, manager, bus: EventBus) -> None:
         self.manager = manager
@@ -54,10 +112,14 @@ class SelfTestRunner:
         that specific result to a structured skip.  The default remains strict,
         and callback errors fail closed as ordinary test failures.
         """
+        timeout = float(timeout)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("self-test timeout must be positive and finite")
         lines = ["===== SELF-TEST / STRESS DRILL =====", ""]
         passed = failed = skipped = 0
         failures: List[dict] = []
         skips: List[dict] = []
+        notifications: list[Event] = []
 
         target_modules = [mod for name, mod in sorted(self.manager.modules.items())
                           if not names or name in names]
@@ -87,7 +149,8 @@ class SelfTestRunner:
         total = len(target_modules) + 1          # +1 for the pipeline check
         _done = {"n": 0}
         _plock = threading.Lock()
-        progress_queue: queue.Queue = queue.Queue()
+        progress_queue: queue.Queue = queue.Queue(maxsize=total + 1)
+        progress_stopped = threading.Event()
 
         def _bump():
             if progress_cb is None:
@@ -95,38 +158,61 @@ class SelfTestRunner:
             with _plock:
                 _done["n"] += 1
                 n = _done["n"]
-            progress_queue.put((n, total))
+                progress_queue.put_nowait((n, total))
 
         def _dispatch_progress() -> None:
-            while True:
-                item = progress_queue.get()
-                if item is None:
-                    return
-                try:
-                    progress_cb(*item)
-                except Exception:
-                    pass
+            try:
+                while not progress_stopped.is_set():
+                    item = progress_queue.get()
+                    if item is None:
+                        return
+                    try:
+                        progress_cb(*item)
+                    except Exception:
+                        pass
+            finally:
+                _PROGRESS_CALLS.release()
 
         def _run_pipeline():
-            pipeline_res["res"] = self._pipeline_check()
+            completed, error, result = _bounded_call(
+                self._pipeline_check,
+                _EVENT_CALLS,
+                self._PIPELINE_TIMEOUT,
+                name="AngeronaSelfTestEventDelivery",
+            )
+            pipeline_res["res"] = (
+                result if completed else (False, f"pipeline check {error}")
+            )
             _bump()
 
         def _run_single(mod):
-            mod_results[mod.name] = self._test_module(mod, timeout)
+            try:
+                mod_results[mod.name] = self._test_module(mod, timeout)
+            except Exception as exc:
+                mod_results[mod.name] = (False, f"error: {exc}")
             _bump()
 
         threads = []
         progress_thread = None
-        if progress_cb is not None:
+        progress_unavailable = False
+        if progress_cb is not None and _PROGRESS_CALLS.acquire(blocking=False):
             progress_thread = threading.Thread(
                 target=_dispatch_progress,
                 name="AngeronaSelfTestProgress",
                 daemon=True,
             )
-            progress_thread.start()
+            try:
+                progress_thread.start()
+            except Exception:
+                _PROGRESS_CALLS.release()
+                raise
+        elif progress_cb is not None:
+            progress_unavailable = True
         
         # Dispatch pipeline test
-        p_thread = threading.Thread(target=_run_pipeline, daemon=True)
+        p_thread = threading.Thread(
+            target=_run_pipeline, name="AngeronaSelfTestPipeline", daemon=True,
+        )
         p_thread.start()
         threads.append(p_thread)
 
@@ -158,23 +244,36 @@ class SelfTestRunner:
         for _mod in skip_reasons:
             _bump()
 
-        # Wait for all to finish
+        # Only coordinator threads are joined here. Actual module and bus calls
+        # keep process-wide permits after timeout, preventing repeated drills
+        # from accumulating hung work. No callback receives an unbounded join.
+        deadline = time.monotonic() + max(
+            self._PIPELINE_TIMEOUT,
+            math.ceil(len(testable_modules) / self._MAX_MODULE_WORKERS) * timeout,
+        ) + 1.0
         for t in threads:
-            t.join()
+            t.join(max(0.0, deadline - time.monotonic()))
         if progress_thread is not None:
-            progress_queue.put(None)
-            progress_thread.join()
+            progress_queue.put_nowait(None)
+            progress_thread.join(self._REPORT_TIMEOUT)
+            progress_unavailable = progress_thread.is_alive()
+            progress_stopped.set()
 
         # 1) Evaluate Pipeline check
-        ok, detail = pipeline_res["res"]
+        ok, detail = pipeline_res.get(
+            "res", (False, "pipeline coordinator did not complete before its deadline"),
+        )
         lines.append(f"  [{'PASS' if ok else 'FAIL'}] Event pipeline — {detail}")
         passed += ok
         failed += (not ok)
         if not ok:
-            failures.append({"module": "Event pipeline", "detail": detail})
-            # CRITICAL WHEN NEEDED: Escalate core bus failures immediately
-            self.bus.publish(Event("Self-Test", 
-                                   f"CRITICAL FAILURE: Event pipeline — {detail}", 
+            failures.append({
+                "module": "Event pipeline", "detail": detail, "repairable": False,
+            })
+            # Preserve critical core-bus diagnostics without calling a possibly
+            # blocked subscriber from the result-collection thread.
+            notifications.append(Event("Self-Test",
+                                   f"CRITICAL FAILURE: Event pipeline — {detail}",
                                    Severity.CRITICAL))
 
         # 2) Evaluate Per-module tests
@@ -185,7 +284,10 @@ class SelfTestRunner:
                 skipped += 1
                 skips.append({"module": mod.name, "detail": skip_detail})
                 continue
-            t_ok, t_detail = mod_results[mod.name]
+            t_ok, t_detail = mod_results.get(
+                mod.name,
+                (False, "test timed out waiting for its coordinator"),
+            )
             if t_ok:
                 lines.append(f"  [PASS] {mod.name} — {t_detail}")
                 passed += 1
@@ -214,21 +316,56 @@ class SelfTestRunner:
                     "repairable": self._is_repairable(mod, t_detail),
                 })
                 # CRITICAL WHEN NEEDED: Elevate failed defense shields to maximum severity
-                self.bus.publish(Event("Self-Test",
+                notifications.append(Event("Self-Test",
                                        f"CRITICAL FAILURE: {mod.name} — {t_detail}", 
                                        Severity.CRITICAL))
 
+        if progress_unavailable:
+            lines.append(
+                "  [NOTICE] Progress callback is still running; "
+                "the completed results are shown below."
+            )
+        
+        # Final summary also escalates if the overall drill failed
+        summary_sev = Severity.CRITICAL if failed else Severity.INFO
+        notifications.append(Event("Self-Test",
+                               f"Drill complete: {passed} passed, {failed} failed, "
+                               f"{skipped} skipped.",
+                               summary_sev))
+
+        def _publish_notifications():
+            errors = []
+            for event in notifications:
+                try:
+                    self.bus.publish(event)
+                except Exception as exc:
+                    errors.append(f"{type(exc).__name__}: {exc}")
+            return errors
+
+        delivered, error, delivery_errors = _bounded_call(
+            _publish_notifications,
+            _EVENT_CALLS,
+            self._REPORT_TIMEOUT,
+            name="AngeronaSelfTestEventDelivery",
+        )
+        if not delivered or delivery_errors:
+            delivery_detail = (
+                error if not delivered else "; ".join(delivery_errors)
+            )
+            delivery_detail = (
+                f"event notifications {delivery_detail}; "
+                "review this report and diagnostics/selftest_failures.json"
+            )
+            lines.append(f"  [FAIL] Event reporting — {delivery_detail}")
+            failed += 1
+            failures.append({
+                "module": "Event reporting", "detail": delivery_detail,
+                "repairable": False,
+            })
         lines += [
             "",
             f"Result: {passed} passed, {failed} failed, {skipped} skipped.",
         ]
-        
-        # Final summary also escalates if the overall drill failed
-        summary_sev = Severity.CRITICAL if failed else Severity.INFO
-        self.bus.publish(Event("Self-Test",
-                               f"Drill complete: {passed} passed, {failed} failed, "
-                               f"{skipped} skipped.",
-                               summary_sev))
         self.last_failures = failures
         self.last_skips = skips
         self._write_failure_log(passed, failed, failures, skipped, skips)
@@ -290,7 +427,9 @@ class SelfTestRunner:
     @staticmethod
     def _is_repairable(mod, detail: str) -> bool:
         """Allow automatic restart only for audited lifecycle failures."""
-        if str(detail).casefold().startswith("test timed out"):
+        if str(detail).casefold().startswith((
+            "test timed out", "test not started", "test already running",
+        )):
             return False
         explicit = type(mod).__dict__.get("selftest_auto_repair")
         if explicit is not None:
@@ -318,30 +457,44 @@ class SelfTestRunner:
             
         return False, "event not delivered"
 
-    def _test_module(self, mod, timeout: float) -> tuple[bool, str]:
-        result: dict = {}
-
+    @staticmethod
+    def _test_module(
+        mod, timeout: float, *, optional_kernel_policy: bool = True,
+    ) -> tuple[bool, str]:
         def work():
+            # The inspector uses this same lock, so an active inspector check
+            # and an all-module drill cannot exercise one module concurrently.
+            lock = module_selftest_lock(mod)
+            if not lock.acquire(blocking=False):
+                return False, "test already running for this capability"
             try:
-                result["ok"], result["detail"] = mod.self_test()
-            except Exception as exc:
-                result["err"] = str(exc)
+                ok, detail = mod.self_test()
+                return bool(ok), str(detail)
+            finally:
+                lock.release()
 
-        # Internal daemon thread enforces the strict timeout on badly-behaving modules
-        t = threading.Thread(target=work, daemon=True)
-        t.start()
-        t.join(timeout)
-        
-        if t.is_alive():
-            return False, f"test timed out after {int(timeout)}s"
-        if "err" in result:
-            return False, f"error: {result['err']}"
-            
-        ok = bool(result.get("ok"))
-        detail = str(result.get("detail", ""))
+        completed, error, result = _bounded_call(
+            work, _MODULE_CALLS, timeout,
+            name=f"AngeronaSelfTestModule-{mod.name}",
+        )
+        if not completed:
+            if error.startswith("timed out"):
+                return False, f"test {error}"
+            if error == "a previous call is still running":
+                return False, (
+                    "test not started: all six worker slots are occupied by "
+                    "unfinished checks; retry after they finish"
+                )
+            return False, f"error: {error}"
+        ok, detail = result
+        if not ok and detail.startswith("test already running"):
+            return ok, detail
         
         # Treat missing optional kernel driver as a pass rather than a hard failure
-        if not ok and (getattr(mod, "CODE", "") == "KRNL" or "Kernel Sensor" in getattr(mod, "NAME", "")):
+        if optional_kernel_policy and not ok and (
+            getattr(mod, "CODE", "") == "KRNL"
+            or "Kernel Sensor" in getattr(mod, "NAME", "")
+        ):
             return True, f"Kernel Driver Not installed ({detail})"
             
         return ok, detail

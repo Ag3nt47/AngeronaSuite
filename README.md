@@ -26,6 +26,13 @@ dashboard paints and responds. Failed launches remain visible with repair/log
 guidance; a timeout never starts another copy. Settings, evidence and security
 journals are preserved. See [startup details](docs/safe-startup.md).
 
+**Responsive self-test results.** Self-test completion now opens a modeless
+results window with copy, module-details, retry and Close actions. Manual
+failures include next steps; eligible restarts require explicit approval.
+Shared deadlines and six active module-test slots prevent timed-out checks
+from accumulating on repeated runs. Ordinary event classification also avoids
+filesystem path lookups when no registered practice artifact can match.
+
 [Master Manual](Angerona_Master_Manual.docx) ·
 [Current capabilities](ANGERONA_CAPABILITIES.md) ·
 [Architecture](docs/architecture.md) ·

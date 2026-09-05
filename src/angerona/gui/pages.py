@@ -3985,17 +3985,13 @@ class ModuleInspector(QDialog):
         self._assurance_dimensions.sortItems(sort_column, sort_order)
 
     def _selftest(self) -> None:
+        from angerona.core.selftest import module_selftest_lock
         if self._test_worker is not None and self._test_worker.is_alive():
             self.test_lbl.setText("A self-test is already running for this capability.")
             return
-        lock = getattr(self.module, "_angerona_selftest_lock", None)
-        if lock is None:
-            lock = threading.Lock()
-            setattr(self.module, "_angerona_selftest_lock", lock)
-        if not lock.acquire(blocking=False):
-            self.test_lbl.setText("A self-test is already running for this capability.")
+        if module_selftest_lock(self.module).locked():
+            self.test_lbl.setText("A self-test is still running for this capability. No duplicate was started.")
             return
-        self._active_test_lock = lock
         self.test_lbl.setText("Testing…")
         self.selftest_btn.setEnabled(False)
         self._test_worker = threading.Thread(
@@ -4003,11 +3999,17 @@ class ModuleInspector(QDialog):
             name=f"ModuleSelfTest-{self.module.name}",
             daemon=True,
         )
-        self._test_worker.start()
+        try:
+            self._test_worker.start()
+        except Exception as exc:
+            self._test_worker = None
+            self.selftest_btn.setEnabled(True)
+            self.test_lbl.setText(f"Self-test could not start: {type(exc).__name__}")
 
     def _run_test(self) -> None:
         try:
-            ok, detail = self.module.self_test()
+            from angerona.core.selftest import run_module_selftest
+            ok, detail = run_module_selftest(self.module, timeout=15.0)
             _emit_if_accepting(
                 self,
                 "_test_done",
@@ -4019,14 +4021,6 @@ class ModuleInspector(QDialog):
                 "_test_done",
                 f"FAIL — {str(exc)[:4000]}",
             )
-        finally:
-            lock = getattr(self, "_active_test_lock", None)
-            if lock is not None:
-                try:
-                    lock.release()
-                except RuntimeError:
-                    pass
-                self._active_test_lock = None
 
     def _apply_test_result(self, message: str) -> None:
         if self._accept_async_results:

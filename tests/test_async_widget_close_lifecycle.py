@@ -204,6 +204,37 @@ def test_module_inspector_drops_selftest_after_delete(monkeypatch) -> None:
     _close_during_worker(dialog, worker, entered, release, errors)
 
 
+def test_module_inspector_timeout_releases_ui_but_retains_check_lock(monkeypatch) -> None:
+    from angerona.core import selftest
+    from PySide6.QtTest import QTest
+
+    app = _app()
+    entered, release = threading.Event(), threading.Event()
+    module = _BlockingModule(entered, release)
+    dialog = ModuleInspector(_Manager(), _Bus(), module)
+    bounded = selftest.run_module_selftest
+    monkeypatch.setattr(selftest, "run_module_selftest", lambda mod, timeout: bounded(mod, 0.02))
+    try:
+        dialog._selftest()
+        assert entered.wait(1)
+        dialog._test_worker.join(1)
+        app.processEvents()
+        assert "timed out" in dialog.test_lbl.text()
+        assert dialog.selftest_btn.isEnabled()
+        assert selftest.module_selftest_lock(module).locked()
+        previous = dialog._test_worker
+        dialog._selftest()
+        assert "No duplicate" in dialog.test_lbl.text()
+        assert dialog._test_worker is previous
+    finally:
+        release.set()
+        deadline = time.monotonic() + 2
+        while selftest.module_selftest_lock(module).locked() and time.monotonic() < deadline:
+            QTest.qWait(5)
+        dialog.close()
+    assert not selftest.module_selftest_lock(module).locked()
+
+
 def test_alerts_panel_drops_storage_result_after_delete(monkeypatch) -> None:
     app = _app()
     entered = threading.Event()

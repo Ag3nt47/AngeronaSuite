@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
+import time
 
 import pytest
 
@@ -84,6 +86,105 @@ def test_only_exact_registered_artifact_is_practice(tmp_path: Path) -> None:
     assert event_disposition(exact) == "practice"
     assert not is_active_threat(exact)
     assert event_disposition(copied_name) == "active"
+
+
+@pytest.mark.parametrize("registration", ["none", "run", "process", "artifact"])
+def test_ordinary_event_never_resolves_unregistered_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, registration: str,
+) -> None:
+    if registration == "run":
+        practice_scope.register_run("live-run")
+    elif registration == "process":
+        practice_scope.register_process("practice-token", "live-run", pid=42)
+    elif registration == "artifact":
+        practice_scope.register_artifact(tmp_path / "registered.txt", "live-run")
+
+    resolutions = []
+
+    def slow_resolve(path: Path, *args, **kwargs):
+        resolutions.append(path)
+        time.sleep(0.02)
+        return path
+
+    ordinary = _critical(
+        "File Integrity Monitor",
+        artifact_path=str(tmp_path / "ordinary.txt"),
+        path=r"\\detached-host\share\file.txt",
+        artifact_paths=[str(tmp_path / "other.txt")],
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "resolve", slow_resolve)
+        assert practice_scope.provenance_for_event(ordinary) is None
+    assert resolutions == []
+
+
+def test_registered_alias_requires_fresh_resolution_after_retargeting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    alias = tmp_path / "junction" / "marker.txt"
+    trusted = practice_scope._path_key(tmp_path / "registered" / "marker.txt")
+    unrelated = practice_scope._path_key(tmp_path / "unrelated" / "marker.txt")
+    current_target = [trusted]
+    monkeypatch.setattr(practice_scope, "_path_key", lambda value: current_target[0])
+    practice_scope.register_artifact(alias, "live-run")
+    event = _critical("File Integrity Monitor", path=str(alias))
+
+    assert practice_scope.provenance_for_event(event).run_id == "live-run"
+    current_target[0] = unrelated
+    assert practice_scope.provenance_for_event(event) is None
+
+
+def test_slow_registered_resolution_does_not_block_revocation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    marker = tmp_path / "marker.txt"
+    key = practice_scope.register_artifact(marker, "live-run")
+    revoked = threading.Event()
+
+    def revoke():
+        practice_scope.unregister_run("live-run")
+        revoked.set()
+
+    worker = threading.Thread(target=revoke, daemon=True)
+
+    def resolve_during_revocation(value):
+        worker.start()
+        assert revoked.wait(1.0), "Path resolution held the provenance lock"
+        return key
+
+    monkeypatch.setattr(practice_scope, "_path_key", resolve_during_revocation)
+    try:
+        assert practice_scope.provenance_for_event(
+            _critical("File Integrity Monitor", path=str(marker))
+        ) is None
+    finally:
+        if worker.ident is not None:
+            worker.join(timeout=1.0)
+
+
+@pytest.mark.parametrize("revocation", ["expired", "evicted", "unregistered"])
+def test_retired_artifact_never_triggers_path_resolution(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, revocation: str,
+) -> None:
+    clock = [100.0]
+    monkeypatch.setattr(practice_scope.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(practice_scope, "_MAX_ARTIFACTS", 1)
+    marker = tmp_path / "retired.txt"
+    practice_scope.register_artifact(marker, "live-run", ttl=1.0)
+    if revocation == "expired":
+        clock[0] = 102.0
+    elif revocation == "evicted":
+        practice_scope.register_artifact(tmp_path / "new.txt", "new-run")
+    else:
+        assert practice_scope.unregister_artifact(marker)
+
+    def unexpected_resolution(value):
+        pytest.fail("Retired registrations must not trigger filesystem access")
+
+    monkeypatch.setattr(practice_scope, "_path_key", unexpected_resolution)
+    assert practice_scope.provenance_for_event(
+        _critical("File Integrity Monitor", path=str(marker))
+    ) is None
 
 
 def test_completed_run_revokes_artifact_and_process_provenance(tmp_path: Path) -> None:
