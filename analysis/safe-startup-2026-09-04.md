@@ -31,6 +31,10 @@ Validation:
 - Real hidden Tk assistant / offscreen Qt fixture handoff passed; the helper
   exited successfully while the synthetic dashboard continued running. No
   live sensors or response actions were started.
+- The source batch uses `Process.WaitForExit()` for the helper only, avoiding
+  PowerShell `Start-Process -Wait` waiting for the dashboard descendant too.
+  The actual PowerShell wrapper returned exit 0 in approximately 3 seconds,
+  before the synthetic dashboard finished.
 - PyInstaller produced the separate **11,687,668-byte** helper, SHA-256
   `e3181f7b2ee00d8ee8c52003b58522c38355d96678e665dd932d4e8c588b529c`.
   Archive checks verified bundled Tcl/Tk and no Qt payload. The executable's

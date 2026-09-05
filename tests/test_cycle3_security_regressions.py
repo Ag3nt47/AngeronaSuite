@@ -210,7 +210,8 @@ def test_source_launcher_is_bounded_and_reports_early_startup_failures():
     assert "launcher-preflight.log" in text
     assert "launcher-stderr.log" in text
     assert "angerona.startup" in text
-    assert "-PassThru -Wait" in text
+    assert "-PassThru; $p.WaitForExit(); exit $p.ExitCode" in text
+    assert "-PassThru -Wait;" not in text
     helper = open(os.path.join(root, "src/angerona/startup.py"), encoding="utf-8").read()
     assert "timeout: float = 120" in helper
     assert "wait_dashboard(listener, process" in helper

@@ -236,7 +236,9 @@ echo [4/4] Opening Angerona Safe Startup...
 set "ANGERONA_PYTHON=%~dp0venv\Scripts\python.exe"
 set "ANGERONA_STDOUT_LOG=%ANGERONA_DATA%\logs\launcher-stdout.log"
 set "ANGERONA_STDERR_LOG=%ANGERONA_DATA%\logs\launcher-stderr.log"
-"%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "$p=Start-Process -FilePath $env:ANGERONA_PYTHON -ArgumentList @('-m','angerona.startup') -WorkingDirectory $env:ANGERONA_INSTALL_ROOT -WindowStyle Hidden -RedirectStandardOutput $env:ANGERONA_STDOUT_LOG -RedirectStandardError $env:ANGERONA_STDERR_LOG -PassThru -Wait; exit $p.ExitCode"
+REM WaitForExit waits only for the assistant. Start-Process -Wait would also
+REM wait for its dashboard descendant and leave this batch window open.
+"%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -Command "$p=Start-Process -FilePath $env:ANGERONA_PYTHON -ArgumentList @('-m','angerona.startup') -WorkingDirectory $env:ANGERONA_INSTALL_ROOT -WindowStyle Hidden -RedirectStandardOutput $env:ANGERONA_STDOUT_LOG -RedirectStandardError $env:ANGERONA_STDERR_LOG -PassThru; $p.WaitForExit(); exit $p.ExitCode"
 if errorlevel 1 (
     echo [!] The startup assistant did not complete. Review its message or this log:
     echo     %ANGERONA_STDERR_LOG%
