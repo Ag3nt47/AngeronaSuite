@@ -43,6 +43,10 @@ and backup-posture alerts no longer masquerade as active intrusions. A narrowly
 scoped, explicit startup-checkpoint repair preserves authenticated history.
 See [findings, recovery limits and validation](analysis/response-readiness-2026-09-05.md).
 
+**Proposed Red Team extension:** [GitHub Tool Library and isolated analysis design](docs/design/red-team-github-tool-library.md)
+covers pinned source imports, reviewed offline analyzers and sandbox result
+integration. This is a design specification; tool import and execution are not yet implemented.
+
 [Master Manual](Angerona_Master_Manual.docx) ·
 [Current capabilities](ANGERONA_CAPABILITIES.md) ·
 [Architecture](docs/architecture.md) ·
