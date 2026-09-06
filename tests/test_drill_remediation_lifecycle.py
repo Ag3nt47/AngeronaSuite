@@ -303,7 +303,7 @@ def test_duplicate_occurrences_and_scorecard_use_unique_finding_classes(tmp_path
     assert "Verified closure   : 1/1" in report
 
 
-def test_verified_live_combat_receipt_counts_as_applied_and_closed_contract():
+def test_live_combat_receipt_does_not_imply_installed_and_verified_detector_fix():
     receipt = Event(
         "Adversary Combat",
         "exact quarantine completed",
@@ -324,8 +324,8 @@ def test_verified_live_combat_receipt_counts_as_applied_and_closed_contract():
 
     assert _closure_metrics(rows) == {
         "actionable_classes": 1,
-        "actions_applied": 1,
-        "verified_closures": 1,
+        "actions_applied": 0,
+        "verified_closures": 0,
     }
 
 
@@ -374,4 +374,4 @@ def test_reconcile_run_turns_real_purple_echo_into_nonzero_closure(tmp_path):
     assert metrics["verified_closures"] == 1
     assert verdicts[0].finding_resolved
     report = render(history, verdicts, "RED TEAM ATTACK")
-    assert "Verified closure   : 1/1 unique gap class(es)  (100%)" in report
+    assert "Verified closure   : 1/1 unique detector-fix class(es)  (100%)" in report

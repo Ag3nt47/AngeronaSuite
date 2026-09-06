@@ -20,6 +20,7 @@ import copy
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -119,6 +120,11 @@ class StepVerdict:
     verification_latency: Optional[float] = None
     remediation: Optional[Event] = None
     remediation_latency: Optional[float] = None
+    response_action_reported: bool = False
+    response_action_applied: bool = False
+    target_containment_verified: bool = False
+    containment_latency: Optional[float] = None
+    containment_reason: str = "No exact verified containment receipt was recorded."
     finding_resolved: bool = False
     technique_id: str = ""
     action_state: str = "OPEN"
@@ -476,14 +482,61 @@ def _matches(step: dict, ev: Event) -> bool:
     return False
 
 
+def _response_trigger_identity(catch: Event, details: dict) -> tuple[object, object]:
+    """Follow one authenticated delegation only through the exact detector HMAC."""
+    module = details.get("trigger_module")
+    timestamp = details.get("trigger_ts")
+    if (module == "Active Response SOAR Request" and catch.hmac_sig
+            and details.get("origin_event_digest") == catch.hmac_sig
+            and details.get("origin_module") == catch.module):
+        return details["origin_module"], details.get("origin_ts")
+    return module, timestamp
+
+
 def _matches_remediation(step: dict, catch: Event, ev: Event) -> bool:
+    """Correlate an action without letting timestamp collisions imply identity."""
     details = ev.details or {}
-    try:
-        if abs(float(details.get("trigger_ts")) - float(catch.ts)) < 0.000001:
-            return True
-    except (TypeError, ValueError):
-        pass
-    return _matches(step, ev)
+    for expected_key, aliases in (
+        ("run_id", ("run_id", "drill_run_id")),
+        ("step_id", ("step_id", "drill_step_id")),
+    ):
+        expected = str(step.get(expected_key) or "")
+        if expected and any(
+            details.get(key) and str(details[key]) != expected for key in aliases
+        ):
+            return False
+    trigger_module, trigger_time = _response_trigger_identity(catch, details)
+    if trigger_module and trigger_module != catch.module:
+        return False
+    if "trigger_ts" in details:
+        try:
+            trigger_ts = float(trigger_time)
+            if not math.isfinite(trigger_ts) or abs(trigger_ts - catch.ts) >= 0.000001:
+                return False
+        except (TypeError, ValueError, OverflowError):
+            return False
+    paths = {_canonical_path(path) for path in step.get("artifact_paths", []) if path}
+    supplied = {_canonical_path(details[key]) for key in ("path", "artifact_path")
+                if details.get(key)}
+    if paths and supplied and not supplied.issubset(paths):
+        return False
+    pids = _step_pids(step)
+    if pids and details.get("pid") is not None and details["pid"] not in pids:
+        return False
+    # A legacy full-path receipt can remain visible as an action report. It
+    # cannot receive containment credit without the stronger proof below.
+    if _matches(step, ev):
+        return True
+    if (trigger_module == catch.module and "trigger_ts" in details
+            and pids and details.get("pid") in pids
+            and details.get("pid") == (catch.details or {}).get("pid")):
+        if step.get("remote_ips"):
+            return True  # exact peer action identity is checked for containment
+        created = _process_start(details)
+        caught_created = _process_start(catch.details or {})
+        return bool(created is not None and caught_created is not None
+                    and abs(created - caught_created) <= 0.001)
+    return False
 
 
 def _is_remediation(ev: Event) -> bool:
@@ -501,13 +554,138 @@ def _is_remediation(ev: Event) -> bool:
     return False
 
 
-def _is_verified_combat_remediation(ev: Event) -> bool:
+def _step_pids(step: dict) -> set[int]:
+    return {pid for pid in [step.get("pid"), *(step.get("pids") or [])]
+            if type(pid) is int and pid > 0}
+
+
+def _expected_containment_targets(step: dict) -> set[tuple[str, object]]:
+    """Every recorded artifact/child must be covered, including repeated spawns."""
+    paths = {("path", _canonical_path(path))
+             for path in step.get("artifact_paths", []) if path}
+    peers = {("peer", str(peer).strip().casefold())
+             for peer in step.get("remote_ips", []) if peer}
+    # A network probe's PID identifies its connection; blocking every exact
+    # peer is its postcondition, not terminating the enclosing test process.
+    if peers:
+        return paths | peers
+    return paths | {("pid", pid) for pid in _step_pids(step)}
+
+
+def _process_start(details: dict) -> float | None:
+    for key in ("process_create_time", "pid_create_time", "create_time"):
+        if key not in details:
+            continue
+        try:
+            value = float(details[key])
+            return value if math.isfinite(value) and value > 0 else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return None
+
+
+def _artifact_digests(step: dict, catches: list[Event]) -> dict[str, set[str]]:
+    """Collect independent content identities already covered by evidence trust."""
+    digests: dict[str, set[str]] = {}
+
+    def include(path: str, value: object) -> None:
+        if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{64}", value):
+            digests.setdefault(path, set()).add(value.lower())
+
+    paths = list(step.get("artifact_paths") or [])
+    receipt = step.get("evidence_receipt") or {}
+    receipts = receipt.get("artifact_receipts") if isinstance(receipt, dict) else None
+    if isinstance(receipts, list):
+        for path, row in zip(paths, receipts):
+            if (isinstance(row, dict) and row.get("status") == "hashed"
+                    and row.get("name") == Path(str(path)).name):
+                include(_canonical_path(path), row.get("sha256"))
+    expected = {_canonical_path(path) for path in paths}
+    for catch in catches:
+        details = catch.details or {}
+        for key in ("path", "artifact_path"):
+            path = _canonical_path(details.get(key))
+            if path not in expected:
+                continue
+            for digest_key in ("sha256", "artifact_sha256", "observed_content_sha256"):
+                include(path, details.get(digest_key))
+    return digests
+
+
+def _verified_containment_targets(
+    step: dict, catch: Event, ev: Event,
+    artifact_digests: dict[str, set[str]] | None = None,
+) -> set[tuple[str, object]]:
+    """Read exact committed action identities, never cleanup or wrapper claims."""
     details = ev.details or {}
-    return bool(
-        ev.module == "Adversary Combat"
-        and details.get("mitigated") is True
-        and details.get("postcondition_verified") is True
-    )
+    trigger_module, _trigger_time = _response_trigger_identity(catch, details)
+    if not (
+        ev.module == "Adversary Combat" and details.get("mitigated") is True
+        and trigger_module == catch.module
+        and "trigger_ts" in details and _matches_remediation(step, catch, ev)
+    ):
+        return set()
+    rows = details.get("verified_actions")
+    action_ids = details.get("action_ids")
+    actions = details.get("actions")
+    if not (isinstance(rows, list) and 0 < len(rows) <= 64
+            and isinstance(action_ids, list) and isinstance(actions, list)):
+        return set()
+    expected = _expected_containment_targets(step)
+    verified: set[tuple[str, object]] = set()
+    used_ids: set[str] = set()
+    catch_details = catch.details or {}
+    if artifact_digests is None:
+        artifact_digests = _artifact_digests(step, [catch])
+    for row in rows:
+        if not isinstance(row, dict) or row.get("postcondition_verified") is not True:
+            continue
+        action_id = row.get("action_id")
+        action = row.get("action")
+        identity = row.get("details")
+        if not (isinstance(action_id, str) and 0 < len(action_id) <= 200
+                and action_id in action_ids and action_id not in used_ids
+                and isinstance(action, str) and action in actions and isinstance(identity, dict)):
+            continue
+        used_ids.add(action_id)
+        if action == "quarantine_file":
+            path = _canonical_path(identity.get("path"))
+            caught_paths = {_canonical_path(catch_details.get(key))
+                            for key in ("path", "artifact_path") if catch_details.get(key)}
+            expected_digests = artifact_digests.get(path, set())
+            digest = identity.get("sha256")
+            if (path and path == _canonical_path(row.get("target"))
+                    and path in caught_paths and ("path", path) in expected
+                    and len(expected_digests) == 1 and isinstance(digest, str)
+                    and digest.lower() in expected_digests):
+                verified.add(("path", path))
+        elif action in {"suspend_process", "terminate_process"}:
+            pid = identity.get("pid")
+            created = _process_start(identity)
+            caught_created = _process_start(catch_details)
+            target = row.get("target")
+            if (type(pid) is int and ("pid", pid) in expected
+                    and catch_details.get("pid") == pid
+                    and isinstance(target, str) and len(target) <= 512
+                    and target.endswith(f" ({pid})")
+                    and created is not None and caught_created is not None
+                    and abs(created - caught_created) <= 0.001):
+                verified.add(("pid", pid))
+        elif action == "block_remote_ip":
+            peer = str(row.get("target") or "").strip().casefold()
+            # The detector must independently bind this exact peer and PID.
+            observed_peers = {
+                _remote_endpoint(catch_details.get(key))[0]
+                for key in ("raddr", "remote", "remote_address", "destination",
+                            "remote_ip", "destination_ip", "dest_ip", "dst_ip")
+                if catch_details.get(key)
+            }
+            if (("peer", peer) in expected and peer in observed_peers
+                    and catch_details.get("pid") in _step_pids(step)):
+                verified.add(("peer", peer))
+        # Starting deception or changing unrelated host posture never proves
+        # that this test's file/process/connection was contained.
+    return verified
 
 
 def evaluate(
@@ -550,6 +728,9 @@ def evaluate(
         observation_index: Optional[int] = None
         native_index: Optional[int] = None
         verification_index: Optional[int] = None
+        triggers: list[Event] = []
+        native_indices: set[int] = set()
+        verification_indices: set[int] = set()
         # Resolve detector evidence before response evidence.  Windows' wall
         # clock can assign the exact same ``time.time()`` value to a detector
         # publication and the immediately-following SOAR receipt.  Callers
@@ -605,6 +786,14 @@ def evaluate(
                 # cannot acquire analytic credit by accident.
                 purple = False
                 native = False
+            native = native and event_index not in used_native
+            purple = purple and event_index not in used_verifications
+            if native:
+                native_indices.add(event_index)
+            if purple:
+                verification_indices.add(event_index)
+            if (native or purple) and all(ev is not item for item in triggers):
+                triggers.append(ev)
             if (
                 native
                 and v.native_catch is None
@@ -633,12 +822,11 @@ def evaluate(
             v.catch = min(analytic_candidates, key=lambda event: event.ts)
             v.catch_latency = round(v.catch.ts - step["ts_start"], 3)
 
-        triggers: list[Event] = []
-        for item in analytic_candidates:
-            if all(item is not existing for existing in triggers):
-                triggers.append(item)
-        if triggers:
+        if triggers and v.catch is not None:
             remediation_candidates: list[tuple[int, Event]] = []
+            contained: set[tuple[str, object]] = set()
+            containment_events: list[Event] = []
+            artifact_digests = _artifact_digests(step, triggers)
             for event_index, ev in enumerate(chrono):
                 if (ev.ts < step["ts_start"] - 2
                         or ev.ts > catch_deadline
@@ -648,20 +836,39 @@ def evaluate(
                             required=require_authenticated,
                             verifier=event_verifier,
                         )
-                        or not _is_remediation(ev)):
+                        or not _is_response_source(ev)):
                     continue
-                trigger = next(
-                    (
-                        item
-                        for item in triggers
-                        if ev.ts >= item.ts
-                        and _matches_remediation(step, item, ev)
-                    ),
-                    None,
+                matching_triggers = [item for item in triggers
+                                     if ev.ts >= item.ts
+                                     and _matches_remediation(step, item, ev)]
+                if not matching_triggers:
+                    continue
+                v.response_action_reported = True
+                if _is_remediation(ev):
+                    remediation_candidates.append((event_index, ev))
+                    v.response_action_applied = True
+                proven: set[tuple[str, object]] = set()
+                for trigger in matching_triggers:
+                    proven.update(_verified_containment_targets(
+                        step, trigger, ev, artifact_digests,
+                    ))
+                if proven:
+                    contained.update(proven)
+                    containment_events.append(ev)
+                    used_remediations.add(event_index)
+            expected = _expected_containment_targets(step)
+            if v.ok and expected and expected.issubset(contained):
+                v.target_containment_verified = True
+                v.containment_latency = round(max(ev.ts for ev in containment_events)
+                                              - step["ts_start"], 3)
+                v.containment_reason = "Every recorded target has an exact verified containment action."
+            elif contained:
+                v.containment_reason = (
+                    f"Only {len(contained & expected)}/{len(expected)} recorded targets "
+                    "have exact verified containment actions."
                 )
-                if trigger is None:
-                    continue
-                remediation_candidates.append((event_index, ev))
+            elif v.response_action_applied:
+                v.containment_reason = "Action reported applied; exact target containment is unverified."
             if remediation_candidates:
                 # Active Response can publish a successful delegation wrapper
                 # just before the exact Combat receipt becomes visible. Prefer
@@ -670,7 +877,7 @@ def evaluate(
                 event_index, ev = min(
                     remediation_candidates,
                     key=lambda item: (
-                        0 if _is_verified_combat_remediation(item[1]) else 1,
+                        0 if any(item[1] is ev for ev in containment_events) else 1,
                         item[1].ts,
                         item[0],
                     ),
@@ -691,6 +898,8 @@ def evaluate(
             used_native.add(native_index)
         if verification_index is not None:
             used_verifications.add(verification_index)
+        used_native.update(native_indices)
+        used_verifications.update(verification_indices)
         verdicts.append(v)
     return verdicts
 
@@ -717,20 +926,16 @@ def _closure_metrics(verdicts: List[StepVerdict]) -> dict:
         technique = verdict.technique_id or _technique_id(verdict.technique)
         if technique:
             classes.setdefault(technique, []).append(verdict)
-    def response_verified(row: StepVerdict) -> bool:
-        return bool(row.remediation and _is_verified_combat_remediation(row.remediation))
-
     applied = sum(
         1
         for rows in classes.values()
-        if any(row.action_applied or response_verified(row) for row in rows)
+        if any(row.action_applied for row in rows)
     )
 
     verified = sum(
         1
         for rows in classes.values()
         if any(row.finding_resolved for row in rows)
-        or (bool(rows) and all(response_verified(row) for row in rows))
     )
     return {
         "actionable_classes": len(classes),
@@ -739,19 +944,40 @@ def _closure_metrics(verdicts: List[StepVerdict]) -> dict:
     }
 
 
+def _score_eligible(history: dict, verdicts: List[StepVerdict]) -> bool:
+    campaign = history.get("campaign") or {}
+    return bool(
+        history.get("status", "completed") == "completed"
+        and all(verdict.ok for verdict in verdicts)
+        and (
+            history.get("kind") != "red_team"
+            or (isinstance(campaign, dict) and campaign.get("score_eligible") is True)
+        )
+    )
+
+
+def _containment_metrics(history: dict, verdicts: List[StepVerdict]) -> dict:
+    rows = [row for row in verdicts if row.category == "detection"]
+    count = sum(1 for row in rows if row.target_containment_verified)
+    eligible = len(rows)
+    conclusive = _score_eligible(history, verdicts) and bool(eligible)
+    return {
+        "count": count,
+        "eligible": eligible,
+        "rate": count / eligible if conclusive else None,
+        "outcome": ("inconclusive" if not conclusive else "verified"
+                    if count == eligible else "partial" if count else "failed"),
+    }
+
+
 def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTACK") -> str:
     lines = [_bar("="), f" ANGERONA — {title} AFTER-ACTION REPORT", _bar("=")]
     lines.append(f" Run ID     : {history.get('run_id', '?')}")
     lines.append(f" Generated  : {history.get('generated', '?')}")
     campaign = history.get("campaign") or {}
-    score_eligible = bool(
-        history.get("kind") != "red_team"
-        or (
-            history.get("status") == "completed"
-            and isinstance(campaign, dict)
-            and campaign.get("score_eligible") is True
-        )
-    )
+    score_eligible = _score_eligible(history, verdicts)
+    containment = _containment_metrics(history, verdicts)
+    lines.append(f" Containment outcome: {containment['outcome'].upper()}")
     if not score_eligible:
         expected = int(campaign.get("expected_steps", 0) or 0)
         missing = len(campaign.get("missing_plan_step_ids") or ())
@@ -791,6 +1017,10 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
     lines.append(
         " Simulation-contract validation is a pipeline canary only; it is NOT "
         "real-attack, exploit, state-actor, or breach-prevention coverage."
+    )
+    lines.append(
+        " Probe completion and test cleanup do not prove a response. Containment "
+        "requires a committed action with a verified postcondition for every exact target."
     )
     lines.append(_bar("-"))
     lines.append(" TIMELINE")
@@ -854,16 +1084,15 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
                 lines.append(f"           {mode} VERIFIED: fresh signed detector + response "
                              f"evidence is bound to action contract {v.contract_id}.")
             if v.remediation:
-                lines.append(f"           remediated by {v.remediation.module} in "
+                lines.append(f"           action reported applied by {v.remediation.module} in "
                              f"{v.remediation_latency:.2f}s — \"{v.remediation.message}\"")
-                if (v.remediation.module == "Adversary Combat"
-                        and (v.remediation.details or {}).get(
-                            "postcondition_verified"
-                        ) is True):
+                if v.target_containment_verified:
                     lines.append(
-                        "           COMBAT CLOSURE VERIFIED: the exact file/process/"
-                        "network postcondition was checked after action."
+                        "           TARGET CONTAINMENT VERIFIED: every exact recorded "
+                        "target has a committed action and verified postcondition."
                     )
+                else:
+                    lines.append(f"           containment unverified: {v.containment_reason}")
             else:
                 lines.append(f"           not remediated — the {v.catch.severity.label} "
                              "detection did not produce a correlated, successful SOAR action "
@@ -931,21 +1160,30 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
         lines.append(
             "   Detection coverage : WITHHELD — incomplete mandatory run"
         )
-    lines.append(f"   Response success   : {det_remediated}/{det_caught} detected threat(s)  "
-                 f"({(det_remediated / det_caught * 100 if det_caught else 0):.0f}%)")
+    lines.append(f"   Actions reported   : {det_remediated}/{det_caught} analytic catches")
+    if containment["rate"] is None:
+        lines.append("   Response success   : WITHHELD — incomplete run or no eligible targets")
+    else:
+        lines.append(
+            f"   Response success   : {containment['count']}/{containment['eligible']} "
+            f"planned containment step(s) ({containment['rate'] * 100:.0f}%)"
+        )
     actionable = lifecycle["actionable_classes"]
     applied = lifecycle["actions_applied"]
     verified = lifecycle["verified_closures"]
     lines.append(f"   Action contracts   : {applied}/{actionable} unique gap class(es) applied  "
                  f"({(applied / actionable * 100 if actionable else 0):.0f}%)")
-    lines.append(f"   Verified closure   : {verified}/{actionable} unique gap class(es)  "
-                 f"({(verified / actionable * 100 if actionable else 0):.0f}%)")
+    if score_eligible:
+        lines.append(f"   Verified closure   : {verified}/{actionable} unique detector-fix class(es)  "
+                     f"({(verified / actionable * 100 if actionable else 0):.0f}%)")
+    else:
+        lines.append("   Verified closure   : WITHHELD — incomplete run")
     if verified_upgrades:
         lines.append(f"   Detector fixes proven by rerun: {verified_upgrades}  "
                      "(signed Purple Guard evidence + contract verification)")
     if findings_resolved:
         lines.append(f"   Drill findings closed: {findings_resolved}  "
-                     "(authenticated action + verified postcondition or fresh rerun proof; "
+                     "(detector-fix contract and fresh rerun proof; "
                      "expiry/future misses reopen)")
     resilience = [v for v in verdicts if v.category == "resilience"]
     if resilience:
@@ -1407,14 +1645,8 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
     verified_upgrades = sum(
         1 for v in detection if v.finding_resolved and v.verification_catch)
     campaign = history.get("campaign") or {}
-    score_eligible = bool(
-        history.get("kind") != "red_team"
-        or (
-            history.get("status") == "completed"
-            and isinstance(campaign, dict)
-            and campaign.get("score_eligible") is True
-        )
-    )
+    score_eligible = _score_eligible(history, verdicts)
+    containment = _containment_metrics(history, verdicts)
 
     def _rate(numerator: int, denominator: int) -> float | None:
         if not score_eligible:
@@ -1425,19 +1657,20 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
         "run_id": history.get("run_id"),
         "report_basename": basename,
         "report_kind": history.get("kind"),
+        "outcome": containment["outcome"],
         "report_text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
         "steps_run": n,
         "detected": caught,               # raw count, all categories — kept for backward compat
-        "remediated": remediated,
+        "remediated": sum(1 for v in verdicts if v.target_containment_verified),
+        "response_actions_applied": remediated,
+        "detection_response_actions_applied": det_remediated,
         "findings_resolved": findings_resolved,
         "actionable_finding_classes": lifecycle["actionable_classes"],
         "action_contracts_applied": lifecycle["actions_applied"],
         "verified_closures": lifecycle["verified_closures"],
-        "verified_closure_rate": (
-            lifecycle["verified_closures"] / lifecycle["actionable_classes"]
-            if lifecycle["actionable_classes"] else 0.0
-        ),
+        "verified_closure_rate": _rate(lifecycle["verified_closures"],
+                                       lifecycle["actionable_classes"]),
         "detection_steps": len(detection),      # steps where a detector SHOULD fire
         "detection_caught": det_caught,
         "coverage_score_eligible": score_eligible,
@@ -1451,6 +1684,19 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
             "is required to resist arbitrary native memory mutation"
         ),
         "validation_readiness": history.get("validation_readiness"),
+        "epistemic_metrics": {
+            "verified_containment": {
+                "count": containment["count"],
+                "eligible": containment["eligible"],
+                "rate": containment["rate"],
+            },
+            "action_reported": {
+                "count": sum(1 for v in detection if v.response_action_reported),
+            },
+            "action_applied": {
+                "count": sum(1 for v in detection if v.response_action_applied),
+            },
+        },
         "evidence_taxonomy": {
             "denominator": len(detection),
             "sensor_observation": {
@@ -1471,14 +1717,14 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
                 "rate": _rate(det_caught, len(detection)),
             },
             "successful_response": {
-                "count": det_remediated,
-                "eligible": det_caught,
-                "rate": _rate(det_remediated, det_caught),
+                "count": containment["count"],
+                "eligible": containment["eligible"],
+                "rate": containment["rate"],
             },
         },
-        "detection_remediated": det_remediated,
-        "remediation_eligible": det_caught,
-        "response_success_rate": _rate(det_remediated, det_caught),
+        "detection_remediated": containment["count"],
+        "remediation_eligible": containment["eligible"],
+        "response_success_rate": containment["rate"],
         "verified_detector_upgrades": verified_upgrades,
         "verdicts": [
             {
@@ -1511,10 +1757,17 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
                     v.verification_catch.module if v.verification_catch else None
                 ),
                 "verification_detect_latency_s": v.verification_latency,
-                "remediated": v.remediation is not None,
-                "remediated_by": v.remediation.module if v.remediation else None,
-                "remediate_latency_s": v.remediation_latency,
-                "remediate_message": v.remediation.message if v.remediation else None,
+                "remediated": v.target_containment_verified,
+                "remediated_by": (v.remediation.module if v.remediation
+                                  and v.target_containment_verified else None),
+                "remediate_latency_s": v.containment_latency,
+                "response_action_reported": v.response_action_reported,
+                "response_action_applied": v.response_action_applied,
+                "response_action_module": v.remediation.module if v.remediation else None,
+                "response_action_message": v.remediation.message if v.remediation else None,
+                "response_action_latency_s": v.remediation_latency,
+                "target_containment_verified": v.target_containment_verified,
+                "containment_reason": v.containment_reason,
                 "finding_resolved": v.finding_resolved,
                 "technique_id": v.technique_id or _technique_id(v.technique),
                 "action_state": v.action_state,

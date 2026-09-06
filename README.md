@@ -51,6 +51,12 @@ spelling alone remain observations, with stronger evidence required for active
 threats. Historical records keep their original signatures and severity. See
 [findings and validation](analysis/ui-responsiveness-and-alert-calibration-2026-09-05.md).
 
+**Verified drill response results.** Automatic-containment tests now check Combat
+readiness before launching and show recovery or policy blockers. Completing
+probes leaves results pending until authenticated reports prove containment of
+each recorded target. Action claims, test cleanup and detector-fix contracts
+have separate outcomes. See [response proof and validation](analysis/drill-response-proof-2026-09-05.md).
+
 **Red Team GitHub source review.** The GitHub Tools tab resolves a public
 repository revision to an exact commit, imports a bounded source archive and
 provides plain-text browsing, integrity checks, review and revocation. Source

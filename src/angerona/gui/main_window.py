@@ -1693,8 +1693,14 @@ class MainWindow(QMainWindow):
         )
         pending = getattr(self, "_pending_simulation_cfg", None)
         if pending is not None:
-            self._pending_simulation_cfg = None
-            QTimer.singleShot(0, lambda cfg=pending: self._run_simulation(cfg))
+            QTimer.singleShot(0, lambda cfg=pending: self._resume_pending_simulation(cfg))
+
+    def _resume_pending_simulation(self, cfg: dict) -> None:
+        # Stop may be clicked after wake completion but before this queued call.
+        if getattr(self, "_pending_simulation_cfg", None) is not cfg:
+            return
+        self._pending_simulation_cfg = None
+        self._run_simulation(cfg)
 
     def _return_to_chill_after_drill(self) -> None:
         if self._eco_on and self._chill_policy.enabled:
@@ -1781,6 +1787,35 @@ class MainWindow(QMainWindow):
             else:
                 os.environ[key] = previous
 
+    def _simulation_launch_status(self, status: str, reason: str, cfg=None) -> dict:
+        result = {"status": status, "reason": reason}
+        if status == "accepted":
+            result["runs"] = dict(getattr(self, "_sim_report_runs", {}))
+        rtc = getattr(self, "_rt_console", None)
+        if rtc is not None:
+            rtc.set_launch_status(result, cfg)
+            result["dispatched"] = True
+        return result
+
+    def _check_simulation_response(self, cfg: dict) -> dict:
+        """Read memory-only readiness; never arm or repair response authority."""
+        from angerona.core.drill_readiness import assess_drill_response
+
+        readiness = assess_drill_response(
+            self.manager, require_process=bool(cfg.get("run_shark") or cfg.get("run_redteam")),
+        )
+        self._sim_response_readiness_start = dict(readiness)
+        self._sim_response_require_process = bool(cfg.get("run_shark") or cfg.get("run_redteam"))
+        if bool(cfg.get("auto_remediate", True)) and not readiness["ready"]:
+            reason = (
+                f"{readiness['state']}: {readiness['reason']}. "
+                "A running module is not necessarily armed for response. "
+                "Review Combat readiness, or select a detection-only run."
+            )
+            self.console._append(f"[red-team] Containment test blocked: {reason}")
+            return self._simulation_launch_status("rejected", reason, cfg)
+        return {"status": "ready", "reason": str(readiness.get("reason") or "")}
+
     def _abort_simulation_launch(self, reason: str, started: tuple = ()) -> None:
         """Collapse a refused launch without ever scheduling a stale AAR."""
         for engine in started:
@@ -1812,11 +1847,12 @@ class MainWindow(QMainWindow):
             f"started drill was stopped and no AAR was scheduled: {reason}"
         )
         self.console._append(f"[red-team] {message}")
+        self._simulation_launch_status("rejected", reason)
         QMessageBox.warning(self, "Red Team Simulation", message)
         if self._eco_on and self._chill_policy.enabled:
             self.chill_return_requested.emit()
 
-    def _run_simulation(self, cfg) -> None:
+    def _run_simulation(self, cfg) -> dict:
         if (self.shark_engine.is_running or self.red_team_engine.is_running
                 or int(getattr(self, "_sim_aar_pending", 0)) > 0
                 or bool(getattr(self, "_redteam_report_pending", False))):
@@ -1825,7 +1861,9 @@ class MainWindow(QMainWindow):
                 "Red Team Simulation",
                 "A drill or its evidence-preserving report is already running.",
             )
-            return
+            return self._simulation_launch_status(
+                "rejected", "A drill or its evidence-preserving report is already running.", cfg,
+            )
         # A drill must test real detector/response paths, not sensors that Chill
         # intentionally parked. Wake them first and launch only after the staged
         # worker reaches its cycle barriers. This is a coverage lease, not a
@@ -1839,8 +1877,15 @@ class MainWindow(QMainWindow):
                 self.console._append(
                     "[chill] Preparing full detector coverage before the drill starts."
                 )
-                return
+                return self._simulation_launch_status(
+                    "queued", "Preparing full detector coverage before launch.", cfg,
+                )
             self._pending_simulation_cfg = None
+        if not cfg.get("run_shark") and not cfg.get("run_redteam"):
+            return self._simulation_launch_status("rejected", "No drill scenario was selected.", cfg)
+        response_check = self._check_simulation_response(cfg)
+        if response_check["status"] == "rejected":
+            return response_check
         import os
         self._shark_prev_armed = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK")
         self._shark_prev_minsev = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY")
@@ -1988,22 +2033,28 @@ class MainWindow(QMainWindow):
             self._abort_simulation_launch(
                 f"{type(exc).__name__}: {exc}", tuple(started)
             )
-            return
+            return {"status": "rejected", "reason": f"{type(exc).__name__}: {exc}"}
 
         self._sim_aar_pending = len(started)
         if not self._sim_aar_pending:
             self._abort_simulation_launch("no engine accepted the run")
-            return
+            return {"status": "rejected", "reason": "No engine accepted the run."}
+        self._sim_report_runs = {
+            kind: str(engine.run_id)
+            for kind, engine in (("red_team", self.red_team_engine), ("shark", self.shark_engine))
+            if engine in started
+        }
         self._sim_poll = QTimer(self)
         self._sim_poll.timeout.connect(self._sim_check_done)
         self._sim_poll.start(500)
+        return self._simulation_launch_status("accepted", "Drill accepted.", cfg)
 
     def _sim_check_done(self) -> None:
         if self.shark_engine.is_running or self.red_team_engine.is_running:
             return
         self._sim_poll.stop()
         self.shark_swim.stop(); self.shark_banner.stop()
-        # Complete the live progress wheel in the Red Team console (green 100%).
+        # Completing execution never certifies the response result.
         rtc = getattr(self, "_rt_console", None)
         if rtc is not None:
             try:
@@ -2032,9 +2083,15 @@ class MainWindow(QMainWindow):
             if pending <= 0:
                 return
             pending -= 1
-            self._sim_aar_pending = pending
             if pending:
+                self._sim_aar_pending = pending
                 return
+            from angerona.core.drill_readiness import assess_drill_response
+
+            self._sim_response_readiness_end = assess_drill_response(
+                self.manager,
+                require_process=bool(getattr(self, "_sim_response_require_process", False)),
+            )
             self._restore_simulation_response_policy()
             try:
                 from angerona.modules.file_integrity import unregister_runtime_watch
@@ -2042,6 +2099,9 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             self._sim_runtime_watch = None
+            # Keep launch gated until the last worker finishes policy/watch
+            # restoration; otherwise a new run could inherit the temporary tier.
+            self._sim_aar_pending = 0
             if self._eco_on and self._chill_policy.enabled:
                 self.chill_return_requested.emit()
 
@@ -2062,24 +2122,10 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
 
-        # Arm the Active Response SOAR engine's kill+rollback tier for the
-        # duration of this one run, then restore whatever the user had set.
-        import os
-        self._shark_prev_armed = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK")
-        os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = "1"
-
-        self.shark_monitor.reset()
-        self.shark_monitor.append("Launching Shark Attack Engine…")
-        self.shark_monitor.show()
-        self.shark_monitor.raise_()
-        self.shark_monitor.activateWindow()
-
-        self.shark_swim.start()
-        self.shark_banner.start()
-        self.shark_engine.start()
-        self._shark_poll = QTimer(self)
-        self._shark_poll.timeout.connect(self._shark_check_done)
-        self._shark_poll.start(500)
+        self._run_simulation({
+            "run_shark": True, "run_redteam": False,
+            "auto_remediate": True, "complexity": 1,
+        })
 
     def _open_red_team(self) -> None:
         """Open the Red Team console window (Live Offense Monitor)."""
@@ -2105,6 +2151,9 @@ class MainWindow(QMainWindow):
             "real secret is read and no persistence mechanism is touched.\n\nContinue?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply != QMessageBox.Yes:
+            return
+        cfg = {"run_redteam": True, "run_shark": False, "auto_remediate": True}
+        if self._check_simulation_response(cfg)["status"] == "rejected":
             return
         import os
         self._shark_prev_armed = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK")
@@ -2145,6 +2194,8 @@ class MainWindow(QMainWindow):
                 raise RuntimeError("Red Team engine safety preflight rejected the run")
             self._legacy_redteam_active = True
             self._redteam_report_pending = True
+            self._sim_report_runs = {"red_team": str(self.red_team_engine.run_id)}
+            self._simulation_launch_status("accepted", "Drill accepted.", cfg)
         except Exception as exc:
             self.shark_monitor.append(
                 "Red Team validation/start failed closed before marker creation: "
@@ -2181,6 +2232,9 @@ class MainWindow(QMainWindow):
         self._rt_poll.stop()
         self.shark_swim.stop()
         self.shark_banner.stop()
+        rtc = getattr(self, "_rt_console", None)
+        if rtc is not None:
+            rtc.finish_run()
         self._sim_redteam_cleanup_scope = (
             self.red_team_engine.evidence_cleanup_scope()
         )
@@ -2213,6 +2267,7 @@ class MainWindow(QMainWindow):
                 report_handoff = {
                     "text": text,
                     "report_kind": "red_team",
+                    "run_id": str(self.red_team_engine.run_id),
                     "error": "generation did not return an authenticated immutable report",
                 }
         except Exception as exc:
@@ -2223,6 +2278,7 @@ class MainWindow(QMainWindow):
             report_handoff = {
                 "text": text,
                 "report_kind": "red_team",
+                "run_id": str(self.red_team_engine.run_id),
                 "error": "report persistence or evaluation failed",
             }
         finally:
@@ -2341,7 +2397,9 @@ class MainWindow(QMainWindow):
     def _shark_build_aar(self) -> None:
         """Runs on a background thread — never touch widgets here directly,
         only emit the signal that hands the result back to the GUI thread."""
-        from angerona.shark.aar_report import generate_aar
+        from angerona.shark.aar_report import (
+            AARReportResult, generate_aar, verified_aar_handoff_text,
+        )
         # Give fast-polling modules (FIM: nominally 30s) one full cycle plus
         # a safety margin to catch up before judging anything a miss. This
         # was 35s, which a real run showed was too tight: FIM's scan used to
@@ -2353,13 +2411,27 @@ class MainWindow(QMainWindow):
         # margin for scheduling jitter without a noticeably longer wait for
         # the AAR dialog to pop up.
         try:
-            text = generate_aar(
+            report_handoff = generate_aar(
                 self.config.data_dir,
                 settle_seconds=45,
                 recorder=self.storage,
                 bus=self.bus,
                 manager=self.manager,
+                return_result=True,
             )
+            if type(report_handoff) is not AARReportResult:
+                raise ValueError("generation did not return an authenticated immutable report")
+            text = verified_aar_handoff_text(report_handoff)
+        except Exception as exc:
+            text = (
+                "SHARK ATTACK — After-Action Report unavailable\n\n"
+                f"Report persistence/evaluation failed: {type(exc).__name__}: {exc}"
+            )
+            report_handoff = {
+                "text": text, "report_kind": "shark",
+                "run_id": str(self.shark_engine.run_id),
+                "error": str(exc),
+            }
         finally:
             self._simulation_aar_finished()
         try:
@@ -2369,7 +2441,7 @@ class MainWindow(QMainWindow):
         self._shark_narration.emit("\U0001F4CB Settle window done — opening the "
                                    "After-Action Report. (Also available any time "
                                    "via the console's `aar` command.)")
-        self._aar_ready.emit(text)
+        self._aar_ready.emit(report_handoff)
 
     def _show_aar_dialog(self, handoff: object) -> None:
         from angerona.shark.aar_report import (
@@ -2384,20 +2456,21 @@ class MainWindow(QMainWindow):
         failed_result = (
             handoff
             if isinstance(handoff, dict)
-            and handoff.get("report_kind") == "red_team"
+            and handoff.get("report_kind") in {"red_team", "shark"}
             else None
         )
         if immutable_result is not None:
             try:
                 text = verified_aar_handoff_text(immutable_result)
-            except (TypeError, ValueError) as exc:
+            except (OSError, TypeError, ValueError) as exc:
                 immutable_result = None
                 failed_result = {
                     "text": (
-                        "RED TEAM ATTACK — After-Action Report unavailable\n\n"
+                        f"{handoff.report_kind.upper()} — After-Action Report unavailable\n\n"
                         "The immutable signed byte handoff failed verification."
                     ),
-                    "report_kind": "red_team",
+                    "report_kind": handoff.report_kind,
+                    "run_id": handoff.run_id,
                     "error": str(exc),
                 }
                 text = str(failed_result["text"])
@@ -2406,7 +2479,7 @@ class MainWindow(QMainWindow):
         is_redteam = bool(
             immutable_result is not None
             and immutable_result.report_kind == "red_team"
-        ) or failed_result is not None or "RED TEAM ATTACK" in text.upper()
+        ) or bool(failed_result and failed_result.get("report_kind") == "red_team") or "RED TEAM ATTACK" in text.upper()
         report_path = self.config.data_dir / ("redteam_aar.json" if is_redteam
                                               else "shark_aar.json")
         report_binding = {"run_id": "", "sha256": "", "error": ""}
@@ -2438,6 +2511,22 @@ class MainWindow(QMainWindow):
                 })
         except (OSError, UnicodeDecodeError, ValueError, TypeError) as exc:
             report_binding["error"] = str(exc)
+
+        # Only verified immutable bytes may update the live run's result. The
+        # console additionally binds each report to the accepted engine run ID.
+        rtc = getattr(self, "_rt_console", None)
+        if rtc is not None and (immutable_result is not None or failed_result is not None):
+            result_kind = "red_team" if is_redteam else "shark"
+            result_run = (immutable_result.run_id if immutable_result is not None
+                          else str(failed_result.get("run_id") or ""))
+            result_payload = None
+            result_error = str(report_binding.get("error") or "")
+            if immutable_result is not None and not result_error:
+                try:
+                    result_payload = json.loads(immutable_result.report_bytes.decode("utf-8"))
+                except (UnicodeDecodeError, ValueError, TypeError) as exc:
+                    result_error = str(exc)
+            rtc.record_verified_report(result_kind, result_run, result_payload, error=result_error)
 
         def _attempt_fix(progress=None) -> str:
             if pm is None:

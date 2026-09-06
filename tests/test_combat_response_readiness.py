@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import queue
+import hashlib
 import threading
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -158,7 +160,8 @@ def test_worker_rechecks_policy_and_evidence_before_host_action(tmp_path, monkey
     assert not module.receipt_path.exists()
 
 
-def test_queued_inert_artifact_has_verified_receipt_and_reversible_restore(tmp_path, monkeypatch):
+@pytest.mark.parametrize("delegated", [False, True])
+def test_queued_inert_artifact_has_verified_receipt_and_reversible_restore(tmp_path, monkeypatch, delegated):
     module = _combat(tmp_path, monkeypatch)
     module.status = "running"
     module._bus.arm(BusAuthority(b"s" * 32))
@@ -166,16 +169,69 @@ def test_queued_inert_artifact_has_verified_receipt_and_reversible_restore(tmp_p
     artifact.write_text("harmless test data", encoding="utf-8")
     event = _event(path=str(artifact), response_contract={
         "version": 1, "actions": ["quarantine_file"], "targets": {"path": str(artifact)},
-    })
+    }, run_id="inert-proof-run", step_id="inert-proof-step",
+        observed_content_sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        evidence_type="native_analytic_detection", detector_verdict="positive")
     module._bus.publish(event)
+    if delegated:
+        original = module._bus.recent(1)[0]
+        request = replace(event, module="Active Response SOAR Request", ts=time.time(), details={
+            **event.details, "origin_module": original.module, "origin_ts": original.ts,
+            "origin_event_digest": original.hmac_sig,
+        })
+        module._bus.publish(request)
     module._submit(module._bus.recent(1)[0])
     module._handle(module._queue.get_nowait())
     assert not artifact.exists()
     action = module.list_actions()[0]
     assert action["integrity_status"] == "verified"
     assert action["details"]["postcondition_verified"] is True
+    receipt = next(ev for ev in module._bus.recent(20)
+                   if ev.module == module.name and ev.details.get("verified_actions"))
+    assert module._bus.verify(receipt)
+    assert receipt.details["run_id"] == "inert-proof-run"
+    assert receipt.details["step_id"] == "inert-proof-step"
+    if delegated:
+        assert receipt.details["origin_event_digest"] == original.hmac_sig
+        assert receipt.details["origin_module"] == original.module
+        assert receipt.details["origin_ts"] == original.ts
+    proof = receipt.details["verified_actions"][0]
+    assert proof == {
+        "action": "quarantine_file", "action_id": action["action_id"],
+        "target": str(artifact), "postcondition_verified": True,
+        "details": {"path": str(artifact),
+                    "sha256": hashlib.sha256(b"harmless test data").hexdigest()},
+    }
+    # Exercise production summary -> authenticated evaluator without launching
+    # any campaign. The file is disposable and restored below.
+    from angerona.shark.aar_report import evaluate
+
+    verdict = evaluate({"run_id": "inert-proof-run", "steps": [{
+        "step_id": "inert-proof-step", "stage": "Initial Access",
+        "technique": "inert local file", "description": "harmless fixture",
+        "ts_start": event.ts - 0.1, "ts_end": receipt.ts,
+        "artifact_paths": [str(artifact)],
+    }]}, module._bus.recent(20), require_authenticated=True,
+        event_verifier=module._bus.verify, native_verifier=lambda ev, step: ev.module == "Detector",
+    )[0]
+    assert verdict.target_containment_verified
     assert module.undo_action(action["action_id"])["ok"] is True
     assert artifact.read_text(encoding="utf-8") == "harmless test data"
+
+
+def test_process_proof_exposes_committed_identity_without_private_journal_fields():
+    from angerona.modules.adversary_combat import CombatAction
+
+    action = CombatAction("act-inert", "combat-inert", "suspend_process", 100.0,
+                          True, "inert (123)", {
+                              "pid": 123, "create_time": 90.0,
+                              "postcondition_verified": True,
+                              "mutation_generation": "private journal value",
+                          }, "Detector", 99.0)
+    proof = AdversaryCombat._response_action_evidence(action)
+    assert proof["details"] == {"pid": 123, "process_create_time": 90.0}
+    assert proof["postcondition_verified"] is True
+    assert "private journal value" not in str(proof)
 
 
 @pytest.mark.parametrize("verification_error", [False, True])

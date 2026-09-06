@@ -1816,14 +1816,30 @@ class AdversaryCombat(BaseModule):
             combat_id=combat_id,
             actions=[action.action for action in succeeded],
             action_ids=[action.action_id for action in succeeded],
+            verified_actions=[self._response_action_evidence(action) for action in succeeded],
             action_succeeded=bool(succeeded),
             mitigated=bool(succeeded),
             postcondition_verified=postcondition_verified,
             reversible_actions=sum(1 for action in succeeded if action.reversible),
             trigger_module=event.module,
             trigger_ts=event.ts,
+            origin_module=(
+                details.get("origin_module")
+                if isinstance(details.get("origin_module"), str) else None
+            ),
+            origin_ts=(
+                details.get("origin_ts")
+                if type(details.get("origin_ts")) in {int, float} else None
+            ),
+            origin_event_digest=(
+                details.get("origin_event_digest")
+                if isinstance(details.get("origin_event_digest"), str) else None
+            ),
             path=path or None,
             pid=pid if isinstance(pid, int) else None,
+            process_create_time=self._expected_process_start(details)[1],
+            run_id=(details.get("run_id") if isinstance(details.get("run_id"), str) else None),
+            step_id=(details.get("step_id") if isinstance(details.get("step_id"), str) else None),
             response_mode=policy.mode,
             queue_request_id=(
                 details.get("queue_request_id")
@@ -1831,6 +1847,29 @@ class AdversaryCombat(BaseModule):
                 else None
             ),
         )
+
+    @staticmethod
+    def _response_action_evidence(action: CombatAction) -> dict[str, Any]:
+        """Expose committed target evidence without copying private journal state.
+
+        An action against another target, or successful deception activation,
+        cannot establish that the triggering file/process was contained. Keep
+        each postcondition paired with the exact committed action identity.
+        """
+        identity: dict[str, Any] = {}
+        if action.action == "quarantine_file":
+            identity["path"] = action.target
+            identity["sha256"] = action.details.get("sha256")
+        elif action.action in {"suspend_process", "terminate_process", "isolate_program"}:
+            identity["pid"] = action.details.get("pid")
+            identity["process_create_time"] = action.details.get("create_time")
+        return {
+            "action": action.action,
+            "action_id": action.action_id,
+            "target": action.target,
+            "postcondition_verified": action.details.get("postcondition_verified") is True,
+            "details": identity,
+        }
 
     @staticmethod
     def _canonical_record(value: dict[str, Any]) -> bytes:

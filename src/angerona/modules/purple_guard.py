@@ -2276,6 +2276,83 @@ class RedTeamValidationLease:
                     return False
         return True
 
+    @staticmethod
+    def _historical_artifact_identity(
+        state: _LeaseAuthorityState,
+        observed_target: str,
+        signed_content_sha256: object,
+    ) -> dict[str, object]:
+        """Verify report evidence after an enrolled object was moved away.
+
+        This is not issuance or cleanup authority. A live original path must
+        still pass the existing identity check. Only an absent name may use
+        its retained descriptor, and the original object's complete content
+        and metadata must still match enrollment and the signed observation.
+        """
+        current = RedTeamValidationLease._validated_artifact_identity(state, observed_target)
+        if current:
+            return current
+        if not isinstance(signed_content_sha256, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", signed_content_sha256
+        ):
+            return {}
+        try:
+            # Do not resolve the final component: a replacement symlink must
+            # be rejected as present, including when its destination is absent.
+            candidate = Path(os.path.abspath(observed_target))
+            if candidate.parent != state.target:
+                return {}
+            try:
+                candidate.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                return {}
+            record = (state.artifact_handles or {}).get(os.path.normcase(str(candidate)))
+            if record is None:
+                return {}
+            descriptor, enrolled = record
+            if enrolled.get("sha256") != signed_content_sha256:
+                return {}
+            before = os.fstat(descriptor)
+            fields = ("device", "inode", "size", "mtime_ns")
+            identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            if (
+                identity != tuple(enrolled.get(key) for key in fields)
+                or not stat.S_ISREG(before.st_mode)
+                or int(getattr(before, "st_nlink", 1)) != 1
+                or bool(getattr(before, "st_file_attributes", 0) & 0x400)
+                or not 0 <= before.st_size <= 1024 * 1024
+            ):
+                return {}
+            position = os.lseek(descriptor, 0, os.SEEK_CUR)
+            digest = hashlib.sha256()
+            try:
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                remaining = before.st_size
+                while remaining:
+                    chunk = os.read(descriptor, min(64 * 1024, remaining))
+                    if not chunk:
+                        return {}
+                    digest.update(chunk)
+                    remaining -= len(chunk)
+            finally:
+                os.lseek(descriptor, position, os.SEEK_SET)
+            after = os.fstat(descriptor)
+            if (
+                identity != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                or int(getattr(after, "st_nlink", 1)) != 1
+                or digest.hexdigest() != signed_content_sha256
+            ):
+                return {}
+            try:
+                candidate.lstat()
+            except FileNotFoundError:
+                return copy.deepcopy(enrolled)
+            return {}
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return {}
+
     def attest_purple_detection(
         self,
         producer: object,
@@ -2339,7 +2416,7 @@ class RedTeamValidationLease:
                     )
                 })
             core: dict[str, object] = {
-                "redteam_detector_receipt_version": 1,
+                "redteam_detector_receipt_version": 2,
                 "receipt_type": "purple_simulation_validation",
                 "lease_id": state.lease_id,
                 "receipt_id": state.receipt_id,
@@ -2357,6 +2434,7 @@ class RedTeamValidationLease:
                 "artifact_identity_sha256": str(
                     artifact_identity.get("identity_sha256") or ""
                 ),
+                "observed_content_sha256": str(artifact_identity.get("sha256") or ""),
                 "process_identity_sha256": str(
                     process_identity.get("identity_sha256") or ""
                 ),
@@ -2394,6 +2472,13 @@ class RedTeamValidationLease:
                 return False
             supplied = str(details.get("detector_receipt_mac") or "")
             core = {key: value for key, value in details.items() if key != "detector_receipt_mac"}
+            version = details.get("redteam_detector_receipt_version")
+            if type(version) is not int or version not in {1, 2}:
+                return False
+            if version == 1 and "observed_content_sha256" in details:
+                # Legacy signatures did not cover this field; it must never
+                # supply unsigned content identity to a containment scorer.
+                return False
             required = {
                 "redteam_detector_receipt_version",
                 "receipt_type",
@@ -2416,6 +2501,8 @@ class RedTeamValidationLease:
                 "evidence_type",
                 "detector_verdict",
             }
+            if version == 2:
+                required.add("observed_content_sha256")
             signed_core = {key: core.get(key) for key in required}
             evidence_kind = str(details.get("evidence_kind") or "")
             if evidence_kind == "inert_file_marker":
@@ -2429,8 +2516,8 @@ class RedTeamValidationLease:
             else:
                 observed_target = ""
             artifact_identity = (
-                RedTeamValidationLease._validated_artifact_identity(
-                    state, observed_target
+                RedTeamValidationLease._historical_artifact_identity(
+                    state, observed_target, details.get("observed_content_sha256")
                 )
                 if evidence_kind == "inert_file_marker"
                 else {}
@@ -2464,6 +2551,8 @@ class RedTeamValidationLease:
                         bool(artifact_identity)
                         and details.get("artifact_identity_sha256")
                         == artifact_identity.get("identity_sha256")
+                        and (version == 1 or details.get("observed_content_sha256")
+                             == artifact_identity.get("sha256"))
                     )
                 )
                 and (
@@ -2473,6 +2562,7 @@ class RedTeamValidationLease:
                         and details.get("process_identity_sha256")
                         == process_identity.get("identity_sha256")
                         and bool(details.get("source_observation_sha256"))
+                        and (version == 1 or details.get("observed_content_sha256") == "")
                     )
                 )
                 and details.get("technique") in set(step.get("attack_ids") or ())
@@ -2742,8 +2832,8 @@ class RedTeamValidationLease:
             observed_path = str(
                 details.get("path") or details.get("artifact_path") or ""
             )
-            artifact_identity = RedTeamValidationLease._validated_artifact_identity(
-                state, observed_path
+            artifact_identity = RedTeamValidationLease._historical_artifact_identity(
+                state, observed_path, details.get("observed_content_sha256")
             )
             scan_receipt = details.get("fim_scan_receipt")
             scan_identity = details.get("fim_scan_path_identity")

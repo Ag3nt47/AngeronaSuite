@@ -140,6 +140,12 @@ class RedTeamConsole(QDialog):
         except Exception:
             pass
         self._stage_messages: dict[str, list[str]] = {}
+        self._report_runs: dict[str, str] = {}
+        self._report_results: dict[str, dict] = {}
+        self._containment_requested = True
+        self._run_cancelled = False
+        self._run_pending = False
+        self._launch_queued = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 14)
@@ -303,12 +309,14 @@ class RedTeamConsole(QDialog):
         self.cb_remediate = QCheckBox("Auto-contain detected markers during the run")
         self.cb_remediate.setChecked(True)
         self.cb_remediate.setToolTip(
-            "Missed detector gaps can use Apply Practice Fix → Test → signed verification."
+            "Requires an armed response module and a compatible containment policy. "
+            "Uncheck for a detection-only run."
         )
         ol.addWidget(self.cb_remediate)
         remediation_help = QLabel(
-            "Missed detector gaps can use Apply Practice Fix → Test → signed "
-            "verification after the run."
+            "A running module may still be unable to respond. Containment tests "
+            "check response readiness before launch and require verified results. "
+            "Uncheck this option for a detection-only run."
         )
         remediation_help.setWordWrap(True)
         remediation_help.setStyleSheet("color:#9fb3c8; margin-left:24px;")
@@ -342,6 +350,7 @@ class RedTeamConsole(QDialog):
         for index, (key, label, _aliases) in enumerate(_STAGES):
             chip = _StageChip(key, label)
             chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            chip.setWordWrap(True)
             chip.setMinimumHeight(30)
             chip.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             chip.setToolTip(f"Open exact {label} stage details and artifact evidence")
@@ -381,8 +390,11 @@ class RedTeamConsole(QDialog):
         # Sticky actions live outside the scrolling configuration body, keeping
         # Launch and Stop & clean reachable at every supported window size.
         act = QHBoxLayout()
-        # Live progress wheel — colours from red → amber → green as the drill runs.
+        # Only an authenticated containment result may complete the wheel.
         self.run_spinner = RunSpinner()
+        # The full state is shown above the stage grid; reserve only the ring
+        # here so footer buttons cannot clip its label on a 700 px window.
+        self.run_spinner.set_compact(True, extent=30)
         act.addWidget(self.run_spinner)
         self.launch_btn = QPushButton("▶  Launch simulation")
         self.launch_btn.setStyleSheet("background:#7f1d1d; color:#fecaca; border:1px solid #b91c1c;"
@@ -398,15 +410,105 @@ class RedTeamConsole(QDialog):
         return w
 
     def finish_run(self) -> None:
-        """Called by the parent when both engines have finished — completes the wheel."""
+        """Engine completion starts evidence review; it does not prove containment."""
         if self._active_stage is not None:
             self._set_chip_state(self._active_stage, "complete")
             self._active_stage = None
-        self.live_status.setText("Simulation complete — all received stages are shown in green.")
+        self.live_status.setText(
+            "Simulation stages complete — awaiting authenticated response evidence. "
+            "Stage colors show execution only."
+        )
+        self.live_status.setStyleSheet("color:#fbbf24; font-size:11px;")
+        self.run_spinner.start("Verifying response evidence")
+
+    def set_launch_status(self, result: dict, cfg: dict | None = None) -> None:
+        """Also receives the eventual launch result after a queued Chill wake-up."""
+        status = str(result.get("status") or "rejected")
+        reason = str(result.get("reason") or "Launch was not accepted.")
+        if status == "rejected" and self._run_pending and not self._launch_queued:
+            self.log.append("Additional launch refused — " + reason)
+            return
+        self.run_spinner.stop()
+        if status == "accepted":
+            self.launch_btn.setEnabled(False)
+            self._run_pending = True
+            self._run_cancelled = False
+            self._launch_queued = False
+            self._report_runs = dict(result.get("runs") or {})
+            self._report_results = {}
+            self._containment_requested = bool((cfg or {}).get("auto_remediate", True))
+            self.live_status.setText(
+                "Containment test running — results require verified evidence."
+                if self._containment_requested else
+                "Detection-only run — no containment pass will be assigned."
+            )
+            self.live_status.setStyleSheet("color:#9fb3c8; font-size:11px;")
+            self.run_spinner.start("Simulation running")
+        else:
+            self._launch_queued = status == "queued"
+            self._run_pending = self._launch_queued
+            self.launch_btn.setEnabled(status != "queued")
+            self.live_status.setText(
+                ("Launch queued — " if status == "queued" else "Launch blocked — ")
+                + reason
+            )
+            self.live_status.setStyleSheet("color:#fbbf24; font-size:11px;")
+        self.log.append(self.live_status.text())
+
+    def record_verified_report(
+        self, kind: str, run_id: str, payload: dict | None, *, error: str = "",
+    ) -> None:
+        """Receive only the parent's verified immutable handoff, bound to this run."""
+        if not run_id or self._report_runs.get(kind) != run_id:
+            return
         try:
-            self.run_spinner.finish("Simulation complete")
-        except Exception:
-            pass
+            if error:
+                raise ValueError(error)
+            metrics = payload["epistemic_metrics"]["verified_containment"]
+            count, eligible = metrics["count"], metrics["eligible"]
+            outcome = str(payload["outcome"])
+            if (type(count) is not int or type(eligible) is not int
+                    or not 0 <= count <= eligible
+                    or outcome not in {"verified", "partial", "failed", "inconclusive"}
+                    or (outcome == "verified" and (eligible == 0 or count != eligible))
+                    or (outcome == "partial" and not 0 < count < eligible)
+                    or (outcome == "failed" and (count != 0 or eligible == 0))):
+                raise ValueError("verified containment metrics are inconsistent")
+            result = {"count": count, "eligible": eligible, "outcome": outcome}
+        except (KeyError, TypeError, ValueError) as exc:
+            result = {"count": 0, "eligible": 0, "outcome": "inconclusive", "error": str(exc)}
+        self._report_results[kind] = result
+        pending = set(self._report_runs) - set(self._report_results)
+        if pending:
+            self.live_status.setText("Awaiting authenticated evidence for: " + ", ".join(sorted(pending)))
+            return
+        count = sum(row["count"] for row in self._report_results.values())
+        eligible = sum(row["eligible"] for row in self._report_results.values())
+        inconclusive = any(row["outcome"] == "inconclusive" for row in self._report_results.values())
+        errors = "; ".join(row["error"] for row in self._report_results.values() if row.get("error"))
+        self.run_spinner.stop()
+        self._run_pending = False
+        self.launch_btn.setEnabled(True)
+        if self._run_cancelled:
+            message = "Containment inconclusive — run cancelled; marker cleanup does not prove response success."
+            color = "#fbbf24"
+        elif not self._containment_requested:
+            message = f"Detection-only result — {count}/{eligible} verified responses observed; no containment pass assigned."
+            color = "#9fb3c8"
+        elif inconclusive or eligible == 0:
+            message = f"Containment inconclusive — {count}/{eligible} verified. " + (errors or "Review the report for incomplete evidence.")
+            color = "#fbbf24"
+        elif count == eligible and all(row["outcome"] == "verified" for row in self._report_results.values()):
+            message = f"Verified containment — {count}/{eligible} tested targets contained."
+            color = "#2fe38a"
+            self.run_spinner.start("Containment verified")
+            self.run_spinner.finish("Containment verified")
+        else:
+            message = f"Containment {'partial' if count else 'failed'} — {count}/{eligible} verified; {eligible - count} remain unverified. Review the report."
+            color = "#fbbf24" if count else "#ff7373"
+        self.live_status.setText(message)
+        self.live_status.setStyleSheet(f"color:{color}; font-size:11px;")
+        self.log.append(message)
 
     # ── History tab ──────────────────────────────────────────────────────────
     def _build_history_tab(self) -> QWidget:
@@ -1150,6 +1252,8 @@ class RedTeamConsole(QDialog):
 
     # ── launch / stop ────────────────────────────────────────────────────────
     def _launch(self) -> None:
+        if self._run_pending:
+            return
         if not (self.cb_shark.isChecked() or self.cb_apt.isChecked()):
             QMessageBox.information(self, "Red Team", "Pick at least one attack profile.")
             return
@@ -1173,16 +1277,23 @@ class RedTeamConsole(QDialog):
             "complexity": self.sld.value() + 1,
         }
         try:
-            self._parent._run_simulation(cfg)
-            # Estimated-duration wheel: scales with intensity (phases) and whether
-            # both profiles run. finish_run() snaps it to green when the drill ends.
-            phases = self.sld.value() + 1
-            est = 14 + phases * 9 + (12 if (self.cb_shark.isChecked() and self.cb_apt.isChecked()) else 0)
-            self.run_spinner.begin_estimated(est, "Simulation running")
+            result = self._parent._run_simulation(cfg)
+            if not isinstance(result, dict):
+                result = {"status": "rejected", "reason": "No launch acceptance was returned."}
+            if not result.get("dispatched"):
+                self.set_launch_status(result, cfg)
         except Exception as exc:
+            self.set_launch_status({"status": "rejected", "reason": str(exc)}, cfg)
             QMessageBox.warning(self, "Launch failed", str(exc))
 
     def _stop(self) -> None:
+        if self._parent is not None:
+            self._parent._pending_simulation_cfg = None
+        if self._run_pending and not self._launch_queued:
+            self._run_cancelled = True
+        if self._launch_queued:
+            self._launch_queued = False
+            self._run_pending = False
         for eng in ("red_team_engine", "shark_engine"):
             try:
                 getattr(self._parent, eng).stop_and_clean()
@@ -1193,6 +1304,7 @@ class RedTeamConsole(QDialog):
         except Exception:
             pass
         self.live_status.setText("Stop requested — cleaning simulation markers…")
+        self.launch_btn.setEnabled(not self._run_pending)
         self.log.append("■ Stop requested — engines cleaning up their markers.")
 
     # ── editor ───────────────────────────────────────────────────────────────

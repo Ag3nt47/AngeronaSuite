@@ -225,13 +225,16 @@ def test_shark_network_evidence_and_combat_action_correlate_exactly():
         "remote blocked",
         Severity.HIGH,
         started + 0.3,
-        {"trigger_ts": detection.ts, "mitigated": True},
+        {"trigger_ts": detection.ts, "trigger_module": detection.module,
+         "pid": 4242, "remote_ip": "203.0.113.10", "remote_port": 443,
+         "mitigated": True},
     )
 
     verdict = evaluate(history, [detection, response])[0]
 
     assert verdict.catch is detection
     assert verdict.remediation is response
+    assert not verdict.target_containment_verified
 
 
 def test_maximum_combat_uses_realtime_fim_cadence(monkeypatch):

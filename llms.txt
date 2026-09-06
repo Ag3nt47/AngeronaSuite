@@ -24,6 +24,15 @@ kernel component is a product capability.
 
 ## LATEST MAINTENANCE (2026-09-05)
 
+- Containment drills check memory-only Combat readiness and effective policy
+  before launch. Rejected, queued, probes-complete and verified-report states
+  are distinct. Detection-only runs cannot receive containment success.
+- Response success requires exact committed target evidence and verified
+  postconditions. File proof binds content digest; process proof binds PID plus
+  creation time. Wrappers, unrelated actions and cleanup do not count. Reports
+  keep detector-fix contract closure separate and withhold incomplete-run scores.
+- Evidence: analysis/drill-response-proof-2026-09-05.md. The existing local
+  startup-checkpoint recovery hold remains separate and was not repaired.
 - Alert review uses bounded background snapshots for Resolve Center, dashboard
   threat/posture, security wake classification and SOAR queue presentation.
   Busy/failed reads preserve the previous view; actions still recheck authority.
