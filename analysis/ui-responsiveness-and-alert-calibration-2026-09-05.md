@@ -44,6 +44,8 @@ not establish that the named programs or files are safe either.
   eligible independent detector signals retain their existing correlation path.
 - Alert Detail explains the assessment separately from recorded severity.
   Observation containment controls are disabled, with original evidence retained.
+  Resolve Center separates pagination from action buttons so counts and controls
+  remain legible in a narrower window.
 - Defender telemetry continuity failures remain visible as health evidence, and
   kernel control gaps as hardening exposure. Narrow compatibility rules remove
   the old indicator records from active threat calculations without changing
@@ -73,6 +75,9 @@ not establish that the named programs or files are safe either.
   whitespace checks passed. The updated Alert Detail layout was rendered with
   synthetic evidence at 900 × 720 and inspected; observation text and actions
   remain visible. The disabled containment control was checked programmatically.
+- After the footer spacing follow-up, **20 focused Resolve/UI checks passed**.
+  Resolve Center was rendered and inspected at 900 × 650; the full footer and
+  both navigation and action rows fit without clipped labels.
 
 ## Limits and deployment
 

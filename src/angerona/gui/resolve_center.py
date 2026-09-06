@@ -193,10 +193,11 @@ class ResolveCenter(QDialog):
         self.table.cellDoubleClicked.connect(lambda *_: self._act_selected(self._detail))
         root.addWidget(self.table, 1)
 
-        bar = QHBoxLayout()
+        navigation = QHBoxLayout()
         self._foot = QLabel("")
         self._foot.setStyleSheet("color:#9aa4b2;")
-        bar.addWidget(self._foot, 1)
+        self._foot.setWordWrap(True)
+        navigation.addWidget(self._foot, 1)
         self._previous_btn = QPushButton("‹ Previous")
         self._previous_btn.setShortcut("Alt+Left")
         self._previous_btn.setToolTip("Previous alert page (Alt+Left)")
@@ -227,8 +228,11 @@ class ResolveCenter(QDialog):
         ignored_btn.clicked.connect(self._show_ignored)
         refresh = QPushButton("Refresh"); refresh.clicked.connect(self._reload)
         close = QPushButton("Close"); close.clicked.connect(self.close)
-        for b in (self._previous_btn, self._page_label, self._next_btn,
-                  self._detail_btn, self._allow_btn, self._block_btn, self._ignore_btn,
+        for b in (self._previous_btn, self._page_label, self._next_btn):
+            navigation.addWidget(b)
+        root.addLayout(navigation)
+        bar = QHBoxLayout()
+        for b in (self._detail_btn, self._allow_btn, self._block_btn, self._ignore_btn,
                   ignore_all_btn, ignored_btn, refresh, close):
             bar.addWidget(b)
         root.addLayout(bar)
