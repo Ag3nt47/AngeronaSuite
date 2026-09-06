@@ -519,6 +519,7 @@ class KernelBoundaryPostureLedger(BaseModule):
                     Severity.HIGH,
                     risks=list(result.risks), unknown=list(result.unknown),
                     evidence_sha256=_digest(snapshot), user_mode_observation=True,
+                    hardening=True, disposition="exposure",
                 )
             elif changes:
                 severity = Severity.MEDIUM if "driver_set_sha256" in changes else Severity.INFO
@@ -527,6 +528,7 @@ class KernelBoundaryPostureLedger(BaseModule):
                     severity,
                     changed=changes, evidence_sha256=_digest(snapshot),
                     user_mode_observation=True,
+                    hardening=True, disposition="exposure",
                 )
             self.sleep(self._INTERVAL)
 

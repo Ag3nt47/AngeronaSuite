@@ -33,13 +33,14 @@ from angerona.core.module_base import BaseModule, Severity
 
 # entropy (bits/char) above which a label looks machine-generated
 _ENTROPY_HI = 3.6
-# per-qname alert cooldown: one HIGH per name per window, so a repeated or
+# per-qname observation cooldown: one event per name per window, so a repeated or
 # looping DNS name can never storm the UI (defence-in-depth against floods)
 _EMIT_COOLDOWN_S = 60.0
 # a single label longer than this is a classic tunneling indicator
 _LABEL_LEN_HI = 30
-# DNS query names may arrive embedded in a larger log message
-_QNAME_RE = re.compile(r"\b((?:[a-zA-Z0-9_-]{1,63}\.){1,}[a-zA-Z]{2,63})\b")
+# Accept a complete bounded DNS name, never a name extracted from log prose.
+_QNAME_RE = re.compile(r"(?:[a-zA-Z0-9_-]{1,63}\.)+[a-zA-Z0-9_-]{1,63}")
+_DNS_EVENT_TYPES = frozenset({"dns", "dns_query", "dns-query", "dns.query", "dns_response"})
 # common benign suffixes we don't want to score the registrable part of
 _KNOWN_TLDS = ("com", "net", "org", "io", "gov", "edu", "co", "uk", "microsoft.com",
                "windows.com", "live.com", "office.com")
@@ -84,7 +85,7 @@ class NetworkProtocolDecoderModule(BaseModule):
         self._seen = 0
         self._flagged = 0
         self._recent_flags: list[dict] = []
-        self._last_emit: dict[str, float] = {}   # qname -> last HIGH emit (monotonic)
+        self._last_emit: dict[str, float] = {}   # qname -> last emit (monotonic)
         self._assurance_issuer: DetectorReceiptIssuer | None = None
 
     def bind_assurance_receipt_issuer(self, issuer: DetectorReceiptIssuer) -> None:
@@ -147,7 +148,7 @@ class NetworkProtocolDecoderModule(BaseModule):
                 "verdict": "DGA/tunneling-suspect" if suspicious else "benign"}
 
     def _should_emit(self, qname: str) -> bool:
-        """Rate-limit HIGH alerts to one per qname per cooldown window."""
+        """Rate-limit observations to one per qname per cooldown window."""
         now = time.monotonic()
         with self.state_lock:
             last = self._last_emit.get(qname, 0.0)
@@ -160,6 +161,11 @@ class NetworkProtocolDecoderModule(BaseModule):
             return True
 
     def _handle(self, qname: str, src: str = "") -> None:
+        if not isinstance(qname, str) or not 1 <= len(qname) <= 254:
+            return
+        name = qname[:-1] if qname.endswith(".") else qname
+        if len(name) > 253 or _QNAME_RE.fullmatch(name) is None:
+            return
         v = self.analyze_qname(qname)
         with self.state_lock:
             self._seen += 1
@@ -179,8 +185,10 @@ class NetworkProtocolDecoderModule(BaseModule):
         # Rate-limit so no single name can flood the UI.
         if not self._should_emit(v["qname"]):
             return
-        self.emit(f"🧬 Suspicious DNS '{v['qname']}' ({', '.join(v['reasons'])}).",
-                  Severity.HIGH, source=src, **v)
+        self.emit(f"DNS name pattern observed: '{v['qname']}' ({', '.join(v['reasons'])}). "
+                  "Lexical features alone do not establish malicious DNS activity.",
+                  Severity.MEDIUM, source=src, disposition="observation",
+                  active_attack=False, detector_policy="dns-lexical-observation", **v)
 
     def _on_event(self, event) -> None:
         # Ignore our OWN emissions (and any DNS *alert* echoes on the bus): the
@@ -189,21 +197,21 @@ class NetworkProtocolDecoderModule(BaseModule):
         # alert — a re-entrant, self-amplifying loop that storms the UI.
         if getattr(event, "module", "") == self.name:
             return
-        msg = event.message or ""
-        low_msg = msg.lower()
-        if "suspicious dns" in low_msg or "self-probe dns" in low_msg:
+        d = getattr(event, "details", None)
+        if not isinstance(d, dict):
             return
-        blob = f"{msg} " + " ".join(str(x) for x in (event.details or {}).values())
-        low = blob.lower()
-        if "dns" not in low and "query" not in low and "resolve" not in low:
+        event_type = d.get("event_type")
+        protocol = d.get("protocol")
+        if not (
+            isinstance(event_type, str) and len(event_type) <= 32
+            and event_type.casefold() in _DNS_EVENT_TYPES
+            or isinstance(protocol, str) and len(protocol) == 3
+            and protocol.casefold() == "dns"
+        ):
             return
-        d = event.details or {}
-        qname = d.get("qname") or d.get("query") or d.get("domain") or d.get("host")
-        if qname:
-            self._handle(str(qname), src=event.module)
-            return
-        for m in _QNAME_RE.finditer(msg):
-            self._handle(m.group(1), src=event.module)
+        qname = d.get("qname") or d.get("query_name")
+        if isinstance(qname, str):
+            self._handle(qname, src=getattr(event, "module", ""))
 
     def stats(self) -> dict:
         with self.state_lock:

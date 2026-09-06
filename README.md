@@ -43,6 +43,14 @@ and backup-posture alerts no longer masquerade as active intrusions. A narrowly
 scoped, explicit startup-checkpoint repair preserves authenticated history.
 See [findings, recovery limits and validation](analysis/response-readiness-2026-09-05.md).
 
+**Responsive alert review and calibrated indicators.** Resolve Center, dashboard
+threat/posture calculations and SOAR queue refreshes now load through bounded
+background workers. Busy reads keep the previous view; pagination reuses loaded
+events. File entropy, anonymous RWX memory, regular connections and unusual DNS
+spelling alone remain observations, with stronger evidence required for active
+threats. Historical records keep their original signatures and severity. See
+[findings and validation](analysis/ui-responsiveness-and-alert-calibration-2026-09-05.md).
+
 **Red Team GitHub source review.** The GitHub Tools tab resolves a public
 repository revision to an exact commit, imports a bounded source archive and
 provides plain-text browsing, integrity checks, review and revocation. Source

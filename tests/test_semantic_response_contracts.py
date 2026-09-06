@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 from angerona.core.eventbus import Event, EventBus, Severity
@@ -404,6 +405,9 @@ def test_beacon_cadence_without_threat_intel_is_alert_only(monkeypatch) -> None:
 
     details = _latest(bus).details
     assert details["detector_policy"] == "cadence-indicator-alert-only"
+    assert details["active_attack"] is False
+    assert details["disposition"] == "observation"
+    assert _latest(bus).severity == Severity.MEDIUM
     assert "response_contract" not in details
 
 
@@ -472,7 +476,9 @@ def test_memory_injection_indicator_is_alert_only(monkeypatch) -> None:
     module._alert(4204, "payload.exe", [(0x1000, 8192, PAGE_EXECUTE_READWRITE)])
 
     details = _latest(bus).details
-    assert details["active_attack"] is True
+    assert details["active_attack"] is False
+    assert details["disposition"] == "observation"
+    assert _latest(bus).severity == Severity.MEDIUM
     assert details["process_create_time"] == 4567.8
     assert details["detector_policy"] == "rwx-memory-indicator-alert-only"
     assert "response_contract" not in details
@@ -487,9 +493,16 @@ def test_ransomware_storm_authorizes_maximum_isolation_and_deception(tmp_path) -
     module = RansomwareHeuristicsModule()
     bus = EventBus()
     module.bind(bus)
-    watched = str(tmp_path.resolve())
-    module._rename_times.extend([(1000.0, watched)] * RENAME_THRESHOLD)
-    module._flagged[str(tmp_path / "report.docx.locked")] = 1000.0
+    names = {f"report-{index}.docx" for index in range(RENAME_THRESHOLD)}
+    module._dir_snapshot[module._directory_key(tmp_path)] = dict.fromkeys(names, 999.0)
+    module._detect_renames_from_snapshot(
+        tmp_path, {name + ".locked": 1000.0 for name in names}, 1000.0
+    )
+    # The static entropy dedup map is deliberately insufficient: a storm must
+    # involve an exact paired filename with authenticated changed content.
+    module._changed_entropy[os.path.normcase(str(tmp_path / "report-0.docx.locked"))] = (
+        1000.0, ("posix", 1, 2), "a" * 64,
+    )
     module._check_rename_rate(1000.0)
 
     details = _latest(bus).details

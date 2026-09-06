@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from angerona.core.eventbus import Severity
-from angerona.core.threat import active_threat_events, threat_level
+from angerona.core.threat import active_threat_events
 
 _META_MODULES = {"Self-Test", "Status", "Console"}
 
@@ -39,13 +39,14 @@ def _band(score: int, active_level: Severity = Severity.INFO):
     return "Elevated", "#f59e0b"
 
 
-def _threat_penalty(bus, window: float = 600.0) -> tuple[int, int]:
+def _threat_penalty(bus, window: float = 600.0, *, active_events=None) -> tuple[int, int]:
     """Return (penalty, active_threat_count)."""
-    try:
-        events = bus.recent(200)
-    except Exception:
-        return 0, 0
-    threats = active_threat_events(events, window)
+    if active_events is None:
+        try:
+            active_events = active_threat_events(bus.recent(200), window)
+        except Exception:
+            return 0, 0
+    threats = active_events
     if not threats:
         return 0, 0
     crit = sum(1 for e in threats if e.severity == Severity.CRITICAL)
@@ -134,20 +135,25 @@ def _attack_penalty() -> int:
         return 0
 
 
-def posture(bus, manager, config=None) -> dict:
+def posture(bus, manager, config=None, *, active_events=None) -> dict:
     """Compute the composite posture. Returns a dict:
 
         {score:int, label:str, color:str, factors:{...}}
     """
-    tp, threats = _threat_penalty(bus)
+    if active_events is None:
+        try:
+            active_events = active_threat_events(bus.recent(200))
+        except Exception:
+            active_events = []
+    tp, threats = _threat_penalty(bus, active_events=active_events)
     hp, degraded = _health_penalty(manager)
     kp, kev = _kev_penalty()
     ap = _attack_penalty()
     score = max(0, min(100, 100 - tp - hp - kp - ap))
-    try:
-        active_level = threat_level(bus.recent(200))
-    except Exception:
-        active_level = Severity.INFO
+    active_level = (
+        Severity.CRITICAL if any(e.severity == Severity.CRITICAL for e in active_events)
+        else Severity.HIGH if active_events else Severity.INFO
+    )
     label, color = _band(score, active_level)
     return {
         "score": score,

@@ -28,6 +28,15 @@ def _app() -> QApplication:
     return _QAPP
 
 
+def _refresh_panel(panel) -> None:
+    panel.refresh()
+    deadline = time.monotonic() + 3.0
+    while panel._queue_reader.busy and time.monotonic() < deadline:
+        _app().processEvents()
+        time.sleep(0.005)
+    assert not panel._queue_reader.busy
+
+
 class _FakeProcess:
     pid = 424242
     create_stamp = 1234.5
@@ -274,7 +283,7 @@ def test_soar_queue_requires_live_session_approval_and_can_dismiss(
     bus.publish(event)
     assert pages._persist_soar_queue(event)
     panel = pages.SoarPanel(bus, _Manager())
-    panel.refresh()
+    _refresh_panel(panel)
     panel.table.selectRow(0)
     app.processEvents()
 
@@ -310,7 +319,7 @@ def test_soar_queue_execute_revalidates_and_records_submission(monkeypatch):
     bus.publish(event)
     assert pages._persist_soar_queue(event)
     panel = pages.SoarPanel(bus, _Manager())
-    panel.refresh()
+    _refresh_panel(panel)
     panel.table.selectRow(0)
     app.processEvents()
 
@@ -332,7 +341,7 @@ def test_soar_queue_execute_revalidates_and_records_submission(monkeypatch):
 
         # Refreshing or selecting a submitted request never makes it executable
         # again while the verified Combat completion receipt is pending.
-        panel.refresh()
+        _refresh_panel(panel)
         panel.table.selectRow(0)
         panel._sync_action_buttons()
         assert not panel._btn_approve.isEnabled()
@@ -354,7 +363,7 @@ def test_soar_session_approval_is_bound_to_canonical_request_digest(monkeypatch)
     bus.publish(event)
     assert pages._persist_soar_queue(event)
     panel = pages.SoarPanel(bus, _Manager())
-    panel.refresh()
+    _refresh_panel(panel)
     panel.table.selectRow(0)
     app.processEvents()
 
@@ -392,7 +401,7 @@ def test_soar_stale_process_refusal_clears_approval_without_gui_exception(
     bus.publish(_active_event())
     assert pages._persist_soar_queue(bus.recent(1)[0])
     panel = pages.SoarPanel(bus, _Manager())
-    panel.refresh()
+    _refresh_panel(panel)
     panel.table.selectRow(0)
     app.processEvents()
 

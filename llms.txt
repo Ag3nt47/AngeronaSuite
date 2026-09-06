@@ -24,6 +24,16 @@ kernel component is a product capability.
 
 ## LATEST MAINTENANCE (2026-09-05)
 
+- Alert review uses bounded background snapshots for Resolve Center, dashboard
+  threat/posture, security wake classification and SOAR queue presentation.
+  Busy/failed reads preserve the previous view; actions still recheck authority.
+- Static entropy, ordinary authenticated file changes/deletions, anonymous RWX,
+  connection cadence and lexical DNS scores alone are observations. DNS input
+  requires typed query fields. Ransomware rename correlation requires changed
+  content in the actual renamed files, not unrelated high-entropy media.
+- Specific legacy indicator records are reclassified without rewriting signed
+  history; Defender continuity failures are health and kernel posture is exposure.
+- Evidence: analysis/ui-responsiveness-and-alert-calibration-2026-09-05.md.
 - Response readiness and USB responsiveness remain on v1.13.0 / 84 capabilities.
 - Combat refreshes watchdog liveness after completed waits/work, isolates queue
   admission from journal I/O, and rechecks current policy and evidence before action.

@@ -33,6 +33,7 @@ from angerona.core.chill_mode import (
 from angerona.core.eco_wakeup import EcoWakeupWorker
 from angerona.core.eventbus import Severity
 from angerona.gui.animations import GlobalLoadingIndicator, RunSpinner
+from angerona.gui.async_snapshot import AsyncSnapshot
 from angerona.gui.header_controls import (
     HeaderActionButton, PanelRevealOverlay, motion_allowed)
 from angerona.gui.holographic_orb import HolographicOrbController
@@ -166,6 +167,10 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
         self.bus, self.storage, self.manager, self.config = bus, storage, manager, config
+        self._posture_reader = AsyncSnapshot(
+            self, self._prepare_posture_snapshot, self._apply_posture_snapshot,
+            name="DashboardPostureReader",
+        )
         self.evidence_store = evidence_store
         self.process_baseline = process_baseline
         self._operations_service = None
@@ -653,6 +658,10 @@ class MainWindow(QMainWindow):
             self._last_bus_revision: int | None = self.bus.revision()
         except Exception:
             self._last_bus_revision = None
+        self._security_reader = AsyncSnapshot(
+            self, self._prepare_security_snapshot, self._apply_security_snapshot,
+            name="SecurityWakeClassifier",
+        )
         # The presentation timer may sleep for 5-15 seconds in Chill/background
         # operation, but genuine HIGH/CRITICAL evidence must still wake policy
         # immediately.  Coalesce a burst into one queued GUI callback: the
@@ -1071,55 +1080,48 @@ class MainWindow(QMainWindow):
         threading.Thread(target=_write, name="FlowMetricsWriter", daemon=True).start()
 
     def _check_threat_animation(self) -> None:
-        # React only to NEW, unresolved active-hostile evidence. Practice,
-        # passive exposure, suite health and response summaries retain their
-        # evidence severity but cannot claim that the host is under attack.
-        # Ask the bounded EventBus for the exact revision delta. A fixed
-        # ``recent(N)`` window can miss the active event that preceded a burst
-        # of harmless process telemetry inside one UI tick.
-        events = []
-        candidates = []
-        if self._last_bus_revision is not None and hasattr(self.bus, "recent_since"):
-            try:
-                current, candidates, overflow = self.bus.recent_since(
-                    self._last_bus_revision
-                )
-                self._last_bus_revision = current
-                events = candidates
-                if overflow:
-                    self.console._append(
-                        "[telemetry] Event burst exceeded the live UI ring; "
-                        "retained security events were still evaluated."
-                    )
-            except Exception:
-                # Compatibility/fault fallback: a broken delta reader must not
-                # blind Chill auto-wake. Timestamp filtering is less exact
-                # during a very large burst, but still evaluates retained
-                # security evidence instead of silently evaluating nothing.
-                self._last_bus_revision = None
-                events = self.bus.recent(100)
-                candidates = [
-                    event for event in events
-                    if event.ts > self._last_threat_ts
-                ]
-        else:
-            events = self.bus.recent(100)
-            if events:
-                candidates = [e for e in events if e.ts > self._last_threat_ts]
-        new_threats = []
-        if events:
-            self._last_threat_ts = max(
-                self._last_threat_ts, max(e.ts for e in events)
-            )
-            if candidates:
+        # Policy snapshots can stat files and hash pinned executables. Keep
+        # them off Qt and independent of the slower presentation readers.
+        self._security_reader.request()
+        # Reconcile live USB gates even while policy IO is pending. The next
+        # completed snapshot also delivers all retained USB event transitions.
+        self._handle_usb_approval_events(())
+        self._update_threat_intel_pulse()
+
+    def _prepare_security_snapshot(self):
+        bus = self.bus
+        revision, last_ts = self._last_bus_revision, self._last_threat_ts
+
+        def read():
+            from angerona.core.threat import active_threat_events
+            current, overflow = revision, False
+            if revision is not None and hasattr(bus, "recent_since"):
                 try:
-                    from angerona.core.threat import active_threat_events
-                    new_threats = active_threat_events(candidates, window=60.0)
+                    current, events, overflow = bus.recent_since(revision)
+                    candidates = events
                 except Exception:
-                    new_threats = []
-        # Reconcile the authoritative pending set every UI cadence.  EventBus
-        # overflow can discard a notification, but it must never strand an
-        # attached drive without its PIN prompt.
+                    current = None
+                    events = bus.recent(100)
+                    candidates = [event for event in events if event.ts > last_ts]
+            else:
+                events = bus.recent(100)
+                candidates = [event for event in events if event.ts > last_ts]
+            newest = max([last_ts, *(event.ts for event in events)])
+            active = active_threat_events(candidates, window=60.0) if candidates else []
+            return current, newest, overflow, candidates, active
+
+        return read
+
+    def _apply_security_snapshot(self, snapshot) -> None:
+        current, newest, overflow, candidates, new_threats = snapshot
+        # Advance only after successful classification. Failed/blocked reads
+        # keep the previous cursor so the next request retries retained events.
+        self._last_bus_revision, self._last_threat_ts = current, newest
+        if overflow:
+            self.console._append(
+                "[telemetry] Event burst exceeded the live UI ring; "
+                "retained security events were still evaluated."
+            )
         self._handle_usb_approval_events(candidates)
         # Red-flash + emoji shark-sweep overlay removed per user request — the
         # full-width swimming SharkSwimBanner across the top now signals a drill,
@@ -1154,9 +1156,6 @@ class MainWindow(QMainWindow):
             cooldown = self._chill_policy.tick()
             if cooldown is not None and cooldown.action == "cooldown" and self._eco_on:
                 self._enter_eco(auto_return=True)
-        # Pulse the THREAT INTEL button when INTL has pending KEV alerts.
-        self._update_threat_intel_pulse()
-
     def _handle_usb_approval_events(self, events) -> None:
         """Present pending USB PIN gates one at a time.
 
@@ -3896,17 +3895,28 @@ class MainWindow(QMainWindow):
             return f"(Local AI error: {exc})"
 
     def _refresh_posture(self) -> None:
-        try:
+        self._posture_reader.request()
+
+    def _prepare_posture_snapshot(self):
+        bus, manager, config = self.bus, self.manager, self.config
+
+        def read():
             from angerona.core.posture import posture, posture_tooltip
-            p = posture(self.bus, self.manager, self.config)
-        except Exception:
-            return
+            from angerona.core.threat import active_threat_events
+            active = active_threat_events(bus.recent(200))
+            p = posture(bus, manager, config, active_events=active)
+            return p, posture_tooltip(p)
+
+        return read
+
+    def _apply_posture_snapshot(self, snapshot) -> None:
+        p, tooltip = snapshot
         self._last_posture = p
         self.posture_lbl.setText(f"POSTURE {p['score']} · {p['label']}")
         self.posture_lbl.setStyleSheet(
             f"color:{p['color']}; font-weight:800; font-size:11px; letter-spacing:1px;")
         try:
-            self.posture_lbl.setToolTip(posture_tooltip(p))
+            self.posture_lbl.setToolTip(tooltip)
         except Exception:
             pass
         # Feed the ARIA HUD: record the score trend (on change) and repaint.

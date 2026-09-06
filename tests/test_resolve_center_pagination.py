@@ -22,8 +22,16 @@ class _Bus:
 
 
 class _Storage:
+    def __init__(self, events):
+        self.events = events
+        self.reads = 0
+
     def revision(self):
         return 1
+
+    def try_recent_in_window(self, *_args):
+        self.reads += 1
+        return self.events
 
 
 def _events(count: int) -> list[Event]:
@@ -37,10 +45,15 @@ def _events(count: int) -> list[Event]:
 def _center(monkeypatch, count: int):
     _app()
     events = _events(count)
-    monkeypatch.setattr(resolve_center.ResolveCenter, "_events", lambda _self: events)
     monkeypatch.setattr(resolve_center.alert_ack, "acked_signatures", lambda: set())
     monkeypatch.setattr(resolve_center.alert_ack, "acked_records", lambda: [])
-    return resolve_center.ResolveCenter(_Bus(), _Storage(), manager=None), events
+    center = resolve_center.ResolveCenter(_Bus(), _Storage(events), manager=None)
+    deadline = time.monotonic() + 5
+    while center._snapshot is None and time.monotonic() < deadline:
+        _app().processEvents()
+        time.sleep(0.005)
+    assert center._snapshot is not None, center._status.text()
+    return center, events
 
 
 def test_resolve_center_paginates_without_per_event_action_widgets(monkeypatch) -> None:
@@ -59,6 +72,7 @@ def test_resolve_center_paginates_without_per_event_action_widgets(monkeypatch) 
         center._change_page(-1)
         assert center.table.rowCount() == 25
         assert center._page_label.text() == "Page 19 / 20"
+        assert center.storage.reads == 1
     finally:
         center.close()
 

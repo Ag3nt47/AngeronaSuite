@@ -11,18 +11,20 @@ Detects T1486 (Data Encrypted for Impact) through two complementary signals:
    Declared packed formats remain in entropy scoring unless a future explicit,
    authenticated operator approval is implemented.  Magic bytes and repeated
    automated observations are descriptive evidence, never exclusion authority.
+   Entropy alone is an informational observation: compressed media, archives,
+   and documents can have the same byte distribution as encrypted content.
 
 2. Rename-rate tracker
    Ransomware renames files en masse (often appending a custom extension).
    We watch a set of canary directories and record how many renames happen
    per 10-second window.  If the rate exceeds RENAME_THRESHOLD the module
-   emits a HIGH alert; recent high-entropy evidence promotes it to CRITICAL and
-   authorizes Maximum-mode host isolation.
+   emits a HIGH alert; recent authenticated changed-content entropy involving
+   an actual paired filename promotes it to CRITICAL and authorizes Maximum-mode
+   host isolation. Unrelated or unchanged high-entropy files cannot promote it.
 
 Why Shannon entropy?
-   Text, executables, and most documents have entropy ≤ 7.5 bits/byte.
-   AES-256 (CTR/CBC) and ChaCha20 output is statistically indistinguishable
-   from uniform random — entropy ≥ 7.9 bits/byte.  The threshold is tunable.
+   Encryption and compression can both produce entropy ≥ 7.9 bits/byte.
+   The tunable threshold supplies a content observation, not a malware verdict.
 
 Watched paths (default):
    User profile sub-folders most targeted by ransomware:
@@ -453,7 +455,7 @@ def _default_watch_dirs() -> List[Path]:
     return admitted
 
 
-def _rename_pair_count(disappeared: set[str], appeared: set[str]) -> int:
+def _rename_pairs(disappeared: set[str], appeared: set[str]) -> list[tuple[str, str]]:
     """Conservatively pair filename changes that look like ransomware renames.
 
     Bulk creates or deletes are not renames.  Pair only an appended extension
@@ -461,7 +463,7 @@ def _rename_pair_count(disappeared: set[str], appeared: set[str]) -> int:
     with the same stem, and consume each new name at most once.
     """
     available = set(appeared)
-    paired = 0
+    paired: list[tuple[str, str]] = []
     for old in sorted(disappeared):
         old_folded = old.casefold()
         old_stem = Path(old).stem.casefold()
@@ -475,8 +477,12 @@ def _rename_pair_count(disappeared: set[str], appeared: set[str]) -> int:
         ), None)
         if match is not None:
             available.remove(match)
-            paired += 1
+            paired.append((old, match))
     return paired
+
+
+def _rename_pair_count(disappeared: set[str], appeared: set[str]) -> int:
+    return len(_rename_pairs(disappeared, appeared))
 
 
 class RansomwareHeuristicsModule(BaseModule):
@@ -497,6 +503,10 @@ class RansomwareHeuristicsModule(BaseModule):
         super().__init__()
         # (path_str) → last_alert_ts
         self._flagged: dict[str, float] = {}
+        # Static entropy is only an observation. Correlation requires a proven
+        # content change and a rename involving that exact old/new pathname.
+        self._changed_entropy: dict[str, tuple[float, tuple[str, int, int], str]] = {}
+        self._rename_evidence: Deque[tuple[float, str, str, str]] = deque()
         # Sliding window of (timestamp, exact directory) rename evidence.
         self._rename_times: Deque[tuple[float, str]] = deque()
         # Filesystem roots traversed through held no-follow directory objects.
@@ -1357,6 +1367,7 @@ class RansomwareHeuristicsModule(BaseModule):
         }
         self._change_observations[key] = observation
         prior = self._change_receipts.get(key)
+        comparison_prior = prior
         if not sample.complete:
             transition = "incomplete"
         elif prior is not None:
@@ -1374,18 +1385,36 @@ class RansomwareHeuristicsModule(BaseModule):
                 else "changed"
             )
         else:
-            same_object_or_path = any(
-                row.get("identity") == identity_value
+            comparison_prior = next((
+                row for row in self._change_receipts.values()
+                if row.get("identity") == identity_value
                 or row.get("path_sha256") == path_digest
-                for row in self._change_receipts.values()
-            )
-            transition = "changed" if same_object_or_path else "new"
+            ), None)
+            transition = "changed" if comparison_prior is not None else "new"
         self._change_transition_counts[transition] += 1
+        normalized_path = os.path.normcase(os.path.abspath(path))
+        previous_entropy = self._changed_entropy.get(normalized_path)
+        if previous_entropy and (
+            previous_entropy[1] != identity
+            or not hmac.compare_digest(previous_entropy[2], sample.sha256)
+        ):
+            self._changed_entropy.pop(normalized_path, None)
+        if (
+            transition == "changed"
+            and sample.complete
+            and sample.entropy >= ENTROPY_THRESHOLD
+            and comparison_prior is not None
+            and comparison_prior.get("content_complete") is True
+            and not hmac.compare_digest(
+                str(comparison_prior.get("content_sha256", "")), sample.sha256
+            )
+        ):
+            self._changed_entropy[normalized_path] = (time.time(), identity, sample.sha256)
         if transition == "changed":
             if self._change_alerts_emitted < 64:
                 self.emit(
-                    "Authenticated ransomware content transition detected",
-                    Severity.HIGH,
+                    "Authenticated file content transition observed",
+                    Severity.INFO,
                     path=path,
                     transition="changed",
                     identity_bound=True,
@@ -1394,9 +1423,9 @@ class RansomwareHeuristicsModule(BaseModule):
                     content_complete=sample.complete,
                     high_entropy_fraction=round(sample.high_entropy_fraction, 4),
                     mitre_tags=["T1486"],
-                    active_attack=True,
+                    active_attack=False,
+                    disposition="observation",
                     detector_policy="authenticated-content-transition",
-                    **deception_response(),
                 )
                 self._change_alerts_emitted += 1
             else:
@@ -1424,15 +1453,15 @@ class RansomwareHeuristicsModule(BaseModule):
             records = self._change_observations
             if missing and self._change_state_sequence > 0:
                 self.emit(
-                    "Authenticated ransomware content-state objects are missing",
-                    Severity.HIGH,
+                    "Authenticated file content-state objects are missing",
+                    Severity.INFO,
                     transition="missing",
                     missing_count=len(missing),
                     exact_receipts=True,
                     mitre_tags=["T1486"],
-                    active_attack=True,
+                    active_attack=False,
+                    disposition="observation",
                     detector_policy="authenticated-content-transition",
-                    **deception_response(),
                 )
         else:
             # Incomplete collection never replaces the last complete receipt set,
@@ -1568,8 +1597,11 @@ class RansomwareHeuristicsModule(BaseModule):
             coverage["errors"] = int(coverage["errors"]) + 1
             coverage["last_error"] = self._change_state_fault
         self._update_coverage_health()
-        self._check_rename_rate(now)
-        self._evict_stale_dedup(now)
+        # Samples were observed after the sweep began. Compare their actual
+        # observation timestamps against completion time, not the older start.
+        completed_at = time.time()
+        self._check_rename_rate(completed_at)
+        self._evict_stale_dedup(completed_at)
 
     # ── Entropy scan ──────────────────────────────────────────────────────────
     @staticmethod
@@ -2735,8 +2767,8 @@ class RansomwareHeuristicsModule(BaseModule):
                     self.emit(
                         f"High-entropy file detected: {os.path.basename(candidate.path)} "
                         f"(entropy={ent:.3f} bits/byte ≥ {ENTROPY_THRESHOLD}) — "
-                        "possible ransomware encryption in progress (T1486)",
-                        Severity.HIGH,
+                        "compression or encryption observed; behavioral corroboration required",
+                        Severity.INFO,
                         path=candidate.path,
                         entropy=round(ent, 4),
                         threshold=ENTROPY_THRESHOLD,
@@ -2750,9 +2782,9 @@ class RansomwareHeuristicsModule(BaseModule):
                             for offset, length in candidate.sample_ranges
                         ],
                         mitre_tags=["T1486"],
-                        active_attack=True,
-                        detector_policy="reviewed-semantic-indicator",
-                        **deception_response(),
+                        active_attack=False,
+                        disposition="observation",
+                        detector_policy="static-entropy-observation",
                     )
                 # Publication was performed while both the exact sample and
                 # every reviewed ancestor remained held.  A POSIX namespace
@@ -2796,17 +2828,25 @@ class RansomwareHeuristicsModule(BaseModule):
         for parent in sorted(set(old_by_parent) | set(new_by_parent)):
             disappeared = old_by_parent.get(parent, set()) - new_by_parent.get(parent, set())
             appeared = new_by_parent.get(parent, set()) - old_by_parent.get(parent, set())
-            rename_count = _rename_pair_count(disappeared, appeared)
-            if not rename_count:
+            pairs = _rename_pairs(disappeared, appeared)
+            if not pairs:
                 continue
             observed_directory = self._directory_key(Path(dkey) / parent)
-            self._rename_times.extend([(now, observed_directory)] * rename_count)
+            self._rename_times.extend([(now, observed_directory)] * len(pairs))
+            self._rename_evidence.extend(
+                (now, observed_directory,
+                 os.path.normcase(os.path.join(observed_directory, old_name)),
+                 os.path.normcase(os.path.join(observed_directory, new_name)))
+                for old_name, new_name in pairs
+            )
 
     def _check_rename_rate(self, now: float) -> None:
         """Emit a storm alert, promoting to CRITICAL only with entropy evidence."""
         cutoff = now - RENAME_WINDOW_S
         while self._rename_times and self._rename_times[0][0] < cutoff:
             self._rename_times.popleft()
+        while self._rename_evidence and self._rename_evidence[0][0] < cutoff:
+            self._rename_evidence.popleft()
         rates: dict[str, int] = {}
         # _detect_renames() stores normalized directory identities. Retain a
         # tiny compatibility normalization map for tests/restored state that
@@ -2825,10 +2865,15 @@ class RansomwareHeuristicsModule(BaseModule):
             return
         directory, rate = max(rates.items(), key=lambda item: item[1])
         if rate >= RENAME_THRESHOLD:
-            entropy_corroborated = any(
-                os.path.normcase(os.path.abspath(str(Path(path).parent))) == directory
-                and 0.0 <= now - stamp <= RENAME_WINDOW_S
-                for path, stamp in self._flagged.items()
+            entropy_corroborated = not self._change_state_fault and any(
+                pair_directory == directory
+                and 0.0 <= now - pair_stamp <= RENAME_WINDOW_S
+                and any(
+                    path in self._changed_entropy
+                    and 0.0 <= now - self._changed_entropy[path][0] <= RENAME_WINDOW_S
+                    for path in (old_path, new_path)
+                )
+                for pair_stamp, pair_directory, old_path, new_path in self._rename_evidence
             )
             self.emit(
                 f"RENAME STORM detected: {rate} file renames in {RENAME_WINDOW_S}s — "
@@ -2859,6 +2904,9 @@ class RansomwareHeuristicsModule(BaseModule):
                 item for item in self._rename_times
                 if normalized_directories[item[1]] != directory
             )
+            self._rename_evidence = deque(
+                item for item in self._rename_evidence if item[1] != directory
+            )
 
     # ── Housekeeping ──────────────────────────────────────────────────────────
     def _evict_stale_dedup(self, now: float) -> None:
@@ -2866,6 +2914,10 @@ class RansomwareHeuristicsModule(BaseModule):
         stale  = [k for k, ts in self._flagged.items() if ts < cutoff]
         for k in stale:
             del self._flagged[k]
+        changed_cutoff = now - RENAME_WINDOW_S
+        for path, (stamp, _identity, _sha256) in list(self._changed_entropy.items()):
+            if stamp < changed_cutoff:
+                del self._changed_entropy[path]
 
     def self_test(self) -> tuple[bool, str]:
         if not (

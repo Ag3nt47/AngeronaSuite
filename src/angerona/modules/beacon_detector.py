@@ -96,6 +96,7 @@ class BeaconDetectorModule(BaseModule):
         # grouping crosses Windows PID reuse.
         self._callbacks: dict[tuple, list[float]] = {}
         self._alerted: set[tuple] = set()
+        self._corroborated_alerted: set[tuple] = set()
         self._detections = 0
 
     @property
@@ -187,23 +188,32 @@ class BeaconDetectorModule(BaseModule):
             if len(hist) > self._HISTORY:
                 del hist[:-self._HISTORY]
             is_b, mean, cv = _beacon_score(hist)
-            if is_b and key not in self._alerted:
+            corroborated = bool(is_b and is_ip_flagged(ip))
+            if is_b and (
+                key not in self._alerted
+                or corroborated and key not in self._corroborated_alerted
+            ):
+                if key not in self._alerted:
+                    self._detections += 1
                 self._alerted.add(key)
-                self._detections += 1
-                corroborated = is_ip_flagged(ip)
+                if corroborated:
+                    self._corroborated_alerted.add(key)
                 response = (
                     process_and_remote_response(pid, created, ip)
                     if corroborated
                     else {}
                 )
                 self.emit(
-                    f"⚠ Possible C2 beacon: {key[2]} → {ip} — {len(hist)} callbacks at a "
-                    f"regular ~{mean:.0f}s cadence (jitter cv={cv:.2f}). Investigate the "
-                    "destination; block if it is an unknown external host.",
-                    Severity.HIGH, name=key[2], pid=pid,
+                    f"{'Possible C2 beacon' if corroborated else 'Regular connection cadence observed'}: "
+                    f"{key[2]} → {ip} — {len(hist)} callbacks at a "
+                    f"regular ~{mean:.0f}s cadence (jitter cv={cv:.2f}). "
+                    + ("Destination is corroborated by threat intelligence."
+                       if corroborated else "Timing alone does not establish malicious activity."),
+                    Severity.HIGH if corroborated else Severity.MEDIUM, name=key[2], pid=pid,
                     process_create_time=created, remote=ip,
                     interval_s=round(mean, 1), cv=round(cv, 3), mitre="T1071",
-                    active_attack=True,
+                    active_attack=corroborated,
+                    disposition="active" if corroborated else "observation",
                     threat_intel_corroborated=corroborated,
                     detector_policy=(
                         "cadence-plus-threat-intel"
@@ -221,6 +231,7 @@ class BeaconDetectorModule(BaseModule):
             if hist and now - hist[-1] > self._EVICT_AFTER:
                 del self._callbacks[key]
                 self._alerted.discard(key)
+                self._corroborated_alerted.discard(key)
         errors = [value for value in (snapshot_error,) if value]
         if identity_failures:
             errors.append(f"{identity_failures} process identity lookup(s) failed")

@@ -15,7 +15,12 @@ shared_logs/alert_acks.json via core.alert_ack.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import queue
+import threading
 import time
+from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
@@ -25,11 +30,115 @@ from PySide6.QtWidgets import (
 )
 
 from angerona.core.eventbus import Severity
-from angerona.core.threat import threat_label
+from angerona.core.threat import active_threat_events, threat_label_from_active
 from angerona.core import alert_ack
-from angerona.core import drill_resolution, process_allowlist
+from angerona.core import process_allowlist
 
 _SEV_COLOR = {"CRITICAL": "#f87171", "HIGH": "#fb923c", "MEDIUM": "#facc15"}
+_READERS = threading.BoundedSemaphore(2)
+_SCAN_CAP = 5000
+_HISTORY_CACHE_SECONDS = 30.0
+
+
+def _event_identity(event) -> str:
+    """Presentation identity only; never a substitute for action authentication."""
+    record = (
+        getattr(event, "ts", 0), getattr(event, "module", ""),
+        int(getattr(event, "severity", Severity.INFO)),
+        getattr(event, "message", ""), getattr(event, "details", {}),
+        getattr(event, "hmac_sig", ""),
+    )
+    encoded = json.dumps(record, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8", "replace")).hexdigest()
+
+
+@dataclass(frozen=True)
+class _AlertRow:
+    event: object
+    identity: str
+    when: str
+    severity: str
+    module: str
+    message: str
+
+
+@dataclass(frozen=True)
+class _ResolveSnapshot:
+    rows: tuple[_AlertRow, ...]
+    ignored: tuple[dict, ...]
+    label: str
+    color: str
+
+
+class _SnapshotUnavailable(Exception):
+    pass
+
+
+class _SnapshotReader:
+    """Worker-only reader. No QObject, widget, or callback into a dialog."""
+
+    def __init__(self, bus, storage, window_s: int):
+        self.bus, self.storage, self.window_s = bus, storage, window_s
+        self._stored: tuple | None = None
+        self._revision = None
+        self._queried_at = 0.0
+
+    def read(self, force: bool = False) -> _ResolveSnapshot:
+        now = time.time()
+        revision = self.storage.revision()
+        if (force or self._stored is None or revision != self._revision
+                or time.monotonic() - self._queried_at >= _HISTORY_CACHE_SECONDS):
+            stored = self.storage.try_recent_in_window(
+                now - self.window_s, now, Severity.HIGH, _SCAN_CAP)
+            if stored is None:
+                raise _SnapshotUnavailable("History reader is busy")
+            self._stored = tuple(stored[:_SCAN_CAP])
+            self._revision = revision
+            self._queried_at = time.monotonic()
+
+        # Include events not yet committed by the asynchronous storage writer.
+        # Read the bus on every refresh, independently of the storage revision.
+        events = {}
+        for event in (*self._stored, *self.bus.recent(_SCAN_CAP)):
+            if (now - self.window_s <= getattr(event, "ts", 0) <= now
+                    and getattr(event, "severity", Severity.INFO) >= Severity.HIGH):
+                events.setdefault(_event_identity(event), event)
+        ordered = sorted(events.items(), key=lambda pair: pair[1].ts, reverse=True)[:_SCAN_CAP]
+        # Reclassify even when history is cached: policy/ack changes (including
+        # same-count replacements), drill resolution and expiry must take effect.
+        active = active_threat_events([event for _, event in ordered], window=self.window_s)
+        identities = {id(event): identity for identity, event in ordered}
+        rows = []
+        for event in active:
+            severity = getattr(event, "severity", Severity.INFO)
+            rows.append(_AlertRow(
+                event, identities[id(event)],
+                time.strftime("%m-%d %H:%M:%S", time.localtime(event.ts)),
+                getattr(severity, "name", str(severity)),
+                str(getattr(event, "module", ""))[:160],
+                str(getattr(event, "message", ""))[:1600],
+            ))
+        # Resolve retains a day of actionable history; its header uses the same
+        # ten-minute posture window as the dashboard without classifying twice.
+        label, color = threat_label_from_active(
+            [event for event in active if 0 <= now - event.ts <= 600.0])
+        return _ResolveSnapshot(tuple(rows), tuple(alert_ack.acked_records()), label, color)
+
+
+def _read_snapshot(reader, results, closed, generation, force) -> None:
+    try:
+        if closed.is_set():
+            return
+        try:
+            snapshot, error = reader.read(force=force), ""
+        except _SnapshotUnavailable:
+            snapshot, error = None, "History reader is busy; keeping the previous view. Retrying…"
+        except Exception:
+            snapshot, error = None, "Could not refresh alerts; keeping the previous view. Retrying…"
+        if not closed.is_set():
+            results.put_nowait((generation, snapshot, error))
+    finally:
+        _READERS.release()
 
 
 class ResolveCenter(QDialog):
@@ -38,6 +147,18 @@ class ResolveCenter(QDialog):
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.bus, self.storage, self.manager = bus, storage, manager
         self.window_s = window_s
+        self._reader = _SnapshotReader(bus, storage, window_s)
+        self._snapshot: _ResolveSnapshot | None = None
+        self._results: queue.Queue = queue.Queue(maxsize=1)
+        self._closed = threading.Event()
+        self._busy = False
+        self._pending_refresh = False
+        self._force_reload = False
+        self._generation = 0
+        self._render_key = None
+        closed = self._closed
+        self.destroyed.connect(lambda *_: closed.set())
+        self.finished.connect(lambda *_: closed.set())
         self.setWindowTitle("🛠  Resolve Center — clear the threat level")
         self.setMinimumSize(900, 600)
         if parent:
@@ -51,6 +172,9 @@ class ResolveCenter(QDialog):
         self._sub.setWordWrap(True)
         self._sub.setStyleSheet("color:#9aa4b2;")
         root.addWidget(self._sub)
+        self._status = QLabel("Loading alerts…")
+        self._status.setStyleSheet("color:#9aa4b2;")
+        root.addWidget(self._status)
 
         self._page = 0
         self._page_size = 25
@@ -101,7 +225,7 @@ class ResolveCenter(QDialog):
         ignored_btn = QPushButton("Ignored…")
         ignored_btn.setToolTip("View and revert previously-ignored alerts.")
         ignored_btn.clicked.connect(self._show_ignored)
-        refresh = QPushButton("Refresh"); refresh.clicked.connect(self._refresh)
+        refresh = QPushButton("Refresh"); refresh.clicked.connect(self._reload)
         close = QPushButton("Close"); close.clicked.connect(self.close)
         for b in (self._previous_btn, self._page_label, self._next_btn,
                   self._detail_btn, self._allow_btn, self._block_btn, self._ignore_btn,
@@ -113,69 +237,106 @@ class ResolveCenter(QDialog):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(4000)
+        self._result_timer = QTimer(self)
+        self._result_timer.timeout.connect(self._drain_results)
         self._refresh()
 
     # ── data ─────────────────────────────────────────────────────────────────
-    _SCAN_CAP = 5000  # bounded history; pagination makes rendering independent of this
+    _SCAN_CAP = _SCAN_CAP
 
     def _events(self) -> list:
-        from angerona.core.threat import active_threat_events
-        now = time.time()
-        try:
-            evs = self.storage.try_recent_in_window(
-                now - self.window_s, now, Severity.HIGH, self._SCAN_CAP)
-            if evs is None:
-                evs = self.bus.recent(self._SCAN_CAP)
-        except Exception:
-            evs = self.bus.recent(self._SCAN_CAP)
-        # The shared classifier excludes practice, passive exposure, health,
-        # allowlisted and resolved evidence without changing the source record.
-        out = [e for e in evs
-               if now - self.window_s <= getattr(e, "ts", 0) <= now
-               and getattr(e, "severity", Severity.INFO) >= Severity.HIGH]
-        out.sort(key=lambda e: getattr(e, "ts", 0), reverse=True)
-        out = out[:self._SCAN_CAP]
-        return active_threat_events(out, window=self.window_s)
+        """Return the displayed snapshot without touching storage or policy files."""
+        return [row.event for row in self._snapshot.rows] if self._snapshot else []
 
     def _refresh(self, *_args) -> None:
-        # Change-detection: skip the whole (expensive) rebuild when nothing new has
-        # arrived and no ack changed — otherwise this ran O(alerts) every 2 s.
-        try:
-            def _stamp(path):
-                try:
-                    return path.stat().st_mtime_ns
-                except OSError:
-                    return -1
-            key = (self.storage.revision(),
-                   len(alert_ack.acked_signatures()),
-                   _stamp(process_allowlist.policy_path()),
-                   _stamp(drill_resolution.state_path()))
-        except Exception:
-            key = None
-        if key is not None and key == getattr(self, "_last_key", object()):
+        if self._closed.is_set():
             return
-        self._last_key = key
+        if self._busy:
+            self._pending_refresh = True
+            return
+        if not _READERS.acquire(blocking=False):
+            self._status.setText("Alert readers are busy; keeping the previous view. Retrying…")
+            return
+        self._busy = True
+        self._pending_refresh = False
+        self._status.setText("Refreshing alerts…" if self._snapshot else "Loading alerts…")
+        force, self._force_reload = self._force_reload, False
+        try:
+            threading.Thread(
+                target=_read_snapshot,
+                args=(self._reader, self._results, self._closed, self._generation, force),
+                name="Resolve snapshot", daemon=True,
+            ).start()
+            self._result_timer.start(50)
+        except Exception:
+            _READERS.release()
+            self._busy = False
+            self._status.setText("Could not start alert refresh; retrying…")
 
-        evs = self._events()
-        label, color = threat_label(self.bus.recent(200))
-        self._head.setText(f"🛠  Resolve Center — threat level: {label}")
-        self._head.setStyleSheet(f"color:{color};")
-        if not evs:
-            self._sub.setText("✅  Nothing left to resolve — the posture is Secure.")
-        else:
-            self._sub.setText(f"{len(evs)} unresolved CRITICAL/HIGH alert(s). Open Detail to "
-                              "Allow / Block / Research / Apply fix, or Ignore a false positive "
-                              "to remove it from the threat level.")
-        n_ign = len(alert_ack.acked_records())
-        page_count = max(1, (len(evs) + self._page_size - 1) // self._page_size)
+    def _reload(self, *_args) -> None:
+        self._force_reload = True
+        self._invalidate_snapshot()
+
+    def _invalidate_snapshot(self) -> None:
+        # Never apply a pre-action result after the operator has changed policy.
+        self._generation += 1
+        self._refresh()
+
+    def _drain_results(self) -> None:
+        if self._closed.is_set():
+            self._timer.stop()
+            self._result_timer.stop()
+            return
+        try:
+            generation, snapshot, error = self._results.get_nowait()
+        except queue.Empty:
+            return
+        self._result_timer.stop()
+        self._busy = False
+        if generation == self._generation:
+            self._status.setText(error)
+            if snapshot is not None:
+                self._snapshot = snapshot
+                self._render_page()
+        if self._pending_refresh or generation != self._generation:
+            self._refresh()
+
+    def closeEvent(self, event) -> None:
+        self._closed.set()
+        self._timer.stop()
+        self._result_timer.stop()
+        super().closeEvent(event)
+
+    def _render_page(self, *, reset_selection: bool = False) -> None:
+        snapshot = self._snapshot
+        if snapshot is None:
+            return
+        rows = snapshot.rows
+        page_count = max(1, (len(rows) + self._page_size - 1) // self._page_size)
         self._page = min(self._page, page_count - 1)
         start = self._page * self._page_size
-        shown = evs[start:start + self._page_size]
-        self._page_events = shown
+        shown = rows[start:start + self._page_size]
+        key = (tuple(row.identity for row in shown), len(rows), len(snapshot.ignored),
+               snapshot.label, snapshot.color, self._page)
+        if key == self._render_key:
+            return
+        first_render = self._render_key is None
+        selected = self.table.item(self.table.currentRow(), 0)
+        selected_identity = selected.data(Qt.UserRole + 1) if selected is not None else None
+        self._render_key = key
+        self._head.setText(f"🛠  Resolve Center — threat level: {snapshot.label}")
+        self._head.setStyleSheet(f"color:{snapshot.color};")
+        if not rows:
+            self._sub.setText("✅  Nothing left to resolve — the posture is Secure.")
+        else:
+            self._sub.setText(f"{len(rows)} unresolved CRITICAL/HIGH alert(s). Open Detail to "
+                              "Allow / Block / Research / Apply fix, or Ignore a false positive "
+                              "to remove it from the threat level.")
+        self._page_events = [row.event for row in shown]
         first = start + 1 if shown else 0
         last = start + len(shown)
         self._foot.setText(
-            f"{len(evs)} active · {n_ign} ignored · showing {first}–{last}. "
+            f"{len(rows)} active · {len(snapshot.ignored)} ignored · showing {first}–{last}. "
             "Double-click a row for detail.")
         self._page_label.setText(f"Page {self._page + 1} / {page_count}")
         self._previous_btn.setEnabled(self._page > 0)
@@ -188,24 +349,29 @@ class ResolveCenter(QDialog):
         self.table.setSortingEnabled(False)
         self.table.clearContents()
         self.table.setRowCount(len(shown))
-        for r, ev in enumerate(shown):
-            when = time.strftime("%m-%d %H:%M:%S", time.localtime(getattr(ev, "ts", time.time())))
-            sev = getattr(ev, "severity", Severity.INFO)
-            sev_name = getattr(sev, "name", str(sev))
-            time_item = QTableWidgetItem(when)
-            time_item.setData(Qt.UserRole, ev)
+        for r, row in enumerate(shown):
+            time_item = QTableWidgetItem(row.when)
+            time_item.setData(Qt.UserRole, row.event)
+            time_item.setData(Qt.UserRole + 1, row.identity)
             self.table.setItem(r, 0, time_item)
-            sev_it = QTableWidgetItem(sev_name)
-            sev_it.setForeground(QColor(_SEV_COLOR.get(sev_name, "#e5e7eb")))
+            sev_it = QTableWidgetItem(row.severity)
+            sev_it.setForeground(QColor(_SEV_COLOR.get(row.severity, "#e5e7eb")))
             self.table.setItem(r, 1, sev_it)
-            self.table.setItem(r, 2, QTableWidgetItem(str(getattr(ev, "module", ""))))
-            self.table.setItem(r, 3, QTableWidgetItem(str(getattr(ev, "message", ""))))
+            self.table.setItem(r, 2, QTableWidgetItem(row.module))
+            self.table.setItem(r, 3, QTableWidgetItem(row.message))
         self.table.setSortingEnabled(True)
         if sort_column >= 0:
             self.table.sortItems(sort_column, sort_order)
         self.table.setUpdatesEnabled(True)
-        if shown:
+        self.table.clearSelection()
+        self.table.setCurrentCell(-1, -1)
+        if shown and (first_render or reset_selection):
             self.table.selectRow(0)
+        elif selected_identity is not None:
+            for row in range(self.table.rowCount()):
+                if self.table.item(row, 0).data(Qt.UserRole + 1) == selected_identity:
+                    self.table.selectRow(row)
+                    break
         self._sync_action_state()
 
     def _change_page(self, delta: int) -> None:
@@ -213,8 +379,7 @@ class ResolveCenter(QDialog):
         if new_page == self._page:
             return
         self._page = new_page
-        self._last_key = None
-        self._refresh()
+        self._render_page(reset_selection=True)
 
     def _selected_event(self):
         row = self.table.currentRow()
@@ -279,8 +444,7 @@ class ResolveCenter(QDialog):
             except Exception as exc:
                 QMessageBox.warning(self, "Trust process", str(exc))
                 return
-            self._last_key = None
-            self._refresh()
+            self._invalidate_snapshot()
             return
         ap = self._alerts_panel()
         if ap is not None:
@@ -289,8 +453,7 @@ class ResolveCenter(QDialog):
             except Exception:
                 pass
         alert_ack.ack(ev, "allowed via Resolve Center")
-        self._last_key = None      # force a rebuild
-        self._refresh()
+        self._invalidate_snapshot()
 
     def _block(self, ev) -> None:
         """Block = queue a SOAR containment request for review (never auto-executes)."""
@@ -303,13 +466,11 @@ class ResolveCenter(QDialog):
         else:
             QMessageBox.information(self, "Block",
                                     "The Live Alerts panel isn't available to queue containment.")
-        self._last_key = None
-        self._refresh()
+        self._invalidate_snapshot()
 
     def _ignore(self, ev) -> None:
         alert_ack.ack(ev, "operator ignore (Resolve Center — false positive / handled)")
-        self._last_key = None
-        self._refresh()
+        self._invalidate_snapshot()
 
     def _ignore_all_shown(self) -> None:
         evs = self._events()
@@ -330,11 +491,10 @@ class ResolveCenter(QDialog):
                 continue
             seen.add(sig)
             alert_ack.ack(ev, "mass-ignore via Resolve Center")
-        self._last_key = None
-        self._refresh()
+        self._invalidate_snapshot()
 
     def _show_ignored(self) -> None:
-        recs = alert_ack.acked_records()
+        recs = self._snapshot.ignored if self._snapshot else ()
         dlg = QDialog(self); dlg.setWindowTitle("Ignored alerts"); dlg.resize(720, 420)
         if self.styleSheet():
             dlg.setStyleSheet(self.styleSheet())
@@ -353,7 +513,7 @@ class ResolveCenter(QDialog):
             sig = rec.get("sig")
             btn = self._btn("Un-ignore", "#334155", "#e2e8f0",
                             lambda s=sig, d=dlg: (alert_ack.unack(s), d.accept(),
-                                                  self._refresh(), self._show_ignored()))
+                                                  self._invalidate_snapshot()))
             wrap = QWidget(); wl = QHBoxLayout(wrap); wl.setContentsMargins(4, 1, 4, 1)
             wl.addWidget(btn); tbl.setCellWidget(r, 3, wrap)
         v.addWidget(tbl, 1)

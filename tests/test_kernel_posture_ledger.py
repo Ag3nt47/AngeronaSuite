@@ -69,6 +69,29 @@ def test_assessment_flags_kernel_boundary_weakening():
     assert any("test-signing" in risk for risk in result.risks)
 
 
+def test_disabled_hvci_is_exposure_instead_of_active_attack(tmp_path, monkeypatch):
+    from angerona.core.eventbus import EventBus, Severity
+    from angerona.modules import kernel_posture_ledger
+
+    snapshot = _healthy()
+    snapshot["hvci"] = False
+    module = KernelBoundaryPostureLedger(
+        provider=_Provider([snapshot]), ledger_path=tmp_path / "posture.jsonl",
+        authority_key=b"k" * 32,
+    )
+    bus = EventBus()
+    module.bind(bus)
+    monkeypatch.setattr(kernel_posture_ledger.sys, "platform", "win32")
+    monkeypatch.setattr(module, "sleep", lambda _seconds: module.stop())
+    module.run()
+    event = bus.recent(1)[0]
+    assert event.severity == Severity.HIGH
+    assert any("HVCI" in risk for risk in event.details["risks"])
+    assert event.details["hardening"] is True
+    assert event.details["disposition"] == "exposure"
+    assert event.details.get("active_attack") is not True
+
+
 def test_ledger_is_bounded_and_detects_tampering(tmp_path):
     path = tmp_path / "kernel.jsonl"
     ledger = KernelPostureLedger(path, max_records=8, authority_key=b"k" * 32)

@@ -659,7 +659,7 @@ class MemInjectScannerModule(BaseModule):
         prediction = self._predict_technique(proc_name, size, protect, ctx)
 
         parts = [
-            f"Suspicious RWX memory in {name_str} (PID={pid}) — "
+            f"RWX memory observed in {name_str} (PID={pid}) — "
             f"{region_count} anonymous RWX region(s)",
             f"Largest: 0x{base:X}–0x{base + size:X}  size={size // 1024}KB  protect={prot_name}",
         ]
@@ -675,11 +675,12 @@ class MemInjectScannerModule(BaseModule):
             parts.append(f"Active connections: {', '.join(ctx['connections'])}")
         if ctx.get("dll_count") is not None:
             parts.append(f"Loaded modules: {ctx['dll_count']}")
-        parts.append(f"Predicted: {prediction}")
+        parts.append(f"Unconfirmed technique hypothesis: {prediction}")
+        parts.append("RWX permissions alone do not establish code injection; JIT runtimes also use executable memory.")
 
         self.emit(
             "\n".join(parts),
-            Severity.MEDIUM if trusted_jit else Severity.HIGH,
+            Severity.MEDIUM,
             pid=pid,
             proc_name=proc_name,
             exe=ctx.get("exe", ""),
@@ -698,7 +699,8 @@ class MemInjectScannerModule(BaseModule):
             predicted_technique=prediction,
             mitre_tags=["T1055", "T1055.001", "T1055.003", "T1055.012"],
             process_create_time=ctx.get("process_create_time"),
-            active_attack=True,
+            active_attack=False,
+            disposition="observation",
             detector_policy="rwx-memory-indicator-alert-only",
             exact_identity_jit_damper=trusted_jit,
         )

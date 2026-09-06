@@ -115,6 +115,41 @@ def _is_self_or_drill(event) -> bool:
     return False
 
 
+def _legacy_indicator_only(event, details: dict, module: str) -> bool:
+    """Recognize the precise older detector records that overstated evidence.
+
+    Do not rewrite stored events or trust a filename/allowlist to establish
+    safety. These policies only measured an indicator, even though their old
+    producers set active_attack. Independent exploitation and critical evidence
+    must still take precedence.
+    """
+    if (
+        getattr(event, "severity", Severity.INFO) > Severity.HIGH
+        or details.get("active_exploitation") is True
+        or details.get("threat_intel_corroborated") is True
+        or details.get("entropy_corroborated") is True
+    ):
+        return False
+    policy = details.get("detector_policy")
+    if module == "memory injection scanner":
+        return policy == "rwx-memory-indicator-alert-only"
+    if module == "c2 beacon detector":
+        return (
+            policy == "cadence-indicator-alert-only"
+            and details.get("threat_intel_corroborated") is False
+        )
+    if module == "ransomware heuristics":
+        if policy == "authenticated-content-transition":
+            return details.get("transition") in ("changed", "missing")
+        return (
+            policy == "reviewed-semantic-indicator"
+            and isinstance(details.get("path"), str)
+            and type(details.get("entropy")) in (int, float)
+            and type(details.get("threshold")) in (int, float)
+        )
+    return False
+
+
 def event_disposition(event) -> str:
     """Classify an event without rewriting its evidentiary severity.
 
@@ -133,13 +168,28 @@ def event_disposition(event) -> str:
         return "health"
     details = getattr(event, "details", None)
     details = details if isinstance(details, dict) else {}
+    module = str(getattr(event, "module", "") or "").strip().casefold()
+    if _legacy_indicator_only(event, details, module):
+        return "observation"
     if details.get("active_exploitation") is True or details.get("active_attack") is True:
         return "active"
-    module = str(getattr(event, "module", "") or "").strip().casefold()
     finding_kind = str(details.get("finding_kind") or "").strip().casefold()
     disposition = str(details.get("disposition") or "").strip().casefold()
     source = str(details.get("source") or "").strip().casefold()
     event_type = str(details.get("event_type") or "").strip().casefold()
+    if disposition == "observation":
+        return "observation"
+    # Old NDRD records were lexical scores, sometimes extracted from prose.
+    # Keep the original evidence available without asserting a live attack.
+    if (
+        module == "network protocol deep decoder"
+        and getattr(event, "severity", Severity.INFO) <= Severity.HIGH
+        and details.get("verdict") == "DGA/tunneling-suspect"
+        and details.get("suspicious") is True
+        and isinstance(details.get("qname"), str)
+        and isinstance(details.get("reasons"), list)
+    ):
+        return "observation"
     # Posture Hardening emits practice-gap metadata only after authenticating a
     # signed Shark/Red-Team report.  Its AAR integrity errors intentionally do
     # not carry these fields, so "verification failed" stays an active alert.
@@ -162,6 +212,20 @@ def event_disposition(event) -> str:
             defender_eid = 0
         if defender_eid in {1117, 5001}:
             return "health"
+        if (
+            disposition == "health"
+            and details.get("continuity_complete") is False
+            and details.get("response_authorized") is False
+            and str(details.get("reason_code", "")).startswith("defender.")
+        ):
+            return "health"
+    if (
+        module == "kernel-boundary posture ledger"
+        and details.get("user_mode_observation") is True
+        and isinstance(details.get("risks"), list)
+        and isinstance(details.get("evidence_sha256"), str)
+    ):
+        return "exposure"
     if (
         module in _EXPOSURE_MODULES
         or disposition in _EXPOSURE_KINDS
@@ -186,6 +250,13 @@ def is_active_threat(event) -> bool:
 def active_threat_events(events, window: float = 600.0) -> list:
     """Return unresolved, non-allowlisted active threats in the time window."""
     now = time.time()
+    candidates = [
+        event for event in events
+        if 0.0 <= now - getattr(event, "ts", 0.0) <= window
+        and is_active_threat(event)
+    ]
+    if not candidates:
+        return []
     try:
         from angerona.core.alert_ack import acked_signatures, signature
         acked = acked_signatures()
@@ -204,10 +275,8 @@ def active_threat_events(events, window: float = 600.0) -> list:
         is_resolved_event = lambda _event, **_kwargs: False
         resolutions = {}
     return [
-        event for event in events
-        if 0.0 <= now - getattr(event, "ts", 0.0) <= window
-        and is_active_threat(event)
-        and not (signature and signature(event) in acked)
+        event for event in candidates
+        if not (signature and signature(event) in acked)
         and not is_event_allowed(event, policy=process_policy)
         and not is_resolved_event(event, resolutions=resolutions)
     ]
@@ -235,3 +304,13 @@ def threat_level(events, window: float = 600.0) -> Severity:
 def threat_label(events, window: float = 600.0):
     """Convenience: returns (label, colour)."""
     return THREAT_LABEL[threat_level(events, window)]
+
+
+def threat_label_from_active(active_events):
+    """Label an already evaluated snapshot without rereading policy or files."""
+    level = Severity.INFO
+    for event in active_events:
+        if event.severity == Severity.CRITICAL:
+            return THREAT_LABEL[Severity.CRITICAL]
+        level = Severity.HIGH
+    return THREAT_LABEL[level]

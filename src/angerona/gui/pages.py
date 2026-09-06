@@ -78,8 +78,11 @@ SECURITY NOTES
 from angerona import __version__
 from angerona.core.capability_assurance import assess_capability, cached_declaration_anchor
 from angerona.core.eventbus import Severity
-from angerona.core.threat import active_threat_events, threat_label
+from angerona.core.threat import (
+    active_threat_events, event_disposition, threat_label, threat_label_from_active,
+)
 from angerona.gui.animations import begin_loading, finish_loading
+from angerona.gui.async_snapshot import AsyncSnapshot
 from angerona.gui.dashboard_details import (
     ConsoleDetailDialog,
     FuturisticDetailDialog,
@@ -921,15 +924,23 @@ def _tail_json_records(path: Path, limit: int) -> list[dict]:
     return records
 
 
-def _read_soar_queue_state() -> dict[str, dict]:
+def _read_soar_queue_state(*, strict: bool = False) -> dict[str, dict]:
     path = _soar_queue_state_path()
     try:
-        if not path.exists() or path.stat().st_size > _SOAR_STATE_MAX_BYTES:
+        if path.stat().st_size > _SOAR_STATE_MAX_BYTES:
+            if strict:
+                raise ValueError("SOAR queue state exceeds its size bound")
             return {}
         value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
     except (OSError, UnicodeError, ValueError, TypeError):
+        if strict:
+            raise
         return {}
     if not isinstance(value, dict) or len(value) > _SOAR_STATE_LIMIT:
+        if strict:
+            raise ValueError("SOAR queue state has an invalid shape")
         return {}
     allowed = {
         "status", "reviewed_at", "approved_at", "dismissed_at",
@@ -1003,7 +1014,7 @@ def _update_soar_queue_record(request_id: str, **updates) -> bool:
         return False
 
 
-def _read_soar_queue(limit: int = 500) -> list:
+def _read_soar_queue(limit: int = 500, *, strict: bool = False) -> list:
     """Read the bounded queue, reusing the parse while the file is unchanged.
 
     The dashboard calls this every two seconds. A queue normally changes only
@@ -1015,20 +1026,25 @@ def _read_soar_queue(limit: int = 500) -> list:
     out = []
     try:
         p = _soar_queue_path()
-        if not p.exists():
+        try:
+            st = p.stat()
+        except FileNotFoundError:
             return out
-        st = p.stat()
         state_path = _soar_queue_state_path()
         try:
             state_stat = state_path.stat()
             state_key = (state_stat.st_mtime_ns, state_stat.st_size)
-        except OSError:
+        except FileNotFoundError:
             state_key = (0, 0)
-        key = (str(p), st.st_mtime_ns, st.st_size, state_key, int(limit))
+        except OSError:
+            if strict:
+                raise
+            state_key = (0, 0)
+        key = (str(p), st.st_mtime_ns, st.st_size, state_key, int(limit), strict)
         with _SOAR_QUEUE_CACHE_LOCK:
             if key == _SOAR_QUEUE_CACHE_KEY:
                 return list(_SOAR_QUEUE_CACHE_VALUE)
-        state = _read_soar_queue_state()
+        state = _read_soar_queue_state(strict=strict)
         for record in _tail_json_records(p, limit):
             updates = state.get(_soar_record_id(record))
             if updates:
@@ -1038,6 +1054,8 @@ def _read_soar_queue(limit: int = 500) -> list:
             _SOAR_QUEUE_CACHE_KEY = key
             _SOAR_QUEUE_CACHE_VALUE = tuple(out)
     except Exception:
+        if strict:
+            raise
         pass
     return list(out)
 
@@ -1427,6 +1445,15 @@ class DashboardCards(QWidget):
         self._cached_count: int = 0
         self._count_load_busy = False
         self.count_loaded.connect(self._apply_count)
+        self._threat_reader = AsyncSnapshot(
+            self, self._prepare_threat_snapshot, self._apply_threat_snapshot,
+            name="DashboardThreatReader",
+            status=lambda state: self.c_threat.setToolTip(
+                "Threat assessment current" if state == "current" else
+                "Updating threat assessment; showing the previous result" if state == "updating" else
+                "Threat assessment unavailable; showing the previous result and retrying on refresh"
+            ),
+        )
 
     def refresh(self) -> None:
         running = sum(1 for m in self.manager.modules.values() if m.status == "running")
@@ -1448,14 +1475,21 @@ class DashboardCards(QWidget):
             self._count_worker.start()
         self.c_alerts.set(str(self._cached_count))
 
-        events = self.bus.recent(200)
-        crit = sum(
-            1 for e in active_threat_events(events)
-            if e.severity == Severity.CRITICAL
-        )
-        self.c_crit.set(str(crit), "#ef4444" if crit else "#ffffff")
+        self._threat_reader.request()
 
-        label, color = threat_label(events)
+    def _prepare_threat_snapshot(self):
+        bus = self.bus
+
+        def read():
+            active = active_threat_events(bus.recent(200))
+            crit = sum(1 for event in active if event.severity == Severity.CRITICAL)
+            return crit, threat_label_from_active(active)
+
+        return read
+
+    def _apply_threat_snapshot(self, snapshot) -> None:
+        crit, (label, color) = snapshot
+        self.c_crit.set(str(crit), "#ef4444" if crit else "#ffffff")
         self.c_threat.set(label, color)
 
     def _apply_count(self, revision, count) -> None:
@@ -1470,6 +1504,7 @@ class DashboardCards(QWidget):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
         self._accept_async_results = False
+        self._threat_reader.close()
         super().closeEvent(event)
 
     # ── Drill-down windows ───────────────────────────────────────────────────
@@ -4340,6 +4375,18 @@ class AlertDetailDialog(QDialog):
             if authenticity_verified else "color:#f59e0b; font-weight:700;"
         )
         lay.addWidget(authenticity)
+        disposition = event_disposition(event)
+        assessment = QLabel({
+            "active": "Assessment: Active threat evidence",
+            "observation": "Assessment: Observation — this signal alone does not establish an active attack.",
+            "health": "Assessment: Sensor / suite health — review monitoring coverage.",
+            "exposure": "Assessment: Hardening exposure — review the affected protection setting.",
+            "practice": "Assessment: Practice / validation evidence",
+        }.get(disposition, "Assessment: Informational evidence"))
+        assessment.setObjectName("alertEvidenceAssessment")
+        assessment.setWordWrap(True)
+        assessment.setToolTip("The original signed event and its recorded severity are retained below.")
+        lay.addWidget(assessment)
         ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(event.ts))
         lay.addWidget(QLabel(f"Time: {ts}"))
         # Long alert text slowly scrolls inside a fixed-height box so the whole
@@ -4452,6 +4499,9 @@ class AlertDetailDialog(QDialog):
         acts = QHBoxLayout()
         b_allow = QPushButton("Allow");   b_allow.clicked.connect(self._act_allow)
         b_block = QPushButton("Block");   b_block.clicked.connect(self._act_block)
+        b_block.setEnabled(disposition in {"active", "practice"})
+        if not b_block.isEnabled():
+            b_block.setToolTip("This evidence does not establish an active threat for containment.")
         b_analyze = QPushButton("Analyze"); b_analyze.clicked.connect(self._act_analyze)
         b_research = QPushButton("🔎 Research"); b_research.clicked.connect(self._act_research)
         b_copy = QPushButton("📋 Copy"); b_copy.clicked.connect(self._act_copy)
@@ -4741,6 +4791,9 @@ class AlertsPanel(QFrame):
 
     def _make_block_btn(self, event) -> QPushButton:
         btn = QPushButton("Block")
+        btn.setEnabled(event_disposition(event) in {"active", "practice"})
+        if not btn.isEnabled():
+            btn.setToolTip("This evidence does not establish an active threat for containment.")
         btn.setFixedHeight(22)
         btn.setStyleSheet(
             "QPushButton{background:#7f1d1d;color:#fca5a5;border:none;border-radius:3px;"
@@ -5227,7 +5280,17 @@ class SoarPanel(QFrame):
         self.setObjectName("Panel")
         self.bus = bus
         self.manager = manager
-        self._queue_fingerprint: tuple | None = None
+        self._queue_fingerprint: str | None = None
+        self._queue_records: dict[str, dict] = {}
+        self._queue_reader = AsyncSnapshot(
+            self, self._prepare_queue_snapshot, self._apply_queue_snapshot,
+            name="DashboardSoarReader",
+            status=lambda state: self._status.setToolTip(
+                "Queue current" if state == "current" else
+                "Updating queue; previous records remain available" if state == "updating" else
+                "Queue refresh unavailable; previous records retained until the next refresh"
+            ),
+        )
         self._last_clear_archive: Path | None = None
         # Approval must be acquired in this live UI session. Persisted JSONL is
         # history, not an authorization boundary, so editing it cannot enable
@@ -5328,51 +5391,61 @@ class SoarPanel(QFrame):
         self._sync_action_buttons()
 
     def refresh(self) -> None:
-        items = _read_soar_queue()
-        if _reconcile_soar_submission_receipts(items, self.bus):
-            items = _read_soar_queue()
-        fingerprint = tuple(
-            (
-                _soar_record_id(record),
-                str(record.get("status", "")),
-                record.get("reviewed_at"),
-                record.get("approved_at"),
-                record.get("dismissed_at"),
-                record.get("submitted_at"),
-                record.get("executed_at"),
-                record.get("receipt_hmac"),
-            )
-            for record in items
-        )
+        self._queue_reader.request()
+
+    def _prepare_queue_snapshot(self):
+        bus = self.bus
+
+        def read():
+            items = _read_soar_queue(strict=True)
+            if _reconcile_soar_submission_receipts(items, bus):
+                items = _read_soar_queue(strict=True)
+            items = copy.deepcopy(items)
+            fingerprint = hashlib.sha256(json.dumps(
+                items, sort_keys=True, default=str, separators=(",", ":"),
+            ).encode("utf-8")).hexdigest()
+            return items, fingerprint
+
+        return read
+
+    def _apply_queue_snapshot(self, snapshot) -> None:
+        items, fingerprint = snapshot
         if fingerprint == self._queue_fingerprint:
             self._sync_action_buttons()
             return
         selected = self._selected_request_id()
         self._queue_fingerprint = fingerprint
-        self.table.setRowCount(0)
-        for rec in reversed(items):     # newest first
-            r = self.table.rowCount()
-            self.table.insertRow(r)
-            ts = time.strftime("%m-%d %H:%M:%S", time.localtime(rec.get("ts", 0)))
-            ts_item = QTableWidgetItem(ts)
-            request_id = _soar_record_id(rec)
-            ts_item.setData(Qt.UserRole, request_id)
-            self.table.setItem(r, 0, ts_item)
-            self.table.setItem(r, 1, QTableWidgetItem(str(rec.get("origin_module", ""))))
-            self.table.setItem(r, 2, QTableWidgetItem(str(rec.get("severity", ""))))
-            self.table.setItem(r, 3, QTableWidgetItem(str(rec.get("message", ""))))
-            st = QTableWidgetItem(str(rec.get("status", "")))
-            status = str(rec.get("status", "")).upper()
-            color = (
-                "#22c55e" if status.startswith("EXECUTED")
-                else "#ef4444" if status.startswith(("FAILED", "DISMISSED"))
-                else "#38bdf8" if status.startswith("APPROVED")
-                else "#f59e0b"
-            )
-            st.setForeground(QColor(color))
-            self.table.setItem(r, 4, st)
-            if selected == request_id:
-                self.table.selectRow(r)
+        self._queue_records = {_soar_record_id(record): record for record in items}
+        self.table.setUpdatesEnabled(False)
+        self.table.blockSignals(True)
+        try:
+            self.table.setRowCount(0)
+            for rec in reversed(items):     # newest first
+                r = self.table.rowCount()
+                self.table.insertRow(r)
+                ts = time.strftime("%m-%d %H:%M:%S", time.localtime(rec.get("ts", 0)))
+                ts_item = QTableWidgetItem(ts)
+                request_id = _soar_record_id(rec)
+                ts_item.setData(Qt.UserRole, request_id)
+                self.table.setItem(r, 0, ts_item)
+                self.table.setItem(r, 1, QTableWidgetItem(str(rec.get("origin_module", ""))))
+                self.table.setItem(r, 2, QTableWidgetItem(str(rec.get("severity", ""))))
+                self.table.setItem(r, 3, QTableWidgetItem(str(rec.get("message", ""))))
+                st = QTableWidgetItem(str(rec.get("status", "")))
+                status = str(rec.get("status", "")).upper()
+                color = (
+                    "#22c55e" if status.startswith("EXECUTED")
+                    else "#ef4444" if status.startswith(("FAILED", "DISMISSED"))
+                    else "#38bdf8" if status.startswith("APPROVED")
+                    else "#f59e0b"
+                )
+                st.setForeground(QColor(color))
+                self.table.setItem(r, 4, st)
+                if selected == request_id:
+                    self.table.selectRow(r)
+        finally:
+            self.table.blockSignals(False)
+            self.table.setUpdatesEnabled(True)
         pending = sum(
             1 for record in items
             if str(record.get("status", "")).upper().startswith("PENDING")
@@ -5387,23 +5460,29 @@ class SoarPanel(QFrame):
         )
         self._sync_action_buttons()
 
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        self._queue_reader.close()
+        super().closeEvent(event)
+
     def _selected_request_id(self) -> str:
         row = self.table.currentRow()
         item = self.table.item(row, 0) if row >= 0 else None
         return str(item.data(Qt.UserRole) or "") if item is not None else ""
 
-    def _record_for_row(self, row: int) -> dict | None:
+    def _record_for_row(self, row: int, *, fresh: bool = False) -> dict | None:
         item = self.table.item(int(row), 0)
         request_id = str(item.data(Qt.UserRole) or "") if item is not None else ""
+        if not fresh:
+            return self._queue_records.get(request_id)
         items = _read_soar_queue()
         return next(
             (record for record in items if _soar_record_id(record) == request_id),
             None,
         )
 
-    def _selected_record(self) -> dict | None:
+    def _selected_record(self, *, fresh: bool = False) -> dict | None:
         row = self.table.currentRow()
-        return self._record_for_row(row) if row >= 0 else None
+        return self._record_for_row(row, fresh=fresh) if row >= 0 else None
 
     @staticmethod
     def _terminal_record(record: dict) -> bool:
@@ -5442,7 +5521,8 @@ class SoarPanel(QFrame):
 
     def _force_queue_refresh(self) -> None:
         self._queue_fingerprint = None
-        self.refresh()
+        self._sync_action_buttons()
+        self._queue_reader.request(invalidate=True)
 
     def _review_selected(self) -> None:
         row = self.table.currentRow()
@@ -5456,7 +5536,7 @@ class SoarPanel(QFrame):
         self._open_record(row, 0)
 
     def _approve_selected(self) -> None:
-        record = self._selected_record()
+        record = self._selected_record(fresh=True)
         if record is None:
             self._status.setText("Select a SOAR item to approve.")
             return
@@ -5507,7 +5587,7 @@ class SoarPanel(QFrame):
             )
 
     def _dismiss_selected(self) -> None:
-        record = self._selected_record()
+        record = self._selected_record(fresh=True)
         if record is None:
             self._status.setText("Select a SOAR item to dismiss.")
             return
@@ -5534,7 +5614,7 @@ class SoarPanel(QFrame):
             self._status.setText("Could not persist the dismissal; request remains open.")
 
     def _execute_selected(self) -> None:
-        record = self._selected_record()
+        record = self._selected_record(fresh=True)
         if record is None:
             self._status.setText("Select an approved SOAR item to execute.")
             return
