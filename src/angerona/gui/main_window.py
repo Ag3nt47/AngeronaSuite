@@ -2861,11 +2861,16 @@ class MainWindow(QMainWindow):
             # the Console rather than in its own tab. This frees the right-hand
             # tabs for Live Alerts + SOAR Queue — you watch alerts and talk to ARIA
             # at the same time. (No more "ARIA" tab stealing the alerts view.)
+            self._aria_history_snapshot = ("", 0)
+            self._aria_history_reader = AsyncSnapshot(
+                self, self._prepare_aria_history_snapshot, self._apply_aria_history_snapshot,
+                name="AriaHistoryReader",
+            )
             self.aria_hud = AriaHud(
                 score_fn=lambda: int((getattr(self, "_last_posture", {}) or {}).get("score", 100)),
                 alerts_fn=lambda: int(((getattr(self, "_last_posture", {}) or {}).get("factors", {}) or {}).get("active_threats", 0)),
-                sparkline_fn=lambda: self.aria_history.sparkline(32),
-                trend_fn=lambda: int(self.aria_history.trend().get("delta", 0)),
+                sparkline_fn=lambda: self._aria_history_snapshot[0],
+                trend_fn=lambda: self._aria_history_snapshot[1],
                 ask_fn=self._aria_ask,
                 stream_fn=self._aria_ask_stream,
                 compact=True,
@@ -3986,6 +3991,18 @@ class MainWindow(QMainWindow):
     def _refresh_posture(self) -> None:
         self._posture_reader.request()
 
+    def _prepare_aria_history_snapshot(self):
+        history = self.aria_history
+
+        def read():
+            return history.sparkline(32), int(history.trend().get("delta", 0))
+
+        return read
+
+    def _apply_aria_history_snapshot(self, snapshot) -> None:
+        self._aria_history_snapshot = snapshot
+        self.aria_hud.refresh()
+
     def _prepare_posture_snapshot(self):
         bus, manager, config = self.bus, self.manager, self.config
 
@@ -4016,6 +4033,7 @@ class MainWindow(QMainWindow):
                     self.aria_history.record(s, band=str(p.get("label", "")))
                     self._aria_last_score = s
                 self.aria_hud.refresh()
+                self._aria_history_reader.request()
                 # Proactive: announce a NEW critical posture once (voice + channel).
                 # Both are no-ops unless their Settings toggle is on. Re-arms only
                 # after posture recovers above the critical threshold.

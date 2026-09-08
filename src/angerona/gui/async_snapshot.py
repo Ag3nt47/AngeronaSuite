@@ -7,6 +7,24 @@ import threading
 from PySide6.QtCore import QTimer
 
 
+def _snapshot_loop(jobs, results, stopped) -> None:
+    """Reuse one sleeping worker without retaining the owner between reads."""
+    while not stopped.is_set():
+        job = jobs.get()
+        if job is None or stopped.is_set():
+            return
+        generation, read = job
+        try:
+            result = (generation, True, read())
+        except Exception:
+            result = (generation, False, None)
+        if stopped.is_set():
+            return
+        results.put_nowait(result)
+        # An idle worker must not pin its previous reader or result payload.
+        job = read = result = None
+
+
 class AsyncSnapshot:
     """One reader, one result and one coalesced follow-up per owner.
 
@@ -21,6 +39,8 @@ class AsyncSnapshot:
         self._name = name
         self._status = status
         self._results: queue.Queue = queue.Queue(maxsize=1)
+        self._requests: queue.Queue = queue.Queue(maxsize=1)
+        self._stopped = threading.Event()
         self._pending = False
         self._closed = False
         self._generation = 0
@@ -44,24 +64,21 @@ class AsyncSnapshot:
         except Exception:
             self._set_status("unavailable")
             return
-        generation, results = self._generation, self._results
-        self.busy = True
-
-        def work() -> None:
-            try:
-                result = (generation, True, read())
-            except Exception:
-                result = (generation, False, None)
-            results.put_nowait(result)
-
         try:
-            self.thread = threading.Thread(target=work, name=self._name, daemon=True)
-            self.thread.start()
+            if self.thread is None or not self.thread.is_alive():
+                self.thread = threading.Thread(
+                    target=_snapshot_loop,
+                    args=(self._requests, self._results, self._stopped),
+                    name=self._name, daemon=True,
+                )
+                self.thread.start()
+            self._requests.put_nowait((self._generation, read))
         except Exception:
             self.busy = False
             self.thread = None
             self._set_status("unavailable")
             return
+        self.busy = True
         self._set_status("updating")
         self._timer.start()
 
@@ -98,6 +115,11 @@ class AsyncSnapshot:
     def close(self, *_args) -> None:
         self._closed = True
         self._pending = False
+        self._stopped.set()
+        try:
+            self._requests.put_nowait(None)
+        except queue.Full:
+            pass  # The queued request observes _stopped before reading.
         # Parent destruction may have already disposed the timer's C++ object.
         try:
             self._timer.stop()

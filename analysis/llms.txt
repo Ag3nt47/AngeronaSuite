@@ -10,6 +10,13 @@
 ## STACK / LAUNCH
 Python package metadata supports 3.10–3.13; the hardened Windows source bootstrap and launcher require the reviewed **CPython 3.12 x64** ABI and hash-locked wheels. PySide6 GUI · local Ollama (llama3) triage; sanitized cloud fallback is opt-in and default-off. Windows editable install: `pip install -e .[windows,voice]`; Linux/macOS source editions use target extras through the hash-locked installer. Entry `python -m angerona` → `app.py:AngeronaApp` builds core services + `gui/main_window.py:MainWindow`. First-run install, SETUP, `--setup`, and `angerona-setup` enter the same 16-step Full Setup. Self-elevating source launchers overwrite inherited `ANGERONA_DATA` with the sibling `<install-folder>\..\AngeronaData` on D: before elevation; frozen Windows builds prefer protected `D:\AngeronaData`. DB: `flight-recorder.db`. TEMP/TMP, watchdog state, reports, diagnostics, scanner evidence, legacy engine status/telemetry, and incident staging use canonical data/temp helpers rather than the checkout.
 
+## RUNTIME MAINTENANCE (2026-09-07)
+
+See `analysis/runtime-responsiveness-2026-09-07.md` for the long-session
+responsiveness investigation. Dashboard snapshots reuse idle workers; ARIA
+history and event drill-down reads run outside Qt. Busy/error retains the last
+display, and worker closure never waits on history I/O. Version remains 1.13.0.
+
 ## LATEST (v1.13.0 — Cycle 34 improvement loop)
 
 - **Release truth:** post-release maintenance only; product remains v1.13.0 and

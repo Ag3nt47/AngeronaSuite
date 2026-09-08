@@ -17,6 +17,13 @@ portfolios—not offensive intrusion or hack-back.
 
 Current version: **v1.13.0**
 
+**Long-session responsiveness (2026-09-07).** Dashboard snapshots reuse sleeping
+workers instead of creating a new thread on every refresh. ARIA score-history
+reads and event drill-down history/filtering run off the UI thread; busy or
+failed history reads retain the previous display. Closing a view stops its
+worker without waiting for a blocked read. Restart Angerona to load these fixes.
+See [findings and validation](analysis/runtime-responsiveness-2026-09-07.md).
+
 **Windows Safe Startup.** `start-angerona.bat` now opens a separate startup
 assistant. Windows bundles include `AngeronaStartup.exe` as their normal launch
 entry. Its independent window prepares missing startup folders, verifies storage

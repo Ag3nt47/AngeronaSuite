@@ -166,18 +166,34 @@ def _():
             f"crit={c.c_crit.value.text()} threat={c.c_threat.value.text()}")
 
 
+def _wait_event_history(dialog) -> None:
+    deadline = time.monotonic() + 5.0
+    while dialog._events_reader.busy and time.monotonic() < deadline:
+        qt.processEvents()
+        time.sleep(0.005)
+    assert not dialog._events_reader.busy, "event history reader did not finish"
+
+
 @phase("EventsWindow — Alerts (LOW+)")
 def _():
     d = pages.EventsWindow("Alerts", bus, storage, min_sev=Severity.LOW)
-    d._refresh()
-    return f"{d.table.rowCount()} rows"
+    try:
+        _wait_event_history(d)
+        assert d.table.rowCount() >= 2, "alert history did not render seeded evidence"
+        return f"{d.table.rowCount()} rows"
+    finally:
+        d.close()
 
 
 @phase("EventsWindow — Critical")
 def _():
     d = pages.EventsWindow("Critical", bus, storage, min_sev=Severity.CRITICAL)
-    d._refresh()
-    return f"{d.table.rowCount()} rows"
+    try:
+        _wait_event_history(d)
+        assert d.table.rowCount() >= 1, "critical history did not render seeded evidence"
+        return f"{d.table.rowCount()} rows"
+    finally:
+        d.close()
 
 
 @phase("ModulesStatusWindow")

@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.13.0
-Date: 2026-09-05
+Date: 2026-09-07
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -22,7 +22,22 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST MAINTENANCE (2026-09-05)
+## LATEST MAINTENANCE (2026-09-07)
+
+- AsyncSnapshot reuses one sleeping worker per owner with a one-slot request,
+  one-slot result and one coalesced follow-up. Idle workers release previous
+  payloads; close never waits for I/O and discards late results.
+- ARIA trend/sparkline callbacks read a completed in-memory snapshot. History
+  queries use a separate background reader so slow history cannot hold Qt or
+  delay the current posture score and independent security-event reader.
+- Event drill-down construction and refresh load bounded history and classify
+  active evidence outside Qt. Failed/busy history preserves the previous rows
+  with visible retry status. These snapshots never authorize response actions.
+- Evidence and deployment limits: analysis/runtime-responsiveness-2026-09-07.md.
+  Product stays v1.13.0 / 84 capabilities; restart the source application to load
+  the changes. Existing Analysis Lab work remains a separate unpublished update.
+
+## PRIOR MAINTENANCE (2026-09-05)
 
 - Containment drills check memory-only Combat readiness and effective policy
   before launch. Rejected, queued, probes-complete and verified-report states

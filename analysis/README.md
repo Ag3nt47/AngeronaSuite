@@ -7,6 +7,8 @@
 > [`ANGERONA_CAPABILITIES.md`](../ANGERONA_CAPABILITIES.md), and
 > [`cycle34/README.md`](loop/cycle34/README.md).
 
+Current runtime maintenance: [long-session responsiveness, 2026-09-07](runtime-responsiveness-2026-09-07.md).
+
 The Cycle 34 v1.13.0 maintenance five-check release gate on exact commit
 `7eef1f0a0c400b34f170cbd1463cd3c6a454de3b` passed **2882 tests / 15
 intentional platform skips / 0 failures in 977.10 seconds**. Canonical

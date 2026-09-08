@@ -1679,7 +1679,7 @@ class EventsWindow(QDialog):
                 self,
             )
         )
-        self.count_lbl = QLabel("")
+        self.count_lbl = QLabel("Loading event history…")
         self.count_lbl.setStyleSheet("color:#9aa4b2;")
         root.addWidget(self.count_lbl)
 
@@ -1714,6 +1714,11 @@ class EventsWindow(QDialog):
         row.addWidget(refresh)
         row.addWidget(close)
         root.addLayout(row)
+        self._events_reader = AsyncSnapshot(
+            self, self._prepare_events_snapshot, self._apply_events_snapshot,
+            name="EventHistoryReader",
+            status=self._history_status,
+        )
         self._refresh()
 
     def _open_detail(self, row: int, _col: int) -> None:
@@ -1728,28 +1733,46 @@ class EventsWindow(QDialog):
                 _sev_color(getattr(ev, "severity", Severity.INFO)),
             )
 
-    def _events(self) -> list:
-        now = time.time()
-        try:
-            evs = self.storage.try_recent_in_window(
-                now - self.window_s, now, self.min_sev, self.MAX_ROWS
-            )
+    def _prepare_events_snapshot(self):
+        storage = self.storage
+        window_s, min_sev = self.window_s, self.min_sev
+        limit, active_only = self.MAX_ROWS, self.active_only
+
+        def read():
+            now = time.time()
+            evs = storage.try_recent_in_window(now - window_s, now, min_sev, limit)
             if evs is None:
-                evs = self.bus.recent(self.MAX_ROWS)
-        except Exception:
-            evs = self.bus.recent(self.MAX_ROWS)
-        out = [e for e in evs
-               if now - self.window_s <= getattr(e, "ts", 0) <= now
-               and getattr(e, "severity", Severity.INFO) >= self.min_sev
-               and getattr(e, "module", "") not in NOISE_MODULES]
-        out.sort(key=lambda e: getattr(e, "ts", 0), reverse=True)
-        if self.active_only:
-            out = active_threat_events(out, window=self.window_s)
+                raise RuntimeError("Event history is busy")
+            out = [e for e in evs
+                   if now - window_s <= getattr(e, "ts", 0) <= now
+                   and getattr(e, "severity", Severity.INFO) >= min_sev
+                   and getattr(e, "module", "") not in NOISE_MODULES]
             out.sort(key=lambda e: getattr(e, "ts", 0), reverse=True)
-        return out
+            if active_only:
+                out = active_threat_events(out, window=window_s)
+            out.sort(key=lambda e: getattr(e, "ts", 0), reverse=True)
+            return out[:limit]
+
+        return read
+
+    def _events(self) -> list:
+        """Explicit synchronous read for non-UI callers and diagnostics."""
+        return self._prepare_events_snapshot()()
 
     def _refresh(self) -> None:
-        evs = self._events()
+        self._events_reader.request()
+
+    def _history_status(self, state: str) -> None:
+        if state == "updating":
+            self.count_lbl.setText("Updating event history; showing the previous result…")
+        elif state == "unavailable":
+            self.count_lbl.setText("Event history unavailable; showing the previous result. Refresh to retry.")
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        self._events_reader.close()
+        super().closeEvent(event)
+
+    def _apply_events_snapshot(self, evs) -> None:
         _fill_event_table(self.table, evs)
         qualifier = "most recent " if len(evs) >= self.MAX_ROWS else ""
         duration = (
