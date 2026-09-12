@@ -14,12 +14,15 @@ Files are written only to the configured runtime-data diagnostics directory.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import List
 
 from angerona import __version__
+from angerona.core.atomic_io import replace_with_retry
 from angerona.core.eventbus import Severity
 from angerona.core.privilege import is_admin
 
@@ -39,6 +42,12 @@ class StatusReporter:
         self._thread: threading.Thread | None = None
         self._last_material: dict | None = None
         self._last_persisted_at = 0.0
+        self._write_lock = threading.Lock()
+        try:
+            import psutil
+            self._process_started_at = psutil.Process().create_time()
+        except Exception:
+            self._process_started_at = None
 
         self._dirs: List[Path] = []
         try:
@@ -73,6 +82,23 @@ class StatusReporter:
             self._stop.wait(self._effective_interval())
 
     # ── Snapshot ─────────────────────────────────────────────────────────────
+    def _bus_snapshot(self) -> dict:
+        """Report actual inline-delivery evidence, without inventing a heartbeat.
+
+        The bus has no dispatcher thread: a quiet revision is normal. Counters
+        are cumulative for this process and do not prove a callback is currently
+        blocked or that all security sensors are healthy.
+        """
+        rows = self.bus.subscriber_metrics()
+        return {
+            "delivery_mode": "inline",
+            "revision": self.bus.revision(),
+            "subscriber_count": len(rows),
+            "deliveries": sum(row.deliveries for row in rows),
+            "failures": sum(row.failures for row in rows),
+            "budget_violations": sum(row.budget_violations for row in rows),
+        }
+
     def _snapshot(self) -> dict:
         from angerona.core.threat import active_threat_events, event_disposition, threat_level
         events = self.bus.recent(200)
@@ -125,6 +151,14 @@ class StatusReporter:
         )
         return {
             "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "generated_ts": time.time(),
+            "pid": os.getpid(),
+            "process_started_at": self._process_started_at,
+            "heartbeat_interval_s": max(
+                self._effective_interval(),
+                60.0 if getattr(self.config, "runtime_chill_active", False) else 30.0,
+            ),
+            "event_bus": self._bus_snapshot(),
             "app_version": __version__,
             "admin": is_admin(),
             "threat_level": _THREAT[threat_level(events)],
@@ -232,10 +266,29 @@ class StatusReporter:
         lines.append("")
         return "\n".join(lines)
 
+    @staticmethod
+    def _atomic_write(path: Path, content: str) -> None:
+        """Keep the previous complete snapshot readable until replacement."""
+        descriptor, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+        temporary = Path(name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+            replace_with_retry(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
     def _write(self, *, force: bool = False) -> None:
+        # Shutdown may request its final snapshot while the reporter is writing.
+        with self._write_lock:
+            self._write_locked(force=force)
+
+    def _write_locked(self, *, force: bool = False) -> None:
         snap = self._snapshot()
         material = dict(snap)
         material.pop("generated", None)
+        material.pop("generated_ts", None)
         now = time.monotonic()
         heartbeat = 60.0 if snap.get("chill_mode") else 30.0
         if (
@@ -248,8 +301,8 @@ class StatusReporter:
         wrote = False
         for d in self._dirs:
             try:
-                (d / "status.json").write_text(json.dumps(snap, indent=2), encoding="utf-8")
-                (d / "status.txt").write_text(text, encoding="utf-8")
+                self._atomic_write(d / "status.json", json.dumps(snap, indent=2))
+                self._atomic_write(d / "status.txt", text)
                 wrote = True
             except Exception:
                 continue

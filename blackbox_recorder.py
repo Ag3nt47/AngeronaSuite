@@ -37,6 +37,7 @@ import datetime as _dt
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -125,13 +126,16 @@ RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
 
 
 def _angerona_data_dir() -> Path:
-    """Resolve the same protected runtime root used by the suite."""
-    configured = os.environ.get("ANGERONA_DATA", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    if getattr(sys, "frozen", False):
-        return Path(os.environ.get("PROGRAMDATA", str(APP_DIR))) / "Angerona"
-    return APP_DIR / "runtime-data"
+    """Use the suite's path policy without creating or hardening suite files."""
+    # A standalone source launch need not have the package installed. Import
+    # only the path utility: it creates no bus, IPC client, or suite singleton.
+    source_dir = str(APP_DIR / "src")
+    if not getattr(sys, "frozen", False) and (APP_DIR / "src").is_dir():
+        if source_dir not in sys.path:
+            sys.path.insert(0, source_dir)
+    from angerona.core.data_paths import data_dir
+
+    return data_dir(create=False)
 
 
 DATA_DIR = _angerona_data_dir()
@@ -139,8 +143,7 @@ DIAG_DIR = Path(os.environ.get("ANGERONA_DIAG_DIR") or (DATA_DIR / "diagnostics"
 ARCHIVE_DIR = DATA_DIR / "archive"
 DATA_DIAG = DIAG_DIR
 
-# Repo-side (next to the suite source) — uiwatchdog, status.json, flow_metrics,
-# runtime_alerts, and a mirror of crash.log are written here.
+# Runtime diagnostics — shared path policy also covers source profile data.
 CRASH_SNAP_DIR = DIAG_DIR / "crash_snapshots"
 DATA_CRASH_SNAP_DIR = DATA_DIAG / "crash_snapshots"      # module quarantine bundles
 NOT_RESPONDING = DIAG_DIR / "not_responding.log"
@@ -194,7 +197,7 @@ def _selftest_failures(data) -> List[Dict]:
         rows = data
     else:
         rows = []
-    return [row for row in rows if isinstance(row, dict)]
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
 def _acquire_single_instance():
@@ -214,7 +217,8 @@ def _acquire_single_instance():
     return handle
 
 CHART_WINDOW = 120          # rolling samples kept on the telemetry graphs
-FRESH_STATUS_S = 20.0       # status.json newer than this ⇒ event bus "moving"
+STATUS_POLL_GRACE_S = 2 * HEALTH_POLL_S
+MAX_STATUS_BYTES = 4 * 1024 * 1024
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -329,36 +333,58 @@ def human_bytes(n: float) -> str:
     return f"{n:,.1f} PB"
 
 
-def find_angerona_pid() -> Optional[int]:
-    """Best-effort, read-only discovery of the primary Angerona python PID.
+def _is_angerona_core(name: str, cmdline: List[str]) -> bool:
+    """Match an actual core entry point, never a checkout name in arguments."""
+    name = name.casefold()
+    if name == "angerona.exe":
+        return True
+    if not re.fullmatch(r"pythonw?(?:\d+(?:\.\d+)*)?(?:\.exe)?", name):
+        return False
+    args = iter(cmdline[1:])
+    for arg in args:
+        if arg == "-m":
+            return next(args, None) == "angerona"
+        if arg in ("-W", "-X"):
+            if next(args, None) is None:
+                return False
+        elif not arg.startswith("-") or arg in ("-", "--") or arg.startswith("-c"):
+            return False
+    return False
 
-    Never raises: on any access error it simply skips the process.  Matches a
-    python interpreter whose command line references the ``angerona`` package
-    (``python -m angerona`` / ``pythonw -m angerona``) but is NOT this recorder.
-    """
-    me = os.getpid()
-    best: Optional[int] = None
-    best_rss = -1
-    for proc in psutil.process_iter(["pid", "name", "cmdline", "memory_info"]):
+
+def find_angerona_pid() -> Optional[int]:
+    """Read-only discovery of core processes, preferring a venv launcher's child."""
+    candidates = {}
+    try:
+        processes = psutil.process_iter(["pid", "ppid", "name", "cmdline", "memory_info"])
+        for proc in processes:
+            try:
+                info = proc.info
+                if info["pid"] == os.getpid() or not _is_angerona_core(
+                    info.get("name") or "", info.get("cmdline") or []
+                ):
+                    continue
+                memory = info.get("memory_info")
+                candidates[info["pid"]] = (info.get("ppid"), memory.rss if memory else 0)
+            except (psutil.Error, OSError, TypeError, ValueError, AttributeError):
+                continue
+    except (psutil.Error, OSError):
+        pass
+    # Windows venv launchers repeat the exact command line in a child. Exclude
+    # only parents with another matching core child, not unrelated helpers.
+    parents = {parent for parent, _rss in candidates.values() if parent in candidates}
+    cores = [pid for pid in candidates if pid not in parents]
+    return max(cores, key=lambda pid: candidates[pid][1]) if cores else None
+
+
+def _finite_number(value) -> Optional[float]:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
         try:
-            if proc.info["pid"] == me:
-                continue
-            name = (proc.info["name"] or "").lower()
-            if "python" not in name and "angerona" not in name:
-                continue
-            cmd = " ".join(proc.info["cmdline"] or []).lower()
-            if "blackbox_recorder" in cmd:
-                continue
-            if "angerona" not in cmd and "-m angerona" not in cmd:
-                continue
-            rss = (proc.info["memory_info"].rss if proc.info["memory_info"] else 0)
-            # Prefer the largest resident python — the real suite, not a helper.
-            if rss > best_rss:
-                best_rss = rss
-                best = proc.info["pid"]
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            continue
-    return best
+            number = float(value)
+            return number if math.isfinite(number) else None
+        except (ValueError, OverflowError):
+            pass
+    return None
 
 
 def safe_tail_bytes(path: Path, offset: int) -> Tuple[bytes, int]:
@@ -566,60 +592,117 @@ class HostTelemetryWorker(QThread):
 
 
 class SuiteHealthWorker(QThread):
-    """Tab 3 engine: is Angerona alive, and is the event bus moving data?"""
+    """Keep OS process state separate from advisory, process-bound diagnostics."""
 
     health = Signal(dict)
 
     def __init__(self) -> None:
         super().__init__()
         self._running = True
+        self._last_bus_sample = None
+        self._last_bus_state = "OBSERVED"
 
     def stop(self) -> None:
         self._running = False
 
     def run(self) -> None:
         while self._running:
-            info: Dict = {"pid": None, "state": "DEAD", "cpu": 0.0, "rss": 0,
-                          "bus_ts": None, "bus_fresh": False, "failed": [],
-                          "counts": {}}
-            pid = find_angerona_pid()
-            info["pid"] = pid
-            if pid:
-                try:
-                    p = psutil.Process(pid)
-                    with p.oneshot():
-                        status = p.status()
-                        info["cpu"] = p.cpu_percent(interval=0.0)
-                        info["rss"] = p.memory_info().rss
-                        info["create_time"] = p.create_time()
-                    # A process pegged in 'disk-sleep'/'stopped' or not scheduling
-                    # is a candidate freeze; refine with the bus freshness below.
-                    info["state"] = "FROZEN" if status in (
-                        psutil.STATUS_STOPPED, psutil.STATUS_DISK_SLEEP) else "RUNNING"
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    info["state"] = "DEAD"
-
-            # event-bus liveness via status.json / flow_metrics.json / ringbuffer
-            bus_ts = self._latest_bus_ts()
-            info["bus_ts"] = bus_ts
-            if bus_ts is not None:
-                info["bus_fresh"] = (time.time() - bus_ts) <= FRESH_STATUS_S
-                # A live process whose bus is stale ⇒ likely deadlocked.
-                if info["state"] == "RUNNING" and not info["bus_fresh"]:
-                    info["state"] = "FROZEN"
-
-            info["failed"] = self._failed_modules()
-            info["counts"] = self._status_counts()
-            self.health.emit(info)
-
+            self.health.emit(self._collect())
             for _ in range(int(HEALTH_POLL_S * 10)):
                 if not self._running:
                     break
                 self.msleep(100)
 
+    def _collect(self) -> Dict:
+        info: Dict = {"pid": find_angerona_pid(), "state": "DEAD", "cpu": 0.0,
+                      "rss": 0, "create_time": None}
+        if info["pid"]:
+            try:
+                process = psutil.Process(info["pid"])
+                with process.oneshot():
+                    status = process.status()
+                    info["cpu"] = process.cpu_percent(interval=0.0)
+                    info["rss"] = process.memory_info().rss
+                    info["create_time"] = process.create_time()
+                info["state"] = {
+                    psutil.STATUS_STOPPED: "STOPPED", psutil.STATUS_DISK_SLEEP: "WAITING",
+                    psutil.STATUS_ZOMBIE: "DEAD", psutil.STATUS_DEAD: "DEAD",
+                }.get(status, "RUNNING")
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                info["state"] = "DEAD"
+            except (psutil.AccessDenied, OSError):
+                info["state"] = "UNKNOWN"
+        snapshot = self._read_status()
+        info.update(self._observe_bus(snapshot, info["pid"], info["create_time"], time.time()))
+        # Historical reports may still help, but stale status from a previous
+        # process must never be presented as a current module failure.
+        current = snapshot if info["bus_fresh"] and info["state"] != "DEAD" else {}
+        info["failed"] = self._failed_modules(current)
+        counts = current.get("counts", {})
+        info["counts"] = counts if isinstance(counts, dict) else {}
+        return info
+
+    def _observe_bus(self, snapshot: Dict, pid: Optional[int], started: Optional[float],
+                     now: float) -> Dict:
+        result = {"bus_ts": None, "bus_fresh": False, "bus_state": "UNKNOWN",
+                  "bus_note": "No current process-bound status snapshot", "bus_warnings": []}
+        if not pid or not isinstance(snapshot, dict) or not snapshot:
+            self._last_bus_sample = None
+            return result
+        reported_start = _finite_number(snapshot.get("process_started_at"))
+        reported_pid = snapshot.get("pid")
+        if (type(reported_pid) is not int or reported_pid != pid or
+                reported_start is None or started is None or abs(reported_start - started) > 0.01):
+            result["bus_note"] = "Status snapshot does not identify the current process"
+            self._last_bus_sample = None
+            return result
+        generated = _finite_number(snapshot.get("generated_ts"))
+        interval = _finite_number(snapshot.get("heartbeat_interval_s"))
+        if generated is None or interval is None or interval <= 0:
+            result["bus_note"] = "Status heartbeat metadata is missing or invalid"
+            return result
+        age = now - generated
+        if generated < started - STATUS_POLL_GRACE_S or age < -STATUS_POLL_GRACE_S:
+            result["bus_note"] = "Status snapshot timestamp is inconsistent with the current process"
+            return result
+        result["bus_ts"] = generated
+        # Reporter heartbeats are at least 30s, or 60s in chill mode. Allow two
+        # advertised periods plus polling grace before marking diagnostics stale.
+        if age > max(30.0, interval) * 2 + STATUS_POLL_GRACE_S:
+            result.update(bus_state="STALE", bus_note="Status heartbeat overdue; bus health unknown")
+            self._last_bus_sample = None
+            return result
+        result["bus_fresh"] = True
+        metrics = snapshot.get("event_bus")
+        fields = ("revision", "subscriber_count", "deliveries", "failures", "budget_violations")
+        if (not isinstance(metrics, dict) or metrics.get("delivery_mode") != "inline" or
+                any(type(metrics.get(key)) is not int or metrics[key] < 0 for key in fields)):
+            result["bus_note"] = "Current status available; event bus counters are missing or invalid"
+            return result
+        sample = (pid, started, generated, metrics["revision"], metrics["deliveries"])
+        previous = self._last_bus_sample
+        state = "OBSERVED"
+        if previous and previous[:2] == sample[:2]:
+            if generated == previous[2]:
+                state = self._last_bus_state
+            elif generated > previous[2] and sample[3] >= previous[3] and sample[4] >= previous[4]:
+                state = "ACTIVE" if sample[3:] != previous[3:] else "QUIET"
+        self._last_bus_sample = sample
+        self._last_bus_state = state
+        notes = {"OBSERVED": "Inline bus counters available; awaiting a comparison",
+                 "ACTIVE": "Events or deliveries increased since the previous heartbeat",
+                 "QUIET": "No counter change since the previous heartbeat"}
+        warnings = []
+        if metrics["failures"]:
+            warnings.append(f"{metrics['failures']} subscriber failures recorded")
+        if metrics["budget_violations"]:
+            warnings.append(f"{metrics['budget_violations']} delivery budget overruns recorded")
+        result.update(bus_state=state, bus_note=notes[state], bus_warnings=warnings)
+        return result
+
     @staticmethod
     def _pick_status() -> Optional[Path]:
-        """Return the freshest existing status.json across repo + data dir."""
+        """Return the newest status file from the configured diagnostic paths."""
         best: Optional[Path] = None
         best_ts = -1.0
         for p in (STATUS_JSON, DATA_STATUS_JSON):
@@ -632,58 +715,44 @@ class SuiteHealthWorker(QThread):
                 continue
         return best
 
-    @staticmethod
-    def _latest_bus_ts() -> Optional[float]:
-        candidates: List[float] = []
-        for p in (STATUS_JSON, DATA_STATUS_JSON, FLOW_METRICS, RINGBUFFER, FLIGHT_RECORDER):
-            try:
-                if p.exists():
-                    candidates.append(p.stat().st_mtime)
-            except OSError:
-                continue
-        return max(candidates) if candidates else None
-
     @classmethod
-    def _failed_modules(cls) -> List[Dict]:
+    def _read_status(cls) -> Dict:
+        try:
+            path = cls._pick_status()
+            if path:
+                with path.open("rb") as handle:
+                    raw = handle.read(MAX_STATUS_BYTES + 1)
+                if len(raw) <= MAX_STATUS_BYTES:
+                    data = json.loads(raw)
+                    return data if isinstance(data, dict) else {}
+        except (OSError, ValueError, UnicodeError, RecursionError):
+            pass
+        return {}
+
+    @staticmethod
+    def _failed_modules(snapshot: Dict) -> List[Dict]:
         out: List[Dict] = []
         # selftest failures
         try:
             if SELFTEST_FAILURES.exists():
                 d = json.loads(SELFTEST_FAILURES.read_text("utf-8", "replace"))
-                for f in _selftest_failures(d):
-                    out.append({"name": f.get("module", "?"),
-                                "detail": f.get("detail", ""), "src": "selftest"})
-        except (OSError, json.JSONDecodeError):
+                for f in _selftest_failures(d)[:500]:
+                    out.append({"name": str(f.get("module") or f.get("name") or "?")[:200],
+                                "detail": str(f.get("detail", ""))[:2000],
+                                "src": "selftest (historical)"})
+        except (OSError, ValueError, RecursionError):
             pass
-        # status.json modules with errors / stopped-but-enabled
-        try:
-            sp = cls._pick_status()
-            if sp:
-                d = json.loads(sp.read_text("utf-8", "replace"))
-                modules = d.get("modules", []) if isinstance(d, dict) else []
-                for m in modules:
-                    if not isinstance(m, dict):
-                        continue
-                    err = m.get("last_error") or ""
-                    bad_state = m.get("health_state") in ("error", "crit")
-                    if err or bad_state:
-                        out.append({"name": m.get("name", "?"),
-                                    "detail": err or m.get("health_note", ""),
-                                    "src": "status"})
-        except (OSError, json.JSONDecodeError):
-            pass
+        modules = snapshot.get("modules", [])
+        if isinstance(modules, list):
+            for module in modules[:500]:
+                if not isinstance(module, dict):
+                    continue
+                error = module.get("last_error") or ""
+                if error or module.get("health_state") in ("error", "crit"):
+                    out.append({"name": str(module.get("name", "?"))[:200],
+                                "detail": str(error or module.get("health_note", ""))[:2000],
+                                "src": "status"})
         return out
-
-    @classmethod
-    def _status_counts(cls) -> Dict:
-        try:
-            sp = cls._pick_status()
-            if sp:
-                d = json.loads(sp.read_text("utf-8", "replace"))
-                return d.get("counts", {}) if isinstance(d, dict) else {}
-        except (OSError, json.JSONDecodeError):
-            pass
-        return {}
 
 
 class ThreadStateWorker(QThread):
@@ -1384,6 +1453,11 @@ class HealthTab(QWidget):
         self.state_lbl = QLabel("STATE: —")
         self.state_lbl.setStyleSheet("font-size:22px;font-weight:800;")
         self.bus_lbl = QLabel("Event bus: —")
+        self.bus_lbl.setTextFormat(Qt.PlainText)
+        self.bus_lbl.setWordWrap(True)
+        self.bus_lbl.setToolTip(
+            "Local status snapshots are advisory. Counters describe observed activity; "
+            "quiet or stale diagnostics alone cannot establish a deadlock.")
         self.res_lbl = QLabel("Resources: —")
         for w in (self.state_lbl, self.pid_lbl, self.bus_lbl, self.res_lbl):
             root.addWidget(w)
@@ -1402,7 +1476,8 @@ class HealthTab(QWidget):
         self.latest = h
         self.pid_lbl.setText(f"PID: {h['pid'] if h['pid'] else '— not found —'}")
         state = h["state"]
-        color = {"RUNNING": GREEN, "FROZEN": AMBER, "DEAD": RED}.get(state, DIM)
+        color = {"RUNNING": GREEN, "STOPPED": AMBER, "WAITING": AMBER,
+                 "DEAD": RED}.get(state, DIM)
         self.state_lbl.setText(f"STATE: {state}")
         self.state_lbl.setStyleSheet(
             f"font-size:22px;font-weight:800;color:{color};")
@@ -1412,33 +1487,33 @@ class HealthTab(QWidget):
         else:
             self.res_lbl.setText("Resources: —")
 
-        if h["bus_ts"]:
-            age = time.time() - h["bus_ts"]
-            fresh = "MOVING" if h["bus_fresh"] else "STALE"
-            fc = GREEN if h["bus_fresh"] else RED
-            ts = _dt.datetime.fromtimestamp(h["bus_ts"]).strftime("%H:%M:%S")
-            self.bus_lbl.setText(
-                f"Event bus: <span style='color:{fc}'>{fresh}</span> "
-                f"— last data {ts} ({age:.0f}s ago)")
-            self.bus_lbl.setTextFormat(Qt.RichText)
-        else:
-            self.bus_lbl.setText("Event bus: no telemetry files found")
+        bus_state = h.get("bus_state", "UNKNOWN")
+        bus_text = f"Event bus: {bus_state} — {h.get('bus_note', 'No current status snapshot')}"
+        if h.get("bus_ts") is not None:
+            bus_text += f" (snapshot {max(0.0, time.time() - h['bus_ts']):.0f}s ago)"
+        warnings = h.get("bus_warnings", [])
+        if warnings:
+            bus_text += "; " + "; ".join(warnings) + " (cumulative)"
+        self.bus_lbl.setText(bus_text)
+        bus_color = AMBER if warnings or bus_state == "STALE" else (
+            GREEN if bus_state == "ACTIVE" else DIM)
+        self.bus_lbl.setStyleSheet(f"color:{bus_color};")
 
         fails = h.get("failed", [])
+        self.fail_table.setSortingEnabled(False)
         self.fail_table.setRowCount(len(fails))
         for r, f in enumerate(fails):
             self.fail_table.setItem(r, 0, QTableWidgetItem(f["name"]))
             self.fail_table.setItem(r, 1, QTableWidgetItem(f["detail"]))
             self.fail_table.setItem(r, 2, QTableWidgetItem(f["src"]))
+        self.fail_table.setSortingEnabled(True)
 
     def snapshot_text(self) -> str:
         h = self.latest
         if not h:
             return "no health sample yet"
         lines = [f"PID   : {h.get('pid')}", f"STATE : {h.get('state')}"]
-        if h.get("bus_ts"):
-            lines.append(f"Bus   : {'MOVING' if h.get('bus_fresh') else 'STALE'} "
-                         f"(last {time.time()-h['bus_ts']:.0f}s ago)")
+        lines.append(self.bus_lbl.text())
         for f in h.get("failed", []):
             lines.append(f"  ✗ {f['name']}: {f['detail']}  [{f['src']}]")
         return "\n".join(lines)
@@ -2232,25 +2307,35 @@ class BlackBoxWindow(QMainWindow):
     def on_archive_clear(self) -> None:
         confirm = QMessageBox.question(
             self, "Archive & Clear",
-            "Move crash files from diagnostics/ into archive/ and clear the console?\n"
-            "(Only Black-Box-owned copies are moved; live files Angerona holds open "
-            "are copied, not deleted.)",
+            "Copy diagnostic snapshots into archive/ and clear the recorder console?\n"
+            "Live diagnostic files remain in place. Files larger than 4 MB are copied as tails.",
             QMessageBox.Yes | QMessageBox.No)
         if confirm != QMessageBox.Yes:
             return
         archive = ARCHIVE_DIR
-        archive.mkdir(exist_ok=True)
-        moved = 0
+        try:
+            archive.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.warning(self, "Archive failed", str(exc))
+            return
+        copied = 0
         for src in DIAG_DIR.glob("*"):
             if src.is_file() and src.suffix in (".log", ".json", ".txt"):
                 try:
-                    dst = archive / f"{now_stamp()}_{src.name}"
-                    src.rename(dst)
-                    moved += 1
+                    size = src.stat().st_size
+                    with src.open("rb") as handle:
+                        handle.seek(max(0, size - MAX_STATUS_BYTES))
+                        data = handle.read(MAX_STATUS_BYTES)
+                    suffix = ".tail" if size > MAX_STATUS_BYTES else ""
+                    stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                    dst = archive / f"{stamp}_{src.name}{suffix}"
+                    with dst.open("xb") as handle:
+                        handle.write(data)
+                    copied += 1
                 except OSError:
                     pass
         self.tab_logs.console.clear()
-        QMessageBox.information(self, "Done", f"Archived {moved} file(s) to {archive}.")
+        QMessageBox.information(self, "Done", f"Copied {copied} diagnostic snapshot(s) to {archive}.")
 
     @Slot()
     def on_launch_sandbox(self) -> None:
