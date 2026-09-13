@@ -27,7 +27,11 @@ from angerona.core.url_policy import (
     read_bounded,
     safe_urlopen,
 )
-from angerona.core.ollama_lifecycle import chill_active, effective_keep_alive
+from angerona.core.ollama_lifecycle import (
+    OllamaAttestationError,
+    chill_active,
+    effective_keep_alive,
+)
 
 SYSTEM_PROMPT = (
     "You are a local SOC analyst. Given a security event, respond with a single "
@@ -75,6 +79,7 @@ class AITriageModule(BaseModule):
         self._recovery_thread: Optional[threading.Thread] = None
         self._attestation_error = ""
         self._attestation_receipt = None
+        self._ollama_readiness_error = ""
 
     def bind_manager(self, manager) -> None:
         """Use the operator's current local-AI settings for readiness checks."""
@@ -235,20 +240,38 @@ class AITriageModule(BaseModule):
     def _ping_ollama(self) -> bool:
         """Check daemon/model availability without loading the model into RAM."""
         self._sync_config()
-        req = urllib.request.Request(local_service_url(self._host, "/api/tags"))
         try:
+            req = urllib.request.Request(local_service_url(self._host, "/api/tags"))
             with safe_urlopen(
                 req, policy=OLLAMA_SERVICE_POLICY, timeout=3.0,
             ) as resp:
                 data = json.loads(read_bounded(resp).decode("utf-8"))
+            if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+                raise ValueError("invalid Ollama model-list response")
+            if len(data["models"]) > 10_000 or any(
+                not isinstance(item, dict) for item in data["models"]
+            ):
+                raise ValueError("invalid Ollama model descriptors")
             installed = [
                 str(item.get("name") or item.get("model") or "")
                 for item in data.get("models", [])
                 if isinstance(item, dict)
             ]
-            return self._model_is_installed(self._model, installed)
-        except Exception:
-            return False
+            if self._model_is_installed(self._model, installed):
+                if self.last_error == self._ollama_readiness_error:
+                    self.last_error = ""
+                self._ollama_readiness_error = ""
+                return True
+            detail = (
+                f"Ollama is reachable, but configured model '{self._model}' is not installed"
+            )
+        except OllamaAttestationError as exc:
+            detail = f"Ollama listener attestation failed: {str(exc)[:500]}"
+        except Exception as exc:
+            detail = f"Ollama readiness check failed ({type(exc).__name__}): {str(exc)[:500]}"
+        self._ollama_readiness_error = detail
+        self.last_error = detail
+        return False
 
     @staticmethod
     def _model_is_installed(configured_model: str, installed_models) -> bool:
@@ -402,12 +425,13 @@ class AITriageModule(BaseModule):
         # Use direct ping so health check doesn't fast-fail misleadingly when CB open
         alive = self._ping_ollama()
         if not alive:
-            note = "Circuit breaker open — recovery pinger active" if cb_open \
-                   else f"Ollama/model unreachable ({self.last_error})"
+            note = self._ollama_readiness_error or f"Ollama readiness unavailable ({self.last_error})"
+            if cb_open:
+                note += "; circuit breaker open — recovery pinger active"
             self.set_health(30, note)
             # Only emit the degradation notice once (not on every 64s tick while CB open)
             if prev >= 50 and not cb_open:
-                self.emit("Ollama not reachable / model missing — AI triage idle.", Severity.MEDIUM)
+                self.emit(f"{note} — AI triage idle.", Severity.MEDIUM)
         else:
             attested = self._attest_model()
             if attested:
@@ -424,13 +448,13 @@ class AITriageModule(BaseModule):
         if chill_active() or bool(getattr(self, "_chill_paused", False)):
             return True, "local AI intentionally asleep in Chill Mode (wakes on demand)"
         if not self._ping_ollama():
-            return False, (
+            return False, self._ollama_readiness_error or (
                 f"Ollama daemon unreachable or configured model "
                 f"'{self._model}' is not installed"
             )
         if not self._attest_model():
             return False, (
                 f"Ollama ready, but model {self._model} has no fresh approved "
-                "local attestation"
+                f"local attestation: {self.last_error}"
             )
         return True, f"Ollama ready; model {self._model} installed and attested"

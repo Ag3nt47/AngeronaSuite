@@ -8,10 +8,11 @@ from __future__ import annotations
 import os
 import re
 import stat
+import subprocess
 import sys
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -25,6 +26,12 @@ from angerona.core.url_policy import (
 _MODEL_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _MODEL_TAG = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
+# Ollama's official Inno Setup AppId, not a registry-wide executable search.
+_OLLAMA_UNINSTALL_KEY = (
+    "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\"
+    "{44E83376-CE68-45EB-8FC1-393500EB558C}_is1"
+)
+_REPARSE_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 class OllamaAttestationError(RuntimeError):
@@ -39,8 +46,80 @@ class OllamaServiceAttestation:
     port: int
 
 
+def _windows_install_location(value: object) -> PureWindowsPath | None:
+    """Accept a bounded local-drive directory, without shell/path expansion."""
+    if not isinstance(value, str) or not 3 <= len(value) <= 1024:
+        return None
+    if re.fullmatch(r"[A-Za-z]:\\[^<>:\"|?*\x00-\x1f/]*", value) is None:
+        return None
+    # Inspect the original components: pathlib removes '.' and duplicate slashes.
+    components = value[3:].removesuffix("\\").split("\\")
+    if any(
+        not component or component in {".", ".."}
+        or component != component.strip() or component.endswith(".")
+        or PureWindowsPath(component).is_reserved()
+        for component in components
+    ):
+        return None
+    path = PureWindowsPath(value)
+    if not path.is_absolute():
+        return None
+    return path
+
+
+def _windows_fixed_drive(anchor: str) -> bool:
+    """Reject mapped network drives as well as UNC/device path spellings."""
+    try:
+        import ctypes
+
+        get_drive_type = ctypes.windll.kernel32.GetDriveTypeW
+        get_drive_type.argtypes = [ctypes.c_wchar_p]
+        get_drive_type.restype = ctypes.c_uint
+        return int(get_drive_type(anchor)) == 3  # DRIVE_FIXED
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _registered_ollama_paths() -> tuple[Path, ...]:
+    """Discover custom installs; registry metadata never confers image trust."""
+    try:
+        import winreg
+    except ImportError:
+        return ()
+    candidates: list[Path] = []
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+            try:
+                with winreg.OpenKey(
+                    hive, _OLLAMA_UNINSTALL_KEY, 0, winreg.KEY_READ | view
+                ) as key:
+                    values = {
+                        name: winreg.QueryValueEx(key, name)
+                        for name in ("DisplayName", "Publisher", "InstallLocation")
+                    }
+                if any(
+                    kind != winreg.REG_SZ or not isinstance(value, str)
+                    for value, kind in values.values()
+                ):
+                    continue
+                display_name = values["DisplayName"][0]
+                if (
+                    len(display_name) > 128
+                    or re.fullmatch(r"Ollama(?: version [0-9][0-9A-Za-z.+-]{0,63})?", display_name)
+                    is None
+                    or values["Publisher"][0] != "Ollama"
+                ):
+                    continue
+                location = _windows_install_location(values["InstallLocation"][0])
+                if location is not None and _windows_fixed_drive(location.anchor):
+                    candidates.append(Path(str(location / "ollama.exe")))
+            except (OSError, ValueError, TypeError):
+                continue
+    return tuple(dict.fromkeys(candidates))
+
+
 def _expected_ollama_paths() -> tuple[Path, ...]:
-    """Return fixed platform install locations without PATH/environment lookup."""
+    """Return known/registered installs without PATH or environment overrides."""
     candidates: list[Path]
     if sys.platform == "win32":
         from angerona.core.privilege import _windows_known_folder
@@ -59,6 +138,7 @@ def _expected_ollama_paths() -> tuple[Path, ...]:
                 candidates.append(_windows_known_folder(csidl) / "Ollama" / "ollama.exe")
             except OSError:
                 pass
+        candidates.extend(_registered_ollama_paths())
     elif sys.platform == "darwin":
         candidates = [
             Path("/Applications/Ollama.app/Contents/Resources/ollama"),
@@ -78,17 +158,68 @@ def _expected_ollama_paths() -> tuple[Path, ...]:
 
 @lru_cache(maxsize=16)
 def _windows_image_signature_valid(
-    path_text: str, size: int, modified_ns: int
+    path_text: str, device: int, inode: int, size: int, modified_ns: int, changed_ns: int
 ) -> bool:
-    del size, modified_ns  # identity fields intentionally participate in cache key
-    from angerona.core.privilege import _authenticode_valid
+    # All identity fields intentionally participate in the bounded cache key.
+    del device, inode, size, modified_ns, changed_ns
+    from angerona.core.privilege import (
+        sanitized_child_environment,
+        trusted_powershell_path,
+        trusted_windows_directories,
+    )
 
-    return _authenticode_valid(Path(path_text))
+    try:
+        powershell = trusted_powershell_path()
+        _windows, system = trusted_windows_directories()
+        if not powershell.is_file():
+            return False
+        environment = sanitized_child_environment(source={})
+        environment["ANGERONA_NATIVE_PATH"] = path_text
+        result = subprocess.run(
+            [
+                str(powershell), "-NoProfile", "-NonInteractive", "-Command",
+                "$ErrorActionPreference='Stop';"
+                "$s=Microsoft.PowerShell.Security\\Get-AuthenticodeSignature "
+                "-LiteralPath $env:ANGERONA_NATIVE_PATH;"
+                "if($s.Status -ne 'Valid' -or $null -eq $s.SignerCertificate){exit 1};"
+                "$p=$s.SignerCertificate.GetNameInfo("
+                "[System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName,$false);"
+                "if([string]::Equals($p,'Ollama Inc.',"
+                "[System.StringComparison]::OrdinalIgnoreCase)){exit 0};exit 1",
+            ],
+            cwd=str(system), env=environment, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=15, check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+
+
+def _image_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        int(info.st_dev), int(info.st_ino), int(info.st_size),
+        int(info.st_mtime_ns), int(info.st_ctime_ns),
+    )
+
+
+def _unredirected_image(path: Path) -> bool:
+    """Reject symbolic links and Windows junctions in every image component."""
+    for component in (path, *path.parents):
+        info = component.lstat()
+        if stat.S_ISLNK(info.st_mode) or (
+            int(getattr(info, "st_file_attributes", 0)) & _REPARSE_ATTRIBUTE
+        ):
+            return False
+    return True
 
 
 def _trusted_ollama_image(path: Path) -> bool:
-    """Require the listening image to match a fixed, protected install path."""
+    """Require a recognized installation and an authenticated platform image."""
     try:
+        if sys.platform == "win32" and not _unredirected_image(path):
+            return False
         image = path.resolve(strict=True)
         info = image.stat()
         if not stat.S_ISREG(info.st_mode) or path.is_symlink():
@@ -97,12 +228,17 @@ def _trusted_ollama_image(path: Path) -> bool:
             candidate.resolve(strict=True)
             for candidate in _expected_ollama_paths()
             if candidate.is_file() and not candidate.is_symlink()
+            and (sys.platform != "win32" or _unredirected_image(candidate))
         }
         if image not in expected:
             return False
         if sys.platform == "win32":
-            return _windows_image_signature_valid(
-                str(image), int(info.st_size), int(info.st_mtime_ns)
+            identity = _image_identity(info)
+            return (
+                _windows_image_signature_valid(str(image), *identity)
+                and _unredirected_image(path)
+                and path.resolve(strict=True) == image
+                and _image_identity(image.stat()) == identity
             )
         # On POSIX there is no portable Authenticode equivalent in the Python
         # runtime. Accept only a root-owned image that group/other cannot write.
@@ -154,8 +290,9 @@ def attest_ollama_service(
 
         process = psutil.Process(pid)
         first_time = float(process.create_time())
-        first_image = Path(process.exe()).resolve(strict=True)
-        if not _trusted_ollama_image(first_image):
+        reported_image = Path(process.exe())
+        first_image = reported_image.resolve(strict=True)
+        if not _trusted_ollama_image(reported_image):
             raise OllamaAttestationError("local Ollama executable is not trusted")
         if (
             not process.is_running()

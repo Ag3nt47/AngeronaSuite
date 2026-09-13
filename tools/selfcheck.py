@@ -116,7 +116,7 @@ bus.publish(Event("Defense Monitor", "exploit attempt blocked", Severity.CRITICA
 @phase("SelfTestRunner over all modules")
 def _():
     from angerona.core.selftest import SelfTestRunner
-    from selfcheck_policy import is_expected_unstarted_failure
+    from selfcheck_policy import is_expected_unstarted_failure, no_tcp_listener_on_port
 
     # In a headless, non-elevated harness some self-tests can't pass for reasons
     # that are NOT defects: a module we never started reports 'stopped'; AI Triage
@@ -125,7 +125,42 @@ def _():
     # persisted result, and exit status all agree. Timeouts and exceptions are
     # deliberately never eligible for this conversion.
     def _expected_reason(module: str, detail: str) -> str | None:
-        if not is_expected_unstarted_failure(module, detail):
+        runtime_root = Path(config.data_dir).resolve()
+        disposable_parent = Path(__file__).resolve().parents[1] / ".tmp"
+        candidate = manager.modules.get(module)
+        # Disposable self-check state deliberately has no operator-approved
+        # model baseline. Never import live trust or mask an existing invalid
+        # baseline merely because the local Ollama daemon now answers.
+        disposable_stopped = (
+            runtime_root.is_relative_to(disposable_parent)
+            and getattr(candidate, "status", None) == "stopped"
+        )
+        allow_unapproved_model_baseline = disposable_stopped and not os.path.lexists(
+            runtime_root / "shared_logs" / "model_baselines.json"
+        )
+        confirmed_absent_ollama_listener = False
+        if disposable_stopped and module == "AI Triage (Ollama)":
+            try:
+                from urllib.parse import urlsplit
+
+                import psutil
+
+                from angerona.core.url_policy import local_service_url
+
+                endpoint = urlsplit(local_service_url(config.ollama_host))
+                confirmed_absent_ollama_listener = no_tcp_listener_on_port(
+                    psutil.net_connections(kind="tcp"),
+                    endpoint.port or (443 if endpoint.scheme == "https" else 80),
+                )
+            except Exception:
+                # Failed enumeration/validation cannot prove an absent service.
+                pass
+        if not is_expected_unstarted_failure(
+            module,
+            detail,
+            allow_unapproved_model_baseline=allow_unapproved_model_baseline,
+            confirmed_absent_ollama_listener=confirmed_absent_ollama_listener,
+        ):
             return None
         return f"not started by headless harness / optional prerequisite: {detail}"
 

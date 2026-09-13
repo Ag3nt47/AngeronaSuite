@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import stat
 import threading
 from types import SimpleNamespace
 
@@ -12,6 +13,13 @@ import pytest
 
 from angerona import startup
 from angerona.core.startup_protocol import notify_dashboard_ready
+
+
+@pytest.fixture(autouse=True)
+def _isolate_model_environment(monkeypatch):
+    # Startup tests must never validate the developer's live model directory.
+    for name in ("ANGERONA_OLLAMA_MODELS", "OLLAMA_MODELS"):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _plan(tmp_path: Path, *, frozen: bool = False) -> startup.LaunchPlan:
@@ -318,6 +326,8 @@ def test_child_environment_drops_inherited_controls_and_uses_owned_storage(
         "ANGERONA_STARTUP_READY": "unexpected-marker", "ANGERONA_DATA": "unexpected-root",
         "ANGERONA_EXTERNAL_WATCHDOG": "1", "OPENAI_API_KEY": "test-secret-not-a-real-key",
         "HTTPS_PROXY": "http://unexpected.invalid", "ANGERONA_FLEET_SERVICE_KEY": "test-only",
+        "OLLAMA_HOST": "http://unexpected.invalid", "OLLAMA_ORIGINS": "*",
+        "OLLAMA_EXE": "unexpected-command", "ANGERONA_OLLAMA_URL": "http://unexpected.invalid",
     }
     for key, value in hostile.items():
         monkeypatch.setenv(key, value)
@@ -335,6 +345,121 @@ def test_child_environment_drops_inherited_controls_and_uses_owned_storage(
         assert environment["ANGERONA_DATA"] == str(plan.storage)
         assert environment["ANGERONA_DIAG_DIR"] == str(plan.storage / "diagnostics")
         assert environment["ANGERONA_STORAGE_AUTOMIGRATE"] == "0"
+
+
+def test_source_child_preserves_only_validated_model_directories(tmp_path, monkeypatch):
+    from angerona.core import ollama_lifecycle
+
+    value = r"F:\BRAIN DRIVE_root\Ollama\models"
+    checked = []
+    drives = []
+    original_lstat = Path.lstat
+
+    def model_lstat(path, *args, **kwargs):
+        if path == Path(value):
+            return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0)
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", model_lstat)
+    monkeypatch.setattr(startup, "_plain_path", lambda path: checked.append(path))
+    monkeypatch.setattr(
+        ollama_lifecycle, "_windows_fixed_drive", lambda anchor: drives.append(anchor) or True,
+    )
+    for name in ("ANGERONA_OLLAMA_MODELS", "OLLAMA_MODELS"):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("ANGERONA_CORE_CMD", "unexpected-command")
+    monkeypatch.setenv("OLLAMA_HOST", "http://unexpected.invalid")
+    environment = startup.child_environment(_plan(tmp_path))
+    assert environment["ANGERONA_OLLAMA_MODELS"] == value
+    assert environment["OLLAMA_MODELS"] == value
+    assert checked == [Path(value), Path(value)]
+    assert drives == ["F:\\", "F:\\"]
+    assert "ANGERONA_CORE_CMD" not in environment
+    assert "OLLAMA_HOST" not in environment
+
+
+def test_frozen_child_drops_model_overrides_without_resolving_them(tmp_path, monkeypatch):
+    for name in ("ANGERONA_OLLAMA_MODELS", "OLLAMA_MODELS"):
+        monkeypatch.setenv(name, r"\\unexpected.invalid\share\models")
+
+    def unexpected_resolution(*_args):
+        raise AssertionError("Frozen startup must not resolve inherited model paths")
+
+    monkeypatch.setattr(startup, "_source_model_directory", unexpected_resolution)
+    environment = startup.child_environment(_plan(tmp_path, frozen=True))
+    assert "ANGERONA_OLLAMA_MODELS" not in environment
+    assert "OLLAMA_MODELS" not in environment
+
+
+@pytest.mark.parametrize("value", [
+    "", " ", "models", r"F:models", r"\\server\share\models",
+    r"\\?\F:\models", r"\\.\F:\models", "https://unexpected.invalid/models",
+    r"F:\models\..\other", r"F:\models\.\other", r"F:\models:stream",
+    r"F:\models\NUL", r"F:\models.", '"F:\\models"', r"%USERPROFILE%\.ollama\models",
+    "F:\\models\x00", "F:\\" + "m" * 1024,
+])
+def test_invalid_source_model_directory_fails_before_filesystem_access(monkeypatch, value):
+    def unexpected_filesystem_access(*_args):
+        raise AssertionError("Malformed model paths must not reach the filesystem")
+
+    monkeypatch.setattr(startup, "_plain_path", unexpected_filesystem_access)
+    with pytest.raises(startup.StartupError, match="OLLAMA_MODELS.*Correct this setting"):
+        startup._source_model_directory("OLLAMA_MODELS", value)
+
+
+def test_mapped_source_model_drive_is_rejected_before_filesystem_access(tmp_path, monkeypatch):
+    from angerona.core import ollama_lifecycle
+
+    monkeypatch.setattr(ollama_lifecycle, "_windows_fixed_drive", lambda _anchor: False)
+    monkeypatch.setenv("OLLAMA_MODELS", r"Z:\models")
+
+    def unexpected_filesystem_access(*_args):
+        raise AssertionError("Mapped model drives must not reach the filesystem")
+
+    monkeypatch.setattr(startup, "_plain_path", unexpected_filesystem_access)
+    with pytest.raises(startup.StartupError, match="OLLAMA_MODELS.*fixed drive"):
+        startup.child_environment(_plan(tmp_path))
+
+
+@pytest.mark.parametrize("condition", ["absent", "file", "reparse-root", "reparse-parent"])
+def test_source_model_directory_rejects_unavailable_or_redirected_objects(tmp_path, monkeypatch, condition):
+    from angerona.core import ollama_lifecycle
+
+    directory = tmp_path / "model-parent" / "models"
+    directory.parent.mkdir()
+    if condition == "file":
+        directory.write_bytes(b"not a directory")
+    elif condition != "absent":
+        directory.mkdir()
+    # Map the independently syntax-tested Windows location to an isolated native
+    # test path so these filesystem checks also run on non-Windows CI workers.
+    monkeypatch.setattr(ollama_lifecycle, "_windows_install_location", lambda _value: directory)
+    monkeypatch.setattr(ollama_lifecycle, "_windows_fixed_drive", lambda _anchor: True)
+    if condition.startswith("reparse"):
+        redirected = directory if condition == "reparse-root" else directory.parent
+        original_lstat = Path.lstat
+
+        def reparse_lstat(path, *args, **kwargs):
+            if path == redirected:
+                return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)
+            return original_lstat(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "lstat", reparse_lstat)
+    monkeypatch.setenv("ANGERONA_OLLAMA_MODELS", r"F:\models")
+    with pytest.raises(startup.StartupError, match="ANGERONA_OLLAMA_MODELS.*Correct this setting"):
+        startup.child_environment(_plan(tmp_path))
+
+
+def test_elevated_source_startup_rejects_before_model_path_validation(tmp_path, monkeypatch):
+    from angerona.core import privilege
+
+    monkeypatch.setattr(startup.sys, "platform", "win32")
+    monkeypatch.delattr(startup.sys, "frozen", raising=False)
+    monkeypatch.setattr(privilege, "is_admin", lambda: True)
+    monkeypatch.setattr(privilege, "_windows_known_folder", lambda _csidl: tmp_path)
+    monkeypatch.setenv("OLLAMA_MODELS", r"F:\models")
+    with pytest.raises(startup.StartupError, match="normal user session"):
+        startup.platform_plan()
 
 
 @pytest.mark.parametrize("reason", ["cancel", "timeout"])

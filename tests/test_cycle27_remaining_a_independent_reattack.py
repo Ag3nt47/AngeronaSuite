@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -175,25 +174,27 @@ def test_a07_persisted_continuity_gap_cannot_restart_as_health_100(
     assert first._checkpoint.coverage_complete is False
     first._close_continuity_state()
 
-    class FakeEventLog:
-        def OpenEventLog(self, _server: object, _channel: object) -> object:
-            return object()
-
-        def CloseEventLog(self, _handle: object) -> None:
+    class FakeEventLogSource:
+        def close(self) -> None:
             return None
 
-        def GetOldestEventLogRecord(self, _handle: object) -> int:
+        def oldest_record_id(self) -> int:
             return 10
 
-        def GetNumberOfEventLogRecords(self, _handle: object) -> int:
-            return 2
+        def newest_record_id(self) -> int:
+            return 11
 
-        def ReadEventLog(
-            self, _handle: object, _flags: int, offset: int
-        ) -> list[SimpleNamespace]:
-            return [_defender_record(11)] if offset == 11 else []
+        def record_at(self, record_id: int) -> SimpleNamespace:
+            assert record_id == 11
+            return _defender_record(11)
 
-    monkeypatch.setitem(sys.modules, "win32evtlog", FakeEventLog())
+        def read_after(self, offset: int, _limit: int) -> list[SimpleNamespace]:
+            return [_defender_record(11)] if offset < 11 else []
+
+    monkeypatch.setattr(
+        "angerona.modules.av_telemetry_bridge._DefenderEventLogSource",
+        FakeEventLogSource,
+    )
     restarted = AVTelemetryBridgeModule(tmp_path, continuity_key=_CONTINUITY_KEY)
     restarted.bind(EventBus())
     monkeypatch.setattr(restarted, "sleep", lambda _seconds: restarted._stop.set())

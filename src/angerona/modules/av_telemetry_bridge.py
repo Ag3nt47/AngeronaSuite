@@ -15,9 +15,9 @@ Why this matters:
   bus should immediately surface.
 
 Implementation:
-  Uses win32evtlog on the Defender Operational channel (same pattern as
-  etw_listener and sysmon_listener).  The Defender channel is readable by
-  non-admin users — no elevation required.
+  Uses the modern Windows Event Log EvtQuery/EvtRender API on the Defender
+  Operational channel and verifies the channel/provider in each rendered XML
+  record. The classic OpenEventLog API can silently open Application instead.
 
 Fallback:
   If win32evtlog is unavailable (non-Windows / no pywin32), the module
@@ -38,6 +38,7 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 
 from defusedxml import ElementTree as ET
@@ -52,15 +53,16 @@ from angerona.core.event_log_integrity import (
     assess_continuity,
 )
 from angerona.core.win import check_output_hidden
+from angerona.core.windows_event_log import WindowsEventLogSource
 
 _DEFENDER_CHANNEL   = "Microsoft-Windows-Windows Defender/Operational"
-_EVTLOG_SEQ_FWD     = 0x0001 | 0x0004   # SEQUENTIAL_READ | FORWARDS_READ
-_EVTLOG_SEEK_FWD    = 0x0002 | 0x0004   # SEEK_READ | FORWARDS_READ
+_DEFENDER_PROVIDER = "Microsoft-Windows-Windows Defender"
 _MAX_EVENT_XML_CHARS = 1024 * 1024
-_MAX_NATIVE_BATCH = 512
+_MAX_NATIVE_BATCH = 256              # Matches the modern event source's page cap.
 _MAX_FALLBACK_RECORDS = 4096
 _MAX_FALLBACK_OUTPUT_BYTES = 4 * 1024 * 1024
 _POLL_INTERVAL      = 30.0              # seconds between log reads (was 10 — AV events don't need sub-30s latency)
+_REPLAY_YIELD_INTERVAL = 0.1           # Yield between committed retained-history pages.
 _FALLBACK_INTERVAL  = 120.0            # seconds between PowerShell polls (was 60)
 _OUTBOX_KEY_DOMAIN = b"angerona/defender-delivery-outbox/v1\x00"
 _OUTBOX_ENROLLMENT_DOMAIN = b"angerona/defender-outbox-enrollment/v2\x00"
@@ -80,6 +82,80 @@ _EID_MAP = {
 }
 
 _NS = "http://schemas.microsoft.com/win/2004/08/events/event"
+
+
+class _DefenderEventLogSource(WindowsEventLogSource):
+    """Adapt validated modern records to the bridge's existing custody format."""
+
+    def __init__(self) -> None:
+        # Every channel record is required for a contiguous authenticated
+        # cursor, including event IDs that do not produce a detection.
+        super().__init__(_DEFENDER_CHANNEL)
+
+    @staticmethod
+    def _record(xml: str) -> SimpleNamespace:
+        if not isinstance(xml, str) or len(xml.encode("utf-8")) > _MAX_EVENT_XML_CHARS:
+            raise ValueError("Defender event XML exceeds its admission bound")
+        try:
+            root = ET.fromstring(xml)
+        except (ET.ParseError, DefusedXmlException) as exc:
+            raise ValueError("Defender event XML is invalid") from exc
+        systems = root.findall(f"{{{_NS}}}System")
+        if root.tag != f"{{{_NS}}}Event" or len(systems) != 1:
+            raise ValueError("Defender event System identity is invalid")
+        system = systems[0]
+
+        def one(name: str):
+            nodes = system.findall(f"{{{_NS}}}{name}")
+            if len(nodes) != 1:
+                raise ValueError(f"Defender event {name} identity is invalid")
+            return nodes[0]
+
+        if (
+            one("Channel").text != _DEFENDER_CHANNEL
+            or one("Provider").get("Name") != _DEFENDER_PROVIDER
+        ):
+            raise ValueError("Defender event channel/provider identity does not match")
+
+        def number(name: str, maximum: int, minimum: int = 0) -> int:
+            value = one(name).text or ""
+            if not value.isascii() or not value.isdecimal() or len(value) > 20:
+                raise ValueError(f"Defender event {name} is invalid")
+            result = int(value)
+            if not minimum <= result <= maximum:
+                raise ValueError(f"Defender event {name} is outside its bound")
+            return result
+
+        record_id = number("EventRecordID", 2**63 - 1, 1)
+        event_id = number("EventID", 65535)
+        generated = one("TimeCreated").get("SystemTime", "")
+        if not generated or len(generated) > 256:
+            raise ValueError("Defender event timestamp is invalid")
+        return SimpleNamespace(
+            RecordNumber=record_id,
+            EventID=event_id,
+            TimeGenerated=generated,
+            StringInserts=[xml],
+        )
+
+    def newest_record_id(self) -> int:
+        xml = self._one("*[System[EventRecordID >= 0]]", reverse=True)
+        return self._record(xml).RecordNumber if xml else 0
+
+    def oldest_record_id(self) -> int:
+        xml = self._one("*[System[EventRecordID >= 0]]")
+        return self._record(xml).RecordNumber if xml else 0
+
+    def record_at(self, record_id: int) -> SimpleNamespace | None:
+        value = max(0, int(record_id))
+        xml = self._one(f"*[System[EventRecordID = {value}]]") if value else ""
+        record = self._record(xml) if xml else None
+        if record is not None and record.RecordNumber != value:
+            raise ValueError("Defender channel returned a different anchor record")
+        return record
+
+    def read_after(self, record_id: int, limit: int = _MAX_NATIVE_BATCH) -> list:
+        return [self._record(xml) for xml in super().read_after(record_id, limit)]
 
 
 def _local_artifact_paths(value: object) -> tuple[str, ...]:
@@ -233,6 +309,8 @@ class AVTelemetryBridgeModule(BaseModule):
         self._delivered = 0
         self._skipped = 0
         self._errors = 0
+        self._telemetry_mode = ""
+        self._startup_blocked = False
 
     @property
     def _state_root(self) -> Path:
@@ -585,32 +663,63 @@ class AVTelemetryBridgeModule(BaseModule):
         return self.health
 
     def run(self) -> None:
+        self._startup_blocked = False
+        self._telemetry_mode = ""
         if self._try_evtlog_mode():
             return
-        if self._try_powershell_mode():
+        if not self._startup_blocked and self._try_powershell_mode():
             return
-        # Both unavailable
-        self.set_health(0, "Defender channel and PowerShell cmdlets unavailable")
-        self.emit(
-            "AV Telemetry Bridge: no telemetry path available (non-Windows or no pywin32/MpCmdRun). "
-            "Module idle.",
-            Severity.MEDIUM,
-        )
+        # An available reader cannot bypass failed custody by switching to
+        # PowerShell. Preserve the actionable integrity/identity diagnostic.
+        if not self._startup_blocked:
+            self.set_health(0, "Defender channel and PowerShell cmdlets unavailable")
+            self.emit(
+                "AV Telemetry Bridge: no telemetry path available "
+                "(non-Windows or no pywin32/Defender cmdlets). Module idle.",
+                Severity.MEDIUM,
+            )
         while not self.stopping:
             self.sleep(120.0)
 
     # ── win32evtlog mode ──────────────────────────────────────────────────────
     def _try_evtlog_mode(self) -> bool:
-        handle = None
+        source = None
         try:
-            import win32evtlog  # type: ignore[import]
-            handle = win32evtlog.OpenEventLog(None, _DEFENDER_CHANNEL)
+            source = _DefenderEventLogSource()
+            source.newest_record_id()  # Open the exact modern channel before custody.
+        except ValueError as exc:
+            if source is not None:
+                source.close()
+            self._startup_blocked = True
+            self.set_health(20, f"Defender channel XML/identity validation failed: {exc}")
+            return False
         except Exception:
+            if source is not None:
+                source.close()
             return False
         try:
             if not self._open_continuity_state():
+                self._startup_blocked = True
                 return False
-            resume_after = self._native_resume_after(win32evtlog, handle)
+            self._telemetry_mode = "native"
+            try:
+                resume_after = self._native_resume_after(source)
+            except Exception as exc:
+                self._startup_blocked = True
+                self._continuity_gap(
+                    "Defender channel bounds/anchor verification failed; "
+                    "the delivery cursor was retained",
+                    reason_code="defender.channel.verification_error",
+                    error_type=type(exc).__name__,
+                )
+                self.set_health(
+                    45,
+                    "Defender channel bounds/anchor verification failed; "
+                    f"the delivery cursor was retained ({type(exc).__name__})",
+                )
+                return False
+            if self._startup_blocked:
+                return False
             self._expected_record_id = max(1, resume_after + 1)
             self._drain_outbox()
             self.emit(
@@ -621,99 +730,52 @@ class AVTelemetryBridgeModule(BaseModule):
                 resume_after=resume_after,
                 **self._counter_details(),
             )
-            first_read = True
             while not self.stopping:
+                poll_interval = _POLL_INTERVAL
                 try:
-                    flags = _EVTLOG_SEEK_FWD if first_read else _EVTLOG_SEQ_FWD
-                    offset = resume_after + 1 if first_read else 0
-                    records = tuple(
-                        win32evtlog.ReadEventLog(handle, flags, offset) or ()
-                    )
-                    first_read = False
-                    for record in records[:_MAX_NATIVE_BATCH]:
-                        self._stage_native_record(record)
-                        resume_after = max(
-                            resume_after, self._record_number(record)
-                        )
-                    if len(records) > _MAX_NATIVE_BATCH:
-                        # The native handle may have advanced across the whole
-                        # page. Seek from the last durably consumed record on
-                        # the next pass instead of dropping the page suffix.
-                        first_read = True
+                    self._drain_outbox()
+                    resume_after = max(resume_after, self._current_record_id())
+                    records = source.read_after(resume_after, _MAX_NATIVE_BATCH)
+                    consumed_page = self._stage_native_page(records)
+                    resume_after = max(resume_after, self._current_record_id())
                     self._drain_outbox()
                     self._refresh_native_health()
+                    if consumed_page:
+                        poll_interval = _REPLAY_YIELD_INTERVAL
                 except Exception as exc:
                     self._errors += 1
                     self._continuity_gap(
-                        "Defender channel read/reopen failed; the delivery cursor "
+                        "Defender channel read/validation failed; the delivery cursor "
                         "was not advanced",
                         reason_code="defender.channel.read_error",
                         error_type=type(exc).__name__,
                     )
-                    self._close_eventlog(win32evtlog, handle)
-                    handle = None
-                    try:
-                        handle = win32evtlog.OpenEventLog(None, _DEFENDER_CHANNEL)
-                        resume_after = self._current_record_id()
-                        first_read = True
-                    except Exception:
-                        self.set_health(25, "Defender channel reopen failed")
-                self.sleep(_POLL_INTERVAL)
+                    # Each bounded EvtQuery owns a fresh handle; retry from
+                    # the last authenticated cursor on the next poll.
+                    resume_after = self._current_record_id()
+                self.sleep(poll_interval)
         finally:
-            self._close_eventlog(win32evtlog, handle)
+            source.close()
             self._close_continuity_state()
         return True
-
-    @staticmethod
-    def _close_eventlog(api: object, handle: object) -> None:
-        if handle is None:
-            return
-        closer = getattr(api, "CloseEventLog", None)
-        if callable(closer):
-            try:
-                closer(handle)
-            except Exception:
-                pass
 
     def _current_record_id(self) -> int:
         checkpoint = self._checkpoints.get(_DEFENDER_CHANNEL)
         return int(checkpoint.record_id) if checkpoint is not None else 0
 
-    def _native_resume_after(self, api: object, handle: object) -> int:
+    def _native_resume_after(self, source: _DefenderEventLogSource) -> int:
         checkpoint = self._checkpoints.get(_DEFENDER_CHANNEL)
         status = self._checkpoint_status
-        try:
-            oldest = max(1, int(api.GetOldestEventLogRecord(handle)))
-            count = max(0, int(api.GetNumberOfEventLogRecords(handle)))
-            newest = oldest + count - 1 if count else 0
-        except Exception:
-            # The classic API range helpers may be absent in test/legacy
-            # backends. A valid authenticated cursor is still safe to seek;
-            # first enrollment starts with retained records instead of draining.
-            return int(checkpoint.record_id) if checkpoint is not None else 0
+        oldest = source.oldest_record_id()
+        newest = source.newest_record_id()
+        if oldest < 0 or newest < oldest or (oldest == 0) != (newest == 0):
+            raise ValueError("Defender channel bounds are inconsistent")
 
         retained_anchor = ""
         if checkpoint is not None and oldest <= checkpoint.record_id <= newest:
-            verifier = None
-            try:
-                verifier = api.OpenEventLog(None, _DEFENDER_CHANNEL)
-                candidates = api.ReadEventLog(
-                    verifier, _EVTLOG_SEEK_FWD, checkpoint.record_id
-                )
-                exact = next(
-                    (
-                        item
-                        for item in candidates or ()
-                        if self._record_number(item) == checkpoint.record_id
-                    ),
-                    None,
-                )
-                if exact is not None:
-                    retained_anchor = self._record_digest(exact)
-            except Exception:
-                retained_anchor = ""
-            finally:
-                self._close_eventlog(api, verifier)
+            exact = source.record_at(checkpoint.record_id)
+            if exact is not None:
+                retained_anchor = self._record_digest(exact)
 
         assessment = assess_continuity(
             checkpoint,
@@ -731,6 +793,15 @@ class AVTelemetryBridgeModule(BaseModule):
                 oldest_retained_record=oldest,
                 newest_retained_record=newest,
             )
+            if checkpoint is not None:
+                # An existing authenticated cursor cannot be silently rebased
+                # onto a different channel generation or anchor format.
+                self._startup_blocked = True
+                self.set_health(
+                    45,
+                    f"Defender continuity: {assessment.reason}; "
+                    "explicit continuity recovery is required",
+                )
         elif assessment.state == "enrollment":
             self.set_health(
                 70,
@@ -832,6 +903,61 @@ class AVTelemetryBridgeModule(BaseModule):
         )
         self._drain_outbox()
 
+    def _stage_native_page(self, records: list) -> bool:
+        """Commit filtered runs together; detections retain individual ack gates."""
+        if len(records) > _MAX_NATIVE_BATCH:
+            raise ValueError("Defender native page exceeds its admission bound")
+        starting_cursor = self._current_record_id()
+        filtered: list[object] = []
+        for record in records:
+            if self.stopping:
+                return False
+            if self._decode_record(record) is None:
+                filtered.append(record)
+                continue
+            if filtered:
+                if not self._checkpoint_filtered_run(filtered):
+                    return False
+                filtered.clear()
+            self._stage_native_record(record)
+            if self._current_record_id() < self._record_number(record):
+                # A pending acknowledgement owns the next cursor. Never scan
+                # or checkpoint filtered evidence beyond that detection.
+                return False
+        if filtered and not self._checkpoint_filtered_run(filtered):
+            return False
+        return bool(records) and self._current_record_id() > starting_cursor
+
+    def _checkpoint_filtered_run(self, records: list[object]) -> bool:
+        """Persist one anchor only after every filtered record is consecutive."""
+        if not records or len(records) > _MAX_NATIVE_BATCH:
+            raise ValueError("Defender filtered run exceeds its admission bound")
+        current_id = self._current_record_id()
+        expected = current_id + 1 if current_id else self._expected_record_id
+        if not expected:
+            expected = self._record_number(records[0])
+        for record in records:
+            if self.stopping:
+                return False  # Uncommitted filtered evidence is replayed next start.
+            number = self._record_number(record)
+            if not number or number != expected:
+                self._persist_incomplete_coverage()
+                self.set_health(
+                    45, f"Defender cursor gap: expected record {expected}, received {number}",
+                )
+                raise ValueError("filtered Defender records are not consecutive")
+            if self._decode_record(record) is not None:
+                raise ValueError("Defender detection requires individual delivery acknowledgement")
+            expected = number + 1
+        if self.stopping:
+            return False
+        if not self._commit_checkpoint(
+            self._record_number(records[-1]), self._record_digest(records[-1])
+        ):
+            raise RuntimeError("filtered Defender cursor could not be committed")
+        self._skipped += len(records)
+        return True
+
     def _save_checkpoint(self, record_number: int, anchor: str) -> bool:
         if (
             self._checkpoint is None
@@ -855,6 +981,12 @@ class AVTelemetryBridgeModule(BaseModule):
                 f"Defender cursor gap: expected record {expected}, received "
                 f"{record_number}",
             )
+            return False
+        return self._commit_checkpoint(record_number, anchor)
+
+    def _commit_checkpoint(self, record_number: int, anchor: str) -> bool:
+        """Write a cursor already validated by the record or filtered-run gate."""
+        if self._checkpoint is None:
             return False
         updated = dict(self._checkpoints)
         updated[_DEFENDER_CHANNEL] = ChannelCheckpoint(record_number, anchor)
@@ -938,6 +1070,12 @@ class AVTelemetryBridgeModule(BaseModule):
             self.set_health(20, "Defender delivery has dead-letter evidence")
         elif stats.pending or stats.leased or self._errors:
             self.set_health(45, "Defender delivery acknowledgement is pending")
+        elif self._telemetry_mode == "powershell":
+            self.set_health(
+                70,
+                "PowerShell fallback delivery is current; real-time EID "
+                "coverage remains unavailable",
+            )
         elif self._checkpoint_status == "authenticated" and self._current_record_id() > 0:
             self.set_health(
                 100,
@@ -1109,7 +1247,9 @@ class AVTelemetryBridgeModule(BaseModule):
             return False
         try:
             if not self._open_continuity_state():
+                self._startup_blocked = True
                 return False
+            self._telemetry_mode = "powershell"
             self.emit(
                 "AV Telemetry Bridge: running PowerShell Get-MpThreatDetection "
                 "fallback with a durable detection outbox.",
@@ -1118,10 +1258,7 @@ class AVTelemetryBridgeModule(BaseModule):
                 retained_replay=True,
                 delivery_semantics="durable-at-least-once",
             )
-            self.set_health(
-                70,
-                "PowerShell fallback has durable replay but no real-time EID coverage",
-            )
+            self._refresh_native_health()
             for threat in retained:
                 self._stage_ps_detection(threat)
             while not self.stopping:
@@ -1130,12 +1267,7 @@ class AVTelemetryBridgeModule(BaseModule):
                     for threat in self._poll_ps():
                         self._stage_ps_detection(threat)
                     self._drain_outbox()
-                    if not self._continuity_gaps and not self._errors:
-                        self.set_health(
-                            70,
-                            "PowerShell fallback delivery is current; real-time EID "
-                            "coverage remains unavailable",
-                        )
+                    self._refresh_native_health()
                 except Exception as exc:
                     self._errors += 1
                     self._continuity_gap(
@@ -1203,14 +1335,15 @@ class AVTelemetryBridgeModule(BaseModule):
     def _poll_ps(self) -> list[dict]:
         out = check_output_hidden(
             ["powershell", "-NoProfile", "-Command",
-             "Get-MpThreatDetection | ConvertTo-Json -Depth 3"],
+             "Get-MpThreatDetection -ErrorAction Stop | ConvertTo-Json -Depth 3"],
             timeout=30,
             stderr=subprocess.DEVNULL,
             text=True,
         )
         if len((out or "").encode("utf-8", "replace")) > _MAX_FALLBACK_OUTPUT_BYTES:
             raise ValueError("Defender fallback output exceeded its byte bound")
-        data = json.loads(out or "[]")
+        # PowerShell emits whitespace when there are no retained detections.
+        data = json.loads((out or "").strip() or "[]")
         if isinstance(data, dict):
             data = [data]
         if (
@@ -1224,6 +1357,14 @@ class AVTelemetryBridgeModule(BaseModule):
     def self_test(self) -> tuple[bool, str]:
         if self.health >= 80:
             return True, f"health={self.health}%"
+        if (
+            self.health == 70
+            and self._telemetry_mode in {"native", "powershell"}
+            and not self._persisted_gap
+            and not self._continuity_gaps
+            and not self._errors
+        ):
+            return True, f"available with degraded coverage: {self.health_note}"
         return False, self.health_note
 
 

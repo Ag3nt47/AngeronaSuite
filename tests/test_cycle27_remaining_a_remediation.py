@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -231,27 +230,26 @@ def test_defender_first_start_processes_retained_native_record(
 ) -> None:
     record = _defender_record(3)
 
-    class FakeEventLog:
+    class FakeEventLogSource:
         def __init__(self) -> None:
             self.closed = 0
 
-        def OpenEventLog(self, _server, _channel):
-            return object()
-
-        def CloseEventLog(self, _handle) -> None:
+        def close(self) -> None:
             self.closed += 1
 
-        def GetOldestEventLogRecord(self, _handle) -> int:
+        def oldest_record_id(self) -> int:
             return 3
 
-        def GetNumberOfEventLogRecords(self, _handle) -> int:
-            return 1
+        def newest_record_id(self) -> int:
+            return 3
 
-        def ReadEventLog(self, _handle, _flags, offset):
-            return [record] if offset <= 3 else []
+        def read_after(self, offset, _limit):
+            return [record] if offset < 3 else []
 
-    fake = FakeEventLog()
-    monkeypatch.setitem(sys.modules, "win32evtlog", fake)
+    fake = FakeEventLogSource()
+    monkeypatch.setattr(
+        "angerona.modules.av_telemetry_bridge._DefenderEventLogSource", lambda: fake
+    )
     bus = EventBus()
     module = AVTelemetryBridgeModule(tmp_path, continuity_key=_CONTINUITY_KEY)
     module.bind(bus)

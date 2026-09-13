@@ -137,6 +137,35 @@ def platform_plan() -> LaunchPlan:
     return LaunchPlan(root, storage, command, frozen)
 
 
+def _source_model_directory(name: str, value: str) -> str:
+    """Validate a source user's model location without trusting model contents."""
+    from angerona.core.ollama_lifecycle import (
+        _windows_fixed_drive,
+        _windows_install_location,
+    )
+
+    message = (
+        f"{name} must name an existing, nonredirected local model directory "
+        "on a fixed drive. Correct this setting or remove it to use Ollama's "
+        "default model folder, then retry."
+    )
+    location = _windows_install_location(value)
+    if location is None or not _windows_fixed_drive(location.anchor):
+        raise StartupError(message)
+    path = Path(str(location))
+    try:
+        _plain_path(path)
+        info = path.lstat()
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or getattr(info, "st_file_attributes", 0) & 0x400
+        ):
+            raise StartupError(message)
+    except (OSError, ValueError, StartupError) as error:
+        raise StartupError(message) from error
+    return str(location)
+
+
 def child_environment(plan: LaunchPlan) -> dict[str, str]:
     from angerona.core.privilege import _minimal_environment
 
@@ -153,6 +182,14 @@ def child_environment(plan: LaunchPlan) -> dict[str, str]:
             "ANGERONA_DIAG_DIR": str(plan.storage / "diagnostics"),
             "ANGERONA_STORAGE_AUTOMIGRATE": "0",
         })
+        # The source launcher and dashboard both reject elevated execution.
+        # Preserve only explicit local model locations, never Ollama commands,
+        # endpoints or other inherited controls. The authenticated model guard
+        # still independently checks the approved root and exact model bytes.
+        for name in ("ANGERONA_OLLAMA_MODELS", "OLLAMA_MODELS"):
+            value = os.environ.get(name)
+            if value is not None:
+                environment[name] = _source_model_directory(name, value)
     return environment
 
 
