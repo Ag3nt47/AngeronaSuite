@@ -42,6 +42,9 @@ SYSTEM_PROMPT = (
 
 class AITriageModule(BaseModule):
     name = "AI Triage (Ollama)"
+    # Cold full-byte attestation precedes the already-bounded Ollama request.
+    startup_cycle_timeout = 300.0
+    watchdog_work_budget_seconds = 300.0
     description = "Explains and scores serious events using a local LLM (Ollama)."
     category = "AI"
     version = "1.13.0"
@@ -80,6 +83,7 @@ class AITriageModule(BaseModule):
         self._attestation_error = ""
         self._attestation_receipt = None
         self._ollama_readiness_error = ""
+        self._model_readiness_error = ""
 
     def bind_manager(self, manager) -> None:
         """Use the operator's current local-AI settings for readiness checks."""
@@ -147,12 +151,15 @@ class AITriageModule(BaseModule):
         Returns the model's response, or None if the circuit is open / request
         fails.  A failure while the circuit is CLOSED trips it and emits HIGH.
         """
+        stop_event = self.generation_stop_event()
+        if stop_event.is_set():
+            return None
         self._sync_config()
         # Fast-fail — never block on a known-bad Ollama
         with self._cb_lock:
             if self._cb_state == "open":
                 return None
-        if not self._attest_model():
+        if not self._attest_model() or stop_event.is_set():
             return None
 
         # BL-03: neutralize attacker-influenced telemetry so embedded instructions
@@ -182,12 +189,18 @@ class AITriageModule(BaseModule):
             headers={"Content-Type": "application/json"},
         )
         try:
+            if stop_event.is_set():
+                return None
             with safe_urlopen(
                 req, policy=OLLAMA_SERVICE_POLICY, timeout=self._CB_TIMEOUT_S,
             ) as resp:
                 data = json.loads(read_bounded(resp).decode("utf-8"))
+            if stop_event.is_set():
+                return None
             return (data.get("message", {}) or {}).get("content", "").strip()
         except Exception as exc:
+            if stop_event.is_set():
+                return None
             self.last_error = str(exc)
             with self._cb_lock:
                 if self._cb_state == "closed":
@@ -208,13 +221,24 @@ class AITriageModule(BaseModule):
     def _attest_model(self) -> bool:
         """Require a fresh receipt for the exact configured tag before use."""
         self._sync_config()
+        stop_event = self.generation_stop_event()
+        if stop_event.is_set():
+            self._attestation_receipt = None
+            return False
+        self.set_health(
+            min(self.health, 70),
+            "configured model byte verification pending; inference is blocked until complete",
+        )
         try:
             from angerona.modules.ai_model_integrity import (
                 require_fresh_model_attestation,
             )
 
-            receipt = require_fresh_model_attestation(self._model)
+            receipt = require_fresh_model_attestation(self._model, stop_event=stop_event)
         except Exception as exc:
+            if stop_event.is_set():
+                self._attestation_receipt = None
+                return False
             rendered = str(exc)[:500]
             self.last_error = rendered
             self.set_health(
@@ -233,8 +257,12 @@ class AITriageModule(BaseModule):
                 )
             self._attestation_receipt = None
             return False
+        if stop_event.is_set():
+            self._attestation_receipt = None
+            return False
         self._attestation_error = ""
         self._attestation_receipt = receipt
+        self.set_health(100, "exact configured model attested for local inference")
         return True
 
     def _ping_ollama(self) -> bool:
@@ -365,13 +393,18 @@ class AITriageModule(BaseModule):
             ticks += 1
             if self.stopping:
                 break
-            if ticks % 8 == 0:   # ~every 64s, re-verify the model is usable
+            if ticks % 8 == 0:   # ~every 64s; full byte attestation runs before inference.
                 self._check_health()
             if self._bus is None:
-                self.mark_cycle_complete()
+                with self._lifecycle_lock:
+                    if self.stopping:
+                        return
+                    self.mark_cycle_complete()
                 continue
             events, _overflow = self.poll_bus_events(priority=True)
             for ev in events:
+                if self.stopping:
+                    return
                 if ev.severity < Severity.HIGH:
                     continue
                 if ev.module == self.name:
@@ -405,18 +438,28 @@ class AITriageModule(BaseModule):
                                "presence of a VPN interface contextually against the process "
                                "ancestry and destination IP.")
                 verdict = self._ask(prompt)
-                if verdict:
-                    self.set_health(100, "")
-                    self.emit(
-                        f"AI: {verdict}",
-                        Severity.INFO,
-                        source=ev.module,
-                        speculative_frame_reused=reused_speculative_frame,
-                    )
+                with self._lifecycle_lock:
+                    if self.stopping:
+                        return
+                    # Each completed request is real progress. A retained batch
+                    # can contain several slow attestations/inferences; only
+                    # finishing one advances liveness, never a hash timer.
+                    self.mark_cycle_complete()
+                    if verdict:
+                        self.set_health(100, "")
+                        self.emit(
+                            f"AI: {verdict}",
+                            Severity.INFO,
+                            source=ev.module,
+                            speculative_frame_reused=reused_speculative_frame,
+                        )
                 # If verdict is None because CB is open, the event is already on the
                 # bus being processed by SOAR, attack_tracker, etc.  The CB trip
                 # itself already emitted a HIGH alert — no further action needed.
-            self.mark_cycle_complete()
+            with self._lifecycle_lock:
+                if self.stopping:
+                    return
+                self.mark_cycle_complete()
 
     def _check_health(self) -> None:
         prev = self.health
@@ -433,11 +476,39 @@ class AITriageModule(BaseModule):
             if prev >= 50 and not cb_open:
                 self.emit(f"{note} — AI triage idle.", Severity.MEDIUM)
         else:
-            attested = self._attest_model()
-            if attested:
-                self.set_health(100, "exact configured model attested for local inference")
-            if attested and prev < 50:
-                self.emit(f"AI triage online ({self._model}).", Severity.INFO)
+            # A 64-second idle timer must not expire the 60-second receipt and
+            # repeatedly read every multi-gigabyte model. This check grants no
+            # inference authority: _ask and self_test still require fresh bytes.
+            try:
+                from angerona.modules.ai_model_integrity import check_model_readiness
+
+                check_model_readiness(self._model)
+            except Exception as exc:
+                rendered = str(exc)[:500]
+                self.last_error = rendered
+                self.set_health(20, f"approved model configuration unavailable: {rendered}")
+                if rendered != self._model_readiness_error:
+                    self.emit(
+                        "AI triage model configuration unavailable; inference remains blocked.",
+                        Severity.MEDIUM, model=self._model, readiness_error=rendered,
+                    )
+                self._model_readiness_error = rendered
+                return
+            if self.last_error == self._model_readiness_error:
+                self.last_error = ""
+            self._model_readiness_error = ""
+            if self._attestation_error:
+                # Metadata readiness cannot erase a known byte-attestation
+                # failure; only a successful mandatory verification can do so.
+                self.set_health(20, f"last model attestation failed: {self._attestation_error}")
+                return
+            self.set_health(
+                100,
+                "Ollama/model available; approved configuration; "
+                "fresh byte attestation required before inference",
+            )
+            if prev < 50:
+                self.emit(f"AI triage ready ({self._model}); attestation runs before inference.", Severity.INFO)
 
     def self_test(self) -> tuple[bool, str]:
         # A health check must never load a multi-gigabyte model. In Chill the

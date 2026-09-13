@@ -351,6 +351,9 @@ class FileIntegrityModule(BaseModule):
         self._pending_scan_snapshot: _FIMScanSnapshot | None = None
         self._pending_scan_custody: _FIMScanCustody | None = None
         self._consumed_scan_generation = 0
+        self._scan_work = threading.local()
+        self._incomplete_scan_attempts = 0
+        self._scan_retry_floor = 0.0
 
     def bind_assurance_receipt_issuer(self, issuer: DetectorReceiptIssuer) -> None:
         self._assurance_issuer = issuer
@@ -383,12 +386,15 @@ class FileIntegrityModule(BaseModule):
         issuer = self._assurance_issuer
         if issuer is None:
             return
+        stop_event = self.generation_stop_event()
         for challenge in issuer.active(self, "fim"):
+            if stop_event.is_set():
+                break
             path = os.path.abspath(challenge.target_ref)
             if not self._assurance_path_is_watched(path):
                 continue
             digest = self._hash(path)
-            if not digest:
+            if not digest or stop_event.is_set():
                 continue
             target_digest = assurance_target_digest("fim", path, digest)
             receipt = issuer.issue(
@@ -663,7 +669,10 @@ class FileIntegrityModule(BaseModule):
         # Antivirus/indexer metadata touches can race the first identity sample
         # on Windows. Retry a small fixed number of times, but accept only one
         # individually stable, handle-bound read.
+        stop_event = getattr(self._scan_work, "stop_event", self.generation_stop_event())
         for _attempt in range(3):
+            if stop_event.is_set():
+                return ""
             digest = self._hash_once(path)
             if digest:
                 return digest
@@ -671,6 +680,9 @@ class FileIntegrityModule(BaseModule):
 
     def _hash_once(self, path: str) -> str:
         h = hashlib.sha256()
+        stop_event = getattr(self._scan_work, "stop_event", self.generation_stop_event())
+        if stop_event.is_set():
+            return ""
         try:
             before = os.lstat(path)
             attributes = getattr(before, "st_file_attributes", 0)
@@ -688,8 +700,14 @@ class FileIntegrityModule(BaseModule):
                     return ""
                 opened_change = self._handle_change_token(f.fileno())
                 opened_usn = self._handle_usn(f.fileno())
-                for chunk in iter(lambda: f.read(65536), b""):
+                while not stop_event.is_set():
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
                     h.update(chunk)
+                    self._report_scan_work(bytes_read=len(chunk))
+                if stop_event.is_set():
+                    return ""
                 after = os.fstat(f.fileno())
                 if self._file_identity(after) != self._file_identity(opened):
                     return ""
@@ -764,7 +782,46 @@ class FileIntegrityModule(BaseModule):
                 continue
         return False
 
+    def _report_scan_work(self, *, bytes_read: int = 0, files: int = 0) -> None:
+        progress = getattr(self._scan_work, "progress", None)
+        if progress is None:
+            return
+        progress["bytes"] += bytes_read
+        progress["files"] += files
+        now = time.monotonic()
+        stop_event = self._scan_work.stop_event
+        if (
+            now < progress["next_report"]
+            or stop_event.is_set()
+            or self.status != "running"
+        ):
+            return
+        progress["next_report"] = now + 1.0
+        self.set_health(
+            35,
+            f"FIM scan in progress: {progress['files']} file(s) examined, "
+            f"{progress['bytes']} bytes read; coverage and content verification pending",
+        )
+        # A bounded chunk of real scan work proves worker liveness, not a
+        # completed detection snapshot. Only the final receipt may authorize
+        # baseline adoption, comparison, or assurance evaluation.
+        self.mark_cycle_complete(interval_seconds=0.0)
+        stop_event.wait(0.005)
+
     def _scan(self) -> Dict[str, str]:
+        self._scan_work.stop_event = self.generation_stop_event()
+        self._scan_work.progress = {
+            "bytes": 0,
+            "files": 0,
+            "next_report": time.monotonic() + 1.0,
+        }
+        try:
+            return self._scan_snapshot()
+        finally:
+            del self._scan_work.progress
+            del self._scan_work.stop_event
+
+    def _scan_snapshot(self) -> Dict[str, str]:
         """Return a bounded recursive snapshot plus an honest coverage receipt.
 
         The fast path is bound to device/inode/size/mtime/ctime rather than only
@@ -774,6 +831,7 @@ class FileIntegrityModule(BaseModule):
         """
         from angerona.core.data_paths import _is_reparse_point
 
+        stop_event = self._scan_work.stop_event
         started_monotonic_ns = time.monotonic_ns()
         with self._scan_proof_lock:
             self._scan_generation += 1
@@ -800,6 +858,10 @@ class FileIntegrityModule(BaseModule):
 
         scan_roots = self._canonical_roots()
         for root in scan_roots:
+            if stop_event.is_set():
+                _error("scan stopped before coverage completed")
+                stopped_for_budget = True
+                break
             root_path = Path(root)
             root_error_count = error_count_total
             try:
@@ -820,9 +882,15 @@ class FileIntegrityModule(BaseModule):
             for dirpath, directories, files in os.walk(
                 root_path, followlinks=False, onerror=_walk_error
             ):
+                if stop_event.is_set():
+                    _error("scan stopped before coverage completed")
+                    stopped_for_budget = True
+                    break
                 directory = Path(dirpath)
                 safe_directories: list[str] = []
                 for name in directories:
+                    if stop_event.is_set():
+                        break
                     child = directory / name
                     try:
                         if child.is_symlink() or _is_reparse_point(child):
@@ -831,10 +899,16 @@ class FileIntegrityModule(BaseModule):
                         safe_directories.append(name)
                     except OSError as exc:
                         _error(f"directory identity failed: {child}: {exc}")
+                    self._report_scan_work()
                 directories[:] = safe_directories
                 for fn in files:
+                    if stop_event.is_set():
+                        _error("scan stopped before coverage completed")
+                        stopped_for_budget = True
+                        break
                     full = os.path.join(dirpath, fn)
                     st = self._stat(full)
+                    self._report_scan_work(files=1)
                     if st is None:
                         _error(f"file metadata unavailable: {full}")
                         continue
@@ -879,6 +953,10 @@ class FileIntegrityModule(BaseModule):
                         digest = self._hash(full)
                         content_bytes += max(0, st[2])
                         hashed += 1
+                        if stop_event.is_set():
+                            _error("scan stopped before coverage completed")
+                            stopped_for_budget = True
+                            break
                         if not digest:
                             _error(f"stable content hash unavailable: {full}")
                     if digest:
@@ -886,7 +964,7 @@ class FileIntegrityModule(BaseModule):
                         new_stat_cache[full] = st
                 if stopped_for_budget:
                     break
-                if self.stopping:
+                if stop_event.is_set():
                     _error("scan stopped before coverage completed")
                     stopped_for_budget = True
                     break
@@ -963,6 +1041,16 @@ class FileIntegrityModule(BaseModule):
             self._pending_scan_custody = custody
         return result
 
+    def _record_scan_outcome(self) -> None:
+        if self._last_scan_receipt.get("complete") is True:
+            self._incomplete_scan_attempts = 0
+            self._scan_retry_floor = 0.0
+            return
+        self._incomplete_scan_attempts = min(self._incomplete_scan_attempts + 1, 5)
+        self._scan_retry_floor = min(
+            300.0, 30.0 * (2 ** (self._incomplete_scan_attempts - 1))
+        )
+
     # ── Ring 1: driver-shield classifier + cheap driver-pool scan ────────────
     def _driver_alert(self, path: str):
         """Classify a path for the Driver-Intel Shield. Returns (Severity, msg)
@@ -1019,7 +1107,9 @@ class FileIntegrityModule(BaseModule):
         if not bool(receipt.get("complete")):
             self.set_health(
                 35,
-                "FIM coverage incomplete: " + str(receipt.get("reason", "unknown")),
+                "FIM coverage incomplete: " + str(receipt.get("reason", "unknown"))
+                + (f"; full-scan retry in {self._scan_retry_floor:g}s; driver checks remain active"
+                   if self._scan_retry_floor else ""),
             )
             return
         if not self._driver_collection_ok:
@@ -1337,6 +1427,8 @@ class FileIntegrityModule(BaseModule):
             self._driver_baseline = set()
 
         current = self._scan()
+        if self.stopping:
+            return
         self._publish_assurance_receipts()
         current_drivers = self._list_driver_names()
         if approved is not None and bool(self._last_scan_receipt.get("complete")):
@@ -1367,6 +1459,7 @@ class FileIntegrityModule(BaseModule):
             self._baseline = dict(current)
         if self._driver_collection_ok:
             self._driver_baseline = current_drivers
+        self._record_scan_outcome()
         self._set_coverage_health()
         self.emit(
             f"FIM armed: {len(self._baseline)} files, "
@@ -1378,6 +1471,7 @@ class FileIntegrityModule(BaseModule):
 
         while not self.stopping:
             _DRIVER_INTERVAL, _FILE_INTERVAL = _combat_intervals()
+            _FILE_INTERVAL = max(_FILE_INTERVAL, self._scan_retry_floor)
             # Sweep the (cheap, name-only) driver pool every _DRIVER_INTERVAL for a
             # fast BYOVD catch, while the full file-integrity scan runs every
             # _FILE_INTERVAL. BL-13: shorter driver-pool interval.
@@ -1391,8 +1485,11 @@ class FileIntegrityModule(BaseModule):
             if self.stopping:
                 break
             current = self._scan()
+            if self.stopping:
+                break
             self._publish_assurance_receipts()
             if bool(self._last_scan_receipt.get("complete")):
                 self._evaluate_snapshot(current)
                 self._baseline = dict(current)
+            self._record_scan_outcome()
             self._set_coverage_health()

@@ -29,6 +29,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -55,6 +56,13 @@ POLL_S           = 15.0             # full Documents/Desktop stat-walk cadence; 
 RETAIN_VERSIONS  = 6                 # versions kept per file
 MAX_FILE_BYTES   = 50 * 1024 * 1024  # don't cache files larger than 50 MB
 VSS_INTERVAL_S   = 3600.0            # request a shadow at most hourly
+VSS_TIMEOUT_S    = 90.0
+CACHE_CHUNK_BYTES = 1024 * 1024
+CACHE_SLICE_FILES = 128
+CACHE_SLICE_BYTES = 16 * 1024 * 1024
+CACHE_SLICE_SECONDS = 0.25
+CACHE_YIELD_SECONDS = 0.25
+MAX_PRUNE_ENTRIES = 128
 SKIP_EXT         = {".tmp", ".part", ".crdownload"}
 
 
@@ -64,6 +72,11 @@ class ShadowShield(BaseModule):
     description = "Ransomware file shielding via a delta version cache and VSS snapshots."
     category = "Response"
     version = "1.13.0"
+    # A real bounded VSS request can take 90 seconds. Cache work publishes
+    # completed slices with explicitly partial coverage, never timer heartbeats.
+    startup_cycle_timeout = 120.0
+    eco_cycle_timeout = 120.0
+    watchdog_work_budget_seconds = 120.0
 
     def __init__(self) -> None:
         super().__init__()
@@ -72,6 +85,10 @@ class ShadowShield(BaseModule):
         self._last_vss = 0.0
         self._snapshots = 0
         self._rollbacks = 0
+        self._vss_health: int | None = None
+        self._vss_note = "VSS coverage not checked in this session"
+        self._walk_errors = 0
+        self._prune_errors = 0
 
     # ── Cache helpers ─────────────────────────────────────────────────────────
     @staticmethod
@@ -82,25 +99,40 @@ class ShadowShield(BaseModule):
         return self._cache_dir / self._key(path)
 
     def _protected_files(self):
+        stopped = self.generation_stop_event()
         for d in PROTECTED_DIRS:
+            if stopped.is_set():
+                return
             if not os.path.isdir(d):
+                self._walk_errors += 1
                 continue
-            for root, dirs, files in os.walk(d):
+            def walk_error(_error):
+                self._walk_errors += 1
+            for root, dirs, files in os.walk(d, onerror=walk_error):
+                if stopped.is_set():
+                    return
                 for fn in files:
+                    if stopped.is_set():
+                        return
                     if os.path.splitext(fn)[1].lower() in SKIP_EXT:
                         continue
                     yield os.path.join(root, fn)
 
-    def _cache_version(self, path: str) -> None:
+    def _cache_version(self, path: str) -> tuple[str, int]:
         """Copy the current bytes of `path` into the version cache, pruning old
         versions. Stores an index sidecar mapping cache filename → source path."""
+        stopped = self.generation_stop_event()
+        temporary: Path | None = None
+        copied = 0
         try:
+            if stopped.is_set():
+                return "cancelled", 0
             st = os.stat(path)
             if st.st_size > MAX_FILE_BYTES:
-                return
+                return "skipped", 0
             mtime_ns = st.st_mtime_ns
             if self._seen_mtime.get(path) == mtime_ns:
-                return  # unchanged since last poll
+                return "unchanged", 0
             kd = self._keydir(path)
             kd.mkdir(parents=True, exist_ok=True)
             # Record the true source path once (rollback needs it).
@@ -108,21 +140,66 @@ class ShadowShield(BaseModule):
             if not idx.exists():
                 idx.write_text(path, encoding="utf-8")
             dst = kd / f"{mtime_ns}.bak"
-            shutil.copy2(path, dst)
-            self._seen_mtime[path] = mtime_ns
+            # A cancelled/changed source must never leave a partial .bak that
+            # the existing exact-artifact recovery workflow could enumerate.
+            temporary = kd / f".{mtime_ns}.{uuid.uuid4().hex}.tmp"
+            with open(path, "rb") as source, temporary.open("xb") as target:
+                opened = os.fstat(source.fileno())
+                if (opened.st_size, opened.st_mtime_ns) != (st.st_size, mtime_ns):
+                    return "failed", 0
+                while True:
+                    if stopped.is_set():
+                        return "cancelled", copied
+                    chunk = source.read(CACHE_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    if stopped.is_set():
+                        return "cancelled", copied
+                    copied += len(chunk)
+                    if copied > MAX_FILE_BYTES:
+                        return "skipped", copied
+                    target.write(chunk)
+                final = os.fstat(source.fileno())
+                if (final.st_size, final.st_mtime_ns) != (opened.st_size, opened.st_mtime_ns):
+                    return "failed", copied
+            shutil.copystat(path, temporary)
+            with self._lifecycle_lock:
+                if stopped.is_set() or stopped is not self._stop:
+                    return "cancelled", copied
+                os.replace(temporary, dst)
+                temporary = None
+                self._seen_mtime[path] = mtime_ns
             self._prune(kd)
-        except (FileNotFoundError, PermissionError):
-            return
+            return "cached", copied
         except Exception:
-            return
+            return "failed", copied
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def _prune(self, kd: Path) -> None:
+        stopped = self.generation_stop_event()
         try:
-            versions = sorted(kd.glob("*.bak"), key=lambda p: p.stat().st_mtime)
-            for old in versions[:-RETAIN_VERSIONS]:
+            versions = []
+            with os.scandir(kd) as entries:
+                for index, entry in enumerate(entries):
+                    if stopped.is_set():
+                        return
+                    if index >= MAX_PRUNE_ENTRIES:
+                        self._prune_errors += 1
+                        return
+                    if entry.name.endswith(".bak") and entry.is_file(follow_symlinks=False):
+                        versions.append((entry.stat(follow_symlinks=False).st_mtime, Path(entry.path)))
+            versions.sort(key=lambda item: item[0])
+            for _, old in versions[:-RETAIN_VERSIONS]:
+                if stopped.is_set():
+                    return
                 old.unlink(missing_ok=True)
         except Exception:
-            pass
+            self._prune_errors += 1
 
     @staticmethod
     def _sha256(path: Path) -> str:
@@ -301,30 +378,85 @@ class ShadowShield(BaseModule):
         }
 
     # ── VSS ───────────────────────────────────────────────────────────────────
+    @staticmethod
+    def _cancel_vss_process(process) -> None:
+        """Stop only our child; cleanup cannot extend cancellation indefinitely."""
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.communicate(timeout=1.0)
+        except (OSError, subprocess.TimeoutExpired):
+            # Windows communicate() leaves its daemon readers owning the pipes
+            # after a timeout. Closing here can wait forever on a reader's
+            # stream lock; each reader already closes its own pipe after EOF.
+            return
+
+    def _set_vss_health(self, stopped: threading.Event, health: int, note: str) -> None:
+        with self._lifecycle_lock:
+            if stopped.is_set() or stopped is not self._stop:
+                return
+            self._vss_health = health
+            self._vss_note = note
+            self.set_health(health, note)
+
     def _take_vss_snapshot(self, drive: str = "C:\\") -> Optional[str]:
         """Request a ClientAccessible shadow via WMI (PowerShell). Best-effort;
         returns the ShadowID string on success. Requires elevation."""
+        stopped = self.generation_stop_event()
+        process = None
         try:
             ps = (f"(Get-WmiObject -List Win32_ShadowCopy)"
                   f".Create('{drive}','ClientAccessible') | "
                   f"Select-Object -ExpandProperty ShadowID")
-            out = subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                capture_output=True, text=True, timeout=90,
-            )
-            sid = (out.stdout or "").strip()
-            if out.returncode == 0 and sid:
-                self._snapshots += 1
-                self.emit(f"VSS snapshot created ({sid}).", Severity.INFO, shadow_id=sid)
-                return sid
-            self.set_health(70, f"VSS create returned rc={out.returncode} "
-                                f"(elevation required?): {(out.stderr or '').strip()[:120]}")
+            # Serialize launch with stop(): after stop returns no old generation
+            # can issue another VSS request. Never hold this lock while waiting.
+            with self._lifecycle_lock:
+                if stopped.is_set() or stopped is not self._stop:
+                    return None
+                # Failed launches also consume the existing hourly attempt
+                # interval; an unavailable host must not retry every cache poll.
+                self._last_vss = time.time()
+                process = subprocess.Popen(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            deadline = time.monotonic() + VSS_TIMEOUT_S
+            while True:
+                if stopped.is_set():
+                    self._cancel_vss_process(process)
+                    return None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._cancel_vss_process(process)
+                    self._set_vss_health(stopped, 70, "VSS snapshot timed out after 90 seconds.")
+                    return None
+                try:
+                    stdout, stderr = process.communicate(timeout=min(0.25, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            sid = (stdout or "").strip()
+            with self._lifecycle_lock:
+                if stopped.is_set() or stopped is not self._stop:
+                    return None
+                if process.returncode == 0 and sid:
+                    self._snapshots += 1
+                    self._set_vss_health(stopped, 100, "VSS snapshot confirmed")
+                    self.emit(f"VSS snapshot created ({sid}).", Severity.INFO, shadow_id=sid)
+                    return sid
+            self._set_vss_health(stopped, 70, f"VSS create returned rc={process.returncode} "
+                                f"(elevation required?): {(stderr or '').strip()[:120]}")
             return None
         except FileNotFoundError:
-            self.set_health(60, "PowerShell/VSS unavailable on this host.")
+            self._set_vss_health(stopped, 60, "PowerShell/VSS unavailable on this host.")
             return None
         except Exception as exc:
-            self.set_health(70, f"VSS snapshot error: {exc}")
+            if process is not None:
+                self._cancel_vss_process(process)
+            self._set_vss_health(stopped, 70, f"VSS snapshot error: {exc}")
             return None
 
     def list_shadow_snapshots(self) -> list[dict]:
@@ -343,25 +475,71 @@ class ShadowShield(BaseModule):
             return []
 
     # ── Loop ──────────────────────────────────────────────────────────────────
+    def _cache_progress(self, counts: dict[str, int], *, complete: bool) -> None:
+        health = self._vss_health if self._vss_health is not None else 50
+        if (not complete or self._walk_errors or self._prune_errors
+                or counts["failed"] or counts["skipped"]):
+            health = min(health, 50)
+        stopped = self.generation_stop_event()
+        with self._lifecycle_lock:
+            if stopped.is_set() or stopped is not self._stop:
+                return
+            self.set_health(
+                health,
+                f"delta cache {'pass complete' if complete else 'coverage PARTIAL'}: "
+                f"cached={counts['cached']}, unchanged={counts['unchanged']}, "
+                f"skipped={counts['skipped']}, failed={counts['failed']}, "
+                f"unavailable roots/walk errors={self._walk_errors}, "
+                f"cache retention errors={self._prune_errors}; {self._vss_note}; "
+                f"{self._snapshots} snapshots, {self._rollbacks} rollbacks",
+            )
+
     def run(self) -> None:
+        stopped = self.generation_stop_event()
+        if stopped.is_set():
+            return
         self._cache_dir.mkdir(parents=True, exist_ok=True)
-        self.emit("Shadow Shield active — protecting Documents & Desktop.", Severity.INFO)
-        while not self.stopping:
-            count = 0
+        self.set_health(50, "Initializing delta cache; initial coverage is incomplete.")
+        self.emit("Shadow Shield starting — checking delta cache and VSS coverage.", Severity.INFO)
+        while not stopped.is_set():
+            counts = dict.fromkeys(("cached", "unchanged", "skipped", "failed"), 0)
+            self._walk_errors = 0
+            self._prune_errors = 0
+            slice_files = slice_bytes = 0
+            slice_started = time.monotonic()
             for path in self._protected_files():
-                if self.stopping:
-                    break
-                self._cache_version(path)
-                count += 1
+                if stopped.is_set():
+                    return
+                outcome, copied = self._cache_version(path)
+                if stopped.is_set() or outcome == "cancelled":
+                    return
+                counts[outcome] += 1
+                slice_files += 1
+                slice_bytes += copied
+                if (slice_files >= CACHE_SLICE_FILES or slice_bytes >= CACHE_SLICE_BYTES
+                        or time.monotonic() - slice_started >= CACHE_SLICE_SECONDS):
+                    # This is real completed cache work, with partial coverage
+                    # explicitly retained until traversal finishes. Yielding
+                    # avoids a full Documents/Desktop copy monopolizing IO.
+                    self._cache_progress(counts, complete=False)
+                    self.sleep(CACHE_YIELD_SECONDS)
+                    if stopped.is_set():
+                        return
+                    slice_files = slice_bytes = 0
+                    slice_started = time.monotonic()
+
+            if stopped.is_set():
+                return
+            self._cache_progress(counts, complete=True)
+            self.mark_cycle_complete(interval_seconds=0.0)
 
             now = time.time()
             if now - self._last_vss >= VSS_INTERVAL_S:
-                self._last_vss = now
                 self._take_vss_snapshot()
 
-            if self.health >= 90:
-                self.set_health(100, f"watching {count} files; "
-                                     f"{self._snapshots} snapshots, {self._rollbacks} rollbacks")
+            if stopped.is_set():
+                return
+            self._cache_progress(counts, complete=True)
             self.sleep(POLL_S)
 
     def self_test(self) -> tuple[bool, str]:

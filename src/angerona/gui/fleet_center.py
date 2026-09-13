@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, is_dataclass
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
@@ -47,9 +47,11 @@ class FleetCenterWidget(QWidget):
         parent=None,
         *,
         auto_refresh: bool = True,
+        refresh_request: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.fabric = fabric
+        self._refresh_request = refresh_request
         self._snapshot: Mapping[str, Any] = {}
         self._selected_rollout_id = ""
 
@@ -191,6 +193,11 @@ class FleetCenterWidget(QWidget):
             table.setSortingEnabled(True)
 
     def refresh(self) -> None:
+        if self._refresh_request is not None:
+            self._clear_evidence_view()
+            self.status.setText("Updating local evidence…")
+            self._refresh_request()
+            return
         fabric = self.fabric
         tenant_id = str(self.tenant_box.currentData() or "")
         if fabric is None or not tenant_id:
@@ -199,14 +206,21 @@ class FleetCenterWidget(QWidget):
             return
         try:
             snapshot = fabric.dashboard_snapshot(tenant_id)
-            self._clear_evidence_view()
-            self._render_health(snapshot["health"])
-            self._render_rollouts(snapshot["rollouts"])
-            self._render_enrollments(snapshot["enrollments"])
+            self.apply_snapshot(snapshot)
         except Exception as exc:
             self._clear_evidence_view()
             self.status.setText(f"Local evidence unavailable: {type(exc).__name__}: {str(exc)[:160]}")
             return
+
+    def apply_snapshot(self, snapshot: Mapping[str, Any] | None, *, error: str = "") -> None:
+        """Render already-read evidence on Qt; this does not authorize an action."""
+        self._clear_evidence_view()
+        if error or snapshot is None:
+            self.status.setText(error or "No Fleet Fabric store is bound")
+            return
+        self._render_health(snapshot["health"])
+        self._render_rollouts(snapshot["rollouts"])
+        self._render_enrollments(snapshot["enrollments"])
         self._snapshot = snapshot
         health = snapshot["health"]
         transport = snapshot["transport"]

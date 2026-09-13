@@ -388,6 +388,7 @@ class AuditLogIntegrityGuard(BaseModule):
                     source_channel=channel,
                     sensor_state="blind",
                     error_class=type(exc).__name__,
+                    reader_error_code=getattr(exc, "winerror", None),
                     response_authorized=False,
                     response_authority="observe-only",
                 )

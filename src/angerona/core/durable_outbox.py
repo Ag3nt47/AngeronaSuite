@@ -14,6 +14,8 @@ import math
 import os
 import secrets
 import sqlite3
+import stat
+import sys
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -92,6 +94,52 @@ def _canonical(value: Any) -> bytes:
         allow_nan=False,
         default=str,
     ).encode("utf-8")
+
+
+def _windows_change_time(path: Path) -> int:
+    """Read NTFS change time; Python's Windows st_ctime is creation time."""
+    import ctypes
+    from ctypes import wintypes
+
+    class FileBasicInfo(ctypes.Structure):
+        _fields_ = [
+            ("creation", ctypes.c_longlong), ("access", ctypes.c_longlong),
+            ("write", ctypes.c_longlong), ("change", ctypes.c_longlong),
+            ("attributes", wintypes.DWORD),
+        ]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                       wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    query = kernel.GetFileInformationByHandleEx
+    query.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    query.restype = wintypes.BOOL
+    close = kernel.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    handle = create(str(path), 0x80, 0x7, None, 3, 0x00200000, None)
+    if handle in (None, ctypes.c_void_p(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        basic = FileBasicInfo()
+        if not query(handle, 0, ctypes.byref(basic), ctypes.sizeof(basic)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return int(basic.change)
+    finally:
+        close(handle)
+
+
+def _backing_file_stamp(path: Path) -> tuple[int, ...]:
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or (
+        int(getattr(info, "st_file_attributes", 0)) & 0x400
+    ):
+        raise OutboxIntegrityError("outbox backing file is not a regular, unredirected file")
+    changed = _windows_change_time(path) if sys.platform == "win32" else info.st_ctime_ns
+    return (int(info.st_dev), int(info.st_ino), int(info.st_size),
+            int(info.st_mtime_ns), int(info.st_ctime_ns), int(changed))
 
 
 def load_or_create_outbox_key(path: Path) -> bytes:
@@ -184,6 +232,8 @@ class DurableOutbox:
             );
             CREATE INDEX IF NOT EXISTS idx_durable_outbox_ready
               ON durable_outbox(state,next_attempt,created_at);
+            CREATE INDEX IF NOT EXISTS idx_durable_outbox_tombstones
+              ON durable_outbox(state,created_at DESC);
             """
         )
         self._db.commit()
@@ -193,6 +243,8 @@ class DurableOutbox:
         }
         if "state_signature" not in columns:
             self._migrate_legacy_state_signatures()
+        self._canonical_backing_path = self.path.resolve(strict=True)
+        self._backing_identity = _backing_file_stamp(self.path)[:2]
         self._trusted_total_changes = -1
         self._trusted_data_version = -1
         self._verify_all_rows_locked()
@@ -389,6 +441,41 @@ class DurableOutbox:
         self._verify_all_rows_locked()
         self._trusted_total_changes = total_changes
         self._trusted_data_version = data_version
+
+    def _verified_change_token_locked(self) -> tuple[int, int]:
+        """Return stable counters only after any unseen mutations authenticate.
+
+        Callers must hold _lock and scope reuse to this exact SQLite connection.
+        Same-connection writes (including rolled-back attempts) change
+        total_changes; other connections change data_version. A racing writer
+        must not turn the audit's older counters into a current cache token.
+        """
+        for _ in range(3):
+            self._verify_if_database_changed_locked()
+            token = (int(self._db.total_changes), self._data_version_locked())
+            if token == (self._trusted_total_changes, self._trusted_data_version):
+                return token
+        raise OutboxIntegrityError("outbox changed repeatedly during authentication")
+
+    def _backing_file_state_locked(self) -> tuple[tuple[int, ...], tuple[int, ...] | None]:
+        """Bind witness reuse to the canonical database object and its WAL."""
+        try:
+            main = _backing_file_stamp(self.path)
+            if (
+                main[:2] != self._backing_identity
+                or self.path.resolve(strict=True) != self._canonical_backing_path
+            ):
+                raise OutboxIntegrityError("outbox database path or file identity changed")
+            wal_path = Path(str(self.path) + "-wal")
+            try:
+                wal = _backing_file_stamp(wal_path)
+            except FileNotFoundError:
+                wal = None
+            return main, wal
+        except OutboxIntegrityError:
+            raise
+        except (OSError, ValueError) as exc:
+            raise OutboxIntegrityError("outbox backing file identity is unavailable") from exc
 
     def _update_state_locked(
         self,

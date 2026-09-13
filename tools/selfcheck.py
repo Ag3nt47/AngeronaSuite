@@ -3,7 +3,7 @@
 Headless smoke test for Angerona.
 
 Builds the entire app (core services + MainWindow) and every dashboard drill-down
-dialog OFFSCREEN, starts the enabled modules like the real app does, and runs each
+dialog OFFSCREEN, discovers modules without starting live sensors, and runs each
 module's self_test via the built-in SelfTestRunner (which applies a per-module
 timeout so a hung test can't wedge us). It never shows a window and never clicks
 anything, but still exercises the real construction, refresh, and selection code
@@ -76,8 +76,17 @@ print("=" * 72)
 print(" ANGERONA — HEADLESS SELF-CHECK")
 print("=" * 72)
 
+from angerona.__main__ import _install_fast_pyside_feature_detection  # noqa: E402
 from PySide6.QtWidgets import QApplication            # noqa: E402
+# Match the production Qt entry point before importing modules and building
+# widgets. Leaving Shiboken's source-inspecting fallback enabled here gives the
+# diagnostic harness a different import/feature path from the supported app.
+_install_fast_pyside_feature_detection()
 qt = QApplication.instance() or QApplication(sys.argv)
+# Keep Python widget owners alive across phase boundaries, like app.window in the
+# real application. Timers are first dispatched in later phases; collecting a
+# prior top-level wrapper before then can leave native callbacks dangling.
+_qt_owners = []
 
 from angerona.core.config import Config              # noqa: E402
 from angerona.core.eventbus import EventBus, Event, Severity   # noqa: E402
@@ -179,6 +188,7 @@ def _():
 def _():
     from angerona.gui.main_window import MainWindow
     w = MainWindow(bus, storage, manager, config)
+    _qt_owners.append(w)
     assert hasattr(w, "_open_collision") and hasattr(w, "_open_blast_prompt"), \
         "dashboard forensics entry points missing"
     # This harness intentionally does not enter Qt's event loop.  Leaving the
@@ -196,6 +206,7 @@ from angerona.gui import pages                        # noqa: E402
 @phase("DashboardCards.refresh")
 def _():
     c = pages.DashboardCards(bus, storage, manager)
+    _qt_owners.append(c)
     c.refresh()
     return (f"modules={c.c_modules.value.text()} alerts={c.c_alerts.value.text()} "
             f"crit={c.c_crit.value.text()} threat={c.c_threat.value.text()}")
@@ -736,6 +747,8 @@ try:
 except Exception:
     pass
 qt.closeAllWindows()
+for _widget in _qt_owners:
+    _widget.deleteLater()
 qt.processEvents()
 time.sleep(0.2)
 qt.processEvents()

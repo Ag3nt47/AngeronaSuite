@@ -63,6 +63,7 @@ class ProvenanceGraph:
         self.parents: dict[str, set[str]] = {}    # child id -> {parent ids}
         self._edge_order: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._latest_pid_node: dict[int, str] = {}
+        self._pid_nodes: dict[object, set[str]] = {}
 
     @staticmethod
     def _safe_int(val) -> int | None:
@@ -87,6 +88,7 @@ class ProvenanceGraph:
     def add_node(self, node_id: str, kind: str, label: str, ts: float, **meta) -> None:
         source_event = str(meta.pop("source_event", "") or "")[:128]
         n = self.nodes.get(node_id)
+        previous_pid = self._node_pid(n)
         if n is None:
             if source_event:
                 meta["source_events"] = [source_event]
@@ -103,9 +105,35 @@ class ProvenanceGraph:
                     sources.append(source_event)
                     del sources[:-16]
             self.nodes.move_to_end(node_id)
+        current_pid = self._node_pid(self.nodes[node_id])
+        if previous_pid != current_pid:
+            self._discard_pid_node(previous_pid, node_id)
+        if current_pid is not None:
+            members = self._pid_nodes.get(current_pid)
+            if members is None:
+                members = self._pid_nodes[current_pid] = set()
+            members.add(node_id)
         while len(self.nodes) > self.max_nodes:
-            retired, _ = self.nodes.popitem(last=False)
-            self._drop_node_links(retired)
+            retired, retired_node = self.nodes.popitem(last=False)
+            self._drop_node_links(retired, retired_node)
+
+    @staticmethod
+    def _node_pid(node: dict | None):
+        if node is None or node.get("kind") != "PROC":
+            return None
+        pid = (node.get("meta") or {}).get("pid")
+        try:
+            hash(pid)
+        except TypeError:
+            return None
+        return pid
+
+    def _discard_pid_node(self, pid, node_id: str) -> None:
+        members = self._pid_nodes.get(pid)
+        if members is not None:
+            members.discard(node_id)
+            if not members:
+                self._pid_nodes.pop(pid, None)
 
     def add_edge(self, parent: str, child: str) -> None:
         if parent == child or parent not in self.nodes or child not in self.nodes:
@@ -146,19 +174,20 @@ class ProvenanceGraph:
         if remove_order:
             self._edge_order.pop((parent, child), None)
 
-    def _drop_node_links(self, node_id: str) -> None:
+    def _drop_node_links(self, node_id: str, node: dict) -> None:
         for child in tuple(self.edges.get(node_id, ())):
             self._discard_edge(node_id, child)
         for parent in tuple(self.parents.get(node_id, ())):
             self._discard_edge(parent, node_id)
-        for pid, current in tuple(self._latest_pid_node.items()):
-            if current != node_id:
-                continue
+        pid = self._node_pid(node)
+        self._discard_pid_node(pid, node_id)
+        if pid is not None and self._latest_pid_node.get(pid) == node_id:
+            # PID reuse may leave other lifetimes behind. Restrict fallback to
+            # that PID's retained nodes, preserving the previous (timestamp, id)
+            # maximum and tie-break without scanning the whole graph under lock.
             candidates = [
-                (float(node.get("ts", 0.0)), candidate)
-                for candidate, node in self.nodes.items()
-                if node.get("kind") == "PROC"
-                and (node.get("meta") or {}).get("pid") == pid
+                (float(self.nodes[candidate].get("ts", 0.0)), candidate)
+                for candidate in self._pid_nodes.get(pid, ())
             ]
             if candidates:
                 self._latest_pid_node[pid] = max(candidates)[1]
@@ -360,12 +389,17 @@ class ProvenanceGraphModule(BaseModule):
 
     _REBUILD_INTERVAL = 20.0
     _DB_PAGE = 1_000
+    _DB_SLICE_SECONDS = 0.25
+    _CATCHUP_INTERVAL = 0.1
 
     def __init__(self) -> None:
         super().__init__()
         self.graph = ProvenanceGraph()
         self._db_path: Path | None = None
         self._last_db_id = 0
+        self._db_replay_target = 0
+        self._db_latest_id = 0
+        self._db_replay_pending = False
         self._subscribed = False
         self._db_identity: tuple[int, int] | None = None
         self._last_db_error = ""
@@ -395,6 +429,11 @@ class ProvenanceGraphModule(BaseModule):
 
     # ── sources ──────────────────────────────────────────────────────────────
     def _rebuild_from_db(self) -> int:
+        # A generation owns its stop token. Catch-up must not outlive a stop or
+        # hold up Watchdog's deferred restart while draining a growing ledger.
+        stop_event = self.generation_stop_event()
+        if stop_event.is_set():
+            return 0
         if self._db_path is None or not self._db_path.exists():
             self._last_db_error = "flight-recorder database is unavailable"
             return 0
@@ -409,6 +448,7 @@ class ProvenanceGraphModule(BaseModule):
             identity = (int(before.st_dev), int(before.st_ino))
             if self._db_identity is not None and identity != self._db_identity:
                 self._last_db_id = 0
+                self._db_replay_target = 0
                 self._db_source_resets += 1
             self._db_identity = identity
             db = sqlite3.connect(
@@ -418,37 +458,47 @@ class ProvenanceGraphModule(BaseModule):
             maximum = int(db.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0])
             if maximum < self._last_db_id:
                 self._last_db_id = 0
+                self._db_replay_target = 0
                 self._db_source_resets += 1
-            while True:
-                rows = db.execute(
-                    "SELECT id, ts, module, message, details FROM events "
-                    "WHERE id > ? ORDER BY id ASC LIMIT ?",
-                    (self._last_db_id, self._DB_PAGE),
-                ).fetchall()
-                if not rows:
+            elif maximum < self._db_replay_target:
+                # Retention/rollback removed part of the captured replay range.
+                # Keep this visible even when the already-ingested cursor remains.
+                self._db_replay_target = 0
+                self._db_source_resets += 1
+            self._db_latest_id = maximum
+            if self._last_db_id >= self._db_replay_target:
+                self._db_replay_target = maximum
+            deadline = time.monotonic() + self._DB_SLICE_SECONDS
+            rows = db.execute(
+                "SELECT id, ts, module, message, details FROM events "
+                "WHERE id > ? AND id <= ? ORDER BY id ASC LIMIT ?",
+                (self._last_db_id, self._db_replay_target, self._DB_PAGE),
+            ).fetchall()
+            for record_id, ts, module, message, details in rows:
+                if stop_event.is_set() or (total and time.monotonic() >= deadline):
                     break
-                for record_id, ts, module, message, details in rows:
-                    # Advance across malformed rows too, otherwise one bad row
-                    # would be reparsed on every refresh forever.
-                    parsed_id = int(record_id)
-                    if parsed_id > self._last_db_id + 1:
-                        self._db_gaps += parsed_id - self._last_db_id - 1
-                    self._last_db_id = max(self._last_db_id, parsed_id)
-                    try:
-                        d = json.loads(details) if details else {}
-                        if not isinstance(d, dict):
-                            raise ValueError("event details are not an object")
-                    except Exception:
-                        self._db_rejected += 1
-                        continue
-                    try:
-                        self.graph.ingest(module, message, d, ts or time.time())
-                    except Exception:
-                        self._db_rejected += 1
-                        continue
-                total += len(rows)
-                if len(rows) < self._DB_PAGE:
-                    break
+                # Advance only across rows actually examined. Malformed rows keep
+                # their visible rejection/gap accounting instead of retrying forever.
+                parsed_id = int(record_id)
+                if parsed_id > self._last_db_id + 1:
+                    self._db_gaps += parsed_id - self._last_db_id - 1
+                self._last_db_id = max(self._last_db_id, parsed_id)
+                total += 1
+                try:
+                    d = json.loads(details) if details else {}
+                    if not isinstance(d, dict):
+                        raise ValueError("event details are not an object")
+                except Exception:
+                    self._db_rejected += 1
+                    continue
+                try:
+                    self.graph.ingest(module, message, d, ts or time.time())
+                except Exception:
+                    self._db_rejected += 1
+                    continue
+            self._db_replay_pending = self._last_db_id < maximum
+            if not rows and self._last_db_id < self._db_replay_target:
+                raise OSError("captured provenance replay range is unavailable")
             after = self._db_path.stat(follow_symlinks=False)
             after_identity = (
                 int(after.st_dev),
@@ -502,7 +552,15 @@ class ProvenanceGraphModule(BaseModule):
                 75,
                 f"provenance incomplete: {self._db_rejected} ledger reject(s), "
                 f"{self._live_rejected} live reject(s), {self._db_gaps} ledger gap(s), "
-                f"{self._db_source_resets} source reset(s)",
+                f"{self._db_source_resets} source reset(s)"
+                + (f"; ledger catch-up at {self._last_db_id}/{self._db_latest_id}"
+                   if self._db_replay_pending else ""),
+            )
+        elif self._db_replay_pending:
+            self.set_health(
+                80,
+                f"ledger catch-up in progress: {self._last_db_id}/{self._db_latest_id}; "
+                f"{new_events} event(s) examined this slice; live events remain active",
             )
         else:
             self.set_health(
@@ -525,8 +583,16 @@ class ProvenanceGraphModule(BaseModule):
         self.emit("PROV online — mapping process/file/network provenance DAG.", Severity.INFO)
         while not self.stopping:
             n = self._rebuild_from_db()
+            if self.stopping:
+                break
             self._update_source_health(n)
-            self.sleep(self._REBUILD_INTERVAL)
+            # Each completed bounded slice is real progress, while health retains
+            # the incomplete replay watermark. Yield briefly between catch-up
+            # slices so live subscribers can acquire the graph's per-event lock.
+            interval = (self._CATCHUP_INTERVAL
+                        if self._db_replay_pending and not self._last_db_error
+                        else self._REBUILD_INTERVAL)
+            self.sleep(interval)
 
     def self_test(self) -> tuple[bool, str]:
         """Build a synthetic PROC→PROC→FIM chain and verify ancestry/subtree."""

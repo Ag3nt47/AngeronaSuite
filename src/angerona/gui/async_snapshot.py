@@ -43,6 +43,7 @@ class AsyncSnapshot:
         self._stopped = threading.Event()
         self._pending = False
         self._closed = False
+        self._paused = False
         self._generation = 0
         self.busy = False
         self.thread: threading.Thread | None = None
@@ -52,7 +53,7 @@ class AsyncSnapshot:
         owner.destroyed.connect(self.close)
 
     def request(self, *, invalidate: bool = False) -> None:
-        if self._closed:
+        if self._closed or self._paused:
             return
         if invalidate:
             self._generation += 1
@@ -83,7 +84,7 @@ class AsyncSnapshot:
         self._timer.start()
 
     def _poll(self) -> None:
-        if self._closed:
+        if self._closed or self._paused:
             return
         try:
             generation, success, value = self._results.get_nowait()
@@ -95,14 +96,35 @@ class AsyncSnapshot:
         try:
             if success and generation == self._generation:
                 self._apply(value)
-                self._set_status("current")
-            elif not success:
+                if generation == self._generation and not self.busy and not self._paused:
+                    self._set_status("current")
+            elif not success and generation == self._generation:
                 self._set_status("unavailable")
         except Exception:
             self._set_status("unavailable")
         finally:
-            if pending and not self._closed:
+            if pending and not self._closed and not self._paused:
                 self.request()
+
+    def pause(self) -> None:
+        """Hide a reusable view without spawning another reader on reopen.
+
+        A read already in progress may finish, but its generation cannot paint.
+        Its one bounded result waits until resume; no timer runs while hidden.
+        """
+        if self._closed:
+            return
+        self._paused = True
+        self._generation += 1
+        self._pending = False
+        self._timer.stop()
+
+    def resume(self) -> None:
+        if self._closed:
+            return
+        self._paused = False
+        if self.busy:
+            self._timer.start()
 
     def _set_status(self, state: str) -> None:
         if self._status is not None and not self._closed:

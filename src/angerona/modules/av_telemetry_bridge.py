@@ -298,6 +298,7 @@ class AVTelemetryBridgeModule(BaseModule):
         self._outbox_owner = f"defender-{uuid.uuid4().hex}"
         self._outbox_signing_key: bytes | None = None
         self._outbox_enrollment: dict[str, object] | None = None
+        self._outbox_witness_cache: tuple[object, int, int, tuple, str] | None = None
         self._outbox_draining = False
         self._outbox_redrain = False
         self._checkpoint: AuthenticatedEventLogCheckpoint | None = None
@@ -354,18 +355,41 @@ class AVTelemetryBridgeModule(BaseModule):
         if outbox is None:
             raise RuntimeError("Defender outbox witness is unavailable")
         with outbox._lock:
-            outbox._verify_if_database_changed_locked()
-            rows = outbox._db.execute(
-                f"SELECT {_OUTBOX_WITNESS_COLUMNS} FROM durable_outbox "
-                "ORDER BY item_id"
-            ).fetchall()
-            for row in rows:
-                outbox._verify_row(row)
-            body = {
-                "schema": "angerona.defender-outbox-state-witness.v1",
-                "rows": [list(row) for row in rows],
-            }
-            return hashlib.sha256(self._canonical_state(body)).hexdigest()
+            for _ in range(3):
+                token = outbox._verified_change_token_locked()
+                backing = outbox._backing_file_state_locked()
+                cached = self._outbox_witness_cache
+                if cached is not None and cached[0] is outbox._db and cached[1:3] == token:
+                    # A legitimate writer may commit while the file metadata is
+                    # read. Re-audit its new token rather than reuse the old
+                    # witness or mistake that transaction for a raw file edit.
+                    if token != (int(outbox._db.total_changes), outbox._data_version_locked()):
+                        continue
+                    if cached[3] != backing:
+                        raise RuntimeError(
+                            "Defender outbox backing files changed without an observed SQLite transaction"
+                        )
+                    return cached[4]
+                self._outbox_witness_cache = None
+                rows = outbox._db.execute(
+                    f"SELECT {_OUTBOX_WITNESS_COLUMNS} FROM durable_outbox "
+                    "ORDER BY item_id"
+                ).fetchall()
+                for row in rows:
+                    outbox._verify_row(row)
+                body = {
+                    "schema": "angerona.defender-outbox-state-witness.v1",
+                    "rows": [list(row) for row in rows],
+                }
+                witness = hashlib.sha256(self._canonical_state(body)).hexdigest()
+                current_token = (int(outbox._db.total_changes), outbox._data_version_locked())
+                current_backing = outbox._backing_file_state_locked()
+                if token == current_token:
+                    if backing != current_backing:
+                        raise RuntimeError("Defender outbox backing files changed during its witness snapshot")
+                    self._outbox_witness_cache = (outbox._db, *token, backing, witness)
+                    return witness
+            raise RuntimeError("Defender outbox changed repeatedly during its witness snapshot")
 
     def _write_outbox_enrollment(
         self, key: bytes, core: dict[str, object]
@@ -520,6 +544,7 @@ class AVTelemetryBridgeModule(BaseModule):
             self._checkpoint_status = "authenticated"
 
     def _open_continuity_state(self) -> bool:
+        self._outbox_witness_cache = None
         key = self._continuity_key()
         if key is None:
             self.set_health(20, "Defender continuity authority is unavailable")
@@ -612,6 +637,7 @@ class AVTelemetryBridgeModule(BaseModule):
             self._outbox = None
         self._outbox_signing_key = None
         self._outbox_enrollment = None
+        self._outbox_witness_cache = None
 
     @staticmethod
     def _record_number(rec: object) -> int:

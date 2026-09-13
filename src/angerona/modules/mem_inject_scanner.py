@@ -20,7 +20,7 @@ False-positive mitigations:
     but the process is still scanned and still produces an event.
   • We skip our own PID (the Angerona process) to avoid self-flagging.
   • We require RegionSize ≥ 4096 bytes (ignores transient 1-page stubs).
-  • Re-alerts for the same (pid, base_address) pair are suppressed for 60s.
+  • Re-alerts for the same PID are suppressed for 300s.
 
 Privilege note:
   Opening remote processes with PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
@@ -131,13 +131,16 @@ class ProcessCoverage:
     skipped: int = 0
     enumeration_complete: bool = False
     enumeration_error: str = ""
+    partial: int = 0
+    scan_complete: bool = True
 
     @property
     def health(self) -> int:
         eligible = self.enumerated - self.skipped
         if not self.enumeration_complete or eligible <= 0:
             return 0
-        return max(0, min(100, int((self.scanned * 100) / eligible)))
+        return max(0, min(100 if self.scan_complete else 99,
+                          int((self.scanned * 100) / eligible)))
 
     @property
     def detail(self) -> str:
@@ -146,6 +149,8 @@ class ProcessCoverage:
             f"coverage {self.health}%: enumerated={self.enumerated}, "
             f"opened={self.opened}, scanned={self.scanned}, denied={self.denied}, "
             f"failed={self.failed}, skipped={self.skipped}; enumeration={state}"
+            f"; scan={'complete' if self.scan_complete else 'partial'}, "
+            f"partial={self.partial}"
         )
         if self.enumeration_error:
             detail += f" ({self.enumeration_error[:160]})"
@@ -273,6 +278,9 @@ class MemInjectScannerModule(BaseModule):
     # scanning absolutely all 128 TB of 64-bit VAS when a handle error keeps
     # returning the same region.
     _MAX_ADDRESS = 0x7FFFFFFF0000   # stay below kernel space on 64-bit Windows
+    _MAX_QUERIES_PER_PID = 32_768
+    _PID_TRAVERSAL_SECONDS = 2.0
+    _MAX_PROCESS_RECORDS = 65_536
 
     @property
     def state(self) -> str:
@@ -292,46 +300,98 @@ class MemInjectScannerModule(BaseModule):
         self._coverage = ProcessCoverage()
 
     def run(self) -> None:
+        stopped = self.generation_stop_event()
+        if not self._generation_active(stopped):
+            return
         self._k32 = _try_load_kernel32()
+        if not self._generation_active(stopped):
+            return
         if self._k32 is None:
-            self.set_health(0, "kernel32.dll unavailable — not Windows?")
-            self.emit(
-                "MemInjectScanner: kernel32.dll not available. "
-                "This module requires Windows. Running idle.",
-                Severity.MEDIUM,
-            )
-            while not self.stopping:
-                self.sleep(60.0)
+            with self._lifecycle_lock:
+                if not self._generation_active(stopped):
+                    return
+                self.set_health(0, "kernel32.dll unavailable — not Windows?")
+                self.emit(
+                    "MemInjectScanner: kernel32.dll not available. "
+                    "This module requires Windows. Running idle.",
+                    Severity.MEDIUM,
+                )
+                self.mark_cycle_complete(interval_seconds=60.0)
+            while self._generation_active(stopped):
+                self.sleep(60.0, cycle_complete=False)
+                with self._lifecycle_lock:
+                    if not self._generation_active(stopped):
+                        return
+                    # The unsupported capability remains explicitly unhealthy.
+                    self.mark_cycle_complete(interval_seconds=60.0)
             return
 
-        self.emit("Memory Injection Scanner active — VirtualQueryEx mode.", Severity.INFO)
+        with self._lifecycle_lock:
+            if not self._generation_active(stopped):
+                return
+            self.set_health(0, "Initial process memory scan coverage is incomplete.")
+            self.emit("Memory Injection Scanner starting — VirtualQueryEx mode.", Severity.INFO)
 
-        while not self.stopping:
-            self._coverage = self._scan_all_pids()
-            self.set_health(self._coverage.health, self._coverage.detail)
+        while not stopped.is_set():
+            coverage = self._scan_all_pids()
+            if not self._publish_coverage(coverage, stopped):
+                return
             self._evict_stale_dedup()
-            self.sleep(self._SCAN_INTERVAL)
+            # Completed PID attempts already published the actual work boundary.
+            # Declaring idle cadence must not mark a cycle after cancellation.
+            self.sleep(self._SCAN_INTERVAL, cycle_complete=False)
+
+    def _generation_active(self, stopped) -> bool:
+        return not stopped.is_set() and stopped is self._stop
+
+    def _publish_coverage(self, coverage, stopped) -> bool:
+        with self._lifecycle_lock:
+            if not self._generation_active(stopped):
+                return False
+            self._coverage = coverage
+            self.set_health(coverage.health, coverage.detail)
+            self.mark_cycle_complete(interval_seconds=0.0)
+            return True
 
     def _scan_all_pids(self) -> ProcessCoverage:
         """Scan every enumerated PID and return an honest coverage receipt."""
         # Use native C-API to batch-pull all PIDs and Names at once. 
         # This completely eliminates heavy psutil.Process() object creation during idle scanning.
+        stopped = self.generation_stop_event()
+        if not self._generation_active(stopped):
+            return ProcessCoverage(scan_complete=False)
         enumeration = self._get_active_processes()
+        if not self._generation_active(stopped):
+            return ProcessCoverage(
+                enumerated=len(enumeration.processes),
+                enumeration_complete=enumeration.complete, scan_complete=False,
+            )
         processes = enumeration.processes
         process_policy = _process_policy_snapshot()
-        opened = scanned = denied = failed = skipped = processed = 0
+        opened = scanned = denied = failed = skipped = processed = partial = 0
+
+        def receipt(*, complete=False):
+            return ProcessCoverage(
+                enumerated=len(processes), opened=opened, scanned=scanned,
+                denied=denied, failed=failed, skipped=skipped,
+                enumeration_complete=enumeration.complete,
+                enumeration_error=enumeration.error,
+                partial=partial, scan_complete=complete and not partial,
+            )
 
         for pid, proc_name in processes.items():
-            if self.stopping:
-                failed += max(0, len(processes) - processed)
+            if not self._generation_active(stopped):
                 break
             if pid == self._self_pid:
                 skipped += 1
                 processed += 1
+                self._publish_coverage(receipt(), stopped)
                 continue
             # A basename is never scan authority. JIT names are used only after
             # a suspicious region is observed to tune the alert's severity.
             result = self._scan_pid(pid, proc_name, process_policy)
+            if not self._generation_active(stopped):
+                break
             processed += 1
             opened += int(result.opened)
             scanned += int(result.scanned)
@@ -339,24 +399,25 @@ class MemInjectScannerModule(BaseModule):
                 denied += 1
             elif result.outcome == "failed":
                 failed += 1
+            elif result.outcome == "partial":
+                partial += 1
+            # A completed PID attempt is actual work even when access is denied
+            # or traversal was bounded. Coverage remains explicitly partial;
+            # no timeout heartbeat or fully-scanned credit is fabricated.
+            self._publish_coverage(receipt(), stopped)
 
-        return ProcessCoverage(
-            enumerated=len(processes),
-            opened=opened,
-            scanned=scanned,
-            denied=denied,
-            failed=failed,
-            skipped=skipped,
-            enumeration_complete=enumeration.complete and not self.stopping,
-            enumeration_error=enumeration.error,
-        )
+        return receipt(complete=processed == len(processes) and self._generation_active(stopped))
 
     def _get_active_processes(self) -> _ProcessEnumeration:
         """Return a typed Toolhelp process inventory; partial reads stay visible."""
         TH32CS_SNAPPROCESS = 0x00000002
         proc_map: dict[int, str] = {}
+        records = 0
+        stopped = self.generation_stop_event()
         snap = None
         try:
+            if not self._generation_active(stopped):
+                return _ProcessEnumeration({}, False, "process enumeration cancelled")
             snap = self._k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
             invalid = ctypes.c_void_p(-1).value
             if not snap or int(snap) == invalid:
@@ -368,6 +429,11 @@ class MemInjectScannerModule(BaseModule):
             if not self._k32.Process32FirstW(snap, ctypes.byref(entry)):
                 return _ProcessEnumeration({}, False, "first process record unavailable")
             while True:
+                if not self._generation_active(stopped):
+                    return _ProcessEnumeration(proc_map, False, "process enumeration cancelled")
+                if records >= self._MAX_PROCESS_RECORDS:
+                    return _ProcessEnumeration(proc_map, False, "process enumeration limit reached")
+                records += 1
                 proc_map[int(entry.th32ProcessID)] = str(entry.szExeFile or "")
                 ctypes.set_last_error(0)
                 if not self._k32.Process32NextW(snap, ctypes.byref(entry)):
@@ -395,8 +461,11 @@ class MemInjectScannerModule(BaseModule):
         self, pid: int, proc_name: str, process_policy=None
     ) -> _PidScanResult:
         """Walk the VAS of a single PID, looking for suspicious RWX regions."""
+        stopped = self.generation_stop_event()
         handle = None
         try:
+            if not self._generation_active(stopped):
+                return _PidScanResult(False, False, "cancelled")
             ctypes.set_last_error(0)
             handle = self._k32.OpenProcess(_OPEN_FLAGS, False, pid)
             if not handle:
@@ -410,8 +479,15 @@ class MemInjectScannerModule(BaseModule):
             addr: int = 0
             regions: list[tuple[int, int, int]] = []   # (base, size, protect)
             queried = 0
+            deadline = time.monotonic() + self._PID_TRAVERSAL_SECONDS
+            limit_reason = ""
 
             while addr < self._MAX_ADDRESS:
+                if not self._generation_active(stopped):
+                    return _PidScanResult(True, False, "cancelled")
+                if queried >= self._MAX_QUERIES_PER_PID or time.monotonic() >= deadline:
+                    limit_reason = "native traversal budget reached"
+                    break
                 ctypes.set_last_error(0)
                 ret = self._k32.VirtualQueryEx(
                     handle,
@@ -419,6 +495,8 @@ class MemInjectScannerModule(BaseModule):
                     ctypes.byref(mbi),
                     mbi_size,
                 )
+                if not self._generation_active(stopped):
+                    return _PidScanResult(True, False, "cancelled")
                 if ret == 0:
                     if ctypes.get_last_error() not in (0, 87):
                         return _PidScanResult(True, False, "failed")
@@ -436,6 +514,7 @@ class MemInjectScannerModule(BaseModule):
                 ):
                     regions.append((region_base, region_size, mbi.Protect))
                     if len(regions) >= 64:
+                        limit_reason = "suspicious region evidence cap reached"
                         break   # already ample evidence; stop walking 128TB of VAS
 
                 # Advance — if RegionSize is 0 we'd loop forever
@@ -446,19 +525,27 @@ class MemInjectScannerModule(BaseModule):
 
             # One aggregated alert per process (not one per region) — this is what
             # turned a JIT app's dozens of RWX regions into an alert storm.
-            if regions:
+            if regions and time.time() - self._seen.get(pid, 0.0) >= _DEDUP_TTL:
                 # Resolve/hash the executable from this still-open process
                 # object only after a suspicious region exists. Ordinary
                 # processes pay no image-hash cost and no PID lookup can grant
                 # a pre-scan exclusion.
                 bound_image = self._bound_image_identity(handle)
+                if not self._generation_active(stopped):
+                    return _PidScanResult(True, False, "cancelled")
                 self._alert(
                     pid,
                     proc_name,
                     regions,
                     process_policy,
                     bound_image=bound_image,
+                    scan_complete=not limit_reason,
+                    scan_limit_reason=limit_reason,
                 )
+            if not self._generation_active(stopped):
+                return _PidScanResult(True, False, "cancelled")
+            if limit_reason:
+                return _PidScanResult(True, False, "partial")
             if queried <= 0:
                 return _PidScanResult(True, False, "failed")
             return _PidScanResult(True, True, "scanned")
@@ -475,7 +562,10 @@ class MemInjectScannerModule(BaseModule):
     # ── Enrichment helpers ────────────────────────────────────────────────────
     def _bound_image_identity(self, process_handle: int) -> dict[str, object]:
         """Resolve the image path from the exact opened process object."""
+        stopped = self.generation_stop_event()
         try:
+            if not self._generation_active(stopped):
+                return {}
             buffer = ctypes.create_unicode_buffer(32768)
             size = ctypes.wintypes.DWORD(len(buffer))
             if not self._k32.QueryFullProcessImageNameW(
@@ -503,9 +593,14 @@ class MemInjectScannerModule(BaseModule):
             created_epoch = (windows_ticks - 116444736000000000) / 10_000_000
             if created_epoch <= 0:
                 return {}
+            if not self._generation_active(stopped):
+                return {}
+            digest = _executable_sha256(path)
+            if not self._generation_active(stopped):
+                return {}
             return {
                 "exe": path,
-                "image_sha256": _executable_sha256(path),
+                "image_sha256": digest,
                 "image_identity_bound": True,
                 "process_create_time": created_epoch,
             }
@@ -514,8 +609,13 @@ class MemInjectScannerModule(BaseModule):
 
     def _enrich_process(self, pid: int) -> dict:
         """CRITICAL WHEN NEEDED: Heavy psutil enrichment only runs upon detection."""
-        ctx: dict = {}
+        stopped = self.generation_stop_event()
+        ctx: dict = {
+            "memory_map_enrichment": "not collected: optional duplicate address-map walk omitted",
+        }
         try:
+            if not self._generation_active(stopped):
+                return ctx
             import psutil
             p = psutil.Process(pid)
             with p.oneshot():
@@ -530,19 +630,21 @@ class MemInjectScannerModule(BaseModule):
                 ctx["age_human"] = (f"{int(age_s // 3600)}h{int(age_s % 3600 // 60)}m"
                                     if age_s >= 3600
                                     else f"{int(age_s // 60)}m{int(age_s % 60)}s")
+                if not self._generation_active(stopped):
+                    return ctx
                 try:
                     parent = p.parent()
                     ctx["parent"] = f"{parent.name()}(pid={parent.pid})"
                 except Exception:
                     ctx["parent"] = "unknown"
+                if not self._generation_active(stopped):
+                    return ctx
                 try:
                     ctx["children"] = len(p.children())
                 except Exception:
                     pass
-                try:
-                    ctx["dll_count"] = len(p.memory_maps())
-                except Exception:
-                    pass
+                if not self._generation_active(stopped):
+                    return ctx
                 try:
                     conns = p.connections(kind="inet")
                     remote = {f"{c.raddr.ip}:{c.raddr.port}"
@@ -550,6 +652,8 @@ class MemInjectScannerModule(BaseModule):
                     ctx["connections"] = list(remote)[:8]
                 except Exception:
                     pass
+                if not self._generation_active(stopped):
+                    return ctx
                 try:
                     minfo = p.memory_info()
                     ctx["rss_kb"] = minfo.rss // 1024
@@ -629,7 +733,12 @@ class MemInjectScannerModule(BaseModule):
         process_policy=None,
         *,
         bound_image: Optional[dict[str, object]] = None,
+        scan_complete: bool = True,
+        scan_limit_reason: str = "",
     ):
+        stopped = self.generation_stop_event()
+        if not self._generation_active(stopped):
+            return
         now = time.time()
         if now - self._seen.get(pid, 0.0) < _DEDUP_TTL:
             return
@@ -648,6 +757,10 @@ class MemInjectScannerModule(BaseModule):
 
         # Deep enrichment triggered only upon detection
         ctx = self._enrich_process(pid)
+        if not self._generation_active(stopped):
+            if self._seen.get(pid) == now:
+                self._seen.pop(pid, None)
+            return
         if bound_image:
             ctx.update(bound_image)
         trusted_jit = self._trusted_jit_image(
@@ -675,35 +788,47 @@ class MemInjectScannerModule(BaseModule):
             parts.append(f"Active connections: {', '.join(ctx['connections'])}")
         if ctx.get("dll_count") is not None:
             parts.append(f"Loaded modules: {ctx['dll_count']}")
+        else:
+            parts.append("Loaded-module count unavailable: optional duplicate address-map walk omitted.")
+        if not scan_complete:
+            parts.append(f"Process address-space coverage is partial: {scan_limit_reason}.")
         parts.append(f"Unconfirmed technique hypothesis: {prediction}")
         parts.append("RWX permissions alone do not establish code injection; JIT runtimes also use executable memory.")
 
-        self.emit(
-            "\n".join(parts),
-            Severity.MEDIUM,
-            pid=pid,
-            proc_name=proc_name,
-            exe=ctx.get("exe", ""),
-            cmdline=ctx.get("cmdline", ""),
-            username=ctx.get("username", ""),
-            parent=ctx.get("parent", ""),
-            base_address=hex(base),
-            region_size=size,
-            region_count=region_count,
-            protection=prot_name,
-            process_age_s=ctx.get("age_s"),
-            threads=ctx.get("threads"),
-            dll_count=ctx.get("dll_count"),
-            connections=ctx.get("connections", []),
-            rss_kb=ctx.get("rss_kb"),
-            predicted_technique=prediction,
-            mitre_tags=["T1055", "T1055.001", "T1055.003", "T1055.012"],
-            process_create_time=ctx.get("process_create_time"),
-            active_attack=False,
-            disposition="observation",
-            detector_policy="rwx-memory-indicator-alert-only",
-            exact_identity_jit_damper=trusted_jit,
-        )
+        with self._lifecycle_lock:
+            if not self._generation_active(stopped):
+                if self._seen.get(pid) == now:
+                    self._seen.pop(pid, None)
+                return
+            self.emit(
+                "\n".join(parts),
+                Severity.MEDIUM,
+                pid=pid,
+                proc_name=proc_name,
+                exe=ctx.get("exe", ""),
+                cmdline=ctx.get("cmdline", ""),
+                username=ctx.get("username", ""),
+                parent=ctx.get("parent", ""),
+                base_address=hex(base),
+                region_size=size,
+                region_count=region_count,
+                protection=prot_name,
+                process_age_s=ctx.get("age_s"),
+                threads=ctx.get("threads"),
+                dll_count=ctx.get("dll_count"),
+                memory_map_enrichment=ctx.get("memory_map_enrichment", "unavailable"),
+                memory_scan_complete=scan_complete,
+                memory_scan_limit_reason=scan_limit_reason,
+                connections=ctx.get("connections", []),
+                rss_kb=ctx.get("rss_kb"),
+                predicted_technique=prediction,
+                mitre_tags=["T1055", "T1055.001", "T1055.003", "T1055.012"],
+                process_create_time=ctx.get("process_create_time"),
+                active_attack=False,
+                disposition="observation",
+                detector_policy="rwx-memory-indicator-alert-only",
+                exact_identity_jit_damper=trusted_jit,
+            )
 
     def _evict_stale_dedup(self):
         """Remove expired dedup entries to prevent unbounded growth."""

@@ -6,7 +6,7 @@ import re
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
@@ -574,9 +574,11 @@ class DetectionForgeWidget(QWidget):
         parent: QWidget | None = None,
         *,
         auto_refresh: bool = True,
+        refresh_request: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.service = service
+        self._refresh_request = refresh_request
         self._tables: dict[str, _GateTable] = {}
         layout = QVBoxLayout(self)
         title = QLabel("DetectionForge · local detection validation and safe promotion")
@@ -616,7 +618,13 @@ class DetectionForgeWidget(QWidget):
             self.refresh()
 
     def refresh(self) -> None:
-        all_rows = self.service.gate_rows()
+        if self._refresh_request is not None:
+            self._refresh_request()
+            return
+        self.apply_rows(self.service.gate_rows())
+
+    def apply_rows(self, all_rows: Sequence[ForgeGateRow]) -> None:
+        """Paint detached gate evidence; action gates still consult the service."""
         for name, table in self._tables.items():
             table.set_rows(tuple(row for row in all_rows if row.view == name))
 

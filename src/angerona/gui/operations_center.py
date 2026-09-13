@@ -20,6 +20,7 @@ from PySide6.QtCore import (
     QPointF,
     QPropertyAnimation,
     QRectF,
+    QSignalBlocker,
     QTimer,
     Qt,
     Signal,
@@ -55,6 +56,7 @@ from angerona.core.operations_center import LocalOperationsCenter
 from angerona.core.security_interop import OSQUERY_TEMPLATES, discover_osquery
 from angerona.gui.aegis_path import AegisPathWidget
 from angerona.gui.animations import begin_loading, finish_loading
+from angerona.gui.async_snapshot import AsyncSnapshot
 from angerona.gui.detection_forge import DetectionForgeService, DetectionForgeWidget
 from angerona.gui.fleet_center import FleetCenterWidget
 from angerona.gui.header_controls import motion_allowed
@@ -280,6 +282,9 @@ class OperationsCenterDialog(QDialog):
         self._task_loading: dict[str, str] = {}
         self._hunt_rows: tuple[Any, ...] = ()
         self._has_refreshed = False
+        self._refresh_paused = False
+        self._case_loaded_id = ""
+        self._audit_render_rows: tuple[tuple[str, ...], ...] = ()
         self.setWindowTitle("Angerona Flow Dashboard — Local SOC")
         self.setMinimumSize(820, 590)
         self.resize(1320, 860)
@@ -318,7 +323,8 @@ class OperationsCenterDialog(QDialog):
         self.tabs.addTab(self._build_assets(), "Assets")
         self.tabs.addTab(self._build_detections(), "Detection Content")
         self.fleet_center = FleetCenterWidget(
-            service.fleet_fabric, self, auto_refresh=False
+            service.fleet_fabric, self, auto_refresh=False,
+            refresh_request=self.refresh_all,
         )
         fleet_error = service.program_errors.get("fleet_fabric")
         if fleet_error:
@@ -332,7 +338,8 @@ class OperationsCenterDialog(QDialog):
             promotion=service.detection_promotion,
         )
         self.detection_forge = DetectionForgeWidget(
-            self.detection_forge_service, self, auto_refresh=False
+            self.detection_forge_service, self, auto_refresh=False,
+            refresh_request=self.refresh_all,
         )
         governance_error = service.program_errors.get("detection_governance")
         if governance_error:
@@ -369,6 +376,14 @@ class OperationsCenterDialog(QDialog):
         actions.addWidget(close)
         root.addLayout(actions)
 
+        self._flow_reader = AsyncSnapshot(
+            self, self._prepare_flow_snapshot, self._apply_flow_snapshot,
+            name="AngeronaFlowSnapshot", status=self._flow_snapshot_status,
+        )
+        self._case_reader = AsyncSnapshot(
+            self, self._prepare_case_snapshot, self._apply_case_snapshot,
+            name="AngeronaFlowCaseSnapshot", status=self._case_snapshot_status,
+        )
         self.refresh_all()
 
     def _panel(self, title: str, subtitle: str = "") -> tuple[QFrame, QVBoxLayout]:
@@ -491,7 +506,7 @@ class OperationsCenterDialog(QDialog):
         self.case_filter.addItem("All states", "")
         for status in _CASE_STATUSES:
             self.case_filter.addItem(status.title(), status)
-        self.case_filter.currentIndexChanged.connect(self._refresh_cases)
+        self.case_filter.currentIndexChanged.connect(self.refresh_all)
         filter_row.addWidget(QLabel("Status:"))
         filter_row.addWidget(self.case_filter)
         filter_row.addStretch()
@@ -512,7 +527,8 @@ class OperationsCenterDialog(QDialog):
         self.case_update_assignee = QLineEdit()
         self.case_update_assignee.setPlaceholderText("Assignee")
         self.case_legal_hold = QCheckBox("Legal hold")
-        update = QPushButton("Update")
+        update = self.case_update_button = QPushButton("Update")
+        update.setEnabled(False)
         update.clicked.connect(self._update_case)
         update_row.addWidget(self.case_status)
         update_row.addWidget(self.case_update_assignee, 1)
@@ -788,8 +804,69 @@ class OperationsCenterDialog(QDialog):
         self.refresh_all()
 
     def refresh_all(self) -> None:
+        """Coalesce refreshes; audit verification and store reads never run on Qt."""
+        if not self._refresh_paused:
+            self._flow_reader.request(invalidate=True)
+
+    def _prepare_flow_snapshot(self):
+        service = self.service
+        forge = self.detection_forge_service
+        status = self.case_filter.currentData() or None
+        fabric = self.fleet_center.fabric
+        tenant = str(self.fleet_center.tenant_box.currentData() or "")
+
+        def read():
+            # summary performs the authoritative full audit-chain verification.
+            # These detached presentation values never authorize an action.
+            summary = service.summary()
+            fleet, fleet_error = None, ""
+            if fabric is not None and tenant:
+                try:
+                    fleet = fabric.dashboard_snapshot(tenant)
+                except Exception as exc:
+                    fleet_error = f"Local evidence unavailable: {type(exc).__name__}: {str(exc)[:160]}"
+            return {
+                "summary": summary,
+                "cases": service.cases.list_cases(status=status),
+                "evidence_counts": service.cases.evidence_counts(),
+                "inventory": service.inventory_store.load(),
+                "detections": service.detection_inventory(),
+                "fleet": fleet, "fleet_error": fleet_error,
+                "fabric": fabric, "tenant": tenant,
+                "forge": forge.gate_rows(),
+                "exposure": service.exposure_snapshot,
+                "parity": service.capability_parity(),
+                "osquery": discover_osquery(),
+                "audit_records": service.audit_records(limit=500),
+            }
+
+        return read
+
+    def _flow_snapshot_status(self, state: str) -> None:
+        if state == "current":
+            self.boundary.setText("● LOCAL ONLY  ·  NO REMOTE SHELL  ·  SIGNED DETECTIONS")
+            self.boundary.setStyleSheet("color:#34d399")
+        else:
+            unavailable = state == "unavailable"
+            self.boundary.setText(
+                "LOCAL SOC UNAVAILABLE · Refresh to retry" if unavailable
+                else "● LOCAL ONLY · UPDATING LOCAL EVIDENCE")
+            self.boundary.setStyleSheet("color:#fb7185" if unavailable else "color:#fbbf24")
+            self.audit_health.setText("Integrity: UNAVAILABLE" if unavailable else "Integrity: UPDATING")
+            self.audit_health.setStyleSheet("color:#fbbf24;font-weight:700")
+            self.deck.cards["audit"].set_metric(
+                "CHECK" if unavailable else "…", 0.0,
+                "verification unavailable" if unavailable else "verifying full audit chain")
+
+    def _apply_flow_snapshot(self, result) -> None:
+        if self._refresh_paused:
+            return
+        if (result["fabric"] is not self.fleet_center.fabric or
+                result["tenant"] != str(self.fleet_center.tenant_box.currentData() or "")):
+            self.refresh_all()
+            return
         try:
-            summary = self.service.summary()
+            summary = result["summary"]
             statuses = summary["case_status"]
             total = int(summary["cases"])
             open_cases = int(statuses["open"] + statuses["investigating"])
@@ -808,7 +885,7 @@ class OperationsCenterDialog(QDialog):
             self.deck.cards["assets"].set_metric(
                 assets, min(assets / 500.0, 1.0),
                 "privacy-minimized local fields")
-            detections = self.service.detection_inventory()
+            detections = result["detections"]
             active = sum(item["state"] == "active" and item["trusted"] for item in detections)
             self.deck.cards["detections"].set_metric(
                 active, active / max(len(detections), 1),
@@ -823,12 +900,12 @@ class OperationsCenterDialog(QDialog):
             self.audit_health.setStyleSheet(
                 "color:#34d399;font-weight:700" if audit_ok
                 else "color:#fb7185;font-weight:700")
-            self._refresh_cases()
-            self._refresh_assets()
-            self._refresh_detections()
-            self.fleet_center.refresh()
-            self.detection_forge.refresh()
-            snapshot = self.service.exposure_snapshot
+            self._refresh_cases(result["cases"], result["evidence_counts"])
+            self._refresh_assets(result["inventory"])
+            self._refresh_detections(detections)
+            self.fleet_center.apply_snapshot(result["fleet"], error=result["fleet_error"])
+            self.detection_forge.apply_rows(result["forge"])
+            snapshot = result["exposure"]
             digest = snapshot.digest if snapshot is not None else ""
             if digest != self._aegis_digest:
                 if snapshot is None:
@@ -838,15 +915,14 @@ class OperationsCenterDialog(QDialog):
                 else:
                     self.aegis_path.set_snapshot(snapshot)
                 self._aegis_digest = digest
-            self._refresh_parity()
-            self._refresh_audit()
+            self._refresh_parity(result["parity"], result["osquery"])
+            self._refresh_audit(result["audit_records"])
             self._has_refreshed = True
-        except Exception as exc:
-            self.boundary.setText(f"LOCAL SOC UNAVAILABLE · {exc}")
-            self.boundary.setStyleSheet("color:#fb7185")
+        except Exception:
+            self._flow_snapshot_status("unavailable")
+            raise
 
-    def _refresh_parity(self) -> None:
-        report = self.service.capability_parity()
+    def _refresh_parity(self, report, osquery) -> None:
         rows = tuple(report["rows"])
         table_state = self._begin_table_refresh(self.parity_table)
         self.parity_table.setRowCount(len(rows))
@@ -868,7 +944,6 @@ class OperationsCenterDialog(QDialog):
             f"foundation, {counts['external-gate']} infrastructure gate. "
             "No unqualified enterprise-parity claim is made."
         )
-        osquery = discover_osquery()
         self.osquery_state.setText(
             f"Ready: {osquery.name} from a known system installation."
             if osquery else
@@ -907,11 +982,9 @@ class OperationsCenterDialog(QDialog):
         item = self.case_table.item(row, 0)
         return item.data(Qt.UserRole) if item else ""
 
-    def _refresh_cases(self) -> None:
+    def _refresh_cases(self, cases, evidence_counts) -> None:
         selected = self._selected_case_id()
-        status = self.case_filter.currentData() if hasattr(self, "case_filter") else ""
-        cases = self.service.cases.list_cases(status=status or None)
-        evidence_counts = self.service.cases.evidence_counts()
+        selection_blocker = QSignalBlocker(self.case_table)
         table_state = self._begin_table_refresh(self.case_table)
         self.case_table.setRowCount(len(cases))
         self.hunt_case.clear()
@@ -932,6 +1005,8 @@ class OperationsCenterDialog(QDialog):
         if cases and self.case_table.currentRow() < 0:
             self.case_table.selectRow(0)
         self._finish_table_refresh(self.case_table, table_state)
+        selection_blocker.unblock()
+        self._show_case_detail()
 
     def _create_case(self) -> None:
         title = self.case_title.text().strip()
@@ -949,16 +1024,46 @@ class OperationsCenterDialog(QDialog):
             QMessageBox.warning(self, "New case", str(exc))
 
     def _show_case_detail(self) -> None:
+        if not self._refresh_paused:
+            self._case_snapshot_status("updating")
+            self._case_reader.request(invalidate=True)
+
+    def _case_snapshot_status(self, state: str) -> None:
+        if state in {"updating", "unavailable"}:
+            self._case_loaded_id = ""
+            for widget in (self.case_status, self.case_update_assignee,
+                           self.case_legal_hold, self.case_update_button):
+                widget.setEnabled(False)
+        if state == "updating":
+            self.case_detail.setPlainText("Updating selected case and verifying evidence custody…")
+        elif state == "unavailable":
+            self.case_detail.setPlainText("Selected case evidence unavailable. Refresh to retry.")
+
+    def _prepare_case_snapshot(self):
         case_id = self._selected_case_id()
-        if not case_id:
+        cases = self.service.cases
+
+        def read():
+            if not case_id:
+                return None
+            case = cases.get_case(case_id)
+            timeline = cases.timeline(case_id)
+            evidence = cases.evidence(case_id)
+            custody_ok = all(cases.verify_custody(item.evidence_id) for item in evidence)
+            return case_id, case, timeline, evidence, custody_ok
+
+        return read
+
+    def _apply_case_snapshot(self, result) -> None:
+        if self._refresh_paused:
+            return
+        if result is None:
             self.case_detail.clear()
             return
+        case_id, case, timeline, evidence, custody_ok = result
+        if case_id != self._selected_case_id():
+            return
         try:
-            case = self.service.cases.get_case(case_id)
-            timeline = self.service.cases.timeline(case_id)
-            evidence = self.service.cases.evidence(case_id)
-            custody_ok = all(
-                self.service.cases.verify_custody(item.evidence_id) for item in evidence)
             lines = [
                 f"{case.title}",
                 f"ID: {case.case_id}",
@@ -982,12 +1087,16 @@ class OperationsCenterDialog(QDialog):
             self.case_status.setCurrentText(case.status.title())
             self.case_update_assignee.setText(case.assignee)
             self.case_legal_hold.setChecked(case.legal_hold)
+            self._case_loaded_id = case_id
+            for widget in (self.case_status, self.case_update_assignee,
+                           self.case_legal_hold, self.case_update_button):
+                widget.setEnabled(True)
         except Exception as exc:
             self.case_detail.setPlainText(str(exc))
 
     def _update_case(self) -> None:
         case_id = self._selected_case_id()
-        if not case_id:
+        if not case_id or case_id != self._case_loaded_id:
             return
         try:
             self.service.update_case(
@@ -1087,8 +1196,7 @@ class OperationsCenterDialog(QDialog):
     def _collect_inventory(self) -> None:
         self._run_task("inventory", self.service.collect_inventory)
 
-    def _refresh_assets(self, snapshot: Any | None = None) -> None:
-        snapshot = snapshot or self.service.inventory_store.load()
+    def _refresh_assets(self, snapshot: Any | None) -> None:
         records = tuple(snapshot.records) if snapshot else ()
         table_state = self._begin_table_refresh(self.asset_table)
         self.asset_table.setRowCount(len(records))
@@ -1161,8 +1269,7 @@ class OperationsCenterDialog(QDialog):
             report.state if report.ok else "\n".join(report.errors))
         self.refresh_all()
 
-    def _refresh_detections(self) -> None:
-        records = self.service.detection_inventory()
+    def _refresh_detections(self, records) -> None:
         table_state = self._begin_table_refresh(self.detection_table)
         self.detection_table.setRowCount(len(records))
         for row, record in enumerate(records):
@@ -1175,19 +1282,30 @@ class OperationsCenterDialog(QDialog):
                 self.detection_table.setItem(row, column, QTableWidgetItem(str(value)))
         self._finish_table_refresh(self.detection_table, table_state)
 
-    def _refresh_audit(self) -> None:
-        records = self.service.audit_records(limit=500)
+    def _refresh_audit(self, records) -> None:
+        # Equality is only a paint optimization over every displayed field.
+        # Each snapshot above still verifies the complete authoritative ledger.
+        rows = tuple(
+            tuple(str(value) for value in (
+                record.sequence, _stamp(record.entry.timestamp), record.entry.action,
+                record.entry.target, record.entry.result, record.entry.actor_id,
+                record.entry.record_id,
+            ))
+            for record in records
+        )
+        if rows == self._audit_render_rows:
+            return
         table_state = self._begin_table_refresh(self.audit_table)
-        self.audit_table.setRowCount(len(records))
-        for row, record in enumerate(records):
-            entry = record.entry
-            values = (
-                record.sequence, _stamp(entry.timestamp), entry.action, entry.target,
-                entry.result, entry.actor_id, entry.record_id,
-            )
+        self.audit_table.setRowCount(len(rows))
+        for row, values in enumerate(rows):
             for column, value in enumerate(values):
-                self.audit_table.setItem(row, column, QTableWidgetItem(str(value)))
+                item = self.audit_table.item(row, column)
+                if item is None:
+                    self.audit_table.setItem(row, column, QTableWidgetItem(value))
+                elif item.text() != value:
+                    item.setText(value)
         self._finish_table_refresh(self.audit_table, table_state)
+        self._audit_render_rows = rows
 
     def _export_audit(self) -> None:
         name, _ = QFileDialog.getSaveFileName(
@@ -1203,13 +1321,20 @@ class OperationsCenterDialog(QDialog):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        was_paused = self._refresh_paused
+        self._refresh_paused = False
+        self._flow_reader.resume()
+        self._case_reader.resume()
         if motion_allowed(getattr(self.service, "config", None)) and not self.deck._timer.isActive():
             self.deck._timer.start()
-        if not self._has_refreshed:
-            QTimer.singleShot(0, self.refresh_all)
+        if was_paused or (not self._has_refreshed and not self._flow_reader.busy):
+            self.refresh_all()
 
     def closeEvent(self, event) -> None:
         self.deck.stop()
+        self._refresh_paused = True
+        self._flow_reader.pause()
+        self._case_reader.pause()
         super().closeEvent(event)
 
 

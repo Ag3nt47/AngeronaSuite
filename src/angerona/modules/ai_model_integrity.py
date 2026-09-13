@@ -45,6 +45,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -65,6 +66,15 @@ _ATTESTATION_TTL_SECONDS = 60.0
 
 class ModelIntegrityError(RuntimeError):
     """Raised when a local Ollama model cannot be verified from disk."""
+
+
+class ModelAttestationCancelled(ModelIntegrityError):
+    """A stopped scan supplies no digest, receipt, or integrity conclusion."""
+
+
+def _raise_if_attestation_cancelled(stop_event: threading.Event | None) -> None:
+    if stop_event is not None and stop_event.is_set():
+        raise ModelAttestationCancelled("model attestation interrupted")
 
 
 @dataclass(frozen=True)
@@ -94,13 +104,31 @@ _ATTESTATION_LOCK = threading.Lock()
 _ATTESTATION_CACHE: dict[str, ModelAttestationReceipt] = {}
 
 
+@contextmanager
+def _attestation_scan_lock(stop_event: threading.Event | None):
+    _raise_if_attestation_cancelled(stop_event)
+    while not _ATTESTATION_LOCK.acquire(timeout=0.1):
+        _raise_if_attestation_cancelled(stop_event)
+    try:
+        _raise_if_attestation_cancelled(stop_event)
+        yield
+    finally:
+        _ATTESTATION_LOCK.release()
+
+
 def _repo_root() -> Path:
     from angerona.core.data_paths import data_dir
     return data_dir()
 
 
-def _hash_file(filepath: str | os.PathLike, chunk: int = 4096 * 1024) -> str:
+def _hash_file(
+    filepath: str | os.PathLike,
+    chunk: int = 4096 * 1024,
+    *,
+    stop_event: threading.Event | None = None,
+) -> str:
     """Hash one stable, regular, no-follow object or raise a typed failure."""
+    _raise_if_attestation_cancelled(stop_event)
     path = Path(filepath)
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor: int | None = None
@@ -126,7 +154,9 @@ def _hash_file(filepath: str | os.PathLike, chunk: int = 4096 * 1024) -> str:
             raise ModelIntegrityError("model inventory object changed before hashing")
         digest = hashlib.sha256()
         while True:
+            _raise_if_attestation_cancelled(stop_event)
             block = os.read(descriptor, chunk)
+            _raise_if_attestation_cancelled(stop_event)
             if not block:
                 break
             digest.update(block)
@@ -142,6 +172,7 @@ def _hash_file(filepath: str | os.PathLike, chunk: int = 4096 * 1024) -> str:
             after_path.st_mtime_ns,
         ):
             raise ModelIntegrityError("model inventory path changed during hashing")
+        _raise_if_attestation_cancelled(stop_event)
         return digest.hexdigest()
     except ModelIntegrityError:
         raise
@@ -219,7 +250,14 @@ def _read_verified_file(path: Path, root: Path, *, maximum: int) -> bytes:
     return payload
 
 
-def _hash_verified_blob(path: Path, root: Path, expected_size: int) -> str:
+def _hash_verified_blob(
+    path: Path,
+    root: Path,
+    expected_size: int,
+    *,
+    stop_event: threading.Event | None = None,
+) -> str:
+    _raise_if_attestation_cancelled(stop_event)
     resolved, before = _require_confined_regular_file(path, root)
     if before.st_size != expected_size:
         raise ModelIntegrityError("Ollama blob size does not match its manifest")
@@ -233,7 +271,12 @@ def _hash_verified_blob(path: Path, root: Path, expected_size: int) -> str:
                 before.st_size,
             ):
                 raise ModelIntegrityError("Ollama blob changed before verification")
-            for block in iter(lambda: stream.read(4 * 1024 * 1024), b""):
+            while True:
+                _raise_if_attestation_cancelled(stop_event)
+                block = stream.read(4 * 1024 * 1024)
+                _raise_if_attestation_cancelled(stop_event)
+                if not block:
+                    break
                 digest.update(block)
             after = os.fstat(stream.fileno())
     except OSError as exc:
@@ -244,6 +287,7 @@ def _hash_verified_blob(path: Path, root: Path, expected_size: int) -> str:
         opened.st_size,
     ):
         raise ModelIntegrityError("Ollama blob changed during verification")
+    _raise_if_attestation_cancelled(stop_event)
     return digest.hexdigest()
 
 
@@ -261,6 +305,7 @@ def verify_ollama_model_files(
     expected_manifest_digest: str | None = None,
     *,
     models_root: str | os.PathLike[str] | None = None,
+    stop_event: threading.Event | None = None,
 ) -> LocalModelVerification:
     """Verify a local Ollama manifest and every referenced content-addressed blob.
 
@@ -270,6 +315,7 @@ def verify_ollama_model_files(
     """
     from angerona.core.ollama_lifecycle import validate_model_ref
 
+    _raise_if_attestation_cancelled(stop_event)
     normalized = validate_model_ref(model_ref)
     if "@" in normalized:
         raise ModelIntegrityError("local verification requires a named model tag")
@@ -338,10 +384,13 @@ def verify_ollama_model_files(
             raise ModelIntegrityError("Ollama manifest contains a duplicate blob")
         seen.add(digest)
         hexadecimal = digest.removeprefix("sha256:")
-        actual = _hash_verified_blob(blob_root / f"sha256-{hexadecimal}", root, size)
+        actual = _hash_verified_blob(
+            blob_root / f"sha256-{hexadecimal}", root, size, stop_event=stop_event,
+        )
         if not hmac.compare_digest(actual, hexadecimal):
             raise ModelIntegrityError("Ollama blob content digest does not match its manifest")
         total += size
+    _raise_if_attestation_cancelled(stop_event)
     return LocalModelVerification(
         manifest_digest=actual_manifest_digest,
         blob_count=len(descriptors),
@@ -360,6 +409,11 @@ class AIModelIntegrityGuardModule(BaseModule):
     version = "1.13.0"
 
     _INTERVAL = 30 * 60.0     # re-attest every 30 min
+    # Full approved inventories can take over a minute on removable storage.
+    # A bounded scan allowance avoids restarting valid work at the generic
+    # 30-second deadline; it changes no attestation receipt or hash policy.
+    startup_cycle_timeout = 300.0
+    watchdog_work_budget_seconds = 300.0
 
     def __init__(self) -> None:
         super().__init__()
@@ -475,15 +529,20 @@ class AIModelIntegrityGuardModule(BaseModule):
                 raise ModelIntegrityError("model inventory changed during traversal")
         return dict(sorted(files.items())), identity
 
-    def _snapshot_inventory(self) -> tuple[dict[str, str], dict[str, object]]:
+    def _snapshot_inventory(
+        self, *, stop_event: threading.Event | None = None,
+    ) -> tuple[dict[str, str], dict[str, object]]:
+        if stop_event is None:
+            stop_event = self.generation_stop_event()
+        _raise_if_attestation_cancelled(stop_event)
         files, identity = self._discover_files()
+        _raise_if_attestation_cancelled(stop_event)
         if not files:
             raise ModelIntegrityError("model inventory is empty")
         hashes: dict[str, str] = {}
         for relative, path in files.items():
-            if self.stopping:
-                raise ModelIntegrityError("model attestation interrupted")
-            digest = _hash_file(path)
+            _raise_if_attestation_cancelled(stop_event)
+            digest = _hash_file(path, stop_event=stop_event)
             name = path.name.casefold()
             if name.startswith("sha256-"):
                 expected = name.removeprefix("sha256-")
@@ -495,7 +554,9 @@ class AIModelIntegrityGuardModule(BaseModule):
                     )
             hashes[relative] = digest
         self._validate_manifest_inventory(files, hashes, Path(str(identity["resolved"])))
+        _raise_if_attestation_cancelled(stop_event)
         after, after_identity = self._discover_files()
+        _raise_if_attestation_cancelled(stop_event)
         if identity != after_identity or tuple(files) != tuple(after):
             raise ModelIntegrityError("model inventory changed during attestation")
         return hashes, identity
@@ -745,13 +806,15 @@ class AIModelIntegrityGuardModule(BaseModule):
         return len(files)
 
     # ── verification ─────────────────────────────────────────────────────────
-    def _verify_pass(self) -> tuple[int, list[str]]:
+    def _verify_pass(
+        self, *, stop_event: threading.Event | None = None,
+    ) -> tuple[int, list[str]]:
         """Verify exact set/root/content; never enroll observations."""
         if not self._load_baseline():
             raise ModelIntegrityError(
                 f"approved model baseline unavailable ({self._baseline_status})"
             )
-        current, root = self._snapshot_inventory()
+        current, root = self._snapshot_inventory(stop_event=stop_event)
         mismatches: list[str] = []
         if root != self._baseline_root:
             mismatches.append("model root identity changed")
@@ -765,23 +828,38 @@ class AIModelIntegrityGuardModule(BaseModule):
         return len(current), mismatches
 
     # ── lifecycle ────────────────────────────────────────────────────────────
+    def _wait_for_next_scan(self, stop_event: threading.Event) -> None:
+        # stop() uses this same lock. A stopped generation must not publish a
+        # late first-cycle/readiness boundary while unwinding its last scan.
+        with self._lifecycle_lock:
+            if stop_event.is_set():
+                return
+            self.mark_cycle_complete()
+        self.sleep(self._INTERVAL, cycle_complete=False)
+
     def run(self) -> None:
+        stop_event = self.generation_stop_event()
         if self._models_root() is None:
             self.set_health(60, "no Ollama model directory found — nothing to attest")
             self.emit("AMIG: no local model directory found; attestation idle. "
                       "Set ANGERONA_OLLAMA_MODELS if models live elsewhere.",
                       Severity.LOW, idle=True)
             while not self.stopping:
-                self.sleep(self._INTERVAL)
+                self._wait_for_next_scan(stop_event)
             return
 
         self.emit(
             "AMIG online — authenticated, explicit model attestation active.",
             Severity.INFO,
         )
-        while not self.stopping:
+        while not stop_event.is_set():
+            self.set_health(
+                min(self.health, 70),
+                "model inventory verification pending; current pass is not yet attested",
+            )
             try:
                 checked, mismatches = self._verify_pass()
+                _raise_if_attestation_cancelled(stop_event)
                 if mismatches:
                     self._mismatches += len(mismatches)
                     self.set_health(
@@ -808,7 +886,13 @@ class AIModelIntegrityGuardModule(BaseModule):
                         100,
                         f"{checked} approved model manifest/blob file(s) attested clean",
                     )
+            except ModelAttestationCancelled:
+                # Stopping is not evidence of tampering and an incomplete pass
+                # must not publish readiness through sleep's cycle boundary.
+                return
             except ModelIntegrityError as exc:
+                if stop_event.is_set():
+                    return
                 self.last_error = str(exc)
                 baseline_failure = self._baseline_status != "approved"
                 health = 25 if baseline_failure else 0
@@ -825,7 +909,9 @@ class AIModelIntegrityGuardModule(BaseModule):
                         baseline_status=self._baseline_status,
                         error=str(exc),
                     )
-            self.sleep(self._INTERVAL)
+            if stop_event.is_set():
+                return
+            self._wait_for_next_scan(stop_event)
 
     def self_test(self) -> tuple[bool, str]:
         """Offline: prove the hasher detects a single-byte change, and report
@@ -853,22 +939,9 @@ class AIModelIntegrityGuardModule(BaseModule):
         return ok, "; ".join(detail_bits)
 
 
-def require_fresh_model_attestation(
-    model_ref: str,
-    *,
-    maximum_age_seconds: float = _ATTESTATION_TTL_SECONDS,
-) -> ModelAttestationReceipt:
-    """Return fresh evidence for one exact configured tag or fail closed.
-
-    A small authenticated baseline is re-read on every call. The expensive full
-    manifest/blob verification is cached only for a short monotonic interval;
-    deletion or mutation of the authority file invalidates the cache at once.
-    """
+def _model_manifest_reference(model_ref: str) -> tuple[str, str]:
     from angerona.core.ollama_lifecycle import validate_model_ref
 
-    maximum_age = float(maximum_age_seconds)
-    if not 0 <= maximum_age <= _ATTESTATION_TTL_SECONDS:
-        raise ValueError("model attestation age exceeds the security bound")
     normalized = validate_model_ref(model_ref)
     if "@" in normalized:
         raise ModelIntegrityError("AI triage requires a named model tag")
@@ -881,16 +954,58 @@ def require_fresh_model_attestation(
         / name
         / tag
     ).as_posix()
+    return normalized, manifest_relative
 
-    with _ATTESTATION_LOCK:
-        guard = AIModelIntegrityGuardModule()
-        if not guard._load_baseline():
-            raise ModelIntegrityError(
-                f"approved model baseline unavailable ({guard._baseline_status})"
-            )
-        root, root_identity = guard._validated_root()
-        if root_identity != guard._baseline_root:
-            raise ModelIntegrityError("approved model root identity changed")
+
+def _approved_model_context(
+    manifest_relative: str,
+) -> tuple[AIModelIntegrityGuardModule, Path]:
+    guard = AIModelIntegrityGuardModule()
+    if not guard._load_baseline():
+        raise ModelIntegrityError(
+            f"approved model baseline unavailable ({guard._baseline_status})"
+        )
+    root, root_identity = guard._validated_root()
+    if root_identity != guard._baseline_root:
+        raise ModelIntegrityError("approved model root identity changed")
+    if guard._baseline.get(manifest_relative) is None:
+        raise ModelIntegrityError(
+            "configured model tag is not present in the approved baseline"
+        )
+    return guard, root
+
+
+def check_model_readiness(model_ref: str) -> None:
+    """Check approved configuration only; never grant model inference authority.
+
+    Idle health checks authenticate the small baseline, exact configured tag,
+    and root identity. Full byte verification remains mandatory in
+    ``require_fresh_model_attestation`` before inference and explicit self-tests.
+    """
+    _normalized, manifest_relative = _model_manifest_reference(model_ref)
+    _approved_model_context(manifest_relative)
+
+
+def require_fresh_model_attestation(
+    model_ref: str,
+    *,
+    maximum_age_seconds: float = _ATTESTATION_TTL_SECONDS,
+    stop_event: threading.Event | None = None,
+) -> ModelAttestationReceipt:
+    """Return fresh evidence for one exact configured tag or fail closed.
+
+    A small authenticated baseline is re-read on every call. The expensive full
+    manifest/blob verification is cached only for a short monotonic interval;
+    deletion or mutation of the authority file invalidates the cache at once.
+    """
+    maximum_age = float(maximum_age_seconds)
+    if not 0 <= maximum_age <= _ATTESTATION_TTL_SECONDS:
+        raise ValueError("model attestation age exceeds the security bound")
+    normalized, manifest_relative = _model_manifest_reference(model_ref)
+
+    with _attestation_scan_lock(stop_event):
+        # Fail a missing/unapproved tag before reading unrelated model blobs.
+        guard, root = _approved_model_context(manifest_relative)
         now = time.monotonic()
         cached = _ATTESTATION_CACHE.get(normalized)
         if (
@@ -899,12 +1014,19 @@ def require_fresh_model_attestation(
             and now <= cached.expires_monotonic
             and now - cached.issued_monotonic <= maximum_age
         ):
+            _raise_if_attestation_cancelled(stop_event)
             return cached
 
-        checked, mismatches = guard._verify_pass()
+        checked, mismatches = (
+            guard._verify_pass() if stop_event is None
+            else guard._verify_pass(stop_event=stop_event)
+        )
+        _raise_if_attestation_cancelled(stop_event)
         if checked < 1 or mismatches:
             summary = "; ".join(mismatches[:5]) or "empty verification"
             raise ModelIntegrityError(f"approved model inventory changed: {summary}")
+        # _verify_pass authenticates the baseline again; use that current
+        # authority if an explicit approval changed while verification ran.
         manifest_hex = guard._baseline.get(manifest_relative)
         if manifest_hex is None:
             raise ModelIntegrityError(
@@ -914,6 +1036,7 @@ def require_fresh_model_attestation(
             normalized,
             f"sha256:{manifest_hex}",
             models_root=root,
+            stop_event=stop_event,
         )
         issued = time.monotonic()
         receipt = ModelAttestationReceipt(
@@ -925,6 +1048,7 @@ def require_fresh_model_attestation(
             issued_monotonic=issued,
             expires_monotonic=issued + _ATTESTATION_TTL_SECONDS,
         )
+        _raise_if_attestation_cancelled(stop_event)
         _ATTESTATION_CACHE[normalized] = receipt
         return receipt
 

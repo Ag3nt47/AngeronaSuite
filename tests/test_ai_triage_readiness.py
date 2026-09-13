@@ -86,7 +86,8 @@ def test_ready_daemon_keeps_model_baseline_failure_specific(module, monkeypatch)
     monkeypatch.setattr(module, "_ping_ollama", lambda: True)
     monkeypatch.setattr(module, "emit", lambda *_args, **_kwargs: None)
 
-    def unavailable(_model):
+    def unavailable(_model, *, stop_event):
+        assert stop_event is module.generation_stop_event()
         raise ai_model_integrity.ModelIntegrityError("approved model baseline unavailable (missing)")
 
     monkeypatch.setattr(ai_model_integrity, "require_fresh_model_attestation", unavailable)

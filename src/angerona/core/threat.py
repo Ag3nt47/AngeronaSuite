@@ -150,6 +150,79 @@ def _legacy_indicator_only(event, details: dict, module: str) -> bool:
     return False
 
 
+def _coverage_health(details: dict, module: str) -> bool:
+    """Recognize producer-specific coverage notices, never detector findings.
+
+    New sensors may report a serious coverage gap at HIGH/CRITICAL severity.
+    Keep that evidence and health warning without waking deep scanners merely
+    because another unavailable sensor was added to the installation.
+    """
+    if (
+        details.get("response_authorized") is not False
+        or details.get("response_authority") != "observe-only"
+    ):
+        return False
+    schema = details.get("schema")
+    if module == "process egress lease guard":
+        return (
+            schema == "angerona.process-egress-guard-status.v1"
+            and type(details.get("audit_complete")) is bool
+            and type(details.get("lost_records")) is int
+            and details.get("observation_only") is True
+            and details.get("enforcement_performed") is False
+        )
+    if module == "temporal tradecraft correlator":
+        state = details.get("temporal_state")
+        return (
+            schema == "angerona.temporal-tradecraft.v1"
+            # Blind combines unavailable and unauthenticated upstream evidence;
+            # that contract cannot safely distinguish a health-only notice.
+            and state in ("missing", "overflow")
+            and details.get("finding_code") == f"temporal.coverage.{state}"
+            and details.get("persistence_status") == "authenticated"
+            and isinstance(details.get("continuity_reason"), str)
+            and not any(key in details for key in ("signal_kinds", "evidence_digests"))
+        )
+    if module == "audit log integrity guard":
+        return (
+            details.get("sensor_state") == "blind"
+            and isinstance(details.get("source_channel"), str)
+            and (
+                details.get("error_class") in (
+                    "FileNotFoundError", "PermissionError", "ModuleNotFoundError", "ImportError",
+                )
+                # pywintypes.error: access denied or missing Event Log channel.
+                or (details.get("error_class") == "error"
+                    and type(details.get("reader_error_code")) is int
+                    and details["reader_error_code"] in (5, 15007))
+            )
+            and not any(key in details for key in (
+                "event_id", "record_id", "provider", "classification",
+                "telemetry_quality",
+            ))
+        )
+    if module == "aegispath exposure graph guard":
+        return (
+            schema == "angerona.aegis-path.graph-health.v1"
+            and details.get("observation_only") is True
+            and details.get("enforcement_performed") is False
+            and (
+                (details.get("snapshot_available") is False
+                 and details.get("snapshot_valid") is False
+                 and details.get("coverage_reason") == "no-snapshot")
+                or (details.get("snapshot_valid") is True
+                    and details.get("semantic_coverage_verified") is True)
+            )
+        )
+    if module == "driver provenance guard":
+        return (
+            schema == "angerona.driver-provenance-coverage.v1"
+            and isinstance(details.get("reason_code"), str)
+            and details.get("driver_control_performed") is False
+        )
+    return False
+
+
 def event_disposition(event) -> str:
     """Classify an event without rewriting its evidentiary severity.
 
@@ -173,6 +246,8 @@ def event_disposition(event) -> str:
         return "observation"
     if details.get("active_exploitation") is True or details.get("active_attack") is True:
         return "active"
+    if _coverage_health(details, module):
+        return "health"
     finding_kind = str(details.get("finding_kind") or "").strip().casefold()
     disposition = str(details.get("disposition") or "").strip().casefold()
     source = str(details.get("source") or "").strip().casefold()
