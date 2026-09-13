@@ -1220,27 +1220,80 @@ class AsyncFlightRecorder:
         self._batches = 0
 
     def start(self) -> bool:
-        """Start the worker once; return False if it is already running."""
+        """Start missing workers, or explicitly restart after a completed stop."""
         with self._state_lock:
-            if self._thread is not None and self._thread.is_alive():
-                return False
-            self._stop.clear()
-            self._primary_saturated.clear()
+            if self._stop.is_set():
+                # A timed-out stop still owns both draining workers. Clearing
+                # its signal would revive a live peer and invalidate the drain.
+                if any(
+                    worker is not None and worker.is_alive()
+                    for worker in (self._thread, self._dlq_thread)
+                ):
+                    return False
+                self._stop.clear()
+            return self._start_missing_workers_locked()
+
+    def _start_missing_workers_locked(self) -> bool:
+        """Preserve queues and live peers; caller holds ``_state_lock``."""
+        started = False
+        if self._dlq_thread is None or not self._dlq_thread.is_alive():
             self._dlq_done.clear()
             self._dlq_busy.clear()
-            self._dlq_thread = threading.Thread(
+            worker = threading.Thread(
                 target=self._run_dlq,
                 name="angerona-flight-dlq",
                 daemon=True,
             )
-            self._thread = threading.Thread(
+            try:
+                worker.start()
+            except Exception:
+                # Do not leave a live primary waiting on a DLQ worker that
+                # never started, or publish an unstarted thread for stop.join.
+                self._dlq_done.set()
+                raise
+            self._dlq_thread = worker
+            started = True
+        if self._thread is None or not self._thread.is_alive():
+            self._primary_saturated.clear()
+            worker = threading.Thread(
                 target=self._run,
                 name="angerona-flight-recorder",
                 daemon=True,
             )
-            self._dlq_thread.start()
-            self._thread.start()
-            return True
+            worker.start()
+            self._thread = worker
+            started = True
+        return started
+
+    def recover(self) -> bool:
+        """Restore dead worker availability without overriding shutdown.
+
+        Pending queues are retained. Restarting a worker cannot establish
+        continuity for a batch it may have held when it failed.
+        """
+        with self._state_lock:
+            if self._stop.is_set():
+                return False
+            return self._start_missing_workers_locked()
+
+    def recovery_snapshot(self) -> dict:
+        """Read worker availability and cumulative failures without disk I/O."""
+        with self._state_lock:
+            stopping = self._stop.is_set()
+            worker_alive = bool(self._thread and self._thread.is_alive())
+            dlq_worker_alive = bool(
+                self._dlq_thread and self._dlq_thread.is_alive()
+            )
+            with self._metrics_lock:
+                return {
+                    "healthy": worker_alive and dlq_worker_alive and not stopping,
+                    "stopping": stopping,
+                    "worker_alive": worker_alive,
+                    "dlq_worker_alive": dlq_worker_alive,
+                    "dlq_failures": self._dlq_failures,
+                    "replay_failures": self._replay_failures,
+                    "replay_quarantined": self._replay_quarantined,
+                }
 
     def submit(self, event: Event) -> None:
         """Non-blocking subscriber callback. No SQLite operation occurs here."""
@@ -1301,9 +1354,9 @@ class AsyncFlightRecorder:
         with self._state_lock:
             thread = self._thread
             dlq_thread = self._dlq_thread
+            self._stop.set()
             if thread is None and dlq_thread is None:
                 return True
-            self._stop.set()
         deadline = time.monotonic() + timeout
         current = threading.current_thread()
         for candidate in (thread, dlq_thread):

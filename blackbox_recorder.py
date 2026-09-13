@@ -640,7 +640,41 @@ class SuiteHealthWorker(QThread):
         info["failed"] = self._failed_modules(current)
         counts = current.get("counts", {})
         info["counts"] = counts if isinstance(counts, dict) else {}
+        info["recovery_note"] = self._recovery_note(current)
         return info
+
+    @staticmethod
+    def _recovery_note(snapshot: Dict) -> str:
+        """Present only bounded, current diagnostics; never request a repair."""
+        recovery = snapshot.get("runtime_healer")
+        if not isinstance(recovery, dict):
+            return "No current recovery report"
+        if recovery.get("enabled") is False:
+            return "Stopped"
+        if recovery.get("worker_alive") is not True:
+            return "Recovery worker unavailable"
+        components = recovery.get("components")
+        if not isinstance(components, dict):
+            return "Recovery report incomplete"
+        states = {
+            "observing": "observing", "unknown": "health unknown",
+            "stopped": "stopped", "healthy": "available",
+            "stabilizing": "recovery observed; checking stability",
+            "confirming": "confirming failure", "cooldown": "waiting to retry",
+            "attention_required": "needs attention", "verifying": "verifying repair",
+        }
+        parts = []
+        for name, label in (("status_reporter", "Status reporter"),
+                            ("flight_recorder", "Event recorder")):
+            row = components.get(name)
+            if not isinstance(row, dict):
+                return "Recovery report incomplete"
+            state, attempts = row.get("state"), row.get("attempts")
+            if (not isinstance(state, str) or state not in states or
+                    type(attempts) is not int or not 0 <= attempts <= 3):
+                return "Recovery report invalid"
+            parts.append(f"{label}: {states[state]} (attempts {attempts}/3)")
+        return "; ".join(parts)
 
     def _observe_bus(self, snapshot: Dict, pid: Optional[int], started: Optional[float],
                      now: float) -> Dict:
@@ -1459,7 +1493,10 @@ class HealthTab(QWidget):
             "Local status snapshots are advisory. Counters describe observed activity; "
             "quiet or stale diagnostics alone cannot establish a deadlock.")
         self.res_lbl = QLabel("Resources: —")
-        for w in (self.state_lbl, self.pid_lbl, self.bus_lbl, self.res_lbl):
+        self.recovery_lbl = QLabel("Self-healing: —")
+        self.recovery_lbl.setTextFormat(Qt.PlainText)
+        self.recovery_lbl.setWordWrap(True)
+        for w in (self.state_lbl, self.pid_lbl, self.bus_lbl, self.recovery_lbl, self.res_lbl):
             root.addWidget(w)
 
         root.addWidget(section_label("RECENTLY FAILED MODULES"))
@@ -1498,6 +1535,8 @@ class HealthTab(QWidget):
         bus_color = AMBER if warnings or bus_state == "STALE" else (
             GREEN if bus_state == "ACTIVE" else DIM)
         self.bus_lbl.setStyleSheet(f"color:{bus_color};")
+        self.recovery_lbl.setText(
+            f"Self-healing: {h.get('recovery_note', 'No current recovery report')}")
 
         fails = h.get("failed", [])
         self.fail_table.setSortingEnabled(False)
@@ -1514,6 +1553,7 @@ class HealthTab(QWidget):
             return "no health sample yet"
         lines = [f"PID   : {h.get('pid')}", f"STATE : {h.get('state')}"]
         lines.append(self.bus_lbl.text())
+        lines.append(self.recovery_lbl.text())
         for f in h.get("failed", []):
             lines.append(f"  ✗ {f['name']}: {f['detail']}  [{f['src']}]")
         return "\n".join(lines)

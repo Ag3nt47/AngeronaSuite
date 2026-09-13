@@ -712,6 +712,7 @@ class AngeronaApp:
             return
         _loading("Starting status reporting…")
         self.reporter.start()          # begin writing diagnostics/status.txt
+        self._start_runtime_healer()
         if self._startup_cancelled():
             return
         # Start MCP server after modules are loaded so all tools have live data
@@ -729,6 +730,27 @@ class AngeronaApp:
             return
         _loading("Finalizing protection services…")
         self._start_fleet_service()
+
+    def _start_runtime_healer(self) -> None:
+        """Supervise essential local workers after their normal startup."""
+        if self._startup_cancelled() or getattr(self, "_runtime_healer", None) is not None:
+            return
+        try:
+            from angerona.core.runtime_healer import RuntimeHealer
+
+            healer = RuntimeHealer(
+                self.reporter, self.flight_recorder_worker, self.bus, self.config,
+            )
+            self.reporter.runtime_healer = healer
+            healer.start()
+            self._runtime_healer = healer
+        except Exception as exc:
+            self.reporter.runtime_healer = None
+            self._record_startup_degradation(
+                "Runtime Self-Healing",
+                "automatic status and recorder worker recovery is unavailable",
+                exc,
+            )
 
     def _start_fleet_service(self) -> bool:
         """Start the opt-in, authenticated, loopback-only fleet endpoint."""
@@ -1015,6 +1037,9 @@ class AngeronaApp:
             self._shutdown_owned()
 
     def _shutdown_owned(self) -> None:
+        healer = getattr(self, "_runtime_healer", None)
+        if healer is not None:
+            healer.stop()
         # Clean shutdown: tell the ecosystem to STAND DOWN so the watchdog does
         # not resurrect the core, then stop the child processes. (A crash — with
         # no stand-down — leaves the watchdog free to restart everything.)
