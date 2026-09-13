@@ -33,3 +33,20 @@ queued signed-event delivery, directory/write recovery, redirection refusal,
 quiet-mode cadence, current-process Black Box presentation, and existing
 recorder, startup, shutdown, status, and watchdog behavior. Live production
 workers and protected runtime evidence are not fault-injected during testing.
+
+Verified results in an isolated checkout containing only this update:
+
+- Focused recovery, recorder, Black Box, status, lifecycle, event-bus, and
+  watchdog regressions: 175 passed, 1 platform skip. The skip is unavailable
+  Windows directory-symlink creation; deterministic reparse-point and real
+  hardlink refusal checks passed.
+- Full offline selfcheck: 26 phases passed, zero failures. Module and event
+  pipeline checks: 69 passed, zero failures, 16 expected optional/platform or
+  unstarted-module skips. These skips do not certify live dependencies.
+- Package syntax, changed core/test Ruff checks, Git whitespace, and offline
+  documentation validation passed. Independent review found no material issue
+  in lifecycle locking, failure admission, peer preservation, or fresh-status
+  presentation.
+
+Unrelated GitHub-tool and analysis-lab changes in the maintainer checkout were
+excluded from the reviewed commit and clean publication checkout.
