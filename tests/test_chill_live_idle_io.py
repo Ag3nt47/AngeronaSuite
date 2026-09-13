@@ -8,7 +8,7 @@ from angerona.modules import deception
 from angerona.modules.evolution_engine import EvolutionEngine
 
 
-def test_evolution_engine_parks_instead_of_polling() -> None:
+def test_evolution_engine_declares_sparse_idle_cadence() -> None:
     class StopToken:
         def __init__(self) -> None:
             self.waits: list[float | None] = []
@@ -28,7 +28,8 @@ def test_evolution_engine_parks_instead_of_polling() -> None:
     module.run()
 
     assert module.first_cycle_complete
-    assert token.waits == [None]
+    assert token.waits == [60.0]
+    assert module.operational_snapshot()["declared_cycle_interval_seconds"] == 60.0
 
 
 def test_deception_does_not_reopen_unchanged_attack_feed(

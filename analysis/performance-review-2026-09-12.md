@@ -293,3 +293,57 @@ scoped lint checks cover the final reviewed files. Publication uses a clean
 worktree that excludes unrelated local development; the exact checkout must pass
 the supported full selfcheck before the guarded publisher can advance public
 `main` and verify every README image.
+
+## Final integration and remaining lifecycle findings
+
+The reviewed performance update was published as
+`b513698a1d5da52bc439797f234a8022794163cb`. The clean checkout imported its own
+package and passed all 26 selfcheck phases, with 69 module/pipeline passes,
+zero failures and 16 expected skips. Documentation validation passed; the guarded
+publisher proved public `main` and its publishing branch matched the commit and
+all five public README images matched the checked-out bytes.
+
+The restarted core then attested all 18 approved model files clean at health 100;
+Defender continuity also remained at health 100. Triage showed pending fresh
+pre-inference verification, while memory, file and backup scans reported partial
+coverage. The fresh status recorded 21,387 event deliveries and zero failures.
+The final 180-second monitor included about 129 seconds with the core present:
+316 MiB peak core/wrapper RSS, mean 94% of one logical CPU, and 37 confirmed
+200 ms window timeouts. Its startup also overlapped the isolated selfcheck, so
+these figures are observations, not a controlled speed comparison.
+
+Two remaining watchdog warnings were traced before closing the review. Evolution
+Engine completed one initial cycle and then parked indefinitely on its stop
+event, which inevitably expired the generic 30-second deadline. It now declares
+a sparse 60-second interruptible idle cadence, adding no scans or inference and
+keeping both missed-progress and dead-thread supervision. The idle, watchdog and
+Chill regression suite passed 19 tests; stopped generations cannot publish a new
+cycle. This fixes a conflict between the earlier no-polling optimization and the
+subsequently enforced liveness contract.
+
+Ransomware Heuristics had a separate quadratic rename matcher: it sorted and
+searched the available names again for each disappeared name. An indexed matcher
+preserves the original lexical greedy pairing, including casefold, dotted-prefix
+and equal-stem alternatives. Inert sets of 1,000 disjoint names on each side took
+9.1217 seconds before and 0.0345 seconds afterward; 25,000 on each side took
+1.0599 seconds afterward. Equivalence checks cover 150 varied fixtures, including
+Unicode and ambiguous-name collisions. These filename-only fixtures confirm the
+hotspot without reading user content; attributing the entire live 54-second
+deadline miss to it would require additional phase instrumentation.
+
+Ransomware sample reads and entropy-candidate evaluation now check the immutable
+generation token at their work boundaries. Actual completed work reports pending
+coverage without overriding existing custody or coverage faults. Cancelled work
+cannot begin a new authenticated state transition or publish a late completed
+scan. A durable transition already admitted finishes its state/witness update
+coherently. Existing content receipts, fair-scan selection, exact identity checks,
+practice gates and response authority remain enforced; watchdog deadlines were
+not broadened for this module.
+
+The relevant ransomware, authenticated-content, traversal, authority, response
+and watchdog regression suites passed 188 tests with one expected skip. The
+final 18 lifecycle tests also passed after adding cancellation-boundary coverage;
+product code was unchanged after the broader run. Independent review verified
+that a rejected post-stop alert cannot consume its entropy cooldown or pending
+rename evidence. Evolution's final three lifecycle tests also confirmed that
+already-stopped entry preserves prior health and evidence.

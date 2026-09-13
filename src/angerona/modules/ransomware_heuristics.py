@@ -455,7 +455,14 @@ def _default_watch_dirs() -> List[Path]:
     return admitted
 
 
-def _rename_pairs(disappeared: set[str], appeared: set[str]) -> list[tuple[str, str]]:
+class _ScanCancelled(OSError):
+    """The calling scan generation no longer has publication authority."""
+
+
+def _rename_pairs(
+    disappeared: set[str], appeared: set[str],
+    *, should_stop: Callable[[], bool] | None = None,
+) -> list[tuple[str, str]]:
     """Conservatively pair filename changes that look like ransomware renames.
 
     Bulk creates or deletes are not renames.  Pair only an appended extension
@@ -463,18 +470,42 @@ def _rename_pairs(disappeared: set[str], appeared: set[str]) -> list[tuple[str, 
     with the same stem, and consume each new name at most once.
     """
     available = set(appeared)
+    by_name: dict[str, list[str]] = {}
+    by_stem: dict[str, list[str]] = {}
+    by_prefix: dict[str, list[str]] = {}
+    # Appending globally sorted names gives every bucket a valid lexical heap.
+    # Dotted prefixes encode both original startswith rules without an all-pairs
+    # comparison; total index size is bounded by the collected filename bytes.
+    for new in sorted(available):
+        if should_stop is not None and should_stop():
+            raise _ScanCancelled("rename pairing cancelled")
+        folded = new.casefold()
+        by_name.setdefault(folded, []).append(new)
+        by_stem.setdefault(Path(new).stem.casefold(), []).append(new)
+        for index, character in enumerate(folded):
+            if character == ".":
+                by_prefix.setdefault(folded[:index], []).append(new)
+
+    def first(bucket: list[str]) -> str | None:
+        while bucket and bucket[0] not in available:
+            heapq.heappop(bucket)
+        return bucket[0] if bucket else None
+
     paired: list[tuple[str, str]] = []
     for old in sorted(disappeared):
+        if should_stop is not None and should_stop():
+            raise _ScanCancelled("rename pairing cancelled")
         old_folded = old.casefold()
         old_stem = Path(old).stem.casefold()
-        match = next((
-            new for new in sorted(available)
-            if (
-                new.casefold().startswith(old_folded + ".")
-                or old_folded.startswith(new.casefold() + ".")
-                or (old_stem and Path(new).stem.casefold() == old_stem)
-            )
-        ), None)
+        buckets = [by_prefix.get(old_folded, [])]
+        if old_stem:
+            buckets.append(by_stem.get(old_stem, []))
+        buckets.extend(
+            by_name.get(old_folded[:index], [])
+            for index, character in enumerate(old_folded) if character == "."
+        )
+        matches = [match for bucket in buckets if (match := first(bucket)) is not None]
+        match = min(matches) if matches else None
         if match is not None:
             available.remove(match)
             paired.append((old, match))
@@ -554,6 +585,39 @@ class RansomwareHeuristicsModule(BaseModule):
     @property
     def health_pct(self) -> int:
         return self.health
+
+    def _generation_active(self, stopped) -> bool:
+        return not stopped.is_set() and stopped is self._stop
+
+    def _require_active(self, stopped) -> None:
+        if not self._generation_active(stopped):
+            raise _ScanCancelled("ransomware scan cancelled")
+
+    def emit(self, message: str, severity: Severity = Severity.INFO, **details) -> None:
+        stopped = self.generation_stop_event()
+        with self._lifecycle_lock:
+            if self._generation_active(stopped):
+                super().emit(message, severity, **details)
+
+    def set_health(self, pct: int, note: str = "") -> None:
+        stopped = self.generation_stop_event()
+        with self._lifecycle_lock:
+            if self._generation_active(stopped):
+                super().set_health(pct, note)
+
+    def _publish_progress(self, coverage, stopped, phase: str = "") -> bool:
+        """Publish completed work without claiming the pending sweep is covered."""
+        with self._lifecycle_lock:
+            if not self._generation_active(stopped):
+                return False
+            self._coverage = dict(coverage)
+            self._coverage["pending_phase"] = phase
+            if phase:
+                self._coverage["complete"] = False
+                self._coverage["collection_complete"] = False
+            self._update_coverage_health()
+            self.mark_cycle_complete(interval_seconds=0.0)
+            return True
 
     def _change_key_path(self) -> Path:
         return self._change_state_root / "content-state.key"
@@ -1343,6 +1407,7 @@ class RansomwareHeuristicsModule(BaseModule):
         modified_identity: int,
         sample: _ContentSample,
     ) -> str:
+        self._require_active(self.generation_stop_event())
         if not self._change_cycle_active:
             return "untracked"
         path_digest = hashlib.sha256(
@@ -1433,10 +1498,15 @@ class RansomwareHeuristicsModule(BaseModule):
         return transition
 
     def _commit_change_cycle(self, *, complete: bool) -> None:
+        stopped = self.generation_stop_event()
+        self._require_active(stopped)
         with self._change_writer_lease():
+            self._require_active(stopped)
             self._commit_change_cycle_under_lease(complete=complete)
 
     def _commit_change_cycle_under_lease(self, *, complete: bool) -> None:
+        stopped = self.generation_stop_event()
+        self._require_active(stopped)
         if not self._change_cycle_active:
             return
         self._change_cycle_active = False
@@ -1473,6 +1543,10 @@ class RansomwareHeuristicsModule(BaseModule):
         expected_head, _payload = self._change_state_document(
             sequence, records, scan_epoch=scan_epoch
         )
+        # Cancellation may abandon prepared data before the durable transaction.
+        # Once its transition starts, finish state+witness recovery coherently;
+        # never hold the lifecycle lock across filesystem writes/fsync.
+        self._require_active(stopped)
         self._write_change_transition(
             old_sequence=self._change_state_sequence,
             old_scan_epoch=self._change_scan_epoch,
@@ -1496,11 +1570,19 @@ class RansomwareHeuristicsModule(BaseModule):
         self._change_witness_verified = True
 
     def run(self) -> None:
+        stopped = self.generation_stop_event()
+        if not self._generation_active(stopped):
+            return
+        self.set_health(0, "Initial authenticated ransomware scan is pending.")
         try:
             self._load_change_state()
         except OSError as exc:
             self._change_state_fault = str(exc)[:240]
+        if not self._publish_progress(self._empty_coverage(), stopped, "initial root scan"):
+            return
         self._watch_dirs = _default_watch_dirs()
+        if not self._generation_active(stopped):
+            return
         if not self._watch_dirs:
             self.set_health(50, "No watched directories found in user profile")
             self.emit(
@@ -1515,33 +1597,47 @@ class RansomwareHeuristicsModule(BaseModule):
                 Severity.INFO,
                 watched_dirs=dirs_str,
             )
-            self.set_health(100, "")
 
         # Seed bounded recursive snapshots so first pass doesn't flood rename alerts.
         seed_coverage = self._empty_coverage()
         self._begin_change_cycle()
         for d in self._watch_dirs:
+            if not self._generation_active(stopped):
+                return
             _candidates, snapshot, coverage = self._scan_root(d, time.time())
+            if not self._generation_active(stopped):
+                return
             self._dir_snapshot[self._directory_key(d)] = snapshot
             self._merge_coverage(seed_coverage, coverage)
-        self._coverage = seed_coverage
+            if not self._publish_progress(seed_coverage, stopped, "initial root scan/state commit"):
+                return
+        if not self._generation_active(stopped):
+            return
         try:
             self._commit_change_cycle(
                 complete=bool(seed_coverage["collection_complete"])
             )
+        except _ScanCancelled:
+            return
         except OSError as exc:
             self._change_state_fault = str(exc)[:240]
-            self._coverage["complete"] = False
-            self._coverage["errors"] = int(self._coverage["errors"]) + 1
-            self._coverage["last_error"] = self._change_state_fault
-        self._update_coverage_health()
+            seed_coverage["complete"] = False
+            seed_coverage["errors"] = int(seed_coverage["errors"]) + 1
+            seed_coverage["last_error"] = self._change_state_fault
+        if not self._publish_progress(seed_coverage, stopped):
+            return
 
-        while not self.stopping:
-            self.sleep(self._SCAN_INTERVAL)
+        while self._generation_active(stopped):
+            self.sleep(self._SCAN_INTERVAL, cycle_complete=False)
+            if not self._generation_active(stopped):
+                return
             self._tick()
 
     # ── Per-tick logic ────────────────────────────────────────────────────────
     def _tick(self) -> None:
+        stopped = self.generation_stop_event()
+        if not self._generation_active(stopped):
+            return
         now = time.time()
         self._begin_change_cycle()
         # Collect exact bounded sample receipts across all watched roots, then
@@ -1551,12 +1647,14 @@ class RansomwareHeuristicsModule(BaseModule):
         candidates: list[_EntropyCandidate] = []
         coverage = self._empty_coverage()
         for directory in self._watch_dirs:
-            if self.stopping:
+            if not self._generation_active(stopped):
                 return
             try:
                 root_candidates, snapshot, root_coverage = self._scan_root(
                     directory, now
                 )
+                if not self._generation_active(stopped):
+                    return
                 candidates.extend(root_candidates)
                 self._detect_renames_from_snapshot(directory, snapshot, now)
                 self._merge_coverage(coverage, root_coverage)
@@ -1566,8 +1664,10 @@ class RansomwareHeuristicsModule(BaseModule):
                 coverage["complete"] = False
                 coverage["collection_complete"] = False
                 coverage["last_error"] = str(exc)[:240]
+            if not self._publish_progress(coverage, stopped, "root scan/candidate verification"):
+                return
 
-        if candidates and not self.stopping:
+        if candidates and self._generation_active(stopped):
             try:
                 read_errors = self._evaluate_entropy(candidates, now)
                 coverage["errors"] = int(coverage["errors"]) + read_errors
@@ -1586,22 +1686,27 @@ class RansomwareHeuristicsModule(BaseModule):
                 coverage["collection_complete"] = False
                 coverage["last_error"] = str(exc)[:240]
 
-        self._coverage = coverage
+        if not self._generation_active(stopped):
+            return
         try:
             self._commit_change_cycle(
                 complete=bool(coverage["collection_complete"])
             )
+        except _ScanCancelled:
+            return
         except OSError as exc:
             self._change_state_fault = str(exc)[:240]
             coverage["complete"] = False
             coverage["errors"] = int(coverage["errors"]) + 1
             coverage["last_error"] = self._change_state_fault
-        self._update_coverage_health()
+        if not self._generation_active(stopped):
+            return
         # Samples were observed after the sweep began. Compare their actual
         # observation timestamps against completion time, not the older start.
         completed_at = time.time()
         self._check_rename_rate(completed_at)
         self._evict_stale_dedup(completed_at)
+        self._publish_progress(coverage, stopped)
 
     # ── Entropy scan ──────────────────────────────────────────────────────────
     @staticmethod
@@ -1871,6 +1976,7 @@ class RansomwareHeuristicsModule(BaseModule):
         ranges: tuple[tuple[int, int], ...],
         *,
         complete: bool,
+        should_stop: Callable[[], bool] | None = None,
     ) -> _ContentSample:
         """Stream and bind every byte in an explicit range contract."""
         digest = hashlib.sha256()
@@ -1880,6 +1986,8 @@ class RansomwareHeuristicsModule(BaseModule):
         window_entropies: list[tuple[float, int]] = []
         prefix = b""
         for offset, length in ranges:
+            if should_stop is not None and should_stop():
+                raise _ScanCancelled("content proof cancelled")
             if offset < 0 or length <= 0:
                 raise ValueError("invalid content-proof range")
             os.lseek(descriptor, offset, os.SEEK_SET)
@@ -1891,7 +1999,11 @@ class RansomwareHeuristicsModule(BaseModule):
                 digest.update(offset.to_bytes(8, "big"))
                 digest.update(length.to_bytes(8, "big"))
             while remaining:
+                if should_stop is not None and should_stop():
+                    raise _ScanCancelled("content proof cancelled")
                 chunk = os.read(descriptor, min(64 * 1024, remaining))
+                if should_stop is not None and should_stop():
+                    raise _ScanCancelled("content proof cancelled")
                 if not chunk:
                     raise OSError("content proof ended before its declared range")
                 if offset == 0 and range_size == 0:
@@ -1956,6 +2068,8 @@ class RansomwareHeuristicsModule(BaseModule):
         expected_modified_identity: int,
     ) -> _ContentSample:
         """Read the explicit proof while exact object identity remains held."""
+        stopped = self.generation_stop_event()
+        self._require_active(stopped)
         kind, handle = self._open_held_file(
             path,
             expected_identity,
@@ -1981,8 +2095,10 @@ class RansomwareHeuristicsModule(BaseModule):
                 expected_identity, expected_size, expected_modified_identity
             )
             sample = self._read_content_sample(
-                descriptor, ranges, complete=complete
+                descriptor, ranges, complete=complete,
+                should_stop=lambda: not self._generation_active(stopped),
             )
+            self._require_active(stopped)
             after = os.fstat(descriptor)
             if not stat.S_ISREG(after.st_mode) or int(after.st_size) != expected_size:
                 raise OSError("held entropy file changed during bounded sampling")
@@ -2101,6 +2217,7 @@ class RansomwareHeuristicsModule(BaseModule):
         The returned descriptor owns the original Windows handle (or is the
         original POSIX descriptor) and must stay open through event publication.
         """
+        stopped = self.generation_stop_event()
         descriptor = file_handle
         if file_kind == "win":
             import msvcrt
@@ -2112,6 +2229,7 @@ class RansomwareHeuristicsModule(BaseModule):
                 | getattr(os, "O_NOINHERIT", 0),
             )
         try:
+            self._require_active(stopped)
             expected_ranges, expected_complete = self._content_ranges(
                 candidate.identity, candidate.size, candidate.modified_identity
             )
@@ -2124,7 +2242,9 @@ class RansomwareHeuristicsModule(BaseModule):
                 descriptor,
                 candidate.sample_ranges,
                 complete=candidate.content_complete,
+                should_stop=lambda: not self._generation_active(stopped),
             )
+            self._require_active(stopped)
             after = os.fstat(descriptor)
             if (
                 not stat.S_ISREG(after.st_mode)
@@ -2364,6 +2484,7 @@ class RansomwareHeuristicsModule(BaseModule):
         Any inaccessible, skipped or budget-truncated object is reflected in the
         returned coverage receipt and therefore prevents a 100% health claim.
         """
+        stopped = self.generation_stop_event()
         started = time.monotonic()
         deadline = started + TRAVERSAL_MAX_S
         root = Path(os.path.abspath(str(directory)))
@@ -2377,7 +2498,7 @@ class RansomwareHeuristicsModule(BaseModule):
         content_budget_remaining = CONTENT_SCAN_MAX_BYTES
         opened_root_identity: tuple[str, int, int] | None = None
 
-        while stack and not stop_for_budget and not self.stopping:
+        while stack and not stop_for_budget and self._generation_active(stopped):
             if time.monotonic() >= deadline:
                 coverage["truncated"] = int(coverage["truncated"]) + max(1, len(stack))
                 break
@@ -2417,7 +2538,7 @@ class RansomwareHeuristicsModule(BaseModule):
                     current_identity,
                     remaining_entry_capacity,
                     deadline=deadline,
-                    should_stop=lambda: self.stopping,
+                    should_stop=lambda: not self._generation_active(stopped),
                 )
                 coverage["eligible_entries"] = (
                     int(coverage["eligible_entries"]) + directory_eligible
@@ -2443,7 +2564,7 @@ class RansomwareHeuristicsModule(BaseModule):
                     modified_identity,
                     entry_identity,
                 ) in directory_entries:
-                    if self.stopping:
+                    if not self._generation_active(stopped):
                         break
                     if time.monotonic() >= deadline:
                         coverage["truncated"] = int(coverage["truncated"]) + 1
@@ -2579,7 +2700,7 @@ class RansomwareHeuristicsModule(BaseModule):
 
         coverage["elapsed_ms"] = round((time.monotonic() - started) * 1000.0, 3)
         coverage["collection_complete"] = (
-            not self.stopping
+            self._generation_active(stopped)
             and int(coverage["skipped"]) == 0
             and int(coverage["truncated"]) == 0
             and int(coverage["errors"]) == 0
@@ -2598,10 +2719,15 @@ class RansomwareHeuristicsModule(BaseModule):
         dict[str, float],
         dict[str, int | float | bool | str],
     ]:
+        stopped = self.generation_stop_event()
         rows, coverage = self._bounded_tree(directory, now)
         candidates: list[_EntropyCandidate] = []
         snapshot: dict[str, float] = {}
         for row in rows:
+            if not self._generation_active(stopped):
+                coverage["complete"] = False
+                coverage["collection_complete"] = False
+                break
             snapshot[row.relative] = row.modified
             if row.size < MIN_FILE_BYTES:
                 continue
@@ -2654,6 +2780,8 @@ class RansomwareHeuristicsModule(BaseModule):
             f"transition_alerts_omitted={self._change_alerts_omitted}, "
             f"change_state_fault={self._change_state_fault or 'none'}"
         )
+        if coverage.get("pending_phase"):
+            note += f"; pending={coverage['pending_phase']}"
         if int(coverage.get("roots", 0)) == 0:
             self.set_health(50, note + "; no watched directories are available")
             return
@@ -2707,9 +2835,11 @@ class RansomwareHeuristicsModule(BaseModule):
         self, candidates: list[_EntropyCandidate], now: float
     ) -> int:
         """Score only exact bounded samples with current identity receipts."""
+        stopped = self.generation_stop_event()
         errors = 0
         self._last_sample_error = ""
         for candidate in candidates:
+            self._require_active(stopped)
             held_directories: list[
                 tuple[Path, str, int, tuple[str, int, int]]
             ] = []
@@ -2755,37 +2885,42 @@ class RansomwareHeuristicsModule(BaseModule):
                 if descriptor is not None:
                     os.close(descriptor)
                 self._close_held_ancestry(held_directories)
+                self._require_active(stopped)
                 errors += 1
                 self._last_sample_error = (
                     f"entropy sample identity changed or content proof stale: "
                     f"{candidate.path}: {exc}"
                 )
+                self._publish_progress(self._coverage, stopped, "candidate verification/state commit")
                 continue
             try:
-                if ent >= ENTROPY_THRESHOLD:
-                    self._flagged[candidate.path] = now
-                    self.emit(
-                        f"High-entropy file detected: {os.path.basename(candidate.path)} "
-                        f"(entropy={ent:.3f} bits/byte ≥ {ENTROPY_THRESHOLD}) — "
-                        "compression or encryption observed; behavioral corroboration required",
-                        Severity.INFO,
-                        path=candidate.path,
-                        entropy=round(ent, 4),
-                        threshold=ENTROPY_THRESHOLD,
-                        content_complete=candidate.content_complete,
-                        content_bytes=candidate.sample_size,
-                        max_window_high_entropy_fraction=round(
-                            candidate.high_entropy_fraction, 4
-                        ),
-                        content_ranges=[
-                            {"offset": offset, "length": length}
-                            for offset, length in candidate.sample_ranges
-                        ],
-                        mitre_tags=["T1486"],
-                        active_attack=False,
-                        disposition="observation",
-                        detector_policy="static-entropy-observation",
-                    )
+                self._require_active(stopped)
+                with self._lifecycle_lock:
+                    self._require_active(stopped)
+                    if ent >= ENTROPY_THRESHOLD:
+                        self._flagged[candidate.path] = now
+                        self.emit(
+                            f"High-entropy file detected: {os.path.basename(candidate.path)} "
+                            f"(entropy={ent:.3f} bits/byte ≥ {ENTROPY_THRESHOLD}) — "
+                            "compression or encryption observed; behavioral corroboration required",
+                            Severity.INFO,
+                            path=candidate.path,
+                            entropy=round(ent, 4),
+                            threshold=ENTROPY_THRESHOLD,
+                            content_complete=candidate.content_complete,
+                            content_bytes=candidate.sample_size,
+                            max_window_high_entropy_fraction=round(
+                                candidate.high_entropy_fraction, 4
+                            ),
+                            content_ranges=[
+                                {"offset": offset, "length": length}
+                                for offset, length in candidate.sample_ranges
+                            ],
+                            mitre_tags=["T1486"],
+                            active_attack=False,
+                            disposition="observation",
+                            detector_policy="static-entropy-observation",
+                        )
                 # Publication was performed while both the exact sample and
                 # every reviewed ancestor remained held.  A POSIX namespace
                 # change at the boundary is still made fail-visible.
@@ -2793,6 +2928,8 @@ class RansomwareHeuristicsModule(BaseModule):
             finally:
                 os.close(descriptor)
                 self._close_held_ancestry(held_directories)
+            self._require_active(stopped)
+            self._publish_progress(self._coverage, stopped, "candidate verification/state commit")
         return errors
 
     # ── Rename-rate tracker ───────────────────────────────────────────────────
@@ -2814,21 +2951,30 @@ class RansomwareHeuristicsModule(BaseModule):
         self, directory: Path, new: dict[str, float], now: float
     ) -> None:
         """Compare per-subdirectory names without pairing across directories."""
+        stopped = self.generation_stop_event()
+        self._require_active(stopped)
         dkey = self._directory_key(directory)
         old = self._dir_snapshot.get(dkey, self._dir_snapshot.get(str(directory), {}))
         self._dir_snapshot[dkey] = new
         old_by_parent: dict[str, set[str]] = {}
         new_by_parent: dict[str, set[str]] = {}
         for relative in old:
+            self._require_active(stopped)
             rel = Path(relative)
             old_by_parent.setdefault(str(rel.parent), set()).add(rel.name)
         for relative in new:
+            self._require_active(stopped)
             rel = Path(relative)
             new_by_parent.setdefault(str(rel.parent), set()).add(rel.name)
         for parent in sorted(set(old_by_parent) | set(new_by_parent)):
+            self._require_active(stopped)
             disappeared = old_by_parent.get(parent, set()) - new_by_parent.get(parent, set())
             appeared = new_by_parent.get(parent, set()) - old_by_parent.get(parent, set())
-            pairs = _rename_pairs(disappeared, appeared)
+            pairs = _rename_pairs(
+                disappeared, appeared,
+                should_stop=lambda: not self._generation_active(stopped),
+            )
+            self._require_active(stopped)
             if not pairs:
                 continue
             observed_directory = self._directory_key(Path(dkey) / parent)
@@ -2842,6 +2988,9 @@ class RansomwareHeuristicsModule(BaseModule):
 
     def _check_rename_rate(self, now: float) -> None:
         """Emit a storm alert, promoting to CRITICAL only with entropy evidence."""
+        stopped = self.generation_stop_event()
+        if not self._generation_active(stopped):
+            return
         cutoff = now - RENAME_WINDOW_S
         while self._rename_times and self._rename_times[0][0] < cutoff:
             self._rename_times.popleft()
@@ -2856,6 +3005,8 @@ class RansomwareHeuristicsModule(BaseModule):
         # changing the directory-bound correlation decision.
         normalized_directories: dict[str, str] = {}
         for _stamp, raw_directory in self._rename_times:
+            if not self._generation_active(stopped):
+                return
             directory = normalized_directories.get(raw_directory)
             if directory is None:
                 directory = os.path.normcase(os.path.abspath(raw_directory))
@@ -2865,6 +3016,8 @@ class RansomwareHeuristicsModule(BaseModule):
             return
         directory, rate = max(rates.items(), key=lambda item: item[1])
         if rate >= RENAME_THRESHOLD:
+            if not self._generation_active(stopped):
+                return
             entropy_corroborated = not self._change_state_fault and any(
                 pair_directory == directory
                 and 0.0 <= now - pair_stamp <= RENAME_WINDOW_S
@@ -2875,38 +3028,41 @@ class RansomwareHeuristicsModule(BaseModule):
                 )
                 for pair_stamp, pair_directory, old_path, new_path in self._rename_evidence
             )
-            self.emit(
-                f"RENAME STORM detected: {rate} file renames in {RENAME_WINDOW_S}s — "
-                "ransomware mass-encryption likely in progress (T1486). "
-                "Review watched directories immediately.",
-                Severity.CRITICAL if entropy_corroborated else Severity.HIGH,
-                rename_count=rate,
-                window_s=RENAME_WINDOW_S,
-                threshold=RENAME_THRESHOLD,
-                watched_directory=directory,
-                mitre_tags=["T1486"],
-                active_attack=True,
-                entropy_corroborated=entropy_corroborated,
-                detector_policy=(
-                    "multi-signal-ransomware-critical"
-                    if entropy_corroborated
-                    else "rename-pattern-high"
-                ),
-                **(
-                    maximum_host_response()
-                    if entropy_corroborated
-                    else deception_response()
-                ),
-            )
-            # Clear only this directory. Evidence for other watched roots must
-            # remain independently attributable and independently actionable.
-            self._rename_times = deque(
-                item for item in self._rename_times
-                if normalized_directories[item[1]] != directory
-            )
-            self._rename_evidence = deque(
-                item for item in self._rename_evidence if item[1] != directory
-            )
+            with self._lifecycle_lock:
+                if not self._generation_active(stopped):
+                    return
+                self.emit(
+                    f"RENAME STORM detected: {rate} file renames in {RENAME_WINDOW_S}s — "
+                    "ransomware mass-encryption likely in progress (T1486). "
+                    "Review watched directories immediately.",
+                    Severity.CRITICAL if entropy_corroborated else Severity.HIGH,
+                    rename_count=rate,
+                    window_s=RENAME_WINDOW_S,
+                    threshold=RENAME_THRESHOLD,
+                    watched_directory=directory,
+                    mitre_tags=["T1486"],
+                    active_attack=True,
+                    entropy_corroborated=entropy_corroborated,
+                    detector_policy=(
+                        "multi-signal-ransomware-critical"
+                        if entropy_corroborated
+                        else "rename-pattern-high"
+                    ),
+                    **(
+                        maximum_host_response()
+                        if entropy_corroborated
+                        else deception_response()
+                    ),
+                )
+                # Clear only this directory. Evidence for other watched roots must
+                # remain independently attributable and independently actionable.
+                self._rename_times = deque(
+                    item for item in self._rename_times
+                    if normalized_directories[item[1]] != directory
+                )
+                self._rename_evidence = deque(
+                    item for item in self._rename_evidence if item[1] != directory
+                )
 
     # ── Housekeeping ──────────────────────────────────────────────────────────
     def _evict_stale_dedup(self, now: float) -> None:

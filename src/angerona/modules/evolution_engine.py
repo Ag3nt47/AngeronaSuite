@@ -214,14 +214,21 @@ class EvolutionEngine(BaseModule):
             pass
 
     def run(self) -> None:
-        self.set_health(100, "proposal-only — waiting for a typed Judgment bypass")
-        # Activation is delivered synchronously by the EventBus subscription in
-        # ``bind()``; this module has no periodic work.  The old five-second
-        # sleep loop woke 17,280 times/day merely to discover that it was still
-        # idle.  Publish readiness once, then park interruptibly until stop().
-        self.mark_cycle_complete()
         stop_event = self.generation_stop_event()
-        stop_event.wait()
+        with self._lifecycle_lock:
+            if stop_event.is_set():
+                return
+            self.set_health(100, "proposal-only — waiting for a typed Judgment bypass")
+        # Activation is delivered synchronously by the EventBus subscription in
+        # ``bind()``; this module has no periodic work. Declare a sparse idle
+        # cadence so a healthy waiting worker does not miss the watchdog's
+        # generic work deadline. No scans or model calls run on these wakes.
+        while not stop_event.is_set():
+            with self._lifecycle_lock:
+                if stop_event.is_set():
+                    break
+                self.mark_cycle_complete()
+            self.sleep(60.0, cycle_complete=False)
         gate = getattr(self, "_gate", None)
         if gate is None:
             return
