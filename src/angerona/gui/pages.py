@@ -2917,6 +2917,13 @@ class RedTeamSimulationDialog(QDialog):
 
 
 # ── Modules panel ────────────────────────────────────────────────────────────
+class _ModuleNameTableItem(QTableWidgetItem):
+    """Keep decorative category avatars out of module-name ordering."""
+
+    def __lt__(self, other) -> bool:
+        return str(self.data(Qt.UserRole)).casefold() < str(other.data(Qt.UserRole)).casefold()
+
+
 class ModulesPanel(QFrame):
     def __init__(self, manager, bus) -> None:
         super().__init__()
@@ -2939,7 +2946,7 @@ class ModulesPanel(QFrame):
         sort_row.addWidget(QLabel("Sort by:"))
         self._sort_combo = QComboBox()
         self._sort_combo.addItems(["Name", "On/Off", "Status", "Assurance", "Category"])
-        self._sort_combo.currentIndexChanged.connect(lambda *_: self._build())
+        self._sort_combo.currentIndexChanged.connect(self._sort_changed)
         sort_row.addWidget(self._sort_combo)
         self._module_search = QLineEdit()
         self._module_search.setPlaceholderText("Search capabilities…")
@@ -2964,10 +2971,23 @@ class ModulesPanel(QFrame):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSortingEnabled(True)
+        self.table.sortItems(1, Qt.AscendingOrder)
         self.table.cellClicked.connect(self._on_click)
+        self.table.itemChanged.connect(self._on_toggle)
+        self.table.setColumnWidth(0, 72)
         lay.addWidget(self.table)
-        self._built_count = -1
+        self._rendered_rows = None
         self._build()
+
+    def _sort_changed(self, *_args) -> None:
+        column, order = {
+            "Name": (1, Qt.AscendingOrder),
+            "On/Off": (0, Qt.DescendingOrder),
+            "Status": (2, Qt.AscendingOrder),
+            "Assurance": (3, Qt.AscendingOrder),
+            "Category": (4, Qt.AscendingOrder),
+        }[self._sort_combo.currentText()]
+        self.table.sortItems(column, order)
 
     def _sorted_items(self):
         items = list(self.manager.modules.items())
@@ -2989,115 +3009,132 @@ class ModulesPanel(QFrame):
                 item for item in items
                 if _capability_summary(item[1]).get("mode") == mode_filter
             ]
-        mode = self._sort_combo.currentText() if hasattr(self, "_sort_combo") else "Name"
-        if mode == "On/Off":
-            # enabled first, then by name
-            return sorted(items, key=lambda kv: (not self.manager.is_enabled(kv[0]), kv[0].lower()))
-        if mode == "Status":
-            return sorted(items, key=lambda kv: (getattr(kv[1], "status", ""), kv[0].lower()))
-        if mode == "Assurance":
-            def assurance_key(item):
-                health_summary = item[1].health_summary()
-                score = _module_assurance(
-                    self.manager,
-                    item[1],
-                    _fast_assurance_operational(item[1], health_summary),
-                ).score
-                return (score, item[0].lower())
-
-            return sorted(items, key=assurance_key)
-        if mode == "Category":
-            return sorted(items, key=lambda kv: (getattr(kv[1], "category", ""), kv[0].lower()))
+        # The native header owns presentation ordering. Do not recompute an
+        # assurance assessment for sorting and then repeat it to render a row.
         return sorted(items, key=lambda kv: kv[0].lower())
 
     def _build(self) -> None:
-        header = self.table.horizontalHeader()
-        sort_column = header.sortIndicatorSection()
-        sort_order = header.sortIndicatorOrder()
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(0)
+        """Reconcile light table items without recreating every row's widgets.
+
+        Module discovery publishes entries incrementally. The old refresh
+        cleared the entire table and installed a checkbox QWidget/layout per
+        row at each size change, putting repeated Qt layout work on MainThread.
+        Native check states need no child widgets; unchanged rows keep their
+        items, selection, and scroll position throughout discovery.
+        """
+        rows = {}
         for name, mod in self._sorted_items():
-            r = self.table.rowCount()
-            self.table.insertRow(r)
-            chk = QCheckBox()
-            chk.setChecked(self.manager.is_enabled(name))
-            chk.stateChanged.connect(lambda st, n=name: self.manager.set_enabled(n, bool(st)))
-            wrap = QWidget(); wlay = QHBoxLayout(wrap)
-            wlay.setAlignment(Qt.AlignCenter); wlay.setContentsMargins(0, 0, 0, 0)
-            wlay.addWidget(chk)
-            on_item = QTableWidgetItem("On" if chk.isChecked() else "Off")
-            on_item.setData(Qt.UserRole, name)
-            self.table.setItem(r, 0, on_item)
-            self.table.setCellWidget(r, 0, wrap)
-            name_item = QTableWidgetItem(f"{_avatar(mod.category)}  {mod.name}")
-            name_item.setData(Qt.UserRole, mod.name)
-            self.table.setItem(r, 1, name_item)
             health_summary = mod.health_summary()
             status, health, health_state = health_summary
-            status_text = f"{status} {health}%" if status == "running" else status
-            status_item = QTableWidgetItem(status_text)
-            status_item.setForeground(QColor(HEALTH_COLOR.get(health_state, "#e5e7eb")))
-            self.table.setItem(r, 2, status_item)
             assurance = _module_assurance(
                 self.manager, mod, _fast_assurance_operational(mod, health_summary)
             )
-            assurance_item = _PercentTableItem(assurance.score)
-            assurance_item.setForeground(QColor(_assurance_color(assurance.score)))
-            assurance_item.setToolTip(_assurance_tooltip(assurance))
-            self.table.setItem(r, 3, assurance_item)
-            self.table.setItem(r, 4, QTableWidgetItem(mod.category))
             contract = _capability_summary(mod)
-            self.table.setItem(r, 5, QTableWidgetItem(str(contract.get("mode", "legacy"))))
-            self.table.setItem(
-                r, 6, QTableWidgetItem(str(contract.get("implementation_version", mod.version)))
+            rows[name] = (
+                bool(self.manager.is_enabled(name)),
+                f"{_avatar(mod.category)}  {mod.name}",
+                f"{status} {health}%" if status == "running" else status,
+                HEALTH_COLOR.get(health_state, "#e5e7eb"),
+                assurance.score, _assurance_tooltip(assurance), mod.category,
+                str(contract.get("mode", "legacy")),
+                str(contract.get("implementation_version", mod.version)),
             )
-        self.table.setColumnWidth(0, 36)
-        self.table.setSortingEnabled(True)
-        self.table.sortItems(sort_column, sort_order)
-        self._built_count = len(self.manager.modules)
+        if rows == self._rendered_rows:
+            return
+
+        table = self.table
+        sorting, updates = table.isSortingEnabled(), table.updatesEnabled()
+        blocked = table.blockSignals(True)
+        table.setUpdatesEnabled(False)
+        table.setSortingEnabled(False)
+        try:
+            # Remove only departed/filtered modules and any incomplete row
+            # left by a prior failed render. Existing named items remain owned
+            # by Qt; removing from the end avoids moving a row yet to inspect.
+            for row in range(table.rowCount() - 1, -1, -1):
+                item = table.item(row, 1)
+                if item is None or item.data(Qt.UserRole) not in rows:
+                    table.removeRow(row)
+            existing = {
+                table.item(row, 1).data(Qt.UserRole): row
+                for row in range(table.rowCount())
+            }
+            missing = [name for name in rows if name not in existing]
+            offset = table.rowCount()
+            if missing:
+                # One allocation, rather than insertRow + layout for each
+                # discovered module. There are no persistent editor widgets.
+                table.setRowCount(offset + len(missing))
+                existing.update({name: offset + index for index, name in enumerate(missing)})
+            for name, values in rows.items():
+                if self._rendered_rows is not None and self._rendered_rows.get(name) == values:
+                    continue
+                row = existing[name]
+                enabled, title, status, color, score, tooltip, category, mode, version = values
+                texts = ("On" if enabled else "Off", title, status, f"{score}%", category, mode, version)
+                for column, text in enumerate(texts):
+                    item = table.item(row, column)
+                    if item is None:
+                        if column == 3:
+                            item = _PercentTableItem(score)
+                        elif column == 1:
+                            item = _ModuleNameTableItem(text)
+                        else:
+                            item = QTableWidgetItem(text)
+                        item.setData(Qt.UserRole, name)
+                        table.setItem(row, column, item)
+                    elif item.text() != text:
+                        item.setText(text)
+                on_item = table.item(row, 0)
+                on_item.setFlags(
+                    (on_item.flags() | Qt.ItemIsUserCheckable) & ~Qt.ItemIsEditable
+                )
+                on_item.setCheckState(Qt.Checked if enabled else Qt.Unchecked)
+                table.item(row, 2).setForeground(QColor(color))
+                assurance_item = table.item(row, 3)
+                assurance_item.score = score
+                assurance_item.setData(_PERCENT_SORT_ROLE, score)
+                assurance_item.setForeground(QColor(_assurance_color(score)))
+                assurance_item.setToolTip(tooltip)
+            self._rendered_rows = rows
+        except Exception:
+            # A half-applied render must not be mistaken for an unchanged
+            # snapshot on the next refresh. No partial UI grants authority.
+            self._rendered_rows = None
+            raise
+        finally:
+            table.setSortingEnabled(sorting)
+            table.setUpdatesEnabled(updates)
+            table.blockSignals(blocked)
 
     def refresh(self) -> None:
-        # Rebuild once discovery has populated modules (fixes the empty table).
-        if self._built_count != len(self.manager.modules):
-            self._build()
+        # Also detects same-count replacements, mode changes, and external
+        # enable/disable operations. Unchanged presentation does no Qt writes.
+        self._build()
+
+    def _on_toggle(self, item: QTableWidgetItem) -> None:
+        if item.column() != 0:
             return
-        header = self.table.horizontalHeader()
-        sort_column = header.sortIndicatorSection()
-        sort_order = header.sortIndicatorOrder()
-        self.table.setSortingEnabled(False)
-        self.table.setUpdatesEnabled(False)
-        for r in range(self.table.rowCount()):
-            name_item = self.table.item(r, 1)
-            if not name_item:
-                continue
-            mod = self.manager.modules.get(name_item.data(Qt.UserRole))
-            if not mod:
-                continue
-            health_summary = mod.health_summary()
-            status, health, health_state = health_summary
-            txt = f"{status} {health}%" if status == "running" else status
-            existing = self.table.item(r, 2)
-            if not existing or existing.text() != txt:
-                item = QTableWidgetItem(txt)
-                item.setForeground(QColor(HEALTH_COLOR.get(health_state, "#e5e7eb")))
-                self.table.setItem(r, 2, item)
-            assurance = _module_assurance(
-                self.manager, mod, _fast_assurance_operational(mod, health_summary)
-            )
-            current_assurance = self.table.item(r, 3)
-            rendered = f"{assurance.score}%"
-            if not current_assurance or current_assurance.text() != rendered:
-                assurance_item = _PercentTableItem(assurance.score)
-                assurance_item.setForeground(QColor(_assurance_color(assurance.score)))
-                assurance_item.setToolTip(_assurance_tooltip(assurance))
-                self.table.setItem(r, 3, assurance_item)
-                current_assurance = assurance_item
-            tooltip = _assurance_tooltip(assurance)
-            if current_assurance.toolTip() != tooltip:
-                current_assurance.setToolTip(tooltip)
-        self.table.setUpdatesEnabled(True)
-        self.table.setSortingEnabled(True)
-        self.table.sortItems(sort_column, sort_order)
+        name = item.data(Qt.UserRole)
+        if name not in self.manager.modules:
+            return
+        requested = item.checkState() == Qt.Checked
+        try:
+            if requested != bool(self.manager.is_enabled(name)):
+                self.manager.set_enabled(name, requested)
+        except Exception as exc:
+            self.table.setToolTip(f"Module toggle failed ({type(exc).__name__}); state refreshed.")
+        finally:
+            # Platform/policy rejection need not raise. Always restore the
+            # manager's state, without a programmatic toggle re-entering it.
+            blocked = self.table.blockSignals(True)
+            try:
+                enabled = bool(self.manager.is_enabled(name))
+                item.setCheckState(Qt.Checked if enabled else Qt.Unchecked)
+                item.setText("On" if enabled else "Off")
+            finally:
+                self.table.blockSignals(blocked)
+                self._rendered_rows = None
 
     def _on_click(self, row: int, col: int) -> None:
         if col == 0:                         # checkbox column — don't open inspector
