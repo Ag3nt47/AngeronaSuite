@@ -35,7 +35,12 @@ decorative category avatars and assurance sorting retains numeric values.
   preservation, forbidden per-row widget installation, authoritative toggles,
   rejection, filtering, replacements, numeric/name sorting, and render retry.
 - The focused panel, page safety, assurance, dashboard snapshot, refresh-worker,
-  and performance suite passes 41 tests.
+  and performance suite passes 41 tests, including in the clean publication
+  checkout containing only this update.
+- The isolated full offline selfcheck passes all 26 phases with zero failures;
+  its module/event-pipeline checks report 69 passes and 16 expected skips.
+  Package compilation covers 377 source files with zero failures. Changed
+  Python Ruff, Git whitespace, and offline documentation checks pass.
 - The broader health-evidence suite has a pre-existing failure in
   `test_all_builtin_snapshots_share_health_evidence_schema_and_parity`:
   `source_state` is `available` where it expects `untrusted-external`. The same
