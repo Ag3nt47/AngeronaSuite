@@ -76,7 +76,10 @@ def test_all_builtin_snapshots_share_health_evidence_schema_and_parity() -> None
     assert not manager.discovery_errors
     assert len(manager.modules) >= 80
     for module in manager.modules.values():
-        module.set_health(73, f"{module.name} bounded parity probe")
+        # Exercise the common inventory schema with an external callsite.
+        # Lifecycle overrides delegate through their own verified source line;
+        # that distinct provenance contract is checked below.
+        BaseModule.set_health(module, 73, f"{module.name} bounded parity probe")
     rows = manager.capability_inventory()
 
     assert len(rows) == len(manager.modules)
@@ -92,6 +95,25 @@ def test_all_builtin_snapshots_share_health_evidence_schema_and_parity() -> None
         assert evidence["source_path"] is None
         assert evidence["source_line"] is None
     json.dumps(rows, sort_keys=True)
+
+
+def test_ransomware_health_override_keeps_verified_delegation_source() -> None:
+    import hashlib
+
+    from angerona.modules import ransomware_heuristics
+
+    module = ransomware_heuristics.RansomwareHeuristicsModule()
+    module.set_health(73, "bounded delegated health probe")
+    evidence = module.health_evidence
+    assert evidence is not None
+    assert evidence["source_state"] == "available"
+    assert evidence["source_provenance"] == "verified-loaded-implementation"
+    assert evidence["source_path"] == "src/angerona/modules/ransomware_heuristics.py"
+    source = Path(ransomware_heuristics.__file__).read_bytes()
+    assert evidence["source_sha256"] == hashlib.sha256(source).hexdigest()
+    line = source.decode("utf-8").splitlines()[int(evidence["source_line"]) - 1]
+    assert "super().set_health(pct, note)" in line
+    assert module.operational_snapshot()["health_evidence"] == evidence
 
 
 def test_degraded_health_requires_bounded_serializable_reason_and_clears() -> None:

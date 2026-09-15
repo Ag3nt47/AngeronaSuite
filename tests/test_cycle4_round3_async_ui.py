@@ -5,6 +5,8 @@ import threading
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import shiboken6
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton
 
 from angerona.core.model_pack_manager import (
@@ -193,14 +195,19 @@ def test_top_talkers_ignores_ai_result_after_close(monkeypatch) -> None:
         assert window._start_ai_request("proc.exe", 7, "example:443", action, button, status)
         assert len(pool.jobs) == 1
         window.reject()
-        app.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        assert not shiboken6.isValid(window)
+        assert not shiboken6.isValid(action)
         _run_off_qt(pool.take())
         _process_queued_signals()
-        assert window._ai_in_flight is False
+        # Deleted receivers are disconnected: no completion slot or widget
+        # access is required to discard the result of the surviving worker.
         assert messages == []
     finally:
-        action.reject()
-        window.reject()
+        if shiboken6.isValid(action):
+            action.reject()
+        if shiboken6.isValid(window):
+            window.reject()
         app.processEvents()
 
 

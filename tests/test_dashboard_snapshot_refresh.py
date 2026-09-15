@@ -44,6 +44,24 @@ def _heartbeat(owner):
     return ticks, timer
 
 
+def _dispose_snapshot_harness(owner, reader):
+    """Finish the test-owned worker and native tree before another Qt event.
+
+    These bare QWidget harnesses borrow MainWindow methods, not its shutdown
+    path. In particular, _SecurityHarness has a self-referencing callback;
+    close() only hides it and can leave destruction to cyclic GC inside an
+    unrelated window's Show event on Python 3.10/3.11.
+    """
+    reader.close()
+    if reader.thread is not None:
+        reader.thread.join(2)
+        assert not reader.thread.is_alive()
+    owner.close()
+    owner.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert not shiboken6.isValid(owner)
+
+
 class _Storage:
     def revision(self):
         return 1
@@ -217,8 +235,7 @@ def test_security_wake_delivers_high_arriving_during_busy_reader(monkeypatch):
     finally:
         release.set()
         timer.stop()
-        window._security_reader.close()
-        window.close()
+        _dispose_snapshot_harness(window, window._security_reader)
 
 
 def test_soar_refresh_and_selection_use_background_snapshot(monkeypatch):
@@ -333,8 +350,7 @@ def test_posture_keeps_previous_label_during_slow_read_and_failure(monkeypatch):
     finally:
         release.set()
         timer.stop()
-        window._posture_reader.close()
-        window.close()
+        _dispose_snapshot_harness(window, window._posture_reader)
 
 
 def test_security_classification_failure_keeps_cursor_for_retry(monkeypatch):
@@ -358,5 +374,4 @@ def test_security_classification_failure_keeps_cursor_for_retry(monkeypatch):
         assert [event.message for event in window.observed] == ["retry me"]
         assert window._last_bus_revision == bus.revision()
     finally:
-        window._security_reader.close()
-        window.close()
+        _dispose_snapshot_harness(window, window._security_reader)

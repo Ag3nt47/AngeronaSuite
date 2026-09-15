@@ -103,3 +103,50 @@ application after updating to load this code. The application version remains
 Publication must use the guarded publisher from the clean reviewed worktree,
 verify public `main` and the publishing branch at the exact commit, and verify
 all public README image bytes. The unrelated development files are excluded.
+
+## CI follow-up
+
+The first performance publication, `c6cf151`, failed
+[CI run 35034396133](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/35034396133).
+The failure had three distinct causes:
+
+- The Top Talkers late-result test still expected a completion callback on a
+  dialog that the performance change now deletes on close. Its cleanup also
+  called `reject()` on a deleted child dialog. The updated test explicitly
+  delivers deferred deletion, verifies both native dialogs are gone, then runs
+  the queued worker and checks that no result message appears.
+- The module inventory parity test assumed every `set_health` call had an
+  external source. Ransomware's lifecycle override delegates through a verified
+  implementation line. The common external-callsite test now invokes the base
+  setter directly; a separate regression verifies the override's exact source
+  path, line, SHA-256 and snapshot parity. Production provenance rules are
+  unchanged.
+- Python 3.10/3.11 terminated with native heap corruption while showing the
+  first animated destination. Python 3.11.9 and CI's PySide6 6.11.2 reproduced
+  the crash locally. Splitting the preceding tests isolated a collection-order
+  interaction. A diagnostic GC trace identified an unreachable `_SecurityHarness`
+  and its snapshot reader/timer being collected during the next test's window
+  show. Retaining that garbage diagnostically, or collecting between tests,
+  avoided the crash. The final fix explicitly stops and joins the test-owned
+  reader, schedules deletion of the harness, delivers deferred deletion, and
+  verifies the native widget is gone. The security and posture harnesses borrow
+  MainWindow methods but do not have its shutdown path; merely closing their
+  bare QWidget hid it and left callback cycles for later collection.
+
+The health parity failure and native crash also appear in
+[the preceding main CI run](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/34800651382).
+The Top Talkers expectation became stale in the performance update. No tests
+were disabled, no Python versions were removed, and no GC or dependency
+workaround was added to the application or test fixtures.
+
+The previously crashing 448-case group passes with the explicit harness cleanup
+(**444 passed, 4 skipped**). All affected tests plus the animation contracts pass
+on Python 3.12 (**43 passed**). Scoped Ruff, full source/test/tool compilation,
+documentation drift and Git whitespace checks pass.
+
+The full Python 3.11.9 suite with the final cleanup passes: **3,643 passed,
+19 skipped**, with no native crash. The full Python 3.12 suite after the two
+assertion corrections also passed (**3,644 passed, 18 skipped**); the 43-case
+rerun above covers the subsequent teardown edit. Optional/platform-dependent
+skips differ by local interpreter and environment. GitHub must independently
+complete the unchanged Python 3.10–3.13 matrix after publication.
