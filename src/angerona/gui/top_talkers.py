@@ -202,6 +202,7 @@ class TopTalkersDialog(QDialog):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setWindowTitle("Top Talkers — outbound network awareness")
         self.setMinimumSize(860, 520)
         if parent is not None:

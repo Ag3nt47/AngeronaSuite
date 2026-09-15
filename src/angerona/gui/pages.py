@@ -1182,19 +1182,22 @@ def _soar_process_preflight(record: dict, bus, manager):
     return process, event
 
 
-def _verified_combat_receipt(bus, request_id: str):
-    """Return a locally authenticated, structurally complete Combat receipt."""
+def _verified_combat_receipts(bus, request_ids: set[str]) -> dict:
+    """Authenticate one bounded snapshot, preserving the first valid receipt."""
+    receipts = {}
+    if not request_ids:
+        return receipts
     if bus is None or not getattr(bus, "integrity_enabled", False):
-        return None
+        return receipts
     for event in reversed(bus.recent(500)):
         if getattr(event, "module", "") != "Adversary Combat":
             continue
         details = getattr(event, "details", {}) or {}
-        if (
-            not isinstance(details, dict)
-            or details.get("queue_request_id") != request_id
-            or not bus.verify(event)
-        ):
+        if not isinstance(details, dict):
+            continue
+        request_id = details.get("queue_request_id")
+        if (not isinstance(request_id, str) or request_id not in request_ids
+                or request_id in receipts or not bus.verify(event)):
             continue
         succeeded = details.get("action_succeeded") is True
         action_ids = details.get("action_ids")
@@ -1217,8 +1220,13 @@ def _verified_combat_receipt(bus, request_id: str):
             and not actions
         ):
             continue
-        return event
-    return None
+        receipts[request_id] = event
+    return receipts
+
+
+def _verified_combat_receipt(bus, request_id: str):
+    """Return a locally authenticated, structurally complete Combat receipt."""
+    return _verified_combat_receipts(bus, {request_id}).get(request_id)
 
 
 def _reconcile_soar_submission_receipts(
@@ -1227,11 +1235,12 @@ def _reconcile_soar_submission_receipts(
     """Close submitted queue items only from signed Combat results or timeout."""
     changed = False
     now = time.time()
-    for record in records:
-        if not str(record.get("status", "")).upper().startswith("SUBMITTED"):
-            continue
+    submitted = [record for record in records
+                 if str(record.get("status", "")).upper().startswith("SUBMITTED")]
+    receipts = _verified_combat_receipts(bus, {_soar_record_id(record) for record in submitted})
+    for record in submitted:
         request_id = _soar_record_id(record)
-        receipt = _verified_combat_receipt(bus, request_id)
+        receipt = receipts.get(request_id)
         if receipt is not None:
             details = getattr(receipt, "details", {}) or {}
             succeeded = details.get("action_succeeded") is True
@@ -1418,13 +1427,10 @@ class StatCard(QFrame):
 
 
 class DashboardCards(QWidget):
-    count_loaded = Signal(object, object)
-
     def __init__(self, bus, storage, manager) -> None:
         super().__init__()
         self.bus, self.storage, self.manager = bus, storage, manager
         self._accept_async_results = True
-        self._count_worker: threading.Thread | None = None
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(14)
@@ -1443,8 +1449,10 @@ class DashboardCards(QWidget):
         # waits behind a SQLite writer/checkpoint on the GUI thread.
         self._last_storage_revision: int = -1
         self._cached_count: int = 0
-        self._count_load_busy = False
-        self.count_loaded.connect(self._apply_count)
+        self._count_reader = AsyncSnapshot(
+            self, self._prepare_count_snapshot,
+            lambda snapshot: self._apply_count(*snapshot), name="DashboardCountReader",
+        )
         self._threat_reader = AsyncSnapshot(
             self, self._prepare_threat_snapshot, self._apply_threat_snapshot,
             name="DashboardThreatReader",
@@ -1459,23 +1467,15 @@ class DashboardCards(QWidget):
         running = sum(1 for m in self.manager.modules.values() if m.status == "running")
         self.c_modules.set(f"{running}/{len(self.manager.modules)}")
         revision = self.storage.revision()
-        if revision != self._last_storage_revision and not self._count_load_busy:
-            self._count_load_busy = True
-
-            def _load_count(_revision=revision) -> None:
-                try:
-                    count = self.storage.try_count_since(time.time() - 86400)
-                    _emit_if_accepting(self, "count_loaded", _revision, count)
-                except Exception:
-                    _emit_if_accepting(self, "count_loaded", _revision, None)
-
-            self._count_worker = threading.Thread(
-                target=_load_count, name="DashboardCountReader", daemon=True
-            )
-            self._count_worker.start()
+        if revision != self._last_storage_revision and not self._count_reader.busy:
+            self._count_reader.request()
         self.c_alerts.set(str(self._cached_count))
 
         self._threat_reader.request()
+
+    def _prepare_count_snapshot(self):
+        storage, revision = self.storage, self.storage.revision()
+        return lambda: (revision, storage.try_count_since(time.time() - 86400))
 
     def _prepare_threat_snapshot(self):
         bus = self.bus
@@ -1495,7 +1495,6 @@ class DashboardCards(QWidget):
     def _apply_count(self, revision, count) -> None:
         if not self._accept_async_results:
             return
-        self._count_load_busy = False
         if count is None:
             return
         self._cached_count = int(count)
@@ -1504,6 +1503,7 @@ class DashboardCards(QWidget):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
         self._accept_async_results = False
+        self._count_reader.close()
         self._threat_reader.close()
         super().closeEvent(event)
 
@@ -1662,6 +1662,7 @@ class EventsWindow(QDialog):
     def __init__(self, title, bus, storage, min_sev=Severity.LOW,
                  window_s=86400, active_only=False, parent=None) -> None:
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.bus, self.storage = bus, storage
         self.min_sev, self.window_s = min_sev, window_s
         self.active_only = bool(active_only)
@@ -4399,6 +4400,7 @@ class AlertDetailDialog(QDialog):
     identical to the inline row buttons. Research always works (AI consult)."""
     def __init__(self, event, parent=None, panel=None) -> None:
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self._event = event
         self._panel = panel
         self.setWindowTitle("Alert detail")
@@ -4695,7 +4697,6 @@ class AlertDetailDialog(QDialog):
 
 
 class AlertsPanel(QFrame):
-    events_loaded = Signal(object, object)
     scan_requested = Signal()
 
     def __init__(self, storage, allow_cloud=False, bus=None) -> None:
@@ -4704,15 +4705,16 @@ class AlertsPanel(QFrame):
         self.storage = storage
         self.bus = bus
         self._accept_async_results = True
-        self._events_worker: threading.Thread | None = None
         self._allow_cloud = allow_cloud is True
         self._events: list = []
         self._rendered_event_ids: tuple[str, ...] = ()
         self._newest_ts: float = 0.0
         self._last_storage_revision: int = -1
         self._last_gap_rebuild: float = 0.0
-        self._events_load_busy = False
-        self.events_loaded.connect(self._apply_loaded_events)
+        self._events_reader = AsyncSnapshot(
+            self, self._prepare_alert_snapshot,
+            lambda snapshot: self._apply_loaded_events(*snapshot), name="DashboardAlertReader",
+        )
         # Explicit, short-lived detector-pattern suppressions.  Module-wide and
         # integrity-alert suppression are deliberately unsupported.
         self._suppressions: dict[tuple[str, str], float] = {}
@@ -5233,6 +5235,7 @@ class AlertsPanel(QFrame):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
         self._accept_async_results = False
+        self._events_reader.close()
         super().closeEvent(event)
 
     def refresh(self) -> None:
@@ -5243,26 +5246,17 @@ class AlertsPanel(QFrame):
         # The pre-check is an in-memory committed revision. If a writer is busy,
         # keep the current table and retry on the next two-second refresh.
         revision = self.storage.revision()
-        if revision == self._last_storage_revision or self._events_load_busy:
+        if revision == self._last_storage_revision or self._events_reader.busy:
             return
-        self._events_load_busy = True
+        self._events_reader.request()
 
-        def _load_events(_revision=revision) -> None:
-            try:
-                events = self.storage.try_recent(120)
-                _emit_if_accepting(self, "events_loaded", _revision, events)
-            except Exception:
-                _emit_if_accepting(self, "events_loaded", _revision, None)
-
-        self._events_worker = threading.Thread(
-            target=_load_events, name="DashboardAlertReader", daemon=True
-        )
-        self._events_worker.start()
+    def _prepare_alert_snapshot(self):
+        storage, revision = self.storage, self.storage.revision()
+        return lambda: (revision, storage.try_recent(120))
 
     def _apply_loaded_events(self, revision, events) -> None:
         if not self._accept_async_results:
             return
-        self._events_load_busy = False
         if events is None:
             return
         self._rebuild_event_rows(events)
@@ -5342,6 +5336,7 @@ class SoarPanel(QFrame):
         self.manager = manager
         self._queue_fingerprint: str | None = None
         self._queue_records: dict[str, dict] = {}
+        self._queue_display_rows: dict[str, tuple] = {}
         self._queue_reader = AsyncSnapshot(
             self, self._prepare_queue_snapshot, self._apply_queue_snapshot,
             name="DashboardSoarReader",
@@ -5473,25 +5468,61 @@ class SoarPanel(QFrame):
         if fingerprint == self._queue_fingerprint:
             self._sync_action_buttons()
             return
-        selected = self._selected_request_id()
-        self._queue_fingerprint = fingerprint
-        self._queue_records = {_soar_record_id(record): record for record in items}
+        selected_item = self.table.item(self.table.currentRow(), 0)
+        selected_key = selected_item.data(Qt.UserRole + 1) if selected_item else None
+        scroll = self.table.verticalScrollBar().value()
+        occurrences: dict[str, int] = {}
+        keyed = []
+        for record in reversed(items):
+            request_id = _soar_record_id(record)
+            ordinal = occurrences.get(request_id, 0)
+            occurrences[request_id] = ordinal + 1
+            keyed.append((f"{request_id}:{ordinal}", request_id, record))
+        wanted = {key for key, _, _ in keyed}
+        display_rows = {}
         self.table.setUpdatesEnabled(False)
         self.table.blockSignals(True)
         try:
-            self.table.setRowCount(0)
-            for rec in reversed(items):     # newest first
-                r = self.table.rowCount()
-                self.table.insertRow(r)
-                ts = time.strftime("%m-%d %H:%M:%S", time.localtime(rec.get("ts", 0)))
-                ts_item = QTableWidgetItem(ts)
-                request_id = _soar_record_id(rec)
-                ts_item.setData(Qt.UserRole, request_id)
-                self.table.setItem(r, 0, ts_item)
-                self.table.setItem(r, 1, QTableWidgetItem(str(rec.get("origin_module", ""))))
-                self.table.setItem(r, 2, QTableWidgetItem(str(rec.get("severity", ""))))
-                self.table.setItem(r, 3, QTableWidgetItem(str(rec.get("message", ""))))
-                st = QTableWidgetItem(str(rec.get("status", "")))
+            for r in range(self.table.rowCount() - 1, -1, -1):
+                item = self.table.item(r, 0)
+                if item is None or item.data(Qt.UserRole + 1) not in wanted:
+                    self.table.removeRow(r)
+            retained = {
+                self.table.item(r, 0).data(Qt.UserRole + 1): self.table.item(r, 0)
+                for r in range(self.table.rowCount())
+            }
+            for r, (key, request_id, rec) in enumerate(keyed):
+                item = retained.get(key)
+                if item is None:
+                    self.table.insertRow(r)
+                    for col in range(5):
+                        self.table.setItem(r, col, QTableWidgetItem())
+                    item = self.table.item(r, 0)
+                    item.setData(Qt.UserRole, request_id)
+                    item.setData(Qt.UserRole + 1, key)
+                elif item.row() != r:
+                    old_row = item.row()
+                    cells = [self.table.takeItem(old_row, col) for col in range(5)]
+                    self.table.removeRow(old_row)
+                    self.table.insertRow(r)
+                    for col, cell in enumerate(cells):
+                        self.table.setItem(r, col, cell)
+                display = (
+                    rec.get("ts", 0),
+                    str(rec.get("origin_module", "")), str(rec.get("severity", "")),
+                    str(rec.get("message", "")), str(rec.get("status", "")),
+                )
+                display_rows[key] = display
+                if selected_key == key:
+                    self.table.selectRow(r)
+                if display == self._queue_display_rows.get(key):
+                    continue
+                values = [time.strftime("%m-%d %H:%M:%S", time.localtime(display[0])), *display[1:]]
+                for col, value in enumerate(values):
+                    cell = self.table.item(r, col)
+                    if cell.text() != value:
+                        cell.setText(value)
+                st = self.table.item(r, 4)
                 status = str(rec.get("status", "")).upper()
                 color = (
                     "#22c55e" if status.startswith("EXECUTED")
@@ -5499,13 +5530,21 @@ class SoarPanel(QFrame):
                     else "#38bdf8" if status.startswith("APPROVED")
                     else "#f59e0b"
                 )
-                st.setForeground(QColor(color))
-                self.table.setItem(r, 4, st)
-                if selected == request_id:
-                    self.table.selectRow(r)
+                if st.foreground().color() != QColor(color):
+                    st.setForeground(QColor(color))
+            if selected_key not in wanted:
+                self.table.setCurrentItem(None)
+            self.table.verticalScrollBar().setValue(scroll)
+        except Exception:
+            self._queue_display_rows.clear()
+            raise
         finally:
             self.table.blockSignals(False)
             self.table.setUpdatesEnabled(True)
+        # A failed render is retried; a display snapshot never grants approval.
+        self._queue_records = {_soar_record_id(record): record for record in items}
+        self._queue_display_rows = display_rows
+        self._queue_fingerprint = fingerprint
         pending = sum(
             1 for record in items
             if str(record.get("status", "")).upper().startswith("PENDING")

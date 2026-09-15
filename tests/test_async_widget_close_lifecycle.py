@@ -161,7 +161,7 @@ def test_dashboard_cards_drop_count_after_delete(monkeypatch) -> None:
     app.processEvents()
 
     cards.refresh()
-    worker = cards._count_worker
+    worker = cards._count_reader.thread
     assert worker is not None
     _close_during_worker(cards, worker, entered, release, errors)
 
@@ -246,6 +246,6 @@ def test_alerts_panel_drops_storage_result_after_delete(monkeypatch) -> None:
     app.processEvents()
 
     panel.refresh()
-    worker = panel._events_worker
+    worker = panel._events_reader.thread
     assert worker is not None
     _close_during_worker(panel, worker, entered, release, errors)
