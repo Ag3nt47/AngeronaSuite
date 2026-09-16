@@ -4392,17 +4392,53 @@ def _event_evidence_context(event) -> dict[str, str]:
     }
 
 
+def _alert_action_panel(owner, bus=None):
+    """Find this view's action owner without requiring the feed to be visible.
+
+    Dialog.window() stops at a child dialog, so walk its full parent chain.
+    Detached bus-backed views may find the same session by bus identity; never
+    route an event to an unrelated application's first top-level window.
+    """
+    from PySide6.QtWidgets import QApplication
+    from shiboken6 import isValid
+
+    def belongs_to_session(panel):
+        return (isinstance(panel, AlertsPanel) and isValid(panel)
+                and panel._accept_async_results
+                and (bus is None or panel.bus is bus))
+
+    seen = set()
+    while isinstance(owner, QWidget) and id(owner) not in seen:
+        seen.add(id(owner))
+        try:
+            if bus is None:
+                bus = getattr(owner, "bus", None)
+            panel = owner if isinstance(owner, AlertsPanel) else getattr(owner, "alerts_panel", None)
+            if belongs_to_session(panel):
+                return panel
+            owner = owner.parentWidget()
+        except RuntimeError:
+            return None
+    if bus is not None:
+        for window in QApplication.topLevelWidgets():
+            panel = getattr(window, "alerts_panel", None)
+            if belongs_to_session(panel):
+                return panel
+    return None
+
+
 class AlertDetailDialog(QDialog):
     """Full granular detail for one alert, incl. a SHA-256 fingerprint.
 
-    `panel` (optional): the AlertsPanel this alert came from. When provided, the
-    Allow / Block / Analyze buttons reuse the panel's handlers so behaviour is
-    identical to the inline row buttons. Research always works (AI consult)."""
+    Actions resolve through the owning session from every evidence surface.
+    `panel` optionally supplies that owner explicitly for inline row actions.
+    """
     def __init__(self, event, parent=None, panel=None) -> None:
         super().__init__(parent)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self._event = event
-        self._panel = panel
+        self._panel = panel if panel is not None else _alert_action_panel(parent)
+        panel = self._panel
         self.setWindowTitle("Alert detail")
         self.setMinimumSize(580, 480)
         if parent:
@@ -4412,6 +4448,7 @@ class AlertDetailDialog(QDialog):
         identity = _event_record_identity(
             event, getattr(panel, "bus", None) if panel is not None else None
         )
+        self._action_identity = identity
         authenticity_verified = identity.startswith("verified:")
         evidence_subtitle = (
             "Verified EventBus HMAC authenticity, record fingerprint, and "
@@ -4560,6 +4597,12 @@ class AlertDetailDialog(QDialog):
         self._action_status.setStyleSheet("color:#94a3b8; font-size:12px;")
         acts = QHBoxLayout()
         b_allow = QPushButton("Allow");   b_allow.clicked.connect(self._act_allow)
+        b_allow.setEnabled(panel is not None)
+        if panel is None:
+            b_allow.setToolTip("Open this record in an active Angerona session to suppress matching alerts.")
+        b_undo_allow = QPushButton("Undo Allow")
+        b_undo_allow.clicked.connect(self._act_undo_allow)
+        b_undo_allow.setToolTip("Revoke the temporary suppression matching this alert.")
         b_block = QPushButton("Block");   b_block.clicked.connect(self._act_block)
         b_block.setEnabled(disposition in {"active", "practice"})
         if not b_block.isEnabled():
@@ -4572,8 +4615,10 @@ class AlertDetailDialog(QDialog):
         b_block.setStyleSheet("background:#7f1d1d;color:#fca5a5;")
         b_analyze.setStyleSheet("background:#1e3a5f;color:#7dd3fc;")
         b_research.setStyleSheet("background:#4c1d95;color:#e9d5ff;")
+        self._b_allow = b_allow
+        self._b_undo_allow = b_undo_allow
         self._b_analyze = b_analyze
-        for b in (b_allow, b_block, b_analyze, b_research, b_copy):
+        for b in (b_allow, b_undo_allow, b_block, b_analyze, b_research, b_copy):
             acts.addWidget(b)
         acts.addStretch()
         close = QPushButton("Close"); close.setObjectName("Primary")
@@ -4581,31 +4626,40 @@ class AlertDetailDialog(QDialog):
         acts.addWidget(close)
         lay.addLayout(acts)
         lay.addWidget(self._action_status)
+        if panel is not None:
+            panel.analysis_status.connect(self._on_analysis_status)
+            panel.suppression_changed.connect(self._sync_suppression_actions)
+        self._sync_suppression_actions()
 
-    # ── Action handlers (reuse the AlertsPanel logic when available) ──────────
+    def _sync_suppression_actions(self) -> None:
+        self._b_undo_allow.setEnabled(
+            self._panel is not None and self._panel._is_suppressed(self._event)
+        )
+
+    def _on_analysis_status(self, identity: str, message: str) -> None:
+        if identity == self._action_identity:
+            self._action_status.setText(message)
+
+    # ── Action handlers (shared with the session's inline row actions) ────────
     def _act_allow(self) -> None:
         if self._panel is not None:
-            changed = self._panel._allow_event(self._event)
-            self._action_status.setText(
-                "A confirmed 15-minute exact-rule suppression is active; "
-                "use Undo Allow in Live Alerts to revoke it."
-                if changed else "No alert suppression was created."
-            )
-        else:
-            self._action_status.setText("Allow needs the live Alerts panel.")
+            self._panel._allow_event(self._event)
+            self._action_status.setText(self._panel._status.text())
+
+    def _act_undo_allow(self) -> None:
+        if self._panel is not None:
+            self._panel._undo_event_suppression(self._event)
+            self._action_status.setText(self._panel._status.text())
 
     def _act_block(self) -> None:
         if self._panel is not None:
             # Report the panel's ACTUAL result — it shows its own confirm dialog
             # and may cancel or fail; claiming "queued" unconditionally is what
             # made blocks look successful while nothing reached the SOAR tab.
-            ok = self._panel._block_event(self._event)
-            self._action_status.setText(
-                "Direct containment completed; the exact process was suspended "
-                "and recorded in SOAR history." if ok
-                else "No containment action completed (cancelled or safely refused).")
+            self._panel._block_event(self._event)
+            self._action_status.setText(self._panel._status.text())
             return
-        # Standalone (opened from a module view): persist the review-gated request
+        # Detached record without a session: persist the review-gated request
         # first (the SOAR tab reads the file), then best-effort bus notify.
         e = self._event
         persisted = _persist_soar_queue(e)
@@ -4630,9 +4684,8 @@ class AlertDetailDialog(QDialog):
     def _act_analyze(self) -> None:
         if self._panel is not None:
             self._panel._analyze_event(self._event, self._b_analyze)
-            self._action_status.setText("Running deep AI triage… (see Alerts panel status)")
             return
-        # Standalone deep triage (module view): run the worker here.
+        # Detached record without a session: run the local worker here.
         try:
             from angerona.core.analysis_worker import AnalysisWorker
         except Exception as exc:
@@ -4698,6 +4751,8 @@ class AlertDetailDialog(QDialog):
 
 class AlertsPanel(QFrame):
     scan_requested = Signal()
+    analysis_status = Signal(str, str)
+    suppression_changed = Signal()
 
     def __init__(self, storage, allow_cloud=False, bus=None) -> None:
         super().__init__()
@@ -4877,27 +4932,31 @@ class AlertsPanel(QFrame):
         btn.clicked.connect(lambda: self._analyze_event(event, btn))
         return btn
 
+    def _set_analysis_status(self, message: str, identity: str = "") -> None:
+        self._status.setText(message)
+        self.analysis_status.emit(identity, message)
+
     def _analyze_event(self, event, btn) -> None:
         """Run operator-triggered deep triage off the GUI thread.
 
         Local Ollama is always tried first. Sanitized cloud fallback is used only
         when the operator explicitly enabled it in Settings.
         """
+        identity = _event_record_identity(event, self.bus)
         try:
             from angerona.core.analysis_worker import AnalysisWorker
         except Exception as exc:
-            self._status.setText(f"Analyze unavailable: {exc}")
+            self._set_analysis_status(f"Analyze unavailable: {exc}", identity)
             return
-        identity = _event_record_identity(event, self.bus)
         if identity in self._analyze_inflight:
-            self._status.setText(
-                "Analyze is already running or queued for this exact event."
+            self._set_analysis_status(
+                "Analyze is already running or queued for this exact event.", identity
             )
             return
         if len(self._analyze_workers) >= self._max_analyze_workers:
             if len(self._analyze_queue) >= self._max_analyze_queue:
-                self._status.setText(
-                    "Analyze queue is full (2 active · 6 queued); try again shortly."
+                self._set_analysis_status(
+                    "Analyze queue is full (2 active · 6 queued); try again shortly.", identity
                 )
                 return
             self._analyze_inflight.add(identity)
@@ -4908,8 +4967,8 @@ class AlertsPanel(QFrame):
                     btn.setText("Queued…")
                 except RuntimeError:
                     pass
-            self._status.setText(
-                f"Analyze queued ({len(self._analyze_queue)}/{self._max_analyze_queue})."
+            self._set_analysis_status(
+                f"Analyze queued ({len(self._analyze_queue)}/{self._max_analyze_queue}).", identity
             )
             return
         self._analyze_inflight.add(identity)
@@ -4923,7 +4982,7 @@ class AlertsPanel(QFrame):
             except Exception as exc:
                 self._analyze_inflight.discard(identity)
                 self._reset_analyze_btn(btn)
-                self._status.setText(f"Analyze unavailable: {exc}")
+                self._set_analysis_status(f"Analyze unavailable: {exc}", identity)
                 return
         if btn is not None:
             try:
@@ -4948,11 +5007,15 @@ class AlertsPanel(QFrame):
         )
         loading_token = begin_loading("Retrieving alert analysis…")
         self._analyze_workers.append(worker)
-        worker.progress.connect(self._status.setText)
-        worker.result_ready.connect(
-            lambda res, b=btn: self._on_analyze_done(res, b)
+        worker.progress.connect(
+            lambda message, event_id=identity: self._set_analysis_status(message, event_id)
         )
-        worker.error.connect(lambda msg, b=btn: self._on_analyze_err(msg, b))
+        worker.result_ready.connect(
+            lambda res, b=btn, event_id=identity: self._on_analyze_done(res, b, event_id)
+        )
+        worker.error.connect(
+            lambda msg, b=btn, event_id=identity: self._on_analyze_err(msg, b, event_id)
+        )
         # Retain the worker until Qt confirms run() has returned. Reaping from
         # result_ready/error could delete a native QThread that is still
         # unwinding, which aborts the process on Windows.
@@ -4962,6 +5025,7 @@ class AlertsPanel(QFrame):
         worker.finished.connect(
             lambda token=loading_token: finish_loading(token)
         )
+        self._set_analysis_status("Running deep AI triage…", identity)
         worker.start()
 
     @staticmethod
@@ -4986,18 +5050,18 @@ class AlertsPanel(QFrame):
         event, btn, queued_identity = self._analyze_queue.pop(0)
         self._start_analysis(event, btn, queued_identity)
 
-    def _on_analyze_done(self, result: dict, btn) -> None:
+    def _on_analyze_done(self, result: dict, btn, identity: str = "") -> None:
         self._reset_analyze_btn(btn)
         verdict = result.get("final_verdict", "UNKNOWN")
         conf = result.get("final_confidence", 0)
         src = "cloud" if result.get("cloud") else "local"
         detail = (result.get("cloud") or result.get("local") or {})
         reason = detail.get("reasoning") or detail.get("justification") or ""
-        self._status.setText(f"🔍 [{verdict} · {conf}% · {src}] {reason}")
+        self._set_analysis_status(f"🔍 [{verdict} · {conf}% · {src}] {reason}", identity)
 
-    def _on_analyze_err(self, msg: str, btn) -> None:
+    def _on_analyze_err(self, msg: str, btn, identity: str = "") -> None:
         self._reset_analyze_btn(btn)
-        self._status.setText(f"⚠ Analyze failed: {msg}")
+        self._set_analysis_status(f"⚠ Analyze failed: {msg}", identity)
 
     def _allow_event(self, event) -> bool:
         """Confirm a reversible, expiring exact-rule/pattern suppression."""
@@ -5024,6 +5088,7 @@ class AlertsPanel(QFrame):
             QMessageBox.No,
         )
         if answer != QMessageBox.Yes:
+            self._status.setText("No alert suppression was created.")
             return False
         scope = (module, selector)
         expires = time.time() + 15 * 60
@@ -5037,6 +5102,7 @@ class AlertsPanel(QFrame):
             "Use Undo Allow to restore it now."
         )
         self._rebuild_event_rows(self._events, force=True)
+        self.suppression_changed.emit()
         return True
 
     def _publish_suppression_audit(
@@ -5063,23 +5129,31 @@ class AlertsPanel(QFrame):
             pass
 
     def _undo_last_suppression(self) -> None:
-        scope = self._last_suppression
+        self._undo_suppression(self._last_suppression)
+
+    def _undo_event_suppression(self, event) -> None:
+        module, selector, _description = _alert_suppression_scope(event)
+        self._undo_suppression((module, selector))
+
+    def _undo_suppression(self, scope) -> None:
+        self._expire_suppressions()
         if scope is None or scope not in self._suppressions:
-            self._undo_allow.setEnabled(False)
+            self._undo_allow.setEnabled(self._last_suppression in self._suppressions)
             self._status.setText("No active temporary suppression to undo.")
+            self.suppression_changed.emit()
             return
         expires = self._suppressions.pop(scope)
         self._publish_suppression_audit("revoked", scope, expires)
-        self._last_suppression = None
-        self._undo_allow.setEnabled(False)
+        if scope == self._last_suppression:
+            self._last_suppression = next(reversed(self._suppressions), None)
+        self._undo_allow.setEnabled(self._last_suppression is not None)
         self._status.setText(
             f"Temporary suppression revoked for {scope[0]}; matching alerts are visible."
         )
         self._rebuild_event_rows(self._events, force=True)
+        self.suppression_changed.emit()
 
-    def _is_suppressed(self, event, *, now: float | None = None) -> bool:
-        if _is_integrity_alert(event):
-            return False
+    def _expire_suppressions(self, now: float | None = None) -> bool:
         current = time.time() if now is None else float(now)
         expired = [
             scope for scope, expiry in self._suppressions.items()
@@ -5090,6 +5164,15 @@ class AlertsPanel(QFrame):
             if scope == self._last_suppression:
                 self._last_suppression = None
                 self._undo_allow.setEnabled(False)
+        if expired:
+            self.suppression_changed.emit()
+        return bool(expired)
+
+    def _is_suppressed(self, event, *, now: float | None = None) -> bool:
+        current = time.time() if now is None else float(now)
+        self._expire_suppressions(current)
+        if _is_integrity_alert(event):
+            return False
         module, selector, _description = _alert_suppression_scope(event)
         return self._suppressions.get((module, selector), 0.0) > current
 
@@ -5138,6 +5221,7 @@ class AlertsPanel(QFrame):
         dlg.setDefaultButton(QMessageBox.Cancel)
         dlg.setIcon(QMessageBox.Warning)
         if dlg.exec() != QMessageBox.Ok:
+            self._status.setText("No containment action completed (cancelled).")
             return False
 
         # Refuse an unaudited host mutation: history must be durable before the
@@ -5241,7 +5325,7 @@ class AlertsPanel(QFrame):
     def refresh(self) -> None:
         # Expiry is wall-clock state, independent of ledger revision. Re-render
         # when a temporary suppression lapses even if no new event arrived.
-        if any(expiry <= time.time() for expiry in self._suppressions.values()):
+        if self._expire_suppressions():
             self._rebuild_event_rows(self._events, force=True)
         # The pre-check is an in-memory committed revision. If a writer is busy,
         # keep the current table and retry on the next two-second refresh.

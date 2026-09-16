@@ -17,6 +17,16 @@ responsiveness investigation. Dashboard snapshots reuse idle workers; ARIA
 history and event drill-down reads run outside Qt. Busy/error retains the last
 display, and worker closure never waits on history I/O. Version remains 1.13.0.
 
+## ALERT ACTION MAINTENANCE (2026-09-15)
+
+See `analysis/alert-actions-everywhere-2026-09-15.md`. Alert details resolve
+their own session through nested views without opening Live Alerts. Allow is
+the same confirmed 15-minute exact-rule suppression everywhere, including
+Resolve Center; older process-trust Allow descriptions below are historical.
+Detail offers event-specific Undo Allow and displays shared bounded analysis
+progress/results locally. Block retains the existing evidence and confirmation
+gates. Persistent process trust remains in Settings → Trusted Processes.
+
 ## LATEST (v1.13.0 — Cycle 34 improvement loop)
 
 - **Release truth:** post-release maintenance only; product remains v1.13.0 and

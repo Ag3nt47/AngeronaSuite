@@ -4,8 +4,10 @@ Opened from the dashboard Threat-level box. Lists the CRITICAL / HIGH alerts
 currently driving the threat level and lets the operator address each one
 directly:
 
-  • Detail   — opens the full alert window (Allow · Block · Analyze · Research ·
-    Apply fix), identical to the Live Alerts row actions.
+  • Detail   — opens the full alert window (Allow · Undo Allow · Block · Analyze
+    · Research), with the same session actions as the Live Alerts rows.
+  • Allow    — confirms a reversible 15-minute exact-rule/pattern suppression.
+  • Block    — confirms submission of a verified process to Combat containment.
   • Ignore   — acknowledges the alert (and future identical repeats) so it is
     EXCLUDED from the threat level — the way to clear false positives. Every
     ignore is revertable from the "Ignored" viewer.
@@ -25,14 +27,13 @@ from dataclasses import dataclass
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QHBoxLayout, QHeaderView, QLabel, QMessageBox,
+    QDialog, QHBoxLayout, QHeaderView, QLabel, QMessageBox,
     QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from angerona.core.eventbus import Severity
-from angerona.core.threat import active_threat_events, threat_label_from_active
+from angerona.core.threat import active_threat_events, event_disposition, threat_label_from_active
 from angerona.core import alert_ack
-from angerona.core import process_allowlist
 
 _SEV_COLOR = {"CRITICAL": "#f87171", "HIGH": "#fb923c", "MEDIUM": "#facc15"}
 _READERS = threading.BoundedSemaphore(2)
@@ -212,6 +213,7 @@ class ResolveCenter(QDialog):
         self._detail_btn = QPushButton("Detail")
         self._detail_btn.clicked.connect(lambda: self._act_selected(self._detail))
         self._allow_btn = QPushButton("Allow")
+        self._allow_btn.setToolTip("Confirm a 15-minute exact-rule suppression; undo from Detail.")
         self._allow_btn.clicked.connect(lambda: self._act_selected(self._allow))
         self._block_btn = QPushButton("Block")
         self._block_btn.clicked.connect(lambda: self._act_selected(self._block))
@@ -391,9 +393,15 @@ class ResolveCenter(QDialog):
         return item.data(Qt.UserRole) if item is not None else None
 
     def _sync_action_state(self) -> None:
-        enabled = self._selected_event() is not None
-        for button in (self._detail_btn, self._allow_btn, self._block_btn, self._ignore_btn):
+        event = self._selected_event()
+        enabled = event is not None
+        for button in (self._detail_btn, self._ignore_btn):
             button.setEnabled(enabled)
+        actions_available = enabled and self._alerts_panel() is not None
+        self._allow_btn.setEnabled(actions_available)
+        self._block_btn.setEnabled(
+            actions_available and event_disposition(event) in {"active", "practice"}
+        )
 
     def _act_selected(self, action) -> None:
         ev = self._selected_event()
@@ -401,16 +409,9 @@ class ResolveCenter(QDialog):
             action(ev)
 
     def _alerts_panel(self):
-        """Find the live AlertsPanel (on the MainWindow) so Allow/Block behave
-        exactly like the Live Alerts feed — they share its suppression + SOAR queue."""
-        try:
-            for tlw in QApplication.topLevelWidgets():
-                ap = getattr(tlw, "alerts_panel", None)
-                if ap is not None:
-                    return ap
-        except Exception:
-            pass
-        return None
+        from angerona.gui.pages import _alert_action_panel
+
+        return _alert_action_panel(self, self.bus)
 
     @staticmethod
     def _btn(text, bg, fg, slot) -> QPushButton:
@@ -426,51 +427,19 @@ class ResolveCenter(QDialog):
         _show_nonmodal(AlertDetailDialog(ev, self.window(), panel=self._alerts_panel()))
 
     def _allow(self, ev) -> None:
-        """Allow = suppress this module's future alerts in the live feed AND clear
-        this one from the threat level."""
-        proc_name, proc_path = process_allowlist.event_process(ev)
-        if proc_name or proc_path:
-            label = proc_path or proc_name
-            if QMessageBox.question(
-                    self, "Trust process",
-                    f"Trust this exact process for process-attributed alerts?\n\n{label}\n\n"
-                    "A trusted process is excluded from threat posture and automatic "
-                    "response. Use this only when you recognize it.",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
-                return
-            try:
-                process_allowlist.add(
-                    proc_name,
-                    proc_path,
-                    source="resolve",
-                )
-            except Exception as exc:
-                QMessageBox.warning(self, "Trust process", str(exc))
-                return
-            self._invalidate_snapshot()
-            return
+        """Use the same confirmed temporary scope as every other Allow button."""
         ap = self._alerts_panel()
         if ap is not None:
-            try:
-                ap._allow_event(ev)
-            except Exception:
-                pass
-        alert_ack.ack(ev, "allowed via Resolve Center")
-        self._invalidate_snapshot()
+            ap._allow_event(ev)
+            self._status.setText(ap._status.text())
 
     def _block(self, ev) -> None:
-        """Block = queue a SOAR containment request for review (never auto-executes)."""
+        """Submit verified containment after the shared explicit confirmation."""
         ap = self._alerts_panel()
         if ap is not None:
-            try:
-                ap._block_event(ev)
-            except Exception as exc:
-                QMessageBox.warning(self, "Block", f"Could not queue containment: {exc}")
-        else:
-            QMessageBox.information(self, "Block",
-                                    "The Live Alerts panel isn't available to queue containment.")
-        self._invalidate_snapshot()
+            if ap._block_event(ev):
+                self._invalidate_snapshot()
+            self._status.setText(ap._status.text())
 
     def _ignore(self, ev) -> None:
         alert_ack.ack(ev, "operator ignore (Resolve Center — false positive / handled)")
