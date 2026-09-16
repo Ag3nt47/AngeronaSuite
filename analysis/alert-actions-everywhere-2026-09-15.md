@@ -60,6 +60,15 @@ host authority. No sensor cadence or cloud permission changed.
   were visible in the same window. Preview data was isolated under `.tmp`;
   no live alert, process, trusted-process policy or model was used.
 
+The first [CI run](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/35044140121)
+passed Python 3.10–3.12 and all platform/security checks. Python 3.13 exposed a
+sorting assumption in the new Live Alerts test: its opener inserted a duplicate
+into a sorted table and then clicked row zero, which could be another alert.
+The fixture now finds the existing row by exact event identity, verifies the
+opened record, and deliberately gives the neighboring alert a newer timestamp.
+No application code changed for this correction. The corrected 15 cases pass
+on Python 3.11, and the adjacent 97-case selection passes again on Python 3.12.
+
 This source maintenance update keeps version 1.13.0. Restart the source
 application to load the new UI behavior. Publication uses the guarded publisher
 and must verify exact public main/branch identity and every README image.

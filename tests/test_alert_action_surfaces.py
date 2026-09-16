@@ -51,10 +51,10 @@ def windows():
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
-def _event(root, rule="startup-entry"):
+def _event(root, rule="startup-entry", *, ts=None):
     root.bus.publish(Event(
         "Persistence Sweep", f"Unreviewed startup entry: {rule}",
-        Severity.CRITICAL, ts=time.time(),
+        Severity.CRITICAL, ts=time.time() if ts is None else ts,
         details={"rule_id": rule, "active_attack": True},
     ))
     return root.bus.recent(1)[0]
@@ -97,12 +97,15 @@ def _open_from(surface, root, event, monkeypatch):
         view = resolve_center.ResolveCenter(root.bus, root.storage, root.manager, nested)
         view._detail(event)
     elif surface == "live-alert-row":
-        root.alerts_panel._insert_row(0, event)
-        root.alerts_panel._on_click(0, 0)
+        table = root.alerts_panel.table
+        row = next(index for index in range(table.rowCount())
+                   if table.item(index, 0).data(Qt.UserRole) is event)
+        root.alerts_panel._on_click(row, 0)
     else:
         raise AssertionError(surface)
     dialogs = root.findChildren(pages.AlertDetailDialog)
     assert len(dialogs) == 1
+    assert dialogs[0]._event is event
     return dialogs[0]
 
 
@@ -112,7 +115,8 @@ def _open_from(surface, root, event, monkeypatch):
 ])
 def test_allow_and_undo_work_from_every_evidence_surface(windows, monkeypatch, surface):
     root = windows()
-    target = _event(root)
+    # Keep the target behind a newer row regardless of platform clock precision.
+    target = _event(root, ts=time.time() - 2)
     sibling = _event(root, "other-rule")
     root.alerts_panel._apply_loaded_events(1, [target, sibling])
     monkeypatch.setattr(QMessageBox, "question", lambda *_a, **_k: QMessageBox.Yes)
