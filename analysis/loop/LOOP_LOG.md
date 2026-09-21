@@ -3647,3 +3647,54 @@ boundaries, and primary-source citations are in
   unchanged: full-root rollback needs an external witness; ambiguous legacy
   history requires operator recovery; missing governed anchors fail closed;
   Fleet remains a bounded local lab.
+
+## Round 20260921 — Bug Test
+
+Audited all 84 capabilities plus three module-package helpers. Baseline: 377 compiled files; 68 module self-tests passed, 16 expected skips, 0 failures; 24 core self-tests passed; EventBus pipeline passed; selfcheck 26/26 phases passed. No import errors, duplicate declared CODEs or mount artifacts. Six finding groups reported: AMSI scan/shutdown race, stale restart fallback, API-hook dedupe retention, inactive callback work, entropy self-test temporary-file retention, and AMSI scan-error-as-clean reporting. No production edits by bug hunter; parent/patch applier owns fixes and final gates. Details: [round report](round20260921/bugtest_results.md), [complete findings](../round-20260921/bug-hunt.md), [84-module audit](../round-20260921/module-audit.md).
+
+## Round 1 — Innovation (focused maintenance 20260921)
+
+The visionary bot produced eight ranked defensive proposals, with primary
+sources and exact built-in applicability gates. Shared machine usage parks
+explicitly unrequested integrations, retains configured failures as coverage
+gaps, and separates operational counts from protection scores. Broader
+process-snapshot receipts, attributed growth, freshness-limited analytical
+leases, shared AI admission, analytic coverage, driver checks and device
+notifications remain proposals. See the [research report](../round-20260921/visionary.md)
+and [implementation record](../round-20260921/README.md). This is one separately
+requested maintenance round; it does not alter historical cycle status.
+
+## Round 20260921 — Performance
+
+Process Monitor avoids repeated command-text formatting for stable identities
+and reuses identity normalization within each poll. Shared process/connection
+cache lifetimes use monotonic time to remain correct after wall-clock changes.
+Entropy self-test fixtures are cleaned up. The targeted gate passed **28 tests**. Inert 600-process fixture medians fell
+from **5.729 to 2.069 ms** at 16 arguments and **19.904 to 2.199 ms** at 128
+arguments (**64% / 89%** less loop bookkeeping). Measurements exclude operating
+system enumeration and do not establish whole-app CPU savings. Details and
+limits: [performance summary](round20260921/performance_summary.md).
+
+## Round 20260921 — Public documentation
+
+Moved the complete What's new block below the introduction and public screenshot
+section; retained existing image paths and historical maintenance notes. README
+and llms.txt distinguish the **84-capability catalog** from machine-enabled
+runtime counts, describe targeted fixes without claiming 84 separate patches,
+and link the [full round record](../round-20260921/README.md). Final combined
+validation and guarded GitHub publication are coordinating-maintainer gates.
+
+## Round 20260921 — Combined validation and finding closure
+
+Both current adversary finding IDs and all six bug-hunter groups are fixed,
+with the callback reports explicitly overlapping. Shared admission also covers
+GUI/headless Chill wake/maintenance, repair and console restart. The full suite
+passed **3,717 tests with 18 expected skips**; the supported selfcheck passed
+**26/26 phases**, including 66 module passes, one pipeline pass and 18 expected
+module skips. All 378 package sources compile; repository Ruff, documentation
+drift and whitespace checks pass. Isolated default Windows usage is 73 enabled
+and 11 off out of 84 discovered capabilities, with no sensor workers started.
+See [final gates and limits](../round-20260921/README.md) and the
+[finding closure map](../round-20260921/findings-after.json). Publication is
+through the guarded publisher from the clean reviewed commit; unrelated
+unfinished Analysis Lab work is preserved outside the published update.

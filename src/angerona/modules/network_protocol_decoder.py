@@ -204,6 +204,8 @@ class NetworkProtocolDecoderModule(BaseModule):
                   active_attack=False, detector_policy="dns-lexical-observation", **v)
 
     def _on_event(self, event) -> None:
+        if self.stopping:
+            return
         # Ignore our OWN emissions (and any DNS *alert* echoes on the bus): the
         # bus delivers each event back to every subscriber including the
         # publisher, so scoring an alert's own text would feed back into another

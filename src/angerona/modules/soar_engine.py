@@ -10,9 +10,9 @@ Origin-blind by design: this module only ever reacts to real EventBus
 alerts that the OTHER detection modules already raised on their own. It
 never reads shark_history.json, or anything else that would tell it "this
 is a drill" — that's what keeps a Shark Attack run an honest end-to-end
-test of the whole pipeline, not a rigged one. It is a normal, always-on
-module exactly like every other capability in modules/; nothing about it is
-specific to testing.
+test of the whole pipeline, not a rigged one. Its event-processing logic is a
+normal capability; nothing about it is specific to testing. The manager starts
+its worker only while operator policy arms it.
 
 Disabled-by-default for the same reason the existing SOAR module's
 auto-contain is opt-in: automatically killing processes is powerful and
@@ -89,7 +89,7 @@ class ActiveResponseSOAR(BaseModule):
         },
         "additionalProperties": False,
     }
-    enabled_by_default = True  # idles harmlessly unless armed — see _armed()
+    enabled_by_default = True  # selected by default; manager requires _armed()
 
     def __init__(self) -> None:
         super().__init__()

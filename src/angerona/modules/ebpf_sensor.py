@@ -102,8 +102,8 @@ class EbpfSensorNode(BaseModule):
     supported_platforms = SUPPORTED_PLATFORMS
     capability_mode = "observe"
     platform_requirements = ("Linux", "BCC", "eBPF-capable kernel")
-    # Thread runs but self-gates on config.ebpf_enabled so the Settings toggle
-    # takes effect without a restart. Inert (healthy) on non-Linux hosts.
+    # The manager requires Linux plus the explicit Settings opt-in, parking the
+    # worker otherwise. The run-loop gate also protects direct invocations.
     enabled_by_default = True
 
     def __init__(self) -> None:

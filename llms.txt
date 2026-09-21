@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.13.0
-Date: 2026-09-07
+Date: 2026-09-21
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -22,7 +22,39 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST MAINTENANCE (2026-09-07)
+## LATEST MAINTENANCE (2026-09-21)
+
+- All 84 discovered capabilities received a source-level review and isolated
+  self-test inventory. Shared module usage, lifecycle and counts cover the
+  catalog; module-specific patches address reproduced defects, not arbitrary
+  changes to every source file. Inventory size remains 84, version 1.13.0.
+- Runtime counts mean running / enabled for this machine. Unsupported platforms,
+  explicit module opt-outs and unconfigured optional integrations are excluded.
+  Mobile and eBPF honor their Settings opt-ins; Active Response SOAR honors its
+  arming policy. The optional kernel bridge defaults off only when the
+  AngeronaSensor service is positively absent; explicit selection overrides it.
+- Missing permissions, broken expected sensors and quiet telemetry do not prove
+  inapplicability. Enabled failures and deferred/paused modules remain expected.
+  USB/WLAN guards remain applicable without a currently attached device/link.
+  Catalog discovery and protection assurance stay separate from runtime counts.
+- Staged startup rechecks current selection and generation before each start.
+  Stopped event subscribers reject work, stale speculative requests are retired,
+  AMSI closes native handles safely and treats native failure as unavailable,
+  successful AMSI recovery clears fallback, API-hook suppression expires and
+  stays bounded, and entropy self-test fixtures are cleaned up.
+- Process Monitor skips repeated command formatting for stable identities and
+  reuses identity normalization within each poll. Isolated 600-process fixture
+  medians fell 64% (16 arguments) and 89% (128 arguments). These measure loop
+  bookkeeping only, excluding OS collection; no whole-app CPU claim. Shared
+  process/connection cache lifetimes now use monotonic time so clock corrections
+  cannot extend stale snapshot reuse or force needless early collection.
+- Evidence: analysis/round-20260921/README.md, module-audit.md, adversary.md,
+  bug-hunt.md, performance.md and visionary.md in that directory. The visionary
+  report separates implemented usage policy from proposed future research.
+- README What's new now follows the description and public screenshot section.
+  Restart the application to load this source maintenance update.
+
+## PRIOR MAINTENANCE (2026-09-07)
 
 - AsyncSnapshot reuses one sleeping worker per owner with a one-slot request,
   one-slot result and one coalesced follow-up. Idle workers release previous

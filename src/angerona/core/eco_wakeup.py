@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import List, Sequence
+from typing import Callable, List, Sequence
 
 from PySide6.QtCore import QThread, Signal
 
@@ -79,10 +79,13 @@ class EcoWakeupWorker(QThread):
         poll_interval: float = 0.1,
         min_settle: float = 0.35,
         parent=None,
+        *,
+        start_module: Callable[[BaseModule], bool] | None = None,
     ) -> None:
         super().__init__(parent)
         # Copy so external mutation of the caller's list can't race the sequence.
         self._modules: List[BaseModule] = list(modules)
+        self._start_module = start_module
         self._health_timeout = float(health_timeout)
         self._poll = max(0.02, float(poll_interval))
         self._min_settle = max(0.0, float(min_settle))
@@ -170,7 +173,11 @@ class EcoWakeupWorker(QThread):
                 with self._control_lock:
                     if self._abort:
                         break
-                    mod.start()
+                    if self._start_module is not None:
+                        if not self._start_module(mod):
+                            continue
+                    else:
+                        mod.start()
             except Exception:
                 failed += 1
                 self.module_ready.emit(name, False)

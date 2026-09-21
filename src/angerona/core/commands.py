@@ -405,11 +405,23 @@ class CommandConsole:
         if not match:
             return f"no module matching '{query}'"
         if action == "on":
-            self.manager.set_enabled(match, True); return f"{match}: enabled"
+            self.manager.set_enabled(match, True)
+            if not self.manager.is_enabled(match):
+                reader = getattr(self.manager, "module_usage", None)
+                reason = reader(match).reason if callable(reader) else "Unavailable."
+                return f"{match}: off — {reason}"
+            return f"{match}: enabled"
         if action == "off":
             self.manager.set_enabled(match, False); return f"{match}: disabled"
         if action == "restart":
-            mod = self.manager.modules[match]; mod.stop(); mod.start(); return f"{match}: restarted"
+            from angerona.core.module_usage import start_module_if_enabled
+            if not self.manager.is_enabled(match):
+                return f"{match}: off; enable/configure it before requesting restart"
+            mod = self.manager.modules[match]
+            mod.stop()
+            if not start_module_if_enabled(self.manager, mod):
+                return f"{match}: restart cancelled by current module policy"
+            return f"{match}: restarted"
         return "action must be on, off, or restart"
 
     def _test(self, args: List[str]) -> str:
@@ -842,9 +854,10 @@ class CommandConsole:
         active = active_threat_events(events)
         label, _color = threat_label(events)
         crit = sum(1 for e in active if e.severity == Severity.CRITICAL)
-        running = sum(1 for m in self.manager.modules.values() if m.status == "running")
+        from angerona.core.module_usage import module_counts
+        counts = module_counts(self.manager)
         return (f"Threat level: {label}\n"
-                f"Modules running: {running}/{len(self.manager.modules)}\n"
+                f"Modules running: {counts['running']}/{counts['enabled']}\n"
                 f"Active critical threats (10m): {crit}")
 
     # ── Enterprise: Scheduled tasks ─────────────────

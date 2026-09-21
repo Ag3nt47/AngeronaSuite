@@ -94,19 +94,30 @@ class SpeculativeTriageModule(BaseModule):
         return temp and risky
 
     def _on_event(self, event) -> None:
+        stop_event = self.generation_stop_event()
+        if stop_event.is_set():
+            return
         try:
             if self._is_high_risk(event.message, event.details or {}):
                 self.speculate({"pid": (event.details or {}).get("pid"),
                                 "message": event.message,
-                                "details": event.details or {}, "ts": event.ts})
+                                "details": event.details or {}, "ts": event.ts},
+                               _generation_stop=stop_event)
         except Exception:
             pass
 
-    def speculate(self, marker: dict) -> bool:
+    def speculate(
+        self, marker: dict, *, _generation_stop: threading.Event | None = None,
+    ) -> bool:
         """Queue a speculative prewarm for an early marker (deduped + cooled)."""
         pid = marker.get("pid") or -1
         now = time.time()
+        stop_event = _generation_stop or self.generation_stop_event()
         with self.state_lock:
+            # A retained callback can finish parsing after stop/restart. Its
+            # original token must still be active before it admits any work.
+            if stop_event.is_set() or stop_event is not self._stop:
+                return False
             # Keep cooldown state only for the interval in which it can affect a
             # decision. Unique short-lived PIDs otherwise accumulated forever in
             # long sessions even though their entries became inert after 8 s.
@@ -120,11 +131,11 @@ class SpeculativeTriageModule(BaseModule):
             if now - self._last_prewarm.get(pid, 0.0) < self._COOLDOWN:
                 return False
             self._last_prewarm[pid] = now
-        try:
-            self._q.put_nowait(marker)
-            return True
-        except queue.Full:
-            return False
+            try:
+                self._q.put_nowait(marker)
+                return True
+            except queue.Full:
+                return False
 
     def bind_consumer(self, consumer: object) -> bool:
         """Bind the one production triage consumer this optimization serves.
@@ -199,6 +210,9 @@ class SpeculativeTriageModule(BaseModule):
                 f"context={ {k: d[k] for k in list(d)[:8]} }")
 
     def _prewarm(self, marker: dict) -> None:
+        stop_event = self.generation_stop_event()
+        if stop_event.is_set():
+            return
         prompt = self._snapshot(marker)
         pid = marker.get("pid") or -1
         primed = {
@@ -228,6 +242,8 @@ class SpeculativeTriageModule(BaseModule):
         except Exception as exc:
             self.last_error = str(exc)      # offline: intent recorded, not warmed
         with self.state_lock:
+            if stop_event.is_set() or stop_event is not self._stop:
+                return
             self._primed[pid] = primed
             self.prewarms += 1
             self._last_warm_succeeded = bool(primed["warmed"])
@@ -285,15 +301,27 @@ class SpeculativeTriageModule(BaseModule):
             except queue.Empty:
                 continue
             if generation_stop.is_set() or helper_stop.is_set():
-                # Preserve a marker that arrived during a stop so a later
-                # generation can pre-warm it; this worker must not act after its
-                # generation has been retired.
-                try:
-                    self._q.put_nowait(marker)
-                except queue.Full:
-                    pass
+                # Retired work must never leak into a later activation.
                 return
+            self._run_context.stop_event = generation_stop
             self._prewarm(marker)
+
+    def stop(self) -> None:
+        with self._lifecycle_lock:
+            super().stop()
+            self._retire_pending()
+
+    def _retire_pending(self) -> None:
+        with self.state_lock:
+            while True:
+                try:
+                    self._q.get_nowait()
+                except queue.Empty:
+                    break
+            self._primed.clear()
+            self._last_prewarm.clear()
+            self._last_warm_succeeded = None
+            self._last_success_at = 0.0
 
     def run(self) -> None:
         stop_event = self.generation_stop_event()
@@ -329,6 +357,9 @@ class SpeculativeTriageModule(BaseModule):
             # non-blocking because this cleanup runs on the module thread.
             for worker in workers:
                 worker.join()
+            # Watchdog generation replacement can signal the token directly,
+            # without invoking the module's public stop() override.
+            self._retire_pending()
             if self._workers is workers:
                 self._workers = []
 

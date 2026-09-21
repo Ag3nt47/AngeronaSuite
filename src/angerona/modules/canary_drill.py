@@ -178,7 +178,7 @@ class CanaryDrillModule(BaseModule):
         announcement (or another module quoting the tag) from satisfying the
         telemetry contract.
         """
-        if event.module not in _TRUSTED_PROCESS_SENSORS:
+        if self.stopping or event.module not in _TRUSTED_PROCESS_SENSORS:
             return
         details = event.details or {}
         # Accept the echo if it's a process-creation record. Windows/Sysmon paths

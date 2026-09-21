@@ -17,6 +17,43 @@ portfolios—not offensive intrusion or hack-back.
 
 Current version: **v1.13.0**
 
+[Master Manual](Angerona_Master_Manual.docx) ·
+[Current capabilities](ANGERONA_CAPABILITIES.md) ·
+[Architecture](docs/architecture.md) ·
+[Security](SECURITY.md) ·
+[Contributing](CONTRIBUTING.md)
+
+## Dashboard and major features
+
+| v1.13.0 enterprise-pattern Local SOC programs | SentinelLens local-first hunt graph |
+| --- | --- |
+| [![Angerona v1.13.0 Fleet Center, DetectionForge, and AegisPath synthetic Local SOC views](docs/screenshots/angerona-v1.13-enterprise-programs.png)](docs/screenshots/angerona-v1.13-enterprise-programs.png) | [![Angerona v1.12.1 SentinelLens synthetic threat-hunting graph](docs/screenshots/angerona-v1.12-sentinel-lens.png)](docs/screenshots/angerona-v1.12-sentinel-lens.png) |
+| Main defensive dashboard | Human-reviewed SOAR queue |
+| [![Angerona v1.11.0 main dashboard](docs/screenshots/angerona-v1.11-dashboard.png)](docs/screenshots/angerona-v1.11-dashboard.png) | [![Angerona v1.11.0 SOAR review](docs/screenshots/angerona-v1.11-soar-review.png)](docs/screenshots/angerona-v1.11-soar-review.png) |
+| Scan Center |  |
+| [![Angerona v1.11.0 Scan Center](docs/screenshots/angerona-v1.11-scan-center.png)](docs/screenshots/angerona-v1.11-scan-center.png) |  |
+
+These are reproducible public demonstrations. All displayed telemetry,
+identifiers, timestamps, and counts are synthetic.
+
+## What's new
+
+**Machine-aware modules and long-session fixes (2026-09-21).** The running
+module counter now shows running / enabled for this machine. Unsupported,
+user-disabled and unconfigured optional modules stay off and outside that
+count; the catalog remains 84 capabilities. Mobile and eBPF integrations need
+opt-in, Active Response SOAR needs arming, and the optional kernel bridge stays
+off by default when its driver is positively absent. Failed expected sensors
+remain visible, and hotplug guards still watch for new devices.
+
+All 84 modules were reviewed, with targeted fixes for stopped event callbacks,
+staged startup, AMSI scan/restart handling and API-hook alert retention. Process
+polling avoids rebuilding command text for already-seen processes: an isolated
+600-process fixture measured 64–89% less loop bookkeeping, excluding operating
+system collection and whole-app CPU. Restart Angerona to load these changes.
+See the [round findings, module audit and validation](analysis/round-20260921/README.md)
+and [benchmark method and limits](analysis/round-20260921/performance.md).
+
 **Long-session responsiveness (2026-09-07).** Dashboard snapshots reuse sleeping
 workers instead of creating a new thread on every refresh. ARIA score-history
 reads and event drill-down history/filtering run off the UI thread; busy or
@@ -71,25 +108,6 @@ stays inside its archive and requires a non-administrator session to import.
 Analysis Lab explains the remaining execution prerequisites: this release has
 no verified disposable-VM backend or approved executable catalog. See the
 [implementation status and isolated analysis design](docs/design/red-team-github-tool-library.md).
-
-[Master Manual](Angerona_Master_Manual.docx) ·
-[Current capabilities](ANGERONA_CAPABILITIES.md) ·
-[Architecture](docs/architecture.md) ·
-[Security](SECURITY.md) ·
-[Contributing](CONTRIBUTING.md)
-
-## Dashboard and major features
-
-| v1.13.0 enterprise-pattern Local SOC programs | SentinelLens local-first hunt graph |
-| --- | --- |
-| [![Angerona v1.13.0 Fleet Center, DetectionForge, and AegisPath synthetic Local SOC views](docs/screenshots/angerona-v1.13-enterprise-programs.png)](docs/screenshots/angerona-v1.13-enterprise-programs.png) | [![Angerona v1.12.1 SentinelLens synthetic threat-hunting graph](docs/screenshots/angerona-v1.12-sentinel-lens.png)](docs/screenshots/angerona-v1.12-sentinel-lens.png) |
-| Main defensive dashboard | Human-reviewed SOAR queue |
-| [![Angerona v1.11.0 main dashboard](docs/screenshots/angerona-v1.11-dashboard.png)](docs/screenshots/angerona-v1.11-dashboard.png) | [![Angerona v1.11.0 SOAR review](docs/screenshots/angerona-v1.11-soar-review.png)](docs/screenshots/angerona-v1.11-soar-review.png) |
-| Scan Center |  |
-| [![Angerona v1.11.0 Scan Center](docs/screenshots/angerona-v1.11-scan-center.png)](docs/screenshots/angerona-v1.11-scan-center.png) |  |
-
-These are reproducible public demonstrations. All displayed telemetry,
-identifiers, timestamps, and counts are synthetic.
 
 ## What Angerona does
 
@@ -239,8 +257,11 @@ identifiers, timestamps, and counts are synthetic.
 | Linux | **Observe + optional eBPF:** rootless process/flow/posture monitoring; BCC/eBPF is an explicit privileged supplement. | **14 modules** |
 | macOS | **Observe preview:** privacy-minimized shared-core process/flow visibility; no Endpoint Security or Network Extension enforcement claim. | **13 modules** |
 
-Static discovery reports **84 modules** on the primary Windows contract. No
-unsigned kernel driver is shipped.
+Static discovery reports **84 modules** on the primary Windows contract. The
+runtime counter uses only modules enabled for the current machine; this catalog
+size is not a claim that all 84 sensors are running or applicable. Expected but
+failed or paused modules remain in the enabled total. No unsigned kernel driver
+is shipped.
 
 ## 🚀 One-click Windows install
 

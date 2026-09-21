@@ -1,0 +1,55 @@
+{
+  "scope": "Final combined offline regression gates; not a live multi-day soak.",
+  "pytest": {
+    "passed": 3717,
+    "skipped": 18,
+    "failed": 0,
+    "duration_seconds": 557.31
+  },
+  "selfcheck": {
+    "phases_passed": 26,
+    "phases_failed": 0,
+    "module_passed": 66,
+    "pipeline_passed": 1,
+    "module_skipped": 18
+  },
+  "package_compile": {
+    "python_files": 378,
+    "passed": true
+  },
+  "ruff": {
+    "scope": [
+      "src",
+      "tests",
+      "tools"
+    ],
+    "passed": true
+  },
+  "documentation_drift": {
+    "passed": true
+  },
+  "diff_whitespace": {
+    "passed": true
+  },
+  "default_windows_usage": {
+    "discovered": 84,
+    "enabled": 73,
+    "off": 11,
+    "workers_started": 0
+  },
+  "final_usage_status_tests": {
+    "passed": 29,
+    "skipped": 1,
+    "failed": 0
+  },
+  "lifecycle_chill_drill_tests": {
+    "passed": 92,
+    "failed": 0
+  },
+  "limits": [
+    "Native AMSI and Canary success paths use inert fixtures where disclosed.",
+    "Skipped module tests do not prove live coverage.",
+    "Process polling benchmark excludes OS enumeration and whole-app CPU.",
+    "Runtime counts depend on saved operator settings."
+  ]
+}

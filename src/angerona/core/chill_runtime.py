@@ -1,6 +1,8 @@
 """GUI-neutral lifecycle controller for network-first Chill Mode."""
 from __future__ import annotations
 
+from angerona.core.module_usage import start_module_if_enabled
+
 import os
 import threading
 import time
@@ -344,7 +346,10 @@ class ChillRuntimeController:
             if not self._maintenance_is_current(epoch, cancel):
                 return
             try:
-                module.start()
+                if not start_module_if_enabled(self.manager, module):
+                    with self._state_lock:
+                        self._maintenance_name = None
+                    return
             except Exception:
                 setattr(module, "_chill_paused", False)
                 with self._state_lock:
@@ -449,7 +454,8 @@ class ChillRuntimeController:
                 if not self._wake_is_current(epoch, cancel):
                     return
                 try:
-                    module.start()
+                    if not start_module_if_enabled(self.manager, module):
+                        continue
                 except Exception:
                     self._record_wake_failure(name, module)
                     continue

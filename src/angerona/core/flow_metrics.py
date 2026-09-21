@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from angerona.core.data_paths import data_dir
+from angerona.core.module_usage import enabled_module_items
 
 _SENSOR_MODULES = {
     "Packet Sniffer", "ETW Core Listener", "File Integrity Monitor",
@@ -143,7 +144,7 @@ def _hw() -> dict:
 
 
 def _running(manager, names) -> tuple[int, int]:
-    have = [manager.modules[n] for n in names if n in manager.modules]
+    have = [mod for name, mod in enabled_module_items(manager) if name in names]
     up = sum(1 for m in have if getattr(m, "status", "") == "running")
     return up, len(have)
 
@@ -175,7 +176,7 @@ def build_metrics(manager, bus, config) -> dict:
     d_up,  d_tot  = _running(manager, _DETECT_MODULES)
     h_up,  h_tot  = _running(manager, _HARDEN_MODULES)
     atk_up, atk_tot = _running(manager, _ATTACK_MODULES)
-    run_total = sum(1 for m in manager.modules.values()
+    run_total = sum(1 for _, m in enabled_module_items(manager)
                     if getattr(m, "status", "") == "running")
 
     # AI guardrail audit-log line count — only appended bytes are recounted.

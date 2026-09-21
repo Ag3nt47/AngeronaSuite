@@ -31,6 +31,7 @@ import stat
 import struct
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 from angerona.core.assurance_receipts import (
@@ -171,6 +172,8 @@ class ApiPatchDetectorModule(BaseModule):
     # BL-14: a much shorter (jittered) interval shrinks the hook→act→unhook window
     # an attacker could exploit against a predictable 30s scan. Env-tunable.
     _INTERVAL = float(os.environ.get("ANGERONA_APID_INTERVAL", "12") or 12)
+    _MAX_FLAGGED = 1024
+    _ALERT_TTL = 300.0
 
     def __init__(self) -> None:
         super().__init__()
@@ -186,7 +189,7 @@ class ApiPatchDetectorModule(BaseModule):
             "missing_disk": [],
             "missing_memory": [],
         }
-        self._flagged: set[str] = set()
+        self._flagged: OrderedDict[tuple, float] = OrderedDict()
         self._addr_cache = None            # {(dll, fn): local export address}
         self._proc_cursor = 0              # rotates cross-process coverage
         self._assurance_issuer: DetectorReceiptIssuer | None = None
@@ -329,6 +332,7 @@ class ApiPatchDetectorModule(BaseModule):
                 memory_ready += 1
                 compared += 1
                 if mem == disk_bytes:
+                    self._forget_clean_export(None, None, dll, fn)
                     continue
                 indicator = _looks_hooked(mem)
                 if indicator is None:
@@ -350,6 +354,30 @@ class ApiPatchDetectorModule(BaseModule):
         return findings
 
     # ── BL-14: cross-process hook scan ───────────────────────────────────────
+    @staticmethod
+    def _process_birth(k32, handle) -> int | None:
+        """Read identity from the same open handle used for memory reads."""
+        try:
+            k32.GetProcessTimes.argtypes = [ctypes.c_void_p] + [
+                ctypes.POINTER(_wt.FILETIME)
+            ] * 4
+            k32.GetProcessTimes.restype = _wt.BOOL
+            created, exited, kernel, user = (_wt.FILETIME() for _ in range(4))
+            if k32.GetProcessTimes(
+                ctypes.c_void_p(handle), ctypes.byref(created), ctypes.byref(exited),
+                ctypes.byref(kernel), ctypes.byref(user),
+            ):
+                return (int(created.dwHighDateTime) << 32) | int(created.dwLowDateTime)
+        except Exception:
+            pass
+        return None
+
+    def _forget_clean_export(self, pid, birth, dll, function) -> None:
+        # Only an actual clean comparison ends an episode; inaccessible memory
+        # and processes outside this cycle's rotating window prove no recovery.
+        with self.state_lock:
+            self._flagged.pop((pid or 0, birth, dll, function), None)
+
     def _watched_addrs(self) -> dict:
         """{(dll, fn): local export address}. ntdll/kernel32 load at the SAME base
         in every process this boot session, so a locally-resolved export address is
@@ -421,6 +449,7 @@ class ApiPatchDetectorModule(BaseModule):
             if not h:
                 continue                    # access denied / protected → skip
             try:
+                birth = self._process_birth(k32, h)
                 for (dll, fn), addr in addrs.items():
                     disk = self._disk_prologues(dll).get(fn)
                     if not disk:
@@ -433,11 +462,13 @@ class ApiPatchDetectorModule(BaseModule):
                         continue
                     mem = buf.raw[:_PROLOGUE]
                     if mem == disk:
+                        self._forget_clean_export(pid, birth, dll, fn)
                         continue
                     indicator = _looks_hooked(mem)
                     if indicator is None:
                         continue
                     findings.append({"pid": pid, "dll": dll, "function": fn,
+                                     "process_birth": birth,
                                      "indicator": indicator, "disk": disk[:8].hex(),
                                      "memory": mem[:8].hex()})
             finally:
@@ -451,9 +482,20 @@ class ApiPatchDetectorModule(BaseModule):
         pid = finding.get("pid")
         scope = f"pid {pid}" if pid else "self"
         key = f"{scope}:{finding['dll']}!{finding['function']}"
-        if key in self._flagged:
-            return
-        self._flagged.add(key)
+        birth = finding.get("process_birth")
+        identity = (pid or 0, birth, finding["dll"], finding["function"])
+        with self.state_lock:
+            now = time.monotonic()
+            while self._flagged and now - next(iter(self._flagged.values())) >= self._ALERT_TTL:
+                self._flagged.popitem(last=False)
+            # A PID alone can name a different process by the next scan. If its
+            # birth identity is unavailable, prefer a repeat alert to suppression.
+            if not pid or type(birth) is int:
+                if identity in self._flagged:
+                    return
+                if len(self._flagged) >= self._MAX_FLAGGED:
+                    self._flagged.popitem(last=False)
+                self._flagged[identity] = now
         ev = {"ts": time.time(), "type": "SENSOR_INTEGRITY_HOOK", "severity": "Critical",
               "code": self.CODE, "detail": finding,
               "recommend": "isolate host + dump hooking module; sensors may be blinded",

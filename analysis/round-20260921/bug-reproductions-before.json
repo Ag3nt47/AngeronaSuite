@@ -1,0 +1,47 @@
+{
+  "amsi_close_race": {
+    "native_context_closed_before_scan_returned": true,
+    "scan_observed_closed_context": true
+  },
+  "amsi_restart_fallback": {
+    "fallback_after_successful_init": true
+  },
+  "apid_clean_reintroduced_hook": {
+    "health_after_clean_scan": 100,
+    "independent_hook_observations": 2,
+    "alerts": 1,
+    "retained_keys": 1
+  },
+  "apid_retained_keys": {
+    "distinct_pid_export_keys_retained": 1001,
+    "source_eviction_or_expiry": false
+  },
+  "NetworkProtocolDecoderModule_stopped_callback": {
+    "status": "stopped",
+    "before": 0,
+    "after": 1
+  },
+  "ProvenanceGraphModule_stopped_callback": {
+    "status": "stopped",
+    "before": 0,
+    "after": 1
+  },
+  "canary_stopped_callback": {
+    "before": 0.0,
+    "after": 620709.046,
+    "changed": true
+  },
+  "entropy_selftest_temp_retention": {
+    "self_test_passed": true,
+    "surviving_directories": 1,
+    "surviving_bytes": 24576
+  },
+  "amsi_scan_failure_clean_result": {
+    "HRESULT": -1,
+    "returned_scan_result": 0,
+    "self_test": [
+      true,
+      "AmsiScanBuffer functional \u2014 probe result=CLEAN"
+    ]
+  }
+}

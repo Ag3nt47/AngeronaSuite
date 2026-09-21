@@ -1,0 +1,121 @@
+========================================================================
+ ANGERONA — HEADLESS SELF-CHECK
+========================================================================
+[+] PASS  discover modules  — 84 modules
+===== SELF-TEST / STRESS DRILL =====
+
+  [PASS] Event pipeline — synthetic event delivered
+  [PASS] AI Model Integrity Guard — chunked SHA-256 tamper-detect verified; model dir: F:\BRAIN DRIVE_root\Ollama\models
+  [SKIP] AI Triage (Ollama) — not started by headless harness / optional prerequisite: Ollama listener attestation failed: local Ollama listener ownership is unavailable or ambiguous
+  [SKIP] AMSI Bridge — not started by headless harness / optional prerequisite: status=stopped, health=100%
+  [PASS] API Patch / Anti-Blinding Detector — parsed all 7 required ntdll export prologue(s) from disk
+  [PASS] ARP Watchdog — ARP parser ready — mode=poll-only; baseline=not-loaded
+  [PASS] AV Telemetry Bridge — health=100%
+  [PASS] Active Deception — disposable secret-free canary lifecycle passed
+  [SKIP] Active Response SOAR — disabled by operator configuration
+  [PASS] Adaptive Resource Governor — governor active; current throttle 1x
+  [SKIP] Adversary Combat — not started by headless harness / optional prerequisite: MAXIMUM status=stopped; Low+; process=terminate; queue drops=0; The response worker is stopped or restarting.
+  [PASS] AegisPath Exposure Graph Guard — immutable digest, evidence generation/freshness, resource-limit, and observe-only health contract verified
+  [PASS] Anti-Suspension Heartbeat — authenticated v2 mmap round-trip OK (pinned v2 watchdog unavailable; authenticated Python heartbeat only)
+  [PASS] App Control Decision Evidence — bounded 3076/3077/3089 parser and ActivityID join verified
+  [PASS] Audit Log Integrity Guard — strict clear-event parser and privacy boundary verified
+  [PASS] Authentication Extension Integrity Guard — bounded path-minimized drift and observe-only event contract verified
+  [PASS] C2 Beacon Detector — beacon cadence detected (mean=60s cv=0.00), human traffic ignored, external-IP test OK
+  [PASS] CHAOS — cycle 24.0h; 0 runs, 0 with regressions
+  [SKIP] Cloud CTI Escalation — disabled by operator configuration
+  [PASS] Compliance Mapper — MITRE→NIST/STIG mapping + sub-technique fallback verified
+  [PASS] Counter-Agentic Detection — cadence+chain detection verified (agentic fires, benign quiet, offensive subsystems excluded)
+  [PASS] Data Provenance Graph — ancestry/subtree verified on synthetic DAG
+  [PASS] Detection Runtime — separate bounded lanes and observe-only authority passed
+  [PASS] Deterministic Fast-Path Interceptor — 17 rules loaded — pattern match verified
+  [PASS] Driver Provenance Guard — hash/signer/catalog/blocklist/HVCI/boot evidence join passed offline
+  [SKIP] Dynamic Resource Governor — not started by headless harness / optional prerequisite: status=stopped, health=100%
+  [PASS] ETW Core Listener — 4688 decode verified (Security channel available)
+  [PASS] ETW Real-Time Process Sensor — Kernel-Process decode verified (pywintrace present but not elevated → run as Administrator for real-time)
+  [PASS] Evidence Lattice Fusion — entity fusion, dedup, time-window expiry, and false-positive controls passed
+  [PASS] Evolution Engine — fallback YARA synthesis + BL-07 bounds (concurrency/rate/breaker) OK
+  [PASS] File Integrity Monitor — driver-shield classifier + BL-13 paranoid high-value hashing verified
+  [PASS] Fleet Health Monitor — typed signed-health shape, exact degraded reason, and no-command rollout boundary verified
+  [SKIP] Forensics Capture — disabled by operator configuration
+  [PASS] HEAL — watching crash snapshots; 0 staged this session
+  [PASS] Hardware-Rooted Integrity — DPAPI round-trip verified
+  [PASS] Identity Session Guard — supplied-only tokenization and bounded transition analytics verified
+  [PASS] Immutable Recovery Assurance Guard — fail-closed signed recovery policy verified; online F: mirrors do not count as immutable or offline
+  [PASS] In-Memory Flight Cache — cache verified (cap-held=10, newest=msg24, ro-guard=True)
+  [PASS] Indirect Syscall Bridge — No sealed private native bridge admitted; explicit ctypes/psutil fallback active and health is truthfully degraded.
+  [SKIP] Kernel Sensor Bridge — disabled by operator configuration
+  [PASS] Kernel-Boundary Posture Ledger — authenticated bounded ledger: 1 record(s) verified; live posture starts unknown
+  [PASS] LSASS Credential-Access Guard — LSASS-dump signature matcher verified (comsvcs+procdump flagged, benign ignored)
+  [SKIP] Linux Observe Sensor — Unavailable on windows; this capability supports linux.
+  [SKIP] Linux eBPF Sensor — Unavailable on windows; this capability supports linux.
+  [SKIP] Memory Injection Scanner — not started by headless harness / optional prerequisite: status=stopped, health=100%
+  [PASS] Memory Time-Machine — dedup verified (4→0 on repeat)
+  [SKIP] Mobile Response Bridge — disabled by operator configuration
+  [PASS] Monolithic Packaging — Assessment: Running as .py (hardening gap) — hermetic binary present (unsigned (NotSigned)).  Consider running angerona.exe. | build-hermetic.bat=found | hermetic=False
+  [PASS] Network Monitor — offline IPv4/IPv6, Community ID, bounds, and response gates passed
+  [PASS] Network Protocol Deep Decoder — layered DGA scoring verified (dga E=4.322, evasive E=4.0 caught via ['entropy 4.00≥3.6', 'low vowel-ratio 0%', 'consonant-run 16'], benign clean)
+  [SKIP] Packet Sniffer — disabled by operator configuration
+  [PASS] Peripheral and DMA Posture Guard — Kernel DMA/IOMMU, Thunderbolt/USB4/removable control risks and honest UNKNOWN/firmware limitations verified without device changes
+  [PASS] Persistence Sweep — persistence classifier verified (encoded-PS + Winlogon hijack CRITICAL, temp-path HIGH, clean-default not escalated)
+  [PASS] Platform Attestation Guard — strict OS posture and injected TPM quote verifier passed offline
+  [PASS] Posture Hardening — probe weaknesses=1, health=40, staged=1
+  [PASS] Process Egress Lease Guard — process/start/user/DNS/IP/path binding, one-use budget, replay denial, and sanitized observe-only audit verified
+  [PASS] Process Monitor — offline lineage and risky-path rules passed
+  [PASS] Purple Remediation Guard — exact file/process markers detected; benign noise ignored
+  [PASS] RAG Provenance Guard — root confinement, digest pinning, and inert excerpt boundary verified
+  [PASS] Ransomware Heuristics — Entropy function OK (test=8.000 ≥ 7.9); timestamp-independent full/range proof, authenticated durable change transitions/high-water, fixed-window strided scoring, durable fair rotation, and held no-reparse traversal enabled
+  [PASS] Release Transparency / Anti-Rollback Guard — unsigned, malformed, expired, and below-threshold updates fail closed
+  [SKIP] Remote Bridge — disabled by operator configuration
+  [PASS] Removable-Media / USB Monitor — new-drive diff + fail-closed approval gate verified
+  [SKIP] SIEM Forwarder — disabled by operator configuration
+  [PASS] SOAR Automation — offline distinct-source corroboration, cursor, and protected-process gates passed
+  [PASS] SSH Surface / Key / Tunnel Guard — bounded parser, privacy tokens, and observe-only contract verified
+  [PASS] Scheduled AI Security Briefing — briefing builder verified (severity tally, technique ranking, posture + containment line)
+  [PASS] Self-Integrity Monitor — runtime tamper detection verified — clean baseline is silent, a monkeypatched enforcement function is flagged, restore clears it.
+  [PASS] Shadow Shield — cache ready; 0 VSS snapshots this session
+  [PASS] Shadow-Copy / Recovery Tamper Guard — recovery-tamper signatures verified (vssadmin/bcdedit/wmic flagged, 'list shadows' ignored)
+  [PASS] Smart Deception — 0 honeytokens; 60-byte read cap; 0 unresolved trips; authenticated custody ledger sequence=0; remaining=4096; external-local-witness=0; freshness=local-authenticity-only; namespace-protected=0; capture=not_attempted; digest-sealed quarantine cap=8/1048576B; dedup cap=256
+  [PASS] Speculative Triage Pre-Warm — early high-risk marker detection verified
+  [PASS] Storage Hygiene Enforcer — detect + dry-run proposal + retired mutation verified (sandboxed)
+  [PASS] Sysmon Event Bridge — offline generation-bound cursor/anchor contract verified
+  [SKIP] TUNE — not started by headless harness / optional prerequisite: status=stopped, health=100%
+  [PASS] Telemetry Canary Drills — strict ETWG echo + bounded telemetry contract controls passed
+  [PASS] Temporal Tradecraft Correlator — authenticated bounded automaton and observe-only output verified
+  [PASS] Upstream Threat Intel Sync — KEV correlation + driver-intel blocklist + IOC fusion verified (offline)
+  [SKIP] WFP Controller — not started by headless harness / optional prerequisite: status=stopped, health=100%
+  [PASS] WLAN Monitor — netsh WLAN query succeeded (not connected)
+  [PASS] Watchdog Monitor — auto-recovered a simulated crashed module: True
+  [PASS] YARA Scanner — PASS - in-process YARA compiled rules and detected EICAR
+  [PASS] Zero-Trust Local IPC Guard — isolated HMAC + loopback handshake verified (valid OK, wrong-key DENY)
+  [PASS] Zero-Trust Network Path Monitor — untrusted-LAN/WLAN monitoring and privacy boundary verified
+  [SKIP] macOS Observe Sensor — Unavailable on windows; this capability supports macos.
+
+Result: 67 passed, 0 failed, 18 skipped.
+[+] PASS  SelfTestRunner over all modules  — Result: 67 passed, 0 failed, 18 skipped. (unstarted/optional states classified as skips)
+[+] PASS  build MainWindow  — constructed (with forensics entry points)
+[+] PASS  DashboardCards.refresh  — modules=0/73 alerts=0 crit=— threat=—
+[+] PASS  EventsWindow — Alerts (LOW+)  — 3 rows
+[+] PASS  EventsWindow — Critical  — 1 rows
+[+] PASS  ModulesStatusWindow  — 84 rows
+[+] PASS  ThreatWindow — refresh + select + posture lookup  — 2 threat rows; selected mitre='T1055'
+[+] PASS  ModuleInspector — build for first module  — AI Model Integrity Guard
+[+] PASS  process-mitigation self-hardening  — {'extension_point_disable': True, 'image_load': True, 'aslr': True, 'dynamic_code_acg': 'skipped (set ANGERONA_HARDEN_AGGRESSIVE=1)', 'binary_signature_microsoft_only': 'skipped (would break Qt/PySide6)'}
+[+] PASS  Judgment Gate — stamp / verify / tamper-detect  — clean=verified, tamper=detected, model advisory=inert
+[+] PASS  Ring 1 Driver-Intel Shield (INTL + FIM + shark)  — INTL lookup + FIM classifier + shark BYOVD step all present
+[+] PASS  Timing jitter (os.urandom, anti-TOCTOU)  — canary 51.1-68.9s, heartbeat 0.426-0.573s
+[+] PASS  Blast-radius tree + Shark-vs-Shield collision view  — blast roots=2; collision rows=0
+[+] PASS  Unified Red Team Simulation (dialog + engine params)  — complexity=3, one-button sim wired, custom captured
+[+] PASS  Red Team drill — LIVE run (complexity + custom + target)  — 30 steps over 2 phases; custom marker inert + cleaned
+[+] PASS  Reliability fixes (watchdog, self-test log, SOAR guard, fixes log)  — watchdog ok; selftest log written; SOAR self-kill guarded; fixes logged
+[+] PASS  Console cmds + custom library CRUD + two-pane monitor  — console cmds ok; custom CRUD+persist ok; two-pane monitor ok
+[+] PASS  AI guardrail proxy + hardware-patching layer  — guardrail (inject/DoS/redact/wrap) ok; hw 6GB=gemma:2b/4096; active tier=cpu; flow_metrics 6 nodes
+[+] PASS  Sprint-1 remediations (guardrail token/neutralize + gate TOCTOU)  — guardrail token + neutralize ok; shared client blocks injection; gate tamper-detects and model advice stays inert
+[+] PASS  Vetted remediation (inert path proposals + gated host actions)  — path quarantine, Defender, and ACL remain proposal-only; registry is gated and network isolation is proposal-only; plan ok
+[+] PASS  Persistence Sweep (autorun classifier + discovery)  — autorun classifier verified; module discovered
+[+] PASS  ATT&CK coverage heatmap (honest, cross-checked vs ACTIONS)  — 14/18 techniques (78%); remediate keys real
+[+] PASS  Incident correlation (grouping + scoring + window split)  — 2 incidents; burst grouped (score 31/HIGH); noise ignored
+[+] PASS  World View → native Qt flow window (live)  — 6 nodes; live refresh + click-detail ok
+[+] PASS  Speed pass (WAL + ledger cap + audit-count cache)  — WAL on; ledger bounded (300 inserts → 50 rows); audit-count cached
+========================================================================
+ RESULT: 26 passed, 0 failed
+========================================================================

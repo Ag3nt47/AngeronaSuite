@@ -519,6 +519,8 @@ class ProvenanceGraphModule(BaseModule):
         return total
 
     def _on_event(self, event) -> None:
+        if self.stopping:
+            return
         try:
             details = event.details or {}
             if not isinstance(details, dict):

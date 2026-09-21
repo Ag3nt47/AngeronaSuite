@@ -218,6 +218,7 @@ class ProcessMonitorModule(BaseModule):
             )
             live: Set[tuple[int, str, str]] = set()
             names: Dict[int, str] = {}
+            observations: list[tuple[dict, tuple[int, str, str]]] = []
             identity_gaps = 0
             for p in procs:
                 identity, complete = _process_identity(p)
@@ -228,11 +229,11 @@ class ProcessMonitorModule(BaseModule):
                 live.add(identity)
                 identity_gaps += int(not complete)
                 names[pid] = (p.get("name") or "").lower()
+                observations.append((p, identity))
 
-            for p in procs:
-                identity, _complete = _process_identity(p)
-                if identity is None:
-                    continue
+            # The complete name table is needed for parent-lineage rules, but
+            # each immutable identity only needs normalizing once per snapshot.
+            for p, identity in observations:
                 pid = identity[0]
                 is_new = bool(
                     identity not in self._seen
@@ -244,12 +245,6 @@ class ProcessMonitorModule(BaseModule):
                 # Publish complete process-creation telemetry for correlation.
                 # INFO is not a malicious verdict; reviewed detectors such as
                 # Purple Guard can promote exact tagged evidence independently.
-                raw_command = p.get("cmdline") or []
-                command = (
-                    " ".join(str(part) for part in raw_command)
-                    if isinstance(raw_command, (list, tuple))
-                    else str(raw_command)
-                )
                 receipt: dict[str, object] = {}
                 if identity not in self._redteam_receipted:
                     try:
@@ -261,6 +256,15 @@ class ProcessMonitorModule(BaseModule):
                     except Exception:
                         receipt = {}
                 if is_new or receipt:
+                    # Unchanged processes do not emit a creation event. Avoid
+                    # rebuilding their potentially long command strings on
+                    # every tick; validation still receives the full raw row.
+                    raw_command = p.get("cmdline") or []
+                    command = (
+                        " ".join(str(part) for part in raw_command)
+                        if isinstance(raw_command, (list, tuple))
+                        else str(raw_command)
+                    )
                     self.emit(
                         f"Process created: {p.get('name') or '?'} (pid {pid})",
                         Severity.INFO,

@@ -31,6 +31,9 @@ from angerona.core.eventbus import EventBus
 from angerona.core.independent_high_water import IndependentHighWater
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.module_contract import ContractError, build_capability_contract
+from angerona.core.module_usage import (
+    has_optional_policy, kernel_service_installed, module_identity, usage_for,
+)
 from angerona.core.platforms import (
     availability_for,
     declared_platforms_from_source,
@@ -77,6 +80,11 @@ class ModuleManager:
         # restart; this manager lock additionally proves the registered object
         # and enabled policy did not change underneath that request.
         self._module_control_lock = threading.RLock()
+        self._control_generation = 0
+        self._runtime_active = False
+        self._shutdown = False
+        self._optional_enabled: dict[str, bool] = {}
+        self._kernel_installed: bool | None = None
         self.assurance_receipt_broker = AssuranceReceiptBroker(lambda: self.modules)
         self.discovery_errors: List[str] = []
         # Enterprise extension inventory. Built-ins inherit the release trust
@@ -100,6 +108,9 @@ class ModuleManager:
                 )
                 continue
             inst.bind(self.bus)
+            if (self.platform == "windows" and module_identity(inst) == (
+                    "angerona.modules.kernel_bridge", "KernelBridgeModule")):
+                self._kernel_installed = kernel_service_installed()
             platform = availability_for(inst, self.platform)
             setattr(inst, "_angerona_platform_availability", platform)
             if not platform.available:
@@ -353,10 +364,43 @@ class ModuleManager:
 
     # ── Lifecycle ───────────────────────────────────────────────────────────
     def is_enabled(self, name: str) -> bool:
-        mod = self.modules[name]
-        if not availability_for(mod, self.platform).available:
-            return False
-        return self.config.module_states.get(name, mod.enabled_by_default)
+        return self.module_usage(name).enabled
+
+    def module_usage(self, name: str):
+        return usage_for(self.modules[name], self.config, self.platform,
+                         kernel_installed=self._kernel_installed)
+
+    def reconcile_usage(self) -> None:
+        """Apply changed opt-in policy without waking paused/failed detectors.
+
+        Called by existing GUI/headless ticks and immediately after settings or
+        drill policy changes. No probes, extra polling thread or settings writes.
+        Only policy transitions start workers; watchdog remains recovery owner.
+        """
+        with self._module_control_lock:
+            if not self._runtime_active or self._shutdown:
+                return
+            for name, mod in tuple(self.modules.items()):
+                if not has_optional_policy(mod):
+                    continue
+                enabled = self.is_enabled(name)
+                previous = self._optional_enabled.get(name, False)
+                self._optional_enabled[name] = enabled
+                if previous != enabled:
+                    mod.start() if enabled else mod.stop()
+
+    def _start_current(self, mod: BaseModule, generation: int) -> bool:
+        with self._module_control_lock:
+            if (generation != self._control_generation or self._shutdown
+                    or self.modules.get(mod.name) is not mod
+                    or not self.is_enabled(mod.name)):
+                return False
+            mod.start()
+            return True
+
+    def start_if_enabled(self, mod: BaseModule) -> bool:
+        """Wake only the current, selected instance; never revive shutdown."""
+        return self._start_current(mod, self._control_generation)
 
     # Safety-critical modules must come up immediately — never staggered.
     _NO_STAGGER = {
@@ -414,11 +458,20 @@ class ModuleManager:
         optional progress callback receives ``(completed, total, module_name)``;
         callback failures never weaken or interrupt module startup.
         """
+        with self._module_control_lock:
+            self._control_generation += 1
+            generation = self._control_generation
+            self._runtime_active = True
+            self._shutdown = False
+            self._optional_enabled = {
+                name: self.is_enabled(name) for name, mod in self.modules.items()
+                if has_optional_policy(mod)
+            }
         deferred = set(deferred_names or ())
         skipped: list[str] = []
         critical: list[BaseModule] = []
         staged: list[BaseModule] = []
-        for name, mod in self.modules.items():
+        for name, mod in tuple(self.modules.items()):
             if not self.is_enabled(name):
                 continue
             if name in deferred:
@@ -443,12 +496,14 @@ class ModuleManager:
         # Do not make containment, IPC protection, or the watchdog wait behind a
         # slow scanner. These modules are intentionally lightweight.
         for mod in critical:
-            mod.start()
+            if not self._start_current(mod, generation):
+                continue
             completed += 1
             _report(mod)
 
         for mod in staged:
-            mod.start()
+            if not self._start_current(mod, generation):
+                continue
             completed += 1
             _report(mod)
             if not sequential_cycles:
@@ -460,7 +515,12 @@ class ModuleManager:
                     float(getattr(mod, "startup_cycle_timeout", cycle_timeout)),
                 )
                 ready = bool(waiter(timeout=timeout))
-                if not ready:
+                with self._module_control_lock:
+                    current = (generation == self._control_generation
+                               and not self._shutdown
+                               and self.modules.get(mod.name) is mod
+                               and self.is_enabled(mod.name))
+                if not ready and current:
                     mod.set_health(
                         min(int(getattr(mod, "health", 100)), 40),
                         f"startup cycle did not complete within {timeout:.1f}s",
@@ -489,7 +549,13 @@ class ModuleManager:
                 return
             self.config.module_states[name] = enabled
             self.config.save()
-            mod.start() if enabled else mod.stop()
+            effective = self.is_enabled(name)
+            if has_optional_policy(mod):
+                self._optional_enabled[name] = effective
+            if effective and not self._shutdown:
+                mod.start()
+            else:
+                mod.stop()
 
     def restart_module_generation(
         self,
@@ -505,7 +571,8 @@ class ModuleManager:
         """
         with self._module_control_lock:
             current = self.modules.get(name)
-            if current is not expected_module or not self.is_enabled(name):
+            if (self._shutdown or current is not expected_module
+                    or not self.is_enabled(name)):
                 return False
             restart = getattr(current, "restart_if_generation", None)
             if not callable(restart):
@@ -513,8 +580,12 @@ class ModuleManager:
             return bool(restart(int(expected_generation)))
 
     def stop_all(self) -> None:
-        for mod in self.modules.values():
-            mod.stop()
+        with self._module_control_lock:
+            self._control_generation += 1
+            self._runtime_active = False
+            self._shutdown = True
+            for mod in tuple(self.modules.values()):
+                mod.stop()
 
     # ── Enterprise trust/readiness inventory ───────────────────────────────
     def capability_inventory(self) -> List[dict[str, Any]]:
@@ -557,6 +628,7 @@ class ModuleManager:
                     "status": str(getattr(mod, "status", "unknown")),
                     "health": int(getattr(mod, "health", 0)),
                     "enabled": enabled,
+                    "usage": self.module_usage(name).as_dict(),
                     "operational": operational,
                     "assurance": assurance.as_dict(),
                     "assurance_score": assurance.score,

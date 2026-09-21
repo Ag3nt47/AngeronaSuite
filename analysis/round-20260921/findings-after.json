@@ -1,0 +1,53 @@
+{
+  "scope": "Current round closure; BH-04 overlaps R20260921-01. Historical architectural residuals are disclosed in adversary.md and are not newly closed.",
+  "findings": [
+    {
+      "id": "R20260921-01",
+      "finding": "Stopped subscribers continue work",
+      "status": "FIXED",
+      "regression": "tests/test_module_review_patches.py"
+    },
+    {
+      "id": "R20260921-02",
+      "finding": "Stale startup and wake/restart requests bypass current selection",
+      "status": "FIXED",
+      "regression": "tests/test_machine_module_usage.py"
+    },
+    {
+      "id": "BH-01",
+      "finding": "AMSI native context lifetime race",
+      "status": "FIXED",
+      "regression": "tests/test_module_review_patches.py"
+    },
+    {
+      "id": "BH-02",
+      "finding": "AMSI successful recovery retains fallback",
+      "status": "FIXED",
+      "regression": "tests/test_module_review_patches.py"
+    },
+    {
+      "id": "BH-03",
+      "finding": "API hook suppression unbounded and survives independent incidents",
+      "status": "FIXED",
+      "regression": "tests/test_module_review_patches.py"
+    },
+    {
+      "id": "BH-04",
+      "finding": "Stopped callback admission including Canary",
+      "status": "FIXED",
+      "regression": "tests/test_module_review_patches.py"
+    },
+    {
+      "id": "BH-05",
+      "finding": "Entropy self-test retains temporary fixtures",
+      "status": "FIXED",
+      "regression": "tests/test_module_poll_efficiency.py"
+    },
+    {
+      "id": "BH-06",
+      "finding": "AMSI failure incorrectly reported clean",
+      "status": "FIXED",
+      "regression": "tests/test_module_review_patches.py"
+    }
+  ]
+}

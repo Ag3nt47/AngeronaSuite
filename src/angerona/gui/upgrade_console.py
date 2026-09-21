@@ -842,7 +842,9 @@ class AngeronaUpgradeConsole(QMainWindow):
             self._wd_status.setText(f"{name}: status={getattr(m,'status','?')}, "
                                     f"health={getattr(m,'health','?')}%")
         else:
-            self._wd_status.setText(f"{len(mods)} modules supervised (no dedicated watchdog module found).")
+            from angerona.core.module_usage import module_counts
+            counts = module_counts(self.manager)
+            self._wd_status.setText(f"{counts['enabled']} modules selected (no dedicated watchdog module found).")
 
     # ── 4. Telemetry Hub (live) ──────────────────────────────────────────────
     def _init_telemetry_tab(self):
@@ -918,8 +920,9 @@ class AngeronaUpgradeConsole(QMainWindow):
             return
         mods = getattr(self.manager, "modules", None)
         if mods:
-            running = sum(1 for m in mods.values() if getattr(m, "status", "") == "running")
-            self._t_running.setText(f"{running}/{len(mods)}")
+            from angerona.core.module_usage import module_counts
+            counts = module_counts(self.manager)
+            self._t_running.setText(f"{counts['running']}/{counts['enabled']}")
         else:
             self._t_running.setText("n/a (standalone)")
         if self.bus is not None:

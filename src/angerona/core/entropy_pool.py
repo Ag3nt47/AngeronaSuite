@@ -189,16 +189,16 @@ def self_test() -> "tuple[bool, str]":
         assert abs(_entropy_of_bytes(bytes(range(256)) * 4) - 8.0) < 1e-9, "uniform → 8.0"
         assert _entropy_of_bytes(b"A" * 4096) == 0.0, "constant → 0.0"
         import tempfile
-        d = tempfile.mkdtemp(prefix="entpool_")
-        paths = []
-        for i in range(3):
-            p = os.path.join(d, f"f{i}.bin")
-            with open(p, "wb") as fh:
-                fh.write(bytes((i * 7 + k) % 256 for k in range(8192)))
-            paths.append(p)
-        res = compute_entropies(paths, prefer_pool=False)
-        assert set(res) == set(paths) and all(v is not None for v in res.values()), \
-            "inline compute returns a score per path"
+        with tempfile.TemporaryDirectory(prefix="entpool_") as d:
+            paths = []
+            for i in range(3):
+                p = os.path.join(d, f"f{i}.bin")
+                with open(p, "wb") as fh:
+                    fh.write(bytes((i * 7 + k) % 256 for k in range(8192)))
+                paths.append(p)
+            res = compute_entropies(paths, prefer_pool=False)
+            assert set(res) == set(paths) and all(v is not None for v in res.values()), \
+                "inline compute returns a score per path"
         return True, ("OK — entropy primitive matches reference (uniform→8.0, "
                       "constant→0.0) and batch compute scores every path.")
     except AssertionError as exc:

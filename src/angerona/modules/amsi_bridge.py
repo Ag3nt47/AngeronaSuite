@@ -44,6 +44,7 @@ import ctypes
 import ctypes.wintypes
 import hashlib
 import os
+import threading
 import time
 from typing import Optional
 
@@ -93,6 +94,7 @@ class _AMSI:
     """Thin ctypes wrapper around amsi.dll."""
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self._lib = ctypes.WinDLL("amsi")
         
         # ── FIX: Explicitly define C-signatures to prevent memory access violations ──
@@ -143,8 +145,12 @@ class _AMSI:
 
     def scan(self, content: bytes, content_name: str = "script") -> int:
         """Call AmsiScanBuffer and return the result code."""
+        with self._lock:
+            return self._scan_locked(content, content_name)
+
+    def _scan_locked(self, content: bytes, content_name: str) -> int:
         if not self._ok:
-            return AMSI_RESULT_CLEAN
+            raise RuntimeError("AMSI scan unavailable: session is closed")
             
         result = ctypes.wintypes.DWORD(0)
         hr = self._lib.AmsiScanBuffer(
@@ -156,17 +162,20 @@ class _AMSI:
             ctypes.byref(result),
         )
         if hr != 0:
-            return AMSI_RESULT_CLEAN
+            raise OSError(f"AmsiScanBuffer failed: HRESULT 0x{hr & 0xFFFFFFFF:08X}")
         return result.value
 
     def close(self) -> None:
-        if self._ok:
-            try:
-                self._lib.AmsiCloseSession(self._hAmsi, self._hSession)
-                self._lib.AmsiUninitialize(self._hAmsi)
-            except Exception:
-                pass
-            self._ok = False
+        # A self-test can scan concurrently with worker shutdown. The native
+        # session must remain alive until the last scan returns.
+        with self._lock:
+            if self._ok:
+                try:
+                    self._lib.AmsiCloseSession(self._hAmsi, self._hSession)
+                    self._lib.AmsiUninitialize(self._hAmsi)
+                except Exception:
+                    pass
+                self._ok = False
 
 
 # ── Module ────────────────────────────────────────────────────────────────────
@@ -199,7 +208,7 @@ class AMSIBridgeModule(BaseModule):
 
     def _publish_assurance_receipts(self) -> None:
         issuer = self._assurance_issuer
-        if issuer is None or self._amsi is None:
+        if issuer is None or self._amsi is None or self.stopping:
             return
         evidence_digest = hashlib.sha256(_EICAR).hexdigest()
         target_digest = assurance_target_digest(
@@ -235,35 +244,47 @@ class AMSIBridgeModule(BaseModule):
         return self.health
 
     def run(self) -> None:
-        self._amsi = self._try_init_amsi()
-
-        if self._amsi is None:
-            self._fallback = True
-            self.set_health(50, "AMSI unavailable — observation-only mode")
-            self.emit(
-                "AMSI Bridge: amsi.dll not available (non-Windows or disabled). "
-                "Running in observation-only mode — watching bus for script events.",
-                Severity.MEDIUM,
-                fallback=True,
-            )
-        else:
-            self.set_health(100, "")
-            self.emit("AMSI Bridge active — AmsiScanBuffer connected.", Severity.INFO)
-            # Verify EICAR is detected (proves AV provider is registered)
-            self._check_eicar_health()
-            self._publish_assurance_receipts()
-
-        while not self.stopping:
-            self.sleep(self._POLL_INTERVAL)
-            self._drain_bus()
-            self._publish_assurance_receipts()
-
-            now = time.time()
-            if not self._fallback and (now - self._last_health_check >= _HEALTH_CHECK_INTERVAL):
+        amsi = self._try_init_amsi()
+        self._amsi = amsi
+        self._fallback = amsi is None
+        try:
+            if self.stopping:
+                return
+            if self._fallback:
+                self.set_health(50, "AMSI unavailable — observation-only mode")
+                self.emit(
+                    "AMSI Bridge: amsi.dll not available (non-Windows or disabled). "
+                    "Running in observation-only mode — watching bus for script events.",
+                    Severity.MEDIUM,
+                    fallback=True,
+                )
+            else:
+                self.set_health(100, "")
+                self.emit("AMSI Bridge active — AmsiScanBuffer connected.", Severity.INFO)
+                # Verify EICAR is detected (proves AV provider is registered)
                 self._check_eicar_health()
-                self._last_health_check = now
+                self._publish_assurance_receipts()
 
-            self._evict_stale_dedup()
+            while not self.stopping:
+                self.sleep(self._POLL_INTERVAL)
+                if self.stopping:
+                    break
+                self._drain_bus()
+                self._publish_assurance_receipts()
+
+                now = time.time()
+                if not self._fallback and (now - self._last_health_check >= _HEALTH_CHECK_INTERVAL):
+                    self._check_eicar_health()
+                    self._last_health_check = now
+
+                self._evict_stale_dedup()
+        finally:
+            # Cleanup belongs to the worker generation, not the GUI's stop()
+            # caller: a native scan may still be in flight when stop is signalled.
+            if amsi is not None:
+                amsi.close()
+            if self._amsi is amsi:
+                self._amsi = None
 
     def _try_init_amsi(self) -> Optional[_AMSI]:
         # Direct ctypes calls into AmsiScanBuffer caused repeated native access
@@ -316,6 +337,8 @@ class AMSIBridgeModule(BaseModule):
 
         events, _overflow = self.poll_bus_events()
         for ev in events:
+            if self.stopping:
+                break
             content = self._extract_script_content(ev)
             if not content:
                 continue
@@ -373,6 +396,7 @@ class AMSIBridgeModule(BaseModule):
             result = self._amsi.scan(content, "angerona_script_scan")
         except Exception as exc:
             self.last_error = str(exc)
+            self.set_health(40, f"AMSI scan error: {exc}")
             return
 
         label = _result_label(result)
@@ -413,14 +437,11 @@ class AMSIBridgeModule(BaseModule):
             return True, "AMSI unavailable — observation-only mode active"
         if self._amsi is None:
             return False, f"AMSI init failed: {self.last_error}"
-        result = self._amsi.scan(_SAFE_PROBE, "self_test")
+        try:
+            result = self._amsi.scan(_SAFE_PROBE, "self_test")
+        except Exception as exc:
+            return False, f"AmsiScanBuffer failed: {exc}"
         return True, f"AmsiScanBuffer functional — probe result={_result_label(result)}"
-
-    def stop(self) -> None:
-        super().stop()
-        if self._amsi is not None:
-            self._amsi.close()
-            self._amsi = None
 
 
 def register() -> AMSIBridgeModule:

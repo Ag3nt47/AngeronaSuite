@@ -37,6 +37,9 @@ except Exception:
 
 _proc_cache_lock = threading.Lock()
 _conn_cache_lock = threading.Lock()
+# Cache lifetimes use monotonic time; evidence receipts retain wall-clock time.
+# An NTP/manual clock correction must neither freeze a stale sensor snapshot
+# nor cause every concurrent consumer to repeat an otherwise fresh scan.
 _proc_cache: tuple[float, List[Dict]] = (0.0, [])
 _conn_cache: tuple[float, "ConnectionSnapshot | None"] = (0.0, None)
 
@@ -89,13 +92,13 @@ def list_processes(max_age: float | None = None) -> List[Dict]:
     # Serialize cache misses so simultaneous sensor ticks do not all perform the
     # same expensive OS enumeration before any of them has populated the cache.
     with _proc_cache_lock:
-        now = time.time()
+        now = time.monotonic()
         if ttl > 0:
             ts, cached = _proc_cache
             # A successful enumeration can legitimately be empty (for example
             # in an isolated test/container).  Cache validity is represented
             # by its timestamp, not by the snapshot's truthiness.
-            if ts > 0.0 and (now - ts) < ttl:
+            if ts > 0.0 and 0.0 <= (now - ts) < ttl:
                 return cached
         try:
             import psutil
@@ -124,16 +127,16 @@ def connection_snapshot(max_age: float | None = None) -> ConnectionSnapshot:
     global _conn_cache
     ttl = _CACHE_TTL if max_age is None else max_age
     with _conn_cache_lock:
-        now = time.time()
+        now = time.monotonic()
         if ttl > 0:
             ts, cached = _conn_cache
-            if ts > 0.0 and cached is not None and (now - ts) < ttl:
+            if ts > 0.0 and cached is not None and 0.0 <= (now - ts) < ttl:
                 return cached
         try:
             import psutil
         except Exception as exc:
             receipt = ConnectionSnapshot(
-                (), now, False, 0, 0, f"psutil unavailable: {exc}"[:500]
+                (), time.time(), False, 0, 0, f"psutil unavailable: {exc}"[:500]
             )
             _conn_cache = (now, receipt)
             return receipt
@@ -143,7 +146,7 @@ def connection_snapshot(max_age: float | None = None) -> ConnectionSnapshot:
             rows = tuple(psutil.net_connections(kind="inet"))
         except Exception as exc:
             receipt = ConnectionSnapshot(
-                (), now, False, 0, 0, f"connection enumeration failed: {exc}"[:500]
+                (), time.time(), False, 0, 0, f"connection enumeration failed: {exc}"[:500]
             )
             _conn_cache = (now, receipt)
             return receipt
@@ -166,7 +169,7 @@ def connection_snapshot(max_age: float | None = None) -> ConnectionSnapshot:
             skipped,
             f"{skipped} connection row(s) could not be normalized" if skipped else "",
         )
-        _conn_cache = (collected, receipt)
+        _conn_cache = (time.monotonic(), receipt)
         return receipt
 
 

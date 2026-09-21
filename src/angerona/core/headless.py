@@ -154,6 +154,7 @@ def run_headless(
 
     try:
         while not stop.is_set():
+            manager.reconcile_usage()
             stop.wait(timeout=1.0)
     except KeyboardInterrupt:
         pass

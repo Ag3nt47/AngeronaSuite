@@ -32,6 +32,9 @@ from angerona.core.chill_mode import (
 )
 from angerona.core.eco_wakeup import EcoWakeupWorker
 from angerona.core.eventbus import Severity
+from angerona.core.module_usage import (
+    enabled_module_items, reconcile_module_usage, start_module_if_enabled,
+)
 from angerona.gui.animations import GlobalLoadingIndicator, RunSpinner
 from angerona.gui.async_snapshot import AsyncSnapshot
 from angerona.gui.header_controls import (
@@ -1025,6 +1028,7 @@ class MainWindow(QMainWindow):
                 pass
 
     def _refresh_body(self) -> None:
+        reconcile_module_usage(self.manager)
         quiet_chill = self._quiet_chill_active()
         timer_ms, status_period, panel_period, posture_period, flow_period = (
             self._current_refresh_plan()
@@ -1489,7 +1493,8 @@ class MainWindow(QMainWindow):
             ok = False
             try:
                 setattr(mod, "_chill_paused", False)
-                mod.start()
+                if not start_module_if_enabled(self.manager, mod):
+                    return
                 ok = bool(mod.wait_for_first_cycle(timeout=5 * 60.0))
             except Exception:
                 ok = False
@@ -1641,7 +1646,9 @@ class MainWindow(QMainWindow):
         self._eco_wake_epoch += 1
         epoch = self._eco_wake_epoch
         self.run_spinner.start("Waking sensors")
-        self._eco_worker = EcoWakeupWorker(mods)
+        self._eco_worker = EcoWakeupWorker(
+            mods, start_module=lambda mod: start_module_if_enabled(self.manager, mod),
+        )
         self._eco_worker.module_waking.connect(
             lambda name: self.console._append(f"[chill]   waking {name}…")
         )
@@ -1790,6 +1797,8 @@ class MainWindow(QMainWindow):
             else:
                 os.environ[key] = previous
 
+        reconcile_module_usage(self.manager)
+
     def _simulation_launch_status(self, status: str, reason: str, cfg=None) -> dict:
         result = {"status": status, "reason": reason}
         if status == "accepted":
@@ -1908,6 +1917,7 @@ class MainWindow(QMainWindow):
             os.environ["ANGERONA_SOAR_RESPONSE_SCOPE"] = os.pathsep.join(
                 dict.fromkeys(scope_roots)
             )
+            reconcile_module_usage(self.manager)
         # Analogy coaching is retained behind the configuration key for a later
         # Red Team UI, but the current focused run view keeps it disabled.
         self._fi_enabled = bool(cfg.get("analogy", False))
@@ -2161,6 +2171,7 @@ class MainWindow(QMainWindow):
         import os
         self._shark_prev_armed = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK")
         os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = "1"
+        reconcile_module_usage(self.manager)
         self.shark_monitor.reset()
         self.shark_monitor.append("Launching Red Team Engine…")
         self.shark_monitor.show()
@@ -3831,7 +3842,7 @@ class MainWindow(QMainWindow):
         from angerona.core.eventbus import Severity
         lines: list[str] = []
         try:
-            mods = self.manager.modules
+            mods = dict(enabled_module_items(self.manager))
             running = sum(1 for m in mods.values() if getattr(m, "status", "") == "running")
             by_cat: dict[str, list] = {}
             for m in mods.values():
@@ -4792,6 +4803,7 @@ class MainWindow(QMainWindow):
                                  process_baseline=self.process_baseline)
             dlg.setStyleSheet(self._qss())
             if dlg.exec():
+                reconcile_module_usage(self.manager)
                 self._apply_voice_settings_live()
                 self._apply_aria_control_settings_live()
                 self._apply_dashboard_mode_live()
@@ -5093,7 +5105,8 @@ class MainWindow(QMainWindow):
             try:
                 if getattr(mod, "status", "") in {"running", "restarting"}:
                     mod.stop()
-                mod.start()
+                if not start_module_if_enabled(self.manager, mod):
+                    continue
                 restarted.append(str(nm))
                 waiter = getattr(mod, "wait_for_first_cycle", None)
                 if callable(waiter):

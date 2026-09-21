@@ -177,7 +177,8 @@ class StatusReporter:
         from angerona.core.threat import active_threat_events, event_disposition, threat_level
         events = self.bus.recent(200)
         active = active_threat_events(events)
-        running = sum(1 for m in self.manager.modules.values() if m.status == "running")
+        from angerona.core.module_usage import module_counts
+        counts = module_counts(self.manager)
         mods = []
         for name, m in sorted(self.manager.modules.items()):
             mods.append({
@@ -241,8 +242,10 @@ class StatusReporter:
             "threat_level": _THREAT[threat_level(events)],
             "chill_mode": bool(getattr(self.config, "runtime_chill_active", False)),
             "counts": {
-                "modules_total": len(self.manager.modules),
-                "modules_running": running,
+                "modules_total": counts["enabled"],
+                "modules_running": counts["running"],
+                "modules_off": counts["off"],
+                "modules_discovered": counts["discovered"],
                 "alerts_24h": self.storage.count_since(time.time() - 86400),
                 # Backward-compatible key: unlike the old raw count, this now
                 # aliases the accurate ten-minute live-hostile count.

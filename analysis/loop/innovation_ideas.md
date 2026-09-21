@@ -1,3 +1,32 @@
+# Angerona machine-aware maintenance research — 2026-09-21
+
+The [current visionary report](../round-20260921/visionary.md) ranks eight
+buildable defensive proposals and cites primary sources. This focused round
+implements shared machine usage and truthful enabled-module counts, informed
+by proposal 1. The complete receipt-based process-snapshot design and the
+remaining proposals are future work; the focused polling optimization does
+not claim to implement a shared cross-module collection service.
+
+| Rank | Proposal | Status in this round |
+| --- | --- | --- |
+| 1 | One machine-usage contract for every module | Shared eligibility/count/lifecycle implementation; final gates in the [round record](../round-20260921/README.md). |
+| 2 | Complete process snapshots with targeted reuse | Proposal; targeted command-formatting and per-poll identity reuse delivered separately. |
+| 3 | Attribute long-session growth to module-owned state | Proposal. |
+| 4 | Source-freshness limits on analytical resource leases | Proposal. |
+| 5 | Shared admission for local AI work | Proposal. |
+| 6 | Explain analytic coverage from actual source readiness | Proposal. |
+| 7 | Incremental driver checks with policy-generation invalidation | Proposal. |
+| 8 | Notification-driven device refresh with retained sentinel | Proposal. |
+
+Unsupported or unrequested integrations may be parked. Broken expected sensors,
+missing permissions and silent evidence remain coverage gaps; absence of an
+attached device does not disable the guard for its next arrival. Research
+proposals are not shipped capabilities or measured efficacy claims.
+
+Historical reviews below retain their original scope and status.
+
+---
+
 # Angerona Cycle 34 Defensive Innovation Review — 2026-08-30
 
 ## Decision

@@ -1,0 +1,4977 @@
+{
+  "summary": {
+    "scope": "source-level lifecycle/applicability/state review plus supported offline smoke tests; not a proof of absence of defects",
+    "discovered_modules": 84,
+    "discovery_errors": [],
+    "duplicate_declared_codes": {},
+    "modules_without_declared_code": [
+      "Adversary Combat",
+      "AI Triage (Ollama)",
+      "Cloud CTI Escalation",
+      "Active Deception",
+      "Evolution Engine",
+      "Forensics Capture",
+      "Linux Observe Sensor",
+      "macOS Observe Sensor",
+      "Network Monitor",
+      "Packet Sniffer",
+      "Persistence Sweep",
+      "Posture Hardening",
+      "Process Monitor",
+      "Purple Remediation Guard",
+      "SOAR Automation",
+      "Active Response SOAR",
+      "Watchdog Monitor",
+      "YARA Scanner"
+    ],
+    "modules_without_register": [
+      "AI Triage (Ollama)",
+      "App Control Decision Evidence",
+      "Cloud CTI Escalation",
+      "Active Deception",
+      "File Integrity Monitor",
+      "Forensics Capture",
+      "Identity Session Guard",
+      "macOS Observe Sensor",
+      "Network Monitor",
+      "Persistence Sweep",
+      "Process Monitor",
+      "RAG Provenance Guard",
+      "SOAR Automation",
+      "Active Response SOAR",
+      "Temporal Tradecraft Correlator",
+      "YARA Scanner"
+    ],
+    "register_note": "ModuleManager discovers local BaseModule subclasses; register() is optional compatibility metadata, not a discovery requirement. Absent register/CODE declarations are not import failures.",
+    "selftests": {
+      "SKIP": 16,
+      "PASS": 68
+    },
+    "helper_files": [
+      "src/angerona/modules/__init__.py",
+      "src/angerona/modules/packet_sniffer_worker.py",
+      "src/angerona/modules/remediation_actions.py"
+    ]
+  },
+  "modules": [
+    {
+      "source": "src/angerona/modules/adversary_combat.py",
+      "class": "AdversaryCombat",
+      "name": "Adversary Combat",
+      "declared_code": null,
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Windows response authority and authenticated action journal",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "SKIP",
+        "detail": "not started by headless harness / optional prerequisite: MAXIMUM status=stopped; Low+; process=terminate; queue drops=0; The response worker is stopped or restarting."
+      },
+      "review": "Bounded admission queue, seen ring, recovery journal and generation-aware response lifecycle reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 1096,
+        "self_test": 1226,
+        "run": 1307
+      },
+      "bound_evidence": [
+        {
+          "line": 86,
+          "text": "_RECOVERY_AUTHORIZATION_MAX_AGE_S = 300.0"
+        },
+        {
+          "line": 94,
+          "text": "_MAX_RECOVERY_ANCHOR_BYTES = 16 * 1024"
+        },
+        {
+          "line": 95,
+          "text": "_MAX_RECOVERY_WITNESS_BYTES = 16 * 1024"
+        },
+        {
+          "line": 96,
+          "text": "_MAX_JOURNAL_BYTES = 32 * 1024 * 1024"
+        },
+        {
+          "line": 97,
+          "text": "_MAX_JOURNAL_LINE_BYTES = 64 * 1024"
+        },
+        {
+          "line": 98,
+          "text": "_MAX_JOURNAL_RECORDS = 32_768"
+        },
+        {
+          "line": 99,
+          "text": "_MAX_JOURNAL_JSON_DEPTH = 16"
+        },
+        {
+          "line": 1105,
+          "text": "self._queue: queue.Queue[Event] = queue.Queue(maxsize=2048)"
+        },
+        {
+          "line": 1113,
+          "text": "self._seen_order: deque[str] = deque(maxlen=8192)"
+        },
+        {
+          "line": 1115,
+          "text": "self._active_events: deque[tuple[float, str]] = deque(maxlen=256)"
+        },
+        {
+          "line": 1415,
+          "text": "if len(self._seen_order) == self._seen_order.maxlen:"
+        },
+        {
+          "line": 1583,
+          "text": "return len(self._active_events)"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/ai_model_integrity.py",
+      "class": "AIModelIntegrityGuardModule",
+      "name": "AI Model Integrity Guard",
+      "declared_code": "AMIG",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Local Ollama model inventory plus separately approved authenticated baseline",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "chunked SHA-256 tamper-detect verified; model dir: F:\\BRAIN DRIVE_root\\Ollama\\models"
+      },
+      "review": "File/manifest/inventory caps and cancellation-aware hashing reviewed; absent models are idle, failed attestation remains visible.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 418,
+        "run": 840,
+        "self_test": 916
+      },
+      "bound_evidence": [
+        {
+          "line": 57,
+          "text": "_MAX_MANIFEST_BYTES = 16 * 1024 * 1024"
+        },
+        {
+          "line": 58,
+          "text": "_MAX_MANIFEST_BLOBS = 10_000"
+        },
+        {
+          "line": 59,
+          "text": "_MAX_BASELINE_BYTES = 4 * 1024 * 1024"
+        },
+        {
+          "line": 60,
+          "text": "_MAX_INVENTORY_FILES = 20_000"
+        },
+        {
+          "line": 100,
+          "text": "expires_monotonic: float"
+        },
+        {
+          "line": 345,
+          "text": "raw = _read_verified_file(manifest_path, root, maximum=_MAX_MANIFEST_BYTES)"
+        },
+        {
+          "line": 364,
+          "text": "if not 1 <= len(descriptors) <= _MAX_MANIFEST_BLOBS:"
+        },
+        {
+          "line": 495,
+          "text": "if objects > _MAX_INVENTORY_FILES:"
+        },
+        {
+          "line": 583,
+          "text": "raw = _read_verified_file(path, root, maximum=_MAX_MANIFEST_BYTES)"
+        },
+        {
+          "line": 601,
+          "text": "if not 1 <= len(descriptors) <= _MAX_MANIFEST_BLOBS:"
+        },
+        {
+          "line": 678,
+          "text": "if not 1 <= len(raw) <= _MAX_BASELINE_BYTES:"
+        },
+        {
+          "line": 710,
+          "text": "or not 1 <= len(files) <= _MAX_INVENTORY_FILES"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/ai_triage.py",
+      "class": "AITriageModule",
+      "name": "AI Triage (Ollama)",
+      "declared_code": null,
+      "register_function": false,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Attested local Ollama listener and approved model",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "SKIP",
+        "detail": "not started by headless harness / optional prerequisite: Ollama listener attestation failed: local Ollama listener ownership is unavailable or ambiguous"
+      },
+      "review": "Recovery helper ownership, bounded calls and circuit-breaker readiness reviewed.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 67,
+        "run": 368,
+        "self_test": 513
+      },
+      "bound_evidence": [
+        {
+          "line": 479,
+          "text": "# A 64-second idle timer must not expire the 60-second receipt and"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/amsi_bridge.py",
+      "class": "AMSIBridgeModule",
+      "name": "AMSI Bridge",
+      "declared_code": "AMSI",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Windows amsi.dll plus functional antimalware provider",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "SKIP",
+        "detail": "not started by headless harness / optional prerequisite: status=stopped, health=100%"
+      },
+      "review": "Native scan/close lifetime, restart fallback and native error handling reviewed; three fixture-reproduced defects.",
+      "disposition": "REPORTED",
+      "finding_ids": [
+        "BH-01",
+        "BH-02",
+        "BH-06"
+      ],
+      "reviewed_methods": {
+        "__init__": 188,
+        "run": 237,
+        "self_test": 409,
+        "stop": 419
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/api_patch_detector.py",
+      "class": "ApiPatchDetectorModule",
+      "name": "API Patch / Anti-Blinding Detector",
+      "declared_code": "APID",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Windows PE exports, readable system DLLs and process memory",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "parsed all 7 required ntdll export prologue(s) from disk"
+      },
+      "review": "Disk size bounds and coverage health reviewed; alert state never expires and suppresses recurrent hooks.",
+      "disposition": "REPORTED",
+      "finding_ids": [
+        "BH-03"
+      ],
+      "reviewed_methods": {
+        "__init__": 175,
+        "run": 493,
+        "self_test": 521
+      },
+      "bound_evidence": [
+        {
+          "line": 55,
+          "text": "_MAX_DLL_BYTES = 128 * 1024 * 1024"
+        },
+        {
+          "line": 248,
+          "text": "if not 0 < int(before.st_size) <= _MAX_DLL_BYTES:"
+        },
+        {
+          "line": 250,
+          "text": "data = handle.read(_MAX_DLL_BYTES + 1)"
+        },
+        {
+          "line": 252,
+          "text": "if len(data) != int(before.st_size) or len(data) > _MAX_DLL_BYTES:"
+        },
+        {
+          "line": 474,
+          "text": "missing_memory = len(self._coverage.get(\"missing_memory\", []))"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/app_control_monitor.py",
+      "class": "AppControlDecisionSensor",
+      "name": "App Control Decision Evidence",
+      "declared_code": "ACDS",
+      "register_function": false,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": [
+          "Microsoft-Windows-CodeIntegrity/Operational"
+        ]
+      },
+      "applicability_review": "Windows CodeIntegrity Operational event channel",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "bounded 3076/3077/3089 parser and ActivityID join verified"
+      },
+      "review": "Bounded event batches, authenticated cursor/pending state and owned-source cleanup reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 422,
+        "run": 861,
+        "self_test": 887
+      },
+      "bound_evidence": [
+        {
+          "line": 34,
+          "text": "_MAX_CURSOR_BYTES = 4096"
+        },
+        {
+          "line": 35,
+          "text": "_MAX_PENDING_BYTES = 2 * 1024 * 1024"
+        },
+        {
+          "line": 36,
+          "text": "_MAX_BATCH = 256"
+        },
+        {
+          "line": 158,
+          "text": "handles = self._next(query, max(1, min(_MAX_BATCH, int(limit))))"
+        },
+        {
+          "line": 220,
+          "text": "if not self.path.is_file() or self.path.stat().st_size > _MAX_CURSOR_BYTES:"
+        },
+        {
+          "line": 341,
+          "text": "if not self.path.is_file() or self.path.stat().st_size > _MAX_PENDING_BYTES:"
+        },
+        {
+          "line": 383,
+          "text": "if len(payload) > _MAX_PENDING_BYTES:"
+        },
+        {
+          "line": 428,
+          "text": "correlation_ttl: float = 15.0,"
+        },
+        {
+          "line": 448,
+          "text": "self._correlator = DecisionCorrelator(ttl_seconds=correlation_ttl)"
+        },
+        {
+          "line": 789,
+          "text": "rows = self._source.read_after(admitted_cursor, _MAX_BATCH)"
+        },
+        {
+          "line": 804,
+          "text": "if len(rows) < _MAX_BATCH:"
+        },
+        {
+          "line": 839,
+          "text": "for decision in self._correlator.flush_expired():"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/arp_watchdog.py",
+      "class": "ARPWatchdogModule",
+      "name": "ARP Watchdog",
+      "declared_code": "ARPW",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Windows ARP cache; optional Scapy capture; approved baseline",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "ARP parser ready \u2014 mode=poll-only; baseline=not-loaded"
+      },
+      "review": "Authenticated baseline cap, separate capture stop token and polling fallback reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 123,
+        "run": 304,
+        "stop": 333,
+        "self_test": 607
+      },
+      "bound_evidence": [
+        {
+          "line": 61,
+          "text": "_MAX_BASELINE_BYTES = 256 * 1024"
+        },
+        {
+          "line": 190,
+          "text": "if len(raw) > _MAX_BASELINE_BYTES:"
+        },
+        {
+          "line": 258,
+          "text": "if len(payload) > _MAX_BASELINE_BYTES:"
+        },
+        {
+          "line": 317,
+          "text": "approved_baseline_entries=len(self._baseline),"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/audit_log_guard.py",
+      "class": "AuditLogIntegrityGuard",
+      "name": "Audit Log Integrity Guard",
+      "declared_code": "ALIG",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": [
+          "Windows Event Log read access"
+        ]
+      },
+      "applicability_review": "Windows Event Log read access and authenticated checkpoints",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "strict clear-event parser and privacy boundary verified"
+      },
+      "review": "Fixed channel state and resource ownership reviewed; native source close is a no-op, so proposed restart defect ruled out.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 77,
+        "run": 535,
+        "self_test": 549
+      },
+      "bound_evidence": [
+        {
+          "line": 431,
+          "text": "and len(self._checkpoints) == len(_CHANNELS)"
+        },
+        {
+          "line": 529,
+          "text": "f\"{len(self._checkpoints)} channels anchored; \""
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/authentication_extension_guard.py",
+      "class": "AuthenticationExtensionIntegrityGuardModule",
+      "name": "Authentication Extension Integrity Guard",
+      "declared_code": "AEIG",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": [
+          "Windows registry read access to fixed authentication-extension keys",
+          "Local component metadata read access when a binding resolves safely",
+          "Angerona bus.key for path minimization and authenticated baseline state"
+        ]
+      },
+      "applicability_review": "Windows registry and authentication-extension evidence",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "bounded path-minimized drift and observe-only event contract verified"
+      },
+      "review": "Fixed collection surfaces, privacy-minimized drift and observe-only outputs reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 101,
+        "self_test": 442,
+        "run": 472
+      },
+      "bound_evidence": [
+        {
+          "line": 96,
+          "text": "\"throttle_min\": 1.0,"
+        },
+        {
+          "line": 97,
+          "text": "\"throttle_max\": 8.0,"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/av_telemetry_bridge.py",
+      "class": "AVTelemetryBridgeModule",
+      "name": "AV Telemetry Bridge",
+      "declared_code": "AVTB",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Defender event channel or bounded PowerShell fallback plus recorder custody",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "health=100%"
+      },
+      "review": "Batch/XML/output bounds and fail-closed fallback custody reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 284,
+        "run": 691,
+        "self_test": 1383
+      },
+      "bound_evidence": [
+        {
+          "line": 60,
+          "text": "_MAX_EVENT_XML_CHARS = 1024 * 1024"
+        },
+        {
+          "line": 61,
+          "text": "_MAX_NATIVE_BATCH = 256              # Matches the modern event source's page cap."
+        },
+        {
+          "line": 62,
+          "text": "_MAX_FALLBACK_RECORDS = 4096"
+        },
+        {
+          "line": 63,
+          "text": "_MAX_FALLBACK_OUTPUT_BYTES = 4 * 1024 * 1024"
+        },
+        {
+          "line": 70,
+          "text": "_MAX_OUTBOX_ENROLLMENT_BYTES = 16 * 1024"
+        },
+        {
+          "line": 97,
+          "text": "if not isinstance(xml, str) or len(xml.encode(\"utf-8\")) > _MAX_EVENT_XML_CHARS:"
+        },
+        {
+          "line": 157,
+          "text": "def read_after(self, record_id: int, limit: int = _MAX_NATIVE_BATCH) -> list:"
+        },
+        {
+          "line": 406,
+          "text": "if len(payload) > _MAX_OUTBOX_ENROLLMENT_BYTES:"
+        },
+        {
+          "line": 485,
+          "text": "if not raw or len(raw) > _MAX_OUTBOX_ENROLLMENT_BYTES:"
+        },
+        {
+          "line": 667,
+          "text": "first[:_MAX_EVENT_XML_CHARS].encode(\"utf-8\", \"replace\")"
+        },
+        {
+          "line": 764,
+          "text": "records = source.read_after(resume_after, _MAX_NATIVE_BATCH)"
+        },
+        {
+          "line": 858,
+          "text": "if xml_str and parser and len(xml_str) <= _MAX_EVENT_XML_CHARS:"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/beacon_detector.py",
+      "class": "BeaconDetectorModule",
+      "name": "C2 Beacon Detector",
+      "declared_code": "BEAC",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "psutil process identity and shared network snapshot",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "beacon cadence detected (mean=60s cv=0.00), human traffic ignored, external-IP test OK"
+      },
+      "review": "Per-key history cap, stale history eviction and incomplete snapshot handling reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 90,
+        "run": 110,
+        "self_test": 245
+      },
+      "bound_evidence": [
+        {
+          "line": 4,
+          "text": "regular cadence (every N seconds/minutes, often with a little jitter). Angerona"
+        },
+        {
+          "line": 37,
+          "text": "_MAX_INTERVAL_S  = 3600.0  # ignore >1h (too slow to distinguish here)"
+        },
+        {
+          "line": 38,
+          "text": "_MAX_CV          = 0.25    # coefficient of variation below this \u21d2 \"regular\""
+        },
+        {
+          "line": 62,
+          "text": "if mean < _MIN_INTERVAL_S or mean > _MAX_INTERVAL_S:"
+        },
+        {
+          "line": 66,
+          "text": "return (cv <= _MAX_CV), mean, cv"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/behavioral_tuner.py",
+      "class": "BehavioralTuner",
+      "name": "TUNE",
+      "declared_code": "TUNE",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "SQLite baseline store and explicit exact-hash trust approval",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "SKIP",
+        "detail": "not started by headless harness / optional prerequisite: status=stopped, health=100%"
+      },
+      "review": "Candidate learning, periodic event drain and explicit trust gate reviewed; no actionable reproduced regression.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 114,
+        "run": 594,
+        "self_test": 644
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/canary_drill.py",
+      "class": "CanaryDrillModule",
+      "name": "Telemetry Canary Drills",
+      "declared_code": "DRILL",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Trusted process sensor echo and recorder persistence",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "strict ETWG echo + bounded telemetry contract controls passed"
+      },
+      "review": "Bounded echo queue and expiry reviewed; stopped callback still parses events and advances liveness timestamp.",
+      "disposition": "REPORTED",
+      "finding_ids": [
+        "BH-04"
+      ],
+      "reviewed_methods": {
+        "__init__": 127,
+        "_on_event": 173,
+        "run": 466,
+        "self_test": 614
+      },
+      "bound_evidence": [
+        {
+          "line": 18,
+          "text": "4. If the timeout expires with no matching event \u2192 presume telemetry blinding;"
+        },
+        {
+          "line": 53,
+          "text": "MAX_CONSECUTIVE_MISSES: int = 2  # misses before CRITICAL"
+        },
+        {
+          "line": 131,
+          "text": "maxsize=_ECHO_QUEUE_LIMIT"
+        },
+        {
+          "line": 307,
+          "text": "if len(self._pending_pids) > 64:      # belt-and-suspenders bound"
+        },
+        {
+          "line": 408,
+          "text": "def _expire_pending(self) -> list[str]:"
+        },
+        {
+          "line": 412,
+          "text": "for outcome in self._expectations.expire(now=time.monotonic())"
+        },
+        {
+          "line": 492,
+          "text": "# Check for expired (missed) canaries"
+        },
+        {
+          "line": 493,
+          "text": "for tag in late_misses + self._expire_pending():"
+        },
+        {
+          "line": 523,
+          "text": "if self._consecutive_misses >= MAX_CONSECUTIVE_MISSES:"
+        },
+        {
+          "line": 538,
+          "text": "# not an attack. Warn once (reuse the throttle) at MEDIUM."
+        },
+        {
+          "line": 587,
+          "text": "f\"persistence_pending={len(self._pending_durable)}\","
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/chaos_harness.py",
+      "class": "ChaosHarness",
+      "name": "CHAOS",
+      "declared_code": "CHAOS",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Bound producer assurance receipts for APID/NDRD/FIM/AMSI",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "cycle 24.0h; 0 runs, 0 with regressions"
+      },
+      "review": "Challenge deadlines, explicit receipt evidence and sparse periodic work reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 83,
+        "run": 314,
+        "self_test": 343
+      },
+      "bound_evidence": [
+        {
+          "line": 130,
+          "text": "expires_at=issued_at + self.ECHO_TIMEOUT_S,"
+        },
+        {
+          "line": 155,
+          "text": "or event_ts > challenge.expires_at + 2.0"
+        },
+        {
+          "line": 206,
+          "text": "self_ioc.register_domain(host, ttl=self.ECHO_TIMEOUT_S + 60.0)"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/cloud_escalation.py",
+      "class": "CloudEscalationModule",
+      "name": "Cloud CTI Escalation",
+      "declared_code": null,
+      "register_function": false,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": false,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Operator opt-in plus protected Gemini credentials",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "SKIP",
+        "detail": "disabled by operator configuration"
+      },
+      "review": "Default-off, dynamic key re-read and 20 calls/hour bound reviewed.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 62,
+        "self_test": 84,
+        "run": 109
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/compliance_mapper.py",
+      "class": "ComplianceMapperModule",
+      "name": "Compliance Mapper",
+      "declared_code": "CMAP",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Local telemetry/recorder plus authenticated reporting state",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "MITRE\u2192NIST/STIG mapping + sub-technique fallback verified"
+      },
+      "review": "Bounded 2000-entry retention and durable batch drain reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 177,
+        "run": 409,
+        "self_test": 445
+      },
+      "bound_evidence": [
+        {
+          "line": 73,
+          "text": "_MAX_STATE_BYTES = 4 * 1024 * 1024"
+        },
+        {
+          "line": 74,
+          "text": "_MAX_DURABLE_BATCH = 5_000"
+        },
+        {
+          "line": 171,
+          "text": "adaptive_throttle_allowed = True"
+        },
+        {
+          "line": 172,
+          "text": "adaptive_throttle_max = 4.0"
+        },
+        {
+          "line": 183,
+          "text": "self._incidents: deque[dict] = deque(maxlen=2000)"
+        },
+        {
+          "line": 242,
+          "text": "if len(raw) > _MAX_STATE_BYTES:"
+        },
+        {
+          "line": 292,
+          "text": "self._incidents = deque(clean, maxlen=2000)"
+        },
+        {
+          "line": 325,
+          "text": "if len(payload) > _MAX_STATE_BYTES:"
+        },
+        {
+          "line": 355,
+          "text": "if len(self._incidents) == self._incidents.maxlen:"
+        },
+        {
+          "line": 372,
+          "text": "limit=_MAX_DURABLE_BATCH,"
+        },
+        {
+          "line": 435,
+          "text": "f\"{n} relevance mappings ({len(self._seen_techniques)} techniques, \""
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/counter_agentic.py",
+      "class": "CounterAgenticModule",
+      "name": "Counter-Agentic Detection",
+      "declared_code": "CAGT",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "psutil and shared connection snapshots",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "cadence+chain detection verified (agentic fires, benign quiet, offensive subsystems excluded)"
+      },
+      "review": "Timeline expiry, per-lineage history and incomplete collection health reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 114,
+        "run": 330,
+        "self_test": 359
+      },
+      "bound_evidence": [
+        {
+          "line": 60,
+          "text": "_MIN_PAUSE, _MAX_PAUSE = 1.5, 4.0"
+        },
+        {
+          "line": 179,
+          "text": "if not (_MIN_PAUSE <= d1 <= _MAX_PAUSE and _MIN_PAUSE <= d2 <= _MAX_PAUSE):"
+        },
+        {
+          "line": 343,
+          "text": "f\"{len(self.timelines)} tracked lineages, \""
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/daily_briefing.py",
+      "class": "DailyBriefingModule",
+      "name": "Scheduled AI Security Briefing",
+      "declared_code": "BRIEF",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Local recorder; optional attested Ollama for narrative",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "briefing builder verified (severity tally, technique ranking, posture + containment line)"
+      },
+      "review": "Authenticated cursor, bounded output and deterministic fallback reviewed; stop-aware schedule slices retained.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 154,
+        "run": 303,
+        "self_test": 461
+      },
+      "bound_evidence": [
+        {
+          "line": 52,
+          "text": "_MAX_CURSOR_BYTES = 16 * 1024"
+        },
+        {
+          "line": 53,
+          "text": "_MAX_BRIEFING_BYTES = 256 * 1024"
+        },
+        {
+          "line": 150,
+          "text": "adaptive_throttle_allowed = True"
+        },
+        {
+          "line": 151,
+          "text": "adaptive_throttle_max = 4.0"
+        },
+        {
+          "line": 216,
+          "text": "if len(raw) > _MAX_CURSOR_BYTES:"
+        },
+        {
+          "line": 253,
+          "text": "if len(payload) > _MAX_BRIEFING_BYTES:"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/deception.py",
+      "class": "DeceptionModule",
+      "name": "Active Deception",
+      "declared_code": null,
+      "register_function": false,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Managed canary directory; user folders require opt-in",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "disposable secret-free canary lifecycle passed"
+      },
+      "review": "Fixed canary set, bounded reads and incremental feed identity/cursor reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 81,
+        "self_test": 171,
+        "run": 206
+      },
+      "bound_evidence": [
+        {
+          "line": 30,
+          "text": "_MAX_CANARY_BYTES = 64 * 1024"
+        },
+        {
+          "line": 107,
+          "text": "or int(before.st_size) > _MAX_CANARY_BYTES"
+        },
+        {
+          "line": 121,
+          "text": "remaining = _MAX_CANARY_BYTES + 1"
+        },
+        {
+          "line": 209,
+          "text": "70 if len(self._canaries) == len(CANARY_NAMES) else 45,"
+        },
+        {
+          "line": 214,
+          "text": "f\"Planted {len(self._canaries)} canary files with mutation/deletion \""
+        },
+        {
+          "line": 251,
+          "text": "remaining = len(self._canaries)"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/detection_runtime.py",
+      "class": "DetectionRuntimeModule",
+      "name": "Detection Runtime",
+      "declared_code": "DFRT",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": [
+          "local Angerona EventBus telemetry",
+          "digest-verified DetectionPackage rules"
+        ]
+      },
+      "applicability_review": "Explicitly activated digest-verified detection packages",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "separate bounded lanes and observe-only authority passed"
+      },
+      "review": "Separate bounded active/shadow queues, dedupe and stopped ingress gate reviewed.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 1401,
+        "_on_event": 1424,
+        "run": 1438,
+        "self_test": 1468
+      },
+      "bound_evidence": [
+        {
+          "line": 29,
+          "text": "MAX_RUNTIME_EVENT_BYTES = 256 * 1024"
+        },
+        {
+          "line": 30,
+          "text": "MAX_RUNTIME_RULES = 128"
+        },
+        {
+          "line": 31,
+          "text": "MAX_DEDUPE_KEYS = 8192"
+        },
+        {
+          "line": 32,
+          "text": "MAX_SHADOW_OBSERVATIONS = 512"
+        },
+        {
+          "line": 33,
+          "text": "MAX_SHADOW_EVALUATIONS_PER_PROCESS = 256"
+        },
+        {
+          "line": 34,
+          "text": "MAX_SHADOW_SLICE_MS = 25.0"
+        },
+        {
+          "line": 270,
+          "text": "maxlen=MAX_SHADOW_OBSERVATIONS"
+        },
+        {
+          "line": 482,
+          "text": "if len(values) > MAX_RUNTIME_RULES:"
+        },
+        {
+          "line": 566,
+          "text": "if len(expected_bindings) > MAX_RUNTIME_RULES:"
+        },
+        {
+          "line": 613,
+          "text": "self._active_epoch_drops += len(self._active_queue)"
+        },
+        {
+          "line": 668,
+          "text": "self._active_epoch_drops += len(self._active_queue)"
+        },
+        {
+          "line": 843,
+          "text": "self._shadow_epoch_drops += len(self._shadow_queue)"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/driver_provenance_guard.py",
+      "class": "DriverProvenanceGuard",
+      "name": "Driver Provenance Guard",
+      "declared_code": "DPVG",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": [
+          "Windows driver inventory access",
+          "file hash and Authenticode query access"
+        ]
+      },
+      "applicability_review": "Windows driver inventory, hashing/signature access; optional kernel receipt verifier",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "hash/signer/catalog/blocklist/HVCI/boot evidence join passed offline"
+      },
+      "review": "Driver/image/output/replay bounds and observe-only evidence boundary reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 891,
+        "run": 1069,
+        "self_test": 1079
+      },
+      "bound_evidence": [
+        {
+          "line": 37,
+          "text": "MAX_DRIVERS = 256"
+        },
+        {
+          "line": 38,
+          "text": "MAX_OUTPUT_BYTES = 512 * 1024"
+        },
+        {
+          "line": 39,
+          "text": "MAX_DRIVER_BYTES = 128 * 1024 * 1024"
+        },
+        {
+          "line": 81,
+          "text": "\"expires_at\","
+        },
+        {
+          "line": 86,
+          "text": "_MAX_REPLAY_AUTHORITIES = 256"
+        },
+        {
+          "line": 87,
+          "text": "_MAX_RECEIPTS_PER_AUTHORITY = 8192"
+        },
+        {
+          "line": 134,
+          "text": "expires_at: float"
+        },
+        {
+          "line": 153,
+          "text": "or not 1 <= self.image_size <= MAX_DRIVER_BYTES"
+        },
+        {
+          "line": 165,
+          "text": "expires = _finite_timestamp(self.expires_at, \"driver load receipt expires_at\")"
+        },
+        {
+          "line": 166,
+          "text": "if not issued < expires or expires - issued > 300.0:"
+        },
+        {
+          "line": 289,
+          "text": "expired = tuple("
+        },
+        {
+          "line": 291,
+          "text": "for receipt_id, expires_at in consumed.items()"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/dynamic_resource.py",
+      "class": "DynamicResourceModule",
+      "name": "Dynamic Resource Governor",
+      "declared_code": "DRES",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "psutil Windows process-priority support",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "SKIP",
+        "detail": "not started by headless harness / optional prerequisite: status=stopped, health=100%"
+      },
+      "review": "Fixed counters, cooldown and best-effort priority restoration reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 72,
+        "run": 79,
+        "self_test": 181,
+        "stop": 198
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/ebpf_sensor.py",
+      "class": "EbpfSensorNode",
+      "name": "Linux eBPF Sensor",
+      "declared_code": "EBPF",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux"
+        ],
+        "available": false,
+        "capability_mode": "observe",
+        "availability_reason": "Unavailable on windows; this capability supports linux.",
+        "platform_requirements": [
+          "Linux",
+          "BCC",
+          "eBPF-capable kernel"
+        ]
+      },
+      "applicability_review": "Linux, config.ebpf_enabled, BCC, compatible kernel and privilege",
+      "host_assessment": "Unavailable on this OS",
+      "self_test_baseline": {
+        "status": "SKIP",
+        "detail": "Unavailable on windows; this capability supports linux."
+      },
+      "review": "Platform exclusion, explicit opt-in and BPF cleanup reviewed; inactive Linux capability excluded on Windows.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 109,
+        "run": 231,
+        "self_test": 298
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/etw_listener.py",
+      "class": "EtwListenerModule",
+      "name": "ETW Core Listener",
+      "declared_code": "ETWG",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Windows Security event channel; psutil fallback",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "4688 decode verified (Security channel available)"
+      },
+      "review": "Bounded page/record/outbox reads and delivery acknowledgement reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 275,
+        "run": 2769,
+        "self_test": 2824
+      },
+      "bound_evidence": [
+        {
+          "line": 54,
+          "text": "_MAX_SECURITY_PAGES = 32"
+        },
+        {
+          "line": 55,
+          "text": "_MAX_SECURITY_RECORDS = 4096"
+        },
+        {
+          "line": 56,
+          "text": "_MAX_SECURITY_IDENTITY_RECORDS = 4096"
+        },
+        {
+          "line": 57,
+          "text": "_MAX_SECURITY_EVENT_INSERTS = 4096"
+        },
+        {
+          "line": 58,
+          "text": "_MAX_SECURITY_RECORD_IDENTITY_BYTES = 4 * 1024 * 1024"
+        },
+        {
+          "line": 59,
+          "text": "_MAX_SECURITY_IDENTITY_BYTES = 64 * 1024 * 1024"
+        },
+        {
+          "line": 60,
+          "text": "_MAX_SECURITY_READ_S = 1.5"
+        },
+        {
+          "line": 73,
+          "text": "_MAX_DELIVERY_OUTBOX_BYTES = 16 * 1024 * 1024"
+        },
+        {
+          "line": 74,
+          "text": "_MAX_DELIVERY_ACK_BYTES = 16 * 1024"
+        },
+        {
+          "line": 76,
+          "text": "_MAX_HIGHWATER_BYTES = 64 * 1024 * 1024"
+        },
+        {
+          "line": 77,
+          "text": "_MAX_AUTHORITY_WITNESS_BYTES = 16 * 1024"
+        },
+        {
+          "line": 153,
+          "text": "_ENROLLMENT_MAX_AGE_S = 300.0"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/etw_realtime_sensor.py",
+      "class": "EtwRealtimeSensorModule",
+      "name": "ETW Real-Time Process Sensor",
+      "declared_code": "ETWR",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Windows, pywintrace and elevated ETW access",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "Kernel-Process decode verified (pywintrace present but not elevated \u2192 run as Administrator for real-time)"
+      },
+      "review": "Bounded identity cache, owned ETW session stop and polling-sensor fallback disclosure reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 388,
+        "_on_event": 406,
+        "run": 428,
+        "stop": 507,
+        "self_test": 517
+      },
+      "bound_evidence": [
+        {
+          "line": 111,
+          "text": "while len(self._map) > self._max_entries:"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/evidence_lattice.py",
+      "class": "EvidenceLatticeModule",
+      "name": "Evidence Lattice Fusion",
+      "declared_code": "ELAT",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Structured local EventBus evidence",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "entity fusion, dedup, time-window expiry, and false-positive controls passed"
+      },
+      "review": "Bounded entities/signals/dedupe and stopped callback gate reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 261,
+        "_on_event": 275,
+        "run": 315,
+        "self_test": 330
+      },
+      "bound_evidence": [
+        {
+          "line": 203,
+          "text": "bucket = deque(maxlen=self.max_signals)"
+        },
+        {
+          "line": 213,
+          "text": "while len(self._buckets) > self.max_entities:"
+        },
+        {
+          "line": 239,
+          "text": "while len(self._dedup_until) > self.max_entities:"
+        },
+        {
+          "line": 245,
+          "text": "return len(self._buckets), len(self._dedup_until)"
+        },
+        {
+          "line": 371,
+          "text": "expired_hit = expiry.ingest(event(\"Network Monitor\", Severity.MEDIUM, 8000), now=9)"
+        },
+        {
+          "line": 372,
+          "text": "expiry_ok = expired_hit is None"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/evolution_engine.py",
+      "class": "EvolutionEngine",
+      "name": "Evolution Engine",
+      "declared_code": null,
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Typed Judgment bypass proposal; optional local model",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "fallback YARA synthesis + BL-07 bounds (concurrency/rate/breaker) OK"
+      },
+      "review": "Concurrent/rate/breaker caps and stop-aware sparse idle lifecycle reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 139,
+        "_on_bus_event": 177,
+        "run": 216,
+        "self_test": 534
+      },
+      "bound_evidence": [
+        {
+          "line": 64,
+          "text": "MAX_ITERATIONS = 3"
+        },
+        {
+          "line": 71,
+          "text": "_MAX_CONCURRENT = 2                 # never evolve more than N techniques at once"
+        },
+        {
+          "line": 73,
+          "text": "_RATE_MAX, _RATE_WINDOW = 8, 3600.0        # \u22648 activations/hour globally"
+        },
+        {
+          "line": 77,
+          "text": "_OLLAMA_FAIL_MAX, _OLLAMA_FAIL_WINDOW = 3, 120.0"
+        },
+        {
+          "line": 134,
+          "text": "adaptive_throttle_allowed = True"
+        },
+        {
+          "line": 135,
+          "text": "adaptive_throttle_max = 2.0"
+        },
+        {
+          "line": 205,
+          "text": "\"Evolution trigger rejected: missing, forged, expired, or replayed \""
+        },
+        {
+          "line": 259,
+          "text": "if len(self._recent) >= _RATE_MAX:"
+        },
+        {
+          "line": 267,
+          "text": "if len(self._active) >= _MAX_CONCURRENT:"
+        },
+        {
+          "line": 300,
+          "text": "if len(self._ollama_fails) >= _OLLAMA_FAIL_MAX:"
+        },
+        {
+          "line": 471,
+          "text": "active_count = len(self._active)"
+        },
+        {
+          "line": 547,
+          "text": "conc_ok = len(e._active) == _MAX_CONCURRENT        # 3rd refused (concurrency cap)"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/exposure_graph_guard.py",
+      "class": "ExposureGraphGuardModule",
+      "name": "AegisPath Exposure Graph Guard",
+      "declared_code": "AEGP",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": [
+          "A local immutable ExposureSnapshot provider",
+          "Evidence sources that disclose freshness and collection generation"
+        ]
+      },
+      "applicability_review": "Explicit immutable ExposureSnapshot provider",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "immutable digest, evidence generation/freshness, resource-limit, and observe-only health contract verified"
+      },
+      "review": "Digest/freshness/resource contracts and sparse health refresh reviewed; absent provider must not imply protection.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 111,
+        "run": 344,
+        "self_test": 349
+      },
+      "bound_evidence": [
+        {
+          "line": 34,
+          "text": "DEFAULT_MAX_SNAPSHOT_AGE_SECONDS = 900.0"
+        },
+        {
+          "line": 92,
+          "text": "\"default\": DEFAULT_MAX_SNAPSHOT_AGE_SECONDS,"
+        },
+        {
+          "line": 107,
+          "text": "\"throttle_min\": 1.0,"
+        },
+        {
+          "line": 108,
+          "text": "\"throttle_max\": 1.0,"
+        },
+        {
+          "line": 115,
+          "text": "max_snapshot_age_seconds: float = DEFAULT_MAX_SNAPSHOT_AGE_SECONDS,"
+        },
+        {
+          "line": 359,
+          "text": "expires_at=1_900_000_600.0,"
+        },
+        {
+          "line": 377,
+          "text": "expires_at=1_900_000_600.0,"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/fast_path.py",
+      "class": "FastPathModule",
+      "name": "Deterministic Fast-Path Interceptor",
+      "declared_code": "FPTH",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Local structured telemetry and deterministic rules",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "17 rules loaded \u2014 pattern match verified"
+      },
+      "review": "Event cursor, stale dedupe cleanup and interruptible cadence reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 180,
+        "run": 193,
+        "self_test": 302
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/file_integrity.py",
+      "class": "FileIntegrityModule",
+      "name": "File Integrity Monitor",
+      "declared_code": "FIM",
+      "register_function": false,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Windows protected roots, reviewed authenticated baseline and driver evidence",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "driver-shield classifier + BL-13 paranoid high-value hashing verified"
+      },
+      "review": "File/count/byte budgets, cancellation and partial coverage receipts reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 329,
+        "self_test": 1397,
+        "run": 1420
+      },
+      "bound_evidence": [
+        {
+          "line": 182,
+          "text": "_MAX_BASELINE_BYTES = 32 * 1024 * 1024"
+        },
+        {
+          "line": 183,
+          "text": "_MAX_SCAN_FILES = 100_000"
+        },
+        {
+          "line": 184,
+          "text": "_MAX_FILE_BYTES = 1024 * 1024 * 1024"
+        },
+        {
+          "line": 185,
+          "text": "_MAX_SCAN_CONTENT_BYTES = 8 * 1024 * 1024 * 1024"
+        },
+        {
+          "line": 190,
+          "text": "@lru_cache(maxsize=1)"
+        },
+        {
+          "line": 225,
+          "text": "record_length = int.from_bytes(raw[0:4], \"little\")"
+        },
+        {
+          "line": 226,
+          "text": "major_version = int.from_bytes(raw[4:6], \"little\")"
+        },
+        {
+          "line": 241,
+          "text": "raw[usn_offset : usn_offset + 8], \"little\", signed=True"
+        },
+        {
+          "line": 483,
+          "text": "if len(raw) > _MAX_BASELINE_BYTES:"
+        },
+        {
+          "line": 504,
+          "text": "if not isinstance(files, dict) or len(files) > _MAX_SCAN_FILES:"
+        },
+        {
+          "line": 570,
+          "text": "if len(body) > _MAX_BASELINE_BYTES:"
+        },
+        {
+          "line": 694,
+          "text": "or before.st_size > _MAX_FILE_BYTES"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/fleet_health_monitor.py",
+      "class": "FleetHealthMonitorModule",
+      "name": "Fleet Health Monitor",
+      "declared_code": "FLTH",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": [
+          "An explicitly bound local FleetFabricStore for cross-device evidence",
+          "Per-tenant key custody established by the existing fleet credential layer",
+          "Ed25519 endpoint key custody for device possession and health signatures"
+        ]
+      },
+      "applicability_review": "Explicit FleetFabric store/tenant enrollment and endpoint key custody",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "typed signed-health shape, exact degraded reason, and no-command rollout boundary verified"
+      },
+      "review": "Typed signed-health boundary, no-command output and absent-integration behavior reviewed.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 89,
+        "run": 260,
+        "self_test": 265
+      },
+      "bound_evidence": [
+        {
+          "line": 79,
+          "text": "\"throttle_min\": 1.0,"
+        },
+        {
+          "line": 80,
+          "text": "\"throttle_max\": 8.0,"
+        },
+        {
+          "line": 86,
+          "text": "adaptive_throttle_allowed = True"
+        },
+        {
+          "line": 87,
+          "text": "adaptive_throttle_max = 8.0"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/flight_cache.py",
+      "class": "FlightCacheModule",
+      "name": "In-Memory Flight Cache",
+      "declared_code": "MEMC",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Local recorder database and EventBus subscription",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "cache verified (cap-held=10, newest=msg24, ro-guard=True)"
+      },
+      "review": "Fixed row cap and cache reopening reviewed; retained stopped callback still invokes closed-cache path.",
+      "disposition": "REPORTED",
+      "finding_ids": [
+        "BH-04"
+      ],
+      "reviewed_methods": {
+        "__init__": 168,
+        "_on_event": 189,
+        "run": 196,
+        "stop": 227,
+        "self_test": 231
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/forensics.py",
+      "class": "ForensicsModule",
+      "name": "Forensics Capture",
+      "declared_code": null,
+      "register_function": false,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": false,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Operator opt-in; process identity and supported dump backend",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "SKIP",
+        "detail": "disabled by operator configuration"
+      },
+      "review": "Bounded PID/start-time capture dedupe and expiry reviewed.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 57,
+        "self_test": 95,
+        "run": 119
+      },
+      "bound_evidence": [
+        {
+          "line": 28,
+          "text": "_CAPTURE_MAX = 2_048"
+        },
+        {
+          "line": 52,
+          "text": "adaptive_throttle_allowed = True"
+        },
+        {
+          "line": 53,
+          "text": "adaptive_throttle_max = 2.0"
+        },
+        {
+          "line": 84,
+          "text": "if len(self._captured) > _CAPTURE_MAX:"
+        },
+        {
+          "line": 88,
+          "text": "self._captured = dict(newest[:_CAPTURE_MAX])"
+        },
+        {
+          "line": 105,
+          "text": "expired = self._capture_needed("
+        },
+        {
+          "line": 110,
+          "text": "ok = first and not duplicate and reused and expired and len(self._captured) <= _CAPTURE_MAX"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/frz_heartbeat.py",
+      "class": "FrzHeartbeatModule",
+      "name": "Anti-Suspension Heartbeat",
+      "declared_code": "FRZ",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Authenticated mmap; optional separately pinned native watchdog",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "authenticated v2 mmap round-trip OK (pinned v2 watchdog unavailable; authenticated Python heartbeat only)"
+      },
+      "review": "Fixed heartbeat record and verified watchdog custody/restart reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 141,
+        "run": 294,
+        "self_test": 357
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/hardware_crypto.py",
+      "class": "HardwareCrypto",
+      "name": "Hardware-Rooted Integrity",
+      "declared_code": "HWID",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Windows DPAPI; optional TPM support",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "DPAPI round-trip verified"
+      },
+      "review": "One-shot/recheck work and honest partial hardware assurance reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 113,
+        "run": 195,
+        "self_test": 219
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/hermetic_packager.py",
+      "class": "HermeticPackagerModule",
+      "name": "Monolithic Packaging",
+      "declared_code": "HERMETIC",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Sealed installed binary or explicitly requested build tooling",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "Assessment: Running as .py (hardening gap) \u2014 hermetic binary present (unsigned (NotSigned)).  Consider running angerona.exe. | build-hermetic.bat=found | hermetic=False"
+      },
+      "review": "Build-script size bound, signature assessment and build-job reaping reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 181,
+        "run": 404,
+        "self_test": 423
+      },
+      "bound_evidence": [
+        {
+          "line": 54,
+          "text": "_MAX_BUILD_SCRIPT_BYTES = 2 * 1024 * 1024"
+        },
+        {
+          "line": 150,
+          "text": "or not 0 < int(opened.st_size) <= _MAX_BUILD_SCRIPT_BYTES"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/identity_session_guard.py",
+      "class": "IdentitySessionGuardModule",
+      "name": "Identity Session Guard",
+      "declared_code": "IDSG",
+      "register_function": false,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": [
+          "Structured identity-session evidence from an authenticated producer",
+          "Angerona bus.key for stable local privacy pseudonyms"
+        ]
+      },
+      "applicability_review": "Authenticated structured identity-session producer and local privacy key",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "supplied-only tokenization and bounded transition analytics verified"
+      },
+      "review": "Bounded tokenized ingress and stopped/active gates reviewed; EventBus itself deduplicates repeated subscribe calls.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 58,
+        "_on_bus_event": 177,
+        "self_test": 280,
+        "run": 317
+      },
+      "bound_evidence": [
+        {
+          "line": 83,
+          "text": "self._pending: deque[TokenizedSessionEvent] = deque(maxlen=256)"
+        },
+        {
+          "line": 242,
+          "text": "if len(self._pending) >= self._pending.maxlen:"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/immutable_recovery_guard.py",
+      "class": "ImmutableRecoveryGuardModule",
+      "name": "Immutable Recovery Assurance Guard",
+      "declared_code": "IRAG",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": [
+          "Pinned Ed25519 recovery-authority public keys",
+          "Evidence exported by independently administered backup targets"
+        ]
+      },
+      "applicability_review": "Pinned independent backup authority and signed recovery evidence",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "fail-closed signed recovery policy verified; online F: mirrors do not count as immutable or offline"
+      },
+      "review": "Fixed evidence appraisal and change-only alerting reviewed; absent required backup protection remains disclosed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 71,
+        "run": 118,
+        "self_test": 165
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/intel_sync.py",
+      "class": "IntelSyncModule",
+      "name": "Upstream Threat Intel Sync",
+      "declared_code": "INTL",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Configured bounded threat-intelligence retrieval and local inventory",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "KEV correlation + driver-intel blocklist + IOC fusion verified (offline)"
+      },
+      "review": "Response/indicator caps, one fetch helper and cancellation-aware publication reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 336,
+        "run": 580,
+        "self_test": 671
+      },
+      "bound_evidence": [
+        {
+          "line": 116,
+          "text": "_IOC_MAX_RESPONSE_BYTES = 2 * 1024 * 1024"
+        },
+        {
+          "line": 117,
+          "text": "_IOC_MAX_RESPONSE_LINES = 50_000"
+        },
+        {
+          "line": 118,
+          "text": "_IOC_MAX_INDICATORS = 10_000"
+        },
+        {
+          "line": 137,
+          "text": "expires_at: float = 0.0"
+        },
+        {
+          "line": 153,
+          "text": "return bool(snapshot.updated_at and (time.time() if now is None else now) < snapshot.expires_at)"
+        },
+        {
+          "line": 224,
+          "text": "\"expires_at\": snapshot.expires_at,"
+        },
+        {
+          "line": 249,
+          "text": "if candidates >= _IOC_MAX_INDICATORS:"
+        },
+        {
+          "line": 485,
+          "text": "raw = read_bounded(r, _IOC_MAX_RESPONSE_BYTES)"
+        },
+        {
+          "line": 487,
+          "text": "if line_count > _IOC_MAX_RESPONSE_LINES:"
+        },
+        {
+          "line": 508,
+          "text": "expires_at=now + _IOC_TTL_SECONDS,"
+        },
+        {
+          "line": 530,
+          "text": "intel_expires_at=snapshot.expires_at,"
+        },
+        {
+          "line": 703,
+          "text": "updated_at=now, expires_at=now + 60, source=\"offline-self-test\","
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/ipc_guard.py",
+      "class": "IpcGuardModule",
+      "name": "Zero-Trust Local IPC Guard",
+      "declared_code": "AUTH",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Local authenticated IPC key and loopback endpoint",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "isolated HMAC + loopback handshake verified (valid OK, wrong-key DENY)"
+      },
+      "review": "Sixteen-connection admission, generation-owned sockets and joined helpers reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 211,
+        "run": 361,
+        "stop": 466,
+        "self_test": 473
+      },
+      "bound_evidence": [
+        {
+          "line": 42,
+          "text": "_MAX_CONNECTIONS = 16"
+        },
+        {
+          "line": 148,
+          "text": "self.connection_slots = threading.BoundedSemaphore(_MAX_CONNECTIONS)"
+        },
+        {
+          "line": 394,
+          "text": "srv.listen(_MAX_CONNECTIONS)"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/kernel_bridge.py",
+      "class": "KernelBridgeModule",
+      "name": "Kernel Sensor Bridge",
+      "declared_code": "KRNL",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Optional AngeronaSensor driver service/device with version and identity proof",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "Kernel Driver Not installed (AngeronaSensor.sys driver not loaded)"
+      },
+      "review": "Bounded IOCTL batches and retry/stop paths reviewed; proven absent optional driver can be parked by shared policy.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 230,
+        "run": 253,
+        "self_test": 479,
+        "stop": 488
+      },
+      "bound_evidence": [
+        {
+          "line": 67,
+          "text": "_MAX_EVENTS_BATCH = 64    # events to drain per poll"
+        },
+        {
+          "line": 357,
+          "text": "out_size = _EVENTS_HEADER_SIZE + _MAX_EVENTS_BATCH * _EVENT_SIZE"
+        },
+        {
+          "line": 371,
+          "text": "or count > _MAX_EVENTS_BATCH"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/kernel_posture_ledger.py",
+      "class": "KernelBoundaryPostureLedger",
+      "name": "Kernel-Boundary Posture Ledger",
+      "declared_code": "KBPL",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Windows boot/driver posture evidence",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "authenticated bounded ledger: 1 record(s) verified; live posture starts unknown"
+      },
+      "review": "256-record authenticated ledger and bounded driver enumeration reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 476,
+        "run": 503,
+        "self_test": 535
+      },
+      "bound_evidence": [
+        {
+          "line": 29,
+          "text": "MAX_LEDGER_RECORDS = 256"
+        },
+        {
+          "line": 30,
+          "text": "MAX_DRIVER_SERVICE_KEYS = 16_384"
+        },
+        {
+          "line": 31,
+          "text": "MAX_DRIVER_COLLECTION_ERRORS = 32"
+        },
+        {
+          "line": 147,
+          "text": "limit: int = MAX_DRIVER_SERVICE_KEYS,"
+        },
+        {
+          "line": 156,
+          "text": "bounded_limit = max(1, min(MAX_DRIVER_SERVICE_KEYS, int(limit)))"
+        },
+        {
+          "line": 199,
+          "text": "if len(errors) < MAX_DRIVER_COLLECTION_ERRORS:"
+        },
+        {
+          "line": 209,
+          "text": "if len(errors) < MAX_DRIVER_COLLECTION_ERRORS:"
+        },
+        {
+          "line": 219,
+          "text": "if len(errors) < MAX_DRIVER_COLLECTION_ERRORS:"
+        },
+        {
+          "line": 227,
+          "text": "if truncated and len(errors) < MAX_DRIVER_COLLECTION_ERRORS:"
+        },
+        {
+          "line": 335,
+          "text": "max_records: int = MAX_LEDGER_RECORDS,"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/linux_observe.py",
+      "class": "LinuxObserveModule",
+      "name": "Linux Observe Sensor",
+      "declared_code": null,
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux"
+        ],
+        "available": false,
+        "capability_mode": "detect",
+        "availability_reason": "Unavailable on windows; this capability supports linux.",
+        "platform_requirements": [
+          "Linux with /proc",
+          "psutil",
+          "root is optional; required only by the separate eBPF sensor"
+        ]
+      },
+      "applicability_review": "Linux /proc and psutil; root optional",
+      "host_assessment": "Unavailable on this OS",
+      "self_test_baseline": {
+        "status": "SKIP",
+        "detail": "Unavailable on windows; this capability supports linux."
+      },
+      "review": "Platform exclusion and privacy-minimized snapshot loop reviewed.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 30,
+        "self_test": 77,
+        "run": 86
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/lsass_guard.py",
+      "class": "LsassGuardModule",
+      "name": "LSASS Credential-Access Guard",
+      "declared_code": "CREDG",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Windows psutil process and command-line evidence",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "LSASS-dump signature matcher verified (comsvcs+procdump flagged, benign ignored)"
+      },
+      "review": "Process birth identity, live-set pruning and partial-read health reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 189,
+        "run": 209,
+        "self_test": 302
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/macos_observe.py",
+      "class": "MacOSObserveModule",
+      "name": "macOS Observe Sensor",
+      "declared_code": null,
+      "register_function": false,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "macos"
+        ],
+        "available": false,
+        "capability_mode": "observe",
+        "availability_reason": "Unavailable on windows; this capability supports macos.",
+        "platform_requirements": [
+          "macOS 13 or later recommended",
+          "signed native host required for Endpoint Security coverage"
+        ]
+      },
+      "applicability_review": "macOS process/network snapshots; signed host needed for native coverage",
+      "host_assessment": "Unavailable on this OS",
+      "self_test_baseline": {
+        "status": "SKIP",
+        "detail": "Unavailable on windows; this capability supports macos."
+      },
+      "review": "Platform exclusion and explicit observe-only/native-coverage disclosure reviewed.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 34,
+        "self_test": 43,
+        "run": 55
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/mem_inject_scanner.py",
+      "class": "MemInjectScannerModule",
+      "name": "Memory Injection Scanner",
+      "declared_code": "MINJ",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Windows kernel32 process memory access",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "SKIP",
+        "detail": "not started by headless harness / optional prerequisite: status=stopped, health=100%"
+      },
+      "review": "Per-process query/time caps, generation cancellation and dedupe expiry reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 293,
+        "run": 302,
+        "self_test": 840
+      },
+      "bound_evidence": [
+        {
+          "line": 280,
+          "text": "_MAX_ADDRESS = 0x7FFFFFFF0000   # stay below kernel space on 64-bit Windows"
+        },
+        {
+          "line": 281,
+          "text": "_MAX_QUERIES_PER_PID = 32_768"
+        },
+        {
+          "line": 283,
+          "text": "_MAX_PROCESS_RECORDS = 65_536"
+        },
+        {
+          "line": 297,
+          "text": "# pid \u2192 last aggregated-alert ts (per-process cooldown; also throttles the"
+        },
+        {
+          "line": 434,
+          "text": "if records >= self._MAX_PROCESS_RECORDS:"
+        },
+        {
+          "line": 485,
+          "text": "while addr < self._MAX_ADDRESS:"
+        },
+        {
+          "line": 488,
+          "text": "if queried >= self._MAX_QUERIES_PER_PID or time.monotonic() >= deadline:"
+        },
+        {
+          "line": 834,
+          "text": "\"\"\"Remove expired dedup entries to prevent unbounded growth.\"\"\""
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/memory_timemachine.py",
+      "class": "MemoryTimeMachineModule",
+      "name": "Memory Time-Machine",
+      "declared_code": "MTM",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "psutil plus telemetry mmap ring",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "dedup verified (4\u21920 on repeat)"
+      },
+      "review": "Bounded per-PID caches/delta queue/strings and read-only collection reviewed; no live memory scan run.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 148,
+        "run": 336,
+        "stop": 456,
+        "self_test": 461
+      },
+      "bound_evidence": [
+        {
+          "line": 142,
+          "text": "_MAX_PIDS = 256         # cap tracked processes (LRU)"
+        },
+        {
+          "line": 144,
+          "text": "_MAX_DELTA_STRINGS = 256"
+        },
+        {
+          "line": 145,
+          "text": "_MAX_DELTA_BYTES = 128 * 1024"
+        },
+        {
+          "line": 146,
+          "text": "_MAX_STRING_BYTES = 4096"
+        },
+        {
+          "line": 153,
+          "text": "self.delta_queue: \"queue.Queue[dict]\" = queue.Queue(maxsize=8192)"
+        },
+        {
+          "line": 229,
+          "text": "if len(self._caches) >= self._MAX_PIDS:"
+        },
+        {
+          "line": 232,
+          "text": "self._caches[pid] = deque(maxlen=self._WINDOW)"
+        },
+        {
+          "line": 260,
+          "text": "candidate_window = deque(window, maxlen=window.maxlen)"
+        },
+        {
+          "line": 299,
+          "text": "if len(raw) > self._MAX_STRING_BYTES:"
+        },
+        {
+          "line": 303,
+          "text": "prefix = raw[: max(0, self._MAX_STRING_BYTES - len(suffix_bytes))]"
+        },
+        {
+          "line": 309,
+          "text": "len(current) >= self._MAX_DELTA_STRINGS"
+        },
+        {
+          "line": 310,
+          "text": "or current_bytes + size > self._MAX_DELTA_BYTES"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/mobile_bridge.py",
+      "class": "MobileResponseBridge",
+      "name": "Mobile Response Bridge",
+      "declared_code": "MOB_BRDG",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "config mobile opt-in, trusted sealed Signal CLI and contact enrollment",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "disabled (opt-in)"
+      },
+      "review": "Pending request/replay/CLI output bounds and disabled-loop behavior reviewed.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 458,
+        "run": 2340,
+        "self_test": 2390
+      },
+      "bound_evidence": [
+        {
+          "line": 15,
+          "text": "* NON-REPLAYABLE. Tokens are random, single-use, and expire in 10 minutes; an"
+        },
+        {
+          "line": 16,
+          "text": "expired token is audit-only and notifies the phone without authorizing action."
+        },
+        {
+          "line": 65,
+          "text": "_FLOOD_MAX = 3              # >this many alerts in the window \u2192 aggregate to a digest"
+        },
+        {
+          "line": 72,
+          "text": "_MAX_REPLAY_IDENTITIES = 512"
+        },
+        {
+          "line": 73,
+          "text": "_MAX_PENDING_COMBAT_REQUESTS = 128"
+        },
+        {
+          "line": 75,
+          "text": "_MAX_CLI_BYTES = 512 * 1024 * 1024"
+        },
+        {
+          "line": 76,
+          "text": "_MAX_CLI_OUTPUT = 256 * 1024"
+        },
+        {
+          "line": 140,
+          "text": "expires_monotonic: float"
+        },
+        {
+          "line": 154,
+          "text": "expires_monotonic: float"
+        },
+        {
+          "line": 163,
+          "text": "\"\ud83c\udf3f ECO ON/OFF <NONCE> <PIN> - Change Governor throttling\\n\""
+        },
+        {
+          "line": 171,
+          "text": "\"Note: Token-based commands expire in 10 minutes.\\n\""
+        },
+        {
+          "line": 580,
+          "text": "if not 0 < size <= _MAX_CLI_BYTES:"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/network_monitor.py",
+      "class": "NetworkMonitorModule",
+      "name": "Network Monitor",
+      "declared_code": null,
+      "register_function": false,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Shared connection snapshots and process start identity",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "offline IPv4/IPv6, Community ID, bounds, and response gates passed"
+      },
+      "review": "Bounded recent-state maps, expiry and birth-aware connection identity reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 194,
+        "self_test": 279,
+        "run": 313
+      },
+      "bound_evidence": [
+        {
+          "line": 62,
+          "text": "_STATE_MAX = 10_000"
+        },
+        {
+          "line": 246,
+          "text": "def _trim_recent(mapping: Dict, maximum: int = _STATE_MAX) -> Dict:"
+        },
+        {
+          "line": 255,
+          "text": "\"\"\"Prune expired entries in place, allocating only for stale keys."
+        },
+        {
+          "line": 266,
+          "text": "\"\"\"Drop closed sockets and expired PID/host identities."
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/network_protocol_decoder.py",
+      "class": "NetworkProtocolDecoderModule",
+      "name": "Network Protocol Deep Decoder",
+      "declared_code": "NDRD",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Structured DNS evidence on local EventBus",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "layered DGA scoring verified (dga E=4.322, evasive E=4.0 caught via ['entropy 4.00\u22653.6', 'low vowel-ratio 0%', 'consonant-run 16'], benign clean)"
+      },
+      "review": "4096-entry ordered cooldown bound reviewed; stopped callback still scores DNS and changes counters.",
+      "disposition": "REPORTED",
+      "finding_ids": [
+        "BH-04"
+      ],
+      "reviewed_methods": {
+        "__init__": 86,
+        "_on_event": 206,
+        "run": 235,
+        "self_test": 257
+      },
+      "bound_evidence": [
+        {
+          "line": 42,
+          "text": "_MAX_EMIT_COOLDOWNS = 4096"
+        },
+        {
+          "line": 171,
+          "text": "if len(self._last_emit) >= _MAX_EMIT_COOLDOWNS:"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/network_trust_monitor.py",
+      "class": "NetworkTrustMonitorModule",
+      "name": "Zero-Trust Network Path Monitor",
+      "declared_code": "NZTR",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "OS network/link/route evidence; privacy key",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "untrusted-LAN/WLAN monitoring and privacy boundary verified"
+      },
+      "review": "Link/route/command output bounds and explicit untrusted-path assessment reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 771,
+        "run": 1238,
+        "self_test": 1243
+      },
+      "bound_evidence": [
+        {
+          "line": 42,
+          "text": "MAX_LINKS,"
+        },
+        {
+          "line": 43,
+          "text": "MAX_ROUTES_PER_LINK,"
+        },
+        {
+          "line": 59,
+          "text": "MAX_COMMAND_OUTPUT = 256 * 1024"
+        },
+        {
+          "line": 60,
+          "text": "MAX_ROUTE_ROWS = 128"
+        },
+        {
+          "line": 61,
+          "text": "MAX_ROUTE_ROWS_PER_FAMILY = 64"
+        },
+        {
+          "line": 103,
+          "text": "remaining = MAX_COMMAND_OUTPUT + 1 - len(buffer)"
+        },
+        {
+          "line": 106,
+          "text": "if len(buffer) > MAX_COMMAND_OUTPUT or len(chunk) > remaining:"
+        },
+        {
+          "line": 227,
+          "text": "if path.is_file() and path.stat().st_size <= MAX_COMMAND_OUTPUT:"
+        },
+        {
+          "line": 384,
+          "text": "if len(values) >= MAX_ROUTES_PER_LINK:"
+        },
+        {
+          "line": 405,
+          "text": "elif isinstance(value, list) and len(value) <= MAX_ROUTE_ROWS:"
+        },
+        {
+          "line": 454,
+          "text": "if row_count > MAX_ROUTE_ROWS_PER_FAMILY:"
+        },
+        {
+          "line": 643,
+          "text": "interfaces_complete = len(addresses) <= MAX_LINKS"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/packet_sniffer.py",
+      "class": "PacketSnifferModule",
+      "name": "Packet Sniffer",
+      "declared_code": null,
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": false,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Operator opt-in, Scapy and Npcap on Windows",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "SKIP",
+        "detail": "disabled by operator configuration"
+      },
+      "review": "Subprocess capture isolation, bounded output, backoff and stop termination reviewed.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 105,
+        "run": 290,
+        "stop": 357,
+        "self_test": 361
+      },
+      "bound_evidence": [
+        {
+          "line": 25,
+          "text": "_MAX_WORKER_OUTPUT_CHARS = 256 * 1024"
+        },
+        {
+          "line": 26,
+          "text": "_MAX_FAILURE_BACKOFF = 60.0"
+        },
+        {
+          "line": 174,
+          "text": "remaining = _MAX_WORKER_OUTPUT_CHARS - output_chars"
+        },
+        {
+          "line": 211,
+          "text": "if len(captured or \"\") > _MAX_WORKER_OUTPUT_CHARS:"
+        },
+        {
+          "line": 213,
+          "text": "output_parts.append((captured or \"\")[:_MAX_WORKER_OUTPUT_CHARS])"
+        },
+        {
+          "line": 352,
+          "text": "_MAX_FAILURE_BACKOFF,"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/peripheral_dma_guard.py",
+      "class": "PeripheralDMAGuardModule",
+      "name": "Peripheral and DMA Posture Guard",
+      "declared_code": "PDMG",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": [
+          "Read access to OS device and DMA posture",
+          "Independent hardware attestation for claims beyond the local kernel"
+        ]
+      },
+      "applicability_review": "OS device/DMA posture; hardware evidence needed for stronger claims",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "Kernel DMA/IOMMU, Thunderbolt/USB4/removable control risks and honest UNKNOWN/firmware limitations verified without device changes"
+      },
+      "review": "Finite posture snapshot and observe-only limitations reviewed; no device policy changes tested.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 36,
+        "run": 106,
+        "self_test": 111
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/persistence_sweep.py",
+      "class": "PersistenceSweepModule",
+      "name": "Persistence Sweep",
+      "declared_code": null,
+      "register_function": false,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Windows registry/startup/task/WMI evidence",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "persistence classifier verified (encoded-PS + Winlogon hijack CRITICAL, temp-path HIGH, clean-default not escalated)"
+      },
+      "review": "Record/output/hash/change caps, partial coverage and unreviewed baseline disclosure reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 145,
+        "self_test": 542,
+        "run": 562
+      },
+      "bound_evidence": [
+        {
+          "line": 67,
+          "text": "_MAX_STARTUP_HASH_BYTES = 512 * 1024 * 1024"
+        },
+        {
+          "line": 69,
+          "text": "_MAX_REPORTED_CHANGES = 10_000"
+        },
+        {
+          "line": 70,
+          "text": "_MAX_COLLECTOR_OUTPUT_BYTES = 8 * 1024 * 1024"
+        },
+        {
+          "line": 71,
+          "text": "_MAX_COLLECTOR_RECORDS = 5_000"
+        },
+        {
+          "line": 72,
+          "text": "_MAX_RECORD_BYTES = 64 * 1024"
+        },
+        {
+          "line": 175,
+          "text": "if len(self._reported_change_order) >= _MAX_REPORTED_CHANGES:"
+        },
+        {
+          "line": 254,
+          "text": "hash_budget = _MAX_STARTUP_HASH_BYTES"
+        },
+        {
+          "line": 418,
+          "text": "if len(rows) > _MAX_COLLECTOR_RECORDS:"
+        },
+        {
+          "line": 433,
+          "text": "if len(canonical.encode(\"utf-8\")) > _MAX_RECORD_BYTES:"
+        },
+        {
+          "line": 467,
+          "text": "if total > _MAX_COLLECTOR_RECORDS:"
+        },
+        {
+          "line": 473,
+          "text": "if len(canonical.encode(\"utf-8\")) > _MAX_RECORD_BYTES:"
+        },
+        {
+          "line": 502,
+          "text": "if len(output.encode(\"utf-8\", \"replace\")) > _MAX_COLLECTOR_OUTPUT_BYTES:"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/platform_attestation_guard.py",
+      "class": "PlatformAttestationGuard",
+      "name": "Platform Attestation Guard",
+      "declared_code": "PATG",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": [
+          "Windows boot-posture query access",
+          "optional enrolled TPM attestation verifier"
+        ]
+      },
+      "applicability_review": "Windows boot posture; optional enrolled TPM verifier",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "strict OS posture and injected TPM quote verifier passed offline"
+      },
+      "review": "Bounded posture sampling and truthful OS-only versus hardware-attestation distinction reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 241,
+        "run": 327,
+        "self_test": 337
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/posture_hardening.py",
+      "class": "PostureHardening",
+      "name": "Posture Hardening",
+      "declared_code": null,
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Local reviewed drill/after-action evidence and gated mitigations",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "probe weaknesses=1, health=40, staged=1"
+      },
+      "review": "Fixed report tailing and bounded Judgment receipts reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 153,
+        "run": 398,
+        "self_test": 1107
+      },
+      "bound_evidence": [
+        {
+          "line": 196,
+          "text": "while len(self._judgment_receipts) >= 64:"
+        },
+        {
+          "line": 210,
+          "text": "expected_technique, expected_digest, expires_at = record"
+        },
+        {
+          "line": 212,
+          "text": "expires_at > now"
+        },
+        {
+          "line": 383,
+          "text": "# Throttle so an unchanged unsigned report can't repeat-alert."
+        },
+        {
+          "line": 810,
+          "text": "vuln = len(self.weaknesses(\"VULNERABLE\"))"
+        },
+        {
+          "line": 827,
+          "text": "float(os.environ.get(\"ANGERONA_POSTURE_EVIDENCE_MAX_AGE_HOURS\", \"24\")),"
+        },
+        {
+          "line": 992,
+          "text": "def verify_mitigation(self, technique_id: str, settle: float = 40.0) -> dict:"
+        },
+        {
+          "line": 1004,
+          "text": "settle=settle,"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/process_egress_guard.py",
+      "class": "ProcessEgressGuardModule",
+      "name": "Process Egress Lease Guard",
+      "declared_code": "PELG",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": [
+          "A separately privileged connection-admission adapter",
+          "Trusted process identity and first-hop path observers",
+          "A shared ProcessEgressLeaseBroker audit stream"
+        ]
+      },
+      "applicability_review": "Explicit privileged admission adapter, trusted observers and lease broker",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "process/start/user/DNS/IP/path binding, one-use budget, replay denial, and sanitized observe-only audit verified"
+      },
+      "review": "1024-event audit dedupe and observe-only authority reviewed.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 62,
+        "run": 169,
+        "self_test": 174
+      },
+      "bound_evidence": [
+        {
+          "line": 24,
+          "text": "MAX_SEEN_EVENTS = 1024"
+        },
+        {
+          "line": 84,
+          "text": "while len(self._seen_order) >= MAX_SEEN_EVENTS:"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/process_monitor.py",
+      "class": "ProcessMonitorModule",
+      "name": "Process Monitor",
+      "declared_code": null,
+      "register_function": false,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "psutil process snapshot and process-birth evidence",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "offline lineage and risky-path rules passed"
+      },
+      "review": "Startup PID boundary, bounded live-set replacement and partial identity health reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 56,
+        "self_test": 144,
+        "run": 189
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/provenance_graph.py",
+      "class": "ProvenanceGraphModule",
+      "name": "Data Provenance Graph",
+      "declared_code": "PROV",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "EventBus and optional local recorder history",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "ancestry/subtree verified on synthetic DAG"
+      },
+      "review": "Node/edge/PID index bounds and incremental replay reviewed; stopped callback continues graph ingestion.",
+      "disposition": "REPORTED",
+      "finding_ids": [
+        "BH-04"
+      ],
+      "reviewed_methods": {
+        "__init__": 395,
+        "_on_event": 521,
+        "run": 573,
+        "self_test": 597
+      },
+      "bound_evidence": [
+        {
+          "line": 116,
+          "text": "while len(self.nodes) > self.max_nodes:"
+        },
+        {
+          "line": 159,
+          "text": "while len(self._edge_order) > self.max_edges:"
+        },
+        {
+          "line": 568,
+          "text": "f\"{len(self.graph.nodes)}/{self.graph.max_nodes} nodes / \""
+        },
+        {
+          "line": 569,
+          "text": "f\"{len(self.graph._edge_order)}/{self.graph.max_edges} edges / \""
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/purple_guard.py",
+      "class": "PurpleGuard",
+      "name": "Purple Remediation Guard",
+      "declared_code": null,
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Exact reviewed drill policies and authenticated process/file receipts",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "exact file/process markers detected; benign noise ignored"
+      },
+      "review": "Marker limits, bounded custody and stopped subscription admission reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 3453,
+        "run": 3884,
+        "self_test": 3909
+      },
+      "bound_evidence": [
+        {
+          "line": 40,
+          "text": "MAX_ADMITTED_DRILL_SECONDS,"
+        },
+        {
+          "line": 114,
+          "text": "_MAX_VALIDATION_TARGET_MARKERS = 4096"
+        },
+        {
+          "line": 1197,
+          "text": "if count > _MAX_VALIDATION_TARGET_MARKERS:"
+        },
+        {
+          "line": 1410,
+          "text": "\"acquire_expires_at\": state.issued_at + _LEASE_ACQUIRE_TTL_S,"
+        },
+        {
+          "line": 1533,
+          "text": "run_ttl_seconds: float = _LEASE_DEFAULT_RUN_TTL_S,"
+        },
+        {
+          "line": 1542,
+          "text": "admitted_ttl = float(run_ttl_seconds)"
+        },
+        {
+          "line": 1548,
+          "text": "not math.isfinite(admitted_ttl)"
+        },
+        {
+          "line": 1549,
+          "text": "or admitted_ttl < 60.0"
+        },
+        {
+          "line": 1550,
+          "text": "or admitted_ttl > MAX_ADMITTED_DRILL_SECONDS"
+        },
+        {
+          "line": 1579,
+          "text": "\"run_expires_at\": now_wall + admitted_ttl,"
+        },
+        {
+          "line": 1580,
+          "text": "\"run_ttl_seconds\": admitted_ttl,"
+        },
+        {
+          "line": 1592,
+          "text": "now_monotonic + admitted_ttl,"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/rag_provenance_guard.py",
+      "class": "RAGProvenanceGuardModule",
+      "name": "RAG Provenance Guard",
+      "declared_code": "RAGP",
+      "register_function": false,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": [
+          "An explicitly configured provenance manifest and source root",
+          "A caller-owned verifier for publisher-signed trust tiers"
+        ]
+      },
+      "applicability_review": "Explicit provenance manifest and root; caller-owned trust-tier verifier",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "root confinement, digest pinning, and inert excerpt boundary verified"
+      },
+      "review": "Root confinement, digest pinning, inert excerpts and absent-manifest behavior reviewed.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 41,
+        "self_test": 144,
+        "run": 185
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/ransomware_heuristics.py",
+      "class": "RansomwareHeuristicsModule",
+      "name": "Ransomware Heuristics",
+      "declared_code": "RANS",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Watched Windows user roots and authenticated change-state authority",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "Entropy function OK (test=8.000 \u2265 7.9); timestamp-independent full/range proof, authenticated durable change transitions/high-water, fixed-window strided scoring, durable fair rotation, and held no-reparse traversal enabled"
+      },
+      "review": "Content/state/tree budgets, fair rotation and generation-aware scanning reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 533,
+        "run": 1572,
+        "self_test": 3078
+      },
+      "bound_evidence": [
+        {
+          "line": 86,
+          "text": "CONTENT_FULL_FILE_MAX_BYTES = 8 * 1024 * 1024"
+        },
+        {
+          "line": 88,
+          "text": "CONTENT_SCAN_MAX_BYTES = 64 * 1024 * 1024"
+        },
+        {
+          "line": 95,
+          "text": "CHANGE_STATE_MAX_RECORDS = 50_000"
+        },
+        {
+          "line": 96,
+          "text": "CHANGE_STATE_MAX_BYTES = 16 * 1024 * 1024"
+        },
+        {
+          "line": 97,
+          "text": "CHANGE_WITNESS_MAX_BYTES = 4096"
+        },
+        {
+          "line": 98,
+          "text": "CHANGE_TRANSITION_MAX_BYTES = 4096"
+        },
+        {
+          "line": 99,
+          "text": "CHANGE_AUTHORITY_MAX_DEPTH = 64"
+        },
+        {
+          "line": 101,
+          "text": "CHANGE_GENESIS_MAX_BYTES = 1024"
+        },
+        {
+          "line": 106,
+          "text": "TRAVERSAL_MAX_DEPTH = 12         # refuse attacker-controlled recursive depth"
+        },
+        {
+          "line": 107,
+          "text": "TRAVERSAL_MAX_FILES = 25_000     # per watched root and scan tick"
+        },
+        {
+          "line": 108,
+          "text": "TRAVERSAL_MAX_DIRS = 4_096       # bounds empty-directory fan-out and stack size"
+        },
+        {
+          "line": 109,
+          "text": "TRAVERSAL_MAX_S = 2.0            # wall-clock budget per watched root"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/release_transparency_guard.py",
+      "class": "ReleaseTransparencyGuardModule",
+      "name": "Release Transparency / Anti-Rollback Guard",
+      "declared_code": "RTAG",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": [
+          "Externally pinned Ed25519 publisher keys",
+          "release-authorization.json shipped by the release pipeline",
+          "Independent witness for rollback resistance beyond the local administrator"
+        ]
+      },
+      "applicability_review": "Pinned Ed25519 publisher keys and shipped release authorization",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "unsigned, malformed, expired, and below-threshold updates fail closed"
+      },
+      "review": "Fail-closed validation, signed rollback floor and change-only reporting reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 78,
+        "run": 185,
+        "self_test": 221
+      },
+      "bound_evidence": [
+        {
+          "line": 109,
+          "text": "if self._floor_key is not None and len(self._floor_key) != 32:"
+        },
+        {
+          "line": 233,
+          "text": "\"unsigned, malformed, expired, and below-threshold updates fail closed\","
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/remote_bridge.py",
+      "class": "RemoteBridge",
+      "name": "Remote Bridge",
+      "declared_code": "RBRG",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": false,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Operator opt-in, SENDER/RECEIVER mode, strong key, cryptography",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "SKIP",
+        "detail": "disabled by operator configuration"
+      },
+      "review": "Bounded frame, authenticated configuration and receiver retirement/join reviewed.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 282,
+        "run": 317,
+        "stop": 1020,
+        "self_test": 1027
+      },
+      "bound_evidence": [
+        {
+          "line": 75,
+          "text": "_MAX_FRAME = 1_000_000"
+        },
+        {
+          "line": 883,
+          "text": "if length <= 0 or length > _MAX_FRAME:"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/resource_governor.py",
+      "class": "ResourceGovernor",
+      "name": "Adaptive Resource Governor",
+      "declared_code": "GOV",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "protect",
+        "availability_reason": "Protect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "psutil and bound module manager",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "governor active; current throttle 1x"
+      },
+      "review": "Only declared adaptive-throttle modules affected; bounded level and lock ordering reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 62,
+        "run": 131,
+        "self_test": 235
+      },
+      "bound_evidence": [
+        {
+          "line": 6,
+          "text": "modules to slow their poll loops (raising each module's ``_throttle`` multiplier,"
+        },
+        {
+          "line": 13,
+          "text": "- NEVER throttles the real-time response/protection path (SOAR, watchdog,"
+        },
+        {
+          "line": 17,
+          "text": "never suspends threads or kills work. Fail-open (any error \u2192 no throttling)."
+        },
+        {
+          "line": 39,
+          "text": "_HIGH_LOAD = 18.0     # above this (sustained) \u2192 tighten throttle a step"
+        },
+        {
+          "line": 41,
+          "text": "_MAX_LEVEL = 8.0      # max slowdown multiplier applied to throttleable modules"
+        },
+        {
+          "line": 45,
+          "text": "# the governor now also throttles on RAM \u2014 and hard-throttles before the machine"
+        },
+        {
+          "line": 54,
+          "text": "description = (\"Watches process CPU and throttles heavy non-critical module \""
+        },
+        {
+          "line": 77,
+          "text": "def _throttleable(self):"
+        },
+        {
+          "line": 89,
+          "text": "if type(mod).__dict__.get(\"adaptive_throttle_allowed\") is not True:"
+        },
+        {
+          "line": 97,
+          "text": "ceiling = float(type(mod).__dict__[\"adaptive_throttle_max\"])"
+        },
+        {
+          "line": 107,
+          "text": "for name, mod, ceiling in self._throttleable():"
+        },
+        {
+          "line": 112,
+          "text": "BaseModule.set_throttle(mod, requested)"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/self_healer.py",
+      "class": "SelfHealer",
+      "name": "HEAL",
+      "declared_code": "HEAL",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Authenticated crash snapshots and optional attested model",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "watching crash snapshots; 0 staged this session"
+      },
+      "review": "Bounded snapshot/source/patch/retry/completed state and proposal-only loop reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 138,
+        "run": 593,
+        "self_test": 1009
+      },
+      "bound_evidence": [
+        {
+          "line": 102,
+          "text": "_MAX_SOURCE_CHARS = 24000   # guard against pathologically large files in the prompt"
+        },
+        {
+          "line": 103,
+          "text": "_MAX_SOURCE_FILE_BYTES = 2 * 1024 * 1024"
+        },
+        {
+          "line": 104,
+          "text": "_MAX_PATCH_CHARS = 128_000"
+        },
+        {
+          "line": 105,
+          "text": "_MAX_SNAPSHOT_BYTES = 512 * 1024"
+        },
+        {
+          "line": 106,
+          "text": "_MAX_SNAPSHOT_FILES = 512"
+        },
+        {
+          "line": 107,
+          "text": "_MAX_STATE_BYTES = 256 * 1024"
+        },
+        {
+          "line": 108,
+          "text": "_MAX_RETRIES = 3"
+        },
+        {
+          "line": 109,
+          "text": "_MAX_COMPLETED = 1_024"
+        },
+        {
+          "line": 110,
+          "text": "_MAX_DEAD_LETTERS = 128"
+        },
+        {
+          "line": 112,
+          "text": "_RETRY_MAX_SECONDS = 300.0"
+        },
+        {
+          "line": 115,
+          "text": "_MAX_STATE_RECEIPT_BYTES = 4 * 1024"
+        },
+        {
+          "line": 122,
+          "text": "_RETRY_MAX_SECONDS,"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/self_integrity.py",
+      "class": "SelfIntegrityMonitor",
+      "name": "Self-Integrity Monitor",
+      "declared_code": "SINT",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Mandatory runtime enforcement targets, baseline and mutable ACL posture",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "runtime tamper detection verified \u2014 clean baseline is silent, a monkeypatched enforcement function is flagged, restore clears it."
+      },
+      "review": "Fixed target baseline, periodic ACL recheck and degradation disclosure reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 439,
+        "run": 533,
+        "self_test": 587
+      },
+      "bound_evidence": [
+        {
+          "line": 321,
+          "text": "return len(self._targets)"
+        },
+        {
+          "line": 325,
+          "text": "return len(self._baseline)"
+        },
+        {
+          "line": 371,
+          "text": "return len(self._baseline)"
+        },
+        {
+          "line": 511,
+          "text": "(20, f\"{len(self._engine.unresolved)} mandatory target(s) unresolved\")"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/shadow_shield.py",
+      "class": "ShadowShield",
+      "name": "Shadow Shield",
+      "declared_code": "SHDW",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Configured protected files/cache and optional Windows VSS",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "cache ready; 0 VSS snapshots this session"
+      },
+      "review": "File/version/prune bounds and byte/time work slices reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 81,
+        "run": 497,
+        "self_test": 545
+      },
+      "bound_evidence": [
+        {
+          "line": 55,
+          "text": "# slightly wider window costs little protection."
+        },
+        {
+          "line": 57,
+          "text": "MAX_FILE_BYTES   = 50 * 1024 * 1024  # don't cache files larger than 50 MB"
+        },
+        {
+          "line": 65,
+          "text": "MAX_PRUNE_ENTRIES = 128"
+        },
+        {
+          "line": 131,
+          "text": "if st.st_size > MAX_FILE_BYTES:"
+        },
+        {
+          "line": 159,
+          "text": "if copied > MAX_FILE_BYTES:"
+        },
+        {
+          "line": 191,
+          "text": "if index >= MAX_PRUNE_ENTRIES:"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/shadowcopy_guard.py",
+      "class": "ShadowCopyGuardModule",
+      "name": "Shadow-Copy / Recovery Tamper Guard",
+      "declared_code": "VSSG",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Windows psutil process/command-line evidence",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "recovery-tamper signatures verified (vssadmin/bcdedit/wmic flagged, 'list shadows' ignored)"
+      },
+      "review": "Process-birth dedupe, live-set pruning and partial coverage health reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 153,
+        "run": 173,
+        "self_test": 274
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/siem_forwarder.py",
+      "class": "SIEMForwarderModule",
+      "name": "SIEM Forwarder",
+      "declared_code": "SIEM",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": false,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Operator opt-in plus explicit sink/transport policy",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "SKIP",
+        "detail": "disabled by operator configuration"
+      },
+      "review": "Durable bounded outbox, retained cursor and loss/dead-letter health reviewed.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 144,
+        "run": 411,
+        "self_test": 514
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/smart_deception.py",
+      "class": "SmartDeception",
+      "name": "Smart Deception",
+      "declared_code": "SDEC",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Managed decoy directory; optional local naming model",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "0 honeytokens; 60-byte read cap; 0 unresolved trips; authenticated custody ledger sequence=0; remaining=4096; external-local-witness=0; freshness=local-authenticity-only; namespace-protected=0; capture=not_attempted; digest-sealed quarantine cap=8/1048576B; dedup cap=256"
+      },
+      "review": "Trip/quarantine/sample/read caps, authenticated custody and deployment cleanup reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 339,
+        "run": 3229,
+        "stop": 3258,
+        "self_test": 3263
+      },
+      "bound_evidence": [
+        {
+          "line": 76,
+          "text": "_MAX_SAMPLE   = 60      # names sampled from Documents"
+        },
+        {
+          "line": 79,
+          "text": "_MAX_ANCHOR_READ = len(_ANCHOR_BYTES) + 1"
+        },
+        {
+          "line": 81,
+          "text": "_TRIP_ALERT_MAX = 256"
+        },
+        {
+          "line": 88,
+          "text": "_QUARANTINE_MAX_FILES = 8"
+        },
+        {
+          "line": 89,
+          "text": "_QUARANTINE_MAX_BYTES = 1024 * 1024"
+        },
+        {
+          "line": 90,
+          "text": "_QUARANTINE_MAX_ITEM_BYTES = 256 * 1024"
+        },
+        {
+          "line": 91,
+          "text": "_QUARANTINE_MAX_AGE_S = 24 * 3600.0"
+        },
+        {
+          "line": 92,
+          "text": "_QUARANTINE_SCAN_MAX = 64"
+        },
+        {
+          "line": 94,
+          "text": "_CUSTODY_COUNTER_MAX = 1_000_000"
+        },
+        {
+          "line": 104,
+          "text": "_CUSTODY_LEDGER_MAX_EVENTS = 4096"
+        },
+        {
+          "line": 109,
+          "text": "_CUSTODY_WITNESS_MAX_BYTES = 4096"
+        },
+        {
+          "line": 110,
+          "text": "_CUSTODY_HEAD_MAX_BYTES = 8192"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/soar.py",
+      "class": "SOARModule",
+      "name": "SOAR Automation",
+      "declared_code": null,
+      "register_function": false,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "respond",
+        "availability_reason": "Respond capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Windows typed corroborated response evidence and explicit policy",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "offline distinct-source corroboration, cursor, and protected-process gates passed"
+      },
+      "review": "Distinct-source corroboration, pending expiry and protected-process gates reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 93,
+        "self_test": 120,
+        "run": 164
+      },
+      "bound_evidence": [
+        {
+          "line": 572,
+          "text": "if len(self._high_events) >= _ATTACK_MIN_EVENTS and len(pids) >= _ATTACK_MIN_PIDS:"
+        },
+        {
+          "line": 575,
+          "text": "f\"\u26a0 UNDER ATTACK \u2014 {len(self._high_events)} high-severity events across \""
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/soar_engine.py",
+      "class": "ActiveResponseSOAR",
+      "name": "Active Response SOAR",
+      "declared_code": null,
+      "register_function": false,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "respond",
+        "availability_reason": "Respond capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Explicit ANGERONA_SOAR_KILL_AND_ROLLBACK arm flag",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "SKIP",
+        "detail": "not started by headless harness / optional prerequisite: running, idle (set ANGERONA_SOAR_KILL_AND_ROLLBACK=1 to arm)"
+      },
+      "review": "Idle-by-design event loop and gated response reviewed; no host actions executed.",
+      "disposition": "SHARED USAGE POLICY REVIEW",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 94,
+        "self_test": 123,
+        "run": 130
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/speculative_triage.py",
+      "class": "SpeculativeTriageModule",
+      "name": "Speculative Triage Pre-Warm",
+      "declared_code": "SPEC",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Supported attested local model and inference opt-in/readiness",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "early high-risk marker detection verified"
+      },
+      "review": "Two joined helper workers and bounded queue/cache reviewed; adversary reports inactive callback admissions.",
+      "disposition": "REPORTED",
+      "finding_ids": [
+        "BH-04"
+      ],
+      "reviewed_methods": {
+        "__init__": 63,
+        "_on_event": 96,
+        "run": 298,
+        "self_test": 335
+      },
+      "bound_evidence": [
+        {
+          "line": 56,
+          "text": "_MAX_INFLIGHT = 2          # concurrent prewarm workers"
+        },
+        {
+          "line": 58,
+          "text": "_FRAME_MAX_AGE = 30.0      # never reuse context across a stale/PID-reuse window"
+        },
+        {
+          "line": 66,
+          "text": "self._q: \"queue.Queue[dict]\" = queue.Queue(maxsize=256)"
+        },
+        {
+          "line": 184,
+          "text": "fresh = 0.0 <= now - float(frame.get(\"ts\", 0.0)) <= self._FRAME_MAX_AGE"
+        },
+        {
+          "line": 237,
+          "text": "if len(self._primed) > 256:      # bound the cache"
+        },
+        {
+          "line": 308,
+          "text": "for _ in range(self._MAX_INFLIGHT):"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/ssh_surface_guard.py",
+      "class": "SSHSurfaceGuardModule",
+      "name": "SSH Surface / Key / Tunnel Guard",
+      "declared_code": "SSHG",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": [
+          "Local OpenSSH files and logs when present",
+          "psutil for local service/process/listener evidence",
+          "Angerona bus.key for authenticated persistent drift state"
+        ]
+      },
+      "applicability_review": "Local SSH files/logs when present; psutil and privacy key",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "bounded parser, privacy tokens, and observe-only contract verified"
+      },
+      "review": "Bounded incremental log reads, retry backoff and callback/handle cleanup reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 195,
+        "_on_bus_event": 302,
+        "self_test": 927,
+        "run": 945
+      },
+      "bound_evidence": [
+        {
+          "line": 28,
+          "text": "MAX_LOG_BYTES,"
+        },
+        {
+          "line": 29,
+          "text": "MAX_LOG_LINES,"
+        },
+        {
+          "line": 30,
+          "text": "MAX_WINDOWS_EVENT_ROWS,"
+        },
+        {
+          "line": 69,
+          "text": "_MAX_LOG_READ_BYTES = 256 * 1024"
+        },
+        {
+          "line": 71,
+          "text": "_WINDOWS_EVENT_RETRY_MAX_SECONDS = 300.0"
+        },
+        {
+          "line": 121,
+          "text": "self._offset = max(0, before.st_size - _MAX_LOG_READ_BYTES)"
+        },
+        {
+          "line": 124,
+          "text": "self._offset = max(0, before.st_size - _MAX_LOG_READ_BYTES)"
+        },
+        {
+          "line": 139,
+          "text": "data = os.read(fd, _MAX_LOG_READ_BYTES + 1)"
+        },
+        {
+          "line": 140,
+          "text": "if len(data) > _MAX_LOG_READ_BYTES:"
+        },
+        {
+          "line": 141,
+          "text": "data = data[:_MAX_LOG_READ_BYTES]"
+        },
+        {
+          "line": 165,
+          "text": "if len(data) >= _MAX_LOG_READ_BYTES:"
+        },
+        {
+          "line": 173,
+          "text": "lines = payload.decode(\"utf-8\", \"replace\").splitlines()[:MAX_LOG_LINES]"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/storage_hygiene.py",
+      "class": "StorageHygieneModule",
+      "name": "Storage Hygiene Enforcer",
+      "declared_code": "SHYG",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Configured runtime storage placement",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "detect + dry-run proposal + retired mutation verified (sandboxed)"
+      },
+      "review": "Periodic detect/propose loop and retired mutation path reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 310,
+        "run": 438,
+        "self_test": 449
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/sys_bridge.py",
+      "class": "SysBridgeModule",
+      "name": "Indirect Syscall Bridge",
+      "declared_code": "SYS",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Admitted sealed native bridge; explicit ctypes/psutil fallback",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "No sealed private native bridge admitted; explicit ctypes/psutil fallback active and health is truthfully degraded."
+      },
+      "review": "Native readiness and truthful degraded fallback reviewed; no indirect operations executed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 138,
+        "run": 208,
+        "self_test": 244
+      },
+      "bound_evidence": []
+    },
+    {
+      "source": "src/angerona/modules/sysmon_listener.py",
+      "class": "SysmonListenerModule",
+      "name": "Sysmon Event Bridge",
+      "declared_code": "SYSL",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Windows Sysmon event channel; documented fallback",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "offline generation-bound cursor/anchor contract verified"
+      },
+      "review": "Bounded event/cursor anchor reads and generation-bound cursor reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 306,
+        "run": 1025,
+        "self_test": 1220
+      },
+      "bound_evidence": [
+        {
+          "line": 72,
+          "text": "_MAX_EVENT_XML_CHARS = 1024 * 1024"
+        },
+        {
+          "line": 73,
+          "text": "_MAX_RECORD_ANCHOR_CHARS = 2 * 1024 * 1024"
+        },
+        {
+          "line": 80,
+          "text": "_MAX_CURSOR_BYTES = 4096"
+        },
+        {
+          "line": 300,
+          "text": "_MAX_RECORDS_PER_POLL = 256"
+        },
+        {
+          "line": 457,
+          "text": "if sum(len(value) for _label, value in fields) > _MAX_RECORD_ANCHOR_CHARS:"
+        },
+        {
+          "line": 496,
+          "text": "if not path.is_file() or path.stat().st_size > _MAX_CURSOR_BYTES:"
+        },
+        {
+          "line": 980,
+          "text": "maximum = min(newest, cursor + self._MAX_RECORDS_PER_POLL)"
+        },
+        {
+          "line": 1118,
+          "text": "if xml_str and len(xml_str) <= _MAX_EVENT_XML_CHARS:"
+        },
+        {
+          "line": 1130,
+          "text": "elif xml_str and len(xml_str) > _MAX_EVENT_XML_CHARS:"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/temporal_tradecraft_correlator.py",
+      "class": "TemporalTradecraftCorrelatorModule",
+      "name": "Temporal Tradecraft Correlator",
+      "declared_code": "TTCR",
+      "register_function": false,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "observe",
+        "availability_reason": "Observe capability is available on windows.",
+        "platform_requirements": [
+          "Angerona EventBus evidence",
+          "Angerona bus.key for authenticated restart state"
+        ]
+      },
+      "applicability_review": "Authenticated local EventBus evidence and restart-state key",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "authenticated bounded automaton and observe-only output verified"
+      },
+      "review": "256-signal pending queue, restart-gap disclosure and stopped/active gates reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 62,
+        "_on_bus_event": 291,
+        "self_test": 351,
+        "run": 404
+      },
+      "bound_evidence": [
+        {
+          "line": 87,
+          "text": "self._pending: deque[TemporalSignal] = deque(maxlen=256)"
+        },
+        {
+          "line": 333,
+          "text": "if len(self._pending) >= self._pending.maxlen:"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/usb_monitor.py",
+      "class": "USBMonitorModule",
+      "name": "Removable-Media / USB Monitor",
+      "declared_code": "USBW",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "linux",
+          "macos",
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "psutil mounted-volume evidence and Windows AutoRun policy",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "new-drive diff + fail-closed approval gate verified"
+      },
+      "review": "Bounded device identity lookup cache and approval gate reviewed; hotplug guard remains relevant with no device attached.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 368,
+        "run": 403,
+        "self_test": 782
+      },
+      "bound_evidence": [
+        {
+          "line": 234,
+          "text": "ttl = self._CACHE_S if drive_type and (bus_type is not None or drive_type != 3) else ("
+        },
+        {
+          "line": 239,
+          "text": "self._cache[root] = (now + ttl, *result)"
+        },
+        {
+          "line": 425,
+          "text": "pending = len(self._approval_policy.pending())"
+        },
+        {
+          "line": 429,
+          "text": "f\"; identity unavailable for {len(self._identity_blind_mounts)} \""
+        },
+        {
+          "line": 439,
+          "text": "f\"{len(self._known)} removable volume(s), {pending} awaiting approval, \""
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/watchdog_monitor.py",
+      "class": "WatchdogMonitor",
+      "name": "Watchdog Monitor",
+      "declared_code": null,
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Bound module manager and generation health snapshots",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "auto-recovered a simulated crashed module: True"
+      },
+      "review": "Three-attempt restart cap and generation-bound recovery reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 55,
+        "run": 64,
+        "self_test": 250
+      },
+      "bound_evidence": [
+        {
+          "line": 5,
+          "text": "thread dies while it should be running, the watchdog restarts it \u2014 throttled so"
+        },
+        {
+          "line": 45,
+          "text": "description = \"Self-healing supervisor: detects crashed/hung modules and restarts them (throttled).\""
+        },
+        {
+          "line": 50,
+          "text": "MAX_RESTARTS = 3"
+        },
+        {
+          "line": 172,
+          "text": "if state.attempts >= self.MAX_RESTARTS:"
+        },
+        {
+          "line": 178,
+          "text": "f\"{self.MAX_RESTARTS} bounded restart attempts; manual attention needed.\","
+        },
+        {
+          "line": 205,
+          "text": "f\"(attempt {attempt}/{self.MAX_RESTARTS}).\","
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/wfp_controller.py",
+      "class": "WFPControllerModule",
+      "name": "WFP Controller",
+      "declared_code": "WFPC",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Windows IP Helper ownership snapshots; typed containment policy",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "SKIP",
+        "detail": "not started by headless harness / optional prerequisite: status=stopped, health=100%"
+      },
+      "review": "Snapshot/ownership evidence and maximum containment TTL reviewed; no WFP capture claim or host changes tested.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 654,
+        "run": 659,
+        "self_test": 764
+      },
+      "bound_evidence": [
+        {
+          "line": 74,
+          "text": "expires_at: str"
+        },
+        {
+          "line": 87,
+          "text": "expires_at: str"
+        },
+        {
+          "line": 401,
+          "text": "_MAX_CONTAINMENT_SECONDS = 24 * 60 * 60"
+        },
+        {
+          "line": 499,
+          "text": "ttl_seconds: int = 15 * 60,"
+        },
+        {
+          "line": 512,
+          "text": "if not 30 <= int(ttl_seconds) <= self._MAX_CONTAINMENT_SECONDS:"
+        },
+        {
+          "line": 523,
+          "text": "expires = created + timedelta(seconds=int(ttl_seconds))"
+        },
+        {
+          "line": 526,
+          "text": "\"expires_at\": expires.isoformat(),"
+        },
+        {
+          "line": 534,
+          "text": "expires_at=identity[\"expires_at\"],"
+        },
+        {
+          "line": 560,
+          "text": "expires = _as_utc(datetime.fromisoformat(plan.expires_at))"
+        },
+        {
+          "line": 563,
+          "text": "ttl = int((expires - created).total_seconds())"
+        },
+        {
+          "line": 566,
+          "text": "ttl_seconds=ttl,"
+        },
+        {
+          "line": 583,
+          "text": "if applied >= expires:"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/wlan_monitor.py",
+      "class": "WLANMonitorModule",
+      "name": "WLAN Monitor",
+      "declared_code": "WLAN",
+      "register_function": true,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "Windows WLAN service/adapter; disconnected is not evidence of absent hardware",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "netsh WLAN query succeeded (not connected)"
+      },
+      "review": "SSID/BSSID cardinality caps and authenticated baseline reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 157,
+        "run": 339,
+        "self_test": 510
+      },
+      "bound_evidence": [
+        {
+          "line": 504,
+          "text": "if len(self._observed_bssids[ssid]) > 64:"
+        },
+        {
+          "line": 506,
+          "text": "if len(self._observed_bssids) > 128:"
+        }
+      ]
+    },
+    {
+      "source": "src/angerona/modules/yara_scanner.py",
+      "class": "YaraScannerModule",
+      "name": "YARA Scanner",
+      "declared_code": null,
+      "register_function": false,
+      "registration_required": false,
+      "self_test_defined_here": true,
+      "default_enabled": true,
+      "platform": {
+        "platform": "windows",
+        "supported_platforms": [
+          "windows"
+        ],
+        "available": true,
+        "capability_mode": "detect",
+        "availability_reason": "Detect capability is available on windows.",
+        "platform_requirements": []
+      },
+      "applicability_review": "YARA runtime/rules plus configured scan roots",
+      "host_assessment": "OS supported; prerequisite status is not inferred from the platform contract",
+      "self_test_baseline": {
+        "status": "PASS",
+        "detail": "PASS - in-process YARA compiled rules and detected EICAR"
+      },
+      "review": "File/tree/size caps, fair cursor, interrupted scans and rule activation reviewed.",
+      "disposition": "REVIEWED / NO MODULE-SPECIFIC CHANGE IDENTIFIED",
+      "finding_ids": [],
+      "reviewed_methods": {
+        "__init__": 72,
+        "self_test": 426,
+        "run": 449
+      },
+      "bound_evidence": [
+        {
+          "line": 30,
+          "text": "MAX_FILES_PER_ROOT = 10_000"
+        },
+        {
+          "line": 31,
+          "text": "MAX_DISCOVERY_ENTRIES_PER_ROOT = 200_000"
+        },
+        {
+          "line": 32,
+          "text": "MAX_DIRECTORY_ENTRIES = 100_000"
+        },
+        {
+          "line": 33,
+          "text": "MAX_FILE_BYTES = 64 * 1024 * 1024"
+        },
+        {
+          "line": 336,
+          "text": "discovered_entries > MAX_DISCOVERY_ENTRIES_PER_ROOT"
+        },
+        {
+          "line": 337,
+          "text": "or len(entries) >= MAX_DIRECTORY_ENTRIES"
+        },
+        {
+          "line": 368,
+          "text": "selected = ordered[:MAX_FILES_PER_ROOT]"
+        },
+        {
+          "line": 398,
+          "text": "if stat.st_size > MAX_FILE_BYTES:"
+        },
+        {
+          "line": 586,
+          "text": "if len(self._seen_matches) > 4096:"
+        }
+      ]
+    }
+  ]
+}

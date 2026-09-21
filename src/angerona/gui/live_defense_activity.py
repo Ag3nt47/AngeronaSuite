@@ -290,7 +290,8 @@ class LiveDefenseActivityCard(QFrame):
     def _module_snapshot(manager) -> tuple[tuple[tuple[int, str, str], ...], int, int, int]:
         """Capture only the coarse state needed for counts and change detection."""
         try:
-            modules = list(getattr(manager, "modules", {}).values())
+            from angerona.core.module_usage import enabled_module_items
+            modules = [mod for _, mod in enabled_module_items(manager)]
         except Exception:
             modules = []
         states: list[tuple[int, str, str]] = []

@@ -57,10 +57,10 @@ class FlightCache:
 
     def put(self, ts: float, module: str, severity: int, message: str,
             details: dict | str | None = None) -> None:
-        det = details if isinstance(details, str) else json.dumps(details or {})
         with self._lock:
             if self._closed:
                 return   # cache closed (module stopped) — ephemeral tier, safe to drop
+            det = details if isinstance(details, str) else json.dumps(details or {})
             try:
                 self._seq += 1
                 self._db.execute(
@@ -187,6 +187,8 @@ class FlightCacheModule(BaseModule):
         return self.cache.query(sql, params)
 
     def _on_event(self, event) -> None:
+        if self.stopping:
+            return
         try:
             self.cache.put(event.ts, event.module, int(event.severity),
                            event.message, event.details or {})

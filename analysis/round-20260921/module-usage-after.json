@@ -1,0 +1,936 @@
+{
+  "scope": "Isolated default settings on Windows; no sensor workers started. Driver service probe is read-only. Actual enabled counts depend on saved operator settings.",
+  "counts": {
+    "enabled": 73,
+    "running": 0,
+    "off": 11,
+    "discovered": 84
+  },
+  "discovery_errors": [],
+  "modules": [
+    {
+      "name": "AI Model Integrity Guard",
+      "source": "angerona.modules.ai_model_integrity",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "AI Triage (Ollama)",
+      "source": "angerona.modules.ai_triage",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "AMSI Bridge",
+      "source": "angerona.modules.amsi_bridge",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "API Patch / Anti-Blinding Detector",
+      "source": "angerona.modules.api_patch_detector",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "ARP Watchdog",
+      "source": "angerona.modules.arp_watchdog",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "AV Telemetry Bridge",
+      "source": "angerona.modules.av_telemetry_bridge",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Active Deception",
+      "source": "angerona.modules.deception",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Active Response SOAR",
+      "source": "angerona.modules.soar_engine",
+      "usage": {
+        "selected": true,
+        "eligible": false,
+        "enabled": false,
+        "state": "not_configured",
+        "reason": "Active Response SOAR is not armed by operator policy."
+      }
+    },
+    {
+      "name": "Adaptive Resource Governor",
+      "source": "angerona.modules.resource_governor",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Adversary Combat",
+      "source": "angerona.modules.adversary_combat",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "AegisPath Exposure Graph Guard",
+      "source": "angerona.modules.exposure_graph_guard",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Anti-Suspension Heartbeat",
+      "source": "angerona.modules.frz_heartbeat",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "App Control Decision Evidence",
+      "source": "angerona.modules.app_control_monitor",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Audit Log Integrity Guard",
+      "source": "angerona.modules.audit_log_guard",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Authentication Extension Integrity Guard",
+      "source": "angerona.modules.authentication_extension_guard",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "C2 Beacon Detector",
+      "source": "angerona.modules.beacon_detector",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "CHAOS",
+      "source": "angerona.modules.chaos_harness",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Cloud CTI Escalation",
+      "source": "angerona.modules.cloud_escalation",
+      "usage": {
+        "selected": false,
+        "eligible": true,
+        "enabled": false,
+        "state": "disabled",
+        "reason": "Off in module settings."
+      }
+    },
+    {
+      "name": "Compliance Mapper",
+      "source": "angerona.modules.compliance_mapper",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Counter-Agentic Detection",
+      "source": "angerona.modules.counter_agentic",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Data Provenance Graph",
+      "source": "angerona.modules.provenance_graph",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Detection Runtime",
+      "source": "angerona.modules.detection_runtime",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Deterministic Fast-Path Interceptor",
+      "source": "angerona.modules.fast_path",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Driver Provenance Guard",
+      "source": "angerona.modules.driver_provenance_guard",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Dynamic Resource Governor",
+      "source": "angerona.modules.dynamic_resource",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "ETW Core Listener",
+      "source": "angerona.modules.etw_listener",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "ETW Real-Time Process Sensor",
+      "source": "angerona.modules.etw_realtime_sensor",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Evidence Lattice Fusion",
+      "source": "angerona.modules.evidence_lattice",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Evolution Engine",
+      "source": "angerona.modules.evolution_engine",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "File Integrity Monitor",
+      "source": "angerona.modules.file_integrity",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Fleet Health Monitor",
+      "source": "angerona.modules.fleet_health_monitor",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Forensics Capture",
+      "source": "angerona.modules.forensics",
+      "usage": {
+        "selected": false,
+        "eligible": true,
+        "enabled": false,
+        "state": "disabled",
+        "reason": "Off in module settings."
+      }
+    },
+    {
+      "name": "HEAL",
+      "source": "angerona.modules.self_healer",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Hardware-Rooted Integrity",
+      "source": "angerona.modules.hardware_crypto",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Identity Session Guard",
+      "source": "angerona.modules.identity_session_guard",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Immutable Recovery Assurance Guard",
+      "source": "angerona.modules.immutable_recovery_guard",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "In-Memory Flight Cache",
+      "source": "angerona.modules.flight_cache",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Indirect Syscall Bridge",
+      "source": "angerona.modules.sys_bridge",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Kernel Sensor Bridge",
+      "source": "angerona.modules.kernel_bridge",
+      "usage": {
+        "selected": true,
+        "eligible": false,
+        "enabled": false,
+        "state": "not_installed",
+        "reason": "Optional AngeronaSensor driver is not installed. Install it, then enable this module to request monitoring."
+      }
+    },
+    {
+      "name": "Kernel-Boundary Posture Ledger",
+      "source": "angerona.modules.kernel_posture_ledger",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "LSASS Credential-Access Guard",
+      "source": "angerona.modules.lsass_guard",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Linux Observe Sensor",
+      "source": "angerona.modules.linux_observe",
+      "usage": {
+        "selected": true,
+        "eligible": false,
+        "enabled": false,
+        "state": "unsupported",
+        "reason": "Unavailable on windows; this capability supports linux."
+      }
+    },
+    {
+      "name": "Linux eBPF Sensor",
+      "source": "angerona.modules.ebpf_sensor",
+      "usage": {
+        "selected": true,
+        "eligible": false,
+        "enabled": false,
+        "state": "unsupported",
+        "reason": "Unavailable on windows; this capability supports linux."
+      }
+    },
+    {
+      "name": "Memory Injection Scanner",
+      "source": "angerona.modules.mem_inject_scanner",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Memory Time-Machine",
+      "source": "angerona.modules.memory_timemachine",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Mobile Response Bridge",
+      "source": "angerona.modules.mobile_bridge",
+      "usage": {
+        "selected": true,
+        "eligible": false,
+        "enabled": false,
+        "state": "not_configured",
+        "reason": "Mobile integration is off in Settings."
+      }
+    },
+    {
+      "name": "Monolithic Packaging",
+      "source": "angerona.modules.hermetic_packager",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Network Monitor",
+      "source": "angerona.modules.network_monitor",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Network Protocol Deep Decoder",
+      "source": "angerona.modules.network_protocol_decoder",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Packet Sniffer",
+      "source": "angerona.modules.packet_sniffer",
+      "usage": {
+        "selected": false,
+        "eligible": true,
+        "enabled": false,
+        "state": "disabled",
+        "reason": "Off in module settings."
+      }
+    },
+    {
+      "name": "Peripheral and DMA Posture Guard",
+      "source": "angerona.modules.peripheral_dma_guard",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Persistence Sweep",
+      "source": "angerona.modules.persistence_sweep",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Platform Attestation Guard",
+      "source": "angerona.modules.platform_attestation_guard",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Posture Hardening",
+      "source": "angerona.modules.posture_hardening",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Process Egress Lease Guard",
+      "source": "angerona.modules.process_egress_guard",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Process Monitor",
+      "source": "angerona.modules.process_monitor",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Purple Remediation Guard",
+      "source": "angerona.modules.purple_guard",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "RAG Provenance Guard",
+      "source": "angerona.modules.rag_provenance_guard",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Ransomware Heuristics",
+      "source": "angerona.modules.ransomware_heuristics",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Release Transparency / Anti-Rollback Guard",
+      "source": "angerona.modules.release_transparency_guard",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Remote Bridge",
+      "source": "angerona.modules.remote_bridge",
+      "usage": {
+        "selected": false,
+        "eligible": true,
+        "enabled": false,
+        "state": "disabled",
+        "reason": "Off in module settings."
+      }
+    },
+    {
+      "name": "Removable-Media / USB Monitor",
+      "source": "angerona.modules.usb_monitor",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "SIEM Forwarder",
+      "source": "angerona.modules.siem_forwarder",
+      "usage": {
+        "selected": false,
+        "eligible": true,
+        "enabled": false,
+        "state": "disabled",
+        "reason": "Off in module settings."
+      }
+    },
+    {
+      "name": "SOAR Automation",
+      "source": "angerona.modules.soar",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "SSH Surface / Key / Tunnel Guard",
+      "source": "angerona.modules.ssh_surface_guard",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Scheduled AI Security Briefing",
+      "source": "angerona.modules.daily_briefing",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Self-Integrity Monitor",
+      "source": "angerona.modules.self_integrity",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Shadow Shield",
+      "source": "angerona.modules.shadow_shield",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Shadow-Copy / Recovery Tamper Guard",
+      "source": "angerona.modules.shadowcopy_guard",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Smart Deception",
+      "source": "angerona.modules.smart_deception",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Speculative Triage Pre-Warm",
+      "source": "angerona.modules.speculative_triage",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Storage Hygiene Enforcer",
+      "source": "angerona.modules.storage_hygiene",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Sysmon Event Bridge",
+      "source": "angerona.modules.sysmon_listener",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "TUNE",
+      "source": "angerona.modules.behavioral_tuner",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Telemetry Canary Drills",
+      "source": "angerona.modules.canary_drill",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Temporal Tradecraft Correlator",
+      "source": "angerona.modules.temporal_tradecraft_correlator",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Upstream Threat Intel Sync",
+      "source": "angerona.modules.intel_sync",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "WFP Controller",
+      "source": "angerona.modules.wfp_controller",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "WLAN Monitor",
+      "source": "angerona.modules.wlan_monitor",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Watchdog Monitor",
+      "source": "angerona.modules.watchdog_monitor",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "YARA Scanner",
+      "source": "angerona.modules.yara_scanner",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Zero-Trust Local IPC Guard",
+      "source": "angerona.modules.ipc_guard",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "Zero-Trust Network Path Monitor",
+      "source": "angerona.modules.network_trust_monitor",
+      "usage": {
+        "selected": true,
+        "eligible": true,
+        "enabled": true,
+        "state": "enabled",
+        "reason": "Enabled for this machine."
+      }
+    },
+    {
+      "name": "macOS Observe Sensor",
+      "source": "angerona.modules.macos_observe",
+      "usage": {
+        "selected": true,
+        "eligible": false,
+        "enabled": false,
+        "state": "unsupported",
+        "reason": "Unavailable on windows; this capability supports macos."
+      }
+    }
+  ]
+}

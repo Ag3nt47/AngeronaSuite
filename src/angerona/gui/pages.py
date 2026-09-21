@@ -78,6 +78,7 @@ SECURITY NOTES
 from angerona import __version__
 from angerona.core.capability_assurance import assess_capability, cached_declaration_anchor
 from angerona.core.eventbus import Severity
+from angerona.core.module_usage import module_counts
 from angerona.core.threat import (
     active_threat_events, event_disposition, threat_label, threat_label_from_active,
 )
@@ -1464,8 +1465,13 @@ class DashboardCards(QWidget):
         )
 
     def refresh(self) -> None:
-        running = sum(1 for m in self.manager.modules.values() if m.status == "running")
-        self.c_modules.set(f"{running}/{len(self.manager.modules)}")
+        counts = module_counts(self.manager)
+        self.c_modules.set(f"{counts['running']}/{counts['enabled']}")
+        self.c_modules.setToolTip(
+            f"{counts['enabled']} enabled for this machine; {counts['off']} off. "
+            f"{counts['discovered']} discovered in the catalog. Enabled sensors "
+            "that are paused or degraded remain in the expected count."
+        )
         revision = self.storage.revision()
         if revision != self._last_storage_revision and not self._count_reader.busy:
             self._count_reader.request()
@@ -3031,6 +3037,8 @@ class ModulesPanel(QFrame):
                 self.manager, mod, _fast_assurance_operational(mod, health_summary)
             )
             contract = _capability_summary(mod)
+            usage_reader = getattr(self.manager, "module_usage", None)
+            usage = usage_reader(name) if callable(usage_reader) else None
             rows[name] = (
                 bool(self.manager.is_enabled(name)),
                 f"{_avatar(mod.category)}  {mod.name}",
@@ -3039,6 +3047,7 @@ class ModulesPanel(QFrame):
                 assurance.score, _assurance_tooltip(assurance), mod.category,
                 str(contract.get("mode", "legacy")),
                 str(contract.get("implementation_version", mod.version)),
+                usage.reason if usage is not None else "",
             )
         if rows == self._rendered_rows:
             return
@@ -3071,7 +3080,7 @@ class ModulesPanel(QFrame):
                 if self._rendered_rows is not None and self._rendered_rows.get(name) == values:
                     continue
                 row = existing[name]
-                enabled, title, status, color, score, tooltip, category, mode, version = values
+                enabled, title, status, color, score, tooltip, category, mode, version, usage_note = values
                 texts = ("On" if enabled else "Off", title, status, f"{score}%", category, mode, version)
                 for column, text in enumerate(texts):
                     item = table.item(row, column)
@@ -3091,6 +3100,7 @@ class ModulesPanel(QFrame):
                     (on_item.flags() | Qt.ItemIsUserCheckable) & ~Qt.ItemIsEditable
                 )
                 on_item.setCheckState(Qt.Checked if enabled else Qt.Unchecked)
+                on_item.setToolTip(usage_note)
                 table.item(row, 2).setForeground(QColor(color))
                 assurance_item = table.item(row, 3)
                 assurance_item.score = score
@@ -6355,9 +6365,10 @@ class StatusStrip(QFrame):
             mod = self.manager.modules.get(name)
             if not mod:
                 continue
-            state = mod.health_state
-            pct_text = (f"{mod.health}%" if mod.status == "running"
-                        else mod.status[:3].upper())
+            enabled = _manager_enabled(self.manager, mod)
+            state = mod.health_state if enabled else "off"
+            pct_text = ((f"{mod.health}%" if mod.status == "running"
+                         else mod.status[:3].upper()) if enabled else "OFF")
             key = (state, pct_text)
             if self._prev.get(name) == key:
                 continue                     # nothing changed — skip repaint
@@ -6460,14 +6471,16 @@ class ResourceStrip(QFrame):
             mod = self.manager.modules.get(name)
             if not mod:
                 continue
-            running = getattr(mod, "status", "") == "running"
-            pct = self._intensity(name, mod, activity)
-            key = (pct, running)
+            enabled = _manager_enabled(self.manager, mod)
+            running = enabled and getattr(mod, "status", "") == "running"
+            pct = self._intensity(name, mod, activity) if enabled else 0
+            key = (pct, running, enabled)
             if self._prev.get(name) == key:
                 continue
             self._prev[name] = key
-            color = _intensity_color(pct, running)
-            chip.setText(f"{_short_code(mod)}\n{pct}%")
+            color = _intensity_color(pct, running) if enabled else HEALTH_COLOR["off"]
+            label = f"{pct}%" if enabled else "OFF"
+            chip.setText(f"{_short_code(mod)}\n{label}")
             chip.setToolTip(f"{mod.name} — resource intensity {pct}%"
                             + ("" if running else " (stopped)"))
             chip.setStyleSheet(

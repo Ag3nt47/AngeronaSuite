@@ -449,8 +449,8 @@ class MobileResponseBridge(BaseModule):
                    "and token+PIN-gated containment from the operator's phone.")
     category = "Response"
     version = "1.13.0"
-    # The thread always runs but self-gates on config.mobile_enabled (idles cheaply
-    # when off) so flipping the Settings toggle takes effect without a restart.
+    # The manager parks this worker while mobile_enabled is false and reconciles
+    # live Settings changes. The run-loop gate also protects direct invocations.
     enabled_by_default = True
 
     POLL_S = 2.0
