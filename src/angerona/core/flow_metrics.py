@@ -9,7 +9,11 @@ error/stopped state. Pure/derivable from live objects; best-effort, never raises
 from __future__ import annotations
 
 import json
+import os
+import stat
+import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from angerona.core.data_paths import data_dir
@@ -31,7 +35,27 @@ _HARDEN_MODULES = {"Posture Hardening", "API Patch / Anti-Blinding Detector",
                    "Anti-Suspension Heartbeat", "Active Response SOAR"}
 
 _hw_cache: dict | None = None
-_audit_cache: tuple = (None, None, 0)   # (mtime, size, count)
+_AUDIT_READ_CHUNK = 64 * 1024
+_AUDIT_GUARD_BYTES = 64
+
+
+@dataclass(frozen=True)
+class _AuditCount:
+    path: str
+    fingerprint: tuple[int, int, int, int]
+    newlines: int
+    last_byte: bytes
+    head: bytes
+    tail: bytes
+
+    @property
+    def count(self) -> int:
+        # Binary file iteration also counts an unterminated final line.
+        return self.newlines + int(self.last_byte not in (b"", b"\n"))
+
+
+_audit_cache: _AuditCount | None = None
+_audit_lock = threading.Lock()
 
 # ── Pipeline telemetry — persistent across refreshes ─────────────────────────
 # Events are shed (sampled) once the 10-s EPS exceeds this threshold.
@@ -41,23 +65,69 @@ _dropped_events: int       = 0   # cumulative dropped/sampled events since start
 
 
 def _audit_line_count(path) -> int:
-    """Line count of the audit log, cached by (mtime,size) — recounts only when
-    the file actually changes, so a growing log doesn't cost O(size) each refresh."""
+    """Count an append-only display log without rereading its growing history.
+
+    One bounded cache holds newline counts and small append guards, not log
+    contents or an open descriptor. Rotation, truncation, same-size rewrites
+    and changed guards trigger a recount. This is presentation only; metadata
+    and guards must never be used to authenticate audit evidence.
+    """
     global _audit_cache
-    try:
-        st = path.stat()
-    except Exception:
-        return 0
-    key = (st.st_mtime, st.st_size)
-    if (_audit_cache[0], _audit_cache[1]) == key:
-        return _audit_cache[2]
-    try:
-        with open(path, "rb") as f:
-            n = sum(1 for _ in f)
-    except Exception:
-        n = _audit_cache[2]
-    _audit_cache = (key[0], key[1], n)
-    return n
+    path = Path(path)
+    identity = os.path.abspath(path)
+
+    def fingerprint(info):
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
+    with _audit_lock:
+        cached = _audit_cache
+        fallback = 0
+        try:
+            info = path.stat()
+            if not stat.S_ISREG(info.st_mode):
+                return 0
+            key = fingerprint(info)
+            same_file = bool(cached and cached.path == identity
+                             and cached.fingerprint[:2] == key[:2])
+            fallback = cached.count if same_file else 0
+            if same_file and cached.fingerprint == key:
+                return cached.count
+            with path.open("rb") as stream:
+                if fingerprint(os.fstat(stream.fileno())) != key:
+                    return cached.count if same_file else 0
+                offset = newlines = 0
+                last_byte = b""
+                if same_file and key[2] > cached.fingerprint[2]:
+                    previous_size = cached.fingerprint[2]
+                    head = stream.read(len(cached.head))
+                    stream.seek(previous_size - len(cached.tail))
+                    tail = stream.read(len(cached.tail))
+                    if head == cached.head and tail == cached.tail:
+                        offset = previous_size
+                        newlines = cached.newlines
+                        last_byte = cached.last_byte
+                stream.seek(offset)
+                remaining = key[2] - offset
+                while remaining:
+                    chunk = stream.read(min(remaining, _AUDIT_READ_CHUNK))
+                    if not chunk:
+                        raise OSError("audit log changed during counting")
+                    newlines += chunk.count(b"\n")
+                    last_byte = chunk[-1:]
+                    remaining -= len(chunk)
+                stream.seek(0)
+                head = stream.read(min(key[2], _AUDIT_GUARD_BYTES))
+                stream.seek(max(0, key[2] - _AUDIT_GUARD_BYTES))
+                tail = stream.read(min(key[2], _AUDIT_GUARD_BYTES))
+                if (fingerprint(os.fstat(stream.fileno())) != key
+                        or fingerprint(path.stat()) != key):
+                    raise OSError("audit log changed during counting")
+            _audit_cache = _AuditCount(identity, key, newlines, last_byte, head, tail)
+            return _audit_cache.count
+        except OSError:
+            # Do not cache an unsuccessful read as current: the next refresh
+            # must retry even if the file metadata has not changed again.
+            return fallback
 
 
 def _hw() -> dict:
@@ -108,7 +178,7 @@ def build_metrics(manager, bus, config) -> dict:
     run_total = sum(1 for m in manager.modules.values()
                     if getattr(m, "status", "") == "running")
 
-    # AI guardrail audit-log line count — cached by (mtime,size)
+    # AI guardrail audit-log line count — only appended bytes are recounted.
     audit_n = _audit_line_count(
         data_dir() / "diagnostics" / "ai_security_audit.log")
 

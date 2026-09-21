@@ -18,7 +18,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSplitter,
+    QApplication, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSplitter,
     QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -721,7 +721,11 @@ class MainWindow(QMainWindow):
         self._fi_worker = threading.Thread(
             target=self._fi_worker_loop, name="FlightInstructorWorker", daemon=True)
         self._fi_worker.start()
-        self._flow_write_busy = threading.Event()
+        self._flow_writer = AsyncSnapshot(
+            self, self._prepare_flow_write, lambda _result: None,
+            name="FlowMetricsWriter",
+        )
+        QApplication.instance().aboutToQuit.connect(self._flow_writer.close)
         try:
             self.shark_monitor.fi_check.setChecked(True)
         except Exception:
@@ -1066,18 +1070,17 @@ class MainWindow(QMainWindow):
 
     def _write_flow_metrics_async(self) -> None:
         """Coalesce the optional canvas feed and keep disk I/O off Qt."""
-        if self._flow_write_busy.is_set():
-            return
-        self._flow_write_busy.set()
+        self._flow_writer.request()
 
-        def _write() -> None:
-            try:
-                from angerona.core import flow_metrics
-                flow_metrics.write(self.manager, self.bus, self.config)
-            finally:
-                self._flow_write_busy.clear()
+    def _prepare_flow_write(self):
+        # The sleeping worker must not retain MainWindow or access Qt objects.
+        manager, bus, config = self.manager, self.bus, self.config
 
-        threading.Thread(target=_write, name="FlowMetricsWriter", daemon=True).start()
+        def write():
+            from angerona.core import flow_metrics
+            flow_metrics.write(manager, bus, config)
+
+        return write
 
     def _check_threat_animation(self) -> None:
         # Policy snapshots can stat files and hash pinned executables. Keep

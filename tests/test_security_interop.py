@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from angerona.core import security_interop
+from angerona.core import evidence_store, security_interop
 from angerona.core.evidence_store import EvidenceStore, HuntQuery
 from angerona.core.security_interop import (
     CAPABILITY_PARITY,
@@ -30,7 +31,17 @@ def test_parity_registry_is_honest_bounded_and_evidence_backed() -> None:
     assert "everything is supported" not in text
 
 
-def test_suricata_zeek_and_ocsf_import_into_local_evidence(tmp_path: Path) -> None:
+def test_suricata_zeek_and_ocsf_import_into_local_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Exercise import/privacy/idempotence against a fixed clock near these
+    # fixture events. Wall time otherwise ages them out after 30 days, making
+    # this test fail even when the importer and retention both work correctly.
+    monkeypatch.setattr(
+        evidence_store, "time", SimpleNamespace(
+            time=lambda: 1787313720.0, perf_counter=evidence_store.time.perf_counter,
+        ),
+    )
     store = EvidenceStore(tmp_path / "evidence.db")
     try:
         suricata = tmp_path / "eve.json"

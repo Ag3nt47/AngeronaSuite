@@ -25,7 +25,7 @@ import math
 import re
 import threading
 import time
-from collections import Counter
+from collections import Counter, OrderedDict
 
 from angerona.core import self_ioc
 from angerona.core.assurance_receipts import DetectorReceiptIssuer
@@ -33,9 +33,13 @@ from angerona.core.module_base import BaseModule, Severity
 
 # entropy (bits/char) above which a label looks machine-generated
 _ENTROPY_HI = 3.6
-# per-qname observation cooldown: one event per name per window, so a repeated or
-# looping DNS name can never storm the UI (defence-in-depth against floods)
+# Per-qname observation cooldown for retained names. Capacity eviction can allow
+# a name to be observed again sooner, without dropping a new name's observation.
 _EMIT_COOLDOWN_S = 60.0
+# Suppression is an optional observation optimization, never detection evidence.
+# On overflow retire the oldest cooldown; a repeated name may be emitted again,
+# but a new name must still be analyzed and reported.
+_MAX_EMIT_COOLDOWNS = 4096
 # a single label longer than this is a classic tunneling indicator
 _LABEL_LEN_HI = 30
 # Accept a complete bounded DNS name, never a name extracted from log prose.
@@ -85,7 +89,7 @@ class NetworkProtocolDecoderModule(BaseModule):
         self._seen = 0
         self._flagged = 0
         self._recent_flags: list[dict] = []
-        self._last_emit: dict[str, float] = {}   # qname -> last emit (monotonic)
+        self._last_emit: OrderedDict[str, float] = OrderedDict()
         self._assurance_issuer: DetectorReceiptIssuer | None = None
 
     def bind_assurance_receipt_issuer(self, issuer: DetectorReceiptIssuer) -> None:
@@ -148,15 +152,24 @@ class NetworkProtocolDecoderModule(BaseModule):
                 "verdict": "DGA/tunneling-suspect" if suspicious else "benign"}
 
     def _should_emit(self, qname: str) -> bool:
-        """Rate-limit observations to one per qname per cooldown window."""
-        now = time.monotonic()
+        """Suppress repeats while a name is retained in the bounded cooldown."""
         with self.state_lock:
-            last = self._last_emit.get(qname, 0.0)
-            if now - last < _EMIT_COOLDOWN_S:
+            # Sample under the lock so timestamp order follows insertion order
+            # even when several producer threads publish DNS events together.
+            now = time.monotonic()
+            last = self._last_emit.get(qname)
+            if last is not None and now - last < _EMIT_COOLDOWN_S:
                 return False
-            if len(self._last_emit) > 256:
-                self._last_emit = {k: t for k, t in self._last_emit.items()
-                                   if now - t < _EMIT_COOLDOWN_S}
+            # Expiry and capacity both remove only the oldest entries. Every
+            # entry is visited at most once, rather than rescanning the entire
+            # active cooldown table for every new name during a DNS burst.
+            while self._last_emit:
+                oldest = next(iter(self._last_emit.values()))
+                if now - oldest < _EMIT_COOLDOWN_S:
+                    break
+                self._last_emit.popitem(last=False)
+            if len(self._last_emit) >= _MAX_EMIT_COOLDOWNS:
+                self._last_emit.popitem(last=False)
             self._last_emit[qname] = now
             return True
 
