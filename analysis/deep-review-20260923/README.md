@@ -187,8 +187,10 @@ Separate source-runtime locks close their reviewed dependency graphs: 23 package
 for Linux and Apple Silicon, 22 plus the explicit cryptography build for Intel.
 Installers stage/validate a new runtime, safely quote paths and retain the old
 validated generation on failure. Optional voice is separate. Native CI lanes
-are configured for Ubuntu, Apple Silicon and Intel; their execution results were
-not verified on the Windows review host.
+are configured for Ubuntu, Apple Silicon and Intel. The initial published
+revision passed native Ubuntu installation/rendering. Mac execution exposed a
+shell path-quoting bug; its correction and subsequent CI results are tracked in
+the [publication follow-up](publication-followup.md).
 
 **Remaining packaging issue:** older full POSIX release-build locks still have
 PyObjC/macholib/typing-extensions graph omissions. They are not consumed by the
@@ -243,7 +245,7 @@ heading; the corrected release/setup group passed **22 tests**. Late startup cha
 coverage accounting are recorded in [QA round 3](bugs-round3.md); these focused
 results must not be relabeled as one rerun of the entire suite.
 
-Final case-by-case reconciliation accounts for all **3,991 collected cases:
+The pre-publication Windows reconciliation accounts for **3,991 collected cases:
 3,972 latest passes, 19 expected skips, no uncovered cases or unresolved
 failures**. This combines the aggregate run with targeted reruns, including the
 final integration gate (**206 passes, 1 skip**) and **11** independent Windows
@@ -251,5 +253,8 @@ token-boundary passes. Overlapping cases are counted once in the
 [reconciliation record](pytest-reconciled-round3.json).
 
 The coordinator owns final integration and guarded publication.
+Additional post-publication native findings and targeted checks are recorded in
+the [publication follow-up](publication-followup.md); they are outside that
+Windows reconciliation snapshot.
 No pending native Lab or macOS/Linux acceptance is converted into a pass by the
 offline gates. Historical cycle34 closure remains unchanged.

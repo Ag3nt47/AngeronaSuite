@@ -23,8 +23,8 @@ case "$OS" in
         RELEASE_APP=${XDG_DATA_HOME:-$HOME/.local/share}/angerona/app
         ;;
     Darwin)
-        DATA_DIR=${ANGERONA_DATA:-$HOME/Library/Application Support/Angerona}
-        RUNTIME_DIR=$HOME/Library/Application Support/Angerona/runtime
+        DATA_DIR="${ANGERONA_DATA:-$HOME/Library/Application Support/Angerona}"
+        RUNTIME_DIR="$HOME/Library/Application Support/Angerona/runtime"
         rm -f -- "$HOME/Library/LaunchAgents/org.angerona.security-suite.plist"
         rm -f -- "$HOME/Applications/Angerona.command"
         RELEASE_APP=$HOME/Applications/Angerona.app

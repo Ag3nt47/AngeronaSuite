@@ -185,11 +185,13 @@ The [three-round record](analysis/deep-review-20260923/README.md) links findings
 fixes, benchmarks, native acceptance and the final module inventory. All 84
 catalog entries are accounted for: 66 module self-tests passed, 18 had explicit
 optional/platform prerequisites, and the separate event-pipeline test passed.
-Skips are not passing live-sensor tests. Final case-by-case reconciliation of
+Skips are not passing live-sensor tests. The Windows review's reconciliation of
 the aggregate run and focused reruns records **3,972 passes, 19 skips and no
 unresolved failures** across 3,991 collected cases. The raw aggregate run and
 its three corrected fixture/documentation failures remain documented separately;
 this is not a claim that the entire suite was rerun in one all-green execution.
+Native CI results and subsequent installer corrections are recorded in the
+[publication follow-up](analysis/deep-review-20260923/publication-followup.md).
 
 For an existing development environment:
 

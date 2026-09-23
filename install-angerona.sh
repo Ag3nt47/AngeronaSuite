@@ -49,8 +49,8 @@ case "$OS" in
                 ;;
             *) printf '%s\n' "No reviewed macOS wheel lock exists for this architecture." >&2; exit 1 ;;
         esac
-        DATA_DIR=${ANGERONA_DATA:-$HOME/Library/Application Support/Angerona}
-        RUNTIME_DIR=$HOME/Library/Application Support/Angerona/runtime
+        DATA_DIR="${ANGERONA_DATA:-$HOME/Library/Application Support/Angerona}"
+        RUNTIME_DIR="$HOME/Library/Application Support/Angerona/runtime"
         ;;
     *)
         printf 'Unsupported operating system: %s\n' "$OS" >&2

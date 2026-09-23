@@ -19,6 +19,96 @@ from tools import posix_install_support as support
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _available_posix_shell() -> str:
+    if os.name == "nt":
+        git = shutil.which("git")
+        if git:
+            for parent in tuple(Path(git).parents)[:3]:
+                candidate = parent / "bin/bash.exe"
+                if candidate.is_file():
+                    return str(candidate)
+        pytest.skip("Git Bash is required for the native shell regression on Windows")
+    return "/bin/sh"
+
+
+@pytest.mark.parametrize("architecture", ["arm64", "x86_64"])
+@pytest.mark.parametrize("custom_data", [False, True])
+def test_macos_installer_keeps_application_support_paths_in_one_argument(tmp_path: Path, architecture: str, custom_data: bool) -> None:
+    """Execute real installer setup; stop before its first directory mutation."""
+    fake = tmp_path / "fake-bin"
+    fake.mkdir()
+    scripts = {
+        "uname": 'case "$1" in -s) printf "Darwin\\n" ;; -m) printf "%s\\n" "$TEST_ARCH" ;; *) exit 2 ;; esac',
+        "id": 'printf "1000\\n"',
+        "sw_vers": 'printf "15.0\\n"',
+        "python3.12": "exit 0",
+        "mkdir": 'printf "%s\\0" "$@" > "$TEST_CAPTURE"\nexit 72',
+    }
+    for name, script in scripts.items():
+        entry = fake / name
+        entry.write_text("#!/bin/sh\n" + script + "\n", encoding="utf-8", newline="\n")
+        entry.chmod(0o700)
+    driver = r'''
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) fixture=$(cygpath -u "$1"); installer=$(cygpath -u "$2") ;;
+    *) fixture=$1; installer=$2 ;;
+esac
+export PATH="$fixture/fake-bin:$PATH"
+export HOME="$fixture/User space"
+export PYTHON="$fixture/fake-bin/python3.12"
+export TEST_CAPTURE="$fixture/captured-arguments"
+unset ANGERONA_DATA
+if [ "$TEST_CUSTOM_DATA" = 1 ]; then
+    export ANGERONA_DATA="$fixture/Custom data folder"
+fi
+exec /bin/sh "$installer" --no-autostart --build-intel-crypto
+'''
+    env = dict(os.environ, TEST_ARCH=architecture, TEST_CUSTOM_DATA="1" if custom_data else "0")
+    result = subprocess.run([_available_posix_shell(), "-c", driver, "fixture", str(tmp_path), str(ROOT / "install-angerona.sh")], env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 72, result.stderr
+    arguments = (tmp_path / "captured-arguments").read_bytes().decode().split("\0")[:-1]
+    assert len(arguments) == 4 and arguments[0] == "-p"
+    assert arguments[1].endswith("/User space/Library/Application Support/Angerona/runtime")
+    expected_data = "/Custom data folder" if custom_data else "/User space/Library/Application Support/Angerona"
+    assert arguments[2].endswith(expected_data)
+    assert arguments[3].endswith("/User space/.local/bin")
+    assert not (tmp_path / "User space").exists()  # All filesystem writes were intercepted.
+
+
+@pytest.mark.parametrize("purge", [False, True])
+def test_macos_uninstaller_passes_whole_paths_to_inert_removal(tmp_path: Path, purge: bool) -> None:
+    fake = tmp_path / "fake-bin"
+    fake.mkdir()
+    for name, script in {
+        "uname": 'printf "Darwin\\n"',
+        "rm": 'printf "%s\\0" "$@" >> "$TEST_CAPTURE"',
+    }.items():
+        entry = fake / name
+        entry.write_text("#!/bin/sh\n" + script + "\n", encoding="utf-8", newline="\n")
+        entry.chmod(0o700)
+    driver = r'''
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) fixture=$(cygpath -u "$1"); uninstaller=$(cygpath -u "$2") ;;
+    *) fixture=$1; uninstaller=$2 ;;
+esac
+export PATH="$fixture/fake-bin:$PATH"
+export HOME="$fixture/User space"
+export TEST_CAPTURE="$fixture/captured-arguments"
+unset ANGERONA_DATA
+if [ "$TEST_PURGE" = 1 ]; then
+    exec /bin/sh "$uninstaller" --purge-data
+fi
+exec /bin/sh "$uninstaller"
+'''
+    env = dict(os.environ, TEST_PURGE="1" if purge else "0")
+    result = subprocess.run([_available_posix_shell(), "-c", driver, "fixture", str(tmp_path), str(ROOT / "uninstall-angerona.sh")], env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    arguments = (tmp_path / "captured-arguments").read_bytes().decode().split("\0")[:-1]
+    assert any(value.endswith("/User space/Library/Application Support/Angerona/runtime") for value in arguments)
+    data_targets = [value for value in arguments if value.endswith("/User space/Library/Application Support/Angerona")]
+    assert len(data_targets) == int(purge)
+
+
 def test_launcher_round_trips_shell_metacharacters_without_evaluation() -> None:
     value = "/Users/A 'quoted' $USER `touch marker` %name\\folder"
     payload = support.shell_launcher(value + "/python", value, value + "/data", setup=True)
@@ -205,7 +295,7 @@ def test_failed_download_preserves_existing_runtime_and_launcher(tmp_path: Path)
     fake = tmp_path / "fake-bin"
     fake.mkdir()
     scripts = {
-        "uname": "printf '%s\\n' \"${1:+x86_64}\" | sed 's/^$/Linux/'",
+        "uname": 'case "$1" in -s) printf "Linux\\n" ;; -m) printf "x86_64\\n" ;; *) exit 2 ;; esac',
         "id": "printf '1000\\n'",
         "python3.12": "case \"$*\" in *'pip download'*) exit 71 ;; *'posix_install_support.py'*) exec \"$REAL_PYTHON\" \"$@\" ;; esac\nexit 0",
     }

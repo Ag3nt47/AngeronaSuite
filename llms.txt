@@ -91,9 +91,11 @@ kernel component is a product capability.
   QApplication rendering before publishing launchers. New staged runtimes and
   escaped paths preserve working installations on failure. Source-runtime locks
   are complete; older full POSIX release-build locks still have dependency gaps.
-- Native Ubuntu, Apple Silicon and Intel CI lanes are configured. Their results
-  and visible native desktops were not verified locally; no packaged-platform
-  acceptance claim is made. See native-installers.md and native-acceptance.md.
+- Native Ubuntu, Apple Silicon and Intel CI lanes are configured. Ubuntu source
+  installation and offscreen rendering passed after publication; native Mac runs
+  exposed a default-path quoting bug. Corrections and later results are recorded
+  in analysis/deep-review-20260923/publication-followup.md. Visible desktops and
+  packaged-platform acceptance remain separate from these automated checks.
 - The visionary comparison cites Wazuh, osquery, Velociraptor and Falco primary
   material without claiming parity. Neutralizer failure handling and no-model
   response proof were applied. Combat overload reporting, queue-age metrics,
@@ -105,7 +107,7 @@ kernel component is a product capability.
   1,205.62 seconds. Corrected publication group: 58 passes; corrected deployment plus
   frozen integration group: 96 passes/1 expected skip; corrected release/setup
   group: 22 passes. Final late-change gates are recorded in bugs-round3.md.
-  Case-by-case reconciliation covers all 3,991 collected cases: 3,972 latest
+  The pre-publication Windows reconciliation covers 3,991 cases: 3,972 latest
   passes, 19 skips, no uncovered cases or unresolved failures. Evidence:
   analysis/deep-review-20260923/pytest-reconciled-round3.json.
   Do not present overlapping

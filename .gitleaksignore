@@ -19,3 +19,8 @@ a0d42b428f828873dc651ffaeed7d9970dd339da:src/angerona/core/fleet_fabric.py:gener
 # Exact historical false positive for a public inert red-team marker token.
 # This fingerprint cannot suppress the same rule on future commits or lines.
 a8d69c382f579c62e6e0ed86fee79a203139974d:src/angerona/shark/run_manifest.py:generic-api-key:224
+
+# Exact historical false positive: the public Qt/XCB shared-library name
+# libxcb-randr.so.0 follows libxcb-keysyms.so.1 in a fixed dependency tuple.
+# No credential is present; future commits and other lines remain scanned.
+a5d9905b6bca9ebe12806535a3271249aaf9b0ab:tools/check_native_gui.py:generic-api-key:20

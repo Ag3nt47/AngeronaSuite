@@ -126,3 +126,33 @@ runtime locks, which already have a complete reviewed dependency graph.
 
 References: [Qt Linux requirements](https://doc.qt.io/qt-6/linux-requirements.html),
 [PyObjC 12.2.2 metadata](https://pypi.org/pypi/pyobjc/12.2.2/json).
+
+## Published CI follow-up: macOS paths with spaces
+
+CI run `35885787265` provided actual native results for published commit
+`a5d9905`. Ubuntu passed the complete source runtime installation, `pip check`,
+offscreen QApplication rendering, Linux XCB plugin loading and discovery of
+16 platform capabilities. ARM macOS job `107265449050` and Intel macOS job
+`107265449356` both stopped at source installer line 53; Intel prerequisite
+installation completed before encountering the same shell error.
+
+The macOS runtime assignment contained an unquoted literal space in
+`Application Support`, so the shell tried to execute `Support/Angerona/runtime`
+as a command. Quoted the complete default data and runtime assignments in both
+`install-angerona.sh` and `uninstall-angerona.sh`; related native launch/release
+path assignments were inspected for the same lexical defect.
+
+Added actual-shell regression cases covering ARM/Intel setup with default and
+custom data paths and uninstall with retained/purged data. The tests intercept
+directory creation and removal, record full arguments, and perform no package
+download, application launch or real uninstall. They run with Git Bash on
+Windows and `/bin/sh` on native POSIX runners. The older failed-download fixture
+also incorrectly returned `x86_64` for `uname -s`; its stub now distinguishes
+the OS (`-s`) from the machine architecture (`-m`).
+
+Local validation: **28 passed, 1 skipped** in the native installer test file,
+including all six new shell cases; both installer scripts pass shell syntax
+and Git whitespace checks. The skipped test is the existing POSIX-only failed
+download fixture. Native Mac CI must be rerun on the corrected revision before
+claiming complete ARM or Intel installation success. See
+[publication-followup.md](publication-followup.md) for overall CI tracking.
