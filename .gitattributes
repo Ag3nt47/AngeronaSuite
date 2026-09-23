@@ -1,6 +1,8 @@
 # Auto detect text files and perform LF normalization
 * text=auto
 *.bat text eol=crlf
+*.sh text eol=lf
+*.command text eol=lf
 # This contract is byte-canonical JSON and must not be rewritten by Windows checkouts.
 installer/windows-install-contract.json text eol=lf
 # This profile is authenticated by an exact compile-time SHA-256.

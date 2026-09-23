@@ -264,13 +264,14 @@ class LsassGuardModule(BaseModule):
                             Severity.CRITICAL, pid=pid, name=info.get("name"),
                             exe=info.get("exe"),
                             process_create_time=created, mitre="T1003.001",
-                            cmdline=cmd[:200], active_attack=True,
+                            cmdline=cmd[:200], active_attack=bool(scope),
+                            disposition="active" if scope else "observation",
                             detector_policy=(
                                 "exact-tool-lsass-dump"
-                                if response
+                                if scope
                                 else "semantic-indicator-alert-only"
                             ),
-                            **response)
+                            **(response or {"response_authorized": False}))
                 # Evict exact generations that exited. A new birth at the same
                 # PID remains distinct even if PID continuity spans snapshots.
                 self._alerted &= live

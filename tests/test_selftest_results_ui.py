@@ -66,6 +66,7 @@ class _Harness(QMainWindow):
             _end_busy=lambda: self.busy.append(False),
         )
         self.run_spinner = _Spinner()
+        self.config = SimpleNamespace(ollama_host="http://127.0.0.1:11434")
         self.manager = SimpleNamespace(modules={})
         self.bus = SimpleNamespace()
         self.opened_modules = []

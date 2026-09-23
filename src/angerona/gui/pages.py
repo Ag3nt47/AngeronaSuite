@@ -4115,7 +4115,12 @@ class ModuleInspector(QDialog):
     def _run_test(self) -> None:
         try:
             from angerona.core.selftest import run_module_selftest
-            ok, detail = run_module_selftest(self.module, timeout=15.0)
+            from angerona.modules.ai_triage import AITriageModule
+            # This explicit AI test may first start a cold daemon. Keep the
+            # shared permit/lock and an outer deadline, with enough time for
+            # the service's separately bounded startup plus model validation.
+            timeout = 60.0 if type(self.module) is AITriageModule else 15.0
+            ok, detail = run_module_selftest(self.module, timeout=timeout)
             _emit_if_accepting(
                 self,
                 "_test_done",
@@ -7724,6 +7729,11 @@ class SettingsDialog(QDialog):
         self._ollama_model = QLineEdit(self._cfg.ollama_model)
         grid.addWidget(self._ollama_model, 1, 1)
         lay.addLayout(grid)
+        from angerona.gui.ollama_status import OllamaStatusPanel
+        self._ollama_status = OllamaStatusPanel(
+            lambda: self._ollama_host.text().strip(), w, retry=True,
+        )
+        lay.addWidget(self._ollama_status)
 
         lay.addWidget(self._section("Appearance"))
         theme_row = QHBoxLayout()

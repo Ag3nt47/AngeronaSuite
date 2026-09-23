@@ -16,6 +16,7 @@ from angerona.core.github_tool_catalog import (
     GitHubToolCatalog, ImportCancelled, ImportOperation, analysis_readiness,
     plain_text, resolve_import,
 )
+from angerona.gui.analysis_lab import AnalysisLabPanel
 
 _WORKERS = threading.BoundedSemaphore(2)
 
@@ -91,19 +92,9 @@ class GitHubToolsPanel(QWidget):
         self.verification = QPlainTextEdit()
         self.verification.setReadOnly(True)
         self.tabs.addTab(self.verification, "Verification")
-        lab = QWidget()
-        lab_layout = QVBoxLayout(lab)
-        readiness = QLabel(analysis_readiness())
-        readiness.setTextFormat(Qt.TextFormat.PlainText)
-        readiness.setWordWrap(True)
-        lab_layout.addWidget(readiness)
-        self.run_button = QPushButton("Run analysis — unavailable")
-        self.run_button.setEnabled(False)
-        self.run_button.setToolTip(analysis_readiness())
-        self.run_button.clicked.connect(self._explain_analysis_gate)
-        lab_layout.addWidget(self.run_button)
-        lab_layout.addStretch()
-        self.tabs.addTab(lab, "Analysis Lab")
+        self.analysis_lab = AnalysisLabPanel(root=(root.parent / 'analysis-lab') if root else None)
+        self.run_button = self.analysis_lab.run_button
+        self.tabs.addTab(self.analysis_lab, "Analysis Lab")
         layout.addWidget(self.tabs, 1)
 
         self.status = QLabel("Open this tab to load your source library.")
@@ -146,16 +137,12 @@ class GitHubToolsPanel(QWidget):
             self._start("load", load, "Loading source library…")
 
     def cancel_pending(self) -> None:
+        self.analysis_lab.cancel_pending()
         if self._operation is not None:
             if self._operation.cancel():
                 self.status.setText("Cancelling… The current network read may take up to 10 seconds.")
             else:
                 self.status.setText("The verified import is being saved; finishing its index transaction.")
-
-    def _explain_analysis_gate(self) -> None:
-        # A direct signal emission cannot bypass the missing execution authority.
-        self.run_button.setEnabled(False)
-        self.status.setText(analysis_readiness())
 
     def _suggestion(self, _index):
         if self.suggestions.currentData():

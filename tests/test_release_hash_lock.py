@@ -276,8 +276,9 @@ def test_posix_source_installer_is_independently_hash_locked() -> None:
 
     assert "linux-x86_64" in installer
     assert "macos-arm64" in installer
-    assert "Intel macOS is not available" in installer
-    assert "Refusing an sdist build" in installer
+    assert "--build-intel-crypto" in installer
+    assert "macos-x86_64-base" in installer
+    assert "tools/build_macos_intel_crypto.py" in installer
     assert "sys.version_info[:2] != (3, 12)" in installer
     assert "--only-binary=:all: --require-hashes --no-deps" in installer
     assert "tools/verify_wheelhouse.py" in installer

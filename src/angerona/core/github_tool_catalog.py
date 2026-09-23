@@ -467,9 +467,9 @@ class GitHubToolCatalog:
 
 
 def analysis_readiness() -> str:
-    """No imported bytes may use the installed-module self-test subprocess."""
+    """Source review itself never supplies analyzer execution authority."""
     return (
-        "Analysis execution unavailable: this release has no verified disposable-VM "
-        "backend or approved executable catalog. GitHub imports are available for "
-        "source review. Installing Windows Sandbox alone does not enable Run."
+        "Analysis Lab uses the reviewed Bandit/Gitleaks catalog in a disposable VMware guest. "
+        "Prepare its runtime and Check readiness before running. GitHub source review "
+        "does not enable imported tools for execution."
     )

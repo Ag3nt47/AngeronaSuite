@@ -29,7 +29,7 @@ def test_attestation_binds_one_listener_to_trusted_executable(
 ) -> None:
     image = tmp_path / "ollama.exe"
     image.write_bytes(b"signed-fixture")
-    monkeypatch.setattr(ollama_lifecycle, "_ollama_listener_pids", lambda _port: {42})
+    monkeypatch.setattr(ollama_lifecycle, "_ollama_listener_pids", lambda _port, _address: {42})
     monkeypatch.setattr(ollama_lifecycle, "_trusted_ollama_image", lambda path: path == image)
     monkeypatch.setattr(psutil, "Process", lambda pid: _Process(pid, image))
 
@@ -44,7 +44,7 @@ def test_attestation_binds_one_listener_to_trusted_executable(
 @pytest.mark.parametrize("listeners", (set(), {10, 11}))
 def test_attestation_refuses_missing_or_ambiguous_owner(monkeypatch, listeners) -> None:
     monkeypatch.setattr(
-        ollama_lifecycle, "_ollama_listener_pids", lambda _port: listeners
+        ollama_lifecycle, "_ollama_listener_pids", lambda _port, _address: listeners
     )
 
     with pytest.raises(
@@ -59,7 +59,7 @@ def test_attestation_refuses_reused_process_identity(tmp_path, monkeypatch) -> N
     process = _Process(42, image)
     birth_times = iter((1234.5, 1235.5))
     monkeypatch.setattr(process, "create_time", lambda: next(birth_times))
-    monkeypatch.setattr(ollama_lifecycle, "_ollama_listener_pids", lambda _port: {42})
+    monkeypatch.setattr(ollama_lifecycle, "_ollama_listener_pids", lambda _port, _address: {42})
     monkeypatch.setattr(ollama_lifecycle, "_trusted_ollama_image", lambda _path: True)
     monkeypatch.setattr(psutil, "Process", lambda _pid: process)
 

@@ -8,6 +8,7 @@ window — raise the level. With nothing active, the state is SECURE.
 """
 from __future__ import annotations
 
+import math
 import time
 
 from angerona.core.eventbus import Severity
@@ -120,17 +121,42 @@ def _legacy_indicator_only(event, details: dict, module: str) -> bool:
 
     Do not rewrite stored events or trust a filename/allowlist to establish
     safety. These policies only measured an indicator, even though their old
-    producers set active_attack. Independent exploitation and critical evidence
-    must still take precedence.
+    producers set active_attack. Independent exploitation/corroboration still
+    takes precedence; severity remains unchanged in the retained evidence.
     """
     if (
-        getattr(event, "severity", Severity.INFO) > Severity.HIGH
-        or details.get("active_exploitation") is True
+        details.get("active_exploitation") is True
         or details.get("threat_intel_corroborated") is True
         or details.get("entropy_corroborated") is True
     ):
         return False
     policy = details.get("detector_policy")
+    # These two producers historically marked unrelated tool mentions as
+    # CRITICAL + active_attack. A complete process identity distinguishes parser
+    # rejection from an exact dangerous command lacking a safe response target.
+    # Other critical findings and authorized responses remain active.
+    if (
+        module in {
+            "lsass credential-access guard",
+            "shadow-copy / recovery tamper guard",
+        }
+        and policy == "semantic-indicator-alert-only"
+    ):
+        pid = details.get("pid")
+        birth = details.get("process_create_time")
+        if type(pid) is not int or not 0 < pid <= 0xFFFFFFFF or type(birth) not in (int, float):
+            return False
+        try:
+            if not math.isfinite(birth) or birth <= 0:
+                return False
+        except OverflowError:
+            return False
+        return (
+            details.get("response_authorized") is not True
+            and "response_contract" not in details
+        )
+    if getattr(event, "severity", Severity.INFO) > Severity.HIGH:
+        return False
     if module == "memory injection scanner":
         return policy == "rwx-memory-indicator-alert-only"
     if module == "c2 beacon detector":

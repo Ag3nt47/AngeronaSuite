@@ -513,7 +513,10 @@ def test_git_boundary_uses_absolute_git_literal_argv_and_fresh_environment(
         if sys.platform == "win32":
             assert environment["GIT_EXEC_PATH"] == str(boundary.staged_runtime.git_exec_path)
             assert str(boundary.staged_runtime.root) in environment["PATH"]
-            assert str(ROOT) not in environment["PATH"]
+            # The isolated staging fixture can itself live under ROOT/.tmp.
+            # Reject ROOT as a search entry, not as a parent-name substring.
+            path_entries = {Path(entry).resolve() for entry in environment["PATH"].split(os.pathsep)}
+            assert ROOT.resolve() not in path_entries
     finally:
         boundary.revalidate()
         boundary.close()

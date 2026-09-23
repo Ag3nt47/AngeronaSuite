@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from base64 import b64encode
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 
 import pytest
@@ -382,7 +382,12 @@ def test_root_governed_transition_requires_exact_live_subscribed_module(tmp_path
                 activation_epoch=999,
                 runtime_authority=test_capability,
             )
-        assert engine.snapshot() == initial
+        # Restart publishes another online event while no rules are bound.
+        # Only the explicit idle-admission counter may advance; denied stale
+        # authority must leave every rule, epoch, queue and failure field intact.
+        assert engine.snapshot() == replace(
+            initial, unconfigured_events_skipped=initial.unconfigured_events_skipped + 1,
+        )
         result = stack.coordinator.promote(approval)
         assert result.ok
         snapshot = engine.snapshot()

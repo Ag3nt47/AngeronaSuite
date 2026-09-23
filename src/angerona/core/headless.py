@@ -87,6 +87,10 @@ def run_headless(
         setattr(config, "runtime_chill_active", False)
         os.environ.pop("ANGERONA_CHILL_ACTIVE", None)
 
+    stop = threading.Event()
+    from angerona.core.ollama_lifecycle import request_ollama_start
+    request_ollama_start(config.ollama_host, stop_event=stop)
+
     # The JARVIS adapter is independent from read-only MCP and works in
     # headless mode so JARVIS can remain the single visible control surface.
     # Start it before the expensive module-discovery pass; status truthfully
@@ -141,8 +145,6 @@ def run_headless(
     print(f"[Angerona] Headless mode ({mode}) — {len(manager.modules)} modules discovered, "
           f"enabled ones running. DB: {config.db_path}. Ctrl+C to stop.", flush=True)
 
-    stop = threading.Event()
-
     def _handle(_signum, _frame):
         stop.set()
 
@@ -159,6 +161,7 @@ def run_headless(
     except KeyboardInterrupt:
         pass
     finally:
+        stop.set()
         if chill is not None:
             chill.stop()
         if _jarvis_control is not None:

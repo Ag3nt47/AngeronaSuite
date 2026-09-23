@@ -1,9 +1,75 @@
 # Red Team: GitHub Tool Library and isolated analysis
 
-Status: source import and review implemented, 2026-09-05. Isolated analyzer
-execution and external-analysis reports remain unimplemented. Runtime remains
-v1.13.0 with 84 capabilities. The sections below retain the intended full design;
-the implementation status here identifies the delivered subset.
+Status updated 2026-09-23: source import/review is delivered. The VMware analyzer
+backend, pinned catalog, optional setup and report controls are implemented, but
+native guest acceptance failed on tested Workstation 25.0.1. Run remains gated.
+Runtime stays v1.13.0 with 84 catalog capabilities. The implementation status
+below distinguishes shipped controls from the intended design and remaining
+acceptance work.
+
+## VMware implementation follow-up
+
+The implementation provides a fixed RAM-only Linux appliance on VMware
+Workstation for Windows. Hypervisor discovery checks both Windows registry views
+and supports nonstandard installation paths. The appliance creates its own VM
+configuration and boot ISO; native checks did not modify or start existing VMs.
+
+The executable catalog pins Gitleaks 8.30.1, Bandit 1.9.4, an Alpine 3.24.1 boot
+kernel/root filesystem and exact Python/dependency packages. Preparation validates
+all 30 artifact SHA-256 values and the deterministic guest-image digest. Linux
+archive paths are encoded into an initramfs, never extracted onto the host.
+Only reviewed analyzer entry points run, with project configuration discovery
+removed through opaque input filenames and fixed configurations.
+
+The VM has no network adapter, writable virtual disk, host share, clipboard,
+drag/drop, USB or 3D acceleration. A readonly boot CD contains its bounded input;
+guest scratch data stays in 768 MiB RAM. Output uses a local, user-restricted named
+pipe with a 2 MiB host limit. Before analysis, the guest waits for a host handshake:
+the pipe peer must be the exact VMX process for this job, and it must enter a
+Windows Job Object with one process, 2 GiB committed-memory limit and kill on
+close. Guest analyzers run as UID/GID 65534, with no supplementary groups.
+
+Input is limited to 2,000 eligible UTF-8 files, 16 MiB total and 1 MiB per file.
+Binary files, linked/reparse paths, virtual environments, dependency directories
+and Angerona runtime data are excluded. The report records skipped entries and
+Bandit parse errors. Guest output drops secret values, code excerpts, free-form
+messages and fingerprints before transport; the host accepts only the fixed
+location/rule schema bound to the job, input and catalog. Reports have no response
+authority and do not enter native Red Team catch scores.
+
+Analysis Lab now offers Prepare runtime, Check readiness, input/analyzer selection,
+Run, Cancel, redacted results/history/export and Clear interrupted jobs. Expensive
+work runs outside Qt. Two worker permits and one cross-process analysis lease
+bound concurrency. At most two interrupted job directories are retained; cleanup
+is constrained to generated UUID job directories and rejects reparse paths.
+
+**Native acceptance has not passed.** The explicitly approved service setup
+verified the installed vendor image, set VMware Authorization Service to Manual
+and started it. Native observation confirmed Manual/Running. Workstation 25.0.1
+then refused the generated VMX with `ERROR_SHARING_VIOLATION` while the host held
+its deny-write/delete seal. A read-only configuration setting and bounded direct
+VMX experiments also failed. Neither a successful readiness record nor an
+analyzer receipt was accepted.
+
+The seal binds exact generated configuration bytes and file identity throughout
+supervision and report acceptance. It is not removed to make the VM start.
+Explicit readiness checks first retire prior success; failure or cancellation
+cannot leave an older green result. Remaining native work requires a reviewed
+VMware-compatible custody handoff or another reviewed backend, then passing
+Bandit and Gitleaks guest fixtures. Preparation/offline tests are not substitutes.
+See [current native evidence](../../analysis/deep-review-20260923/native-acceptance.md)
+and [historical implementation evidence](../../analysis/vmware-analysis-lab-2026-09-05.md).
+
+Full Setup now offers an optional VMware helper. It explains the source-analysis
+purpose, additional resource requirements and Skip. Opening it changes nothing.
+It opens Broadcom's official download process, where an account and compliance
+approval may be required; it does not download or silently install VMware.
+A selected local installer must pass vendor signature, product and stable-file
+checks. Its file and parent custody remain held through interactive UAC/installer
+exit. Service configuration is separately confirmed, verifies the exact service
+registration/image, and sets only the Authorization Service to Manual/Running.
+Neither action starts a VM or establishes Lab readiness. VMware is unnecessary
+for ordinary Angerona monitoring, response and GitHub source review.
 
 ## Implementation status
 
@@ -11,7 +77,9 @@ the implementation status here identifies the delivered subset.
 Lab views. Resolve a public GitHub repository's branch, tag or full SHA, inspect
 the pinned commit, then import that source snapshot. Browse text, mark it reviewed
 or permanently revoke the exact import. Review status never enables execution.
-Gitleaks and Bandit are source URL shortcuts, not installed or approved binaries.
+The source-library shortcuts themselves do not install binaries. The separate
+Analysis Lab catalog pins reviewed Gitleaks/Bandit artifacts and adapter commands;
+those controls remain subject to the native readiness gate above.
 
 The implementation lives in `src/angerona/core/github_tool_catalog.py` and
 `src/angerona/gui/github_tools.py`. Imports retain their ZIP bytes in a separate
@@ -32,15 +100,13 @@ Cancellation before the index transaction leaves no ready entry; once the tiny
 durable save is sealed, the UI reports that it is finishing instead of claiming
 cancellation. Closing the console requests cancellation without waiting on I/O.
 
-**Remaining:** a dedicated unprivileged acquisition process for elevated Protect
-sessions, executable artifact/adapter approval, enforceable disposable-VM
-isolation and output transport, analyzer execution, and external-analysis
-receipts/history integration. Current acquisition and review mutations refuse an
-administrator/root session. Analysis Lab explicitly disables Run on all hosts;
-installing a VM feature alone does not enable it. Windows Sandbox and Hyper-V
-management tools were unavailable on the implementation host, so the required
-real-guest execution/isolation gates could not be completed. No host-subprocess
-fallback was added.
+**Remaining:** native acceptance of enforceable guest configuration custody and
+both analyzer fixtures. The implemented supervisor, transport and redacted
+history have offline/inert regression coverage; no successful native analyzer
+execution is claimed. A dedicated unprivileged acquisition process for elevated
+Protect sessions also remains future work. Current acquisition and review
+mutations refuse administrator/root sessions. Installing a hypervisor alone
+never enables Run, and no host-subprocess analyzer fallback was added.
 
 **Evidence:** the public Bandit source at commit
 `1d3053df070c91fe0fde002a21536c277d67e5d9` was imported in an isolated development
@@ -58,8 +124,9 @@ and Sandbox Editor available alongside the new workflow.
 
 The first executable adapters are **Gitleaks directory analysis** and **Bandit
 Python source analysis**. Gitleaks supports local file analysis and redacted
-reports; Bandit examines Python syntax trees for security issues. These are
-candidates for individual release review, not automatically trusted dependencies.
+reports; Bandit examines Python syntax trees for security issues. Their exact catalog entries and fixed adapters are implemented; successful
+native guest acceptance remains required. Other tools still need individual
+review rather than inheriting trust from a repository listing.
 [Gitleaks documentation](https://github.com/gitleaks/gitleaks),
 [Bandit documentation](https://bandit.readthedocs.io/en/latest/).
 

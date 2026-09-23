@@ -16,6 +16,7 @@ charset-normalizer==3.4.7
 idna==3.18
 urllib3==2.7.0
 pywin32==312
+pycdlib==1.20.0
 WMI==1.5.1
 scapy==2.7.0
 yara-x==1.19.0

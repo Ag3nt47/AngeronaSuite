@@ -1,0 +1,1797 @@
+{
+  "scope": "Static declared policy; runtime settings/platform/usage gates still apply. Literal sleeps exclude work duration; unresolved expressions remain explicit. Source markers include helpers and do not prove work on every cycle.",
+  "modules": [
+    {
+      "name": "Adversary Combat",
+      "source": "src/angerona/modules/adversary_combat.py",
+      "class": "AdversaryCombat",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 1330,
+          "expression": "30.0",
+          "literal_seconds": 30.0
+        }
+      ],
+      "source_work_markers": [
+        "read_text",
+        ".subscribe("
+      ]
+    },
+    {
+      "name": "AI Model Integrity Guard",
+      "source": "src/angerona/modules/ai_model_integrity.py",
+      "class": "AIModelIntegrityGuardModule",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "_wait_for_next_scan",
+          "line": 838,
+          "expression": "self._INTERVAL",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": [
+        "read_text"
+      ]
+    },
+    {
+      "name": "AI Triage (Ollama)",
+      "source": "src/angerona/modules/ai_triage.py",
+      "class": "AITriageModule",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "_run_generation",
+          "line": 392,
+          "expression": "8",
+          "literal_seconds": 8
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "AMSI Bridge",
+      "source": "src/angerona/modules/amsi_bridge.py",
+      "class": "AMSIBridgeModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 269,
+          "expression": "self._POLL_INTERVAL",
+          "literal_seconds": 5.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "API Patch / Anti-Blinding Detector",
+      "source": "src/angerona/modules/api_patch_detector.py",
+      "class": "ApiPatchDetectorModule",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 553,
+          "expression": "self._INTERVAL * (0.7 + 0.6 * random.random())",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": [
+        "process_iter"
+      ]
+    },
+    {
+      "name": "App Control Decision Evidence",
+      "source": "src/angerona/modules/app_control_monitor.py",
+      "class": "AppControlDecisionSensor",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 875,
+          "expression": "self._POLL_INTERVAL",
+          "literal_seconds": 2.0
+        }
+      ],
+      "source_work_markers": [
+        "read_text"
+      ]
+    },
+    {
+      "name": "ARP Watchdog",
+      "source": "src/angerona/modules/arp_watchdog.py",
+      "class": "ARPWatchdogModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 2.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 327,
+          "expression": "_POLL_INTERVAL",
+          "literal_seconds": 20.0
+        }
+      ],
+      "source_work_markers": [
+        "read_text"
+      ]
+    },
+    {
+      "name": "Audit Log Integrity Guard",
+      "source": "src/angerona/modules/audit_log_guard.py",
+      "class": "AuditLogIntegrityGuard",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 539,
+          "expression": "_POLL_SECONDS",
+          "literal_seconds": 4.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Authentication Extension Integrity Guard",
+      "source": "src/angerona/modules/authentication_extension_guard.py",
+      "class": "AuthenticationExtensionIntegrityGuardModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 484,
+          "expression": "self.INTERVAL_SECONDS",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "AV Telemetry Bridge",
+      "source": "src/angerona/modules/av_telemetry_bridge.py",
+      "class": "AVTelemetryBridgeModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 708,
+          "expression": "120.0",
+          "literal_seconds": 120.0
+        },
+        {
+          "method": "_try_evtlog_mode",
+          "line": 782,
+          "expression": "poll_interval",
+          "literal_seconds": null
+        },
+        {
+          "method": "_try_powershell_mode",
+          "line": 1291,
+          "expression": "_FALLBACK_INTERVAL",
+          "literal_seconds": 120.0
+        }
+      ],
+      "source_work_markers": [
+        "read_text"
+      ]
+    },
+    {
+      "name": "C2 Beacon Detector",
+      "source": "src/angerona/modules/beacon_detector.py",
+      "class": "BeaconDetectorModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 138,
+          "expression": "self._POLL",
+          "literal_seconds": 5.0
+        },
+        {
+          "method": "run",
+          "line": 115,
+          "expression": "self._POLL",
+          "literal_seconds": 5.0
+        }
+      ],
+      "source_work_markers": [
+        "list_connections"
+      ]
+    },
+    {
+      "name": "TUNE",
+      "source": "src/angerona/modules/behavioral_tuner.py",
+      "class": "BehavioralTuner",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 606,
+          "expression": "8",
+          "literal_seconds": 8
+        }
+      ],
+      "source_work_markers": [
+        "sqlite3.connect"
+      ]
+    },
+    {
+      "name": "Telemetry Canary Drills",
+      "source": "src/angerona/modules/canary_drill.py",
+      "class": "CanaryDrillModule",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 612,
+          "expression": "1.0",
+          "literal_seconds": 1.0
+        }
+      ],
+      "source_work_markers": [
+        ".subscribe("
+      ]
+    },
+    {
+      "name": "CHAOS",
+      "source": "src/angerona/modules/chaos_harness.py",
+      "class": "ChaosHarness",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "_wait_for_echo",
+          "line": 171,
+          "expression": "1.0",
+          "literal_seconds": 1.0
+        },
+        {
+          "method": "run",
+          "line": 316,
+          "expression": "min(60.0, self._cycle)",
+          "literal_seconds": null
+        },
+        {
+          "method": "run",
+          "line": 341,
+          "expression": "self._cycle",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Cloud CTI Escalation",
+      "source": "src/angerona/modules/cloud_escalation.py",
+      "class": "CloudEscalationModule",
+      "default_enabled": false,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 133,
+          "expression": "8 if active else 30",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Compliance Mapper",
+      "source": "src/angerona/modules/compliance_mapper.py",
+      "class": "ComplianceMapperModule",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 443,
+          "expression": "self._INTERVAL",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": [
+        "read_text"
+      ]
+    },
+    {
+      "name": "Counter-Agentic Detection",
+      "source": "src/angerona/modules/counter_agentic.py",
+      "class": "CounterAgenticModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 357,
+          "expression": "self._POLL",
+          "literal_seconds": 2.5
+        }
+      ],
+      "source_work_markers": [
+        "list_connections"
+      ]
+    },
+    {
+      "name": "Scheduled AI Security Briefing",
+      "source": "src/angerona/modules/daily_briefing.py",
+      "class": "DailyBriefingModule",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 307,
+          "expression": "min(60.0, self._interval_s)",
+          "literal_seconds": null
+        },
+        {
+          "method": "run",
+          "line": 326,
+          "expression": "5.0",
+          "literal_seconds": 5.0
+        }
+      ],
+      "source_work_markers": [
+        "read_text"
+      ]
+    },
+    {
+      "name": "Active Deception",
+      "source": "src/angerona/modules/deception.py",
+      "class": "DeceptionModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 226,
+          "expression": "5",
+          "literal_seconds": 5
+        }
+      ],
+      "source_work_markers": [
+        "subprocess.run",
+        "read_text"
+      ]
+    },
+    {
+      "name": "Detection Runtime",
+      "source": "src/angerona/modules/detection_runtime.py",
+      "class": "DetectionRuntimeModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 1508,
+          "expression": "0.1",
+          "literal_seconds": 0.1
+        }
+      ],
+      "source_work_markers": [
+        ".subscribe("
+      ]
+    },
+    {
+      "name": "Driver Provenance Guard",
+      "source": "src/angerona/modules/driver_provenance_guard.py",
+      "class": "DriverProvenanceGuard",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 1077,
+          "expression": "self._INTERVAL",
+          "literal_seconds": 900.0
+        },
+        {
+          "method": "run",
+          "line": 1073,
+          "expression": "self._INTERVAL",
+          "literal_seconds": 900.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Dynamic Resource Governor",
+      "source": "src/angerona/modules/dynamic_resource.py",
+      "class": "DynamicResourceModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 105,
+          "expression": "POLL_INTERVAL",
+          "literal_seconds": 5.0
+        },
+        {
+          "method": "run",
+          "line": 91,
+          "expression": "60.0",
+          "literal_seconds": 60.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Linux eBPF Sensor",
+      "source": "src/angerona/modules/ebpf_sensor.py",
+      "class": "EbpfSensorNode",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 242,
+          "expression": "5",
+          "literal_seconds": 5
+        },
+        {
+          "method": "run",
+          "line": 236,
+          "expression": "30",
+          "literal_seconds": 30
+        },
+        {
+          "method": "run",
+          "line": 249,
+          "expression": "30",
+          "literal_seconds": 30
+        },
+        {
+          "method": "run",
+          "line": 271,
+          "expression": "30",
+          "literal_seconds": 30
+        },
+        {
+          "method": "run",
+          "line": 287,
+          "expression": "1",
+          "literal_seconds": 1
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "ETW Core Listener",
+      "source": "src/angerona/modules/etw_listener.py",
+      "class": "EtwListenerModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 2822,
+          "expression": "self._POLL",
+          "literal_seconds": 3.0
+        }
+      ],
+      "source_work_markers": [
+        "process_iter"
+      ]
+    },
+    {
+      "name": "ETW Real-Time Process Sensor",
+      "source": "src/angerona/modules/etw_realtime_sensor.py",
+      "class": "EtwRealtimeSensorModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 446,
+          "expression": "self._HEALTH_POLL",
+          "literal_seconds": 5.0
+        },
+        {
+          "method": "run",
+          "line": 454,
+          "expression": "self._HEALTH_POLL",
+          "literal_seconds": 5.0
+        }
+      ],
+      "source_work_markers": [
+        "process_iter"
+      ]
+    },
+    {
+      "name": "Evidence Lattice Fusion",
+      "source": "src/angerona/modules/evidence_lattice.py",
+      "class": "EvidenceLatticeModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 8.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 328,
+          "expression": "15.0",
+          "literal_seconds": 15.0
+        }
+      ],
+      "source_work_markers": [
+        ".subscribe("
+      ]
+    },
+    {
+      "name": "Evolution Engine",
+      "source": "src/angerona/modules/evolution_engine.py",
+      "class": "EvolutionEngine",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 231,
+          "expression": "60.0",
+          "literal_seconds": 60.0
+        }
+      ],
+      "source_work_markers": [
+        "read_text",
+        ".subscribe("
+      ]
+    },
+    {
+      "name": "AegisPath Exposure Graph Guard",
+      "source": "src/angerona/modules/exposure_graph_guard.py",
+      "class": "ExposureGraphGuardModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 347,
+          "expression": "POLL_INTERVAL_SECONDS",
+          "literal_seconds": 60.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Deterministic Fast-Path Interceptor",
+      "source": "src/angerona/modules/fast_path.py",
+      "class": "FastPathModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 203,
+          "expression": "self._POLL_INTERVAL",
+          "literal_seconds": 3.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "File Integrity Monitor",
+      "source": "src/angerona/modules/file_integrity.py",
+      "class": "FileIntegrityModule",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 1480,
+          "expression": "_DRIVER_INTERVAL",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": [
+        "read_text"
+      ]
+    },
+    {
+      "name": "Fleet Health Monitor",
+      "source": "src/angerona/modules/fleet_health_monitor.py",
+      "class": "FleetHealthMonitorModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 263,
+          "expression": "POLL_INTERVAL_SECONDS",
+          "literal_seconds": 30.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "In-Memory Flight Cache",
+      "source": "src/angerona/modules/flight_cache.py",
+      "class": "FlightCacheModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 8.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 227,
+          "expression": "10.0",
+          "literal_seconds": 10.0
+        }
+      ],
+      "source_work_markers": [
+        "sqlite3.connect",
+        ".subscribe("
+      ]
+    },
+    {
+      "name": "Forensics Capture",
+      "source": "src/angerona/modules/forensics.py",
+      "class": "ForensicsModule",
+      "default_enabled": false,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 122,
+          "expression": "5",
+          "literal_seconds": 5
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Anti-Suspension Heartbeat",
+      "source": "src/angerona/modules/frz_heartbeat.py",
+      "class": "FrzHeartbeatModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 345,
+          "expression": "jittered(self._WRITE_INTERVAL)",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": [
+        "subprocess.Popen"
+      ]
+    },
+    {
+      "name": "Hardware-Rooted Integrity",
+      "source": "src/angerona/modules/hardware_crypto.py",
+      "class": "HardwareCrypto",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 214,
+          "expression": "300",
+          "literal_seconds": 300
+        },
+        {
+          "method": "run",
+          "line": 200,
+          "expression": "30",
+          "literal_seconds": 30
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Monolithic Packaging",
+      "source": "src/angerona/modules/hermetic_packager.py",
+      "class": "HermeticPackagerModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 417,
+          "expression": "self._POLL",
+          "literal_seconds": 300.0
+        }
+      ],
+      "source_work_markers": [
+        "subprocess.Popen"
+      ]
+    },
+    {
+      "name": "Identity Session Guard",
+      "source": "src/angerona/modules/identity_session_guard.py",
+      "class": "IdentitySessionGuardModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 340,
+          "expression": "self._interval",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": [
+        ".subscribe("
+      ]
+    },
+    {
+      "name": "Immutable Recovery Assurance Guard",
+      "source": "src/angerona/modules/immutable_recovery_guard.py",
+      "class": "ImmutableRecoveryGuardModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 163,
+          "expression": "self._INTERVAL",
+          "literal_seconds": 3600.0
+        }
+      ],
+      "source_work_markers": [
+        "read_text"
+      ]
+    },
+    {
+      "name": "Upstream Threat Intel Sync",
+      "source": "src/angerona/modules/intel_sync.py",
+      "class": "IntelSyncModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 669,
+          "expression": "self._INTERVAL",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": [
+        "process_iter"
+      ]
+    },
+    {
+      "name": "Zero-Trust Local IPC Guard",
+      "source": "src/angerona/modules/ipc_guard.py",
+      "class": "IpcGuardModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "_run_generation",
+          "line": 460,
+          "expression": "5.0",
+          "literal_seconds": 5.0
+        },
+        {
+          "method": "_run_generation",
+          "line": 388,
+          "expression": "5.0",
+          "literal_seconds": 5.0
+        },
+        {
+          "method": "_run_generation",
+          "line": 410,
+          "expression": "5.0",
+          "literal_seconds": 5.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Kernel Sensor Bridge",
+      "source": "src/angerona/modules/kernel_bridge.py",
+      "class": "KernelBridgeModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 286,
+          "expression": "_POLL_INTERVAL",
+          "literal_seconds": 1.0
+        },
+        {
+          "method": "run",
+          "line": 284,
+          "expression": "5.0",
+          "literal_seconds": 5.0
+        },
+        {
+          "method": "run",
+          "line": 259,
+          "expression": "30.0",
+          "literal_seconds": 30.0
+        },
+        {
+          "method": "run",
+          "line": 263,
+          "expression": "5.0",
+          "literal_seconds": 5.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Kernel-Boundary Posture Ledger",
+      "source": "src/angerona/modules/kernel_posture_ledger.py",
+      "class": "KernelBoundaryPostureLedger",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 533,
+          "expression": "self._INTERVAL",
+          "literal_seconds": 300.0
+        },
+        {
+          "method": "run",
+          "line": 507,
+          "expression": "self._INTERVAL",
+          "literal_seconds": 300.0
+        }
+      ],
+      "source_work_markers": [
+        "read_text"
+      ]
+    },
+    {
+      "name": "Linux Observe Sensor",
+      "source": "src/angerona/modules/linux_observe.py",
+      "class": "LinuxObserveModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 118,
+          "expression": "self._interval",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "LSASS Credential-Access Guard",
+      "source": "src/angerona/modules/lsass_guard.py",
+      "class": "LsassGuardModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 300,
+          "expression": "self._POLL",
+          "literal_seconds": 3.0
+        },
+        {
+          "method": "run",
+          "line": 214,
+          "expression": "self._POLL",
+          "literal_seconds": 3.0
+        }
+      ],
+      "source_work_markers": [
+        "process_iter"
+      ]
+    },
+    {
+      "name": "macOS Observe Sensor",
+      "source": "src/angerona/modules/macos_observe.py",
+      "class": "MacOSObserveModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 95,
+          "expression": "self._interval",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Memory Injection Scanner",
+      "source": "src/angerona/modules/mem_inject_scanner.py",
+      "class": "MemInjectScannerModule",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 342,
+          "expression": "self._SCAN_INTERVAL",
+          "literal_seconds": 30.0
+        },
+        {
+          "method": "run",
+          "line": 321,
+          "expression": "60.0",
+          "literal_seconds": 60.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Memory Time-Machine",
+      "source": "src/angerona/modules/memory_timemachine.py",
+      "class": "MemoryTimeMachineModule",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 351,
+          "expression": "self._CARVE_INTERVAL",
+          "literal_seconds": 6.0
+        }
+      ],
+      "source_work_markers": [
+        "process_iter",
+        "net_connections"
+      ]
+    },
+    {
+      "name": "Mobile Response Bridge",
+      "source": "src/angerona/modules/mobile_bridge.py",
+      "class": "MobileResponseBridge",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 2388,
+          "expression": "self.POLL_S",
+          "literal_seconds": 2.0
+        },
+        {
+          "method": "run",
+          "line": 2344,
+          "expression": "5.0",
+          "literal_seconds": 5.0
+        },
+        {
+          "method": "run",
+          "line": 2350,
+          "expression": "5.0",
+          "literal_seconds": 5.0
+        }
+      ],
+      "source_work_markers": [
+        "subprocess.run",
+        "subprocess.Popen"
+      ]
+    },
+    {
+      "name": "Network Monitor",
+      "source": "src/angerona/modules/network_monitor.py",
+      "class": "NetworkMonitorModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 338,
+          "expression": "_poll_interval()",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": [
+        "list_connections"
+      ]
+    },
+    {
+      "name": "Network Protocol Deep Decoder",
+      "source": "src/angerona/modules/network_protocol_decoder.py",
+      "class": "NetworkProtocolDecoderModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 2.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 257,
+          "expression": "10.0",
+          "literal_seconds": 10.0
+        }
+      ],
+      "source_work_markers": [
+        ".subscribe("
+      ]
+    },
+    {
+      "name": "Zero-Trust Network Path Monitor",
+      "source": "src/angerona/modules/network_trust_monitor.py",
+      "class": "NetworkTrustMonitorModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 1241,
+          "expression": "POLL_INTERVAL",
+          "literal_seconds": 30.0
+        }
+      ],
+      "source_work_markers": [
+        "read_text"
+      ]
+    },
+    {
+      "name": "Packet Sniffer",
+      "source": "src/angerona/modules/packet_sniffer.py",
+      "class": "PacketSnifferModule",
+      "default_enabled": false,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 355,
+          "expression": "delay",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": [
+        "subprocess.Popen"
+      ]
+    },
+    {
+      "name": "Peripheral and DMA Posture Guard",
+      "source": "src/angerona/modules/peripheral_dma_guard.py",
+      "class": "PeripheralDMAGuardModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 109,
+          "expression": "POLL_INTERVAL",
+          "literal_seconds": 300.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Persistence Sweep",
+      "source": "src/angerona/modules/persistence_sweep.py",
+      "class": "PersistenceSweepModule",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 625,
+          "expression": "self.SWEEP_SECONDS",
+          "literal_seconds": 60
+        }
+      ],
+      "source_work_markers": [
+        "subprocess.run"
+      ]
+    },
+    {
+      "name": "Platform Attestation Guard",
+      "source": "src/angerona/modules/platform_attestation_guard.py",
+      "class": "PlatformAttestationGuard",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 335,
+          "expression": "self._INTERVAL",
+          "literal_seconds": 300.0
+        },
+        {
+          "method": "run",
+          "line": 331,
+          "expression": "self._INTERVAL",
+          "literal_seconds": 300.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Posture Hardening",
+      "source": "src/angerona/modules/posture_hardening.py",
+      "class": "PostureHardening",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 8.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 412,
+          "expression": "2.0",
+          "literal_seconds": 2.0
+        }
+      ],
+      "source_work_markers": [
+        "read_text",
+        "sqlite3.connect"
+      ]
+    },
+    {
+      "name": "Process Egress Lease Guard",
+      "source": "src/angerona/modules/process_egress_guard.py",
+      "class": "ProcessEgressGuardModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 172,
+          "expression": "POLL_INTERVAL",
+          "literal_seconds": 5.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Process Monitor",
+      "source": "src/angerona/modules/process_monitor.py",
+      "class": "ProcessMonitorModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 2.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 210,
+          "expression": "interval",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": [
+        "list_processes"
+      ]
+    },
+    {
+      "name": "Data Provenance Graph",
+      "source": "src/angerona/modules/provenance_graph.py",
+      "class": "ProvenanceGraphModule",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 597,
+          "expression": "interval",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": [
+        "sqlite3.connect",
+        ".subscribe("
+      ]
+    },
+    {
+      "name": "Purple Remediation Guard",
+      "source": "src/angerona/modules/purple_guard.py",
+      "class": "PurpleGuard",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [],
+      "source_work_markers": [
+        "read_text",
+        ".subscribe("
+      ]
+    },
+    {
+      "name": "RAG Provenance Guard",
+      "source": "src/angerona/modules/rag_provenance_guard.py",
+      "class": "RAGProvenanceGuardModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 196,
+          "expression": "self._interval",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Ransomware Heuristics",
+      "source": "src/angerona/modules/ransomware_heuristics.py",
+      "class": "RansomwareHeuristicsModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 4.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 1631,
+          "expression": "self._SCAN_INTERVAL",
+          "literal_seconds": 10.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Release Transparency / Anti-Rollback Guard",
+      "source": "src/angerona/modules/release_transparency_guard.py",
+      "class": "ReleaseTransparencyGuardModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 219,
+          "expression": "self._INTERVAL",
+          "literal_seconds": 1800.0
+        }
+      ],
+      "source_work_markers": [
+        "read_text"
+      ]
+    },
+    {
+      "name": "Remote Bridge",
+      "source": "src/angerona/modules/remote_bridge.py",
+      "class": "RemoteBridge",
+      "default_enabled": false,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 321,
+          "expression": "10",
+          "literal_seconds": 10
+        },
+        {
+          "method": "run",
+          "line": 328,
+          "expression": "10",
+          "literal_seconds": 10
+        },
+        {
+          "method": "run",
+          "line": 335,
+          "expression": "10",
+          "literal_seconds": 10
+        },
+        {
+          "method": "_run_sender",
+          "line": 361,
+          "expression": "10",
+          "literal_seconds": 10
+        },
+        {
+          "method": "_run_sender",
+          "line": 381,
+          "expression": "3",
+          "literal_seconds": 3
+        },
+        {
+          "method": "_run_sender",
+          "line": 374,
+          "expression": "10",
+          "literal_seconds": 10
+        },
+        {
+          "method": "_run_receiver",
+          "line": 740,
+          "expression": "10",
+          "literal_seconds": 10
+        },
+        {
+          "method": "_run_receiver",
+          "line": 745,
+          "expression": "10",
+          "literal_seconds": 10
+        },
+        {
+          "method": "_run_receiver",
+          "line": 726,
+          "expression": "10",
+          "literal_seconds": 10
+        },
+        {
+          "method": "_run_receiver",
+          "line": 768,
+          "expression": "5",
+          "literal_seconds": 5
+        }
+      ],
+      "source_work_markers": [
+        "read_text"
+      ]
+    },
+    {
+      "name": "Adaptive Resource Governor",
+      "source": "src/angerona/modules/resource_governor.py",
+      "class": "ResourceGovernor",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 135,
+          "expression": "30",
+          "literal_seconds": 30
+        },
+        {
+          "method": "run",
+          "line": 145,
+          "expression": "_SAMPLE_S",
+          "literal_seconds": 4.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "HEAL",
+      "source": "src/angerona/modules/self_healer.py",
+      "class": "SelfHealer",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 6.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 600,
+          "expression": "self.POLL_S",
+          "literal_seconds": 10.0
+        }
+      ],
+      "source_work_markers": [
+        "read_text"
+      ]
+    },
+    {
+      "name": "Self-Integrity Monitor",
+      "source": "src/angerona/modules/self_integrity.py",
+      "class": "SelfIntegrityMonitor",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 4.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 559,
+          "expression": "self._INTERVAL",
+          "literal_seconds": 15.0
+        }
+      ],
+      "source_work_markers": [
+        "subprocess.run"
+      ]
+    },
+    {
+      "name": "Shadow Shield",
+      "source": "src/angerona/modules/shadow_shield.py",
+      "class": "ShadowShield",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 543,
+          "expression": "POLL_S",
+          "literal_seconds": 15.0
+        },
+        {
+          "method": "run",
+          "line": 525,
+          "expression": "CACHE_YIELD_SECONDS",
+          "literal_seconds": 0.25
+        }
+      ],
+      "source_work_markers": [
+        "subprocess.run",
+        "subprocess.Popen",
+        "read_text"
+      ]
+    },
+    {
+      "name": "Shadow-Copy / Recovery Tamper Guard",
+      "source": "src/angerona/modules/shadowcopy_guard.py",
+      "class": "ShadowCopyGuardModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 272,
+          "expression": "self._POLL",
+          "literal_seconds": 2.0
+        },
+        {
+          "method": "run",
+          "line": 178,
+          "expression": "self._POLL",
+          "literal_seconds": 2.0
+        }
+      ],
+      "source_work_markers": [
+        "process_iter"
+      ]
+    },
+    {
+      "name": "SIEM Forwarder",
+      "source": "src/angerona/modules/siem_forwarder.py",
+      "class": "SIEMForwarderModule",
+      "default_enabled": false,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 497,
+          "expression": "self._POLL",
+          "literal_seconds": 3.0
+        },
+        {
+          "method": "run",
+          "line": 419,
+          "expression": "30",
+          "literal_seconds": 30
+        },
+        {
+          "method": "run",
+          "line": 435,
+          "expression": "30",
+          "literal_seconds": 30
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Smart Deception",
+      "source": "src/angerona/modules/smart_deception.py",
+      "class": "SmartDeception",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 3256,
+          "expression": "self.MONITOR_S",
+          "literal_seconds": 2.5
+        }
+      ],
+      "source_work_markers": [
+        "read_text",
+        "sqlite3.connect"
+      ]
+    },
+    {
+      "name": "SOAR Automation",
+      "source": "src/angerona/modules/soar.py",
+      "class": "SOARModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 174,
+          "expression": "5",
+          "literal_seconds": 5
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Active Response SOAR",
+      "source": "src/angerona/modules/soar_engine.py",
+      "class": "ActiveResponseSOAR",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 135,
+          "expression": "2",
+          "literal_seconds": 2
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Speculative Triage Pre-Warm",
+      "source": "src/angerona/modules/speculative_triage.py",
+      "class": "SpeculativeTriageModule",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 352,
+          "expression": "5.0",
+          "literal_seconds": 5.0
+        }
+      ],
+      "source_work_markers": [
+        ".subscribe("
+      ]
+    },
+    {
+      "name": "SSH Surface / Key / Tunnel Guard",
+      "source": "src/angerona/modules/ssh_surface_guard.py",
+      "class": "SSHSurfaceGuardModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 959,
+          "expression": "self._interval",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": [
+        ".subscribe("
+      ]
+    },
+    {
+      "name": "Storage Hygiene Enforcer",
+      "source": "src/angerona/modules/storage_hygiene.py",
+      "class": "StorageHygieneModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 8.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 447,
+          "expression": "self._INTERVAL",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": [
+        "read_text"
+      ]
+    },
+    {
+      "name": "Indirect Syscall Bridge",
+      "source": "src/angerona/modules/sys_bridge.py",
+      "class": "SysBridgeModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 237,
+          "expression": "60.0",
+          "literal_seconds": 60.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Sysmon Event Bridge",
+      "source": "src/angerona/modules/sysmon_listener.py",
+      "class": "SysmonListenerModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "_run_sysmon_loop",
+          "line": 1092,
+          "expression": "self._POLL_INTERVAL",
+          "literal_seconds": 2.0
+        },
+        {
+          "method": "_run_fallback_loop",
+          "line": 1174,
+          "expression": "self._FALLBACK_INTERVAL",
+          "literal_seconds": 5.0
+        },
+        {
+          "method": "_run_fallback_loop",
+          "line": 1164,
+          "expression": "30.0",
+          "literal_seconds": 30.0
+        }
+      ],
+      "source_work_markers": [
+        "process_iter",
+        "read_text"
+      ]
+    },
+    {
+      "name": "Temporal Tradecraft Correlator",
+      "source": "src/angerona/modules/temporal_tradecraft_correlator.py",
+      "class": "TemporalTradecraftCorrelatorModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 431,
+          "expression": "self._interval",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": [
+        ".subscribe("
+      ]
+    },
+    {
+      "name": "Removable-Media / USB Monitor",
+      "source": "src/angerona/modules/usb_monitor.py",
+      "class": "USBMonitorModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 445,
+          "expression": "self._POLL",
+          "literal_seconds": 4.0
+        },
+        {
+          "method": "run",
+          "line": 409,
+          "expression": "self._POLL",
+          "literal_seconds": 4.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "Watchdog Monitor",
+      "source": "src/angerona/modules/watchdog_monitor.py",
+      "class": "WatchdogMonitor",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 70,
+          "expression": "self.SWEEP_SECONDS",
+          "literal_seconds": 8.0
+        }
+      ],
+      "source_work_markers": []
+    },
+    {
+      "name": "WFP Controller",
+      "source": "src/angerona/modules/wfp_controller.py",
+      "class": "WFPControllerModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 672,
+          "expression": "self._SCAN_INTERVAL",
+          "literal_seconds": 30.0
+        }
+      ],
+      "source_work_markers": [
+        "net_connections"
+      ]
+    },
+    {
+      "name": "WLAN Monitor",
+      "source": "src/angerona/modules/wlan_monitor.py",
+      "class": "WLANMonitorModule",
+      "default_enabled": true,
+      "chill_policy": "live",
+      "chill_floor": 2.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 345,
+          "expression": "_POLL_INTERVAL",
+          "literal_seconds": 15.0
+        }
+      ],
+      "source_work_markers": [
+        "read_text"
+      ]
+    },
+    {
+      "name": "YARA Scanner",
+      "source": "src/angerona/modules/yara_scanner.py",
+      "class": "YaraScannerModule",
+      "default_enabled": true,
+      "chill_policy": "parked",
+      "chill_floor": 1.0,
+      "sleep_calls": [
+        {
+          "method": "run",
+          "line": 588,
+          "expression": "_scan_interval()",
+          "literal_seconds": null
+        }
+      ],
+      "source_work_markers": [
+        "read_text"
+      ]
+    }
+  ]
+}

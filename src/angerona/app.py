@@ -538,6 +538,11 @@ class AngeronaApp:
         responsive while modules import and start."""
         if self._startup_cancelled():
             return
+        from angerona.core.ollama_lifecycle import request_ollama_start
+        request_ollama_start(
+            self.config.ollama_host,
+            stop_event=getattr(self, "_shutdown_requested", None),
+        )
         from angerona.gui.animations import begin_loading
 
         token = begin_loading("Preparing protection services…")

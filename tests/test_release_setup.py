@@ -497,10 +497,11 @@ def test_posix_installer_is_local_user_scoped_and_has_safe_uninstall() -> None:
 
 def test_readme_has_a_visible_windows_install_section() -> None:
     text = (ROOT / "README.md").read_text(encoding="utf-8")
-    section = text.split("## 🚀 One-click Windows install", 1)[1].split("\n## ", 1)[0]
+    section = text.split("## Choose your installation", 1)[1].split("\n## ", 1)[0]
 
-    assert "Angerona-<version>" in section
-    assert "No Python or terminal is required" in section
+    assert "Angerona-<version>-win64.msix" in section
+    assert "SHA-256" in section and "publisher" in section
+    assert "no Python or terminal" in section
 
 
 def test_portable_release_installer_is_protected_upgrade_only() -> None:

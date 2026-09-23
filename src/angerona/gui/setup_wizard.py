@@ -120,7 +120,8 @@ STEPS: tuple[Step, ...] = (
         "Welcome to Angerona Full Setup",
         "Configure the complete supported product in one pass. Nothing is sent "
         "off this device unless you explicitly enable an option marked as network "
-        "or cloud. Changes are reviewed and saved only when you press Finish.",
+        "or cloud. Settings are reviewed and saved when you press Finish. "
+        "Explicit installation and service-configuration actions take effect when confirmed.",
         (
             Field("profile", "_profile", "Starting profile", options=tuple(SETUP_PROFILES)),
             Field("action", "apply_profile", "Apply selected profile"),
@@ -160,6 +161,19 @@ STEPS: tuple[Step, ...] = (
             Field("text", "ai_provider_order", "AI priority", "anthropic,gemini,groq,openai,openrouter,ollama",
                   note="Comma-separated. Ollama remains available without a cloud key."),
             Field("action", "check_ollama", "Check local Ollama availability"),
+        ),
+    ),
+    Step(
+        "Optional Analysis Lab",
+        "VMware lets Analysis Lab inspect a copy of source in an isolated virtual "
+        "machine using fixed Python security and secret checks. It is optional: "
+        "monitoring, autonomous defense, and Ollama work without it. It needs an "
+        "extra download, disk space, RAM, and hardware virtualization, and runs "
+        "only when you start the Lab. The Lab currently supports Windows; skip "
+        "on macOS or Linux. Installation alone does not establish Lab readiness.",
+        (
+            Field("action", "setup_analysis_lab", "Set up Analysis Lab", platforms=("win32",),
+                  note="Skip is the default. No silent download or installation. Broadcom account/compliance approval may be required."),
         ),
     ),
     Step(
@@ -972,6 +986,12 @@ if _HAVE_QT:
             elif action == "check_ollama":
                 found = shutil.which("ollama")
                 QMessageBox.information(self, "Ollama", "Ollama is installed and available." if found else "Ollama was not found. ARIA can use its deterministic local fallback until Ollama is installed.")
+            elif action == "setup_analysis_lab":
+                from angerona.gui.analysis_vmware_setup import VMwareSetupDialog
+
+                dialog = VMwareSetupDialog(self)
+                dialog.exec()
+                dialog.deleteLater()
             elif action == "reset_orb":
                 self._reset_orb = True
                 self._progress.setText("Globe position will reset when setup is applied.")
@@ -1041,6 +1061,11 @@ if _HAVE_QT:
             self._back.setEnabled(index > 0)
             self._next.setText("Finish and verify ✓" if index == len(STEPS) - 1 else "Next →")
             self._skip.setVisible(index not in (0, len(STEPS) - 1))
+            lab_step = STEPS[index].title == "Optional Analysis Lab"
+            self._skip.setDefault(lab_step)
+            self._next.setDefault(not lab_step)
+            if lab_step:
+                self._skip.setFocus()
 
         def _finish(self) -> None:
             values, secret_updates, providers = self._staged()

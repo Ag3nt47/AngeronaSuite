@@ -324,7 +324,7 @@ def test_cancelled_review_does_not_change_state(tmp_path):
 
 
 def test_no_execution_capability_or_backend_fallback():
-    assert "no verified disposable-VM" in catalog.analysis_readiness()
+    assert "does not enable imported tools" in catalog.analysis_readiness()
     assert not hasattr(catalog.GitHubToolCatalog, "run")
     assert not hasattr(catalog.GitHubToolCatalog, "execute")
 

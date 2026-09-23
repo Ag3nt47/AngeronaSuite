@@ -26,6 +26,7 @@ case "$OS" in
         DATA_DIR=${ANGERONA_DATA:-$HOME/Library/Application Support/Angerona}
         RUNTIME_DIR=$HOME/Library/Application Support/Angerona/runtime
         rm -f -- "$HOME/Library/LaunchAgents/org.angerona.security-suite.plist"
+        rm -f -- "$HOME/Applications/Angerona.command"
         RELEASE_APP=$HOME/Applications/Angerona.app
         ;;
     *) printf 'Unsupported operating system: %s\n' "$OS" >&2; exit 1 ;;

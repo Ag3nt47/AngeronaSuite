@@ -47,6 +47,31 @@ os.environ.setdefault(
 from angerona.core.data_paths import configure_runtime_environment  # noqa: E402
 configure_runtime_environment()
 
+# Production app startup and explicit AI self-tests may now prepare Ollama.
+# This offline harness intentionally never launches services or sensors. Keep
+# the actual inventory/readiness checks and their existing expected-skip policy,
+# but make automatic startup return an honest unavailable result locally.
+from angerona.core import ollama_lifecycle as _offline_ollama_lifecycle  # noqa: E402
+
+
+def _offline_ollama_start(*_args, progress=None, **_kwargs):
+    status = _offline_ollama_lifecycle.OllamaStartupStatus(
+        "failed", "Offline self-check", 0,
+        "Native Ollama startup is disabled by the offline self-check harness.",
+    )
+    if progress is not None:
+        progress(status)
+    return status
+
+
+def _forbid_native_ollama_spawn(*_args, **_kwargs):
+    raise AssertionError("The offline self-check attempted to launch real Ollama")
+
+
+_offline_ollama_lifecycle.request_ollama_start = _offline_ollama_start
+_offline_ollama_lifecycle.ensure_ollama_service = _offline_ollama_start
+_offline_ollama_lifecycle._spawn_ollama_service = _forbid_native_ollama_spawn
+
 PASS, FAIL = "PASS", "FAIL"
 rows: list[tuple[str, str, str]] = []
 

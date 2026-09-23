@@ -8,7 +8,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import shiboken6
-from PySide6.QtCore import QCoreApplication, QEvent, QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QTimer, Signal
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QWidget
 
@@ -171,6 +171,12 @@ def test_snapshot_drops_closed_owner_and_stale_generation():
 
 
 class _SecurityHarness(QWidget):
+    _security_event_wake = Signal()
+    _init_security_event_reader = MainWindow._init_security_event_reader
+    _queue_security_event_wake = MainWindow._queue_security_event_wake
+    _handle_security_event_wake = MainWindow._handle_security_event_wake
+    _request_security_snapshot = MainWindow._request_security_snapshot
+    _security_snapshot_status = MainWindow._security_snapshot_status
     _check_threat_animation = MainWindow._check_threat_animation
     _prepare_security_snapshot = MainWindow._prepare_security_snapshot
     _apply_security_snapshot = MainWindow._apply_security_snapshot
@@ -189,10 +195,7 @@ class _SecurityHarness(QWidget):
         self._handle_usb_approval_events = lambda events: None
         self._update_threat_intel_pulse = lambda: None
         self._notify_critical = lambda events: None
-        self._security_reader = AsyncSnapshot(
-            self, self._prepare_security_snapshot, self._apply_security_snapshot,
-            name="SecurityTestReader",
-        )
+        self._init_security_event_reader()
 
 
 def test_security_wake_delivers_high_arriving_during_busy_reader(monkeypatch):

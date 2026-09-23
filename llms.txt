@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.13.0
-Date: 2026-09-21
+Date: 2026-09-23
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -22,7 +22,96 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST MAINTENANCE (2026-09-21)
+## LATEST MAINTENANCE (2026-09-23 — three review rounds)
+
+- Canonical combined record: analysis/deep-review-20260923/README.md. Product
+  remains v1.13.0 with 84 catalog capabilities; no new module-count inflation.
+  All 84 entries are accounted for by the final offline inventory: 66 module
+  passes, 18 explicit optional/platform skips, plus one event-pipeline pass.
+  Existing machine usage excludes unsupported/unused integrations from active
+  counts while preserving expected failures and hotplug protection.
+- Detection Runtime skips normalization/identity retention when no evaluator is
+  configured and bounds cumulative nested-input expansion before serialization.
+  Fixture medians: 3,000 idle callbacks 739.411→42.840 ms (94% less); oversized input
+  rejection 216.304→0.140 ms and 8,212.1→7.4 KiB peak traced allocation. Ordinary
+  configured normalization cost increased about 40 microseconds/event (22%) in
+  that run. Shared health provenance reuses identical path resolution (65% less
+  fixture time) without extending source-trust cache lifetime. These are
+  component benchmarks, not whole-PC or multi-day memory measurements.
+- GUI security wake admission spans the complete asynchronous read. In a
+  blocked-reader fixture 1,001 Qt wakes become 1; all 1,001 retained serious events
+  are classified in 2 reads by the same worker. No new polling timer or worker.
+  INFO-only traffic does not start the security reader; failures preserve the
+  cursor and teardown refuses late callbacks/results.
+- Ollama service preparation is automatic at application launch, AI Triage
+  restart and explicit self-test, with asynchronous percentage/stage display.
+  Startup validates the exact loopback listener/image and sanitized child
+  environment; HTTP and attestation use the same pinned numeric endpoint.
+  100% proves service/inventory readiness, not approved model identity or
+  inference. No model is downloaded, loaded or approved by startup.
+- Native Windows cold start reached 100% in 16.44 seconds with zero resident
+  models; warm and Chill service checks also passed. Native testing fixed a
+  Windows refusal timeout and stat/fstat timestamp mismatch. Cancellation and
+  deadline are rechecked before spawning. macOS/Linux daemon launch remains
+  fixture-covered, not natively accepted on this Windows host. POSIX startup
+  requires known root-owned images/protected parents; user-owned or symlinked
+  Homebrew/application paths may be refused.
+- Elevated Windows Protect startup uses only the same user's linked limited
+  medium token, checks the suspended child's token/image before resumption,
+  and has no administrator fallback. Only validated OLLAMA_MODELS is recovered
+  from the user's environment. Inert policy/boundary tests pass; actual elevated
+  native process creation remains untested. See ollama-startup.md.
+- AI Triage skips narrative requests if telemetry neutralization fails and
+  explicitly labels narrative output without response authority. The real
+  Combat worker quarantined an inert exact-hash artifact, verified/journaled
+  the result and restored exact bytes through Undo with inference unavailable.
+  Forged AI/remote/prose claims produced no action. This verifies an existing
+  deterministic response boundary, not host-wide detection efficacy.
+- Fixed Memory Time-Machine cancellation/ring ownership, Lab final-result queue
+  races, semantic-only LSASS/ShadowCopy active-threat assertions, exact-address
+  Ollama attestation and ambiguous VMware service paths. Exact dangerous-command
+  evidence remains active even when incomplete identity denies response.
+- Analysis Lab GUI, pinned Bandit/Gitleaks catalog, appliance preparation,
+  bounded supervision and redacted reports/history are implemented. VMX bytes
+  and identity stay sealed through supervision/receipt acceptance. Native Lab
+  acceptance FAILED on Workstation 25.0.1: VMware cannot open the generated VMX
+  under the deny-write/delete seal. Read-only/direct bounded experiments also
+  failed. The seal remains; no analyzer receipt was accepted and Run stays gated.
+- With explicit user approval, VMAuthdService is now Manual/Running. That solved
+  the earlier service prerequisite, not native Lab compatibility. Optional Full
+  Setup explains VMware's purpose/cost/Skip, opens Broadcom's account/compliance
+  download portal, verifies a user-selected vendor installer and retains its
+  custody through interactive UAC, then offers separately confirmed Manual
+  service setup. Installation/service startup never grants Lab readiness. A real
+  selected VMware 25 installer passed native vendor/product/custody/digest verification;
+  the installer itself was not launched.
+- macOS 14+ has one source launcher for Intel/Apple Silicon/Rosetta. Intel builds
+  pinned cryptography 50 using Xcode/Rust/OpenSSL; it is not a universal binary.
+  Linux x86_64 source setup checks Qt libraries and actual bounded offscreen
+  QApplication rendering before publishing launchers. New staged runtimes and
+  escaped paths preserve working installations on failure. Source-runtime locks
+  are complete; older full POSIX release-build locks still have dependency gaps.
+- Native Ubuntu, Apple Silicon and Intel CI lanes are configured. Their results
+  and visible native desktops were not verified locally; no packaged-platform
+  acceptance claim is made. See native-installers.md and native-acceptance.md.
+- The visionary comparison cites Wazuh, osquery, Velociraptor and Falco primary
+  material without claiming parity. Neutralizer failure handling and no-model
+  response proof were applied. Combat overload reporting, queue-age metrics,
+  work-triggered analytic waits, shared AI admission and telemetry dependency
+  planning remain proposals; GUI coalescing is a separate implemented change.
+- README now presents description/screenshots before What's new and links
+  historical changes to their existing evidence. Raw aggregate pytest result:
+  3,884 passed, 19 skipped, 3 stale fixture/documentation assertion failures in
+  1,205.62 seconds. Corrected publication group: 58 passes; corrected deployment plus
+  frozen integration group: 96 passes/1 expected skip; corrected release/setup
+  group: 22 passes. Final late-change gates are recorded in bugs-round3.md.
+  Case-by-case reconciliation covers all 3,991 collected cases: 3,972 latest
+  passes, 19 skips, no uncovered cases or unresolved failures. Evidence:
+  analysis/deep-review-20260923/pytest-reconciled-round3.json.
+  Do not present overlapping
+  reruns as one all-green full-suite execution.
+
+## PRIOR MAINTENANCE (2026-09-21)
 
 - All 84 discovered capabilities received a source-level review and isolated
   self-test inventory. Shared module usage, lifecycle and counts cover the
@@ -67,7 +156,8 @@ kernel component is a product capability.
   with visible retry status. These snapshots never authorize response actions.
 - Evidence and deployment limits: analysis/runtime-responsiveness-2026-09-07.md.
   Product stays v1.13.0 / 84 capabilities; restart the source application to load
-  the changes. Existing Analysis Lab work remains a separate unpublished update.
+  the changes. At this historical checkpoint, Analysis Lab was a separate
+  unpublished update; the current status is recorded above.
 
 ## PRIOR MAINTENANCE (2026-09-05)
 
@@ -103,7 +193,7 @@ kernel component is a product capability.
   response. General corruption and containment histories remain operator-recovery cases.
 - Evidence: analysis/response-readiness-2026-09-05.md.
 
-## GITHUB SOURCE REVIEW (2026-09-05)
+## GITHUB SOURCE REVIEW / ANALYSIS LAB (updated 2026-09-23)
 
 - Red Team -> GitHub Tools now resolves public repository revisions, imports pinned
   ZIP snapshots and provides bounded text preview, digest checks, review labels
@@ -111,9 +201,18 @@ kernel component is a product capability.
 - Acquisition requires a non-administrator session. Downloads use fixed GitHub
   endpoints without ambient credentials or proxies; imports and previews run on
   bounded background workers. Storage has a single-writer OS lease.
-- docs/design/red-team-github-tool-library.md records delivered source review and
-  remaining VM execution/report work. Analysis Lab is unavailable: no verified
-  disposable-VM backend or approved executable catalog ships in this release.
+- Analysis Lab now implements a diskless VMware appliance, pinned Bandit 1.9.4 /
+  Gitleaks 8.30.1, bounded local text copies, process supervision, redacted reports,
+  history/export and interrupted-job cleanup. See core/tool_analysis_jobs.py,
+  core/analysis_vmware.py and gui/analysis_lab.py. Imported source is never an adapter.
+- Native guest acceptance failed on tested Workstation 25.0.1 after the approved
+  service setup changed VMAuthdService to Manual/Running. VMware cannot open the
+  generated VMX under the required deny-write/delete seal; readonly/direct tests
+  did not resolve it. Runtime preparation is not a native analyzer pass. Run
+  remains gated, stale readiness is retired before rechecks, and the custody
+  requirement is not relaxed. Current evidence:
+  analysis/deep-review-20260923/native-acceptance.md. The earlier
+  analysis/vmware-analysis-lab-2026-09-05.md is historical implementation evidence.
 - The existing Sandbox Editor edits copies only; the installed-module self-test
   subprocess does not supply an OS security boundary for imported programs.
 - Runtime stays at v1.13.0 / 84 capabilities. Imported content cannot define an

@@ -1,0 +1,19 @@
+{
+  "before": {
+    "unconfigured_3000_events_median_ms": 739.411,
+    "unconfigured_retained_identity_entries": 6000,
+    "configured_1000_normalizations_median_ms": 177.837,
+    "oversize_nested_median_ms": 216.304,
+    "oversize_nested_peak_kib": 8212.1,
+    "degraded_health_median_ms": 5.2926
+  },
+  "after": {
+    "unconfigured_3000_events_median_ms": 42.84,
+    "unconfigured_retained_identity_entries": 0,
+    "configured_1000_normalizations_median_ms": 217.395,
+    "oversize_nested_median_ms": 0.14,
+    "oversize_nested_peak_kib": 7.4,
+    "degraded_health_median_ms": 1.8621
+  },
+  "accepted_fixture_identities_equal": 128
+}

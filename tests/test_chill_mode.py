@@ -136,17 +136,21 @@ def test_chill_forces_ollama_immediate_release(monkeypatch) -> None:
     )))
     assert module._host == "http://127.0.0.1:11434"
     assert module._model == "environment-model:latest"
-    assert module._model_is_installed("llama3", ["llama3:8b"])
+    assert not module._model_is_installed("llama3", ["llama3:8b"])
+    assert module._model_is_installed("llama3", ["llama3:latest"])
     assert module._model_is_installed("llama3:8b", ["llama3:8b"])
     assert not module._model_is_installed("llama3:70b", ["llama3:8b"])
     module._ask = lambda _prompt: (_ for _ in ()).throw(
         AssertionError("self-test must never run inference")
     )
     module._ping_ollama = lambda: (_ for _ in ()).throw(
-        AssertionError("Chill self-test must not wake or probe local AI")
+        AssertionError("Chill self-test must use bounded service preparation, not model probing")
     )
+    preparations = []
+    module._ensure_ollama = lambda **kwargs: preparations.append(kwargs) or True
     ok, detail = module.self_test()
-    assert ok and "intentionally asleep" in detail
+    assert ok and "service ready (100%)" in detail and "model remains asleep" in detail
+    assert preparations == [{"for_selftest": True}]
 
     monkeypatch.delenv("ANGERONA_CHILL_ACTIVE")
     monkeypatch.delenv("ANGERONA_MODEL")
@@ -158,6 +162,7 @@ def test_chill_forces_ollama_immediate_release(monkeypatch) -> None:
     ok, detail = module.self_test()
     assert ok and "operator-model:latest" in detail and "attested" in detail
     module._ping_ollama = lambda: False
+    module._ensure_ollama = lambda **_kwargs: False
     ok, detail = module.self_test()
     assert not ok and "not installed" in detail
     assert module.selftest_auto_repair is False

@@ -47,6 +47,11 @@ def test_deploy_refuses_nested_destination_before_mirror():
 
 
 def test_deploy_refuses_existing_unowned_destination(tmp_path):
+    # Keep source/destination siblings even when basetemp is under ROOT/.tmp,
+    # so this case reaches the ownership gate instead of the overlap gate.
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "README.md").write_text("inert staging fixture", encoding="utf-8")
     destination = tmp_path / "unowned"
     destination.mkdir()
     sentinel = destination / "keep.txt"
@@ -54,7 +59,7 @@ def test_deploy_refuses_existing_unowned_destination(tmp_path):
 
     result = _run(
         "-Stage",
-        str(ROOT),
+        str(stage),
         "-Home",
         str(destination),
         "-ConfirmMirror",

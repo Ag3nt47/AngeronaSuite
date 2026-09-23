@@ -50,8 +50,8 @@ class AITriageModule(BaseModule):
     version = "1.13.0"
     supported_platforms = SUPPORTED_PLATFORMS
     capability_mode = "detect"
-    # Restarting this worker cannot install a model or start the external
-    # Ollama service. Keep such failures out of the GUI's automatic restart.
+    # Restarting prepares the service, but cannot install or approve a model.
+    # Keep model-policy failures out of the GUI's automatic repair restarts.
     selftest_auto_repair = False
 
     # ── Circuit breaker constants ────────────────────────────────────────────
@@ -149,7 +149,7 @@ class AITriageModule(BaseModule):
         """Send a prompt to Ollama, respecting the circuit breaker.
 
         Returns the model's response, or None if the circuit is open / request
-        fails.  A failure while the circuit is CLOSED trips it and emits HIGH.
+        fails. A transport failure opens the circuit and emits a health notice.
         """
         stop_event = self.generation_stop_event()
         if stop_event.is_set():
@@ -168,7 +168,12 @@ class AITriageModule(BaseModule):
             from angerona.engines.ai_guardrail import neutralize_telemetry
             user_content = neutralize_telemetry(prompt)
         except Exception:
-            user_content = prompt
+            # This optional narrative must never bypass its telemetry boundary
+            # when a sanitizer fails. Detector evidence remains on the bus for
+            # deterministic response; do not include hostile input in the error.
+            self.last_error = "AI telemetry protection unavailable; request skipped"
+            self.set_health(20, self.last_error)
+            return None
 
         payload = json.dumps({
             "model": self._model,
@@ -301,20 +306,38 @@ class AITriageModule(BaseModule):
         self.last_error = detail
         return False
 
+    def _ensure_ollama(self, *, for_selftest: bool = False) -> bool:
+        """Prepare the daemon only on explicit lifecycle operations, not idle health."""
+        from angerona.core.ollama_lifecycle import ensure_ollama_service
+
+        self._sync_config()
+        # An explicit test is allowed for a parked/stopped module; its retired
+        # worker token must not cancel this separately bounded user operation.
+        stop = threading.Event() if for_selftest else self.generation_stop_event()
+
+        def progress(status):
+            if not stop.is_set():
+                self.set_health(
+                    min(self.health, 70),
+                    f"Ollama service {status.percent}% — {status.stage}: {status.detail}",
+                )
+
+        status = ensure_ollama_service(
+            self._host, stop_event=stop, progress=progress, timeout=30.0,
+        )
+        return bool(status.daemon_ready and not stop.is_set())
+
     @staticmethod
     def _model_is_installed(configured_model: str, installed_models) -> bool:
-        """Match explicit tags exactly; allow family matching only when untagged."""
+        """Match the exact tag Ollama will use (an omitted tag means latest)."""
         configured = str(configured_model or "").strip().casefold()
         if not configured:
             return False
-        exact_tag = ":" in configured
-        wanted_family = configured.split(":", 1)[0]
+        wanted = configured if ":" in configured else configured + ":latest"
         for installed_model in installed_models:
             name = str(installed_model or "").strip().casefold()
-            if (
-                (exact_tag and name == configured)
-                or (not exact_tag and name.split(":", 1)[0] == wanted_family)
-            ):
+            actual = name if ":" in name else name + ":latest"
+            if actual == wanted:
                 return True
         return False
 
@@ -370,6 +393,7 @@ class AITriageModule(BaseModule):
         helper_stop = threading.Event()
         pinger: Optional[threading.Thread] = None
         try:
+            self._ensure_ollama()
             self._check_health()
             if generation_stop.is_set():
                 return
@@ -452,10 +476,12 @@ class AITriageModule(BaseModule):
                             Severity.INFO,
                             source=ev.module,
                             speculative_frame_reused=reused_speculative_frame,
+                            origin="ai_narrative",
+                            response_authorized=False,
                         )
                 # If verdict is None because CB is open, the event is already on the
                 # bus being processed by SOAR, attack_tracker, etc.  The CB trip
-                # itself already emitted a HIGH alert — no further action needed.
+                # itself already emitted a health notice — no further action needed.
             with self._lifecycle_lock:
                 if self.stopping:
                     return
@@ -512,17 +538,24 @@ class AITriageModule(BaseModule):
 
     def self_test(self) -> tuple[bool, str]:
         # A health check must never load a multi-gigabyte model. In Chill the
-        # worker is intentionally dormant, so even probing the daemon would be
-        # needless background activity. Full Mode uses /api/tags, which checks
-        # daemon + configured-model readiness without running inference.
+        # worker is intentionally dormant. An explicit self-test now prepares
+        # the daemon as requested, while leaving the model unloaded. Idle
+        # health checks continue to use _check_health and never start services.
         self._sync_config()
         if chill_active() or bool(getattr(self, "_chill_paused", False)):
-            return True, "local AI intentionally asleep in Chill Mode (wakes on demand)"
+            if not self._ensure_ollama(for_selftest=True):
+                return False, "Ollama service startup incomplete; see local AI startup status"
+            return True, "Ollama service ready (100%); model remains asleep in Chill Mode"
         if not self._ping_ollama():
+            if self._ensure_ollama(for_selftest=True) and self._ping_ollama():
+                return self._selftest_attested_model()
             return False, self._ollama_readiness_error or (
                 f"Ollama daemon unreachable or configured model "
                 f"'{self._model}' is not installed"
             )
+        return self._selftest_attested_model()
+
+    def _selftest_attested_model(self) -> tuple[bool, str]:
         if not self._attest_model():
             return False, (
                 f"Ollama ready, but model {self._model} has no fresh approved "

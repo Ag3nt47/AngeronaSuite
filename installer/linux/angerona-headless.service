@@ -9,7 +9,7 @@ StartLimitBurst=3
 Type=simple
 ExecStart=@PYTHON@ -m angerona --headless
 WorkingDirectory=@WORKDIR@
-Environment=ANGERONA_DATA=@DATA_DIR@
+Environment=@ENV_DATA_DIR@
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30

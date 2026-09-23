@@ -1,0 +1,146 @@
+[
+  {
+    "module": "angerona.core.action_policy",
+    "status": "PASS",
+    "detail": "OK - deterministic shadow evaluation; preview remains non-authoritative.",
+    "seconds": 0.047
+  },
+  {
+    "module": "angerona.core.alert_ack",
+    "status": "PASS",
+    "detail": "ack suppresses alert + identical repeats, filter + revert verified",
+    "seconds": 0.125
+  },
+  {
+    "module": "angerona.core.angerona_score",
+    "status": "PASS",
+    "detail": "score: quiet=88/SECURE, attack=0/CRITICAL \u2192 'Contain the top Cortex entity and review...'",
+    "seconds": 0.032
+  },
+  {
+    "module": "angerona.core.copilot",
+    "status": "PASS",
+    "detail": "copilot verified: top-threats, why-critical (chain), entity activity, coverage",
+    "seconds": 0.219
+  },
+  {
+    "module": "angerona.core.cortex",
+    "status": "PASS",
+    "detail": "fusion verified: proc:42=65.5 (3 modules/3 tactics) > lone HIGH proc:7=16.8 > lone MEDIUM proc:99=8.4; hottest=proc:42",
+    "seconds": 0.032
+  },
+  {
+    "module": "angerona.core.cve_fix_advisor",
+    "status": "PASS",
+    "detail": "JSON parse + normalize + destructive and containment guardrails verified",
+    "seconds": 0.063
+  },
+  {
+    "module": "angerona.core.cve_ignore",
+    "status": "PASS",
+    "detail": "typed expiry + ignore/revert/history + active filtering verified",
+    "seconds": 0.062
+  },
+  {
+    "module": "angerona.core.d3fend_map",
+    "status": "PASS",
+    "detail": "D3FEND map verified: 19 techniques, 88% countermeasures implemented; T1003.001\u2192Credential Hardening / Local A",
+    "seconds": 0.016
+  },
+  {
+    "module": "angerona.core.entropy_pool",
+    "status": "PASS",
+    "detail": "OK \u2014 entropy primitive matches reference (uniform\u21928.0, constant\u21920.0) and batch compute scores every path.",
+    "seconds": 0.094
+  },
+  {
+    "module": "angerona.core.host_adaptation",
+    "status": "PASS",
+    "detail": "OK - integrity stores, exceptions, and context matching are healthy.",
+    "seconds": 0.422
+  },
+  {
+    "module": "angerona.core.incident_timeline",
+    "status": "PASS",
+    "detail": "kill-chain reconstructed: Execution \u2192 Credential Access \u2192 Command and Control \u2192 Impact (100% progress, sev=CRITICAL)",
+    "seconds": 0.047
+  },
+  {
+    "module": "angerona.core.ir_bundle",
+    "status": "PASS",
+    "detail": "privacy-bounded IR bundle built with 5 members (ir_triage_20260923-083110-ed23329d.zip)",
+    "seconds": 6.047
+  },
+  {
+    "module": "angerona.core.measured_boot",
+    "status": "PASS",
+    "detail": "strict posture parser preserves the TPM hardware-attestation boundary",
+    "seconds": 0.032
+  },
+  {
+    "module": "angerona.core.network_trust",
+    "status": "PASS",
+    "detail": "zero-trust network evaluation and privacy boundaries verified",
+    "seconds": 0.078
+  },
+  {
+    "module": "angerona.core.ocsf_export",
+    "status": "PASS",
+    "detail": "Constrained OCSF 1.8 Detection Finding mapping verified (class 2004, typed observables resolving to evidence paths)",
+    "seconds": 0.031
+  },
+  {
+    "module": "angerona.core.personal_sentinel_authority",
+    "status": "PASS",
+    "detail": "signed private CAS authority and nonce-bound time receipt verified offline",
+    "seconds": 0.375
+  },
+  {
+    "module": "angerona.core.personal_sentinel_gateway",
+    "status": "PASS",
+    "detail": "pinned, nonce-bound, fail-closed gateway attestation verified offline",
+    "seconds": 0.0
+  },
+  {
+    "module": "angerona.core.purple_loop",
+    "status": "PASS",
+    "detail": "purple-loop verified: 5 gaps, 5 review-gated proposals (coverage 78%)",
+    "seconds": 0.094
+  },
+  {
+    "module": "angerona.core.report_attest",
+    "status": "PASS",
+    "detail": "OK \u2014 sign/verify round-trips through JSON, a one-flag tamper breaks the HMAC, and unsigned reports are classified.",
+    "seconds": 0.0
+  },
+  {
+    "module": "angerona.core.self_installer",
+    "status": "PASS",
+    "detail": "OK - 6 capabilities, 10 approved packages",
+    "seconds": 0.297
+  },
+  {
+    "module": "angerona.core.self_ioc",
+    "status": "PASS",
+    "detail": "self-IOC registry OK (exact=True, neg=True, suffix=True, expiry=True)",
+    "seconds": 0.047
+  },
+  {
+    "module": "angerona.core.sigma_engine",
+    "status": "PASS",
+    "detail": "Constrained Sigma subset verified: selection + modifiers + 'and not filter' + list-OR + explicit admission receipts",
+    "seconds": 0.016
+  },
+  {
+    "module": "angerona.core.telemetry_contracts",
+    "status": "PASS",
+    "detail": "bounded contracts, opaque IDs, exact echoes, deadlines, and false-positive controls passed",
+    "seconds": 0.016
+  },
+  {
+    "module": "angerona.core.trusted_time",
+    "status": "PASS",
+    "detail": "wall/monotonic continuity and fail-closed witness boundary verified",
+    "seconds": 0.016
+  }
+]

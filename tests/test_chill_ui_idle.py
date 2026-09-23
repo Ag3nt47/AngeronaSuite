@@ -51,6 +51,10 @@ def test_high_priority_wake_is_coalesced_and_info_does_not_wake() -> None:
     calls: list[str] = []
     harness = SimpleNamespace(
         _security_wake_pending=threading.Event(),
+        _security_wake_closed=threading.Event(),
+        _security_wake_lock=threading.Lock(),
+        _security_wake_again=False,
+        _security_reader=SimpleNamespace(busy=False),
         _security_event_wake=_Signal(),
         _check_threat_animation=lambda: calls.append("checked"),
     )
@@ -68,6 +72,10 @@ def test_high_priority_wake_is_coalesced_and_info_does_not_wake() -> None:
 
     MainWindow._handle_security_event_wake(harness)
     assert calls == ["checked"]
+    # A dispatch alone no longer reopens the gate while classification runs.
+    assert harness._security_wake_pending.is_set()
+    harness._security_wake_again = False  # the simulated read captured the burst
+    MainWindow._security_snapshot_status(harness, "current")
     assert not harness._security_wake_pending.is_set()
 
 

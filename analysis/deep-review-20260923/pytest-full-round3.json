@@ -1,0 +1,140 @@
+{
+  "scope": "Original full run, before subsequent corrections and concurrent test additions. Narrow corrections are recorded separately.",
+  "tests": 3906,
+  "passed": 3884,
+  "failed": 3,
+  "skipped": 19,
+  "seconds": 1205.046,
+  "failures": [
+    "tests.test_cycle26_publication_snapshot::test_git_boundary_uses_absolute_git_literal_argv_and_fresh_environment",
+    "tests.test_finalize_deploy_safety::test_deploy_refuses_existing_unowned_destination",
+    "tests.test_release_setup::test_readme_has_a_visible_windows_install_section"
+  ],
+  "slowest_call_phases": [
+    {
+      "seconds": 37.19,
+      "phase": "call",
+      "test": "tests/test_cycle34_round1_remediation.py::test_129th_binding_is_rejected_before_state_registry_or_runtime_change"
+    },
+    {
+      "seconds": 25.51,
+      "phase": "call",
+      "test": "tests/test_context_info_tabs.py::test_settings_tabs_open_their_registered_code_in_sandbox"
+    },
+    {
+      "seconds": 16.75,
+      "phase": "call",
+      "test": "tests/test_v12_integrations.py::test_exporters_drain_before_staging_when_capacity_recovers"
+    },
+    {
+      "seconds": 12.57,
+      "phase": "call",
+      "test": "tests/test_cycle7_round2_fleet_remediation.py::test_partial_requests_repeatably_drain_and_release_replay_ledger"
+    },
+    {
+      "seconds": 12.3,
+      "phase": "call",
+      "test": "tests/test_cycle26_publication_snapshot.py::test_publisher_rechecks_clean_snapshot_after_network_verification"
+    },
+    {
+      "seconds": 10.67,
+      "phase": "call",
+      "test": "tests/test_ollama_transport_inventory.py::test_every_local_ollama_transport_is_attested"
+    },
+    {
+      "seconds": 10.31,
+      "phase": "call",
+      "test": "tests/test_cycle7_round2_fleet_remediation.py::test_shutdown_covers_handler_setup_race"
+    },
+    {
+      "seconds": 10.1,
+      "phase": "call",
+      "test": "tests/test_property_fuzz_boundaries.py::test_fleet_authenticator_denies_malformed_inputs_without_exception"
+    },
+    {
+      "seconds": 9.07,
+      "phase": "call",
+      "test": "tests/test_cycle27_redteam_simulation_repair.py::test_safe_end_to_end_campaign_validates_all_13_pipeline_canaries"
+    },
+    {
+      "seconds": 8.43,
+      "phase": "call",
+      "test": "tests/test_cycle27_round1_high_c.py::test_smart_deception_restage_bounds_evidence_and_logical_slot_alerts"
+    },
+    {
+      "seconds": 8.04,
+      "phase": "call",
+      "test": "tests/test_property_fuzz_boundaries.py::test_sensor_event_mutations_normalize_or_raise_documented_error"
+    },
+    {
+      "seconds": 6.54,
+      "phase": "call",
+      "test": "tests/test_cycle27_remaining_a_remediation.py::test_combat_append_reuses_authenticated_terminal_checkpoint"
+    },
+    {
+      "seconds": 6.42,
+      "phase": "call",
+      "test": "tests/test_host_adaptation.py::test_rollback_requires_fresh_canonical_firewall_postcondition"
+    },
+    {
+      "seconds": 6.27,
+      "phase": "call",
+      "test": "tests/test_release_setup.py::test_release_powershell_and_every_workflow_pwsh_block_parse"
+    },
+    {
+      "seconds": 5.71,
+      "phase": "call",
+      "test": "tests/test_cycle29_judgment_receipt_gate.py::test_isolated_child_returns_authentic_complete_bypass_receipt"
+    },
+    {
+      "seconds": 5.64,
+      "phase": "call",
+      "test": "tests/test_cycle10_fleet_ingestion_api.py::test_concurrent_ingestion_preserves_counts_and_device_binding"
+    },
+    {
+      "seconds": 5.57,
+      "phase": "call",
+      "test": "tests/test_cycle27_high_c_fifth_remediation.py::test_ransomware_tail_swap_is_fail_visible_then_retried_without_mtime_gate"
+    },
+    {
+      "seconds": 5.53,
+      "phase": "call",
+      "test": "tests/test_v12_round2_performance.py::test_remote_bridge_fragmented_frame_assembly_is_exact"
+    },
+    {
+      "seconds": 4.74,
+      "phase": "call",
+      "test": "tests/test_cycle27_high_c_fifth_remediation.py::test_deception_alias_topology_degradation_survives_restart"
+    },
+    {
+      "seconds": 4.34,
+      "phase": "call",
+      "test": "tests/test_operations_center.py::test_enterprise_programs_are_local_bounded_and_fail_closed"
+    },
+    {
+      "seconds": 4.32,
+      "phase": "call",
+      "test": "tests/test_cycle26_publication_snapshot.py::test_late_local_config_mutation_fails_before_fetch_or_push"
+    },
+    {
+      "seconds": 4.1,
+      "phase": "call",
+      "test": "tests/test_v12_durable_outbox.py::test_outbox_capacity_and_authenticated_rows_fail_closed"
+    },
+    {
+      "seconds": 3.97,
+      "phase": "call",
+      "test": "tests/test_cycle27_high_c_fifth_remediation.py::test_deception_authority_deletion_and_paired_rollback_fail_closed"
+    },
+    {
+      "seconds": 3.71,
+      "phase": "call",
+      "test": "tests/test_cycle27_high_c_sixth_remediation.py::test_ransomware_suffix_only_and_strided_encryption_are_scored"
+    },
+    {
+      "seconds": 3.7,
+      "phase": "call",
+      "test": "tests/test_cycle30_evolution_history.py::test_concurrent_history_writers_preserve_every_receipt"
+    }
+  ]
+}

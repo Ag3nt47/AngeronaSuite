@@ -123,7 +123,7 @@ def test_red_team_includes_source_library_and_preserves_editor(tmp_path):
         assert not dialog.github_tools.run_button.isEnabled()
         assert dialog.github_tools._catalog is None  # Lazy; no GUI-thread disk work.
         dialog.github_tools.run_button.clicked.emit()
-        assert "no verified disposable-VM" in dialog.github_tools.status.text()
+        assert "Check readiness" in dialog.github_tools.analysis_lab.status.text()
         assert not dialog.github_tools.run_button.isEnabled()
     finally:
         dialog.close()

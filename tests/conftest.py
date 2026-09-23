@@ -69,6 +69,36 @@ def keep_qt_application_alive():
     app.processEvents()
 
 
+@pytest.fixture(autouse=True)
+def isolate_automatic_ollama_startup(request: pytest.FixtureRequest, monkeypatch):
+    """Legacy app/self-test fixtures must never start the operator's daemon.
+
+    The dedicated startup suite keeps the real orchestration helpers and owns
+    its own listener, process-launch and trust mocks. Other tests may replace
+    these inert helpers explicitly when proving an integration decision.
+    """
+    if request.node.path.name == "test_ollama_startup.py":
+        return
+    from angerona.core import ollama_lifecycle
+
+    unavailable = ollama_lifecycle.OllamaStartupStatus(
+        "failed", "Offline test", 0,
+        "Native Ollama startup is disabled by the isolated test harness.",
+    )
+
+    def offline_start(*_args, progress=None, **_kwargs):
+        if progress is not None:
+            progress(unavailable)
+        return unavailable
+
+    def forbid_native_spawn(*_args, **_kwargs):
+        raise AssertionError("An isolated test attempted to launch real Ollama")
+
+    monkeypatch.setattr(ollama_lifecycle, "request_ollama_start", offline_start)
+    monkeypatch.setattr(ollama_lifecycle, "ensure_ollama_service", offline_start)
+    monkeypatch.setattr(ollama_lifecycle, "_spawn_ollama_service", forbid_native_spawn)
+
+
 def _clear_data_path_caches() -> None:
     try:
         from angerona.core import data_paths

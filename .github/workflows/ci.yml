@@ -111,3 +111,47 @@ jobs:
           tests/test_linux_platform_contract.py
           tests/test_macos_platform_contract.py
           tests/test_release_setup.py
+          tests/test_native_installers.py
+
+  native-source-install:
+    name: Native installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, macos-15-intel]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Check native shell syntax
+        shell: bash
+        run: |
+          sh -n install-angerona.sh tools/native-quickstart.sh
+          bash -n Start-Angerona-Linux.sh
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            zsh -n Start-Angerona-macOS.command
+          fi
+      - name: Install Linux Qt runtime prerequisites
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python tools/check_native_gui.py --install-system-libraries --yes
+      - name: Install runtime and render an offscreen QApplication
+        shell: bash
+        run: |
+          export PYTHON="$(command -v python)"
+          if [[ "$(uname -s)" == Darwin && "$(uname -m)" == x86_64 ]]; then
+            brew install openssl@3 rust
+            export OPENSSL_DIR="$(brew --prefix openssl@3)"
+            sh install-angerona.sh --no-autostart --build-intel-crypto
+          else
+            sh install-angerona.sh --no-autostart
+          fi
+      - name: Verify installed entry points
+        shell: bash
+        run: |
+          test -x "$HOME/.local/bin/angerona"
+          test -x "$HOME/.local/bin/angerona-setup"
+          sh -n "$HOME/.local/bin/angerona" "$HOME/.local/bin/angerona-setup"

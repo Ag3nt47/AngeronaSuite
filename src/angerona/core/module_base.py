@@ -300,8 +300,21 @@ def _health_callsite(frame) -> dict[str, object]:
         }
     try:
         candidate = root.joinpath(relative).resolve(strict=True)
-        module_file = Path(str(getattr(module, "__file__", ""))).resolve(strict=True)
-        spec_origin = Path(str(module.__spec__.origin)).resolve(strict=True)
+        # Normal imports expose the same canonical absolute string in all
+        # three places. Re-resolving that identical path repeats Windows path
+        # I/O on every degraded-health tick without adding identity evidence.
+        # Aliased or changed origins still receive the full strict resolution.
+        candidate_name = str(candidate)
+        module_filename = str(getattr(module, "__file__", ""))
+        origin_name = str(module.__spec__.origin)
+        module_file = (
+            candidate if module_filename == candidate_name
+            else Path(module_filename).resolve(strict=True)
+        )
+        spec_origin = (
+            candidate if origin_name == candidate_name
+            else Path(origin_name).resolve(strict=True)
+        )
         if candidate != module_file or candidate != spec_origin:
             return unavailable
         info = candidate.stat(follow_symlinks=False)

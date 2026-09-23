@@ -45,31 +45,55 @@ class DetectionRuntimeError(RuntimeError):
     """A runtime rule or event cannot be admitted safely."""
 
 
-def _safe_value(value: object, *, depth: int = 0) -> object:
+def _charge_normalized_size(remaining: list[int], amount: int) -> None:
+    remaining[0] -= amount
+    if remaining[0] < 0:
+        raise DetectionRuntimeError("runtime event exceeds its normalization budget")
+
+
+def _safe_value(
+    value: object, *, depth: int = 0, _remaining: list[int] | None = None,
+) -> object:
+    # Per-container limits alone allow a tiny aliased Python structure to fan
+    # out into millions of copied elements before the final JSON-size check.
+    # Charge a conservative lower bound on normalized JSON bytes while walking
+    # it; the exact serialized-byte limit is still enforced on admission.
+    if _remaining is None:
+        _remaining = [MAX_RUNTIME_EVENT_BYTES]
+
     if depth > 5:
         raise DetectionRuntimeError("runtime event exceeds its nesting depth")
     if value is None or type(value) in (bool, int, str):
-        if isinstance(value, str) and len(value) > 8192:
-            return value[:8192]
+        if isinstance(value, str):
+            value = value[:8192]
+            _charge_normalized_size(_remaining, len(value) + 2)
+        else:
+            _charge_normalized_size(
+                _remaining, 4 if value is None or value is True else 5 if value is False else 1,
+            )
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
             raise DetectionRuntimeError("runtime event contains a non-finite number")
+        _charge_normalized_size(_remaining, 1)
         return value
     if isinstance(value, Mapping):
         if len(value) > 256:
             raise DetectionRuntimeError("runtime event contains an oversized object")
+        _charge_normalized_size(_remaining, 2 + max(0, len(value) - 1))
         result: dict[str, object] = {}
         for key, item in value.items():
             rendered = str(key)
             if not rendered or len(rendered) > 160 or "\x00" in rendered:
                 raise DetectionRuntimeError("runtime event contains an unsafe field name")
-            result[rendered] = _safe_value(item, depth=depth + 1)
+            _charge_normalized_size(_remaining, len(rendered) + 3)
+            result[rendered] = _safe_value(item, depth=depth + 1, _remaining=_remaining)
         return result
     if isinstance(value, (list, tuple)):
         if len(value) > 256:
             raise DetectionRuntimeError("runtime event contains an oversized list")
-        return [_safe_value(item, depth=depth + 1) for item in value]
+        _charge_normalized_size(_remaining, 2 + max(0, len(value) - 1))
+        return [_safe_value(item, depth=depth + 1, _remaining=_remaining) for item in value]
     raise DetectionRuntimeError("runtime event contains an unsupported value type")
 
 
@@ -153,6 +177,7 @@ class DetectionRuntimeSnapshot:
     active_epoch_drops: int
     shadow_epoch_drops: int
     shadow_observations: tuple[ShadowObservation, ...]
+    unconfigured_events_skipped: int = 0
 
     def to_dict(self) -> dict[str, object]:
         document = asdict(self)
@@ -281,6 +306,7 @@ class DetectionRuntimeEngine:
         self._evaluation_failures = 0
         self._recursive_rejected = 0
         self._invalid_rejected = 0
+        self._unconfigured_events_skipped = 0
         self._event_id_collisions = 0
         self._source_cursor_collisions = 0
         self._active_epoch = 0
@@ -959,6 +985,21 @@ class DetectionRuntimeEngine:
                     self._shadow_queue.append(_QueuedWork(queued, self._shadow_epoch))
         return admitted
 
+    def submit_configured(self, event: Event, *, source_cursor: int) -> bool:
+        """Live bus ingress: do no payload work when neither lane has rules.
+
+        Configuration is observed atomically before normalization. An event
+        arriving with no configured evaluator cannot produce a finding, and
+        rule activation already discards prior-epoch queues. The original
+        EventBus event still reaches all other subscribers and storage.
+        Direct ``submit`` retains its validation/collision-diagnostic contract.
+        """
+        with self._lock:
+            if not self._active_rules and not self._shadow_rules:
+                self._unconfigured_events_skipped += 1
+                return True
+        return self.submit(event, source_cursor=source_cursor)
+
     def submit_shadow(self, event: Event, *, source_cursor: int | None = None) -> bool:
         """Admit offline shadow work without consuming any active-lane slot."""
         try:
@@ -1334,6 +1375,7 @@ class DetectionRuntimeEngine:
                 active_epoch_drops=self._active_epoch_drops,
                 shadow_epoch_drops=self._shadow_epoch_drops,
                 shadow_observations=tuple(self._shadow_observations),
+                unconfigured_events_skipped=self._unconfigured_events_skipped,
             )
 
 
@@ -1430,7 +1472,7 @@ class DetectionRuntimeModule(BaseModule):
         with self._source_cursor_lock:
             self._source_cursor += 1
             cursor = self._source_cursor
-        self.engine.submit(event, source_cursor=cursor)
+        self.engine.submit_configured(event, source_cursor=cursor)
 
     def evidence_snapshot(self) -> dict[str, object]:
         return self.engine.snapshot().to_dict()

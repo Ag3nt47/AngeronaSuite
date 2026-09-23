@@ -3698,3 +3698,15 @@ See [final gates and limits](../round-20260921/README.md) and the
 [finding closure map](../round-20260921/findings-after.json). Publication is
 through the guarded publisher from the clean reviewed commit; unrelated
 unfinished Analysis Lab work is preserved outside the published update.
+
+## Round 20260923 — Bug Test
+
+Deep-review pass 1: 384 files compile, 84 capabilities discover, 66 module self-tests pass/18 expected skips, 24 core self-tests pass, EventBus pipeline passes, selfcheck 26/26. Focused existing pytest: 265 passed/1 skipped; new hostile-text control passed. Two inert regressions reproduce lost Analysis Lab completion on a queue race and Memory Time-Machine late writes/admissions after stop closes its ring. No production edits by QA; both REPORTED for patching. [Detailed report](../deep-review-20260923/bugs-round1.md).
+
+## Round 20260923 — Bug Test (pass 2)
+
+385 current source files compile; supported selfcheck passes 26/26 with 66 module passes, 18 expected skips and one pipeline pass. Focused integration yields 186 distinct passing tests and one skip. Both pass-1 QA regressions pass after remediation. Inert tests prove authenticated exact-target Combat quarantine, postcondition verification, signed receipt and rollback with unavailable Ollama; forged AI/remote instructions remain non-authoritative. Cached status UI preserves true percentages, plain text and hidden-timer behavior. QA updated legacy fixtures and prevents automatic native launches in ordinary tests/offline selfcheck. No new production defect established; parent owns combined validation and native acceptance. [Detailed report](../deep-review-20260923/bugs-round2.md).
+
+## Round 20260923 — Bug Test (pass 3)
+
+388 final sources compile. Final offline selfcheck passes 26/26, with 84 modules accounted for, 66 module passes, 18 explicit skips and pipeline pass; 24 direct core self-tests pass. Original full pytest: 3,884 pass/19 skip/3 stale fixture or documentation failures in 1,205.62 seconds. QA corrected those three tests without product changes. Targeted closure gates pass, including final combined integration 206 pass/1 skip and independent token boundary 11 pass. Final collection reconciliation: all 3,991 cases accounted for, latest outcomes 3,972 pass/19 skip, no unresolved failures or uncovered cases. This combines the full run and subsequent targeted gates; native elevated Ollama, VMware guest and non-Windows GUI acceptance are not inferred from inert tests. [Detailed report](../deep-review-20260923/bugs-round3.md).

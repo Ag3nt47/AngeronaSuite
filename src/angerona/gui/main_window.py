@@ -646,6 +646,11 @@ class MainWindow(QMainWindow):
         # Second row: per-module resource-intensity (0–100%, red=off→green→red).
         self.resource_strip = ResourceStrip(manager, self.bus)
         root.addWidget(self.resource_strip)
+        from angerona.gui.ollama_status import OllamaStatusPanel
+        self.ollama_status = OllamaStatusPanel(
+            lambda: self.config.ollama_host, central,
+        )
+        root.addWidget(self.ollama_status)
 
         self.setCentralWidget(central)
         self._panel_reveal = PanelRevealOverlay(central)
@@ -661,25 +666,7 @@ class MainWindow(QMainWindow):
             self._last_bus_revision: int | None = self.bus.revision()
         except Exception:
             self._last_bus_revision = None
-        self._security_reader = AsyncSnapshot(
-            self, self._prepare_security_snapshot, self._apply_security_snapshot,
-            name="SecurityWakeClassifier",
-        )
-        # The presentation timer may sleep for 5-15 seconds in Chill/background
-        # operation, but genuine HIGH/CRITICAL evidence must still wake policy
-        # immediately.  Coalesce a burst into one queued GUI callback: the
-        # callback drains the bus's authoritative revision delta, so no event is
-        # lost and publisher threads never touch Qt widgets directly.
-        self._security_wake_pending = threading.Event()
-        self._security_event_wake.connect(
-            self._handle_security_event_wake,
-            Qt.QueuedConnection,
-        )
-        self._bus_wake_subscriber = self._queue_security_event_wake
-        try:
-            self.bus.subscribe(self._bus_wake_subscriber)
-        except Exception:
-            pass
+        self._init_security_event_reader()
         # One fail-closed prompt per currently mounted removable volume.  The
         # dialog map is bounded by the USB policy's mount bound and entries are
         # removed as soon as each window finishes.
@@ -1007,18 +994,75 @@ class MainWindow(QMainWindow):
                 or not self.isActiveWindow()
             )
 
+    def _init_security_event_reader(self) -> None:
+        """One Qt dispatch, one reader and one dirty follow-up for a burst."""
+        self._security_wake_lock = threading.Lock()
+        self._security_wake_pending = threading.Event()
+        self._security_wake_closed = threading.Event()
+        self._security_wake_again = False
+        self._security_reader = AsyncSnapshot(
+            self, self._prepare_security_snapshot, self._apply_security_snapshot,
+            name="SecurityWakeClassifier", status=self._security_snapshot_status,
+        )
+        # Capture only plain gate state and the reader. Destruction must close
+        # the retained EventBus callback even after Qt disposes this window.
+        lock = self._security_wake_lock
+        pending, closed = self._security_wake_pending, self._security_wake_closed
+        reader = self._security_reader
+        app = QApplication.instance()
+
+        def close(*_args):
+            with lock:
+                was_closed = closed.is_set()
+                closed.set()
+                pending.clear()
+            reader.close()
+            if app is not None and not was_closed:
+                try:
+                    app.aboutToQuit.disconnect(close)
+                except (RuntimeError, TypeError):
+                    pass
+
+        self._security_wake_cleanup = close
+        self.destroyed.connect(close)
+        if app is not None:
+            app.aboutToQuit.connect(close)
+        self._security_event_wake.connect(
+            self._handle_security_event_wake, Qt.QueuedConnection,
+        )
+        self._bus_wake_subscriber = self._queue_security_event_wake
+        try:
+            self.bus.subscribe(self._bus_wake_subscriber)
+        except Exception:
+            pass
+
     def _queue_security_event_wake(self, event) -> None:
-        """Bridge serious EventBus publications to Qt, once per pending burst."""
+        """Gate Qt dispatch across both queued callbacks and blocked reads."""
         try:
             serious = event.severity >= Severity.HIGH
         except Exception:
             serious = False
-        if serious and not self._security_wake_pending.is_set():
+        if not serious:
+            return
+        with self._security_wake_lock:
+            if self._security_wake_closed.is_set():
+                return
+            if self._security_wake_pending.is_set():
+                self._security_wake_again = True
+                return
             self._security_wake_pending.set()
+        try:
             self._security_event_wake.emit()
+        except RuntimeError:
+            self._security_wake_cleanup()
 
     def _handle_security_event_wake(self) -> None:
-        self._security_wake_pending.clear()
+        if self._security_wake_closed.is_set():
+            return
+        # A cosmetic refresh may have started the read before this queued
+        # signal was dispatched. Its demand is already covered by that read.
+        if self._security_reader.busy:
+            return
         try:
             self._check_threat_animation()
         except Exception as exc:
@@ -1026,6 +1070,40 @@ class MainWindow(QMainWindow):
                 self._blackbox_feed(f"Security UI wake error (non-fatal): {exc}")
             except Exception:
                 pass
+
+    def _request_security_snapshot(self) -> None:
+        """Coalesce demand before it reaches AsyncSnapshot's request queue."""
+        with self._security_wake_lock:
+            if self._security_wake_closed.is_set():
+                return
+            self._security_wake_pending.set()
+            if self._security_reader.busy:
+                self._security_wake_again = True
+                return
+            # All demand before this read is covered by its fresh bus delta.
+            self._security_wake_again = False
+        self._security_reader.request()
+
+    def _security_snapshot_status(self, state: str) -> None:
+        if state not in {"current", "unavailable"}:
+            return
+        with self._security_wake_lock:
+            if self._security_wake_closed.is_set():
+                return
+            again = self._security_wake_again
+            self._security_wake_again = False
+            if not again:
+                self._security_wake_pending.clear()
+        if again:
+            # Qt completion callback: immediately classify arrivals after the
+            # previous read. No extra queued Qt signal, timer or worker needed.
+            if state == "current":
+                self._request_security_snapshot()
+            else:
+                # A prepare/start failure can complete synchronously. Queue
+                # its coalesced retry instead of recursively retrying while a
+                # publisher keeps marking fresh demand.
+                self._security_event_wake.emit()
 
     def _refresh_body(self) -> None:
         reconcile_module_usage(self.manager)
@@ -1089,13 +1167,18 @@ class MainWindow(QMainWindow):
     def _check_threat_animation(self) -> None:
         # Policy snapshots can stat files and hash pinned executables. Keep
         # them off Qt and independent of the slower presentation readers.
-        self._security_reader.request()
+        self._request_security_snapshot()
         # Reconcile live USB gates even while policy IO is pending. The next
         # completed snapshot also delivers all retained USB event transitions.
         self._handle_usb_approval_events(())
         self._update_threat_intel_pulse()
 
     def _prepare_security_snapshot(self):
+        with self._security_wake_lock:
+            # Also covers an AsyncSnapshot generation retry: its fresh delta
+            # includes every request accumulated before this preparation.
+            self._security_wake_pending.set()
+            self._security_wake_again = False
         bus = self.bus
         revision, last_ts = self._last_bus_revision, self._last_threat_ts
 
@@ -4963,6 +5046,10 @@ class MainWindow(QMainWindow):
 
     def _self_test_worker(self) -> None:
         try:
+            # Explicit self-test also prepares optional local AI in Chill,
+            # where the ordinary module sweep correctly skips parked workers.
+            from angerona.core.ollama_lifecycle import ensure_ollama_service
+            ensure_ollama_service(self.config.ollama_host, timeout=30.0)
             from angerona.core.selftest import SelfTestRunner
             runner = SelfTestRunner(self.manager, self.bus)
             report = runner.run(

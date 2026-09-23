@@ -246,6 +246,9 @@ def safe_urlopen(
     )
     if policy is OLLAMA_SERVICE_POLICY and not ollama_route:
         raise UrlPolicyError("unsupported attested Ollama API path")
+    # Pin once before ownership verification. Attestation and HTTP must refer
+    # to the same address/family even if a hostname's DNS answers change.
+    pinned_url = _pin_loopback_url(url) if policy.loopback_only else None
     if policy.loopback_only and ollama_route:
         # The fixed Ollama route is itself the service discriminator. Promote
         # even a generic local policy so an accidental caller cannot silently
@@ -254,10 +257,10 @@ def safe_urlopen(
         # Call-time import avoids url_policy <-> ollama_lifecycle import cycles.
         from angerona.core.ollama_lifecycle import attest_ollama_service
 
-        base = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+        pinned = urlsplit(pinned_url)
+        base = urlunsplit((pinned.scheme, pinned.netloc, "", "", ""))
         attest_ollama_service(base)
     if policy.loopback_only:
-        pinned_url = _pin_loopback_url(url)
         if isinstance(request_or_url, urllib.request.Request):
             request_or_url = urllib.request.Request(
                 pinned_url,

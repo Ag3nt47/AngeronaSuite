@@ -1,0 +1,52 @@
+{
+  "scope": "Latest final-collection result per case across the original full run and subsequent targeted gates; not a second all-green full-suite run.",
+  "collected_tests": 3991,
+  "latest_case_counts": {
+    "passed": 3972,
+    "skipped": 19
+  },
+  "uncovered": [],
+  "unresolved_failures": [],
+  "runs": [
+    {
+      "run": "qa-full-round3.xml",
+      "counts": {
+        "passed": 3884,
+        "failed": 3,
+        "skipped": 19
+      }
+    },
+    {
+      "run": "qa-round3-publication-fixed.xml",
+      "counts": {
+        "passed": 58
+      }
+    },
+    {
+      "run": "qa-round3-final-narrow.xml",
+      "counts": {
+        "passed": 96,
+        "skipped": 1
+      }
+    },
+    {
+      "run": "qa-round3-release-fixed.xml",
+      "counts": {
+        "passed": 22
+      }
+    },
+    {
+      "run": "qa-round3-final-integration.xml",
+      "counts": {
+        "passed": 206,
+        "skipped": 1
+      }
+    },
+    {
+      "run": "qa-round3-token-boundary.xml",
+      "counts": {
+        "passed": 11
+      }
+    }
+  ]
+}

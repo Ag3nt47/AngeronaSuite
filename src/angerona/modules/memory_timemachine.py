@@ -9,8 +9,8 @@ Design
     - A lock-light Single-Producer / Single-Consumer (SPSC) ring buffer backed by
       an ``mmap`` file (the ``telemetry_ringbuffer`` / RING). The producer thread
       carves printable strings; a single consumer drains them. Because there is
-      exactly one writer and one reader, the hot path needs no mutex — only the
-      slow-path open/resize is guarded by ``state_lock``.
+      exactly one writer and one reader, each bounded slot operation shares a
+      short lock with close so retiring a ring cannot invalidate its readers.
     - A per-PID sliding hash cache of previously-observed benign strings. Anything
       whose hash is already in the window is dropped; only the delta is queued for
       Ollama.
@@ -64,7 +64,9 @@ class _SpscRing:
     def __init__(self, path: Path, slots: int = _SLOTS) -> None:
         self._slots = slots
         self._size = _HEADER + slots * _SLOT
-        self._open_lock = threading.Lock()   # slow-path guard (a.k.a. state_lock)
+        self._open_lock = threading.Lock()   # slot access and native lifetime
+        self._closed = False
+        self._closed_overwrites = 0
         with self._open_lock:
             new = not path.exists() or path.stat().st_size != self._size
             if new:
@@ -92,6 +94,12 @@ class _SpscRing:
         return struct.unpack_from("<Q", self._mm, 16)[0]
 
     def push(self, payload: bytes) -> bool:
+        with self._open_lock:
+            if self._closed:
+                return False
+            return self._push_locked(payload)
+
+    def _push_locked(self, payload: bytes) -> bool:
         body = payload[: _SLOT - 4]
         head, tail = self._head(), self._tail()
         admitted_without_loss = True
@@ -107,6 +115,12 @@ class _SpscRing:
         return admitted_without_loss
 
     def pop(self) -> bytes | None:
+        with self._open_lock:
+            if self._closed:
+                return None
+            return self._pop_locked()
+
+    def _pop_locked(self) -> bytes | None:
         head, tail = self._head(), self._tail()
         if tail >= head:
             return None
@@ -117,16 +131,30 @@ class _SpscRing:
         return data
 
     def depth(self) -> int:
-        return max(0, self._head() - self._tail())
+        with self._open_lock:
+            return 0 if self._closed else max(0, self._head() - self._tail())
 
     def overwrite_count(self) -> int:
-        return struct.unpack_from("<Q", self._mm, 24)[0]
+        with self._open_lock:
+            return (self._closed_overwrites if self._closed else
+                    struct.unpack_from("<Q", self._mm, 24)[0])
 
     def close(self) -> None:
-        try:
-            self._mm.flush(); self._mm.close(); self._f.close()
-        except Exception:
-            pass
+        with self._open_lock:
+            if self._closed:
+                return
+            self._closed_overwrites = struct.unpack_from("<Q", self._mm, 24)[0]
+            self._closed = True
+            try:
+                try:
+                    self._mm.flush()
+                finally:
+                    try:
+                        self._mm.close()
+                    finally:
+                        self._f.close()
+            except Exception:
+                pass
 
 
 class MemoryTimeMachineModule(BaseModule):
@@ -319,10 +347,14 @@ class MemoryTimeMachineModule(BaseModule):
         return chunks
 
     def stats(self) -> dict:
+        with self.state_lock:
+            ring = self._ring
+            ring_available = ring is not None and not getattr(ring, "_closed", False)
+            ring_depth = ring.depth() if ring_available else 0
         reduction = (1 - self._forwarded / self._seen) * 100 if self._seen else 0.0
         return {"strings_seen": self._seen, "forwarded": self._forwarded,
                 "reduction_pct": round(reduction, 1),
-                "ring_depth": self._ring.depth() if self._ring else 0,
+                "ring_depth": ring_depth,
                 "queue_depth": self.delta_queue.qsize(),
                 "queue_drops": self._queue_drops,
                 "queue_highwater": self._queue_highwater,
@@ -330,27 +362,45 @@ class MemoryTimeMachineModule(BaseModule):
                 "collector_failures": self._collector_failures,
                 "payload_truncations": self._payload_truncations,
                 "delivery_incomplete": self._delivery_incomplete,
-                "ring_available": self._ring is not None}
+                "ring_available": ring_available}
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def run(self) -> None:
         from angerona.core.config import Config
         ring_path = Config().data_dir / "telemetry_ringbuffer.mmap"
+        ring = None
         try:
-            self._ring = _SpscRing(ring_path)
-            self._ring_overwrites = self._ring.overwrite_count()
-        except Exception as exc:
-            self.set_health(40, f"ring unavailable: {exc}")
-        if psutil is None:
-            self.set_health(0, "psutil unavailable")
-            self.status = "error"
-            return
-        self.emit("MTM online — deduplicating process strings before triage.", Severity.INFO)
-        while not self.stopping:
-            self._sweep()
-            self.sleep(self._CARVE_INTERVAL)
+            try:
+                ring = _SpscRing(ring_path)
+                with self.state_lock:
+                    self._ring = ring
+                    self._ring_overwrites = ring.overwrite_count()
+            except Exception as exc:
+                self.set_health(40, f"ring unavailable: {exc}")
+            if self.stopping:
+                return
+            if psutil is None:
+                self.set_health(0, "psutil unavailable")
+                self.status = "error"
+                return
+            self.emit("MTM online — deduplicating process strings before triage.", Severity.INFO)
+            while not self.stopping:
+                self._sweep()
+                self.sleep(self._CARVE_INTERVAL)
+        finally:
+            # The worker owns this generation's native ring. Stop signals it;
+            # destruction waits until its potentially blocking collection ends.
+            with self.state_lock:
+                if self._ring is ring:
+                    self._ring = None
+            if ring is not None:
+                ring.close()
 
     def _sweep(self) -> None:
+        stop_event = self.generation_stop_event()
+        if stop_event.is_set():
+            return
+        ring = self._ring
         batch = 0
         self._last_sweep_collector_failures = 0
         # Process.connections() performs an OS connection-table query for every
@@ -373,10 +423,12 @@ class MemoryTimeMachineModule(BaseModule):
             connections_by_pid = None
             self._collector_failures += 1
             self._last_sweep_collector_failures += 1
+        if stop_event.is_set():
+            return
         try:
             processes = psutil.process_iter(["pid"])
             for proc in processes:
-                if self.stopping:
+                if stop_event.is_set():
                     break
                 try:
                     pid = int(proc.info["pid"])
@@ -387,43 +439,52 @@ class MemoryTimeMachineModule(BaseModule):
                 proc_connections = (None if connections_by_pid is None
                                     else connections_by_pid.get(pid, ()))
                 strings = self._process_strings(proc, proc_connections)
+                if stop_event.is_set():
+                    return
                 if not strings:
                     continue
                 delta = self.delta_for(pid, strings, commit=False)
                 if not delta:
                     continue
                 for admitted in self._bounded_delta(delta):
-                    payload = {"pid": pid, "delta": admitted, "ts": time.time()}
-                    try:
-                        self.delta_queue.put_nowait(payload)
-                    except queue.Full:
-                        self._queue_drops += len(admitted)
-                        self._delivery_incomplete = True
-                        self._last_delivery_failure_at = time.time()
-                        continue
+                    # Serialize only bounded admission/receipt work with stop;
+                    # never hold this lock across native process collection.
+                    with self._lifecycle_lock:
+                        if (stop_event.is_set() or stop_event is not self._stop
+                                or ring is not self._ring):
+                            return
+                        payload = {"pid": pid, "delta": admitted, "ts": time.time()}
+                        try:
+                            self.delta_queue.put_nowait(payload)
+                        except queue.Full:
+                            self._queue_drops += len(admitted)
+                            self._delivery_incomplete = True
+                            self._last_delivery_failure_at = time.time()
+                            continue
 
-                    # Delivery is authoritative: commit dedup state only after
-                    # queue admission. The mmap receives pseudonymous receipts,
-                    # never the source strings themselves.
-                    self._commit_delta(pid, admitted)
-                    self._forwarded += len(admitted)
-                    batch += len(admitted)
-                    if self._ring is not None:
-                        for value in admitted:
-                            receipt = hashlib.blake2b(
-                                value.encode("utf-8", "ignore"),
-                                digest_size=16,
-                                person=b"Angerona-MTM-v1",
-                            ).hexdigest()
-                            if not self._ring.push(f"{pid}\t{receipt}".encode("ascii")):
-                                self._last_delivery_failure_at = time.time()
-                        self._ring_overwrites = self._ring.overwrite_count()
-                    self._queue_highwater = max(
-                        self._queue_highwater, self.delta_queue.qsize()
-                    )
+                        # Commit dedup only after queue admission. The mmap
+                        # receives pseudonymous receipts, never source strings.
+                        self._commit_delta(pid, admitted)
+                        self._forwarded += len(admitted)
+                        batch += len(admitted)
+                        if ring is not None:
+                            for value in admitted:
+                                receipt = hashlib.blake2b(
+                                    value.encode("utf-8", "ignore"),
+                                    digest_size=16,
+                                    person=b"Angerona-MTM-v1",
+                                ).hexdigest()
+                                if not ring.push(f"{pid}\t{receipt}".encode("ascii")):
+                                    self._last_delivery_failure_at = time.time()
+                            self._ring_overwrites = ring.overwrite_count()
+                        self._queue_highwater = max(
+                            self._queue_highwater, self.delta_queue.qsize()
+                        )
         except Exception:
             self._collector_failures += 1
             self._last_sweep_collector_failures += 1
+        if stop_event.is_set():
+            return
         st = self.stats()
         health = 100
         reasons: list[str] = []
@@ -449,14 +510,9 @@ class MemoryTimeMachineModule(BaseModule):
             + ("; " + "; ".join(reasons) if reasons else "; complete delivery")
         )
         self.set_health(health, note)
-        if batch:
+        if batch and not stop_event.is_set():
             self.emit(f"Forwarded {batch} NEW strings (dedup {st['reduction_pct']}%).",
                       Severity.INFO, **st)
-
-    def stop(self) -> None:
-        super().stop()
-        if self._ring is not None:
-            self._ring.close()
 
     def self_test(self) -> tuple[bool, str]:
         """Prove the dedup path: the same string set twice must yield a full

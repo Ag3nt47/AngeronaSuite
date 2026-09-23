@@ -251,7 +251,7 @@ def test_ollama_policy_attests_custom_port_but_unrelated_local_service_does_not(
         timeout=1,
     )
 
-    assert attested == ["http://localhost:23145"]
+    assert attested == ["http://127.0.0.1:23145"]
 
 
 def test_ollama_policy_refuses_non_ollama_route_before_connection(monkeypatch) -> None:

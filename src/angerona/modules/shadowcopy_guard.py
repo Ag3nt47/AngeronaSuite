@@ -225,9 +225,10 @@ class ShadowCopyGuardModule(BaseModule):
                         trusted_name = _trusted_system_utility(
                             info.get("name"), info.get("exe")
                         )
-                        if trusted_name and _recovery_argv_is_destructive(
+                        exact_command = bool(trusted_name and _recovery_argv_is_destructive(
                             trusted_name, raw_cmdline
-                        ):
+                        ))
+                        if exact_command:
                             response = process_response(
                                 pid, created, escalate_host=True
                             )
@@ -238,13 +239,14 @@ class ShadowCopyGuardModule(BaseModule):
                             Severity.CRITICAL, pid=pid, ppid=ppid,
                             name=info.get("name"), exe=info.get("exe"),
                             process_create_time=created,
-                            mitre="T1490", cmdline=cmd[:200], active_attack=True,
+                            mitre="T1490", cmdline=cmd[:200], active_attack=exact_command,
+                            disposition="active" if exact_command else "observation",
                             detector_policy=(
                                 "exact-recovery-tool-command"
-                                if response
+                                if exact_command
                                 else "semantic-indicator-alert-only"
                             ),
-                            **response)
+                            **(response or {"response_authorized": False}))
                 self._alerted &= live
                 self._last_coverage = {
                     "enumerated": enumerated,

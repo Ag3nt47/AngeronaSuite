@@ -226,6 +226,19 @@ class StatusReporter:
         )
         healer = getattr(self, "runtime_healer", None)
         recovery = healer.snapshot() if healer is not None else None
+        # These are memory-only views. Capturing why response is held must not
+        # read a journal, hash a model or probe a service on each status write.
+        response = {"ready": False, "state": "UNAVAILABLE", "reason": "Response worker unavailable."}
+        combat = self.manager.modules.get("Adversary Combat")
+        reader = getattr(combat, "response_snapshot", None)
+        if callable(reader):
+            try:
+                response = reader()
+            except Exception:
+                pass
+        from dataclasses import asdict
+        from angerona.core.ollama_lifecycle import startup_snapshot
+        ollama_startup = asdict(startup_snapshot(self.config.ollama_host))
         return {
             "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
             "generated_ts": time.time(),
@@ -237,6 +250,7 @@ class StatusReporter:
             ),
             "event_bus": self._bus_snapshot(),
             "runtime_healer": recovery,
+            "automatic_response": response,
             "app_version": __version__,
             "admin": is_admin(),
             "threat_level": _THREAT[threat_level(events)],
@@ -252,7 +266,8 @@ class StatusReporter:
                 "critical_24h": active_critical,
                 "active_critical_10m": active_critical,
             },
-            "ollama": {"host": self.config.ollama_host, "model": self.config.ollama_model},
+            "ollama": {"host": self.config.ollama_host, "model": self.config.ollama_model,
+                       "startup": ollama_startup},
             "telemetry_coverage": {
                 "sensors": telemetry,
                 "evicted_sensors": evicted_sensors,
@@ -284,6 +299,10 @@ class StatusReporter:
             f"     Alerts(24h): {c['alerts_24h']}"
             f"     ActiveCritical(10m): {c['active_critical_10m']}",
             f" Ollama    : {s['ollama']['host']}  (model: {s['ollama']['model']})",
+            f" AI startup: {s['ollama'].get('startup', {}).get('percent', 0)}% "
+            f"{s['ollama'].get('startup', {}).get('stage', 'Not requested')}",
+            f" Response  : {s.get('automatic_response', {}).get('state', 'UNAVAILABLE')} "
+            f"— {s.get('automatic_response', {}).get('reason', '')}",
             "",
             "-" * 78,
             " TELEMETRY COVERAGE",
