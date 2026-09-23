@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "id": "org.angerona.demo-quality-candidate",
+  "version": "1.0.0",
+  "owner": "Angerona synthetic demonstration",
+  "description": "Inert event-data example for measuring rule tradeoffs. Not an enabled protection rule.",
+  "telemetry": [
+    "fixture.observation"
+  ],
+  "attack": [
+    "T1059"
+  ],
+  "severity": "medium",
+  "confidence": 50,
+  "logic": {
+    "type": "sigma-subset",
+    "detection": {
+      "selection": {
+        "indicator": "confirmed"
+      },
+      "condition": "selection"
+    }
+  },
+  "fixtures": [
+    {
+      "name": "synthetic expected match",
+      "event": {
+        "message": "legacy-marker",
+        "indicator": "confirmed"
+      },
+      "expected_match": true
+    },
+    {
+      "name": "synthetic expected non-match",
+      "event": {
+        "message": "ordinary activity",
+        "indicator": "none"
+      },
+      "expected_match": false
+    }
+  ],
+  "performance": {
+    "max_eval_ms": 50,
+    "max_events_per_second": 1000
+  },
+  "rollback": {
+    "previous_digest": null,
+    "instructions": "This demonstration is not activated. Retain the prior package for comparison."
+  },
+  "expires_at": "2035-01-01T00:00:00Z",
+  "digest": "sha256:43ff5401c035af3c350a2fc37ef695158f1595124904443bf4f4399f95ca4e3b"
+}

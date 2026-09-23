@@ -167,6 +167,8 @@ class MainWindow(QMainWindow):
         evidence_store=None, evidence_ingestion=None,
         flight_recorder_worker=None,
         process_baseline=None,
+        alert_retention_worker=None,
+        runtime_metrics=None,
     ) -> None:
         super().__init__()
         self.bus, self.storage, self.manager, self.config = bus, storage, manager, config
@@ -176,6 +178,8 @@ class MainWindow(QMainWindow):
         )
         self.evidence_store = evidence_store
         self.process_baseline = process_baseline
+        self.alert_retention_worker = alert_retention_worker
+        self.runtime_metrics = runtime_metrics
         self._operations_service = None
         self._operations_service_lock = threading.Lock()
         self._operations_service_shutdown = False
@@ -767,6 +771,8 @@ class MainWindow(QMainWindow):
             self._ui_watchdog.start()
             self._beat_timer = QTimer(self)
             self._beat_timer.timeout.connect(self._ui_watchdog.beat)
+            if self.runtime_metrics is not None:
+                self._beat_timer.timeout.connect(self.runtime_metrics.heartbeat)
             self._beat_timer.start(1000)
         except Exception:
             self._ui_watchdog = None
@@ -952,6 +958,8 @@ class MainWindow(QMainWindow):
 
     # ── Refresh ──────────────────────────────────────────────────────────────
     def _refresh(self) -> None:
+        metrics = getattr(self, "runtime_metrics", None)
+        started = time.perf_counter() if metrics is not None else 0.0
         self._tick_count += 1
         # The ENTIRE refresh is wrapped: a single panel raising (e.g. under a data
         # flood or a transient DB lock) must never propagate out of the QTimer
@@ -963,6 +971,10 @@ class MainWindow(QMainWindow):
                 self._blackbox_feed(f"UI refresh error (non-fatal): {exc}")
             except Exception:
                 pass
+
+        finally:
+            if metrics is not None:
+                metrics.record_tick((time.perf_counter() - started) * 1000)
 
     def _quiet_chill_active(self) -> bool:
         return bool(
@@ -1404,14 +1416,11 @@ class MainWindow(QMainWindow):
             pass
 
     def _blackbox_feed(self, text: str) -> None:
-        """Append a timestamped line to diagnostics/runtime_alerts.log — an
-        out-of-band file the Black Box recorder tails. Best-effort; never raises."""
+        """Queue a disposable diagnostic copy without performing GUI-thread I/O."""
         try:
-            from angerona.core.data_paths import data_dir
-            d = data_dir() / "diagnostics"
-            d.mkdir(parents=True, exist_ok=True)
-            with open(d / "runtime_alerts.log", "a", encoding="utf-8") as f:
-                f.write(f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] {text}\n")
+            worker = getattr(self, "alert_retention_worker", None)
+            if worker is not None:
+                worker.append(text)
         except Exception:
             pass
 
@@ -1930,6 +1939,8 @@ class MainWindow(QMainWindow):
             from angerona.modules.file_integrity import unregister_runtime_watch
 
             unregister_runtime_watch(getattr(self, "_sim_runtime_watch", None))
+            from angerona.modules.yara_scanner import unregister_runtime_watch as unwatch_yara
+            unwatch_yara(getattr(self, "_sim_runtime_watch", None))
         except Exception as exc:
             reason += f"; FIM target restore failed: {type(exc).__name__}: {exc}"
         self._sim_runtime_watch = None
@@ -2044,6 +2055,9 @@ class MainWindow(QMainWindow):
                     f"File Integrity Monitor refused runtime target {_target!r}"
                 )
             self._sim_runtime_watch = _target
+            from angerona.modules.yara_scanner import register_runtime_watch as watch_yara
+            if not watch_yara(_target):
+                raise RuntimeError(f"YARA Scanner refused runtime target {_target!r}")
             if self._sim_ran_shark:
                 from angerona.shark.run_manifest import preflight_run
 
@@ -2192,6 +2206,8 @@ class MainWindow(QMainWindow):
             try:
                 from angerona.modules.file_integrity import unregister_runtime_watch
                 unregister_runtime_watch(getattr(self, "_sim_runtime_watch", None))
+                from angerona.modules.yara_scanner import unregister_runtime_watch as unwatch_yara
+                unwatch_yara(getattr(self, "_sim_runtime_watch", None))
             except Exception:
                 pass
             self._sim_runtime_watch = None
@@ -2212,7 +2228,7 @@ class MainWindow(QMainWindow):
             "end. The running modules get no advance notice — that's the point — but "
             "every action is a real, narrowly-scoped, reversible test (an inert EICAR "
             "test file, read-only system enumeration, a benign outbound test "
-            "connection). No data ever leaves this machine and no real persistence "
+            "connection). Only a fixed dummy marker is sent; no personal files are read, and no real persistence "
             "mechanism is ever touched.\n\nContinue?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply != QMessageBox.Yes:

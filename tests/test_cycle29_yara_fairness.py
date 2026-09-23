@@ -94,7 +94,7 @@ def test_file_scan_failure_is_counted_instead_of_silently_green(tmp_path) -> Non
 
     class _BrokenScanner:
         @staticmethod
-        def scan_file(_path):
+        def scan(_content):
             raise TimeoutError("bounded scanner timeout")
 
     scanner = YaraScannerModule()

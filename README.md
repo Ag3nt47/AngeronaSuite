@@ -7,8 +7,9 @@ Response (SOAR), digital forensics, defensive ATT&CK exercises and an optional
 local Ollama assistant.
 
 Built for home labs, defensive research, learning and security-engineering
-portfolios. Start with the dashboard, inspect the evidence behind an alert,
-and use the configured response controls when their prerequisites are ready.
+portfolios. Follow an alert from its sensor evidence to a verified response,
+review the action, and undo supported changes. Automatic defense follows your
+configured policy and works without an AI model.
 
 [![CI](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/ci.yml/badge.svg)](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/ci.yml)
 [![Security](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml/badge.svg)](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml)
@@ -36,35 +37,32 @@ identifiers, timestamps, and counts are synthetic.
 
 ## What's new
 
-The [September 23 continuation](analysis/continuation-20260923/README.md) adds
-an optional QEMU Analysis Lab and investigates a reproduced Windows Ollama
-startup failure. It builds on the [three-round deep review](analysis/deep-review-20260923/README.md):
+The [September 23 maintenance upgrade](analysis/upgrade-20260923/README.md)
+repairs a real detection-to-response gap and reduces repeated background work:
 
-- **Bounded, on-demand source analysis.** The new Windows Lab runs pinned
-  Python-security and secret scanners in an offline, diskless QEMU guest.
-  Setup explains its purpose, download and resource costs before installation.
-  Both real guest analyzers passed their native readiness fixtures on Windows.
-  No Lab VM stays running while Angerona is idle.
-- **Less idle and burst work.** Unconfigured detection callbacks skip payload
-  processing; oversized nested input is rejected before expansion. A fixture
-  measured 94% less idle callback time. A blocked-reader GUI fixture reduced
-  1,001 queued wake callbacks to one while processing all retained serious
-  events in two reads. These are component measurements, not whole-PC promises.
-- **Visible local-AI startup.** Launch, restart and explicit self-tests prepare
-  the trusted local Ollama service asynchronously and show stage percentages.
-  A real Windows cold start reached 100% in 16.44 seconds with zero models loaded.
-  The continuation adds handling for suitable linked Windows tokens;
-  elevated startup still needs native acceptance.
-- **Stronger lifecycle and input checks.** Fixed retired memory-ring writes,
-  lost Lab completion messages, ambiguous Ollama endpoint ownership and service
-  paths. Keyword-only command observations no longer wake deep threat work.
-- **Native source launchers.** Guided Linux and Intel/Apple Silicon Mac setup
-  now validates a staged runtime before replacing launchers. Native CI results
-  remain separate from the Windows checks performed for this review.
+- **Automatic, verifiable file containment.** Real YARA detections now carry
+  exact content identity into the live response worker. Native Windows tests
+  verified automatic quarantine, signed results and Undo for inert files and
+  ZIPs, without Ollama or manually dispatching an action. Shark reports also
+  recognize the actual registered detector's evidence.
+- **Less repeated scanning.** Shared process snapshots avoid duplicate OS
+  collection, and unchanged files reuse bounded YARA scan results. A 48-file
+  fixture fell from 2,557 ms to 67 ms on repeated scans; this is a component
+  measurement, not a whole-PC speed or long-term stability claim.
+- **Automatic alert cleanup.** Runtime alert archives default to 30 days and
+  a 256 MiB target. Change or disable cleanup in **Settings → System**; signed
+  evidence, response journals and recovery data are excluded.
+- **Protection beyond the window.** The opt-in detached engine keeps running
+  after its console closes. It exposes live module readiness, response state,
+  events and controls through authenticated local communication.
+- **More testable defenses.** Enroll AI instruction and tool files for drift
+  checks, run an encrypted restore drill, and compare detection rules against
+  labelled benign and suspicious events. [Usage and limits](analysis/upgrade-20260923/usage.md).
 
-The earlier [machine-module update](analysis/round-20260921/README.md) remains:
-unused or unsupported modules stay off and outside the running/enabled count.
-Restart Angerona to load these changes. [Earlier maintenance records](analysis/loop/LOOP_LOG.md).
+The earlier [QEMU Analysis Lab and Ollama startup work](analysis/continuation-20260923/README.md)
+and [native Mac/Linux source launchers](docs/NATIVE_INSTALL.md) remain available.
+Unused or unsupported modules stay off and outside the running/enabled count.
+Restart Angerona to load changes. [Review, tests and remaining work](analysis/upgrade-20260923/validation.md).
 
 ## What you can do
 
@@ -94,7 +92,11 @@ features depend on platform, permissions, configuration and trusted evidence.
 | macOS 14+ | [Start-Angerona-macOS.command](Start-Angerona-macOS.command) | Observe preview; one launcher detects Intel, Apple Silicon and Rosetta. |
 | Linux x86_64 | [Start-Angerona-Linux.sh](Start-Angerona-Linux.sh) | Observe, with optional explicitly configured eBPF; reviewed native CI target is Ubuntu 24.04. |
 
-For a tagged Windows release, use its `Angerona-<version>-win64.msix` and adjacent
+Publisher signing and Apple notarization credentials are **not configured** in
+this maintenance environment. Trusted installer publication remains pending;
+the source launchers below are the available development setup path.
+
+For a tagged Windows release with signing provisioned, use its `Angerona-<version>-win64.msix` and adjacent
 SHA-256 file from [Releases](../../releases). Windows must trust the provisioned
 package publisher. Installing a trusted signed Windows release needs
 no Python or terminal. Release signing and clean-VM acceptance remain release gates;
@@ -131,6 +133,14 @@ Chill Mode limits optional analytical and presentation work while retaining its
 configured protection paths. The catalog is not a recommendation to activate
 all modules, and a running count is not a protection score. Module details expose
 availability, health and the reason for an inactive state.
+
+To try the separate protection engine from an installed source environment, run
+`python -m angerona --engine-console`. Closing this console leaves the engine
+running; **Stop protection** is a separate explicit control. This is an optional
+ordinary-user console, with a smaller interface than the full workbench.
+Per-user automatic startup is available through `tools/manage_engine.py`.
+It does not establish privileged service protection or survive every sign-out.
+[Engine setup and resource measurements](analysis/upgrade-20260923/usage.md).
 
 Ollama service percentages describe completed startup checks. **100% means the
 local service and inventory passed validation; it does not approve or load a
@@ -187,6 +197,13 @@ Packaged Windows installs prefer `D:\AngeronaData`, with protected
 `%ProgramData%\Angerona` as fallback when D: is unavailable.
 Cloud integrations are optional and off by default.
 
+Disposable `diagnostics/runtime_alerts.log` copies rotate at 4 MiB. Background
+cleanup removes eligible closed archives by age and total-size target, with
+adjustable limits of 1–3,650 days and 8–16,384 MiB. Pinned or inaccessible files
+can leave storage above the target; the settings panel shows cleanup status.
+Turning cleanup off allows archives to grow. It never sweeps the whole data
+directory or deletes signed event/action records, cases, backups or exports.
+
 Angerona is user-mode and ships no production kernel driver. It cannot promise
 tamper resistance against compromised Administrator/SYSTEM or kernel authority,
 recover events deleted before collection, or prove full-history rollback without
@@ -201,10 +218,18 @@ product capability. See [Security](SECURITY.md) and [capability limits](ANGERONA
 
 ## Validation and development
 
-The continuation's [regression record](analysis/continuation-20260923/validation.md)
-reconciles **4,107 passes and 18 skips** from a full baseline plus focused
-fixture corrections; it is not a second full-suite run. Both real Lab readiness
-fixtures and an end-to-end scan passed. Elevated Ollama acceptance remains open.
+The final upgrade regression suite passed **4,303 tests with 20 skips**.
+The [validation record](analysis/upgrade-20260923/validation.md) separates native
+automatic-containment checks, module self-tests and component benchmarks.
+Its isolated selfcheck passed all 26 phases; SelfTestRunner reported 66 module
+passes, one separate event-pipeline pass and 18 explicit prerequisite skips.
+Skips do not establish live coverage.
+
+The prior [continuation record](analysis/continuation-20260923/validation.md)
+reconciles 4,107 passes and 18 skips from a full baseline plus fixture
+corrections. Both real Lab readiness fixtures and an end-to-end scan passed.
+Elevated Ollama acceptance remains open; 24-hour/7-day stability and trusted
+installer acceptance are also outstanding.
 
 The earlier [three-round review](analysis/deep-review-20260923/README.md)
 accounts for all 84 modules: 66 self-tests passed, 18 had explicit optional or
@@ -222,7 +247,7 @@ python tools/validate_documentation_drift.py
 ```
 
 Contributions: [Contributing](CONTRIBUTING.md) · [Architecture](docs/architecture.md) ·
-[Research comparison and proposed follow-ups](analysis/deep-review-20260923/visionary-comparison.md).
+[Research comparison and proposed follow-ups](analysis/upgrade-20260923/comparison.md).
 Maintainer publication uses `python tools/publish_github_update.py`, which checks
 canonical fast-forward publication and the public bytes of every README image.
 

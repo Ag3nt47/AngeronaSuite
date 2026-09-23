@@ -33,7 +33,7 @@ from PySide6.QtGui import (QAction, QColor, QFont, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFileDialog, QGridLayout, QFrame, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
+    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
     QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
     QTextEdit,
 )
@@ -7200,7 +7200,13 @@ class AARDialog(QDialog):
             else:
                 from angerona.shark.aar_report import generate_aar
 
-                text = generate_aar(self.data_dir, settle_seconds=0)
+                owner = self.parent()
+                text = generate_aar(
+                    self.data_dir, settle_seconds=0,
+                    recorder=getattr(owner, "storage", None),
+                    bus=getattr(owner, "bus", None),
+                    manager=getattr(owner, "manager", None),
+                )
         except Exception as exc:
             text = (
                 f"Could not load authenticated report: {exc}"
@@ -8180,6 +8186,8 @@ class SettingsDialog(QDialog):
         eco_note.setWordWrap(True); eco_note.setStyleSheet("color: #94a3b8; font-size: 11px;")
         lay.addWidget(eco_note)
 
+        lay.addWidget(self._alert_retention_controls())
+
         lay.addWidget(self._section("Removable media (USB)"))
         usb_grid = QGridLayout()
         usb_grid.setColumnStretch(1, 1)
@@ -8307,6 +8315,93 @@ class SettingsDialog(QDialog):
 
         lay.addStretch()
         return w
+
+    def _alert_retention_controls(self) -> QWidget:
+        from angerona.core.alert_retention import RetentionPolicy
+        policy = RetentionPolicy.from_config(self._cfg)
+        box = QGroupBox("Automatic alert archive cleanup")
+        layout = QVBoxLayout(box)
+        self._alert_retention_chk = QCheckBox("Automatically remove old runtime alert archives")
+        self._alert_retention_chk.setChecked(policy.enabled)
+        layout.addWidget(self._alert_retention_chk)
+        limits = QHBoxLayout()
+        limits.addWidget(QLabel("Keep for:"))
+        self._alert_retention_days = QSpinBox()
+        self._alert_retention_days.setRange(1, 3650)
+        self._alert_retention_days.setSuffix(" days")
+        self._alert_retention_days.setValue(policy.days)
+        limits.addWidget(self._alert_retention_days)
+        limits.addWidget(QLabel("Size limit:"))
+        self._alert_retention_mib = QSpinBox()
+        self._alert_retention_mib.setRange(8, 16384)
+        self._alert_retention_mib.setSuffix(" MiB")
+        self._alert_retention_mib.setValue(policy.max_mib)
+        limits.addWidget(self._alert_retention_mib)
+        limits.addStretch()
+        layout.addLayout(limits)
+        for widget in (self._alert_retention_days, self._alert_retention_mib):
+            widget.setEnabled(policy.enabled)
+            self._alert_retention_chk.toggled.connect(widget.setEnabled)
+        note = QLabel(
+            "Cleanup permanently deletes closed runtime alert diagnostic files after the age limit "
+            "or oldest first to meet the size limit. The active file counts toward that limit and "
+            "rotates at 4 MiB. Signed alert history, pending events, case evidence, action receipts, "
+            "recovery data and exports are excluded. Archives with a .keep sidecar are preserved. "
+            "Disabling cleanup allows archives to keep growing. Changes apply when you save."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("font-size: 12px;")
+        layout.addWidget(note)
+        buttons = QHBoxLayout()
+        self._alert_cleanup_btn = QPushButton("Clean archives now")
+        self._alert_cleanup_btn.setToolTip("Uses your saved retention settings; never deletes active files.")
+        self._alert_cleanup_btn.clicked.connect(self._request_alert_cleanup)
+        buttons.addWidget(self._alert_cleanup_btn)
+        refresh = QPushButton("Refresh status")
+        refresh.clicked.connect(self._refresh_alert_cleanup)
+        buttons.addWidget(refresh)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+        self._alert_cleanup_status = QLabel()
+        self._alert_cleanup_status.setWordWrap(True)
+        layout.addWidget(self._alert_cleanup_status)
+        self._refresh_alert_cleanup()
+        return box
+
+    def _alert_retention_worker(self):
+        return getattr(self.parent(), "alert_retention_worker", None)
+
+    def _refresh_alert_cleanup(self) -> None:
+        worker = self._alert_retention_worker()
+        if worker is None:
+            self._alert_cleanup_btn.setEnabled(False)
+            self._alert_cleanup_status.setText("Cleanup worker unavailable in this session.")
+            return
+        state = worker.snapshot()
+        self._alert_cleanup_btn.setEnabled(bool(state.get("enabled", False)))
+        status = str(state.get("status", "unknown"))
+        labels = {
+            "waiting": "First automatic check starts after one minute",
+            "clean": "Archive limits satisfied", "disabled": "Automatic cleanup disabled",
+            "quota-pressure": "Size limit could not be met; active or pinned files are preserved",
+            "incomplete": "Some files could not be safely checked or removed",
+            "unavailable": "Cleanup unavailable; another writer or unsafe path prevented access",
+        }
+        self._alert_cleanup_status.setText(
+            f"{labels.get(status, status)}. Managed files: "
+            f"{int(state.get('managed_bytes', 0)) / 1024**2:.1f} MiB; "
+            f"last check removed {int(state.get('deleted_files', 0))} archives; "
+            f"pinned {int(state.get('pinned_files', 0))}. "
+            f"Diagnostic queue drops: {int(state.get('dropped', 0))}; "
+            f"write failures: {int(state.get('writer_errors', 0))}."
+        )
+
+    def _request_alert_cleanup(self) -> None:
+        worker = self._alert_retention_worker()
+        if worker is not None:
+            worker.request_cleanup()
+            self._alert_cleanup_status.setText("Cleanup requested with the saved settings.")
+            QTimer.singleShot(500, self._refresh_alert_cleanup)
 
     def _tab_enterprise(self) -> QWidget:
         """Evidence-based readiness, extension trust, and proof status."""
@@ -9913,6 +10008,9 @@ class SettingsDialog(QDialog):
         candidate.autostart_enabled = self._autostart_chk.isChecked()
         candidate.eco_mode = self._eco_chk.isChecked()
         candidate.blackbox_enabled = self._blackbox_chk.isChecked()
+        candidate.alert_retention_enabled = self._alert_retention_chk.isChecked()
+        candidate.alert_retention_days = self._alert_retention_days.value()
+        candidate.alert_retention_max_mib = self._alert_retention_mib.value()
         candidate.deception_user_folders = self._deception_user_folders_chk.isChecked()
         candidate.mcp_enabled = self._mcp_chk.isChecked()
         try:
@@ -10317,4 +10415,8 @@ class SettingsDialog(QDialog):
             self._process_baseline.set_enabled(
                 self._cfg.process_baseline_enabled
             )
+        retention_worker = self._alert_retention_worker()
+        if retention_worker is not None:
+            from angerona.core.alert_retention import RetentionPolicy
+            retention_worker.update_policy(RetentionPolicy.from_config(self._cfg))
         self.accept()

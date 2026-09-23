@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import os
 from types import SimpleNamespace
 
@@ -631,3 +633,18 @@ def test_evidence_lattice_requires_same_process_birth_across_signals() -> None:
         "process_create_time": 5678.9,
         "deception": "Smart Deception",
     }
+
+
+@pytest.fixture(autouse=True)
+def _shared_process_evidence(monkeypatch):
+    # Existing detector-policy fixtures control process rows. Exercise the
+    # detector through its shared-snapshot seam; sensor collection has its own
+    # concurrency, loss and PID-reuse tests.
+    from angerona.telemetry.sensors import ProcessSnapshot
+    from angerona.modules import lsass_guard, shadowcopy_guard
+
+    for provider in (lsass_guard, shadowcopy_guard,):
+        def snapshot(*_args, _provider=provider, **_kwargs):
+            rows = tuple(item.info for item in _provider.psutil.process_iter([]))
+            return ProcessSnapshot(rows, 1.0, True, len(rows), 0)
+        monkeypatch.setattr(provider, "process_snapshot", snapshot)

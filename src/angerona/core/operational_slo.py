@@ -5,6 +5,7 @@ import math
 import os
 import secrets
 import time
+from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Mapping
@@ -20,6 +21,8 @@ class PerformanceBudget:
     max_p95_tick_ms: float = 250.0
     max_queue_utilization: float = 0.90
     max_dropped_events: int = 0
+    max_p95_cpu_percent: float = 25.0
+    max_write_mb_per_second: float = 10.0
 
     def __post_init__(self) -> None:
         values = asdict(self)
@@ -36,10 +39,16 @@ class RuntimeSample:
     rss_mb: float
     threads: int
     handles: int
-    tick_ms: float
+    tick_ms: float | None
     queue_depth: int = 0
     queue_capacity: int = 1
     dropped_events: int = 0
+    cpu_seconds: float | None = None
+    read_bytes: int | None = None
+    write_bytes: int | None = None
+    process_count: int = 1
+    logical_cpus: int = 1
+    resource_unknowns: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.queue_capacity < 1 or self.queue_depth < 0:
@@ -48,13 +57,19 @@ class RuntimeSample:
             raise ValueError("queue depth exceeds capacity")
         numeric = (
             self.timestamp, self.rss_mb, self.threads, self.handles,
-            self.tick_ms, self.queue_depth, self.queue_capacity,
+            self.queue_depth, self.queue_capacity,
             self.dropped_events,
+            self.process_count, self.logical_cpus,
         )
+        numeric += tuple(value for value in (
+            self.tick_ms, self.cpu_seconds, self.read_bytes, self.write_bytes,
+        ) if value is not None)
         if any(not math.isfinite(float(value)) for value in numeric):
             raise ValueError("runtime measurements must be finite")
         if any(float(value) < 0 for value in numeric):
             raise ValueError("runtime measurements cannot be negative")
+        if self.logical_cpus < 1 or self.process_count < 1:
+            raise ValueError("invalid process or CPU count")
 
 
 @dataclass(frozen=True)
@@ -79,10 +94,48 @@ class SoakEvidence:
         self.max_samples = int(max_samples)
         self._samples: list[RuntimeSample] = []
         self._evicted = 0
+        self._peaks: dict[str, float] = {}
+        self._drops_delta = 0
+        self._counter_resets = 0
+        self._unknowns: set[str] = set()
+        self._cpu_rates: list[float] = []
+        self._max_write_rate = 0.0
+        self._read_delta = self._write_delta = 0
 
     def add(self, sample: RuntimeSample) -> None:
         if self._samples and sample.timestamp < self._samples[-1].timestamp:
             raise ValueError("sample timestamps must not regress")
+        for field in ("rss_mb", "threads", "handles", "process_count"):
+            self._peaks[field] = max(self._peaks.get(field, 0), getattr(sample, field))
+        self._peaks["queue"] = max(
+            self._peaks.get("queue", 0), sample.queue_depth / sample.queue_capacity,
+        )
+        self._unknowns.update(str(item)[:120] for item in sample.resource_unknowns[:16])
+        if self._samples:
+            previous = self._samples[-1]
+            self._drops_delta += max(0, sample.dropped_events - previous.dropped_events)
+            self._counter_resets += sample.dropped_events < previous.dropped_events
+            duration = sample.timestamp - previous.timestamp
+            for field in ("cpu_seconds", "read_bytes", "write_bytes"):
+                before, after = getattr(previous, field), getattr(sample, field)
+                if before is None or after is None:
+                    continue
+                if after < before:
+                    self._unknowns.add(f"{field} counter regressed")
+                    continue
+                delta = after - before
+                if field == "cpu_seconds" and duration > 0:
+                    self._cpu_rates.append(delta / duration / sample.logical_cpus * 100)
+                    if len(self._cpu_rates) > self.max_samples:
+                        self._cpu_rates.pop(0)
+                elif field == "read_bytes":
+                    self._read_delta += delta
+                elif field == "write_bytes":
+                    self._write_delta += delta
+                    if duration > 0:
+                        self._max_write_rate = max(
+                            self._max_write_rate, delta / duration / (1024 * 1024),
+                        )
         self._samples.append(sample)
         if len(self._samples) > self.max_samples:
             # Preserve baseline plus the newest window so growth remains
@@ -97,35 +150,33 @@ class SoakEvidence:
                 (), ("at least two samples are required",),
             )
         first, last = self._samples[0], self._samples[-1]
-        tick_values = sorted(item.tick_ms for item in self._samples)
+        tick_values = sorted(item.tick_ms for item in self._samples if item.tick_ms is not None)
         p95_index = max(0, math.ceil(len(tick_values) * 0.95) - 1)
         # Peak growth is intentional: a resource spike followed by a late drop
         # must not disappear from long-runtime evidence.
         indicators = {
-            "rss_growth_mb": max(item.rss_mb for item in self._samples) - first.rss_mb,
-            "thread_growth": float(
-                max(item.threads for item in self._samples) - first.threads
-            ),
-            "handle_growth": float(
-                max(item.handles for item in self._samples) - first.handles
-            ),
-            "p95_tick_ms": tick_values[p95_index],
-            "max_queue_utilization": max(
-                item.queue_depth / item.queue_capacity for item in self._samples
-            ),
-            "dropped_events_delta": float(sum(
-                max(0, current.dropped_events - previous.dropped_events)
-                for previous, current in zip(self._samples, self._samples[1:])
-            )),
+            "rss_growth_mb": self._peaks["rss_mb"] - first.rss_mb,
+            "peak_rss_mb": self._peaks["rss_mb"],
+            "thread_growth": self._peaks["threads"] - first.threads,
+            "handle_growth": self._peaks["handles"] - first.handles,
+            "peak_process_count": self._peaks["process_count"],
+            "max_queue_utilization": self._peaks["queue"],
+            "dropped_events_delta": float(self._drops_delta),
             "samples_evicted": float(self._evicted),
         }
-        counter_resets = sum(
-            current.dropped_events < previous.dropped_events
-            for previous, current in zip(self._samples, self._samples[1:])
-        )
-        unknowns = (
-            (f"dropped-event counter reset {counter_resets} time(s)",)
-            if counter_resets else ()
+        if tick_values:
+            indicators["p95_tick_ms"] = tick_values[p95_index]
+        if self._cpu_rates:
+            rates = sorted(self._cpu_rates)
+            indicators["p95_cpu_percent"] = rates[max(0, math.ceil(len(rates) * .95) - 1)]
+        if any(item.write_bytes is not None for item in self._samples):
+            indicators["max_write_mb_per_second"] = self._max_write_rate
+            indicators["write_mb"] = self._write_delta / (1024 * 1024)
+        if any(item.read_bytes is not None for item in self._samples):
+            indicators["read_mb"] = self._read_delta / (1024 * 1024)
+        unknowns = tuple(sorted(self._unknowns)) + (
+            (f"dropped-event counter reset {self._counter_resets} time(s)",)
+            if self._counter_resets else ()
         )
         checks = (
             ("rss_growth_mb", self.budget.max_rss_growth_mb),
@@ -134,10 +185,12 @@ class SoakEvidence:
             ("p95_tick_ms", self.budget.max_p95_tick_ms),
             ("max_queue_utilization", self.budget.max_queue_utilization),
             ("dropped_events_delta", self.budget.max_dropped_events),
+            ("p95_cpu_percent", self.budget.max_p95_cpu_percent),
+            ("max_write_mb_per_second", self.budget.max_write_mb_per_second),
         )
         violations = tuple(
             f"{name}={indicators[name]:.3f} exceeds {float(limit):.3f}"
-            for name, limit in checks if indicators[name] > float(limit)
+            for name, limit in checks if name in indicators and indicators[name] > float(limit)
         )
         return SLOResult(
             not violations and not unknowns,
@@ -276,6 +329,130 @@ def sample_process(
         clock(), float(rss), int(threads), int(handles), float(tick_ms),
         int(queue_depth), int(queue_capacity), int(dropped_events),
     )
+
+
+class ProcessTreeSampler:
+    """On-demand process-tree counters bound to the original root generations.
+
+    No background polling, process names, command lines, or paths are read.
+    Explicit additional roots cover an independently started Ollama daemon or
+    protection service. Trees are deduplicated. Departed children do not cause
+    cumulative CPU/I/O counters to decrease. Processes which start and exit
+    entirely between observations are outside this polling measurement.
+    """
+
+    MAX_PROCESSES = 4096
+
+    def __init__(
+        self, process_id: int, *, additional_pids: tuple[int, ...] = (),
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        import psutil
+
+        ids = tuple(dict.fromkeys((process_id, *additional_pids)))
+        if len(ids) > 32 or any(
+            isinstance(pid, bool) or not isinstance(pid, int) or not 1 <= pid <= 0xFFFFFFFF
+            for pid in ids
+        ):
+            raise ValueError("invalid process ID or more than 32 process roots")
+        self._roots = tuple(psutil.Process(pid) for pid in ids)
+        self._births = tuple(float(proc.create_time()) for proc in self._roots)
+        if any(not math.isfinite(birth) or birth <= 0 for birth in self._births):
+            raise RuntimeError("process root identity is unavailable")
+        self._logical_cpus = max(1, int(psutil.cpu_count() or 1))
+        self._clock = clock
+        self._previous: OrderedDict[
+            tuple[int, float], tuple[float | None, int | None, int | None]
+        ] = OrderedDict()
+        self._totals = [0.0, 0, 0]
+
+    def sample(
+        self, *, tick_ms: float = 0, queue_depth: int = 0,
+        queue_capacity: int = 1, dropped_events: int = 0,
+    ) -> RuntimeSample:
+        processes = {}
+        unknowns: set[str] = set()
+        for root, birth in zip(self._roots, self._births):
+            if not root.is_running() or float(root.create_time()) != birth:
+                raise RuntimeError("original process root exited or was replaced")
+            processes[root.pid] = root
+            try:
+                for child in root.children(recursive=True):
+                    if len(processes) >= self.MAX_PROCESSES:
+                        unknowns.add("process tree exceeds collection limit")
+                        break
+                    processes.setdefault(child.pid, child)
+            except Exception:
+                unknowns.add("process tree enumeration incomplete")
+        rss = threads = handles = 0
+        observed: dict[tuple[int, float], tuple[float | None, int | None, int | None]] = {}
+        measured = [False, False, False]
+        for process in processes.values():
+            try:
+                birth = float(process.create_time())
+                if not math.isfinite(birth) or birth <= 0 or not process.is_running():
+                    raise RuntimeError("process identity changed")
+                identity = (process.pid, birth)
+                with process.oneshot():
+                    memory = int(process.memory_info().rss)
+                    thread_count = int(process.num_threads())
+                    handle_reader = getattr(process, "num_handles", None)
+                    if handle_reader is None:
+                        handle_reader = getattr(process, "num_fds", None)
+                    handle_count = int(handle_reader()) if handle_reader else 0
+                    if handle_reader is None:
+                        unknowns.add("native handles/file descriptors unavailable")
+                    cpu: float | None = None
+                    read_bytes: int | None = None
+                    write_bytes: int | None = None
+                    try:
+                        times = process.cpu_times()
+                        cpu = float(times.user + times.system)
+                    except Exception:
+                        unknowns.add("process CPU counters incomplete")
+                    try:
+                        io = process.io_counters()
+                        read_bytes, write_bytes = int(io.read_bytes), int(io.write_bytes)
+                    except Exception:
+                        unknowns.add("process disk I/O counters incomplete")
+                # A PID reused during the reads cannot contribute another
+                # process's counters under the previous generation's identity.
+                if not process.is_running():
+                    raise RuntimeError("process exited during sampling")
+                rss += memory
+                threads += thread_count
+                handles += handle_count
+                current = (cpu, read_bytes, write_bytes)
+                previous = self._previous.get(identity, (0.0, 0, 0))
+                for index, (before, after) in enumerate(zip(previous, current)):
+                    if after is None:
+                        continue
+                    measured[index] = True
+                    if before is None:
+                        unknowns.add("process resource counter coverage resumed")
+                    elif after < before:
+                        unknowns.add("process resource counter regressed")
+                    else:
+                        self._totals[index] += after - before
+                observed[identity] = current
+            except Exception:
+                unknowns.add("process resource collection incomplete")
+        if not observed:
+            raise RuntimeError("process tree resource counters unavailable")
+        for identity, counters in observed.items():
+            self._previous[identity] = counters
+            self._previous.move_to_end(identity)
+        while len(self._previous) > self.MAX_PROCESSES * 4:
+            self._previous.popitem(last=False)
+            unknowns.add("process counter history exceeded collection limit")
+        return RuntimeSample(
+            self._clock(), rss / (1024 * 1024), threads, handles, float(tick_ms),
+            queue_depth, queue_capacity, dropped_events,
+            float(self._totals[0]) if measured[0] else None,
+            int(self._totals[1]) if measured[1] else None,
+            int(self._totals[2]) if measured[2] else None,
+            len(observed), self._logical_cpus, tuple(sorted(unknowns)),
+        )
 
 
 def structured_health(

@@ -11,7 +11,9 @@ import hashlib
 import hmac
 import json
 import math
+import os
 import re
+import stat
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -242,10 +244,25 @@ def load_package(path: str | Path, *, now: datetime | None = None) -> DetectionP
     """Load, verify, fixture-test, and performance-gate one local JSON package."""
     package_path = Path(path)
     try:
-        if package_path.stat().st_size > MAX_PACKAGE_BYTES:
+        flags = (os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(os.open(package_path, flags), "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                _fail("package must be a regular file")
+            raw = stream.read(MAX_PACKAGE_BYTES + 1)
+        if len(raw) > MAX_PACKAGE_BYTES:
             _fail("package exceeds maximum size")
-        raw = package_path.read_bytes()
-        document = json.loads(raw.decode("utf-8"))
+
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    _fail("package has duplicate JSON fields")
+                result[key] = value
+            return result
+
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique,
+                              parse_constant=lambda _value: _fail("package must use finite JSON"))
     except PackageValidationError:
         raise
     except Exception as exc:

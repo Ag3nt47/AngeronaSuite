@@ -17,6 +17,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
+from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
 MAX_INPUT_CHARS = 32_000
@@ -148,6 +149,9 @@ class BrokerResponse:
     authorization_tag: str = ""
     tool_executed: bool = False
     tool_result: Any = None
+    request_hash: str = ""
+    tool_definition_hash: str = ""
+    agent_revision: str = ""
 
 
 @dataclass(frozen=True)
@@ -171,6 +175,7 @@ class AuditReceipt:
 class _Tool:
     validators: Mapping[str, Callable[[Any], Any]]
     handler: Callable[..., Any]
+    definition_hash: str
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -201,6 +206,9 @@ def _response_authorization_body(response: BrokerResponse) -> bytes:
             "expires_at": response.expires_at,
             "tool_executed": response.tool_executed,
             "tool_result": response.tool_result,
+            "request_hash": response.request_hash,
+            "tool_definition_hash": response.tool_definition_hash,
+            "agent_revision": response.agent_revision,
         }
     )
 
@@ -213,6 +221,7 @@ class AISecurityBroker:
         execution_ttl_seconds: int = DEFAULT_EXECUTION_TTL_SECONDS,
         clock: Callable[[], float] = time.time,
         audit_key: bytes | None = None,
+        agent_integrity=None,
     ) -> None:
         if type(execution_enabled) is not bool:
             raise ValueError("AI execution setting must be a boolean")
@@ -235,6 +244,13 @@ class AISecurityBroker:
         self._consumed: dict[str, float] = {}
         self._execution_lock = threading.Lock()
         self._tools: dict[str, _Tool] = {}
+        self._agent_integrity = agent_integrity
+
+    def _agent_guard(self, name, expected=None, *, mutation=False):
+        if self._agent_integrity is None:
+            from angerona.core.agent_integrity import AgentIntegrityStore
+            self._agent_integrity = AgentIntegrityStore.current()
+        return self._agent_integrity.guard_tool(name, expected, mutation=mutation)
 
     def register_tool(
         self,
@@ -265,7 +281,18 @@ class AISecurityBroker:
             or not callable(handler)
         ):
             raise ValueError("typed tool validators are required")
-        self._tools[name] = _Tool(dict(validators), handler)
+        definition_hash = hashlib.sha256(_canonical_json({
+            "name": name, "arguments": sorted(validators), "registration": secrets.token_hex(32),
+        })).hexdigest()
+        with self._execution_lock:
+            if name in self._tools:
+                raise ValueError("tool name must be non-empty and unique")
+            self._tools[name] = _Tool(MappingProxyType(dict(validators)), handler, definition_hash)
+
+    def unregister_tool(self, name):
+        """Retiring/replacing a tool revokes prior authorizations for its definition."""
+        with self._execution_lock:
+            return self._tools.pop(name, None) is not None
 
     @staticmethod
     def _canonical_hash(value: Any) -> str:
@@ -347,6 +374,7 @@ class AISecurityBroker:
         if abstained and tool_name:
             raise ValueError("an abstaining model cannot request a tool")
         arguments: tuple[tuple[str, Any], ...] = ()
+        tool_definition_hash, agent_revision = "", ""
         if request.mode is AIMode.EXECUTE:
             if abstained:
                 if tool_name or raw_args:
@@ -362,16 +390,18 @@ class AISecurityBroker:
                 tool = None
             else:
                 tool = self._tools[tool_name]
+                tool_definition_hash = tool.definition_hash
             if tool is None:
                 validated = {}
             else:
                 if set(raw_args) != set(tool.validators):
                     raise ValueError("tool argument names do not match its schema")
                 try:
-                    validated = {
-                        name: validator(raw_args[name])
-                        for name, validator in tool.validators.items()
-                    }
+                    with self._agent_guard(tool_name) as agent_revision:
+                        validated = {
+                            name: validator(raw_args[name])
+                            for name, validator in tool.validators.items()
+                        }
                 except Exception as exc:
                     raise ValueError("tool argument validation failed") from exc
             if len(_canonical_json(validated)) > MAX_OUTPUT_CHARS:
@@ -386,6 +416,9 @@ class AISecurityBroker:
             abstention_reason=reason,
             tool_name=tool_name,
             tool_arguments=arguments,
+            request_hash=hashlib.sha256(request.canonical()).hexdigest(),
+            tool_definition_hash=tool_definition_hash,
+            agent_revision=agent_revision,
         )
         stamp = float(self._clock())
         if not math.isfinite(stamp):
@@ -423,7 +456,8 @@ class AISecurityBroker:
             or stamp > response.expires_at
         ):
             raise PermissionError("AI tool authorization is expired or invalid")
-        expected = self._authorization_tag(response)
+        authorization_body = _response_authorization_body(response)
+        expected = hmac.new(self._authorization_key, authorization_body, hashlib.sha256).hexdigest()
         if not re.fullmatch(r"[0-9a-f]{64}", response.authorization_tag) or not hmac.compare_digest(
             response.authorization_tag, expected
         ):
@@ -439,7 +473,16 @@ class AISecurityBroker:
             # Consume before entering plugin/tool code. A failing handler cannot
             # turn the same model-issued capability into an execution replay.
             self._consumed[response.authorization_tag] = response.expires_at
-        result = tool.handler(**dict(response.tool_arguments))
+        if tool.definition_hash != response.tool_definition_hash:
+            raise PermissionError("AI tool definition changed after authorization")
+        # Dispatch the exact authenticated JSON snapshot. A caller retaining a
+        # nested argument dictionary cannot mutate it while file custody opens.
+        arguments = dict(json.loads(authorization_body)["tool_arguments"])
+        with self._agent_guard(response.tool_name, response.agent_revision, mutation=True):
+            with self._execution_lock:
+                if self._tools.get(response.tool_name) is not tool:
+                    raise PermissionError("AI tool registration changed before execution")
+            result = tool.handler(**arguments)
         if len(_canonical_json(result)) > MAX_TOOL_RESULT_CHARS:
             raise ValueError("AI tool result exceeds the bound")
         executed = replace(
@@ -467,6 +510,7 @@ class AISecurityBroker:
             or type(accepted) is not bool
             or response.request_id != request.request_id
             or response.mode is not request.mode
+            or response.request_hash != hashlib.sha256(request.canonical()).hexdigest()
             or not re.fullmatch(r"[0-9a-f]{64}", response.authorization_tag)
             or not hmac.compare_digest(
                 response.authorization_tag,

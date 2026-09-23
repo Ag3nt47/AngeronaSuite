@@ -1,0 +1,94 @@
+{
+  "schema": "angerona.curated-detection-cohort.v1",
+  "source_id": "angerona.synthetic.rule-tradeoffs.v1",
+  "source_kind": "synthetic",
+  "high_water": 8,
+  "loss": {
+    "overflow": false,
+    "dropped_rows": 0,
+    "incomplete_reason": "",
+    "excluded_after_high_water": 0
+  },
+  "rows": [
+    {
+      "event_id": "both-positive",
+      "revision": 1,
+      "event": {
+        "message": "legacy-marker synthetic malicious behavior",
+        "indicator": "confirmed"
+      },
+      "label": true,
+      "label_source": "Angerona authored synthetic example; not observed attack ground truth"
+    },
+    {
+      "event_id": "new-positive",
+      "revision": 2,
+      "event": {
+        "message": "synthetic credential-access sequence",
+        "indicator": "confirmed"
+      },
+      "label": true,
+      "label_source": "Angerona authored synthetic example; not observed attack ground truth"
+    },
+    {
+      "event_id": "missed-positive",
+      "revision": 3,
+      "event": {
+        "message": "synthetic unrecognized malicious behavior",
+        "indicator": "none"
+      },
+      "label": true,
+      "label_source": "Angerona authored synthetic example; not observed attack ground truth"
+    },
+    {
+      "event_id": "developer-benign",
+      "revision": 4,
+      "event": {
+        "message": "developer discussing legacy-marker in source",
+        "indicator": "none"
+      },
+      "label": false,
+      "label_source": "Angerona authored synthetic example; not observed attack ground truth"
+    },
+    {
+      "event_id": "backup-benign",
+      "revision": 5,
+      "event": {
+        "message": "backup includes text legacy-marker",
+        "indicator": "none"
+      },
+      "label": false,
+      "label_source": "Angerona authored synthetic example; not observed attack ground truth"
+    },
+    {
+      "event_id": "gaming-benign",
+      "revision": 6,
+      "event": {
+        "message": "ordinary gaming workload",
+        "indicator": "none"
+      },
+      "label": false,
+      "label_source": "Angerona authored synthetic example; not observed attack ground truth"
+    },
+    {
+      "event_id": "lost-positive",
+      "revision": 7,
+      "event": {
+        "message": "legacy-marker synthetic older attack pattern",
+        "indicator": "none"
+      },
+      "label": true,
+      "label_source": "Angerona authored synthetic example; not observed attack ground truth"
+    },
+    {
+      "event_id": "new-false-positive",
+      "revision": 8,
+      "event": {
+        "message": "approved benign evaluation fixture",
+        "indicator": "confirmed"
+      },
+      "label": false,
+      "label_source": "Angerona authored synthetic example; not observed attack ground truth"
+    }
+  ]
+}

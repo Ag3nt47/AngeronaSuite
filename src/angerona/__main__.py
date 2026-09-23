@@ -55,6 +55,11 @@ def _install_fast_pyside_feature_detection() -> bool:
 def main() -> int:
     setup_requested = "--setup" in sys.argv
     chill_requested = "--chill" in sys.argv
+    engine_flags = {"--engine-console", "--engine-serve", "--engine-service"}.intersection(sys.argv)
+    if len(engine_flags) > 1:
+        print("[Angerona] Choose exactly one engine launch mode.", flush=True)
+        return 2
+    engine_mode = next(iter(engine_flags), "")
     frozen = bool(getattr(sys, "frozen", False))
     from angerona.core.privilege import ElevationResult, ensure_admin, is_admin
     if frozen and sys.platform == "win32":
@@ -72,6 +77,14 @@ def main() -> int:
                 flush=True,
             )
             return 2
+        # The detachable desktop console is an ordinary-user client. A signed
+        # SCM package enters through its own native dispatcher. Neither route
+        # requests elevation implicitly or bypasses the exact package pin.
+        if engine_mode:
+            if engine_mode != "--engine-service" and is_admin():
+                print("[Angerona] Open the engine console in an ordinary-user session.", flush=True)
+                return 2
+            return _run_engine_mode(engine_mode)
         elevation = ensure_admin()
         authority_after_elevation = verify_current_msix_authority()
         effective_administrator = is_admin()
@@ -104,6 +117,9 @@ def main() -> int:
             flush=True,
         )
         return 2
+
+    if engine_mode:
+        return _run_engine_mode(engine_mode)
 
     # Keep sys.argv intact for the UAC handoff above. The helper's loopback
     # readiness option belongs to Angerona and must not reach Qt's parser.
@@ -204,6 +220,38 @@ def main() -> int:
     if setup_requested:
         from PySide6.QtCore import QTimer
         QTimer.singleShot(700, app.window._open_setup)
+    return qt.exec()
+
+
+def _run_engine_mode(mode: str) -> int:
+    """Route before the embedded GUI singleton so only the engine owns sensors."""
+    if mode == "--engine-service":
+        from angerona.core.engine_windows_service import run_dispatcher
+        return run_dispatcher()
+    if mode == "--engine-serve":
+        from angerona.core.persistent_engine import serve
+        return serve()
+    from angerona.core.persistent_engine import _require_user
+    _require_user()
+    from angerona.core.data_paths import configure_runtime_environment
+    configure_runtime_environment()
+    _install_fast_pyside_feature_detection()
+    from PySide6.QtWidgets import QApplication
+    from angerona.gui.engine_console import EngineConsole
+    qt = QApplication([sys.argv[0]])
+    qt.setApplicationName("Angerona Protection Console")
+    qt.setQuitOnLastWindowClosed(True)
+    from angerona.core.config import Config
+    from angerona.gui.theme import build_qss
+    from angerona.branding import icon_path
+    from PySide6.QtGui import QIcon
+    config = Config.load()
+    qt.setStyleSheet(build_qss(config.theme))
+    icon = icon_path()
+    if icon:
+        qt.setWindowIcon(QIcon(icon))
+    window = EngineConsole()
+    window.show()
     return qt.exec()
 
 

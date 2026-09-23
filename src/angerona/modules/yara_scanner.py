@@ -1,6 +1,6 @@
 """In-process YARA signature scanner with bounded, symlink-safe traversal.
 
-The scanner uses the maintained ``yara-python`` package instead of launching a
+The scanner uses the maintained ``yara-x`` package instead of launching a
 writeable checkout/PATH executable from an elevated process. Rules are compiled
 before activation and only changed files generate repeat alerts.
 """
@@ -11,9 +11,14 @@ import hmac
 import json
 import math
 import os
+import io
+import secrets
+import stat as stat_module
 import sys
 import threading
 import time
+import zipfile
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -21,6 +26,9 @@ from typing import Iterator
 from angerona.core.atomic_io import replace_with_retry
 from angerona.core.data_paths import data_dir, resource_root
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.eventbus import Event
+from angerona.core.response_contract import authorize_response
+from angerona.core.archive_safety import preflight_zip_bytes
 
 
 SCAN_DIRS = [
@@ -31,12 +39,45 @@ MAX_FILES_PER_ROOT = 10_000
 MAX_DISCOVERY_ENTRIES_PER_ROOT = 200_000
 MAX_DIRECTORY_ENTRIES = 100_000
 MAX_FILE_BYTES = 64 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 128
+MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
+MAX_SCAN_CACHE = 20_000
 _CURSOR_SCHEMA = "angerona.yara-fair-cursor.v1"
 _CURSOR_SIG = "hmac_sha256"
+_RUNTIME_ROOTS: set[Path] = set()
+_RUNTIME_ROOTS_LOCK = threading.Lock()
+
+
+def register_runtime_watch(path: str) -> bool:
+    """Enroll the operator-selected drill target, with a bounded root count."""
+    try:
+        root = Path(path).expanduser().absolute()
+        if root.exists() and (not root.is_dir() or root.is_symlink()
+                              or YaraScannerModule._is_reparse(root.lstat())):
+            return False
+        with _RUNTIME_ROOTS_LOCK:
+            if root not in _RUNTIME_ROOTS and len(_RUNTIME_ROOTS) >= 8:
+                return False
+            _RUNTIME_ROOTS.add(root)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def unregister_runtime_watch(path: str | None) -> None:
+    if path:
+        with _RUNTIME_ROOTS_LOCK:
+            _RUNTIME_ROOTS.discard(Path(path).expanduser().absolute())
+
+
+def scan_roots() -> tuple[Path, ...]:
+    with _RUNTIME_ROOTS_LOCK:
+        return tuple(dict.fromkeys([*SCAN_DIRS, *sorted(_RUNTIME_ROOTS)]))
 
 SEVERITY_HINTS = {
     "mimikatz": Severity.CRITICAL,
     "eicar": Severity.MEDIUM,
+    "angerona_byovd_probe": Severity.MEDIUM,
 }
 
 
@@ -76,6 +117,9 @@ class YaraScannerModule(BaseModule):
         self._scanner = None
         self._active_rules = ""
         self._seen_matches: dict[tuple[str, str], int] = {}
+        self._scan_cache: OrderedDict[str, tuple[int, ...]] = OrderedDict()
+        self._detection_receipts: OrderedDict[str, int] = OrderedDict()
+        self._receipt_lock = threading.Lock()
         self._cursor_state: dict[str, object] = {
             "schema": _CURSOR_SCHEMA,
             "sequence": 0,
@@ -135,6 +179,8 @@ class YaraScannerModule(BaseModule):
             self._compiled_rules = compiled
             self._scanner = scanner
             self._active_rules = str(path.resolve())
+            self._scan_cache.clear()
+            self._seen_matches.clear()
         return compiled
 
     def reload_rules(self, candidate_text: str | None = None) -> bool:
@@ -171,6 +217,8 @@ class YaraScannerModule(BaseModule):
                     self._compiled_rules = compiled
                     self._scanner = self._make_scanner(compiled)
                     self._active_rules = str(active.resolve())
+                    self._scan_cache.clear()
+                    self._seen_matches.clear()
             self.set_health(100, "validated rules active")
             self.emit(f"YARA rules reloaded ({Path(self._active_rules).name}).", Severity.INFO)
             return True
@@ -390,36 +438,161 @@ class YaraScannerModule(BaseModule):
                 return severity
         return Severity.HIGH
 
+    @staticmethod
+    def _file_identity(value: os.stat_result) -> tuple[int, ...]:
+        return (value.st_dev, value.st_ino, value.st_size,
+                value.st_mtime_ns, value.st_nlink)
+
+    @staticmethod
+    def _event_digest(event: Event) -> str:
+        return hashlib.sha256(json.dumps({
+            "module": event.module, "message": event.message,
+            "severity": int(event.severity), "ts": event.ts,
+            "details": event.details,
+        }, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+            allow_nan=False).encode("utf-8")).hexdigest()
+
+    def verify_detection_event(self, event: Event) -> bool:
+        """Verify an exact observation retained by this detector generation.
+
+        Bus authentication alone identifies a ledger entry, not the code that
+        produced it. Generic emit() calls cannot manufacture a scan receipt.
+        This is same-process provenance, not an OS isolation boundary.
+        """
+        try:
+            if event.module != self.name or self._bus is None:
+                return False
+            digest = YaraScannerModule._event_digest(event)
+            with self._receipt_lock:
+                return self._detection_receipts.get(digest) == self.lifecycle_generation
+        except (TypeError, ValueError, OverflowError):
+            return False
+
+    @staticmethod
+    def _response_classification(path: Path, payload: bytes) -> str:
+        # A keyword in a report or source file must not quarantine that file.
+        # Automatic authority is independent of editable rule names/metadata.
+        marker = b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE"
+        if marker in payload or b"ANGERONA-BYOVD-DRILL-BENIGN-MARKER" in payload:
+            from types import SimpleNamespace
+            from angerona.core.practice_scope import provenance_for_event
+            provenance = provenance_for_event(SimpleNamespace(details={"path": str(path)}))
+            if provenance is not None and provenance.kind in {"shark", "red-team"}:
+                return "registered-antimalware-probe"
+            standard = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}" + b"$" + marker + b"!$H+H*"
+            if payload[:68] == standard and not payload[68:].strip(b" \t\r\n\x1a"):
+                return "standard-antimalware-test"
+        if (payload.startswith(b"MZ") and b"PE\x00\x00" in payload[:4096]
+                and all(token in payload.lower() for token in
+                        (b"sekurlsa::", b"logonpasswords", b"gentilkiwi"))):
+            return "credential-dumper-binary-signatures"
+        return ""
+
+    @staticmethod
+    def _archive_contents(payload: bytes):
+        preflight_zip_bytes(payload, max_files=MAX_ARCHIVE_MEMBERS)
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            remaining = MAX_ARCHIVE_BYTES
+            for member in archive.infolist():
+                if member.is_dir():
+                    continue
+                if (member.flag_bits & 1 or member.file_size > remaining
+                        or member.file_size > 1000 * max(1, member.compress_size)):
+                    raise OSError("archive expansion or encryption prevents complete inspection")
+                with archive.open(member) as stream:
+                    content = stream.read(remaining + 1)
+                if len(content) > remaining:
+                    raise OSError("archive expansion budget exceeded")
+                remaining -= len(content)
+                yield member.filename[:512], content
+
     def _scan_file(self, scanner, path: Path) -> str:
         try:
-            stat = path.stat(follow_symlinks=False)
-            if self._is_reparse(stat):
+            path = Path(os.path.abspath(path))
+            before = path.stat(follow_symlinks=False)
+            if (self._is_reparse(before) or stat_module.S_ISLNK(before.st_mode)
+                    or not stat_module.S_ISREG(before.st_mode) or before.st_nlink != 1):
                 return "reparse-skipped"
-            if stat.st_size > MAX_FILE_BYTES:
+            if before.st_size > MAX_FILE_BYTES:
                 return "oversize-skipped"
-            results = scanner.scan_file(str(path))
-            for match in results.matching_rules:
-                rule = str(match.identifier)
-                key = (str(path), rule)
-                if self._seen_matches.get(key) == stat.st_mtime_ns:
-                    continue
-                self._seen_matches[key] = stat.st_mtime_ns
-                # Structured evidence lets the threat layer match this exact
-                # path against short-lived in-memory drill provenance.  Never
-                # infer practice status from the attacker-controlled filename,
-                # rule name, or display message.
-                self.emit(
-                    f"YARA match: {rule} {path}",
-                    self._severity_for(rule),
-                    path=str(path),
-                    artifact_path=str(path),
-                    rule=rule,
-                )
+            identity = self._file_identity(before)
+            cache_key = str(path)
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            with os.fdopen(os.open(path, flags), "rb") as handle:
+                if self._file_identity(os.fstat(handle.fileno())) != identity:
+                    raise OSError("file changed before signature inspection")
+                # Windows Path.stat and fstat have different ctime semantics
+                # in Python 3.12. Use the native handle ChangeTime, also for
+                # cache admission, so restoring mtime cannot suppress rescans.
+                from angerona.modules.file_integrity import FileIntegrityModule
+                change_token = FileIntegrityModule._handle_change_token(handle.fileno())
+                scan_identity = (id(scanner), *identity, change_token)
+                if self._scan_cache.get(cache_key) == scan_identity:
+                    self._scan_cache.move_to_end(cache_key)
+                    return "scanned"
+                payload = handle.read(MAX_FILE_BYTES + 1)
+                if len(payload) > MAX_FILE_BYTES:
+                    raise OSError("file grew beyond signature budget")
+                results = scanner.scan(payload)
+                matches = {str(match.identifier): "" for match in results.matching_rules}
+                classification = self._response_classification(path, payload)
+                archive_error = ""
+                # Inspect ZIP members in memory only; no extraction, recursion,
+                # archive paths, encryption, or unbounded decompression.
+                if payload.startswith(b"PK\x03\x04"):
+                    try:
+                        for member, content in self._archive_contents(payload):
+                            for match in scanner.scan(content).matching_rules:
+                                matches.setdefault(str(match.identifier), member)
+                            classification = classification or self._response_classification(path, content)
+                    except Exception as exc:
+                        # Loss of archive coverage must not erase a positive
+                        # signature already proved in the outer bytes or an
+                        # earlier member. Never cache this as a complete scan.
+                        archive_error = f"{type(exc).__name__}: {exc}"[:500]
+                if (self._file_identity(os.fstat(handle.fileno())) != identity
+                        or FileIntegrityModule._handle_change_token(handle.fileno()) != change_token
+                        or self._file_identity(path.stat(follow_symlinks=False)) != identity):
+                    raise OSError("file changed during signature inspection")
+            digest = hashlib.sha256(payload).hexdigest()
+            for rule, member in matches.items():
+                details = {
+                    "path": str(path), "artifact_path": str(path), "rule": rule,
+                    "observed_content_sha256": digest,
+                    "evidence_type": "native_analytic_detection", "detector_verdict": "positive",
+                    "producer_generation": self.lifecycle_generation,
+                    "detector_receipt_nonce": secrets.token_hex(16),
+                    "response_authorized": False,
+                    "scan_complete": not bool(archive_error),
+                }
+                if archive_error:
+                    details["coverage_reason"] = archive_error
+                if member:
+                    details["archive_member"] = member
+                if classification:
+                    details.update(authorize_response(("quarantine_file",), path=path))
+                    details["response_classification"] = classification
+                else:
+                    details["response_withheld_reason"] = "heuristic signature requires corroboration"
+                event = Event(self.name, f"YARA match: {rule} {path}",
+                              self._severity_for(rule), time.time(), details)
+                # Record immutable proof before publication: inline consumers
+                # can verify it, and mutated/re-signed lookalikes cannot pass.
+                with self._receipt_lock:
+                    self._detection_receipts[self._event_digest(event)] = self.lifecycle_generation
+                    while len(self._detection_receipts) > 4096:
+                        self._detection_receipts.popitem(last=False)
+                if self._bus is not None:
+                    self._bus.publish(event)
+            if archive_error:
+                self.last_error = archive_error
+                return "failed"
+            self._scan_cache[cache_key] = scan_identity
+            self._scan_cache.move_to_end(cache_key)
+            while len(self._scan_cache) > MAX_SCAN_CACHE:
+                self._scan_cache.popitem(last=False)
             return "scanned"
         except Exception as exc:
-            # Every unreadable/transient/timeout result participates in coverage
-            # health; silent failure would turn a hostile locked-file prefix into
-            # false proof of a complete scan.
             self.last_error = str(exc)
             return "failed"
 
@@ -481,7 +654,7 @@ class YaraScannerModule(BaseModule):
             if not isinstance(roots_state, dict):
                 roots_state = {}
                 self._cursor_state["roots"] = roots_state
-            for root in SCAN_DIRS:
+            for root in scan_roots():
                 if self.stopping:
                     break
                 if not root.is_dir():

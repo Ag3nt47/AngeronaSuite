@@ -46,6 +46,10 @@ _NON_ENVIRONMENT_SECRETS = frozenset({
     # Local IPC proof material is authority and must never be inherited by a
     # child process or left as a plaintext sidecar.
     "ANGERONA_IPC_AUTH_KEY",
+    # Recovery drill encryption/audit keys are read only by the backup drill;
+    # they must never become ambient child-process authority.
+    "ANGERONA_RECOVERY_DRILL_ENCRYPTION_KEY",
+    "ANGERONA_RECOVERY_DRILL_AUDIT_KEY",
 })
 _MAX_LEGACY_ENV_BYTES = 1024 * 1024
 

@@ -416,11 +416,13 @@ def _():
             validation_lease=lease,
         )
         assert started, "engine did not start with its live validation lease"
-        deadline = time.time() + 30
-        while eng.is_running and time.time() < deadline:
+        deadline = time.monotonic() + 30
+        while eng.is_running and time.monotonic() < deadline:
             time.sleep(0.3)
         assert not eng.is_running, "drill did not finish within 30s"
         assert eng.steps, "no steps recorded"
+        failed_steps = [step.technique for step in eng.steps if not step.ok]
+        assert not failed_steps, f"mandatory drill steps failed: {failed_steps}"
         files = os.listdir(tmp)
         custom = [f for f in files if "custom" in f]
         assert custom, f"custom marker not written; files={files}"
@@ -429,13 +431,24 @@ def _():
         assert "detect-me-xyz" in txt and "never executed" in txt.lower(), (
             "custom marker not inert"
         )
-        eng.stop_and_clean()
     finally:
-        lease.release()
-    try:
-        os.rmdir(tmp)
-    except OSError:
-        pass
+        try:
+            # A timeout or failed assertion still owns a live drill and its
+            # artifact custody. Cancel before releasing that custody, then
+            # wait for the worker's final marker/child cleanup to finish.
+            eng.stop_and_clean()
+            worker = eng._thread
+            if worker is not None and worker.is_alive():
+                worker.join(timeout=5.0)
+                assert not worker.is_alive(), "drill worker did not stop within 5s"
+            # Catch any artifact completed during the bounded cancellation join.
+            eng.stop_and_clean()
+        finally:
+            lease.release()
+            try:
+                os.rmdir(tmp)
+            except OSError:
+                pass
     return f"{len(eng.steps)} steps over 2 phases; custom marker inert + cleaned"
 
 

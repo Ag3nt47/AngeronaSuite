@@ -145,3 +145,18 @@ def test_other_producers_without_response_authority_are_not_globally_demoted(mod
         'response_authorized': False, 'detector_policy': 'semantic-indicator-alert-only',
     })
     assert event_disposition(event) == 'active'
+
+
+@pytest.fixture(autouse=True)
+def _shared_process_evidence(monkeypatch):
+    # Existing detector-policy fixtures control process rows. Exercise the
+    # detector through its shared-snapshot seam; sensor collection has its own
+    # concurrency, loss and PID-reuse tests.
+    from angerona.telemetry.sensors import ProcessSnapshot
+    from angerona.modules import lsass_guard, shadowcopy_guard
+
+    for provider in (lsass_guard, shadowcopy_guard,):
+        def snapshot(*_args, _provider=provider, **_kwargs):
+            rows = tuple(item.info for item in _provider.psutil.process_iter([]))
+            return ProcessSnapshot(rows, 1.0, True, len(rows), 0)
+        monkeypatch.setattr(provider, "process_snapshot", snapshot)

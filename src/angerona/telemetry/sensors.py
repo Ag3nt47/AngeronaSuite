@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import threading
 import time
+import math
 from dataclasses import dataclass
-from typing import Dict, Iterable, List
+from types import MappingProxyType
+from typing import Dict, Iterable, List, Mapping
 
 # ── Shared snapshot cache ─────────────────────────────────────────────────────
 # A full process-table / connection-table enumeration is one of the most
@@ -40,7 +42,7 @@ _conn_cache_lock = threading.Lock()
 # Cache lifetimes use monotonic time; evidence receipts retain wall-clock time.
 # An NTP/manual clock correction must neither freeze a stale sensor snapshot
 # nor cause every concurrent consumer to repeat an otherwise fresh scan.
-_proc_cache: tuple[float, List[Dict]] = (0.0, [])
+_proc_cache: tuple[float, "ProcessSnapshot | None"] = (0.0, None)
 _conn_cache: tuple[float, "ConnectionSnapshot | None"] = (0.0, None)
 
 
@@ -80,8 +82,28 @@ class ConnectionList(list[Dict]):
         return self.receipt.error
 
 
-def list_processes(max_age: float | None = None) -> List[Dict]:
-    """Snapshot processes, including the PID-reuse-safe creation timestamp.
+@dataclass(frozen=True)
+class ProcessSnapshot:
+    """Shared, immutable process evidence with explicit collection loss.
+
+    A missing command line or birth timestamp is retained as an unknown; it
+    never becomes an empty, apparently successful inventory. Consumers must
+    still revalidate process identity before taking action.
+    """
+
+    processes: tuple[Mapping[str, object], ...]
+    collected_at: float
+    complete: bool
+    enumerated: int
+    skipped: int
+    unreadable: int = 0
+    identity_incomplete: int = 0
+    error: str = ""
+    enumeration_complete: bool = True
+
+
+def process_snapshot(max_age: float | None = None) -> ProcessSnapshot:
+    """Snapshot rich process metadata, including PID birth and parent identity.
 
     Cached for a short window (``ANGERONA_SENSOR_CACHE_TTL``, default 1.5 s) so
     concurrent sensor threads share one enumeration instead of each running
@@ -98,22 +120,77 @@ def list_processes(max_age: float | None = None) -> List[Dict]:
             # A successful enumeration can legitimately be empty (for example
             # in an isolated test/container).  Cache validity is represented
             # by its timestamp, not by the snapshot's truthiness.
-            if ts > 0.0 and 0.0 <= (now - ts) < ttl:
+            if ts > 0.0 and cached is not None and 0.0 <= (now - ts) < ttl:
                 return cached
+        out: list[Mapping[str, object]] = []
+        enumerated = skipped = unreadable = identity_incomplete = 0
+        error = ""
+        enumeration_complete = True
         try:
             import psutil
-        except Exception:
-            return []
-        out: List[Dict] = []
-        for p in psutil.process_iter([
-            "pid", "name", "exe", "ppid", "username", "cmdline", "create_time",
-        ]):
-            try:
-                out.append(p.info)
-            except Exception:
-                continue
-        _proc_cache = (now, out)
-        return out
+
+            for p in psutil.process_iter([
+                "pid", "name", "exe", "ppid", "username", "cmdline", "create_time",
+            ]):
+                enumerated += 1
+                try:
+                    info = dict(p.info)
+                    # psutil caches Process objects between process_iter calls.
+                    # Verify their birth identity after reading the metadata:
+                    # otherwise a reused PID can mix an old birth timestamp
+                    # with the replacement process's image or command line.
+                    running = getattr(p, "is_running", None)
+                    if running is not None and not running():
+                        skipped += 1
+                        continue
+                    command = info.get("cmdline")
+                    if not isinstance(command, (tuple, list)) or any(
+                        not isinstance(value, str) for value in command
+                    ):
+                        command = None
+                        unreadable += 1
+                    else:
+                        command = tuple(command)
+                    info["cmdline"] = command
+                    try:
+                        birth = float(info.get("create_time"))
+                        valid_identity = (
+                            isinstance(info.get("pid"), int) and info["pid"] > 0
+                            and math.isfinite(birth) and birth > 0
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        valid_identity = False
+                    identity_incomplete += int(not valid_identity)
+                    out.append(MappingProxyType(info))
+                except Exception:
+                    skipped += 1
+        except Exception as exc:
+            enumeration_complete = False
+            error = f"process enumeration failed: {exc}"[:500]
+        if skipped and not error:
+            error = f"{skipped} process row(s) could not be normalized"
+        receipt = ProcessSnapshot(
+            tuple(out), time.time(),
+            enumeration_complete and not (skipped or unreadable or identity_incomplete),
+            enumerated, skipped, unreadable, identity_incomplete, error,
+            enumeration_complete and skipped == 0,
+        )
+        # The timestamp starts when collection begins: an expensive enumeration
+        # must not silently extend the maximum evidence age by its own duration.
+        _proc_cache = (now, receipt)
+        return receipt
+
+
+def list_processes(max_age: float | None = None) -> List[Dict]:
+    """Return private, list-compatible rows from the shared rich snapshot.
+
+    Consumers historically mutate dictionaries and command-line lists. Copies
+    prevent one detector from changing evidence seen by other detectors.
+    """
+    return [
+        {**row, "cmdline": list(row["cmdline"]) if row["cmdline"] is not None else None}
+        for row in process_snapshot(max_age=max_age).processes
+    ]
 
 
 def connection_snapshot(max_age: float | None = None) -> ConnectionSnapshot:

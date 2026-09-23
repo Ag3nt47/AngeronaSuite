@@ -119,6 +119,10 @@ class CounterAgenticModule(BaseModule):
         self._alerted: dict[int, float] = {}     # parent_pid -> last alert ts (dedup)
         self._port_alerted: dict[tuple, float] = {}
         self._detections = 0
+        self._agent_integrity_store = None
+        self._agent_integrity_due = 0.0
+        self._agent_integrity_signature = None
+        self._agent_integrity_status = "unconfigured"
         (
             self._inference_port,
             self._inference_endpoint,
@@ -327,6 +331,35 @@ class CounterAgenticModule(BaseModule):
                 del self._port_alerted[key]
 
     # ── lifecycle ────────────────────────────────────────────────────────────
+    def _check_agent_integrity(self):
+        """Configured agent inputs only; no discovery, content execution or rebaseline."""
+        now = time.monotonic()
+        if now < self._agent_integrity_due:
+            return
+        self._agent_integrity_due = now + 60.0
+        from angerona.core.agent_integrity import AgentIntegrityStore
+        try:
+            if self._agent_integrity_store is None:
+                self._agent_integrity_store = AgentIntegrityStore.current()
+            result = self._agent_integrity_store.verify()
+        except Exception:
+            result = {"status": "unavailable", "files": []}
+        self._agent_integrity_status = result["status"]
+        signature = (result["status"], tuple(
+            (row["target_id"], row["status"], row["observed_sha256"])
+            for row in result["files"]
+        ))
+        if signature == self._agent_integrity_signature:
+            return
+        self._agent_integrity_signature = signature
+        if result["status"] in {"drift", "unavailable"}:
+            self.emit(
+                "Enrolled AI agent instructions, memory or tool definitions changed or became "
+                "unavailable. Configured Angerona tool actions are withheld until explicit review.",
+                Severity.HIGH, event_type="agent_input_integrity", response_authority=False,
+                finding_code="agent.input.integrity", agent_integrity=result,
+            )
+
     def run(self) -> None:
         self.emit("CAGT online — counter-agentic detection (cadence fingerprinting + "
                   "inference-port watch). Detection-only.", Severity.INFO)
@@ -335,13 +368,17 @@ class CounterAgenticModule(BaseModule):
                 self._ingest_bus()
                 coverage = self._watch_ollama_port()
                 self._prune()
-                if coverage.complete:
+                self._check_agent_integrity()
+                if self._agent_integrity_status in {"drift", "unavailable"}:
+                    self.set_health(55, "configured agent input integrity requires operator review")
+                elif coverage.complete:
                     self.set_health(
                         100,
                         f"complete connection snapshot ({coverage.observed} rows; "
                         f"{coverage.port_connections} on configured inference port), "
                         f"{len(self.timelines)} tracked lineages, "
-                        f"{self._detections} detections",
+                        f"{self._detections} detections; agent input baselines "
+                        f"{self._agent_integrity_status}",
                     )
                 else:
                     self.set_health(

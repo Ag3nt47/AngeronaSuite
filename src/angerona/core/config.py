@@ -131,6 +131,9 @@ class Config:
     autostart_enabled: bool = True              # platform-native per-user logon startup
     eco_mode: bool = True                        # start in network-first Chill Mode for all-day low-impact protection
     blackbox_enabled: bool = True                # auto-launch the decoupled Black Box diagnostic recorder at startup
+    alert_retention_enabled: bool = True         # disposable runtime-alert archives only
+    alert_retention_days: int = 30
+    alert_retention_max_mib: int = 256
     # Decoys stay inside Angerona's D-drive data root unless the operator
     # explicitly opts into personal-folder/registry placement.
     deception_user_folders: bool = False
@@ -471,6 +474,11 @@ class Config:
                 cfg.eco_mode = _bool_setting(data, "eco_mode", cfg.eco_mode)
                 cfg.blackbox_enabled = _bool_setting(
                     data, "blackbox_enabled", cfg.blackbox_enabled)
+                from angerona.core.alert_retention import RetentionPolicy
+                retention = RetentionPolicy.from_config(data)
+                cfg.alert_retention_enabled = retention.enabled
+                cfg.alert_retention_days = retention.days
+                cfg.alert_retention_max_mib = retention.max_mib
                 cfg.deception_user_folders = _bool_setting(
                     data, "deception_user_folders", cfg.deception_user_folders)
                 cfg.mobile_enabled = _bool_setting(
@@ -844,6 +852,9 @@ class Config:
 
     def save(self) -> None:
         self.validate_integration_settings()
+        from angerona.core.alert_retention import RetentionPolicy
+        RetentionPolicy(self.alert_retention_enabled, self.alert_retention_days,
+                        self.alert_retention_max_mib)
         # Persist the push webhook before replacing settings.json. If the OS store is
         # unavailable, fail the save rather than falling back to a plaintext
         # credential in the general settings file.
@@ -867,6 +878,9 @@ class Config:
                     "autostart_enabled": self.autostart_enabled,
                     "eco_mode":          self.eco_mode,
                     "blackbox_enabled":  self.blackbox_enabled,
+                    "alert_retention_enabled": self.alert_retention_enabled,
+                    "alert_retention_days": self.alert_retention_days,
+                    "alert_retention_max_mib": self.alert_retention_max_mib,
                     "deception_user_folders": self.deception_user_folders,
                     "mobile_enabled":     self.mobile_enabled,
                     "mobile_signal_cli":  self.mobile_signal_cli,

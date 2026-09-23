@@ -107,13 +107,8 @@ try:
 except Exception:  # pragma: no cover
     psutil = None
 
-# The exact, industry-standard AV test string — fully inert, recognized by
-# every scanner on earth, and already wired into this project's own
-# rules.yar and YARA self-test (see modules/yara_scanner.py). Using the real
-# EICAR marker (instead of inventing a fake "malicious-looking" string)
-# makes the test genuinely safe AND genuinely realistic at the same time.
-# Every Initial Access / Persistence variant below embeds this exact,
-# unmodified string — only the surrounding filename/container ever varies.
+# Inert substring recognized by the bundled YARA probe rule. This is not the
+# complete 68-byte standard EICAR file and does not imply third-party AV coverage.
 EICAR_MARKER = "EICAR-STANDARD-ANTIVIRUS-TEST-FILE"
 
 # IANA-reserved domains, explicitly set aside for documentation/testing —

@@ -15,6 +15,17 @@ rule EICAR_Test_File
         $eicar
 }
 
+rule Angerona_BYOVD_Probe
+{
+    meta:
+        description = "Inert Angerona driver-drop probe; not a driver exploit signature"
+        severity = "medium"
+    strings:
+        $probe = "ANGERONA-BYOVD-DRILL-BENIGN-MARKER"
+    condition:
+        $probe
+}
+
 rule Suspicious_PowerShell_Downloader
 {
     meta:

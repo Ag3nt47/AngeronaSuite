@@ -58,6 +58,7 @@ class StagedAction:
     preview: str
     staged_at: float
     digest: str
+    agent_revision: str = ""
 
 
 @dataclass
@@ -92,7 +93,8 @@ class Assistant:
         aria.confirm(r.confirm_token)            # -> executes
     """
 
-    def __init__(self, *, enabled: bool = False, memory_turns: int = 200) -> None:
+    def __init__(self, *, enabled: bool = False, memory_turns: int = 200,
+                 agent_integrity=None) -> None:
         self._state_lock = threading.RLock()
         self._enabled = bool(enabled)
         self._tools: dict[str, Tool] = {}
@@ -101,6 +103,13 @@ class Assistant:
         self._pending: dict[str, StagedAction] = {}
         self._triggers: list[tuple[str, Callable[[dict], Optional[str]]]] = []
         self._confirm_ttl = 300.0   # a pending write expires after 5 min
+        self._agent_integrity = agent_integrity
+
+    def _agent_guard(self, name, expected=None, *, mutation=False):
+        if self._agent_integrity is None:
+            from angerona.core.agent_integrity import AgentIntegrityStore
+            self._agent_integrity = AgentIntegrityStore.current()
+        return self._agent_integrity.guard_tool(name, expected, mutation=mutation)
 
     @property
     def enabled(self) -> bool:
@@ -194,7 +203,8 @@ class Assistant:
 
         if tool.kind is ToolKind.READ:
             try:
-                data = tool.fn(*args, **kwargs)
+                with self._agent_guard(name):
+                    data = tool.fn(*args, **kwargs)
                 return self._say(Result(True, _summarize(name, data), data=data), role="tool")
             except Exception as exc:
                 return self._say(Result(False, f"{name} failed: {exc}"), role="tool")
@@ -208,12 +218,13 @@ class Assistant:
             ))
             call_args = tuple(_thaw_value(value) for value in frozen_args)
             call_kwargs = {key: _thaw_value(value) for key, value in frozen_kwargs}
-            preview = (tool.preview(*call_args, **call_kwargs) if tool.preview
-                       else f"{name}({_fmt_args(call_args, call_kwargs)})")
+            with self._agent_guard(name) as agent_revision:
+                preview = (tool.preview(*call_args, **call_kwargs) if tool.preview
+                           else f"{name}({_fmt_args(call_args, call_kwargs)})")
         except Exception as exc:
             return self._say(Result(False, f"Could not safely stage {name}: {exc}"))
         digest = _action_digest(name, tool.version, tool.kind,
-                                frozen_args, frozen_kwargs, preview)
+                                frozen_args, frozen_kwargs, preview, agent_revision)
         with self._state_lock:
             if not self._enabled:
                 return self._say(Result(False, "ARIA is disabled; no action was staged."))
@@ -230,6 +241,7 @@ class Assistant:
                 name=name, version=tool.version, kind=tool.kind, fn=tool.fn,
                 args=frozen_args, kwargs=frozen_kwargs, preview=preview,
                 staged_at=time.time(), digest=digest,
+                agent_revision=agent_revision,
             )
         self._record_shadow_preview(name, tool.version, frozen_args, frozen_kwargs)
         msg = (f"⚠ Confirmation required before executing a change.\n"
@@ -255,13 +267,14 @@ class Assistant:
                 tool.version != staged.version or tool.fn is not staged.fn):
             return self._say(Result(False, "The registered action changed; confirmation was revoked."))
         expected = _action_digest(staged.name, staged.version, staged.kind,
-                                  staged.args, staged.kwargs, staged.preview)
+                                  staged.args, staged.kwargs, staged.preview, staged.agent_revision)
         if expected != staged.digest:
             return self._say(Result(False, "The staged action failed its integrity check."))
         try:
             args = tuple(_thaw_value(value) for value in staged.args)
             kwargs = {key: _thaw_value(value) for key, value in staged.kwargs}
-            data = staged.fn(*args, **kwargs)
+            with self._agent_guard(staged.name, staged.agent_revision, mutation=True):
+                data = staged.fn(*args, **kwargs)
             return self._say(Result(True, f"✓ Executed {staged.name}. {_summarize(staged.name, data)}", data=data),
                              role="tool")
         except Exception as exc:
@@ -483,8 +496,8 @@ def _thaw_value(value: tuple) -> Any:
 
 
 def _action_digest(name: str, version: int, kind: ToolKind, args: tuple,
-                   kwargs: tuple, preview: str) -> str:
-    payload = repr((name, version, kind.value, args, kwargs, preview)).encode("utf-8")
+                   kwargs: tuple, preview: str, agent_revision: str = "") -> str:
+    payload = repr((name, version, kind.value, args, kwargs, preview, agent_revision)).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 

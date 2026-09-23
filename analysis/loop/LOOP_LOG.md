@@ -3710,3 +3710,30 @@ Deep-review pass 1: 384 files compile, 84 capabilities discover, 66 module self-
 ## Round 20260923 — Bug Test (pass 3)
 
 388 final sources compile. Final offline selfcheck passes 26/26, with 84 modules accounted for, 66 module passes, 18 explicit skips and pipeline pass; 24 direct core self-tests pass. Original full pytest: 3,884 pass/19 skip/3 stale fixture or documentation failures in 1,205.62 seconds. QA corrected those three tests without product changes. Targeted closure gates pass, including final combined integration 206 pass/1 skip and independent token boundary 11 pass. Final collection reconciliation: all 3,991 cases accounted for, latest outcomes 3,972 pass/19 skip, no unresolved failures or uncovered cases. This combines the full run and subsequent targeted gates; native elevated Ollama, VMware guest and non-Windows GUI acceptance are not inferred from inert tests. [Detailed report](../deep-review-20260923/bugs-round3.md).
+
+## Round 1 — Innovation
+
+2026-09-23 upgrade research addendum: compared current code with primary osquery,
+Falco, Wazuh, OWASP, Microsoft, Apple, and CISA sources. Ranked seven remaining
+proposals: measured Chill release gates, native containment acceptance, sensor
+demand planning, independent recovery copies, immutable POSIX AI-tool inputs,
+trusted service/package acceptance, and native enrolled-application egress.
+Existing implementations are identified separately from proposals; external
+signing identities, native authority/OS acceptance, and real 24-hour/7-day
+measurements remain explicit dependencies. No product edits or comparative
+efficacy claim. The historical completed loop state is unchanged.
+[Comparison](../upgrade-20260923/comparison.md) and
+[ranked proposal addendum](innovation_ideas.md#september-23-2026-upgrade--focused-research-addendum).
+
+## Round 20260923 — Bug Test (subsequent upgrade)
+
+403 sources compile; 86 module imports succeed, with 84 capabilities discovered
+and no duplicate declared CODEs. Selfcheck passes 26/26: 66 module self-tests,
+one pipeline pass, and 18 expected skips. Direct core/Red Team checks pass 32/32;
+focused harness/integrity/retention tests pass 70 with 2 permission skips. Two
+harness defects are FIXED behind gates: timeout cleanup previously released
+custody without stopping its drill, and mandatory failed steps could pass the
+phase. The isolated 30-step drill passes its unchanged 30-second deadline.
+Independent integrity and resumable-retention regressions pass; no additional
+unresolved product bug was reproduced. Final integrated suite and publication
+remain coordinator-owned. [Detailed report](../upgrade-20260923/bug-hunt.md).

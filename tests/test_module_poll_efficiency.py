@@ -125,7 +125,7 @@ def sensor_clock(monkeypatch):
 @pytest.mark.parametrize("kind", ["process", "connection"])
 def test_wall_clock_corrections_preserve_sensor_freshness(sensor_clock, kind, wall_delta):
     clock, calls = sensor_clock
-    read = sensors.list_processes if kind == "process" else sensors.connection_snapshot
+    read = sensors.process_snapshot if kind == "process" else sensors.connection_snapshot
     first = read(max_age=1.5)
     clock[0] += 0.5
     clock[1] += wall_delta
@@ -145,7 +145,7 @@ def test_wall_clock_corrections_preserve_sensor_freshness(sensor_clock, kind, wa
 @pytest.mark.parametrize("kind", ["process", "connection"])
 def test_concurrent_sensor_consumers_share_single_enumeration(sensor_clock, kind):
     _clock, calls = sensor_clock
-    read = sensors.list_processes if kind == "process" else sensors.connection_snapshot
+    read = sensors.process_snapshot if kind == "process" else sensors.connection_snapshot
     with ThreadPoolExecutor(max_workers=8) as workers:
         snapshots = list(workers.map(lambda _index: read(max_age=1.5), range(32)))
     assert calls[kind] == 1

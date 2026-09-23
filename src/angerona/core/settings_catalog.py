@@ -25,9 +25,9 @@ AREAS = (
     ),
     SettingsArea(
         "system", "System",
-        "Startup, local services, performance and platform sensors.",
+        "Startup, local services, performance, alert archive cleanup and platform sensors.",
         ("startup", "autostart", "eco", "performance", "black box", "mcp",
-         "ebpf", "sgx", "service"),
+         "ebpf", "sgx", "service", "retention", "cleanup", "alert archive", "disk space"),
         "Local configuration", True,
     ),
     SettingsArea(

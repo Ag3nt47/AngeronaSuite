@@ -377,6 +377,40 @@ def _is_native_analytic(ev: Event) -> bool:
     return True
 
 
+def _verify_shark_native_event(
+    event: Event, *, manager: object | None, bus: object | None,
+    recorder: object,
+) -> bool:
+    """Verify an actual detector production receipt, independently of bus HMAC.
+
+    A signed event proves publication, not that the named detector scanned a
+    file. Only the exact currently registered built-in producer can validate
+    its bounded scan receipt. Historical refreshes without that live producer
+    intentionally cannot manufacture native detection credit.
+    """
+    try:
+        from angerona.core.module_manager import ModuleManager
+        from angerona.modules.yara_scanner import YaraScannerModule
+
+        if type(manager) is not ModuleManager or type(bus) is not EventBus:
+            return False
+        with manager._module_control_lock:
+            if manager.bus is not bus or manager.recorder is not recorder:
+                return False
+            producer = manager.modules.get(YaraScannerModule.name)
+            if (
+                type(producer) is not YaraScannerModule
+                or producer._bus is not bus
+                or event.module != YaraScannerModule.name
+            ):
+                return False
+            # Calling the class implementation prevents an instance-level
+            # verifier replacement from accepting fabricated native fields.
+            return YaraScannerModule.verify_detection_event(producer, event) is True
+    except Exception:
+        return False
+
+
 def _custom_contract_category(step: dict) -> str | None:
     """Return a declared custom category only for a complete explicit contract."""
     contract = step.get("detector_contract")
@@ -1003,8 +1037,12 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
     det_remediated = sum(1 for v in detection if v.remediation)
     verified_upgrades = sum(
         1 for v in detection if v.finding_resolved and v.verification_catch)
-    lines.append(f" Steps run  : {n}     Compatible analytic catches: {caught}/{n}     "
-                 f"Correlated SOAR actions: {remediated}/{caught}")
+    benign = [v for v in verdicts if v.category == "resilience"]
+    unscored = [v for v in verdicts if v.category in {"informational", "unmonitored"}]
+    lines.append(f" Steps run  : {n}     Expected-positive: {len(detection)}     "
+                 f"Benign checks: {len(benign)}     Informational: {len(unscored)}")
+    lines.append(f" Analytic catches on expected-positive steps: {det_caught}/{len(detection)}; "
+                 f"correlated SOAR actions: {det_remediated}/{det_caught}")
     readiness = history.get("validation_readiness")
     if isinstance(readiness, dict) and readiness:
         lines.append(
@@ -1029,7 +1067,7 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
         if v.category in {"unmonitored", "informational"}:
             status = "N/A    "
         elif v.category == "resilience":
-            status = "FALSE-POS" if v.catch else "PASS   "
+            status = "FALSE-POS" if v.catch else "NO ALERT"
         else:
             status = "CAUGHT " if v.catch else "MISSED "
         lines.append(f" [{status}] {v.stage} — {v.technique}")
@@ -1053,9 +1091,9 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
                              "malicious about it. That's a FALSE POSITIVE worth investigating in "
                              f"{v.catch.module}'s trigger condition, not a successful catch.")
             else:
-                lines.append("           correctly generated no alert — legitimate heavy CPU/IO "
-                             "work should never be treated as malicious on its own. Silence here "
-                             "is the passing outcome.")
+                lines.append("           no verified analytic alert was recorded for this benign "
+                             "workload. This does not prove that every detector observed it; "
+                             "negative sensor coverage remains unverified.")
         elif v.catch:
             if v.native_catch:
                 lines.append(
@@ -1188,7 +1226,10 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
     resilience = [v for v in verdicts if v.category == "resilience"]
     if resilience:
         fps = sum(1 for v in resilience if v.catch)
-        lines.append(f"   Resilience check   : {'FAIL — false positive(s), see above' if fps else 'PASS — no false alert'}")
+        lines.append(f"   Benign alerts      : {fps}/{len(resilience)} recorded check(s); "
+                     "negative detector coverage unverified")
+        if fps:
+            lines.append("   Resilience check   : FAIL — verified false positive(s), see above")
     unmon = [v for v in verdicts if v.category in {"unmonitored", "informational"}]
     if unmon:
         lines.append(f"   Unmonitored (info) : {', '.join(v.stage for v in unmon)} — no detector by design")
@@ -1653,6 +1694,11 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
             return None
         return numerator / denominator if denominator else 0.0
 
+    benign = [v for v in verdicts if v.category == "resilience"]
+    benign_alerts = sum(v.catch is not None for v in benign)
+    observation_only = sum(
+        v.observation is not None and v.catch is None for v in detection
+    )
     payload = {
         "run_id": history.get("run_id"),
         "report_basename": basename,
@@ -1699,6 +1745,24 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
         },
         "evidence_taxonomy": {
             "denominator": len(detection),
+            "denominator_scope": "expected-positive steps; incomplete runs withhold rates",
+            "observation_only": {
+                "count": observation_only,
+                "rate": _rate(observation_only, len(detection)),
+            },
+            "benign_resilience": {
+                "denominator": len(benign),
+                "executed": sum(v.ok for v in benign),
+                "recorded_analytic_alerts": benign_alerts,
+                "recorded_alert_rate": (
+                    _rate(benign_alerts, len(benign)) if benign else None
+                ),
+                "observed_steps": sum(v.observation is not None for v in benign),
+                "negative_detector_coverage_verified": False,
+            },
+            "unscored_steps": sum(
+                v.category in {"informational", "unmonitored"} for v in verdicts
+            ),
             "sensor_observation": {
                 "count": observed,
                 "rate": _rate(observed, len(detection)),
@@ -1996,6 +2060,10 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
             )
             purple_verifier = lambda event, step: verify_validation_purple_event(
                 validation_lease, event, step
+            )
+        else:
+            native_verifier = lambda event, _step: _verify_shark_native_event(
+                event, manager=manager, bus=bus, recorder=active_recorder,
             )
     finally:
         if owns_recorder:

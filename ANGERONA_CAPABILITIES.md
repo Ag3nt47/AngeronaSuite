@@ -1,9 +1,10 @@
 # Angerona Capabilities
 
-Current status: **v1.12.1**. This is a present-tense capability and boundary
+Current status: **v1.13.0**. This is a present-tense capability and boundary
 summary. Operating detail is in the [Master Manual](Angerona_Master_Manual.docx);
 engineering evidence is in
-[`analysis/loop/`](analysis/loop/), including the Cycle 26–30 evidence.
+the [September 23 upgrade](analysis/upgrade-20260923/README.md) and historical
+[`analysis/loop/`](analysis/loop/) records.
 
 ## Core proposition
 
@@ -13,7 +14,7 @@ security-engineering portfolios. It brings telemetry, detection, correlation,
 investigation, governed response, recovery, local AI, and non-destructive
 validation into one PySide6 desktop application.
 
-The v1.12.1 security model separates four kinds of claims:
+The current security model separates four kinds of claims:
 
 - **Integrated:** a production path is connected to the application and covered
   by its local contract.
@@ -26,20 +27,54 @@ The v1.12.1 security model separates four kinds of claims:
 
 ## v12 capability contract and operator surfaces
 
-- Exactly **81** built-in capabilities are present in the reproducible
+- Exactly **84** built-in capabilities are present in the reproducible
   Windows-target inventory. Every capability receives the same validated v12
   contract and operational lifecycle/freshness/loss snapshot.
 - Contract fields cover implementation version, platform, mode, permissions,
   inputs/outputs, egress, retention, response authority, dependencies,
   conflicts, settings, self-test, restart/loss behavior, and resource budget.
-- Contract truth is explicit: **6 native contracts** and **75 compatibility
+- Contract truth is explicit: **9 native contracts** and **75 compatibility
   adapters**. Compatibility metadata gaps remain visible and lower assurance
-  even though every shipped built-in module now carries the v1.12.1 release
+  even though every shipped built-in module now carries the v1.13.0 release
   implementation label. A shared version does not imply equal platform support,
   evidence completeness, response authority, or independent efficacy.
 - Capability Center and Module Inspector provide search, filter, typed sorting,
   bounded details, source/dependency/path information, and live operational
   evidence. Contract export remains machine-readable.
+
+## September 23 maintenance capabilities
+
+- **Automatic file containment:** a real YARA scan supplies typed positive
+  evidence and the observed file digest to the live response worker. Native
+  Windows inert file/ZIP checks verified quarantine, signed outcomes and Undo
+  without Ollama or manual dispatch. Shark native credit now verifies the
+  exact registered producer and its current scan receipt. This evidence covers
+  the tested path, not every Shark step or all real-world attacks.
+- **Bounded background work:** rich shared process collection preserves loss
+  and process birth identity; YARA caches unchanged files and bounds archive
+  metadata before expansion. Partial archives retain real findings and explicit
+  coverage gaps. Component benchmarks are separate from whole-host stability.
+- **Alert retention:** a background writer rotates disposable runtime alerts
+  at 4 MiB. Configurable age/size cleanup defaults to 30 days / 256 MiB and
+  excludes active or pinned segments, signed records, cases and recovery data.
+  Protected or inaccessible files can leave usage above the target.
+- **Detached engine:** an optional ordinary-user protection process survives
+  closure of its console. Authenticated bounded IPC carries live events,
+  readiness and typed controls; native per-user startup definitions are
+  available. Privileged Windows service deployment remains a signing and
+  native-acceptance gate.
+- **Integrated AI file integrity:** explicitly enrolled instruction, memory
+  and tool-definition digests gate mapped Assistant/broker actions. Windows
+  retains approved file custody; POSIX withholds mapped mutations when it
+  cannot provide immutable custody. This does not enforce arbitrary external
+  agents' tools or socket traffic.
+- **Recovery and detection evaluation:** CLI workflows create and verify a
+  real encrypted restore drill and replay labelled rule-quality cohorts.
+  Local restoration is not independent backup assurance; replay does not
+  execute attacks or measure unlabelled field false-positive rates.
+
+These extend existing modules and core workflows without increasing the catalog.
+[Commands, settings and evidence](analysis/upgrade-20260923/usage.md).
 
 ## Endpoint, network, and evidence visibility
 
@@ -312,11 +347,17 @@ Angerona host
 
 ## Platform contract and module discovery
 
-| Platform | Current use | Static modules |
+| Platform | Current use | Catalog entries declaring support |
 | --- | --- | ---: |
-| Windows | **Protect:** supported elevated user-mode telemetry and governed response; no unsigned kernel driver ships. | **81** |
-| Linux | **Observe + optional eBPF:** rootless shared-core visibility with an explicit privileged BCC/eBPF supplement. | **14** |
-| macOS | **Observe preview:** privacy-minimized shared-core visibility; no native enforcement claim. | **13** |
+| Windows | **Protect** depends on installed trusted authority and each action's prerequisites; ordinary-user source remains Observe/development scope. | **81** |
+| Linux | **Observe + optional eBPF:** rootless shared-core visibility with an explicit privileged BCC/eBPF supplement. | **20** |
+| macOS | **Observe preview:** privacy-minimized shared-core visibility; no native enforcement claim. | **19** |
+
+The shared catalog has **84** identities, including platform-specific entries.
+These overlapping declaration counts are not active module counts. Runtime
+running/enabled counts exclude unsupported, disabled and unconfigured optional
+integrations. Failed expected sensors remain visible; quiet telemetry alone is
+not grounds to disable a sensor or conceal a coverage gap.
 
 ## Best-fit use cases
 
@@ -334,15 +375,21 @@ Angerona host
 
 ## Validation snapshot
 
-- Authoritative v1.12.1 serial release suite:
-  **2678 passed; 13 intentional host-platform
-  skips; 0 failed**.
-- Static platform discovery: **81 Windows / 14 Linux / 13 macOS modules**.
-- Product `compileall`: pass.
-- Structural inventory: **81 capabilities** with **6 native contracts** and
-  **75 compatibility adapters**, without duplicate identity.
-- Supported headless selfcheck: **26/26**; workflow policy, dependency audit,
-  documentation drift, Ruff, and diff checks pass on the same release tree.
+- Final upgrade serial regression suite after code freeze: **4,303 passed /
+  20 skipped / 0 failed**, 478.73 seconds. See the linked validation record
+  below for the exact scope and separate native acceptance.
+- Current read-only inventory: **84 capabilities**, **9 native contracts** and
+  **75 compatibility adapters**, without duplicate identity; all implementation
+  versions report 1.13.0. The exporter starts no module workers.
+- Current isolated selfcheck: **26 phases passed / 0 failed**. SelfTestRunner:
+  **67 passed / 18 prerequisite skips**, including its separate event-pipeline
+  check. Skips are not live sensor passes.
+- Native scan-to-containment, detached-engine lifetime, encrypted recovery and
+  the regression-run results are recorded with their scopes in the
+  [upgrade validation record](analysis/upgrade-20260923/validation.md).
+- Prior source-launcher native CI passed on Intel and Apple Silicon macOS and
+  Ubuntu; that evidence does not establish new service deployment or signed
+  installer acceptance. [Native CI record](analysis/deep-review-20260923/publication-followup.md).
 
 Focused groups overlap. They are not a final-suite total or clean-machine
 publisher/deployment proof.

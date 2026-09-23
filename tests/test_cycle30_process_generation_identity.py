@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from types import SimpleNamespace
 
 from angerona.core.eventbus import EventBus, Severity
@@ -125,3 +127,18 @@ def test_lsass_guard_alerts_same_pid_for_two_birth_generations(monkeypatch) -> N
         20.0,
     ]
     assert module._detections == 2
+
+
+@pytest.fixture(autouse=True)
+def _shared_process_evidence(monkeypatch):
+    # Existing detector-policy fixtures control process rows. Exercise the
+    # detector through its shared-snapshot seam; sensor collection has its own
+    # concurrency, loss and PID-reuse tests.
+    from angerona.telemetry.sensors import ProcessSnapshot
+    from angerona.modules import lsass_guard
+
+    for provider in (lsass_guard,):
+        def snapshot(*_args, _provider=provider, **_kwargs):
+            rows = tuple(item.info for item in _provider.psutil.process_iter([]))
+            return ProcessSnapshot(rows, 1.0, True, len(rows), 0)
+        monkeypatch.setattr(provider, "process_snapshot", snapshot)

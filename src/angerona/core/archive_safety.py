@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import stat
+import struct
 import unicodedata
 import zipfile
 from pathlib import PurePosixPath
@@ -14,6 +15,38 @@ _WINDOWS_DEVICES = {
 }
 _WINDOWS_FORBIDDEN = set('<>:"|?*')
 _SUPPORTED_COMPRESSION = {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
+
+
+def preflight_zip_bytes(payload: bytes, *, max_files: int,
+                        max_directory_bytes: int = 1024 * 1024) -> None:
+    """Bound central-directory allocation before ZipFile materializes members.
+
+    This small-file inspection path intentionally rejects ZIP64, split archives,
+    prepended executables and trailing material. It does not extract anything.
+    The EOCD count is untrusted: walk the bounded directory and verify it.
+    """
+    end = payload.rfind(b"PK\x05\x06", max(0, len(payload) - 65557))
+    if end < 0 or len(payload) - end < 22:
+        raise ValueError("ZIP end record is missing")
+    _, disk, directory_disk, disk_entries, entries, size, offset, comment = struct.unpack_from(
+        "<4s4H2LH", payload, end
+    )
+    if (disk or directory_disk or disk_entries != entries or entries == 0xFFFF
+            or entries > max_files or size == 0xFFFFFFFF or offset == 0xFFFFFFFF
+            or size > max_directory_bytes or offset + size != end
+            or end + 22 + comment != len(payload)):
+        raise ValueError("ZIP directory exceeds inspection bounds or uses unsupported layout")
+    cursor, count = offset, 0
+    while cursor < end:
+        if cursor + 46 > end or payload[cursor:cursor + 4] != b"PK\x01\x02":
+            raise ValueError("ZIP directory entry is malformed")
+        name, extra, note = struct.unpack_from("<3H", payload, cursor + 28)
+        cursor += 46 + name + extra + note
+        count += 1
+        if count > max_files or cursor > end:
+            raise ValueError("ZIP directory member budget exceeded")
+    if cursor != end or count != entries:
+        raise ValueError("ZIP directory count is inconsistent")
 
 
 def safe_archive_path(name: str, *, allow_directory: bool = False) -> PurePosixPath:

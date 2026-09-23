@@ -449,6 +449,10 @@ STEPS: tuple[Step, ...] = (
         (
             Field("text", "github_repo", "GitHub release repository", "owner/AngeronaSuite"),
             Field("info", "data_dir", "Evidence and settings location"),
+            Field("check", "alert_retention_enabled", "Automatically clean archived alert copies",
+                  note="Keeps signed evidence, recovery records and pinned archives. Defaults: 30 days / 256 MiB."),
+            Field("spin", "alert_retention_days", "Keep alert archives for this many days", minimum=1, maximum=3650),
+            Field("spin", "alert_retention_max_mib", "Maximum alert archive storage (MiB)", minimum=8, maximum=16384),
         ),
     ),
     Step(

@@ -442,7 +442,9 @@ class CommandConsole:
         delay (useful for checking back later, e.g. after YARA's next
         5-minute scan cycle has had a chance to catch a file-drop step)."""
         from angerona.shark.aar_report import generate_aar
-        return generate_aar(self.config.data_dir, settle_seconds=0)
+        return generate_aar(self.config.data_dir, settle_seconds=0,
+                            recorder=getattr(self.manager, "recorder", None),
+                            bus=self.bus, manager=self.manager)
 
     # ── Cyber Security Academy ────────────────────────────────────────────
     def _instructor_lazy(self):

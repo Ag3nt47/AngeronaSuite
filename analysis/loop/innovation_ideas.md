@@ -963,3 +963,28 @@ traffic redirection, or hack-back.
 - No expansion of the existing Firewall-only restorable baseline by wording.
   Each additional mutation class must independently prove capture, apply,
   postcondition, rollback, restart recovery, and scope.
+
+## September 23, 2026 upgrade — focused research addendum
+
+This dated addendum preserves the completed historical loop above. It does not
+restart or alter `state.json`. Current implementation already includes shared
+process snapshots, process-tree measurements, typed YARA quarantine and Shark
+producer proof, configurable alert retention, a detached ordinary-user engine,
+enrolled AI-file integrity, encrypted restore drills, and detection evaluation.
+Those foundations are not proposed again. Full comparison, implementation
+locations, and acceptance limits: [upgrade comparison](../upgrade-20260923/comparison.md).
+
+Ranked by estimated impact per engineering effort for idle overhead and reliable
+autonomous defense. S/M/L do not include external provisioning or elapsed soak
+time. These are proposals, not claims that implementation or native acceptance
+has completed.
+
+| Rank and title | Pitch / why now and primary source | Fit | Effort / dependency | Safety |
+| --- | --- | --- | --- | --- |
+| 1. Measured Chill release gate | Prove sustained owned-process resource budgets under representative idle/burst workloads; current short fixtures cannot explain multi-day slowdown. [osquery watchdog](https://github.com/osquery/osquery/blob/master/osquery/core/watcher.cpp) offers a resource-supervision reference. | Core `operational_slo.py`, `runtime_metrics.py`, `tools/run_soak.py`; Harden/Visualize. | S integration; actual 24-hour/7-day runs and complete counters required. | Defensive only; explicit process ownership, visible missing evidence, no termination of unrelated processes. |
+| 2. Native containment acceptance matrix | Extend real detector-to-action proofs across supported target classes, benign controls, restart and loss. The failed Shark run demonstrates why rule/action integration matters. [Wazuh active response](https://documentation.wazuh.com/current/user-manual/reference/ossec-conf/active-response.html). | Existing detector tests, Combat, Shark AAR, detection-quality CLI; Detect/Respond/Visualize. | M; native permissions and producer availability differ by OS. | Defensive only; inert owned fixtures and loopback peers, exact verified outcomes, no payload weaponization. |
+| 3. Sensor demand plan for Chill | Compile active detection requirements into a shared input plan while preserving lifecycle and identity state. [Falco tuning](https://falco.org/docs/concepts/event-sources/kernel/tuning/) illustrates preserving state inputs when reducing collection. | Shared telemetry, capability dependencies, Chill controller; Detect/Harden. | M; equivalence tests needed before retiring any input. | Defensive only; never equate quiet telemetry with irrelevance or suppress loss reporting. |
+| 4. Independent recovery-copy adapter | Verify one enrolled external backup copy and restore exact bytes into a new private directory. Local restore success does not cover disk loss. [CISA ransomware guide](https://www.cisa.gov/stopransomware/ransomware-guide). | Existing backup, recovery drill and recovery-assurance engines; Harden/Respond. | M plus genuinely separate storage/provider and signer custody where claimed. | Defensive only; read-only selected sources, no live-file overwrite, no invented offline/offsite status. |
+| 5. Immutable POSIX inputs for integrated AI tools | Have the consumer use exact approved instruction/tool bytes instead of reopening a checked mutable path; adversarial review found the race. [OWASP agent security](https://cheatsheetseries.owasp.org/cheatsheets/AI_Agent_Security_Cheat_Sheet.html). | `agent_integrity.py`, AI broker, explicit adapters; Harden. | M; native Linux/macOS tests and cooperating consumer required. | Defensive only; preserve mutation refusal until custody exists; no arbitrary plugin loading or universal external-agent claim. |
+| 6. Trusted service and native package acceptance | Deploy the already gated Windows SCM entry and validate the complete signed install/reboot/update/uninstall lifecycle; separately accept Intel/Apple Silicon Mac packages. [Microsoft MSIX signing](https://learn.microsoft.com/en-us/windows/msix/package/signing-package-overview), [Apple Developer ID](https://developer.apple.com/developer-id/). | Native service, package identity and installer tooling; Harden/Respond. | L plus unconfigured signing/notarization identities and clean native hosts. | Defensive only; no privileged mutable Python source, invented signature, or assumed service protection. |
+| 7. Native egress policy for enrolled AI applications | Add application/user-bound WFP enforcement and verified reversible rule receipts; current process-egress guard observes only. [Microsoft ALE](https://learn.microsoft.com/en-us/windows/win32/fwp/application-layer-enforcement--ale-), [reauthorization](https://learn.microsoft.com/en-us/windows/win32/fwp/ale-re-authorization). | Process-egress module, egress policy, privileged broker; Respond/Harden. | L; signed authority, IPv4/IPv6 tests, existing-flow tests and shared-interpreter identity design. | Defensive only; explicit scoped destinations, no credential interception, offensive traffic or default whole-host denial. |

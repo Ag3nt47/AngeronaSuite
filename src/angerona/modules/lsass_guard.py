@@ -25,6 +25,7 @@ except Exception:  # pragma: no cover
 
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.response_contract import process_response
+from angerona.telemetry.sensors import process_snapshot
 
 # Command-line signatures of common LSASS credential-dumping techniques.
 _DUMP_SIGNATURES = (
@@ -196,6 +197,8 @@ class LsassGuardModule(BaseModule):
             "readable": 0,
             "unreadable": 0,
             "identity_incomplete": 0,
+            "skipped": 0,
+            "enumeration_complete": False,
         }
 
     @property
@@ -221,11 +224,9 @@ class LsassGuardModule(BaseModule):
                 readable = 0
                 unreadable = 0
                 identity_incomplete = 0
-                for p in psutil.process_iter([
-                    "pid", "name", "exe", "cmdline", "create_time"
-                ]):
+                snapshot = process_snapshot(max_age=1.5)
+                for info in snapshot.processes:
                     enumerated += 1
-                    info = p.info
                     identity, complete = _process_generation(info)
                     if identity is None:
                         identity_incomplete += 1
@@ -274,14 +275,24 @@ class LsassGuardModule(BaseModule):
                             **(response or {"response_authorized": False}))
                 # Evict exact generations that exited. A new birth at the same
                 # PID remains distinct even if PID continuity spans snapshots.
-                self._alerted &= live
+                # A partial enumeration is not evidence that a previously
+                # observed generation exited. Preserve deduplication until a
+                # complete inventory arrives, bounded even under repeated loss.
+                if snapshot.enumeration_complete:
+                    self._alerted &= live
+                elif len(self._alerted) > 16_384:
+                    self._alerted = live
                 self._last_coverage = {
                     "enumerated": enumerated,
                     "readable": readable,
                     "unreadable": unreadable,
                     "identity_incomplete": identity_incomplete,
+                    "skipped": snapshot.skipped,
+                    "enumeration_complete": snapshot.enumeration_complete,
                 }
-                if enumerated == 0:
+                if not snapshot.enumeration_complete:
+                    self.set_health(60, snapshot.error or "process collection incomplete")
+                elif enumerated == 0:
                     self.set_health(60, "process enumeration returned no LSASS coverage")
                 elif unreadable or identity_incomplete:
                     self.set_health(

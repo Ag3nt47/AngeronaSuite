@@ -32,7 +32,9 @@ from angerona.core.storage import AsyncFlightRecorder, FlightRecorder
 
 
 def run_headless(
-    *, high_water_provider: IndependentHighWater | None = None
+    *, high_water_provider: IndependentHighWater | None = None,
+    stop_event: threading.Event | None = None,
+    runtime_control=None,
 ) -> int:
     """Build core services (no Qt), start modules, and block until signalled."""
     config = Config.load()
@@ -47,6 +49,19 @@ def run_headless(
     recorder_worker = AsyncFlightRecorder(storage)
     recorder_worker.start()
     bus.subscribe(recorder_worker.submit)
+    from angerona.core.alert_retention import AlertRetentionWorker, RetentionPolicy
+    from angerona.core.eventbus import Severity
+    alert_retention = AlertRetentionWorker(config.data_dir, RetentionPolicy.from_config(config))
+    alert_retention.start()
+    from angerona.core.runtime_metrics import RuntimeMetrics, optional_publisher
+    runtime_metrics = RuntimeMetrics(gui=False, recorder=recorder_worker, retention=alert_retention)
+    metrics_publisher = optional_publisher(runtime_metrics, config.data_dir)
+
+    def _retain_alert(event):
+        if event.severity >= Severity.MEDIUM:
+            alert_retention.append(f"{event.time_str} [{event.module}] {event.message[:2000]}")
+
+    bus.subscribe(_retain_alert)
     try:
         from angerona.core.incidents import get_correlator
         bus.subscribe(get_correlator().on_event)
@@ -87,7 +102,11 @@ def run_headless(
         setattr(config, "runtime_chill_active", False)
         os.environ.pop("ANGERONA_CHILL_ACTIVE", None)
 
-    stop = threading.Event()
+    stop = stop_event or threading.Event()
+    if runtime_control is not None:
+        runtime_control.attach(manager, bus, config, chill)
+        runtime_control.retention = alert_retention
+        runtime_control.runtime_metrics = runtime_metrics
     from angerona.core.ollama_lifecycle import request_ollama_start
     request_ollama_start(config.ollama_host, stop_event=stop)
 
@@ -125,6 +144,8 @@ def run_headless(
         # Preserve the historical Full-mode startup path exactly.
         manager.start_enabled()
     reporter.start()
+    if runtime_control is not None:
+        runtime_control.ready()
 
     # Opt-in decoupled resilience ecosystem (standalone scanner + supervisor +
     # core heartbeat, feeding raw telemetry back onto the bus). Off by default;
@@ -176,6 +197,9 @@ def run_headless(
                 pass
         reporter.stop()
         manager.stop_all()
+        alert_retention.stop(timeout=2.0)
+        if metrics_publisher is not None:
+            metrics_publisher.stop()
         recorder_drained = False
         try:
             recorder_drained = recorder_worker.stop(timeout=3.0)

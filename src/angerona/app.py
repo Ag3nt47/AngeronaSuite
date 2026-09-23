@@ -134,6 +134,21 @@ class AngeronaApp:
         self._startup_events_ready = True
         self._flush_startup_degradations()
 
+        # Disposable diagnostics have independent, optional retention. The GUI
+        # only queues bounded text; directory custody and cleanup stay here.
+        self.alert_retention_worker = None
+        try:
+            from angerona.core.alert_retention import AlertRetentionWorker, RetentionPolicy
+            self.alert_retention_worker = AlertRetentionWorker(
+                self.config.data_dir, RetentionPolicy.from_config(self.config),
+            )
+            self.alert_retention_worker.start()
+        except Exception as exc:
+            self.alert_retention_worker = None
+            self._record_startup_degradation(
+                "Alert archive cleanup", "disposable diagnostic retention is unavailable", exc,
+            )
+
         # Build the normalized hunt read-model asynchronously. EventBus invokes
         # subscribers inline, so this subscriber only performs a bounded
         # put_nowait; normalization, hashing, and SQLite work stay on the
@@ -259,12 +274,24 @@ class AngeronaApp:
                     exc,
                 )
 
+        self.runtime_metrics = None
+        self.runtime_metrics_publisher = None
+        if os.environ.get("ANGERONA_RUNTIME_METRICS") == "1":
+            from angerona.core.runtime_metrics import RuntimeMetrics, optional_publisher
+            self.runtime_metrics = RuntimeMetrics(
+                gui=True, recorder=self.flight_recorder_worker,
+                evidence=self.evidence_ingestion, retention=self.alert_retention_worker,
+            )
+            self.runtime_metrics_publisher = optional_publisher(self.runtime_metrics, self.config.data_dir)
+
         self.window = MainWindow(
             self.bus, self.storage, self.manager, self.config,
             evidence_store=self.evidence_store,
             evidence_ingestion=self.evidence_ingestion,
             flight_recorder_worker=self.flight_recorder_worker,
             process_baseline=self.process_baseline,
+            alert_retention_worker=self.alert_retention_worker,
+            runtime_metrics=self.runtime_metrics,
         )
         # Settings consumes only this bounded, privacy-safe status provider; it
         # never receives fleet service keys or endpoint private-key material.
@@ -1042,6 +1069,9 @@ class AngeronaApp:
             self._shutdown_owned()
 
     def _shutdown_owned(self) -> None:
+        metrics_publisher = getattr(self, "runtime_metrics_publisher", None)
+        if metrics_publisher is not None:
+            metrics_publisher.stop()
         healer = getattr(self, "_runtime_healer", None)
         if healer is not None:
             healer.stop()
@@ -1088,6 +1118,12 @@ class AngeronaApp:
             self._admin_audit = None
         self._endpoint_identity = None
         self.manager.stop_all()
+        alert_worker = getattr(self, "alert_retention_worker", None)
+        if alert_worker is not None:
+            try:
+                alert_worker.stop(timeout=2.0)
+            except Exception:
+                pass
         # Fleet Health is a module consumer of the eager Local SOC fabric.
         # Stop all consumers first, then close that shared store exactly once.
         try:

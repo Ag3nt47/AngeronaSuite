@@ -3643,6 +3643,17 @@ class AdversaryCombat(BaseModule):
             with _PinnedFileMove(source) as pinned:
                 source_link_count = pinned.require_single_link()
                 digest = pinned.sha256()
+                # Bind response to the bytes the detector actually inspected.
+                # A pathname can be replaced while a response waits in queue.
+                # Do not quarantine that replacement on an earlier verdict.
+                observed_digest = (event.details or {}).get("observed_content_sha256")
+                if observed_digest is not None and (
+                    not isinstance(observed_digest, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", observed_digest)
+                    or not hmac.compare_digest(digest, observed_digest)
+                ):
+                    self._response_decision("file_content_changed")
+                    return None
                 planned_strategy = (
                     "cross_volume_copy"
                     if pinned.crosses_volume(destination)

@@ -1,0 +1,7 @@
+{
+  "files": 48,
+  "bytes": 6720000,
+  "uncached_median_ms": 2556.949,
+  "unchanged_cached_median_ms": 66.532,
+  "scope": "YARA content collection microbenchmark, concurrent offline tests; not whole-application idle CPU or long soak"
+}

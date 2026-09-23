@@ -24,6 +24,7 @@ except Exception:  # pragma: no cover
 
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.response_contract import process_response
+from angerona.telemetry.sensors import process_snapshot
 
 # Destructive recovery-tampering command signatures (all parts must appear).
 _TAMPER_SIGNATURES = (
@@ -160,6 +161,8 @@ class ShadowCopyGuardModule(BaseModule):
             "readable": 0,
             "unreadable": 0,
             "identity_incomplete": 0,
+            "skipped": 0,
+            "enumeration_complete": False,
         }
 
     @property
@@ -185,11 +188,9 @@ class ShadowCopyGuardModule(BaseModule):
                 readable = 0
                 unreadable = 0
                 identity_incomplete = 0
-                for p in psutil.process_iter([
-                    "pid", "name", "exe", "cmdline", "create_time"
-                ]):
+                snapshot = process_snapshot(max_age=1.5)
+                for info in snapshot.processes:
                     enumerated += 1
-                    info = p.info
                     pid = info.get("pid")
                     if not isinstance(pid, int) or pid <= 0:
                         identity_incomplete += 1
@@ -216,11 +217,10 @@ class ShadowCopyGuardModule(BaseModule):
                         self._detections += 1
                         # Attribute to the PARENT where possible — vssadmin is often a
                         # child of the real ransomware process; report both.
-                        ppid = None
-                        try:
-                            ppid = psutil.Process(pid).ppid()
-                        except Exception:
-                            pass
+                        # Read with the process birth in the same shared
+                        # inventory; reopening a reused PID could name another
+                        # generation's parent.
+                        ppid = info.get("ppid")
                         response = {}
                         trusted_name = _trusted_system_utility(
                             info.get("name"), info.get("exe")
@@ -247,14 +247,24 @@ class ShadowCopyGuardModule(BaseModule):
                                 else "semantic-indicator-alert-only"
                             ),
                             **(response or {"response_authorized": False}))
-                self._alerted &= live
+                # A partial enumeration is not evidence that a previously
+                # observed generation exited. Preserve deduplication until a
+                # complete inventory arrives, bounded even under repeated loss.
+                if snapshot.enumeration_complete:
+                    self._alerted &= live
+                elif len(self._alerted) > 16_384:
+                    self._alerted = live
                 self._last_coverage = {
                     "enumerated": enumerated,
                     "readable": readable,
                     "unreadable": unreadable,
                     "identity_incomplete": identity_incomplete,
+                    "skipped": snapshot.skipped,
+                    "enumeration_complete": snapshot.enumeration_complete,
                 }
-                if enumerated == 0:
+                if not snapshot.enumeration_complete:
+                    self.set_health(60, snapshot.error or "process collection incomplete")
+                elif enumerated == 0:
                     self.set_health(60, "process enumeration returned no coverage")
                 elif unreadable or identity_incomplete:
                     self.set_health(

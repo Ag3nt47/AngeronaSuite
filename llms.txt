@@ -22,6 +22,91 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
+## LATEST (v1.13.0 — 2026-09-23 improvement loop)
+
+- Canonical upgrade record: analysis/upgrade-20260923/README.md; commands and
+  scope: analysis/upgrade-20260923/usage.md; validation and uncompleted gates:
+  analysis/upgrade-20260923/validation.md. Version remains 1.13.0. Read-only
+  inventory verifies 84 identities, 9 native contracts and 75 compatibility
+  adapters; all implementation labels are 1.13.0. Platform declarations cover
+  81 Windows, 20 Linux and 19 macOS entries within this shared catalog; these
+  are not simultaneous running counts or equally capable enforcement paths.
+- Real YARA-X scans now emit typed positive evidence and observed outer-file
+  digests. The live Combat worker can automatically quarantine eligible files
+  under configured policy, record signed verified results, and support Undo.
+  Native inert plain-file/ZIP tests exercised scan to worker to quarantine
+  without Ollama or manual action dispatch; changed content is rejected.
+- Shark previously omitted its native-producer verifier even when authenticated
+  detections existed. The repaired path requires the exact registered built-in
+  YARA producer, current manager/bus/recorder graph and lifecycle, plus the
+  producer's bounded immutable event receipt. Fabricated signed fields are
+  insufficient. Red Team retains its separate validation lease. Receipt expiry,
+  eviction or restart can leave historical native proof unavailable. An inert
+  BYOVD signature exercises scanning; it never loads a vulnerable driver.
+- Bounded ZIP preflight checks the central directory before Python allocates
+  its member list. A partial, malformed or over-budget archive retains verified
+  positive findings while reporting incomplete coverage and declining a clean
+  cache entry. Windows path/descriptor ctime disagreement was repaired using
+  a held-handle change token, including restored-mtime regression coverage.
+- Shared rich process snapshots preserve immutable rows, collection loss and
+  PID birth identity. Three-consumer component timing fell from 314.210 to
+  99.543 ms (68.32%). An unchanged-file YARA fixture of 48 files / 6.72 MB fell
+  from median 2556.949 to 66.532 ms under concurrent offline tests. Neither
+  result establishes whole-PC CPU savings or 24-hour/7-day stability.
+- Runtime-alert diagnostics now use a bounded background writer, 4 MiB active
+  rotation and fair bounded archive cleanup. Defaults: enabled, 30 days,
+  256 MiB; settings allow 1–3650 days and 8–16384 MiB in System and first-run
+  setup. Only managed closed runtime_alerts segments are eligible. A sibling
+  .keep pins an archive. Active/pinned/inaccessible files can exceed the target;
+  pressure/loss remain visible. Signed evidence, pending delivery, action and
+  recovery journals, cases, exports and arbitrary data files are excluded.
+- Opt-in `python -m angerona --engine-console` connects to a separate ordinary-
+  user engine; closing the console does not stop it. Bounded authenticated local
+  IPC exposes readiness, events, queued module/Chill/settings operations and
+  explicit stop. Event pages account for encoded bytes, including non-BMP text.
+  tools/manage_engine.py supplies explicit per-user Task Scheduler, launchd and
+  systemd setup. This is not deployed privileged SCM protection. Isolated native
+  lifecycle acceptance disabled all 84 modules, so it proves process lifetime
+  and reconnect behavior rather than active sensor coverage.
+- tools/manage_agent_integrity.py explicitly enrolls exact instruction, memory
+  and tool-definition file digests. Integrated Assistant/broker calls and
+  Counter-Agentic monitoring enforce the configured boundary. Live-store
+  generation floors reject same-session signed-baseline rollback; Windows
+  alias checks and held file custody protect approved bytes during mapped
+  actions. POSIX mapped mutations are withheld without immutable input custody.
+  External agents and kernel socket egress are not thereby controlled; the
+  existing process-egress guard remains observe-only.
+- tools/run_recovery_drill.py uses actual AES-GCM backup/restore into a new
+  private directory, verifies hashes, and retains authenticated drill evidence.
+  A native three-file / 1107-byte fixture passed in 6.485 s, including second-
+  process verification through the Windows protected key store and tamper
+  rejection. Same-host recovery is not independent/offline/offsite protection.
+- tools/evaluate_detections.py replays labelled cohorts against verified rule
+  packages, reports true/false positives and negatives, and supports explicit
+  quality thresholds. examples/cohorts supplies inert synthetic fixtures.
+  It executes no attacks; incomplete cohorts withhold quality claims.
+- Runtime resource evidence now follows owned process trees and explicit extra
+  PIDs. Optional ANGERONA_RUNTIME_METRICS=1 publishes bounded real queue/GUI
+  measurements; tools/run_soak.py also accepts authenticated engine metrics.
+  PID birth and freshness are checked; headless GUI latency is not applicable.
+  Short plumbing tests are not long-duration acceptance.
+- Final serial suite after code freeze: 4303 passed / 20 skipped / 0 failed in
+  478.73 seconds (7:58), exit 0. Current validation is recorded in the linked
+  upgrade document; focused groups overlap and are never added into that total.
+  Isolated
+  selfcheck: 26 phases passed; SelfTestRunner: 67 passed / 18 prerequisite skips,
+  including the separate pipeline test. Selfcheck now stops owned drill workers
+  before releasing their validation lease on timeout.
+- Pending external gates: publisher signing/notarization credentials, trusted
+  privileged Windows deployment, elevated Ollama process acceptance after the
+  prior cancelled UAC prompt, native new-service acceptance on Mac/Linux, and
+  representative 24-hour/7-day soaks. Prior QEMU Lab and source-launcher native
+  evidence remains in the September 23 continuation/deep-review records.
+- Proposed/backlog, not shipped: independent backup destination adapters,
+  immutable POSIX AI-consumer input adapters, application-scoped native AI
+  egress enforcement, expanded native containment matrices and a sensor-demand
+  plan. See analysis/upgrade-20260923/comparison.md for priorities and sources.
+
 ## LATEST MAINTENANCE (v1.13.0 — 2026-09-23 continuation)
 
 - Canonical record: analysis/continuation-20260923/README.md. Product version
