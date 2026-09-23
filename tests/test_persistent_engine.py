@@ -254,6 +254,122 @@ def test_discovery_rejects_hardlinks(tmp_path):
         read_discovery(directory)
 
 
+@pytest.mark.parametrize("linked", [False, True])
+def test_private_file_creation_never_overwrites_existing_paths(tmp_path, linked):
+    directory = transport.private_directory(tmp_path / "engine")
+    original = directory / "original"
+    original.write_bytes(b"existing bytes")
+    path = directory / "candidate" if linked else original
+    if linked:
+        os.link(original, path)
+    with pytest.raises(FileExistsError):
+        transport.create_private_file(path)
+    assert original.read_bytes() == path.read_bytes() == b"existing bytes"
+
+
+def test_private_file_verification_failure_closes_empty_file(tmp_path, monkeypatch):
+    directory = transport.private_directory(tmp_path / "engine")
+    path = directory / "candidate"
+    verify = transport.verify_private
+
+    def reject_file(candidate, *, directory=False):
+        verify(candidate, directory=directory)
+        if not directory:
+            raise EngineError("Creation verification failed")
+
+    monkeypatch.setattr(transport, "verify_private", reject_file)
+    with pytest.raises(EngineError, match="Creation verification failed"):
+        transport.create_private_file(path)
+    assert path.read_bytes() == b""
+    path.unlink()  # Windows also proves the non-delete-sharing handle was closed.
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows owner and DACL regression")
+def test_windows_private_creation_uses_user_instead_of_default_token_owner(tmp_path):
+    import win32api
+    import win32security
+
+    directory = transport.private_directory(tmp_path / "engine")
+    user = transport._windows_identity()
+    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32security.TOKEN_QUERY)
+    try:
+        default_owner = win32security.GetTokenInformation(token, win32security.TokenOwner)
+    finally:
+        token.Close()
+    security_flags = win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION
+    baseline = directory / "default-owner"
+    descriptor = os.open(baseline, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(descriptor)
+    assert win32security.GetFileSecurity(str(baseline), security_flags).GetSecurityDescriptorOwner() == default_owner
+    if default_owner != user:
+        # Elevated CI tokens default to Administrators: the old os.open path
+        # really creates a file that the unchanged user boundary must reject.
+        with pytest.raises(EngineError, match="owner does not match"):
+            transport.verify_private(baseline)
+
+    path = directory / "explicit-owner"
+    descriptor = transport.create_private_file(path)
+    with os.fdopen(descriptor, "wb") as stream:
+        assert not os.get_inheritable(stream.fileno())
+        stream.write(b"binary\ncontents")
+    assert path.read_bytes() == b"binary\ncontents"
+    for candidate, is_directory in ((directory, True), (path, False)):
+        transport.verify_private(candidate, directory=is_directory)
+        security = win32security.GetFileSecurity(str(candidate), security_flags)
+        assert security.GetSecurityDescriptorOwner() == user
+        assert security.GetSecurityDescriptorControl()[0] & win32security.SE_DACL_PROTECTED
+        acl = security.GetSecurityDescriptorDacl()
+        principals = set()
+        for index in range(acl.GetAceCount()):
+            ace = acl.GetAce(index)
+            assert ace[0][0] == win32security.ACCESS_ALLOWED_ACE_TYPE
+            principals.add(win32security.ConvertSidToStringSid(ace[2]))
+        assert principals == {win32security.ConvertSidToStringSid(user), "S-1-5-18", "S-1-5-32-544"}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows owner boundary")
+@pytest.mark.parametrize("directory", [False, True])
+def test_windows_existing_foreign_owner_is_rejected_without_repair(tmp_path, monkeypatch, directory):
+    import win32security
+
+    root = transport.private_directory(tmp_path / "engine")
+    path = root if directory else root / "state"
+    if not directory:
+        os.close(transport.create_private_file(path))
+    security_flags = win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION
+    before = win32security.GetFileSecurity(str(path), security_flags)
+    user = before.GetSecurityDescriptorOwner()
+    other = win32security.ConvertStringSidToSid(
+        "S-1-5-18" if win32security.ConvertSidToStringSid(user) != "S-1-5-18" else "S-1-5-32-545")
+    assert other != user
+    monkeypatch.setattr(transport, "_windows_identity", lambda: other)
+    with pytest.raises(EngineError, match="owner does not match"):
+        if directory:
+            transport.private_directory(path)
+        else:
+            transport.verify_private(path)
+    after = win32security.GetFileSecurity(str(path), security_flags)
+    assert after.GetSecurityDescriptorOwner() == user
+    assert win32security.ConvertSecurityDescriptorToStringSecurityDescriptor(after, 1, security_flags) == (
+        win32security.ConvertSecurityDescriptorToStringSecurityDescriptor(before, 1, security_flags))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows handle transfer")
+def test_windows_private_file_closes_handle_when_fd_conversion_fails(tmp_path, monkeypatch):
+    import msvcrt
+
+    directory = transport.private_directory(tmp_path / "engine")
+    path = directory / "candidate"
+
+    def fail(*args):
+        raise OSError("CRT descriptor table is full")
+
+    monkeypatch.setattr(msvcrt, "open_osfhandle", fail)
+    with pytest.raises(OSError, match="descriptor table is full"):
+        transport.create_private_file(path)
+    path.unlink()
+
+
 def test_service_templates_use_exact_argv_and_bounded_restart():
     from angerona.core.engine_service import launchd_plist, systemd_unit
     import plistlib

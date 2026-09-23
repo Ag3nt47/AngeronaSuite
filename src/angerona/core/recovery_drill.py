@@ -24,7 +24,7 @@ from typing import Iterable
 from cryptography.exceptions import InvalidTag
 
 from .backup_restore import BackupSelection, EncryptedBackupManager
-from .engine_transport import canonical, decode, private_directory, verify_private
+from .engine_transport import canonical, create_private_file, decode, private_directory, verify_private
 from .executable_trust import _open_sealed
 from .source_sandbox import _absolute, _hold_plain_directories, _validate_chain, _validate_regular_file
 
@@ -201,8 +201,7 @@ def run_drill(source_root: Path, relative_paths: Iterable[str], output_parent: P
                 }
                 envelope = {"payload": payload, "hmac_sha256": hmac.new(
                     audit_key, _DOMAIN + canonical(payload), hashlib.sha256).hexdigest()}
-                receipt_fd = os.open(root / "receipt.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                                     | getattr(os, "O_BINARY", 0), 0o600)
+                receipt_fd = create_private_file(root / "receipt.json")
                 with os.fdopen(receipt_fd, "wb") as receipt_stream:
                     receipt_stream.write(canonical(envelope))
                     receipt_stream.flush()

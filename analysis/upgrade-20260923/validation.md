@@ -4,9 +4,9 @@ Package version remains **1.13.0**. This record separates actual native
 acceptance, offline regression, module checks and component measurements.
 Focused groups overlap and must not be added together as a full-suite total.
 
-## Final regression gate
+## Base upgrade regression gate
 
-The final serial suite after code freeze passed: **4,303 passed / 20 skipped /
+The serial suite for the base upgrade after code freeze passed: **4,303 passed / 20 skipped /
 0 failed** in **478.73 seconds (7:58)**, exit status 0. Local run evidence is
 `.tmp/upgrade-20260923-final-tests.log` and its JUnit companion
 `.tmp/upgrade-20260923-final-tests.xml`. These local diagnostic artifacts are
@@ -125,3 +125,24 @@ and does not replace exact-commit CI verification.
 The local follow-up does not establish remote success; consult the resulting
 commit's [CI run](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/ci.yml)
 for exact-commit validation.
+
+### Native Windows ownership and asynchronous response follow-up
+
+The corrected CI dependency setup at `26d1477` exposed a native elevated-token
+compatibility bug: Windows file creation can select Administrators as the
+default owner, even inside a correctly user-owned private directory. Discovery
+files and recovery receipts then failed the unchanged current-user ownership
+check. A shared exclusive file creator now supplies the current user's owner
+SID and protected DACL at creation, before writing data. It verifies custody
+and closes native handles on failure. Existing files with a foreign owner remain
+rejected. The engine/recovery gate passed **56 tests in 15.76 seconds**, including
+seven new ownership, exclusivity and handle-cleanup regressions. Local testing
+used an ordinary-user token; elevated execution remains an explicit CI check.
+
+The live YARA worker test also raced the durable journal commit: the source file
+was already moved while its action receipt was still pending. It now deliberately
+holds that commit, checks that no verified completion is reported yet, releases
+it and waits for the authenticated response before inspecting the journal and
+Undo. This changes test synchronization, not response success criteria. The
+scanner/AAR/fairness gate passed **27 tests in 7.83 seconds**. These focused results
+are separate from the earlier 4,303-test run, whose product revision is `3d94570`.

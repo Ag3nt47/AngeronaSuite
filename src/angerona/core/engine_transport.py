@@ -6,6 +6,7 @@ accepted. Every connection has a fresh server challenge and one response.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import hmac
 import json
@@ -143,18 +144,25 @@ def verify_private(path: Path, *, directory: bool = False) -> None:
                 raise EngineError("Engine state grants access outside this user boundary")
 
 
+def _windows_private_attributes(*, directory: bool = False):
+    import pywintypes
+    import win32security
+    sid = win32security.ConvertSidToStringSid(_windows_identity())
+    inherit = "OICI" if directory else ""
+    attributes = pywintypes.SECURITY_ATTRIBUTES()
+    attributes.bInheritHandle = False
+    attributes.SECURITY_DESCRIPTOR = win32security.ConvertStringSecurityDescriptorToSecurityDescriptor(
+        f"O:{sid}D:P(A;{inherit};FA;;;{sid})(A;{inherit};FA;;;SY)(A;{inherit};FA;;;BA)", 1)
+    return attributes
+
+
 def private_directory(path: Path) -> Path:
     if not path.exists():
         if os.name == "nt":
             import pywintypes
             import win32file
-            import win32security
-            sid = win32security.ConvertSidToStringSid(_windows_identity())
-            attributes = pywintypes.SECURITY_ATTRIBUTES()
-            attributes.SECURITY_DESCRIPTOR = win32security.ConvertStringSecurityDescriptorToSecurityDescriptor(
-                f"O:{sid}D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", 1)
             try:
-                win32file.CreateDirectory(str(path), attributes)
+                win32file.CreateDirectory(str(path), _windows_private_attributes(directory=True))
             except pywintypes.error as exc:
                 if exc.winerror != 183:
                     raise
@@ -164,10 +172,48 @@ def private_directory(path: Path) -> Path:
     return path
 
 
+def create_private_file(path: Path) -> int:
+    """Exclusively create a user-owned binary file; return its verified writable fd.
+
+    Windows inherits a directory's DACL, but selects the file owner from the
+    token. Elevated tokens can default to Administrators instead of TokenUser,
+    so supply both the owner and protected DACL atomically at creation.
+    """
+    verify_private(path.parent, directory=True)
+    flags = os.O_WRONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0)
+    if os.name == "nt":
+        import msvcrt
+        import pywintypes
+        import win32con
+        import win32file
+        try:
+            handle = win32file.CreateFile(
+                str(path), win32con.GENERIC_WRITE, win32con.FILE_SHARE_READ,
+                _windows_private_attributes(), win32con.CREATE_NEW,
+                win32con.FILE_ATTRIBUTE_NORMAL, None)
+        except pywintypes.error as exc:
+            if exc.winerror in (80, 183):
+                raise FileExistsError(errno.EEXIST, "Private engine state already exists", str(path)) from exc
+            raise
+        try:
+            descriptor = msvcrt.open_osfhandle(int(handle), flags)
+            handle.Detach()  # The CRT descriptor now owns the native handle.
+        finally:
+            handle.Close()
+    else:
+        descriptor = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        verify_private(path)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
 def write_discovery(directory: Path, record: dict) -> None:
     verify_private(directory, directory=True)
     path = directory / (".endpoint-" + secrets.token_hex(12))
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    descriptor = create_private_file(path)
     try:
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(canonical(record))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import os
+import threading
 import time
 import zipfile
 from dataclasses import replace
@@ -98,8 +99,27 @@ def test_changed_target_is_not_quarantined_on_stale_content(tmp_path):
         unregister_run("yara-stale-proof")
 
 
-def test_live_worker_responds_automatically_without_ollama_or_manual_dispatch(tmp_path):
+def test_live_worker_responds_automatically_without_ollama_or_manual_dispatch(tmp_path, monkeypatch):
     bus, detector, scanner, combat = _setup(tmp_path)
+    commit_entered = threading.Event()
+    release_commit = threading.Event()
+    commit = combat._commit_after_mutation
+
+    def held_commit(action, **kwargs):
+        commit_entered.set()
+        assert release_commit.wait(10), "test did not release the durable commit"
+        return commit(action, **kwargs)
+
+    monkeypatch.setattr(combat, "_commit_after_mutation", held_commit)
+
+    def verified_response():
+        return any(
+            event.module == combat.name and bus.verify(event)
+            and event.details.get("postcondition_verified") is True
+            and "quarantine_file" in event.details.get("actions", [])
+            for event in bus.recent(50)
+        )
+
     path = tmp_path / "automatic-probe.txt"
     path.write_bytes(MARKER)
     register_artifact(path, "yara-automatic-worker", kind="shark")
@@ -110,18 +130,24 @@ def test_live_worker_responds_automatically_without_ollama_or_manual_dispatch(tm
             time.sleep(0.02)
         assert combat.response_snapshot()["ready"], combat.response_snapshot()
         assert detector._scan_file(scanner, path) == "scanned", detector.last_error
-        while path.exists() and time.monotonic() < deadline:
-            time.sleep(0.02)
+        assert commit_entered.wait(10), combat.response_snapshot()
         # No _handle/_submit call: the actual subscribed worker owns this action.
         assert not path.exists(), combat.response_snapshot()
-        while not combat.list_actions() and time.monotonic() < deadline:
+        # Moving the file precedes the durable receipt. Do not race that receipt
+        # or mistake an in-flight journal intent for the completed response.
+        assert not verified_response()
+        release_commit.set()
+        deadline = time.monotonic() + 10
+        while not verified_response() and time.monotonic() < deadline:
             time.sleep(0.02)
+        assert verified_response(), combat.response_snapshot()
         action = combat.list_actions()[0]
         assert action["status"] == "applied"
         assert action["details"]["postcondition_verified"] is True
         assert combat.undo_action(action["action_id"])["ok"]
         assert path.read_bytes() == MARKER
     finally:
+        release_commit.set()
         combat.stop()
         unregister_run("yara-automatic-worker")
 
