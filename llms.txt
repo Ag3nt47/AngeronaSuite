@@ -92,8 +92,10 @@ kernel component is a product capability.
   escaped paths preserve working installations on failure. Source-runtime locks
   are complete; older full POSIX release-build locks still have dependency gaps.
 - Native Ubuntu, Apple Silicon and Intel CI lanes are configured. Ubuntu source
-  installation and offscreen rendering passed after publication; native Mac runs
-  exposed a default-path quoting bug. Corrections and later results are recorded
+  installation and offscreen rendering passed after publication; a Mac default-
+  path quoting bug was then fixed and both Mac architectures passed native setup
+  and rendering, including Intel's pinned cryptography source build.
+  Corrections and later results are recorded
   in analysis/deep-review-20260923/publication-followup.md. Visible desktops and
   packaged-platform acceptance remain separate from these automated checks.
 - The visionary comparison cites Wazuh, osquery, Velociraptor and Falco primary

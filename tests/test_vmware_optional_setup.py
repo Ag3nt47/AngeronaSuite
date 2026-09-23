@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import ctypes
 import io
 import os
 import re
@@ -161,7 +162,10 @@ def test_configure_only_elevates_fixed_service_script_after_trust(monkeypatch):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell directory-custody fixture")
-def test_service_program_rejects_other_directory_and_denies_ancestor_rename(tmp_path):
+@pytest.mark.parametrize("fixture_kind", [
+    "plain", "hidden-directory", "hidden-image", "reported-reparse-directory",
+])
+def test_service_program_rejects_other_directory_and_denies_ancestor_rename(tmp_path, fixture_kind):
     """Run only fixture overrides: service/signature commands cannot touch host."""
     from angerona.core.privilege import (
         sanitized_child_environment, trusted_powershell_path, trusted_windows_directories,
@@ -175,6 +179,7 @@ def test_service_program_rejects_other_directory_and_denies_ancestor_rename(tmp_
     foreign.parent.mkdir()
     foreign.write_bytes(b"inert fixture")
     prelude = r'''
+$ProgressPreference = 'SilentlyContinue'
 function Get-CimInstance { [pscustomobject]@{PathName=$env:FIXTURE_SERVICE_IMAGE} }
 function Set-Service { throw 'Fixture forbids any host service modification' }
 function Start-Service { throw 'Fixture forbids any host service startup' }
@@ -183,23 +188,67 @@ function Get-AuthenticodeSignature {
     catch [IO.IOException] { exit 88 }
     catch [UnauthorizedAccessException] { exit 88 }
 }
+if ($env:FIXTURE_REPARSE -eq '1') {
+    function Get-Item {
+        param([string]$LiteralPath, [switch]$Force)
+        $item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force:$Force
+        if ($LiteralPath -eq $env:FIXTURE_PARENT) {
+            return [pscustomobject]@{PSIsContainer=$true; Attributes=[IO.FileAttributes]::ReparsePoint}
+        }
+        return $item
+    }
+}
 '''
+    # Preserve the production guards while exposing a bounded fixture failure
+    # reason; the product deliberately returns only an exit code after UAC.
+    program = setup._CONFIGURE_SCRIPT.replace(
+        "} catch { exit 1 }\nfinally",
+        "} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }\nfinally",
+    )
+    assert program != setup._CONFIGURE_SCRIPT
     environment = sanitized_child_environment(source={})
     environment.update({
         "ANGERONA_VMWARE_EXPECTED_DIRECTORY": str(expected),
         "FIXTURE_PARENT": str(expected.parent),
+        "FIXTURE_REPARSE": "1" if fixture_kind == "reported-reparse-directory" else "0",
     })
     argv = [str(trusted_powershell_path()), "-NoProfile", "-NonInteractive", "-EncodedCommand",
-            setup._encoded(prelude + setup._CONFIGURE_SCRIPT)]
-    for target, expected_code in ((foreign, 1), (image, 88)):
-        environment["FIXTURE_SERVICE_IMAGE"] = str(target)
-        result = subprocess.run(
-            argv, cwd=str(trusted_windows_directories()[1]), env=environment,
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=30, check=False, creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        assert result.returncode == expected_code, result.stderr.decode(errors="replace")
-        assert expected.parent.is_dir()
+            setup._encoded(prelude + program)]
+    hidden = {"hidden-directory": expected.parent, "hidden-image": image}.get(fixture_kind)
+    if hidden is not None:
+        original_attributes = hidden.stat().st_file_attributes
+        set_attributes = ctypes.windll.kernel32.SetFileAttributesW
+        set_attributes.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32]
+        set_attributes.restype = ctypes.c_int
+        assert set_attributes(str(hidden), original_attributes | 2)
+    try:
+        expected_image_code = 1 if fixture_kind == "reported-reparse-directory" else 88
+        for target, expected_code in ((foreign, 1), (image, expected_image_code)):
+            environment["FIXTURE_SERVICE_IMAGE"] = str(target)
+            try:
+                result = subprocess.run(
+                    argv, cwd=str(trusted_windows_directories()[1]), env=environment,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    # A fresh Windows runner initializes PowerShell modules and
+                    # invokes the native C# compiler for Add-Type on first use.
+                    timeout=90, check=False, creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+            except subprocess.TimeoutExpired:
+                pytest.fail("PowerShell custody fixture exceeded its 90s startup/compile bound", pytrace=False)
+            detail = result.stderr.decode(errors="replace").replace(str(tmp_path), "<fixture>")
+            if result.returncode != expected_code:
+                pytest.fail(
+                    f"Custody fixture {fixture_kind}/{target.name}: expected {expected_code}, "
+                    f"received {result.returncode}; {detail[-2000:]}", pytrace=False,
+                )
+            if target == foreign:
+                assert "outside its trusted Workstation installation" in detail
+            elif fixture_kind == "reported-reparse-directory":
+                assert "redirected directory" in detail
+            assert expected.parent.is_dir()
+    finally:
+        if hidden is not None:
+            assert set_attributes(str(hidden), original_attributes)
 
 
 def test_standalone_service_program_matches_guarded_immutable_body():

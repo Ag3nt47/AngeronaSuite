@@ -108,9 +108,10 @@ Qt graphics/font libraries and validates real offscreen widget rendering before
 publishing a launcher. Failed installation preserves the previous runtime.
 [Native setup, prerequisites and recovery](docs/NATIVE_INSTALL.md).
 
-Mac/Linux launchers have local fixture, metadata and shell checks; native GUI
-and Intel-build acceptance require the dedicated OS CI lanes. Those results
-were not available on the Windows review host. Source-runtime locks are complete;
+Intel and Apple Silicon macOS and Ubuntu source installation passed their native
+CI lanes, including the Intel dependency build and actual offscreen GUI rendering.
+See the [CI follow-up](analysis/deep-review-20260923/publication-followup.md).
+Visible desktop operation is a separate check. Source-runtime locks are complete;
 older full POSIX release-build locks still need dependency-graph repair.
 
 ## Modules, resource use and local AI

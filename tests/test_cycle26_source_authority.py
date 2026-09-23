@@ -262,9 +262,11 @@ def test_msix_authority_defaults_fail_closed_until_external_pin_exists() -> None
 
 def test_public_install_truth_keeps_signed_msix_as_first_install() -> None:
     contract = _text("installer/windows-install-contract.json")
-    readme = _text("README.md")
+    readme = " ".join(_text("README.md").split())
     editions = _text("docs/enterprise/SUPPORTED_EDITIONS.md")
     assert '"artifact":"signed-msix"' in contract
-    assert "no public classic Setup first-install path" in readme
-    assert "Source checkouts are unelevated Observe/development only" in readme
+    assert "Angerona-<version>-win64.msix" in readme
+    assert "the classic Setup wrapper is not a public first-install path" in readme
+    assert "Protect requires the signed installed authority" in readme
+    assert "unelevated source runs in Observe/development scope" in readme
     assert "Full Windows Protect coverage requires the OS-validated signed MSIX" in editions

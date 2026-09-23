@@ -41,6 +41,52 @@ install/uninstall scenarios under Git Bash. Shell syntax and whitespace checks
 also passed. Repeat native CI acceptance remains separate: a passing offline
 test does not imply a passing native installer.
 
+## Corrected installer CI
+
+At `5efa0d188b032f20646827a19519aea50141f9cd`,
+[CI run 35886949539](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/35886949539)
+passed **all three native source installers: Intel macOS, Apple Silicon macOS
+and Ubuntu**, including
+dependency consistency, actual offscreen QApplication rendering, platform
+discovery and installed entry points. The Mac/Linux platform-contract jobs also
+passed, including the corrected failed-download fixture. Intel built pinned
+cryptography 50.0.0 from source and passed its runtime/rendering checks.
+This proves automated source setup
+and rendering, not every visible desktop interaction or full packaged releases.
+
+The [corrected security run](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/35886949469)
+passed secret scanning, CodeQL and Scorecard. The dependency audit and public README
+integrity checks also passed.
+
+The initial hosted Windows Python 3.12/3.13 runs each reported **3,980 passes,
+8 skips and 3 failures**: absent `win32job` in the base-only CI environment,
+another obsolete literal README phrase, and a PowerShell directory-custody
+fixture failure (a timeout on one runner, early failure on another). These are
+recorded separately from the local Windows snapshot; their correction must
+retain the actual custody assertions and service-mutation prohibitions.
+
+The PowerShell failure was reproduced locally by marking one owned ancestor
+hidden: `Get-Item` without `-Force` could not inspect it. Both the embedded setup
+program and standalone service helper now use `-Force` for their three file/
+directory inspections. This permits inspection of hidden entries; explicit
+reparse rejection, retained handles, vendor checks and registration checks are
+unchanged. Tests cover hidden ancestors/images and refusal of redirected paths.
+The test-only diagnostic copy exposes bounded failure details and suppresses
+PowerShell progress output. No service change is allowed by those fixtures.
+
+The Windows test matrix installs the already release-pinned `pywin32==312`, so
+the real Job Object integration test remains mandatory. The README assertion
+checks the current signed-MSIX installation and source/Protect boundaries.
+
+The corrected local gate passed **74 tests** across the Analysis Lab, source
+authority and optional VMware setup files, plus a separate passing rerun under
+an external hidden ancestor. See the [Windows follow-up report](windows-ci-followup-bugs.md).
+Compile, lint, PowerShell parsing and
+whitespace checks passed. The native custody fixture has a bounded 90-second
+cold-start budget for PowerShell module initialization and C# compilation;
+production deadlines were unchanged. The repeated hosted Windows matrix is a
+separate acceptance check, not part of the earlier reconciliation count.
+
 The pre-publication **3,972 passes / 19 skips** reconciliation is a Windows review
 snapshot. New native regressions and later CI checks are not silently added to
 that count. The VMware Lab compatibility blocker and elevated-to-medium Ollama

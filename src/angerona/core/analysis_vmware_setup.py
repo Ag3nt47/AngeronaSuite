@@ -100,19 +100,19 @@ public static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(stri
         if ($cursor) { $cursor = $cursor.TrimEnd('\') }
     }
     foreach ($parentPath in $parents) {
-        $parentItem = Get-Item -LiteralPath $parentPath
+        $parentItem = Get-Item -LiteralPath $parentPath -Force
         if (-not $parentItem.PSIsContainer -or ($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
             throw 'VMware installation contains a redirected directory. Repair VMware first.'
         }
         $guard = [Angerona.SetupDirectoryCustody]::CreateFileW($parentPath, 0x80, 3, [IntPtr]::Zero, 3, 0x02200000, [IntPtr]::Zero)
         if ($guard.IsInvalid) { $guard.Dispose(); throw 'Cannot retain VMware directory custody.' }
         $directoryGuards.Add($guard)
-        $parentItem = Get-Item -LiteralPath $parentPath
+        $parentItem = Get-Item -LiteralPath $parentPath -Force
         if (-not $parentItem.PSIsContainer -or ($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
             throw 'VMware installation directory changed during verification.'
         }
     }
-    $serviceItem = Get-Item -LiteralPath $serviceImage
+    $serviceItem = Get-Item -LiteralPath $serviceImage -Force
     if ($serviceItem.PSIsContainer -or ($serviceItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         throw 'Service executable is not a regular file.'
     }

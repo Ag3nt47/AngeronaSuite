@@ -76,6 +76,7 @@ After publication, GitHub's Ubuntu 24.04 runner completed source installation,
 dependency checks, offscreen QApplication rendering and XCB plugin loading,
 then verified both installed entry points. Both Mac runners exposed an unquoted
 default runtime path; this is a native finding beyond the Windows fixtures.
-See the [publication follow-up](publication-followup.md) for the correction and
-updated CI acceptance. Visible desktop operation remains separate from these
-automated rendering checks.
+After the correction, all three native installer jobs passed at `5efa0d1`,
+including Intel's cryptography source build. See the
+[publication follow-up](publication-followup.md) for the linked CI evidence.
+Visible desktop operation remains separate from these automated rendering checks.
