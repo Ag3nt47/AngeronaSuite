@@ -18,12 +18,14 @@ from urllib.parse import urlsplit
 
 from angerona.core.analysis_catalog import CATALOG_VERSION, OUTPUTS, PACKAGES, TOOLS
 from angerona.core.analysis_image import GuestImage, compress, cpio
-from angerona.core import analysis_vmware
+from angerona.core import analysis_vmware, analysis_qemu, analysis_qemu_runtime
+from angerona.core.analysis_qemu_catalog import FILES as EMULATOR_FILES
+from angerona.core.analysis_qemu_runtime import require_user_session as _require_unprivileged
 from angerona.core.data_paths import data_dir
 from angerona.core.executable_trust import _open_sealed
 from angerona.core.file_lease import ExclusiveFileLease, ExclusiveFileLeaseError
 from angerona.core.github_tool_catalog import (
-    ImportCancelled, ImportOperation, _bounded_read, _require_unprivileged, plain_text,
+    ImportCancelled, ImportOperation, _bounded_read, plain_text,
 )
 from angerona.core.source_sandbox import (
     _absolute, _atomic_bytes_write, _ensure_directory, _hold_plain_directories,
@@ -43,7 +45,7 @@ _EXTENSIONS = {'.py', '.txt', '.md', '.json', '.yaml', '.yml', '.toml', '.ini', 
                '.java', '.cs', '.rb', '.php'}
 CATALOG_DIGEST = hashlib.sha256(json.dumps(
     [CATALOG_VERSION, TOOLS, PACKAGES, OUTPUTS,
-     analysis_vmware.SUPERVISOR_PROFILE, analysis_vmware.configuration('0' * 32)], sort_keys=True,
+     analysis_qemu.SUPERVISOR_PROFILE, EMULATOR_FILES], sort_keys=True,
 ).encode()).hexdigest()
 
 
@@ -127,7 +129,7 @@ def _fetch(item, operation):
 def prepare_runtime(root, operation, progress=lambda _message: None):
     root = _absolute(Path(root))
     with transaction(root):
-        analysis_vmware.installation()  # Preparation does not require the service to be running.
+        analysis_qemu_runtime.installation()
         import pycdlib
         downloads, appliance = root / 'downloads', root / 'appliance'
         for path in (downloads, appliance):
@@ -178,27 +180,27 @@ def prepare_runtime(root, operation, progress=lambda _message: None):
             raise ValueError('The assembled guest image does not match the reviewed build.')
         operation.check()
         _atomic_bytes_write(appliance / 'base.cpio.gz', content, root=root)
-    return 'Reviewed runtime prepared. Check readiness to test both analyzers in VMware.'
+    return 'Reviewed runtime prepared. Check readiness to test both analyzers in the isolated QEMU guest.'
 
 
 def readiness(root) -> tuple[bool, str]:
     try:
         _require_unprivileged()
-        analysis_vmware.installation()
-        analysis_vmware.service_ready()
+        with analysis_qemu_runtime.trusted_installation():
+            pass
         root = _absolute(Path(root))
         for name, expected in OUTPUTS.items():
             _verified(root / 'appliance' / name, expected, root)
         record = json.loads(_bounded_read(root / 'selfcheck.json', root, 4096))
         if record != {'catalog': CATALOG_DIGEST, 'tools': sorted(TOOLS), 'passed': True}:
             raise ValueError('Check readiness to verify the current appliance with both analyzers.')
-        return True, 'Ready: VMware · offline RAM-only guest · Bandit 1.9.4 / Gitleaks 8.30.1.'
+        return True, 'Ready: QEMU · offline RAM-only guest · Bandit 1.9.4 / Gitleaks 8.30.1.'
     except (FileNotFoundError, ModuleNotFoundError):
         return False, 'Prepare the reviewed analysis runtime, then Check readiness.'
     except (ValueError, PermissionError) as exc:
         return False, plain_text(str(exc))
     except Exception:
-        return False, 'VMware readiness could not be verified. Check the installation and Authorization Service.'
+        return False, 'Analysis Lab readiness could not be verified. Repeat its optional emulator setup and check.'
 
 
 def snapshot(directory, tool, operation, *, runtime_root):
@@ -351,6 +353,7 @@ def _run(root, tool, files, mapping, digest, skipped, operation):
     job_dir = runs / identity
     _ensure_directory(job_dir)
     with contextlib.ExitStack() as stack:
+        runtime = stack.enter_context(analysis_qemu_runtime.trusted_installation())
         stack.enter_context(_hold_plain_directories(root / 'appliance', job_dir))
         boot = {}
         for name, expected in OUTPUTS.items():
@@ -363,17 +366,16 @@ def _run(root, tool, files, mapping, digest, skipped, operation):
             boot[name] = raw
         entries = {'input/' + name: (stat.S_IFREG | 0o444, raw) for name, raw in files.items()}
         entries['job.json'] = stat.S_IFREG | 0o444, json.dumps(job).encode()
-        iso = make_iso(boot, boot['base.cpio.gz'] + compress(cpio(entries)))
-        _atomic_bytes_write(job_dir / 'boot.iso', iso, root=root)
-        _atomic_bytes_write(job_dir / 'analysis.vmx', analysis_vmware.configuration(identity).encode(), root=root)
-        stack.enter_context(_open_sealed(job_dir / 'boot.iso'))
-        verify_configuration = stack.enter_context(
-            analysis_vmware.sealed_configuration(job_dir, identity)
-        )
+        initrd = job_dir / 'initrd.cpio.gz'
+        content = boot['base.cpio.gz'] + compress(cpio(entries))
+        _atomic_bytes_write(initrd, content, root=root)
+        handle = stack.enter_context(_open_sealed(initrd))
+        if handle.read(len(content) + 1) != content:
+            raise ValueError('The generated analysis input changed before startup.')
         operation.check()
-        output = analysis_vmware.supervise(job_dir, identity, operation)
+        output = analysis_qemu.supervise(runtime, root / 'appliance' / 'kernel',
+                                        initrd, identity, operation)
         operation.check()
-        verify_configuration()
         report = parse_report(output, job)
     # Delete only files within this generated, reparse-checked job directory.
     # Keep a failed/interrupted job visible for operator cleanup, never follow aliases.
@@ -423,25 +425,28 @@ def clear_interrupted_jobs(root, operation):
             directories = list(runs.iterdir())
             if len(directories) > 2:
                 raise ValueError('Unexpected analysis job count; operator inspection is required.')
-            with analysis_vmware.trusted_installation() as installation:
-                for directory in directories:
-                    operation.check()
-                    if not re.fullmatch('[0-9a-f]{32}', directory.name):
-                        raise ValueError('Unexpected directory in analysis jobs.')
-                    _validate_chain(directory)
-                    vmx = directory / 'analysis.vmx'
-                    if vmx.exists():
-                        _validate_regular_file(vmx)
+            for directory in directories:
+                operation.check()
+                if not re.fullmatch('[0-9a-f]{32}', directory.name):
+                    raise ValueError('Unexpected directory in analysis jobs.')
+                _validate_chain(directory)
+                vmx = directory / 'analysis.vmx'
+                if vmx.exists():
+                    _validate_regular_file(vmx)
+                    # Only legacy jobs use VMware; preserve the original
+                    # exact-job cleanup and never touch an unrelated VM.
+                    with analysis_vmware.trusted_installation() as installation:
                         analysis_vmware._control(installation, 'stop', vmx)
-                    # Refuse to remove files still in use by a VM, regardless of control output.
-                    import psutil
-                    for process in psutil.process_iter(['name', 'cmdline']):
-                        if process.info['name'] == 'vmware-vmx.exe' and any(
-                            os.path.normcase(arg) == os.path.normcase(str(vmx))
-                            for arg in (process.info['cmdline'] or [])
-                        ):
-                            raise ValueError('An analysis VM is still active; its files were retained.')
-                    remove_job_directory(root, directory)
+                # Refuse to remove files still in use by a VM, regardless of control output.
+                import psutil
+                for process in psutil.process_iter(['name', 'cmdline']):
+                    if process.info['name'] in {'vmware-vmx.exe', 'qemu-system-x86_64.exe'} and any(
+                        os.path.normcase(arg) in {os.path.normcase(str(vmx)),
+                                                 os.path.normcase(str(directory / 'initrd.cpio.gz'))}
+                        for arg in (process.info['cmdline'] or [])
+                    ):
+                        raise ValueError('An analysis VM is still active; its files were retained.')
+                remove_job_directory(root, directory)
     return 'Interrupted analysis job copies cleared.'
 
 
@@ -473,11 +478,14 @@ def check_runtime(root, operation):
         _atomic_bytes_write(root / 'selfcheck.json', json.dumps(
             {'catalog': CATALOG_DIGEST, 'tools': sorted(TOOLS), 'passed': False},
         ).encode(), root=root)
-        analysis_vmware.installation()
-        analysis_vmware.service_ready()
+        with analysis_qemu_runtime.trusted_installation():
+            pass
         # Inert fixtures exercise real analyzers; they cannot authorize response actions.
+        # This is generated locally, never issued by GitHub. Gitleaks excludes
+        # alphabetic example strings through its global placeholder allowlist.
+        fake_pat = hashlib.sha256(b'Angerona inert Analysis Lab selfcheck v2').hexdigest()[:36].encode()
         fixtures = {'bandit': b'assert True\n',
-                    'gitleaks': b'const token = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij";\n'}
+                    'gitleaks': b'const token = "ghp_' + fake_pat + b'";\n'}
         for tool, content in fixtures.items():
             name = '00000.py' if tool == 'bandit' else '00000.txt'
             digest = hashlib.sha256(content).hexdigest()

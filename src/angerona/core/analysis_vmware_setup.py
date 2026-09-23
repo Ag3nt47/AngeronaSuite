@@ -23,16 +23,15 @@ from angerona.core.source_sandbox import _hold_plain_directories, _validate_regu
 DOWNLOAD_URL = "https://support.broadcom.com/"
 DOWNLOAD_HELP_URL = "https://knowledge.broadcom.com/external/article/368734"
 PURPOSE = (
-    "VMware is optional. Analysis Lab uses it to inspect a copy of your source "
-    "in an isolated virtual machine with fixed Python security and secret checks. "
-    "It is not required for monitoring, autonomous defense, or Ollama. "
+    "VMware is optional virtualization software for running separate operating systems. "
+    "Angerona's current Analysis Lab uses QEMU for its isolated source checks. "
+    "VMware is not required for the Lab, monitoring, autonomous defense, or Ollama. "
     "It needs an extra download, disk space, RAM, and hardware virtualization. "
-    "The Lab runs only when you start it. Analysis Lab currently supports Windows."
+    "Install it only if you also want VMware for your own virtual machines."
 )
 VALIDATION_NOTE = (
-    "Installing VMware does not make Analysis Lab ready. Its runtime and isolation "
-    "checks must also pass. This release's native VMware check is currently blocked "
-    "by configuration-file custody; setup does not remove that protection."
+    "Angerona's VMware backend remains blocked by configuration-file custody; "
+    "setup does not remove that protection. Use the QEMU Lab setup for source analysis."
 )
 _MAX_INSTALLER_BYTES = 2 * 1024 * 1024 * 1024
 _INSTALLER_NAME = re.compile(r"VMware-workstation-(?:full-)?[A-Za-z0-9][A-Za-z0-9._-]*\.exe", re.I)

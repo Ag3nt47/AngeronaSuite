@@ -18,6 +18,7 @@ class FakeNative:
         self.parent = token_launch._TokenIdentity("fixture-user", 2, True, 0x3000, 1, 2, False)
         self.medium = replace(self.parent, elevated=False, integrity=0x2000, elevation_type=3)
         self.linked = self.medium
+        self.primary = self.medium
         self.child = self.medium
         self.closed = []
         self.terminated = []
@@ -35,16 +36,21 @@ class FakeNative:
         assert process == 30
         return 50
 
+    def primary_token(self, token):
+        assert token == 20
+        self.calls.append(("duplicate", token))
+        return 60
+
     def identity(self, token):
         self.calls.append(("identity", token))
-        return {10: self.parent, 20: self.linked, 50: self.child}[token]
+        return {10: self.parent, 20: self.linked, 50: self.child, 60: self.primary}[token]
 
     def model_directory(self, token):
-        assert token == 20
+        assert token == (60 if self.linked.token_type == 2 else 20)
         return self.models
 
     def create_suspended(self, linked, image, environment):
-        assert linked == 20 and image == self.path
+        assert linked == (60 if self.linked.token_type == 2 else 20) and image == self.path
         self.calls.append(("create", dict(environment)))
         return 30, 40, 600
 
@@ -97,7 +103,7 @@ def test_same_user_medium_child_verified_before_resume(fixture_native):
 @pytest.mark.parametrize("changes", [
     {"sid": "another-user"}, {"session": 3}, {"session": 0},
     {"elevated": True}, {"integrity": 0x3000}, {"integrity": 0x2100},
-    {"token_type": 2}, {"elevation_type": 2}, {"ui_access": True},
+    {"token_type": 0}, {"elevation_type": 2}, {"ui_access": True},
 ])
 @pytest.mark.parametrize("target", ["linked", "child"])
 def test_wrong_authority_fails_before_resume(fixture_native, changes, target):
@@ -121,6 +127,88 @@ def test_non_split_or_service_parent_is_rejected(fixture_native, changes):
         run(native)
     assert native.calls == [("identity", 10)]
     assert native.closed == [10]
+
+
+def test_linked_impersonation_is_converted_and_rechecked_before_creation(fixture_native):
+    native = fixture_native
+    native.linked = replace(native.medium, token_type=2)
+    process = run(native)
+    assert native.calls == [
+        ("identity", 10), ("identity", 20), ("duplicate", 20), ("identity", 60),
+        ("create", {"OLLAMA_NO_CLOUD": "1"}), ("identity", 50), ("resume", 40),
+    ]
+    assert native.closed == [50, 40, 60, 20, 10]
+    assert not native.terminated and process.pid == 600
+
+
+@pytest.mark.parametrize("changes", [
+    {"sid": "another-user"}, {"session": 3}, {"session": 0},
+    {"elevated": True}, {"integrity": 0x3000}, {"integrity": 0x2100},
+    {"token_type": 2}, {"elevation_type": 2}, {"ui_access": True},
+])
+def test_converted_token_authority_is_not_assumed(fixture_native, changes):
+    native = fixture_native
+    native.linked = replace(native.medium, token_type=2)
+    native.primary = replace(native.medium, **changes)
+    with pytest.raises(ValueError):
+        run(native)
+    assert native.closed == [60, 20, 10]
+    assert not any(call[0] == "create" for call in native.calls)
+
+
+def test_linked_impersonation_wrong_user_cannot_be_duplicated(fixture_native):
+    native = fixture_native
+    native.linked = replace(native.medium, token_type=2, sid="another-user")
+    with pytest.raises(ValueError):
+        run(native)
+    assert native.calls == [("identity", 10), ("identity", 20)]
+    assert native.closed == [20, 10]
+
+
+def test_primary_conversion_failure_never_creates_child_or_falls_back(fixture_native):
+    native = fixture_native
+    native.linked = replace(native.medium, token_type=2)
+
+    def denied(_token):
+        raise OSError("Fixture token conversion denied")
+
+    native.primary_token = denied
+    with pytest.raises(ValueError):
+        run(native)
+    assert native.closed == [20, 10]
+    assert not any(call[0] == "create" for call in native.calls)
+
+
+def test_impersonation_child_is_rejected_even_after_primary_conversion(fixture_native):
+    native = fixture_native
+    native.linked = native.child = replace(native.medium, token_type=2)
+    with pytest.raises(ValueError):
+        run(native)
+    assert native.terminated == [30]
+    assert native.closed == [30, 50, 40, 60, 20, 10]
+    assert not any(call[0] == "resume" for call in native.calls)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ctypes ABI; native call is replaced")
+@pytest.mark.parametrize("succeeds", [True, False])
+def test_primary_conversion_binding_has_minimum_rights_and_noninherited_handle(monkeypatch, succeeds):
+    class Duplicate:
+        def __call__(self, token, rights, attributes, level, token_type, result):
+            assert (token, rights, attributes, level, token_type) == (20, 0xB, None, 1, 1)
+            if succeeds:
+                result._obj.value = 60
+            return succeeds
+
+    class Library:
+        DuplicateTokenEx = Duplicate()
+
+    monkeypatch.setattr(token_launch.ctypes, "WinDLL", lambda *_a, **_k: Library())
+    native = token_launch._Native.__new__(token_launch._Native)
+    if succeeds:
+        assert native.primary_token(20) == 60
+    else:
+        with pytest.raises(OSError, match="conversion failed"):
+            native.primary_token(20)
 
 
 def test_wrong_suspended_image_is_terminated_by_owned_handle(fixture_native, tmp_path):
@@ -194,8 +282,11 @@ def test_cleanup_closes_remaining_handles_even_if_termination_fails(fixture_nati
 
 
 @pytest.mark.parametrize("cancel_at", [1, 2])
-def test_cancellation_after_token_checks_never_resumes(fixture_native, cancel_at):
+@pytest.mark.parametrize("linked_impersonation", [False, True])
+def test_cancellation_after_token_checks_never_resumes(fixture_native, cancel_at, linked_impersonation):
     native = fixture_native
+    if linked_impersonation:
+        native.linked = replace(native.medium, token_type=2)
     checks = []
 
     def cancel():
@@ -208,6 +299,8 @@ def test_cancellation_after_token_checks_never_resumes(fixture_native, cancel_at
                              check_cancelled=cancel)
     assert not any(call[0] == "resume" for call in native.calls)
     assert native.terminated == ([30] if cancel_at == 2 else [])
+    if linked_impersonation:
+        assert 60 in native.closed
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows ctypes ABI; native call is replaced")

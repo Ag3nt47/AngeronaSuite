@@ -1,6 +1,6 @@
 """Reviewed offline analyzer artifacts; public upstream SHA-256 pins, 2026-09-05."""
 
-CATALOG_VERSION = 1
+CATALOG_VERSION = 2
 TOOLS = {"bandit": "1.9.4", "gitleaks": "8.30.1"}
 PACKAGES = [{'kind': 'rootfs',
   'sha256': '41f73e3cf5fa919b8aa5ca6b30dc48f0da2720776d7423e2a7748211456fe081',
@@ -174,8 +174,8 @@ PACKAGES = [{'kind': 'rootfs',
   'sha256': 'e73a6241bd5f3c5c2d4d38c02cc52c378c0415a7c888bd292066bf36e0f41a39',
   'size': 69206016,
   'url': 'https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-virt-3.24.1-x86_64.iso'}]
-OUTPUTS = {'base.cpio.gz': {'sha256': '67a58f7c1c930eb95a3c27ac7c5765dfeebd9f0d3630ab9118eee4a916e43532',
-                  'size': 24415704},
+OUTPUTS = {'base.cpio.gz': {'sha256': '3527278483488d153a62bdc6ad4b298bedb8b4a7172ece5f0adb7ec7b6a44e31',
+                  'size': 24415754},
  'isolinux.bin': {'member': 'boot/syslinux/isolinux.bin',
                   'sha256': '3607bcb1d1ba6e6708f2e1dc38829f993951cbed7ab78d1fae0a6a4ca8d58fca',
                   'size': 43008},

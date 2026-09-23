@@ -22,7 +22,77 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST MAINTENANCE (2026-09-23 — three review rounds)
+## LATEST MAINTENANCE (v1.13.0 — 2026-09-23 continuation)
+
+- Canonical record: analysis/continuation-20260923/README.md. Product version
+  and catalog count remain v1.13.0 / 84; the Lab backend is not a new sensor.
+  Earlier three-round performance measurements and native Mac/Linux CI results
+  remain dated evidence in analysis/deep-review-20260923/.
+- Analysis Lab now uses a separate fixed-argument QEMU 11.1.0 backend on 64-bit
+  Intel/AMD Windows, from a normal non-administrator Angerona session. Pinned
+  Bandit 1.9.4 and Gitleaks 8.30.1 analyze copied text without executing it.
+  The VMware backend retains its VMX seal and its documented native failure;
+  QEMU does not turn that earlier result into a VMware pass.
+- Setup is explicit and optional, explains purpose/cost/Skip, and downloads the
+  exact reviewed approximately 197 MiB vendor installer when needed. Its normal
+  UI, license and UAC prompts remain visible. Keep Program Files\qemu as the
+  vendor destination. A matching installation can be reused. A separate
+  administrator prompt creates the approximately 122 MiB protected Lab runtime;
+  allow 2 GiB free. The vendor certificate is expired, so acquisition explicitly
+  relies on reviewed SHA-256/SHA-512 pins, not a currently valid signature.
+- The 109-file runtime includes the recursive DLL closure and two firmware
+  images. Administrator-owned namespace ACLs, exact hashes/file membership,
+  retained directory custody and deny-write/delete leaf seals precede execution.
+  Setup independently validates every generated archive member under its seal
+  before privileged copying; the elevated helper retains destination ancestry
+  itself. It never runs the emulator or guest elevated.
+- The fixed diskless profile uses one CPU, 768 MiB guest RAM, single-threaded
+  TCG, no NIC/host shares/monitor/user config and explicit firmware. A suspended
+  child must pass image/medium-token checks and enter a kill-on-close Job Object
+  before resume: one process, 2 GiB process memory, 25% host CPU, below-normal
+  priority and at most five minutes per job. No Lab VM is resident while idle.
+  Windows host paging/crash dumps still apply; diskless is a guest property.
+- Native boot found and fixed Windows QEMU serial burst loss: cbreak is set
+  before READY and the exclusive inherited pipe carries one start byte. UUID
+  and complete receipt checks remain. The v3 profile disables the unused VAPIC
+  option ROM explicitly while retaining ordinary APIC operation. Crypto-library
+  configuration/provider overrides block unwanted compiled search defaults.
+- Both real analyzer readiness fixtures passed with loopback only, zero block
+  devices and no host shares: Bandit B101 in 117.328 s and Gitleaks github-pat in
+  62.593 s. The Gitleaks fixture is generated locally and never issued; its
+  original alphabetical fixture was legitimately allowlisted. Native loaded
+  DLLs came only from the protected runtime or Windows System32/WinSxS. Both
+  owned emulator processes were reaped, with none left after the check. Run
+  binds readiness to the current catalog and retires stale results on recheck.
+- Native elevated Ollama testing reproduced a real Windows linked medium token
+  of impersonation type 2. The candidate checks same-user/session/medium
+  authority before narrow DuplicateTokenEx conversion, rechecks the resulting
+  primary token, and preserves suspended-child verification/no elevated fallback.
+  Native token-only controls convert level-2 impersonation but reject level 1
+  with ERROR_BAD_IMPERSONATION_LEVEL (1346). This host's actual elevated linked
+  token level remains unknown, so the candidate is not an accepted startup fix.
+  Focused tests: 146 passed, including two real Windows token-only checks.
+  Native process acceptance remains pending after UAC
+  cancellation (1223); normal-user startup success is separate prior evidence.
+  Automatic authorized defense remains independent of Ollama and the Lab.
+- End-to-end native source analysis passed in 47.719 s, with a redacted finding,
+  original source-path mapping, saved history and response_authority=False.
+  Cancelling a second job reaped its child without extra history; readiness
+  remained true. The offscreen GUI displayed the accepted report and history.
+- Validation: the first full baseline was 4,103 passed / 19 skipped / 3 stale
+  VMware-fixture failures. Final Lab gate: 192 passed, including architecture
+  rejection before download and visible-panel setup/Skip refresh; a falsely skipped
+  hard-link fixture and its complete six-test file passed after repair. Original
+  population reconciliation: 4,107 passed / 18 skips, not another full-suite run.
+  The remaining skips are 14 unavailable Windows link-privilege checks and four
+  explicit POSIX/native macOS/Linux checks. Compilation covered 393 package and
+  56 tool sources; focused Ruff and documentation drift passed. Evidence:
+  analysis/continuation-20260923/validation.md. Overlapping gates are not additive.
+  QA also fixed trusted PowerShell module-path initialization to precede any
+  cmdlet resolution. No cross-platform Lab, arbitrary imported execution,
+  host-wide performance claim or AI-authorized response is implied.
+
+## PRIOR MAINTENANCE (2026-09-23 — three review rounds)
 
 - Canonical combined record: analysis/deep-review-20260923/README.md. Product
   remains v1.13.0 with 84 catalog capabilities; no new module-count inflation.
@@ -205,16 +275,21 @@ kernel component is a product capability.
 - Acquisition requires a non-administrator session. Downloads use fixed GitHub
   endpoints without ambient credentials or proxies; imports and previews run on
   bounded background workers. Storage has a single-writer OS lease.
-- Analysis Lab now implements a diskless VMware appliance, pinned Bandit 1.9.4 /
-  Gitleaks 8.30.1, bounded local text copies, process supervision, redacted reports,
-  history/export and interrupted-job cleanup. See core/tool_analysis_jobs.py,
-  core/analysis_vmware.py and gui/analysis_lab.py. Imported source is never an adapter.
+- Analysis Lab implements a diskless QEMU guest on Intel/AMD Windows, pinned
+  Bandit 1.9.4 / Gitleaks 8.30.1, bounded local text copies, process supervision,
+  redacted reports, history/export and interrupted-job cleanup. See
+  core/tool_analysis_jobs.py, core/analysis_qemu.py and gui/analysis_lab.py.
+  Imported source is never an adapter. Setup explains optional use, download,
+  installation/license/UAC prompts and resource costs; Skip changes nothing.
+  Monitoring, automatic response and Ollama require neither Lab nor VMware.
+- Current QEMU guest and expected-detection acceptance is recorded in
+  analysis/continuation-20260923/README.md. Preparation alone is not readiness;
+  both real analyzer fixtures must pass for the current backend/runtime identity.
 - Native guest acceptance failed on tested Workstation 25.0.1 after the approved
   service setup changed VMAuthdService to Manual/Running. VMware cannot open the
   generated VMX under the required deny-write/delete seal; readonly/direct tests
-  did not resolve it. Runtime preparation is not a native analyzer pass. Run
-  remains gated, stale readiness is retired before rechecks, and the custody
-  requirement is not relaxed. Current evidence:
+  did not resolve it. That VMware backend remains gated and its custody
+  requirement is not relaxed. Historical VMware evidence:
   analysis/deep-review-20260923/native-acceptance.md. The earlier
   analysis/vmware-analysis-lab-2026-09-05.md is historical implementation evidence.
 - The existing Sandbox Editor edits copies only; the installed-module self-test

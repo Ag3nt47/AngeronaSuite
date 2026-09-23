@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from angerona.core import analysis_vmware as vmware, tool_analysis_jobs as jobs
+from angerona.core import analysis_vmware as vmware, analysis_qemu_runtime as runtime, tool_analysis_jobs as jobs
 
 
 def test_failed_native_recheck_retires_previous_success(tmp_path, monkeypatch):
@@ -14,16 +14,14 @@ def test_failed_native_recheck_retires_previous_success(tmp_path, monkeypatch):
     record.write_text(json.dumps({'catalog': jobs.CATALOG_DIGEST,
                                  'tools': sorted(jobs.TOOLS), 'passed': True}))
     monkeypatch.setattr(jobs, 'transaction', lambda _root: contextlib.nullcontext())
-    monkeypatch.setattr(vmware, 'installation', lambda: tmp_path)
-
     def unavailable():
-        raise ValueError('Service unavailable')
+        raise ValueError('Protected runtime unavailable')
 
-    monkeypatch.setattr(vmware, 'service_ready', unavailable)
-    with pytest.raises(ValueError, match='Service unavailable'):
+    monkeypatch.setattr(runtime, 'trusted_installation', unavailable)
+    with pytest.raises(ValueError, match='Protected runtime unavailable'):
         jobs.check_runtime(tmp_path, jobs.AnalysisOperation())
     assert json.loads(record.read_text())['passed'] is False
-    monkeypatch.setattr(vmware, 'service_ready', lambda: None)
+    monkeypatch.setattr(runtime, 'trusted_installation', lambda: contextlib.nullcontext(tmp_path))
     monkeypatch.setattr(jobs, '_require_unprivileged', lambda: None)
     monkeypatch.setattr(jobs, '_verified', lambda *_a: b'')
     ready, reason = jobs.readiness(tmp_path)

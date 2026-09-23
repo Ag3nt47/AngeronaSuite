@@ -125,7 +125,8 @@ def test_vm_profile_has_only_readonly_boot_media_and_local_pipe():
 
 def test_guest_entry_point_compiles_and_requires_supervisor_handshake():
     compile(SOURCE, '<reviewed guest>', 'exec')
-    assert 'GO:' in SOURCE
+    assert "os.read(serial.fileno(), 1) != b'G'" in SOURCE
+    assert SOURCE.index('tty.setcbreak') < SOURCE.index("print('ANGERONA_READY:")
     assert 'resource.RLIMIT_FSIZE' in SOURCE
     assert 'extra_groups=[]' in SOURCE
     assert 'user=65534' in SOURCE
@@ -205,14 +206,13 @@ def test_cleanup_cannot_leave_generated_job_boundary(tmp_path):
         jobs.remove_job_directory(root,tmp_path)
 
 
-def test_readiness_does_not_claim_a_missing_service_is_a_missing_hypervisor(tmp_path,monkeypatch):
+def test_readiness_explains_untrusted_emulator_without_accepting_an_old_receipt(tmp_path,monkeypatch):
     monkeypatch.setattr(jobs,'_require_unprivileged',lambda:None)
-    monkeypatch.setattr(analysis_vmware,'installation',lambda:tmp_path)
-    def stopped():raise ValueError('Start VMware Authorization Service in Windows Services.')
-    monkeypatch.setattr(analysis_vmware,'service_ready',stopped)
+    def changed():raise ValueError('The Lab emulator differs from its reviewed catalog; repeat setup.')
+    monkeypatch.setattr(jobs.analysis_qemu_runtime,'trusted_installation',changed)
     ready,reason=jobs.readiness(tmp_path)
     assert not ready
-    assert 'Authorization Service' in reason
+    assert 'reviewed catalog' in reason
 
 
 @pytest.mark.skipif(__import__('os').name!='nt',reason='Windows Job Object integration')

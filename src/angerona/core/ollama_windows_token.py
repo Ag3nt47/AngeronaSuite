@@ -30,10 +30,11 @@ class _TokenIdentity:
     ui_access: bool
 
 
-def _require_medium(parent: _TokenIdentity, token: _TokenIdentity) -> None:
+def _require_medium(parent: _TokenIdentity, token: _TokenIdentity, *, linked=False) -> None:
     if (token.sid != parent.sid or token.session != parent.session
             or token.session <= 0 or token.elevated or token.integrity != 0x2000
-            or token.token_type != 1 or token.elevation_type != 3 or token.ui_access):
+            or token.token_type not in ((1, 2) if linked else (1,))
+            or token.elevation_type != 3 or token.ui_access):
         raise ValueError(_UNAVAILABLE)
 
 
@@ -56,6 +57,27 @@ class _Native:
 
     def linked_token(self, token):
         return self.security.GetTokenInformation(token, self.security.TokenLinkedToken)
+
+    def primary_token(self, token):
+        """Convert only a token Windows already permits to become primary.
+
+        An identification-only source cannot be converted: Windows returns
+        ERROR_BAD_IMPERSONATION_LEVEL, which must fail closed. This operation
+        neither raises the source impersonation level nor enables privileges.
+        """
+        from ctypes import wintypes
+
+        duplicate = ctypes.WinDLL("advapi32", use_last_error=True).DuplicateTokenEx
+        duplicate.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID,
+                              ctypes.c_int, ctypes.c_int, ctypes.POINTER(wintypes.HANDLE)]
+        duplicate.restype = wintypes.BOOL
+        primary = wintypes.HANDLE()
+        # Only QUERY | DUPLICATE | ASSIGN_PRIMARY. NULL attributes prohibit
+        # handle inheritance. The source still needs SecurityImpersonation or
+        # SecurityDelegation authority, regardless of this level argument.
+        if not duplicate(int(token), 0x000B, None, 1, 1, ctypes.byref(primary)):
+            raise OSError(ctypes.get_last_error(), "Linked medium token conversion failed.")
+        return int(primary.value)
 
     def child_token(self, process):
         return self.security.OpenProcessToken(process, self.security.TOKEN_QUERY)
@@ -189,7 +211,7 @@ class _MediumOllamaProcess:
 
 
 def _launch(native, image, environment, deadline, *, check_cancelled=None):
-    current = linked = child_token = process = thread = None
+    current = linked = primary = child_token = process = thread = None
     try:
         current = native.current_token()
         parent = native.identity(current)
@@ -197,9 +219,18 @@ def _launch(native, image, environment, deadline, *, check_cancelled=None):
                 or not 0x3000 <= parent.integrity < 0x4000 or parent.session <= 0):
             raise ValueError(_UNAVAILABLE)
         linked = native.linked_token(current)
-        _require_medium(parent, native.identity(linked))
+        linked_identity = native.identity(linked)
+        _require_medium(parent, linked_identity, linked=True)
+        launch_token = linked
+        if linked_identity.token_type == 2:
+            # Windows may expose the user's linked limited token as an
+            # impersonation token. Validate its authority before conversion,
+            # then independently revalidate the new primary token.
+            primary = native.primary_token(linked)
+            _require_medium(parent, native.identity(primary))
+            launch_token = primary
         environment = dict(environment)
-        models = native.model_directory(linked)
+        models = native.model_directory(launch_token)
         if models is not None and models != "":
             if (not isinstance(models, str) or len(models) > 4096
                     or any(ord(character) < 32 for character in models)
@@ -210,7 +241,7 @@ def _launch(native, image, environment, deadline, *, check_cancelled=None):
             raise TimeoutError
         if check_cancelled is not None:
             check_cancelled()
-        process, thread, pid = native.create_suspended(linked, image, environment)
+        process, thread, pid = native.create_suspended(launch_token, image, environment)
         child_token = native.child_token(process)
         _require_medium(parent, native.identity(child_token))
         if native.image(process).resolve(strict=True) != image.resolve(strict=True):
@@ -235,7 +266,7 @@ def _launch(native, image, environment, deadline, *, check_cancelled=None):
                 native.terminate(process)
             except Exception as exc:
                 cleanup_error = exc
-        for handle in (process, child_token, thread, linked, current):
+        for handle in (process, child_token, thread, primary, linked, current):
             if handle is not None:
                 try:
                     native.close(handle)

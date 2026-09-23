@@ -246,7 +246,7 @@ def supervise(job_dir: Path, job_id: str, operation) -> bytes:
                             job = _client_job(pipe, vmx, directory)
                             operation.check()
                             verify_configuration()
-                            win32file.WriteFile(pipe, ('GO:' + job_id + '\n').encode())
+                            win32file.WriteFile(pipe, b'G')
                         if b'ANGERONA_ANALYZER_FAILED' in result:
                             raise ValueError('The offline analyzer failed; no raw source or secret output was retained.')
                         if b'ANGERONA_REPORT:' in result and result.endswith(b'\n'):

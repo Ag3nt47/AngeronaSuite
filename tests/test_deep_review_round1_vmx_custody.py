@@ -1,4 +1,4 @@
-"""VM configuration custody with disposable files and fake VMware supervision."""
+"""Legacy VMX and current QEMU boot-input custody use only disposable fixtures."""
 from __future__ import annotations
 
 import contextlib
@@ -163,7 +163,7 @@ def test_supervisor_rejects_failed_custody_before_start_go_or_report(tmp_path, m
     )
     with pytest.raises(ValueError, match='custody changed'):
         vmware.supervise(tmp_path / identity, identity, SimpleNamespace(check=lambda: None))
-    assert writes == ([] if fail_check < 3 else [('GO:' + identity + '\n').encode()])
+    assert writes == ([] if fail_check < 3 else [b'G'])
     assert controls == ([] if fail_check == 1 else ['start', 'stop'])
     assert 'pipe' in closed
     if fail_check > 1:
@@ -182,36 +182,56 @@ def test_supervisor_keeps_custody_through_stop_and_receipt(tmp_path, monkeypatch
     assert closed.count('job') == 1
 
 
-@pytest.mark.skipif(os.name != 'nt', reason='Windows deny-write/delete sharing')
-def test_job_runner_pins_generated_profile_until_report_is_parsed(tmp_path, monkeypatch):
+def _isolated_appliance(tmp_path, monkeypatch):
     root = tmp_path / 'lab'
     appliance = root / 'appliance'
     appliance.mkdir(parents=True)
-    raw = b'inert appliance'
-    (appliance / 'base.cpio.gz').write_bytes(raw)
+    files = {'base.cpio.gz': b'inert appliance', 'kernel': b'inert kernel'}
+    for name, raw in files.items():
+        (appliance / name).write_bytes(raw)
     monkeypatch.setattr(jobs, 'OUTPUTS', {
-        'base.cpio.gz': {'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()},
+        name: {'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+        for name, raw in files.items()
     })
-    monkeypatch.setattr(jobs, 'make_iso', lambda *_a: b'inert fixture image')
+    runtime = tmp_path / 'fixture-runtime'
+    runtime.mkdir()
+    # Never consult or launch the operator's real protected QEMU installation.
+    monkeypatch.setattr(jobs.analysis_qemu_runtime, 'trusted_installation',
+                        lambda: contextlib.nullcontext(runtime))
+    return root, runtime
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows deny-write/delete sharing')
+def test_job_runner_pins_generated_initrd_until_report_is_parsed(tmp_path, monkeypatch):
+    root, runtime = _isolated_appliance(tmp_path, monkeypatch)
     accepted = []
 
-    def supervisor(directory, identity, _operation):
+    def supervisor(actual_runtime, kernel, initrd, identity, _operation):
+        assert actual_runtime == runtime
+        assert kernel == root / 'appliance' / 'kernel'
+        assert initrd == root / 'runs' / identity / 'initrd.cpio.gz'
         with pytest.raises(PermissionError):
-            (directory / 'analysis.vmx').write_bytes(b'boot.iso -> alternate.iso')
+            initrd.write_bytes(b'altered boot input')
+        with pytest.raises(PermissionError):
+            initrd.unlink()
+        with pytest.raises(PermissionError):
+            kernel.write_bytes(b'altered kernel')
         report = dict(schema=1, job=identity, tool='bandit', input_sha256='b' * 64,
                       catalog_sha256=jobs.CATALOG_DIGEST, errors=0, findings=[],
-                      isolation={'network': ['lo'], 'block_devices': ['sr0'], 'host_shares': False})
+                      isolation={'network': ['lo'], 'block_devices': [], 'host_shares': False})
         return b'ANGERONA_REPORT:' + json.dumps(report).encode() + b'\n'
 
     original_parse = jobs.parse_report
 
     def parse(output, job):
         with pytest.raises(PermissionError):
-            (root / 'runs' / job['job'] / 'analysis.vmx').unlink()
+            (root / 'runs' / job['job'] / 'initrd.cpio.gz').unlink()
+        with pytest.raises(PermissionError):
+            (root / 'appliance' / 'kernel').unlink()
         accepted.append(job['job'])
         return original_parse(output, job)
 
-    monkeypatch.setattr(vmware, 'supervise', supervisor)
+    monkeypatch.setattr(jobs.analysis_qemu, 'supervise', supervisor)
     monkeypatch.setattr(jobs, 'parse_report', parse)
     result = jobs._run(root, 'bandit', {}, {}, 'b' * 64, 0, jobs.AnalysisOperation())
     assert accepted == [result['job']]
@@ -219,25 +239,17 @@ def test_job_runner_pins_generated_profile_until_report_is_parsed(tmp_path, monk
     assert not list((root / 'runs').iterdir())
 
 
-def test_job_runner_rejects_profile_swapped_between_generation_and_sealing(tmp_path, monkeypatch):
-    root = tmp_path / 'lab'
-    appliance = root / 'appliance'
-    appliance.mkdir(parents=True)
-    raw = b'inert appliance'
-    (appliance / 'base.cpio.gz').write_bytes(raw)
-    monkeypatch.setattr(jobs, 'OUTPUTS', {
-        'base.cpio.gz': {'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()},
-    })
-    monkeypatch.setattr(jobs, 'make_iso', lambda *_a: b'inert fixture image')
+def test_job_runner_rejects_initrd_swapped_between_generation_and_sealing(tmp_path, monkeypatch):
+    root, _runtime = _isolated_appliance(tmp_path, monkeypatch)
     original_write = jobs._atomic_bytes_write
 
     def race_after_generation(path, data, **kwargs):
         original_write(path, data, **kwargs)
-        if path.name == 'analysis.vmx':
-            path.write_bytes(data.replace(b'"boot.iso"', b'"alternate.iso"'))
+        if path.name == 'initrd.cpio.gz':
+            path.write_bytes(b'altered initrd before the readonly seal')
 
     monkeypatch.setattr(jobs, '_atomic_bytes_write', race_after_generation)
-    monkeypatch.setattr(vmware, 'supervise', lambda *_a: pytest.fail('started altered guest'))
+    monkeypatch.setattr(jobs.analysis_qemu, 'supervise', lambda *_a: pytest.fail('started altered guest'))
     monkeypatch.setattr(jobs, 'parse_report', lambda *_a: pytest.fail('accepted altered guest report'))
-    with pytest.raises(ValueError, match='fixed reviewed profile'):
+    with pytest.raises(ValueError, match='generated analysis input changed'):
         jobs._run(root, 'bandit', {}, {}, 'b' * 64, 0, jobs.AnalysisOperation())

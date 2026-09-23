@@ -373,7 +373,8 @@ def test_worker_keeps_gui_responsive_and_completion_survives_full_progress():
             time.sleep(0.01)
         assert not dialog._busy
         assert dialog.status.text().startswith("Fixture completed")
-        assert "currently blocked" in dialog.status.text()
+        assert "remains blocked" in dialog.status.text()
+        assert "QEMU Lab setup" in dialog.status.text()
     finally:
         finish.set()
         dialog.close()

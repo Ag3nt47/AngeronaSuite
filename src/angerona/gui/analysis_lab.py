@@ -40,22 +40,25 @@ class AnalysisLabPanel(QWidget):
 
         self.destroyed.connect(destroyed)
         layout = QVBoxLayout(self)
-        self.status = QLabel('Open Analysis Lab to check VMware and the reviewed runtime.')
+        self.status = QLabel('Open Analysis Lab to check its optional emulator and reviewed runtime.')
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.status)
-        note = QLabel('Analyze a copy of local UTF-8 source. Offline, RAM-only VMware guest; '
+        note = QLabel('Analyze a copy of local UTF-8 source. Offline, diskless QEMU guest; '
                       '2,000 files / 16 MiB, five minutes. Results are external analysis. '
                       'Imported repositories never become runnable tools.')
         note.setWordWrap(True)
         layout.addWidget(note)
         setup = QHBoxLayout()
+        self.setup_button = QPushButton('Set up Lab emulator…')
         self.prepare_button = QPushButton('Prepare runtime')
         self.check_button = QPushButton('Check readiness')
         self.cleanup_button = QPushButton('Clear interrupted jobs')
+        self.setup_button.clicked.connect(self._setup)
         self.prepare_button.clicked.connect(self._prepare)
         self.check_button.clicked.connect(self._check)
         self.cleanup_button.clicked.connect(self._cleanup)
+        setup.addWidget(self.setup_button)
         setup.addWidget(self.prepare_button)
         setup.addWidget(self.check_button)
         setup.addWidget(self.cleanup_button)
@@ -114,11 +117,22 @@ class AnalysisLabPanel(QWidget):
 
     def _buttons(self, *_args):
         self.run_button.setEnabled(not self._busy and self._ready and bool(self.input_path.text().strip()))
-        for widget in (self.prepare_button, self.check_button, self.cleanup_button, self.browse_button,
+        for widget in (self.setup_button, self.prepare_button, self.check_button, self.cleanup_button, self.browse_button,
                        self.input_path, self.tool, self.history):
             widget.setEnabled(not self._busy)
         self.cancel_button.setEnabled(self._busy)
         self.export_button.setEnabled(not self._busy and self._report is not None)
+
+    def _setup(self):
+        from angerona.gui.analysis_qemu_setup import QEMUSetupDialog
+        dialog = QEMUSetupDialog(self, root=self._root)
+        dialog.exec()
+        dialog.deleteLater()
+        self._ready = False
+        self._loaded = False
+        self._buttons()
+        root = self._root
+        self._start('load', lambda _op, _progress: self._load(root), 'Checking Analysis Lab…')
 
     def _start(self, kind, work, message):
         if self._busy:
@@ -254,7 +268,7 @@ class AnalysisLabPanel(QWidget):
         root = self._root or jobs.default_root()
         self._root = root
         self._start('check', lambda op, _progress: jobs.check_runtime(root, op),
-                    'Checking VMware isolation, process limits and both analyzers with harmless fixtures…')
+                    'Checking QEMU isolation, process limits and both analyzers with harmless fixtures…')
 
     def _cleanup(self):
         root = self._root or jobs.default_root()
@@ -273,7 +287,7 @@ class AnalysisLabPanel(QWidget):
     def cancel_pending(self):
         if self._operation is not None:
             if self._operation.cancel():
-                self.status.setText('Cancelling and stopping the analysis VM. VMware startup may take up to 45 seconds…')
+                self.status.setText('Cancelling and stopping the isolated analysis process…')
             else:
                 self.status.setText('Finishing the redacted report save…')
 

@@ -165,15 +165,15 @@ STEPS: tuple[Step, ...] = (
     ),
     Step(
         "Optional Analysis Lab",
-        "VMware lets Analysis Lab inspect a copy of source in an isolated virtual "
+        "QEMU lets Analysis Lab inspect a copy of source in an isolated virtual "
         "machine using fixed Python security and secret checks. It is optional: "
         "monitoring, autonomous defense, and Ollama work without it. It needs an "
-        "extra download, disk space, RAM, and hardware virtualization, and runs "
+        "extra download, disk space, and RAM, and runs "
         "only when you start the Lab. The Lab currently supports Windows; skip "
         "on macOS or Linux. Installation alone does not establish Lab readiness.",
         (
             Field("action", "setup_analysis_lab", "Set up Analysis Lab", platforms=("win32",),
-                  note="Skip is the default. No silent download or installation. Broadcom account/compliance approval may be required."),
+                  note="Skip is the default. Download and administrator prompts require your setup action."),
         ),
     ),
     Step(
@@ -987,9 +987,9 @@ if _HAVE_QT:
                 found = shutil.which("ollama")
                 QMessageBox.information(self, "Ollama", "Ollama is installed and available." if found else "Ollama was not found. ARIA can use its deterministic local fallback until Ollama is installed.")
             elif action == "setup_analysis_lab":
-                from angerona.gui.analysis_vmware_setup import VMwareSetupDialog
+                from angerona.gui.analysis_qemu_setup import QEMUSetupDialog
 
-                dialog = VMwareSetupDialog(self)
+                dialog = QEMUSetupDialog(self)
                 dialog.exec()
                 dialog.deleteLater()
             elif action == "reset_orb":

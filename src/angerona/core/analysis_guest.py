@@ -19,6 +19,8 @@ import re
 import resource
 import select
 import subprocess
+import termios
+import tty
 
 def main():
     job = json.loads(pathlib.Path('/job.json').read_text())
@@ -32,13 +34,15 @@ def main():
         'rootfs', 'proc', 'sysfs', 'devtmpfs'
     } for line in mounts)):
         raise ValueError('Unexpected guest device or mount')
-    # The host sends this fixed acknowledgement only after assigning VMX to
-    # its kill-on-close, memory-limited Windows Job Object.
-    print('ANGERONA_READY:' + job['job'], flush=True)
-    with open('/dev/ttyS0', 'r') as serial:
+    # Configure input before READY, then accept only one host control byte.
+    # QEMU's Windows stdio backend can discard a burst when the UART is full.
+    # Job identity is bound by READY/report and the exclusive host-owned pipe.
+    with open('/dev/ttyS0', 'rb', buffering=0) as serial:
+        tty.setcbreak(serial.fileno(), termios.TCSAFLUSH)
+        print('ANGERONA_READY:' + job['job'], flush=True)
         if not select.select([serial], [], [], 45)[0]:
             raise ValueError('Host supervision not established')
-        if serial.readline(100).strip() != 'GO:' + job['job']:
+        if os.read(serial.fileno(), 1) != b'G':
             raise ValueError('Unexpected host acknowledgement')
     tool = job['tool']
     if tool == 'bandit':

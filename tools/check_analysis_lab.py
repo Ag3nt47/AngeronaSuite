@@ -14,7 +14,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, help='Separate analysis runtime directory')
     parser.add_argument('--prepare', action='store_true', help='Acquire only catalog-pinned artifacts')
-    parser.add_argument('--check', action='store_true', help='Verify VMware with inert fixtures for both analyzers')
+    parser.add_argument('--check', action='store_true', help='Verify the isolated QEMU guest with inert fixtures for both analyzers')
     parser.add_argument('--input', type=Path, help='Local source folder to copy and analyze')
     parser.add_argument('--tool', choices=sorted(jobs.TOOLS), default='bandit')
     args = parser.parse_args()

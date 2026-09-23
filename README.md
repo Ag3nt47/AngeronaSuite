@@ -36,9 +36,15 @@ identifiers, timestamps, and counts are synthetic.
 
 ## What's new
 
-The [September 23 deep review](analysis/deep-review-20260923/README.md) completed
-three rounds of adversarial review, bug testing and targeted remediation:
+The [September 23 continuation](analysis/continuation-20260923/README.md) adds
+an optional QEMU Analysis Lab and investigates a reproduced Windows Ollama
+startup failure. It builds on the [three-round deep review](analysis/deep-review-20260923/README.md):
 
+- **Bounded, on-demand source analysis.** The new Windows Lab runs pinned
+  Python-security and secret scanners in an offline, diskless QEMU guest.
+  Setup explains its purpose, download and resource costs before installation.
+  Both real guest analyzers passed their native readiness fixtures on Windows.
+  No Lab VM stays running while Angerona is idle.
 - **Less idle and burst work.** Unconfigured detection callbacks skip payload
   processing; oversized nested input is rejected before expansion. A fixture
   measured 94% less idle callback time. A blocked-reader GUI fixture reduced
@@ -47,15 +53,14 @@ three rounds of adversarial review, bug testing and targeted remediation:
 - **Visible local-AI startup.** Launch, restart and explicit self-tests prepare
   the trusted local Ollama service asynchronously and show stage percentages.
   A real Windows cold start reached 100% in 16.44 seconds with zero models loaded.
+  The continuation adds handling for suitable linked Windows tokens;
+  elevated startup still needs native acceptance.
 - **Stronger lifecycle and input checks.** Fixed retired memory-ring writes,
   lost Lab completion messages, ambiguous Ollama endpoint ownership and service
   paths. Keyword-only command observations no longer wake deep threat work.
 - **Native source launchers.** Guided Linux and Intel/Apple Silicon Mac setup
   now validates a staged runtime before replacing launchers. Native CI results
   remain separate from the Windows checks performed for this review.
-- **Optional Analysis Lab setup.** VMware setup and pinned analyzer controls
-  are implemented. Native Lab execution is still blocked by the configuration
-  custody check on tested Workstation 25; see the explicit limit below.
 
 The earlier [machine-module update](analysis/round-20260921/README.md) remains:
 unused or unsupported modules stay off and outside the running/enabled count.
@@ -133,32 +138,46 @@ model.** Inference still needs the exact installed model and a fresh approved
 attestation. Automatic startup requires a recognized trusted installation;
 user-owned or symlinked POSIX installation paths may be refused. Missing AI leaves
 deterministic detection and authorized response available. Protected Windows
-launches use a checked normal-user token; that elevated handoff has fixture
-coverage and still needs native acceptance. Hostile telemetry is treated as data;
-failed neutralization skips the
-optional narrative request. [Startup evidence](analysis/deep-review-20260923/ollama-startup.md).
+launches require a checked normal-user token. Native testing exposed a linked-token
+type mismatch; a compatibility change supports tokens with sufficient authority,
+but elevated startup remains unverified after a cancelled UAC request.
+Hostile telemetry is treated as data;
+failed neutralization skips the optional narrative request.
+[Startup evidence](analysis/continuation-20260923/ollama-native.md).
 
 ## Optional Analysis Lab
 
-Analysis Lab is intended for bounded source analysis with pinned Bandit and
-Gitleaks inside a disposable offline VMware appliance. The GUI, catalog,
-preparation, cancellation and redacted report/history controls are implemented.
-They do not establish that native guest execution works.
+Analysis Lab checks a copy of your source with pinned **Bandit 1.9.4** and
+**Gitleaks 8.30.1** inside a disposable, offline QEMU guest. It looks for Python
+security issues and exposed secrets; it does not execute the submitted source.
+Reports are redacted and cannot authorize host response. The current backend
+requires **64-bit Windows on Intel/AMD and a normal, non-administrator Angerona
+session**. Monitoring, automatic defense and Ollama work without it.
 
-**Current limit:** tested Workstation 25.0.1 cannot open the generated VMX while
-its write/delete protection is held. Read-only and bounded direct-start trials
-also failed. The protection stays intact, no analyzer receipt was accepted,
-and Run stays gated until both real analyzer readiness checks pass.
-[Native acceptance and remaining work](analysis/deep-review-20260923/native-acceptance.md).
+Open **Full Setup → Optional Analysis Lab**, or the Lab's setup button. Choosing
+setup downloads the reviewed QEMU 11.1.0 installer (about **197 MiB**) if needed,
+opens its normal installer/license and Windows administrator prompts, and
+configures a protected **122 MiB** Lab runtime. Keep the vendor installer's
+default location and allow **2 GiB free disk space**. An exact matching QEMU
+installation can be reused. **Skip** leaves setup unchanged. The distributor's
+certificate is expired; Angerona verifies the exact reviewed download and
+runtime files against pinned hashes. [Runtime provenance](analysis/continuation-20260923/qemu-design.md).
 
-VMware is optional and adds installation, disk and guest-memory costs. Skip it
-if you only need Angerona monitoring, response or source review. Full Setup's
-optional Lab flow opens Broadcom's official portal; account/compliance approval
-may be required. Select the downloaded installer for vendor verification and
-interactive Windows elevation. A separate confirmed action sets the verified
-Authorization Service to Manual and starts it. Then prepare the runtime and
-check readiness. Installation or service startup alone never enables Run.
-[Lab design and implementation status](docs/design/red-team-github-tool-library.md).
+After setup, choose **Prepare runtime**, then **Check readiness**. Installation
+alone never enables Run: both real analyzer fixtures must pass for the current
+runtime. Native Windows checks passed for both analyzers, including their
+expected findings and isolation checks.
+
+Each requested job uses one virtual CPU and **768 MiB guest RAM**, with a
+five-minute deadline, a **2 GiB host-process memory limit** and a **25% host-CPU
+cap**. There is no guest disk, external network adapter or host folder share.
+The VM stops when the job ends; no Lab VM runs in the background while idle.
+Normal Windows paging and crash dumps still apply to host memory.
+
+Separate VMware setup remains available for users who want Workstation.
+VMware is not required for this Lab: its tested backend remains blocked by
+Workstation's need to write its configuration, and that protection has not been
+relaxed. [Continuation results and limits](analysis/continuation-20260923/README.md).
 
 ## Data, trust and limits
 
@@ -182,17 +201,17 @@ product capability. See [Security](SECURITY.md) and [capability limits](ANGERONA
 
 ## Validation and development
 
-The [three-round record](analysis/deep-review-20260923/README.md) links findings,
-fixes, benchmarks, native acceptance and the final module inventory. All 84
-catalog entries are accounted for: 66 module self-tests passed, 18 had explicit
-optional/platform prerequisites, and the separate event-pipeline test passed.
-Skips are not passing live-sensor tests. The Windows review's reconciliation of
-the aggregate run and focused reruns records **3,972 passes, 19 skips and no
-unresolved failures** across 3,991 collected cases. The raw aggregate run and
-its three corrected fixture/documentation failures remain documented separately;
-this is not a claim that the entire suite was rerun in one all-green execution.
-Native CI results and subsequent installer corrections are recorded in the
-[publication follow-up](analysis/deep-review-20260923/publication-followup.md).
+The continuation's [regression record](analysis/continuation-20260923/validation.md)
+reconciles **4,107 passes and 18 skips** from a full baseline plus focused
+fixture corrections; it is not a second full-suite run. Both real Lab readiness
+fixtures and an end-to-end scan passed. Elevated Ollama acceptance remains open.
+
+The earlier [three-round review](analysis/deep-review-20260923/README.md)
+accounts for all 84 modules: 66 self-tests passed, 18 had explicit optional or
+platform prerequisites, and the separate event-pipeline test passed. Skips are
+not passing live-sensor tests. Its full-suite reconciliation, component
+benchmarks and subsequent [native CI results](analysis/deep-review-20260923/publication-followup.md)
+remain linked evidence for their respective checkpoints.
 
 For an existing development environment:
 

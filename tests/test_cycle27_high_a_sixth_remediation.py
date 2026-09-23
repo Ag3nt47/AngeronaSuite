@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import errno
 import os
+import stat
 import threading
 from pathlib import Path
 
@@ -160,13 +162,26 @@ def test_combat_hard_link_journal_is_rejected_without_append(tmp_path: Path) -> 
     module = _combat(tmp_path, anchors)
     assert module._reconcile_state() is True
     module.receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    # Reconciliation now initializes an empty, ordinary journal. Remove only
+    # that exact disposable fixture before replacing it with the hostile alias.
+    receipt = module.receipt_path
+    assert receipt == tmp_path / 'shared_logs' / 'adversary_combat_actions.jsonl'
+    initialized = receipt.lstat()
+    assert stat.S_ISREG(initialized.st_mode) and initialized.st_nlink == 1
+    assert not int(getattr(initialized, 'st_file_attributes', 0)) & 0x400
+    assert receipt.read_bytes() == b''
+    receipt.unlink()
     unrelated = tmp_path / "unrelated-inert-file.txt"
     original = b"inert sentinel content\n"
     unrelated.write_bytes(original)
     try:
         os.link(unrelated, module.receipt_path)
     except OSError as exc:
-        pytest.skip(f"hard links unavailable in this test environment: {exc}")
+        if (exc.errno in {errno.EACCES, errno.EPERM, errno.ENOSYS, errno.ENOTSUP}
+                or getattr(exc, 'winerror', None) in {1, 50, 1314}):
+            pytest.skip(f"hard links unavailable in this test environment: {exc}")
+        raise
+    assert module.receipt_path.stat().st_nlink == 2
 
     with pytest.raises(JournalIntegrityError, match="unsafe"):
         _intent(module)
