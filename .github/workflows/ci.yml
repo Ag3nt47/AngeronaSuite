@@ -52,8 +52,8 @@ jobs:
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade "pip==26.2.1"
-          # Required by the real, disposable Windows Job Object integration test.
-          python -m pip install -e . "pytest==9.1.1" "hypothesis==6.163.0" "pywin32==312"
+          # Exercise actual YARA-X response and disposable Windows Job Object integration tests.
+          python -m pip install -e . "pytest==9.1.1" "hypothesis==6.163.0" "pywin32==312" "yara-x>=1.15"
       - name: Compile
         run: python -m compileall -q src tests tools
       - name: Establish protected source data custody

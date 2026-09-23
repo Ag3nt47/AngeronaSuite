@@ -103,5 +103,25 @@ runs; missing counters and headless-only timing retain explicit limits.
   remains observe-only. Independent backup destinations remain a separate
   deployment integration.
 
-GitHub publication and exact-commit CI status belong to the final maintainer
-publication step; an earlier green commit does not validate this changed tree.
+## September 23 publication and CI follow-up
+
+The first upgrade publication, commit
+`3d94570823c96479864bb5684f666556b3bb167f`, passed the guarded publisher's
+public-main verification, including **five byte-identical README images**.
+Remote CI then exposed a missing test dependency: all four Windows Python
+matrix jobs (3.10–3.13) failed while collecting `tests/test_yara_automatic_response.py`
+with `ModuleNotFoundError: No module named 'yara_x'`. The local full-suite pass
+above used an environment with the scanner installed; publication verification
+does not establish a successful CI run.
+
+The Windows Python matrix now explicitly installs `yara-x>=1.15`, matching the
+scanner requirement declared in `pyproject.toml`, so the real native scanner
+and automatic-response tests can execute. These tests retain their actual
+scanner dependency. The focused scanner, native after-action-report and
+fairness gate passed **27 tests in 7.69 seconds** locally with that dependency
+installed. This targeted follow-up is separate from the earlier full-suite run
+and does not replace exact-commit CI verification.
+
+The local follow-up does not establish remote success; consult the resulting
+commit's [CI run](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/ci.yml)
+for exact-commit validation.
