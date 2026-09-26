@@ -153,9 +153,22 @@ def call(
         evidence = g.neutralize_telemetry(neutralized_telemetry)
         guarded = decision["payload"]
         if path == "/api/chat" and isinstance(guarded.get("messages"), list):
-            guarded["messages"].append({"role": "user", "content": evidence})
+            messages = guarded["messages"] + [{"role": "user", "content": evidence}]
+            envelope_size = g.forwarded_json_chars({**guarded, "messages": messages})
+            if envelope_size > g.MAX_PROMPT_CHARS:
+                reason = f"chat length>{g.MAX_PROMPT_CHARS} after telemetry (rejected)"
+                g.audit("Input Blocked", "Medium", plen, time.time() - t0,
+                        {"reasons": [reason], "path": path})
+                return {"error": "blocked by AI guardrail", "reasons": [reason]}
+            guarded["messages"] = messages
         else:
-            guarded["prompt"] = str(guarded.get("prompt", "")).rstrip() + "\n\n" + evidence
+            prompt = str(guarded.get("prompt", "")).rstrip() + "\n\n" + evidence
+            if g.forwarded_json_chars({**guarded, "prompt": prompt}) > g.MAX_PROMPT_CHARS:
+                reason = f"prompt length>{g.MAX_PROMPT_CHARS} after telemetry (rejected)"
+                g.audit("Input Blocked", "Medium", plen, time.time() - t0,
+                        {"reasons": [reason], "path": path})
+                return {"error": "blocked by AI guardrail", "reasons": [reason]}
+            guarded["prompt"] = prompt
         plen += len(evidence)
     host = host or g.OLLAMA_UPSTREAM
     try:

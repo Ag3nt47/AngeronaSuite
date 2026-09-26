@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from angerona.core.eventbus import EventBus, Severity
-from angerona.modules import process_monitor
+from angerona.modules import process_monitor, purple_guard
 from angerona.telemetry import sensors
 
 
@@ -95,6 +98,72 @@ def test_validation_receipt_still_observes_unchanged_raw_process(monkeypatch):
     assert len(creations) == 1
     assert creations[0].details["fixture_receipt"] is True
     assert creations[0].details["cmdline"] == "fixture.exe --receipt"
+
+
+def test_process_receipt_skips_full_lease_for_unenrolled_processes(monkeypatch):
+    """Routine/forged host rows cannot grant credit or force marker rescans."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    producer = SimpleNamespace(
+        name="Process Monitor", lifecycle_generation=1,
+        _angerona_contract=SimpleNamespace(
+            capability_id="angerona.builtin.process_monitor"
+        ),
+    )
+    capability = object.__new__(purple_guard._ProducerReceiptCapability)
+    signer = Ed25519PrivateKey.generate()
+    capability._ProducerReceiptCapability__kind = "process"
+    capability._ProducerReceiptCapability__serial = 0
+    capability._ProducerReceiptCapability__site_sha256 = "a" * 64
+    capability._ProducerReceiptCapability__private_signer = signer
+    identity = {}
+    capability._ProducerReceiptCapability__process_validator = (
+        lambda *_args, **_kwargs: identity
+    )
+    state = SimpleNamespace(
+        lock=threading.RLock(), consumed=True, released=False,
+        run_deadline_monotonic=time.monotonic() + 60,
+        _native_generation=lambda _name: 1,
+        _native_module=lambda _name: producer,
+        _native_capability_is=lambda _name, candidate: candidate is capability,
+        lease_id="lease", receipt_id="receipt", bound_run_id="run",
+        target=Path("inert-target"),
+    )
+    lease = object()
+    checks = []
+    monkeypatch.setattr(
+        purple_guard._ProducerReceiptCapability, "_authority",
+        lambda _self, _producer: (lease, state),
+    )
+    monkeypatch.setattr(
+        purple_guard._ProducerReceiptCapability, "_canonical_caller",
+        lambda _self, _producer: True,
+    )
+    monkeypatch.setattr(
+        purple_guard.BaseModule, "operational_snapshot",
+        lambda _self: {"status": "running", "thread_alive": True,
+                       "event_overflow_count": 0},
+    )
+    monkeypatch.setattr(
+        purple_guard.RedTeamValidationLease, "_state_matches",
+        lambda _lease: checks.append(True) or True,
+    )
+    process = {"pid": 700, "create_time": 10.0, "cmdline": ["ordinary.exe"]}
+    assert capability.issue_process_observation(producer, process=process) == {}
+    assert checks == []
+
+    process["cmdline"] = ["ordinary.exe", "ANGERONA_REDTEAM_deadbeef"]
+    assert capability.issue_process_observation(producer, process=process) == {}
+    assert checks == []
+
+    identity = {"pid": 700, "process_create_time": 10.0,
+                "identity_sha256": "b" * 64}
+    receipt = capability.issue_process_observation(producer, process=process)
+    assert len(checks) == 1
+    assert receipt["receipt_type"] == "native_process_observation"
+    assert receipt["producer_observation_serial"] == 1
+    signature = bytes.fromhex(receipt.pop("detector_receipt_mac"))
+    signer.public_key().verify(signature, purple_guard._canonical_json(receipt))
 
 
 @pytest.fixture

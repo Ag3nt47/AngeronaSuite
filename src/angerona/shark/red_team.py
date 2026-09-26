@@ -39,6 +39,7 @@ from angerona.core.practice_scope import (
     register_artifact,
     register_process,
     register_run,
+    unregister_artifact,
     unregister_run,
 )
 from angerona.modules.purple_guard import (
@@ -61,6 +62,10 @@ _MARKER_PREFIX = "_redteam_"
 
 class _DrillCancelled(Exception):
     """Internal control flow for an operator-requested drill stop."""
+
+
+class _DrillAuthorityLost(Exception):
+    """Stop a run whose detector validation lease can no longer score evidence."""
 
 # ── Intensity presets ────────────────────────────────────────────────────────
 # One knob the operator can slide from Low → Extreme; it scales the number of
@@ -198,6 +203,9 @@ class RedTeamEngine:
             RedTeamValidationLease.assert_target_identity(
                 lease, run_id=self.run_id
             )
+            RedTeamValidationLease.assert_live_producers(
+                lease, run_id=self.run_id
+            )
         self.documents_dir.mkdir(parents=True, exist_ok=True)
         p = self.documents_dir / name
         encoded = body.encode("utf-8")
@@ -256,6 +264,7 @@ class RedTeamEngine:
                 or int(getattr(created, "st_nlink", 1)) != 1
                 or bool(getattr(created, "st_file_attributes", 0) & 0x400)
             ):
+                RedTeamValidationLease.discard_unenrolled_marker(descriptor, p)
                 raise RedTeamValidationError(
                     "marker creation did not yield one regular single-link file"
                 )
@@ -264,33 +273,51 @@ class RedTeamEngine:
             # provenance before the first content byte is written, without a
             # failed O_EXCL attempt ever granting cleanup authority over an
             # attacker-planted alias.
-            register_artifact(p, self.run_id, kind="red-team")
-            offset = 0
-            while offset < len(encoded):
-                written = os.write(descriptor, encoded[offset:])
-                if written <= 0:
-                    raise OSError("marker write made no progress")
-                offset += written
-            os.fsync(descriptor)
-            after = os.fstat(descriptor)
-            path_stat = p.stat(follow_symlinks=False)
-            if (
-                (created.st_dev, created.st_ino)
-                != (after.st_dev, after.st_ino)
-                or (after.st_dev, after.st_ino)
-                != (path_stat.st_dev, path_stat.st_ino)
-                or int(getattr(after, "st_nlink", 1)) != 1
-                or int(getattr(path_stat, "st_nlink", 1)) != 1
-                or int(after.st_size) != len(encoded)
-            ):
-                raise RedTeamValidationError(
-                    "marker identity changed during exclusive creation"
-                )
-            if type(lease) is RedTeamValidationLease:
-                RedTeamValidationLease.register_artifact_handle(
-                    lease, p, run_id=self.run_id
-                )
-            self._owned_artifacts.append(p)
+            registered = False
+            enrolled = False
+            try:
+                register_artifact(p, self.run_id, kind="red-team")
+                registered = True
+                offset = 0
+                while offset < len(encoded):
+                    written = os.write(descriptor, encoded[offset:])
+                    if written <= 0:
+                        raise OSError("marker write made no progress")
+                    offset += written
+                os.fsync(descriptor)
+                after = os.fstat(descriptor)
+                path_stat = p.stat(follow_symlinks=False)
+                if (
+                    (created.st_dev, created.st_ino)
+                    != (after.st_dev, after.st_ino)
+                    or (after.st_dev, after.st_ino)
+                    != (path_stat.st_dev, path_stat.st_ino)
+                    or int(getattr(after, "st_nlink", 1)) != 1
+                    or int(getattr(path_stat, "st_nlink", 1)) != 1
+                    or int(after.st_size) != len(encoded)
+                ):
+                    raise RedTeamValidationError(
+                        "marker identity changed during exclusive creation"
+                    )
+                if type(lease) is RedTeamValidationLease:
+                    RedTeamValidationLease.register_artifact_handle(
+                        lease, p, run_id=self.run_id
+                    )
+                enrolled = True
+                self._owned_artifacts.append(p)
+            except Exception:
+                if not enrolled:
+                    removed = RedTeamValidationLease.discard_unenrolled_marker(
+                        descriptor, p
+                    )
+                    if registered:
+                        unregister_artifact(p, run_id=self.run_id)
+                    if not removed:
+                        self._narrate(
+                            "⚠ newly created drill marker could not be disposed "
+                            "by its held file identity; operator review is required."
+                        )
+                raise
         finally:
             if descriptor is not None:
                 os.close(descriptor)
@@ -639,6 +666,7 @@ class RedTeamEngine:
                       f"catalog={'comprehensive' if comprehensive else 'base'}; "
                       f"target={self.documents_dir}" + ("; +1 custom benign technique" if custom else ""))
         cancelled = False
+        authority_failure = ""
         plan_by_cycle_key = {
             (int(row["cycle"]), str(row["key"])): row
             for row in getattr(self, "_expected_plan", ())
@@ -723,9 +751,28 @@ class RedTeamEngine:
                         )
                     before = len(self.steps)
                     try:
+                        RedTeamValidationLease.assert_target_identity(
+                            self._validation_lease, run_id=self.run_id
+                        )
+                        RedTeamValidationLease.assert_live_producers(
+                            self._validation_lease, run_id=self.run_id
+                        )
                         fn(jitter_range)
                     except _DrillCancelled:
                         raise
+                    except RedTeamValidationError as exc:
+                        self._narrate(f"⚠ validation authority lost: {exc}")
+                        if len(self.steps) == before and self._active_plan_entry:
+                            expected = self._active_plan_entry
+                            self._record(
+                                str(expected.get("stage") or fn.__name__),
+                                str(expected.get("technique") or "failed probe"),
+                                "Simulation stopped because detector validation authority was lost.",
+                                time.time(),
+                                detail=f"{type(exc).__name__}: {exc}"[:500],
+                                ok=False,
+                            )
+                        raise _DrillAuthorityLost(str(exc)) from exc
                     except Exception as exc:
                         self._narrate(f"⚠ mandatory step failed: {exc}")
                         if len(self.steps) == before and self._active_plan_entry:
@@ -755,13 +802,16 @@ class RedTeamEngine:
                         raise _DrillCancelled()
         except _DrillCancelled:
             cancelled = True
+        except _DrillAuthorityLost as exc:
+            authority_failure = str(exc)
         finally:
             run_target = Path(self.documents_dir).resolve(strict=False)
             run_artifacts = self._artifact_paths_snapshot()
             self._last_run_target = run_target
             run_cancelled = cancelled or self._cancel.is_set()
             recorded_status = self._write_history(
-                status="cancelled" if run_cancelled else "completed"
+                status=("cancelled" if run_cancelled else
+                        "incomplete" if authority_failure else "completed")
             )
             n, ok = len(self.steps), sum(1 for s in self.steps if s.ok)
             if run_cancelled:
@@ -774,6 +824,11 @@ class RedTeamEngine:
                 self._cleanup_probe_processes()
                 unregister_run(self.run_id)
             else:
+                if authority_failure:
+                    self._narrate(
+                        "Red Team Attack stopped early: validation authority was lost; "
+                        f"the incomplete run cannot receive a coverage score ({authority_failure})."
+                    )
                 self._narrate(
                     f"\U0001F3C1 Red Team Attack {recorded_status} — {ok}/{n} steps executed. "
                     "Generating the After-Action Report (brief settle window)…")

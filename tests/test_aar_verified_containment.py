@@ -54,28 +54,28 @@ def _response(detector, **extra):
     })
 
 
-def _evaluate(history, events):
+def _evaluate(history, events, *, authenticated=False):
     bus = EventBus()
     bus.arm(BusAuthority(b"a" * 32))
     for event in events:
         bus.publish(event)
     return aar.evaluate(
-        history, bus.recent(100), require_authenticated=True,
+        history, bus.recent(100), require_authenticated=authenticated,
         event_verifier=bus.verify, native_verifier=lambda _event, _step: True,
     )
 
 
-def test_authenticated_exact_digest_and_action_prove_containment():
+def test_bus_signed_combat_claim_without_journal_never_proves_containment():
     history = _history()
     detector = _detector(history)
-    row = _evaluate(history, [detector, _response(detector)])[0]
-    assert row.response_action_reported and row.response_action_applied
-    assert row.target_containment_verified
-    assert row.containment_latency == 2.0
+    row = _evaluate(history, [detector, _response(detector)], authenticated=True)[0]
+    assert row.response_action_reported and not row.response_action_applied
+    assert not row.target_containment_verified
+    assert row.containment_latency is None
     assert not row.finding_resolved  # containment does not install a detector fix
     assert aar._closure_metrics([row])["verified_closures"] == 0
     assert aar._containment_metrics(history, [row]) == {
-        "count": 1, "eligible": 1, "rate": 1.0, "outcome": "verified",
+        "count": 0, "eligible": 1, "rate": 0.0, "outcome": "failed",
     }
 
 
@@ -165,7 +165,7 @@ def test_delegated_receipt_must_bind_original_authenticated_detector(origin_dige
     )
     bus.publish(response)
     row = aar.evaluate(
-        history, bus.recent(10), require_authenticated=True,
+        history, bus.recent(10), require_authenticated=False,
         event_verifier=bus.verify, native_verifier=lambda _event, _step: True,
     )[0]
     assert row.target_containment_verified is (origin_digest == "exact")

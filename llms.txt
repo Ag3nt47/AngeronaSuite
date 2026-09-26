@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.13.0
-Date: 2026-09-23
+Date: 2026-09-26
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -22,7 +22,49 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST (v1.13.0 — 2026-09-23 improvement loop)
+## LATEST (v1.13.0 — Cycle 35 improvement loop, 2026-09-26)
+
+- Canonical record: analysis/loop/cycle35/README.md and its round notes. The
+  version remains 1.13.0 and static discovery remains 84 modules; no module
+  or proposed research feature was added in this maintenance cycle.
+- Two consecutive real offscreen Windows MainWindow runs saved Settings Arm,
+  launched the comprehensive Red Team drill, completed 38/38 steps each, and
+  produced signed AARs with 37/37 Purple simulation validations and 37/37
+  exact verified responses each. Native analytic detection was 0/37 in both.
+  The score verifies inert
+  canary/response contracts, not real-adversary efficacy.
+- A separate-process two-phase OS witness checked all 36 source markers absent,
+  matching quarantine names, and three captured-birth tagged processes gone
+  before cleanup in each run; after Windows custody release it matched all 36
+  quarantine SHA-256 hashes against bytes captured at creation in each. The
+  journals recorded 72 file commits and 6 process terminations across both.
+  Process absence by itself is not
+  termination proof; signed Combat journal actions provide response credit.
+- Combat and Purple Guard coordinate exact Windows marker-handle handoff and
+  serialize whole-target scans with marker moves. Authenticated short-lived
+  process requests have bounded queue priority. Stale producer/target authority
+  ends the drill incomplete and score-ineligible; refused markers are deleted
+  by held object identity. Historical authentic FIM claims survive later scans.
+- Authenticated AAR containment requires the exact registered Combat worker,
+  signed trigger, matching applied journal commit and no undo intent. A
+  bus-signed synthetic Combat event without a commit cannot earn credit.
+- Settings Arm now persists Combat policy and module selection, then starts the
+  worker; Disarm stops it. The AAR waits for queued and in-flight responses.
+- Ollama guardrail size-checks the complete forwarded JSON and scans the
+  original model-facing envelope; focused hostile-field probes return 413 or
+  403. Packet Sniffer child teardown runs off the Qt thread. Unenrolled process
+  receipts skip full Red Team lease validation without changing telemetry.
+- Focused live response regression: 7/7, including base 13/13, comprehensive
+  37/37, historical FIM, stale enrollment, and commit rollback. Round 1 compile
+  403/403 and second selfcheck 26/26; final exact-commit release gate is a
+  separate pending check.
+- Component evidence: 100 unenrolled process offers/68 markers, 1,832.75 to
+  0.49 ms median; offscreen Packet Sniffer full-timeout stop, 3,000.8 to 1.0
+  ms. Loaded GUI construction and Settings save were slow under shared load;
+  physical-host long Chill/Full soak and root-cause profiling remain open.
+  Journal durability and exact marker custody were not weakened for speed.
+
+## PRIOR (v1.13.0 — 2026-09-23 improvement loop)
 
 - Canonical upgrade record: analysis/upgrade-20260923/README.md; commands and
   scope: analysis/upgrade-20260923/usage.md; validation and uncompleted gates:

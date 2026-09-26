@@ -3737,3 +3737,40 @@ phase. The isolated 30-step drill passes its unchanged 30-second deadline.
 Independent integrity and resumable-retention regressions pass; no additional
 unresolved product bug was reproduced. Final integrated suite and publication
 remain coordinator-owned. [Detailed report](../upgrade-20260923/bug-hunt.md).
+
+## Cycle 35 — Red Team, Combat, security, and responsiveness (2026-09-26)
+
+[Cycle record](cycle35/README.md). Two consecutive actual offscreen MainWindow
+Settings Arm and Red Team Launch runs each completed 38/38 comprehensive inert
+steps and emitted signed 37/37 Purple simulation-validation, 37/37 verified-
+response AARs. Native analytic detection was 0/37 in both and is not a passing native
+coverage score. A separate-process OS witness checked 36 original marker paths
+absent, quarantine basenames present and three tagged PID/birth identities gone
+before cleanup in each run; after Windows custody release it compared all 36
+quarantine SHA-256 hashes against bytes captured at marker creation in each.
+The journals recorded 72 file commits and 6 process terminations across both
+runs. Combat's signed committed
+actions, not process absence alone, supplied termination response credit.
+
+The fix set coordinates exact Windows Purple/Combat marker custody, serializes
+marker moves with whole-target scans, prioritizes authenticated short-lived
+process responses in the bounded queue, ends stale-authority drills early,
+retains historical authentic FIM claims, and binds AAR response credit to a
+strict applied Combat journal commit with no undo intent. Settings Arm/Disarm
+now controls policy and module selection together; pending response settlement
+is visible to the AAR worker. The Ollama guardrail enforces complete forwarded
+request size and scans the original model-facing envelope. Ordinary unenrolled
+process receipt offers skip full lease validation; Packet Sniffer child cleanup
+leaves the Qt thread during Chill transition. No module or version was added.
+
+Round 1 compile passed 403/403; the second supported selfcheck passed 26/26
+phases (67 module/pipeline passes, 18 explicit skips). A later release selfcheck
+initially hit the load-sensitive 12-second AI Triage timeout; its serial rerun
+passed 26/26 with 67 passes, 0 failures and 18 optional/platform skips. The
+focused live response
+gate passed 7/7 (base 13/13, comprehensive 37/37, FIM history, two stale
+enrollment and two failed-commit cases). Isolated speed fixtures measured
+1,832.75 → 0.49 ms for 100 denied process offers/68 markers and 3,000.8 →
+1.0 ms for a full-timeout Packet Sniffer stop. Loaded GUI construction and
+Settings save remained slow under shared load; a long physical-host Chill/Full
+soak and exact-commit release gate remain to be completed separately.

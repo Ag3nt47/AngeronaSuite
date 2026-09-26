@@ -4,8 +4,10 @@ import queue
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from angerona.core.eventbus import BusAuthority, Event, EventBus, Severity
-from angerona.modules.adversary_combat import AdversaryCombat
+from angerona.modules.adversary_combat import AdversaryCombat, _ResponseEventQueue
 from angerona.modules.file_integrity import _combat_intervals
 from angerona.shark.aar_report import evaluate
 
@@ -98,6 +100,116 @@ def test_saturated_queue_releases_dedup_and_emits_signed_soar_failure(tmp_path):
     module._submit(signed_request)
     assert module._queue.get_nowait() is signed_request
     assert identity in module._seen
+
+
+def test_exact_process_responses_preempt_file_backlog_without_changing_capacity(tmp_path):
+    module, bus = _module(tmp_path)
+    bus.arm(BusAuthority(b"p" * 32))
+    module.status = "running"
+
+    def admit(details: dict) -> Event:
+        bus.publish(Event("Fixture Detector", "exact response", Severity.HIGH,
+                          time.time(), details))
+        signed = bus.recent(1)[0]
+        module._submit(signed)
+        return signed
+
+    regular = []
+    for index in range(3):
+        path = str(tmp_path / f"inert-{index}.txt")
+        regular.append(admit({
+            "path": path, "active_attack": True, "response_authorized": True,
+            "response_contract": {"version": 1, "actions": ["quarantine_file"],
+                                  "targets": {"path": path}},
+        }))
+    urgent = []
+    for pid in (12341, 12342):
+        urgent.append(admit({
+            "pid": pid, "process_create_time": 1234.5,
+            "active_attack": True, "response_authorized": True,
+            "response_contract": {"version": 1,
+                                  "actions": ["terminate_process"],
+                                  "targets": {"pid": pid,
+                                              "process_create_time": 1234.5}},
+        }))
+    malformed = admit({
+        "pid": 12343, "process_create_time": 1234.5,
+        "active_attack": True, "response_authorized": True,
+        "response_contract": {"version": 2,
+                              "actions": ["terminate_process"],
+                              "targets": {"pid": 12343,
+                                          "process_create_time": 1234.5}},
+    })
+    mixed_path = str(tmp_path / "mixed-inert.txt")
+    mixed = admit({
+        "pid": 12344, "process_create_time": 1234.5,
+        "path": mixed_path,
+        "active_attack": True, "response_authorized": True,
+        "response_contract": {"version": 1,
+                              "actions": ["terminate_process", "quarantine_file"],
+                              "targets": {"pid": 12344,
+                                          "process_create_time": 1234.5,
+                                          "path": mixed_path}},
+    })
+
+    assert module._queue.maxsize == 2048
+    assert module._queue.qsize() == 7
+    assert [module._queue.get_nowait() for _ in range(7)] == (
+        urgent + regular + [malformed, mixed]
+    )
+    assert module._queue.unfinished_tasks == 7
+    for _ in range(7):
+        module._queue.task_done()
+    assert module._queue.unfinished_tasks == 0
+
+
+def test_urgent_process_lane_serves_waiting_files_with_bounded_fairness():
+    response_queue = _ResponseEventQueue(maxsize=8)
+    normal = [Event("file", str(index), Severity.HIGH) for index in range(2)]
+    urgent = [Event("process", str(index), Severity.HIGH) for index in range(6)]
+    for event in normal:
+        response_queue.put_nowait(event)
+    for event in urgent:
+        response_queue.put_urgent_nowait(event)
+    assert response_queue.qsize() == response_queue.unfinished_tasks == 8
+    with pytest.raises(queue.Full):
+        response_queue.put_urgent_nowait(Event("process", "overflow", Severity.HIGH))
+    assert response_queue.qsize() == response_queue.unfinished_tasks == 8
+
+    expected = urgent[:4] + normal[:1] + urgent[4:] + normal[1:]
+    assert [response_queue.get_nowait() for _ in range(8)] == expected
+    for _ in range(8):
+        response_queue.task_done()
+    response_queue.join()
+    assert response_queue.unfinished_tasks == 0
+
+    # Burst debt must clear when the queue drains; a new short-lived process
+    # still preempts a newly waiting file after an idle interval.
+    for event in urgent[:4]:
+        response_queue.put_urgent_nowait(event)
+        assert response_queue.get_nowait() is event
+        response_queue.task_done()
+    assert response_queue.empty()
+    response_queue.put_nowait(normal[0])
+    response_queue.put_urgent_nowait(urgent[0])
+    assert response_queue.get_nowait() is urgent[0]
+    assert response_queue.get_nowait() is normal[0]
+    response_queue.task_done()
+    response_queue.task_done()
+
+    # Continuous urgent refill still grants a waiting ordinary request its
+    # turn after at most four urgent completions.
+    response_queue.put_nowait(normal[0])
+    served = []
+    for index in range(8):
+        response_queue.put_urgent_nowait(urgent[index % len(urgent)])
+        event = response_queue.get_nowait()
+        response_queue.task_done()
+        served.append(event)
+        if event is normal[0]:
+            break
+    assert served[:4] == urgent[:4]
+    assert served[4] is normal[0]
 
 
 def test_file_quarantine_emits_success_and_undo_restores(tmp_path):

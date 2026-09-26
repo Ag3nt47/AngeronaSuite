@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -10,6 +11,14 @@ from PySide6.QtWidgets import QApplication
 from angerona.core.config import Config
 from angerona.gui import pages
 from angerona.gui.pages import SettingsDialog
+
+
+def _process_until(app, predicate) -> None:
+    deadline = time.monotonic() + 5.0
+    while not predicate() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert predicate()
 
 
 def test_combat_history_exposes_only_verified_reversible_actions(
@@ -51,6 +60,7 @@ def test_combat_history_exposes_only_verified_reversible_actions(
     dialog._combat_module = lambda: module
 
     dialog._refresh_combat_actions()
+    _process_until(app, lambda: not dialog._combat_history_loading)
     assert dialog._combat_undo_selector.count() == 1
     assert dialog._combat_undo_selector.currentData() == "verified-action"
     assert dialog._combat_undo_btn.isEnabled() is True
@@ -86,6 +96,7 @@ def test_combat_history_disables_undo_without_reversible_actions(
     dialog._combat_module = lambda: module
 
     dialog._refresh_combat_actions()
+    _process_until(app, lambda: not dialog._combat_history_loading)
 
     assert dialog._combat_undo_selector.count() == 0
     assert dialog._combat_undo_selector.isEnabled() is False

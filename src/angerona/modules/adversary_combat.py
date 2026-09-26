@@ -381,6 +381,9 @@ class _PinnedFileMove:
         checker = getattr(self._impl, "crosses_volume", None)
         return bool(checker and checker(_absolute_path(destination)))
 
+    def duplicate_custody_descriptor(self) -> int:
+        return int(self._impl.duplicate_custody_descriptor())
+
     def close(self) -> None:
         if not self._closed:
             self._closed = True
@@ -777,6 +780,38 @@ class _WindowsPinnedFileMove:
             raise self._ctypes.WinError(self._ctypes.get_last_error())
         return info
 
+    def duplicate_custody_descriptor(self) -> int:
+        """Retain this exact exclusive file object for an in-process lease."""
+        import msvcrt
+
+        kernel32 = self._kernel32()
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.GetCurrentProcess.restype = self._wintypes.HANDLE
+        kernel32.DuplicateHandle.argtypes = [
+            self._wintypes.HANDLE,
+            self._wintypes.HANDLE,
+            self._wintypes.HANDLE,
+            self._ctypes.POINTER(self._wintypes.HANDLE),
+            self._wintypes.DWORD,
+            self._wintypes.BOOL,
+            self._wintypes.DWORD,
+        ]
+        kernel32.DuplicateHandle.restype = self._wintypes.BOOL
+        process = kernel32.GetCurrentProcess()
+        duplicate = self._wintypes.HANDLE()
+        if not kernel32.DuplicateHandle(
+            process, self._handle, process, self._ctypes.byref(duplicate),
+            0, False, 0x00000002,  # DUPLICATE_SAME_ACCESS
+        ):
+            raise self._ctypes.WinError(self._ctypes.get_last_error())
+        try:
+            return msvcrt.open_osfhandle(
+                int(duplicate.value), os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            )
+        except Exception:
+            kernel32.CloseHandle(duplicate)
+            raise
+
     def _final_path(self, handle: int) -> Path:
         buffer = self._ctypes.create_unicode_buffer(32_768)
         count = self._kernel32().GetFinalPathNameByHandleW(
@@ -1081,6 +1116,52 @@ class CombatAction:
     status: str = "applied"
 
 
+class _ResponseEventQueue(queue.Queue[Event]):
+    """Keep short-lived process requests ahead of slower file mutations.
+
+    This remains a bounded Queue of Event objects. Urgent requests retain
+    arrival order among themselves, and all ordinary requests retain their
+    arrival order; admission and task accounting use Queue's own condition.
+    """
+
+    def __init__(self, maxsize: int) -> None:
+        super().__init__(maxsize=maxsize)
+        self._urgent_count = 0
+        self._urgent_burst = 0
+        self._max_urgent_burst = 4
+
+    def put_urgent_nowait(self, event: Event) -> None:
+        with self.not_full:
+            if self.maxsize > 0 and self._qsize() >= self.maxsize:
+                raise queue.Full
+            self.queue.insert(self._urgent_count, event)
+            self._urgent_count += 1
+            self.unfinished_tasks += 1
+            self.not_empty.notify()
+
+    def _get(self) -> Event:
+        if self._urgent_count and (
+            self._urgent_burst < self._max_urgent_burst
+            or self._urgent_count == len(self.queue)
+        ):
+            self._urgent_count -= 1
+            self._urgent_burst = min(
+                self._max_urgent_burst, self._urgent_burst + 1,
+            )
+            event = super()._get()
+            if not self.queue:
+                self._urgent_burst = 0
+            return event
+        self._urgent_burst = 0
+        if self._urgent_count:
+            # Queue's mutex is held by get(). Select the oldest ordinary
+            # request without disturbing FIFO order within either lane.
+            event = self.queue[self._urgent_count]
+            del self.queue[self._urgent_count]
+            return event
+        return super()._get()
+
+
 class AdversaryCombat(BaseModule):
     """Execute block/contain/isolate/deceive playbooks without incident prompts."""
 
@@ -1102,7 +1183,7 @@ class AdversaryCombat(BaseModule):
         super().__init__()
         self._manager = None
         self._explicit_data_root = Path(data_root) if data_root is not None else None
-        self._queue: queue.Queue[Event] = queue.Queue(maxsize=2048)
+        self._queue: queue.Queue[Event] = _ResponseEventQueue(maxsize=2048)
         self._receipt_lock = threading.RLock()
         # EventBus publishers must never wait behind journal fsync, firewall
         # commands or rollback. Admission owns only bounded in-memory state.
@@ -1267,11 +1348,14 @@ class AdversaryCombat(BaseModule):
         with self._admission_lock:
             counts = dict(self._response_counts)
             last_decision = self._last_response_decision
+        with self._queue.all_tasks_done:
+            queue_pending = int(self._queue.unfinished_tasks)
         return {
             "ready": state == "ARMED",
             "state": state,
             "reason": " ".join(str(reason).split())[:500],
             "queue_depth": self._queue.qsize(),
+            "queue_pending": queue_pending,
             "queue_capacity": self._queue.maxsize,
             "queue_drops": self._dropped_events,
             "counts": counts,
@@ -1371,6 +1455,60 @@ class AdversaryCombat(BaseModule):
         finally:
             self._response_initialized = False
 
+    @classmethod
+    def _time_sensitive_process_request(cls, event: Event) -> bool:
+        """Classify a signed exact-birth process contract without host I/O.
+
+        A short-lived process may exit while durable file moves ahead of it
+        fsync. This changes only scheduling; the worker still revalidates the
+        full contract, producer receipt, PID birth identity and live target.
+        """
+        details = event.details if isinstance(event.details, dict) else {}
+        contract = details.get("response_contract")
+        if (
+            not isinstance(contract, dict)
+            or set(contract) != {"version", "actions", "targets"}
+            or type(contract.get("version")) is not int
+            or contract["version"] != 1
+        ):
+            return False
+        actions = contract.get("actions")
+        targets = contract.get("targets")
+        if (
+            not isinstance(actions, list)
+            or not actions
+            or len(actions) > len(_CONTRACT_ACTIONS)
+            or not all(isinstance(action, str) for action in actions)
+            or len(set(actions)) != len(actions)
+            or not set(actions).issubset(_CONTRACT_ACTIONS)
+            or not set(actions).issubset({
+                "isolate_program", "suspend_process", "terminate_process",
+            })
+            or not isinstance(targets, dict)
+            or not any(
+                isinstance(action, str)
+                and action in {
+                    "isolate_program", "suspend_process", "terminate_process",
+                }
+                for action in actions
+            )
+            or type(details.get("pid")) is not int
+            or details["pid"] <= 0
+            or type(targets.get("pid")) is not int
+            or targets["pid"] != details["pid"]
+        ):
+            return False
+        supplied, start = cls._expected_process_start(details)
+        try:
+            contracted_start = float(targets.get("process_create_time"))
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return bool(
+            supplied and start is not None
+            and math.isfinite(contracted_start)
+            and abs(start - contracted_start) <= 0.001
+        )
+
     def _submit(self, event: Event) -> None:
         if self.status != "running" or self.stopping or self._mutation_blocked:
             return
@@ -1417,7 +1555,13 @@ class AdversaryCombat(BaseModule):
             self._seen_order.append(identity)
             self._seen.add(identity)
         try:
-            self._queue.put_nowait(event)
+            if (
+                isinstance(self._queue, _ResponseEventQueue)
+                and self._time_sensitive_process_request(event)
+            ):
+                self._queue.put_urgent_nowait(event)
+            else:
+                self._queue.put_nowait(event)
         except queue.Full:
             # Admission failed, so the dedup claim must fail with it. Keeping
             # the identity would poison this exact request forever even after
@@ -1823,6 +1967,7 @@ class AdversaryCombat(BaseModule):
             reversible_actions=sum(1 for action in succeeded if action.reversible),
             trigger_module=event.module,
             trigger_ts=event.ts,
+            trigger_event_digest=event.hmac_sig,
             origin_module=(
                 details.get("origin_module")
                 if isinstance(details.get("origin_module"), str) else None
@@ -3611,6 +3756,18 @@ class AdversaryCombat(BaseModule):
         details: dict[str, Any],
     ) -> CombatAction:
         normalized_details = dict(details)
+        trigger = event.details if isinstance(event.details, dict) else {}
+        # These values become part of the signed terminal journal record.  A
+        # later bus-signed response claim cannot borrow this action for a
+        # different detector event or drill step.
+        normalized_details.update({
+            "aar_trigger_event_digest": event.hmac_sig,
+            "aar_trigger_run_id": trigger.get("run_id"),
+            "aar_trigger_step_id": trigger.get("step_id"),
+            "aar_origin_event_digest": trigger.get("origin_event_digest"),
+            "aar_origin_module": trigger.get("origin_module"),
+            "aar_origin_ts": trigger.get("origin_ts"),
+        })
         if not reversible:
             normalized_details["mutation_generation"] = secrets.token_hex(16)
         return CombatAction(
@@ -3629,6 +3786,10 @@ class AdversaryCombat(BaseModule):
         self, raw_path: str, event: Event, combat_id: str
     ) -> CombatAction | None:
         action: CombatAction | None = None
+        handoff_lease: Any = None
+        handoff_started = False
+        handoff_succeeded = False
+        source: Path | None = None
         try:
             source = _absolute_path(Path(raw_path).expanduser())
             quarantine = _absolute_path(self.quarantine_root)
@@ -3640,7 +3801,48 @@ class AdversaryCombat(BaseModule):
             destination = destination_dir / source.name
             if destination.exists():
                 destination = destination_dir / f"{uuid.uuid4().hex[:8]}-{source.name}"
+            if os.name == "nt" and (event.details or {}).get(
+                "receipt_type"
+            ) == "purple_simulation_validation":
+                from angerona.modules.purple_guard import RedTeamValidationLease
+
+                modules = getattr(self._manager, "modules", {})
+                guard = modules.get("Purple Remediation Guard") if isinstance(
+                    modules, dict
+                ) else None
+                lease = getattr(guard, "_validation_lease", None)
+                if type(lease) is not RedTeamValidationLease:
+                    raise OSError("signed marker response has no live custody lease")
+                enrollment = RedTeamValidationLease.begin_marker_containment(
+                    lease, self, event, source
+                )
+                handoff_lease = lease
+                handoff_started = True
             with _PinnedFileMove(source) as pinned:
+                def release_custody_before_rollback() -> None:
+                    try:
+                        if handoff_started:
+                            RedTeamValidationLease.abort_marker_containment(
+                                handoff_lease, self, source, recapture=False
+                            )
+                    finally:
+                        pinned.close()
+
+                if handoff_started:
+                    descriptor = pinned.duplicate_custody_descriptor()
+                    try:
+                        held = os.fstat(descriptor)
+                        if (
+                            (held.st_dev, held.st_ino, held.st_size,
+                             held.st_mtime_ns)
+                            != tuple(enrollment.get(field) for field in
+                                     ("device", "inode", "size", "mtime_ns"))
+                            or int(getattr(held, "st_nlink", 1)) != 1
+                            or pinned.crosses_volume(destination)
+                        ):
+                            raise OSError("marker handoff changed exact file identity")
+                    finally:
+                        os.close(descriptor)
                 source_link_count = pinned.require_single_link()
                 digest = pinned.sha256()
                 # Bind response to the bytes the detector actually inspected.
@@ -3679,7 +3881,13 @@ class AdversaryCombat(BaseModule):
                     destination_identity = ""
                     try:
                         pinned.require_single_link()
-                        destination_identity = pinned.rename_to(destination)
+                        if handoff_started:
+                            with RedTeamValidationLease.marker_move_guard(
+                                handoff_lease, source,
+                            ):
+                                destination_identity = pinned.rename_to(destination)
+                        else:
+                            destination_identity = pinned.rename_to(destination)
                         destination_link_count = pinned.require_single_link()
                         if pinned.sha256() != digest:
                             raise OSError("quarantine postcondition digest failed")
@@ -3692,6 +3900,12 @@ class AdversaryCombat(BaseModule):
                                 "move_strategy": pinned.move_strategy,
                             },
                         })
+
+                        if handoff_started:
+                            descriptor = pinned.duplicate_custody_descriptor()
+                            RedTeamValidationLease.complete_marker_containment(
+                                handoff_lease, self, source, descriptor
+                            )
 
                         def terminal_object_proof() -> dict[str, Any]:
                             link_count = pinned.require_single_link()
@@ -3714,10 +3928,15 @@ class AdversaryCombat(BaseModule):
                         if pinned.sha256() != digest:
                             raise OSError("quarantine pre-commit object drifted")
                         with self._terminal_commit_validator(terminal_object_proof):
-                            return self._commit_after_mutation(
+                            committed = self._commit_after_mutation(
                                 action,
-                                release_before_rollback=pinned.close,
+                                release_before_rollback=release_custody_before_rollback,
                             )
+                            handoff_succeeded = bool(
+                                committed is not None
+                                and committed.status == "applied"
+                            )
+                            return committed
                     except Exception as exc:
                         if destination_identity:
                             action = CombatAction(**{
@@ -3732,13 +3951,41 @@ class AdversaryCombat(BaseModule):
                             action,
                             f"quarantine mutation boundary failed: "
                             f"{type(exc).__name__}",
-                            release_custody=pinned.close,
+                            release_custody=release_custody_before_rollback,
                         )
+                        if handoff_started:
+                            self.emit(
+                                "Adversary Combat could not verify the drill marker move.",
+                                Severity.MEDIUM,
+                                disposition="health",
+                                response_authorized=False,
+                                response_failure_reason="marker_mutation_or_terminal_failed",
+                            )
                         return None
         except (OSError, RuntimeError, ValueError, JournalIntegrityError) as exc:
             if action is not None:
                 self._journal_failure(action, f"{type(exc).__name__}: {exc}")
+            if (event.details or {}).get("receipt_type") == (
+                "purple_simulation_validation"
+            ):
+                reason = (
+                    "windows_sharing_conflict"
+                    if int(getattr(exc, "winerror", 0) or 0) == 32
+                    else "marker_custody_handoff_failed"
+                )
+                self.emit(
+                    "Adversary Combat could not secure exact drill marker custody.",
+                    Severity.MEDIUM,
+                    disposition="health",
+                    response_authorized=False,
+                    response_failure_reason=reason,
+                )
             return None
+        finally:
+            if handoff_started and not handoff_succeeded and source is not None:
+                RedTeamValidationLease.abort_marker_containment(
+                    handoff_lease, self, source, recapture=True
+                )
 
     def _terminate_process_transaction(
         self, process: Any, action: CombatAction
@@ -4943,6 +5190,28 @@ class AdversaryCombat(BaseModule):
             "bound_record_hmac": str(record.get("record_hmac") or ""),
         })
 
+    @contextmanager
+    def _marker_target_rename_guard(self, target: Path) -> Iterator[None]:
+        """Keep rollback/undo restores coherent with a live drill scan."""
+        from angerona.modules.purple_guard import (
+            RedTeamValidationError, RedTeamValidationLease,
+        )
+
+        modules = getattr(self._manager, "modules", None)
+        guard = modules.get("Purple Remediation Guard") if isinstance(modules, dict) else None
+        lease = getattr(guard, "_validation_lease", None)
+        if type(lease) is RedTeamValidationLease:
+            try:
+                matches_target = target.parent == lease.target
+            except RedTeamValidationError:
+                # An expired lease cannot be an active scoring authority.
+                matches_target = False
+            if matches_target:
+                with RedTeamValidationLease.marker_move_guard(lease, target):
+                    yield
+                return
+        yield
+
     def _undo_record(self, record: dict[str, Any]) -> tuple[bool, str]:
         """Execute one exact, revalidated reverse mutation idempotently."""
         action = str(record.get("action") or "")
@@ -4981,7 +5250,8 @@ class AdversaryCombat(BaseModule):
                             return False, "quarantined content no longer matches receipt"
                         if destination.exists() or self._is_protected_file(destination):
                             return False, "original target is occupied or protected"
-                        restored_identity = pinned.rename_to(destination)
+                        with self._marker_target_rename_guard(destination):
+                            restored_identity = pinned.rename_to(destination)
                         if pinned.sha256() != expected_hash:
                             return False, "quarantine restore postcondition failed"
                 else:

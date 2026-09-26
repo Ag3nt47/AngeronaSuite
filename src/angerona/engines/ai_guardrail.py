@@ -199,8 +199,19 @@ def _prompt_len_of(payload: dict) -> int:
     if "prompt" in payload:
         return len(str(payload.get("prompt", "")))
     if "messages" in payload:
-        return sum(len(str(m.get("content", ""))) for m in payload.get("messages", []))
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            return 0
+        return sum(
+            len(str(message.get("content", "")))
+            for message in messages if isinstance(message, dict)
+        )
     return 0
+
+
+def forwarded_json_chars(payload: dict) -> int:
+    """Count the complete JSON object sent to Ollama, including extra fields."""
+    return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 
 def process_request(payload: dict) -> dict:
@@ -208,25 +219,88 @@ def process_request(payload: dict) -> dict:
     Returns {allow, status, verdict, payload}. Used by the proxy AND tests."""
     verdict = {"reasons": [], "risk": "Low"}
     payload = dict(payload)
+    try:
+        # Every original field is forwarded unless replaced below. Scan the
+        # whole caller envelope so tool/schema descriptions, suffixes, and
+        # message metadata cannot smuggle instructions around content scanning.
+        envelope_scan = scan_input(json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":"),
+        ))
+    except (TypeError, ValueError, RecursionError):
+        return {"allow": False, "status": 400,
+                "verdict": {"reasons": ["invalid request payload"], "risk": "Medium"},
+                "payload": payload}
     payload["keep_alive"] = effective_keep_alive(
         payload.get("keep_alive", "30m")
     )
     # Wrap/patch the system prompt (both /api/generate 'system' and /api/chat msgs).
     if "messages" in payload:
-        msgs = payload.get("messages") or []
+        msgs = payload["messages"]
+        if not isinstance(msgs, list) or any(not isinstance(m, dict) for m in msgs):
+            return {"allow": False, "status": 400,
+                    "verdict": {"reasons": ["invalid chat messages"], "risk": "Medium"},
+                    "payload": payload}
+        if any(not isinstance(m.get("content", ""), str) for m in msgs):
+            return {"allow": False, "status": 400,
+                    "verdict": {"reasons": ["invalid chat content"], "risk": "Medium"},
+                    "payload": payload}
         sys_msgs = [m for m in msgs if m.get("role") == "system"]
-        base = sys_msgs[0]["content"] if sys_msgs else None
+        base = sys_msgs[0].get("content") if sys_msgs else None
         wrapped = wrap_system(base)
-        msgs = [m for m in msgs if m.get("role") != "system"]
-        payload["messages"] = [{"role": "system", "content": wrapped}] + msgs
-        joined = "\n".join(str(m.get("content", "")) for m in msgs if m.get("role") != "system")
+        forwarded = [{"role": "system", "content": wrapped}] + [
+            m for m in msgs if m.get("role") != "system"
+        ]
+        # The complete chat envelope reaches Ollama. Reject an oversize request
+        # before forwarding it; trimming only the scan text left the original
+        # messages (and large tool/image fields) able to exhaust model time.
+        payload["messages"] = forwarded
+        try:
+            chat_chars = forwarded_json_chars(payload)
+        except (TypeError, ValueError):
+            return {"allow": False, "status": 400,
+                    "verdict": {"reasons": ["invalid chat payload"], "risk": "Medium"},
+                    "payload": payload}
+        if chat_chars > MAX_PROMPT_CHARS:
+            return {"allow": False, "status": 413,
+                    "verdict": {"reasons": [f"chat length>{MAX_PROMPT_CHARS} (rejected)"],
+                                "risk": "Medium"}, "payload": payload}
+        joined = "\n".join(m.get("content", "") for m in msgs)
         scan = scan_input(joined)
     else:
-        payload["system"] = wrap_system(payload.get("system"))
-        scan = scan_input(payload.get("prompt", ""))
+        prompt = payload.get("prompt", "")
+        system = payload.get("system")
+        if not isinstance(prompt, str) or (system is not None and not isinstance(system, str)):
+            return {"allow": False, "status": 400,
+                    "verdict": {"reasons": ["invalid generate text"], "risk": "Medium"},
+                    "payload": payload}
+        payload["system"] = wrap_system(system)
+        # Reserve the complete forwarded envelope before admitting prompt text.
+        # Ollama also consumes caller-controlled suffix/template/format fields.
+        payload["prompt"] = ""
+        try:
+            available = MAX_PROMPT_CHARS - forwarded_json_chars(payload)
+        except (TypeError, ValueError):
+            return {"allow": False, "status": 400,
+                    "verdict": {"reasons": ["invalid generate payload"], "risk": "Medium"},
+                    "payload": payload}
+        if available < 0:
+            return {"allow": False, "status": 413,
+                    "verdict": {"reasons": [f"request length>{MAX_PROMPT_CHARS} (rejected)"],
+                                "risk": "Medium"}, "payload": payload}
+        scan = scan_input(prompt, max_chars=available)
         payload["prompt"] = scan["prompt"]
-    verdict = {"reasons": scan["reasons"], "risk": scan["risk"]}
-    if scan["blocked"]:
+        # JSON escaping can expand a prompt beyond its character budget.
+        if forwarded_json_chars(payload) > MAX_PROMPT_CHARS:
+            return {"allow": False, "status": 413,
+                    "verdict": {"reasons": [f"request length>{MAX_PROMPT_CHARS} (rejected)"],
+                                "risk": "Medium"}, "payload": payload}
+    blocked = scan["blocked"] or envelope_scan["blocked"]
+    verdict = {
+        "reasons": list(dict.fromkeys([*scan["reasons"], *envelope_scan["reasons"]])),
+        "risk": ("High" if blocked else "Medium" if
+                 scan["truncated"] or envelope_scan["truncated"] else "Low"),
+    }
+    if blocked:
         return {"allow": False, "status": 403, "verdict": verdict, "payload": payload}
     return {"allow": True, "status": 200, "verdict": verdict, "payload": payload}
 
@@ -280,7 +354,7 @@ def build_app():
         if not decision["allow"]:
             audit("Input Blocked", decision["verdict"]["risk"], plen, time.time() - t0,
                   {"reasons": decision["verdict"]["reasons"], "path": path})
-            return JSONResponse(status_code=403,
+            return JSONResponse(status_code=decision["status"],
                                 content={"error": "blocked by AI guardrail",
                                          "reasons": decision["verdict"]["reasons"]})
         try:

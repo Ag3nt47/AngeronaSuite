@@ -37,6 +37,34 @@ identifiers, timestamps, and counts are synthetic.
 
 ## What's new
 
+The [September 26 Red Team and responsiveness maintenance](analysis/loop/cycle35/README.md)
+repairs the simulation's response path and makes its score harder to spoof:
+
+- **Passing signed simulation response:** Two consecutive real GUI Settings
+  **Arm** and Red Team **Launch** runs completed the 38-step comprehensive
+  drill, each with a signed **37/37 Purple simulation validation and 37/37
+  verified response** AAR. An
+  independent process checked original marker removal, quarantine names and
+  tagged process identities before cleanup, then matched all 36 quarantine
+  files by SHA-256 after Windows handles were released in each run. Native
+  analytic detection was **0/37** in both; the drill is an inert canary, not a claim
+  about detecting real attacks.
+- **Exact response accounting:** Windows marker custody and Combat quarantine
+  now coordinate exact-object handoff and synchronized moves. Short-lived
+  authenticated process requests receive queue priority. AAR containment
+  credit requires a matching applied Combat journal action and rejects an
+  action once Undo has begun. Lost producer authority ends a drill as
+  incomplete instead of continuing with an ineligible score.
+- **Measured responsiveness fixes:** Ordinary process observations skip full
+  Red Team lease validation when they carry no enrolled challenge. Packet
+  Sniffer child cleanup no longer blocks the Qt thread during Chill transition.
+  The isolated fixtures improved from 1,832.75 to 0.49 ms for 100 denied
+  process offers and from 3,000.8 to 1.0 ms for a full-timeout sniffer stop.
+  These measurements do not establish long-running Chill/Full stability.
+- **Local AI request hardening:** The Ollama guardrail caps the complete
+  forwarded request and scans model-facing fields beyond the prompt for
+  instruction injection. No module was added; the catalog remains 84.
+
 The [September 23 maintenance upgrade](analysis/upgrade-20260923/README.md)
 repairs a real detection-to-response gap and reduces repeated background work:
 

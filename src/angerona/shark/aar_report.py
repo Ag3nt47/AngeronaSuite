@@ -27,7 +27,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 from angerona.core.config import Config
 from angerona.core.atomic_io import replace_with_retry
@@ -649,6 +649,7 @@ def _artifact_digests(step: dict, catches: list[Event]) -> dict[str, set[str]]:
 def _verified_containment_targets(
     step: dict, catch: Event, ev: Event,
     artifact_digests: dict[str, set[str]] | None = None,
+    combat_verifier: Callable[[dict, Event, Event, dict], bool] | None = None,
 ) -> set[tuple[str, object]]:
     """Read exact committed action identities, never cleanup or wrapper claims."""
     details = ev.details or {}
@@ -682,6 +683,8 @@ def _verified_containment_targets(
                 and isinstance(action, str) and action in actions and isinstance(identity, dict)):
             continue
         used_ids.add(action_id)
+        if combat_verifier is not None and not combat_verifier(step, catch, ev, row):
+            continue
         if action == "quarantine_file":
             path = _canonical_path(identity.get("path"))
             caught_paths = {_canonical_path(catch_details.get(key))
@@ -722,6 +725,159 @@ def _verified_containment_targets(
     return verified
 
 
+def _live_combat_action_verifier(
+    manager: object, bus: object, data_dir: Path, *, red_team: bool,
+) -> Callable[[dict, Event, Event, dict], bool]:
+    """Require an exact live Combat producer and its signed, active commit."""
+    from angerona.modules.adversary_combat import AdversaryCombat
+
+    journal: dict[str, Any] = {}
+
+    def verify(step: dict, catch: Event, response: Event, row: dict) -> bool:
+        try:
+            modules = getattr(manager, "modules", None)
+            combat = modules.get("Adversary Combat") if isinstance(modules, dict) else None
+            if (
+                type(combat) is not AdversaryCombat
+                or getattr(combat, "_manager", None) is not manager
+                or getattr(combat, "_bus", None) is not bus
+                or getattr(manager, "bus", None) is not bus
+                or combat.data_root.resolve(strict=False) != data_dir
+                or (journal and journal.get("combat") is not combat)
+            ):
+                return False
+            action_id = row.get("action_id")
+            if not isinstance(action_id, str) or not action_id:
+                return False
+            if journal.get("unavailable"):
+                return False
+            if not journal:
+                try:
+                    signed, _legacy = AdversaryCombat._read_journal(
+                        combat, strict=True,
+                    )
+                except Exception:
+                    journal["unavailable"] = True
+                    return False
+                commits = {
+                    item["action_id"]: item for item in signed
+                    if item.get("record_type") == "commit"
+                    and isinstance(item.get("action_id"), str)
+                }
+                # An undo attempt can reverse the host mutation before its
+                # terminal receipt is durable. Even a signed undo_failure is
+                # ambiguous, so none of these actions proves containment.
+                undo_attempted = {
+                    item.get("undo_of") for item in signed
+                    if item.get("record_type") in {
+                        "undo_intent", "undo_commit", "undo_failure",
+                    }
+                }
+                journal.update(
+                    signed=signed, commits=commits, undo_attempted=undo_attempted,
+                    combat=combat,
+                )
+            record = journal["commits"].get(action_id)
+            if not isinstance(record, dict) or action_id in journal["undo_attempted"]:
+                return False
+            details = record.get("details")
+            receipt = response.details or {}
+            if not isinstance(details, dict) or not isinstance(receipt, dict):
+                return False
+            if not (
+                row.get("postcondition_verified") is True
+                and isinstance(receipt.get("action_ids"), list)
+                and isinstance(receipt.get("actions"), list)
+                and action_id in receipt.get("action_ids", [])
+                and row.get("action") in receipt.get("actions", [])
+                and record.get("record_type") == "commit"
+                and record.get("status") == "applied"
+                and details.get("postcondition_verified") is True
+                and record.get("action_id") == action_id
+                and record.get("combat_id") == receipt.get("combat_id")
+                and record.get("action") == row.get("action")
+                and record.get("target") == row.get("target")
+                and record.get("trigger_module") == receipt.get("trigger_module")
+                and record.get("trigger_ts") == receipt.get("trigger_ts")
+                and details.get("aar_trigger_event_digest")
+                    == receipt.get("trigger_event_digest")
+                and isinstance(details.get("aar_trigger_event_digest"), str)
+                and float(record.get("committed_at")) <= response.ts + 0.000001
+            ):
+                return False
+            run_id = str(step.get("run_id") or "")
+            step_id = str(step.get("step_id") or "")
+            if red_team and (
+                not run_id
+                or receipt.get("run_id") != run_id
+                or details.get("aar_trigger_run_id") != run_id
+            ):
+                return False
+            for key, recorded in (
+                ("run_id", "aar_trigger_run_id"),
+                ("step_id", "aar_trigger_step_id"),
+            ):
+                if receipt.get(key) != details.get(recorded):
+                    return False
+            if record.get("trigger_module") == catch.module:
+                if (record.get("trigger_ts") != catch.ts
+                        or details.get("aar_trigger_event_digest") != catch.hmac_sig):
+                    return False
+            elif not (
+                record.get("trigger_module") == "Active Response SOAR Request"
+                and receipt.get("origin_module") == catch.module
+                and receipt.get("origin_ts") == catch.ts
+                and receipt.get("origin_event_digest") == catch.hmac_sig
+                and details.get("aar_origin_module") == catch.module
+                and details.get("aar_origin_ts") == catch.ts
+                and details.get("aar_origin_event_digest") == catch.hmac_sig
+            ):
+                return False
+            identity = row.get("details")
+            if not isinstance(identity, dict):
+                return False
+            if row.get("action") == "quarantine_file":
+                return (
+                    _canonical_path(identity.get("path"))
+                    == _canonical_path(record.get("target"))
+                    and identity.get("sha256") == details.get("sha256")
+                )
+            if row.get("action") in {"suspend_process", "terminate_process"}:
+                return (
+                    identity.get("pid") == details.get("pid")
+                    and _process_start(identity) == _process_start(details)
+                )
+            return identity == {}
+        except Exception:
+            # Missing/corrupt journal custody, a changed graph, and I/O errors
+            # all withhold proof; self-reported response fields never recover it.
+            return False
+
+    def journal_unchanged() -> bool:
+        if not journal:
+            return True
+        if journal.get("unavailable"):
+            return False
+        try:
+            modules = getattr(manager, "modules", None)
+            if (not isinstance(modules, dict)
+                    or modules.get("Adversary Combat") is not journal["combat"]
+                    or getattr(manager, "bus", None) is not bus
+                    or getattr(journal["combat"], "_bus", None) is not bus
+                    or getattr(journal["combat"], "_manager", None) is not manager
+                    or journal["combat"].data_root.resolve(strict=False) != data_dir):
+                return False
+            signed, _legacy = AdversaryCombat._read_journal(
+                journal["combat"], strict=True,
+            )
+            return signed == journal["signed"]
+        except Exception:
+            return False
+
+    verify.journal_unchanged = journal_unchanged
+    return verify
+
+
 def evaluate(
     history: dict,
     events: List[Event],
@@ -731,6 +887,7 @@ def evaluate(
     event_verifier: Callable[[Event], bool] | None = None,
     native_verifier: Callable[[Event, dict], bool] | None = None,
     purple_verifier: Callable[[Event, dict], bool] | None = None,
+    combat_verifier: Callable[[dict, Event, Event, dict], bool] | None = None,
 ) -> List[StepVerdict]:
     """Walk events in chronological order and, for each step, find the first
     real-module event that matches its artifact (the "catch"), then the first
@@ -878,14 +1035,27 @@ def evaluate(
                 if not matching_triggers:
                     continue
                 v.response_action_reported = True
-                if _is_remediation(ev):
+                combat_claim = ev.module == "Adversary Combat" and require_authenticated
+                rows = (ev.details or {}).get("verified_actions")
+                committed = bool(
+                    combat_verifier is not None
+                    and isinstance(rows, list) and len(rows) <= 64
+                    and any(
+                        isinstance(row, dict)
+                        and combat_verifier(step, trigger, ev, row)
+                        for trigger in matching_triggers for row in rows
+                    )
+                ) if combat_claim else True
+                if _is_remediation(ev) and committed:
                     remediation_candidates.append((event_index, ev))
                     v.response_action_applied = True
                 proven: set[tuple[str, object]] = set()
-                for trigger in matching_triggers:
-                    proven.update(_verified_containment_targets(
-                        step, trigger, ev, artifact_digests,
-                    ))
+                if not require_authenticated or combat_verifier is not None:
+                    for trigger in matching_triggers:
+                        proven.update(_verified_containment_targets(
+                            step, trigger, ev, artifact_digests,
+                            combat_verifier if require_authenticated else None,
+                        ))
                 if proven:
                     contained.update(proven)
                     containment_events.append(ev)
@@ -2069,6 +2239,9 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
         if owns_recorder:
             active_recorder.close()
 
+    combat_verifier = _live_combat_action_verifier(
+        manager, bus, data_dir, red_team=red_team_history,
+    )
     verdicts = evaluate(
         history,
         events,
@@ -2077,7 +2250,10 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
         event_verifier=verify_stored_event,
         native_verifier=native_verifier,
         purple_verifier=purple_verifier,
+        combat_verifier=combat_verifier,
     )
+    if not combat_verifier.journal_unchanged():
+        return "Combat journal changed during AAR verification — AAR not generated."
     # Reconcile proof, never invent or execute a fix: misses become
     # OPEN/REOPENED and only a fresh, exact Purple Guard echo can close an
     # already-applied deterministic action contract.

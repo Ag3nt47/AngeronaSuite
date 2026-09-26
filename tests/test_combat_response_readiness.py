@@ -21,7 +21,8 @@ def _combat(tmp_path, monkeypatch):
             monkeypatch.delenv(name)
     module = AdversaryCombat(tmp_path, rollback_anchor={})
     module.bind(EventBus())
-    module.bind_manager(SimpleNamespace(config=SimpleNamespace(
+    module.bind_manager(SimpleNamespace(bus=module._bus, modules={module.name: module},
+        config=SimpleNamespace(
         data_dir=tmp_path, adversary_combat_activate_honeypots=False,
         adversary_combat_block_network=False, adversary_combat_isolate_host=False,
     )))
@@ -204,7 +205,7 @@ def test_queued_inert_artifact_has_verified_receipt_and_reversible_restore(tmp_p
     }
     # Exercise production summary -> authenticated evaluator without launching
     # any campaign. The file is disposable and restored below.
-    from angerona.shark.aar_report import evaluate
+    from angerona.shark.aar_report import evaluate, _live_combat_action_verifier
 
     verdict = evaluate({"run_id": "inert-proof-run", "steps": [{
         "step_id": "inert-proof-step", "stage": "Initial Access",
@@ -213,6 +214,9 @@ def test_queued_inert_artifact_has_verified_receipt_and_reversible_restore(tmp_p
         "artifact_paths": [str(artifact)],
     }]}, module._bus.recent(20), require_authenticated=True,
         event_verifier=module._bus.verify, native_verifier=lambda ev, step: ev.module == "Detector",
+        combat_verifier=_live_combat_action_verifier(
+            module._manager, module._bus, tmp_path.resolve(), red_team=False,
+        ),
     )[0]
     assert verdict.target_containment_verified
     assert module.undo_action(action["action_id"])["ok"] is True

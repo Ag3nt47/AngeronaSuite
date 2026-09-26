@@ -161,6 +161,7 @@ class MainWindow(QMainWindow):
     _security_event_wake = Signal()
     _ir_bundle_done = Signal(object, object)  # Path | None, error | None
     _adaptation_poll_done = Signal(object, object)  # result | None, error | None
+    _settings_combat_status = Signal(str, str)
 
     def __init__(
         self, bus, storage, manager, config, *,
@@ -688,6 +689,7 @@ class MainWindow(QMainWindow):
         self._shark_prev_armed = None
         self._aar_ready.connect(self._show_aar_dialog)
         self._shark_narration.connect(self.shark_monitor.append)
+        self._settings_combat_status.connect(self._show_settings_combat_status)
         self._fi_coaching.connect(self.shark_monitor.append_instructor)
         self._selftest_done.connect(self._on_selftest_done)
         self._selftest_progress.connect(self.run_spinner.set_progress)
@@ -1905,11 +1907,12 @@ class MainWindow(QMainWindow):
         """Read memory-only readiness; never arm or repair response authority."""
         from angerona.core.drill_readiness import assess_drill_response
 
+        require_process = bool(cfg.get("run_redteam"))
         readiness = assess_drill_response(
-            self.manager, require_process=bool(cfg.get("run_shark") or cfg.get("run_redteam")),
+            self.manager, require_process=require_process,
         )
         self._sim_response_readiness_start = dict(readiness)
-        self._sim_response_require_process = bool(cfg.get("run_shark") or cfg.get("run_redteam"))
+        self._sim_response_require_process = require_process
         if bool(cfg.get("auto_remediate", True)) and not readiness["ready"]:
             reason = (
                 f"{readiness['state']}: {readiness['reason']}. "
@@ -2354,7 +2357,60 @@ class MainWindow(QMainWindow):
         import threading
         threading.Thread(target=self._red_team_build_aar, daemon=True).start()
 
+    def _wait_for_redteam_response_settlement(
+        self,
+        *,
+        started_at: float,
+        minimum_seconds: float = 45.0,
+        max_extra_seconds: float = 120.0,
+    ) -> dict:
+        """Allow FIM one scan, then let Combat finish admitted work before scoring.
+
+        This runs only on the AAR worker. Queue state is diagnostic, not proof
+        of containment; generate_aar still credits only authenticated receipts.
+        """
+        minimum_deadline = started_at + max(0.0, minimum_seconds)
+        remaining = minimum_deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
+        if getattr(self, "_sim_auto_remediate", True) is False:
+            return {"pending": None, "timed_out": False}
+
+        deadline = minimum_deadline + max(0.0, max_extra_seconds)
+        announced = False
+        while True:
+            try:
+                combat = getattr(self.manager, "modules", {}).get("Adversary Combat")
+                snapshot = combat.response_snapshot() if combat is not None else None
+                pending = snapshot.get("queue_pending") if isinstance(snapshot, dict) else None
+            except Exception:
+                pending = None
+            if type(pending) is not int or pending < 0:
+                self._shark_narration.emit(
+                    "Combat queue status is unavailable; the Red Team AAR will "
+                    "score only authenticated response receipts."
+                )
+                return {"pending": None, "timed_out": False}
+            if pending == 0:
+                return {"pending": 0, "timed_out": False}
+            if not announced:
+                self._shark_narration.emit(
+                    f"Combat has {pending} queued or in-flight action(s); "
+                    "waiting for response receipts before the Red Team AAR."
+                )
+                announced = True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._shark_narration.emit(
+                    f"Combat still has {pending} pending action(s) after the "
+                    "bounded settle window. The AAR will score only authenticated "
+                    "receipts already completed."
+                )
+                return {"pending": pending, "timed_out": True}
+            time.sleep(min(0.5, remaining))
+
     def _red_team_build_aar(self) -> None:
+        settle_started = time.monotonic()
         from angerona.shark.aar_report import (
             AARReportResult,
             generate_aar,
@@ -2365,7 +2421,8 @@ class MainWindow(QMainWindow):
         if scope is None:
             scope = self.red_team_engine.evidence_cleanup_scope()
         try:
-            report_handoff = generate_aar(self.config.data_dir, settle_seconds=45,
+            self._wait_for_redteam_response_settlement(started_at=settle_started)
+            report_handoff = generate_aar(self.config.data_dir,
                                  history_name="redteam_history.json",
                                   stage_category=REDTEAM_STAGE_CATEGORY,
                                   title="RED TEAM ATTACK", report_basename="redteam_aar",
@@ -4884,6 +4941,23 @@ class MainWindow(QMainWindow):
         box.open()
 
     # ── Settings ─────────────────────────────────────────────────────────────
+    def _show_settings_combat_status(self, state: str, message: str) -> None:
+        """Surface asynchronous Combat startup without claiming a saved policy is armed."""
+        self.console._append(f"[settings] {message}")
+        self.statusBar().showMessage(message, 0 if state in {"pending", "failed"} else 10000)
+        try:
+            self.status_strip.refresh()
+        except Exception:
+            pass
+        if state == "failed":
+            try:
+                self.tray.showMessage(
+                    "Angerona — Combat not ready", message,
+                    QSystemTrayIcon.Warning, 8000,
+                )
+            except Exception:
+                pass
+
     def _open_settings(self) -> None:
         self._show_settings()
 

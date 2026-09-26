@@ -39,12 +39,14 @@ def _setup(tmp_path):
         adversary_combat_process_action="none", adversary_combat_isolate_host=False,
         adversary_combat_activate_honeypots=False,
     )
-    combat.bind_manager(SimpleNamespace(config=config, modules={combat.name: combat}))
+    combat.bind_manager(SimpleNamespace(
+        bus=bus, config=config, modules={combat.name: combat},
+    ))
     return bus, detector, scanner, combat
 
 
 @pytest.mark.parametrize("archive", [False, True])
-def test_real_scan_drives_signed_containment_and_undo(tmp_path, archive):
+def test_real_scan_drives_signed_containment_and_undo(tmp_path, monkeypatch, archive):
     bus, detector, scanner, combat = _setup(tmp_path)
     path = tmp_path / ("probe.zip" if archive else "probe.txt")
     if archive:
@@ -65,19 +67,37 @@ def test_real_scan_drives_signed_containment_and_undo(tmp_path, archive):
         response = bus.recent(1)[0]
         assert response.details["postcondition_verified"] is True
         assert response.details["actions"] == ["quarantine_file"]
-        from angerona.shark.aar_report import evaluate
+        from angerona.shark.aar_report import evaluate, _live_combat_action_verifier
         history = {"run_id": "yara-native-proof", "kind": "shark", "steps": [{
             "stage": "Initial Access", "ts_start": started, "ts_end": time.time(),
             "technique": "signature probe", "description": "native inert file scan",
             "ok": True, "artifact_paths": [str(path)],
         }]}
-        verdict = evaluate(history, bus.recent(50), require_authenticated=True,
-                           event_verifier=bus.verify,
-                           native_verifier=lambda row, _step: detector.verify_detection_event(row))[0]
+        response_events = bus.recent(50)
+        def verdict_for_current_journal():
+            return evaluate(
+                history, response_events, require_authenticated=True,
+                event_verifier=bus.verify,
+                native_verifier=lambda row, _step: detector.verify_detection_event(row),
+                combat_verifier=_live_combat_action_verifier(
+                    combat._manager, bus, combat.data_root.resolve(), red_team=False,
+                ),
+            )[0]
+        verdict = verdict_for_current_journal()
         assert verdict.native_catch is not None and verdict.target_containment_verified
         action = combat.list_actions()[0]
-        assert combat.undo_action(action["action_id"])["ok"] is True
+        if archive:
+            append_phase = combat._append_undo_phase
+            def fail_terminal_undo(phase, *args, **kwargs):
+                if phase == "undo_commit":
+                    raise OSError("simulated terminal journal failure")
+                return append_phase(phase, *args, **kwargs)
+            monkeypatch.setattr(combat, "_append_undo_phase", fail_terminal_undo)
+            assert combat.undo_action(action["action_id"])["ok"] is False
+        else:
+            assert combat.undo_action(action["action_id"])["ok"] is True
         assert path.read_bytes() == original
+        assert not verdict_for_current_journal().target_containment_verified
         assert not (tmp_path.parent / "never-extracted.txt").exists()
     finally:
         unregister_run("yara-native-proof")

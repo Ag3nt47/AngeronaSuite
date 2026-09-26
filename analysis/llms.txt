@@ -27,7 +27,32 @@ Detail offers event-specific Undo Allow and displays shared bounded analysis
 progress/results locally. Block retains the existing evidence and confirmation
 gates. Persistent process trust remains in Settings → Trusted Processes.
 
-## LATEST (v1.13.0 — Cycle 34 improvement loop)
+## LATEST (v1.13.0 — Cycle 35 maintenance, 2026-09-26)
+
+- [Cycle 35 record](loop/cycle35/README.md): no version or module-count change.
+  two consecutive GUI Settings Arm → Red Team Launch runs each completed 38/38
+  comprehensive inert steps; each signed AAR credited 37/37 Purple simulation
+  validations and 37/37 exact responses. Native analytic detection was 0/37
+  in both. This is validation of a
+  local simulation contract, not a real-attack detection score.
+- Independent two-phase Python-process witness checked 36 original paths
+  absent, quarantine basenames present, and tagged PID/birth identities gone
+  before cleanup in each run; after Windows lease release it compared 36
+  quarantine SHA-256 hashes to captured original bytes in each. Combat journal
+  commits, not
+  process absence alone, establish termination response credit.
+- Purple/Combat exact-object handoff and synchronized marker moves, priority
+  for authenticated short-lived process requests, fail-fast stale drill
+  authority, and journal-backed AAR scoring fix the simulation/response path.
+  Authentic historical FIM claims survive subsequent scans.
+- Ollama guardrail checks complete forwarded JSON size and scans all original
+  model-facing fields; Packet Sniffer child teardown moves off Qt. An
+  unenrolled process receipt avoids repeated whole-lease scans.
+- Targeted gates and component benchmarks are in the Cycle 35 record. Full
+  exact-commit release validation and physical-host long Chill/Full soak are
+  distinct; neither is inferred from a targeted GUI pass.
+
+## PRIOR (v1.13.0 — Cycle 34 improvement loop)
 
 - **Release truth:** post-release maintenance only; product remains v1.13.0 and
   inventory remains 84 Windows-target capabilities (nine native contracts, 75
@@ -78,7 +103,7 @@ gates. Persistent process trust remains in Settings → Trusted Processes.
   production mTLS coordinator.
 - Evidence map: `analysis/loop/cycle34/README.md`.
 
-## PRIOR (v1.13.0 — Cycles 31-33 enterprise-pattern defensive programs)
+## EARLIER (v1.13.0 — Cycles 31-33 enterprise-pattern defensive programs)
 
 - **Inventory and UI truth:** 84 Windows-target capabilities; nine native
   contracts and 75 compatibility adapters. Built-in implementation labels are

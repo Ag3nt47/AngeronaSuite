@@ -28,6 +28,7 @@ import time
 import uuid
 import weakref
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeAlias
@@ -85,6 +86,15 @@ _COMPREHENSIVE_PATTERNS: tuple[tuple[str, str, str], ...] = (
 _PATTERNS = (*_BASE_PATTERNS, *_COMPREHENSIVE_PATTERNS)
 _PROCESS_TECHNIQUE = "T1059"
 _PROCESS_LABEL = "benign tagged execution marker"
+_PURPLE_RECEIPT_V2_FIELDS = (
+    "redteam_detector_receipt_version", "receipt_type", "lease_id",
+    "receipt_id", "run_id", "target", "target_digest", "technique",
+    "evidence_kind", "observed_target_digest", "producer_capability_id",
+    "producer_generation", "policy_sha256", "artifact_identity_sha256",
+    "observed_content_sha256", "process_identity_sha256",
+    "source_observation_sha256", "event_nonce", "observed_at",
+    "evidence_type", "detector_verdict",
+)
 _PROCESS_TOKEN = re.compile(r"\bANGERONA_REDTEAM_[0-9a-f]{8}\b", re.I)
 _PRACTICE_FILE_TOKEN = re.compile(
     r"_practice_(?P<id>[0-9a-f]{8,64})\.txt$",
@@ -158,10 +168,15 @@ class _LeaseAuthorityState:
     native_generations: dict[str, int] | None = None
     native_capabilities: dict[str, object] | None = None
     native_verifiers: dict[str, bytes] | None = None
-    fim_scan_claims: dict[str, tuple[int, set[str]]] | None = None
-    artifact_handles: dict[str, tuple[int, dict[str, object]]] | None = None
+    fim_scan_claims: dict[
+        str, tuple[int, set[str], dict[tuple[int, str], None]]
+    ] | None = None
+    artifact_handles: dict[str, tuple[int | None, dict[str, object]]] | None = None
+    artifact_handoffs: set[str] | None = None
+    artifact_custody_failed: bool = False
     process_challenges: dict[str, dict[str, object]] | None = None
     lock: threading.RLock | None = None
+    marker_move_lock: threading.RLock | None = None
 
     def __post_init__(self) -> None:
         self.consumed_receipt = {}
@@ -171,8 +186,10 @@ class _LeaseAuthorityState:
         self.native_verifiers = {}
         self.fim_scan_claims = {}
         self.artifact_handles = {}
+        self.artifact_handoffs = set()
         self.process_challenges = {}
         self.lock = threading.RLock()
+        self.marker_move_lock = threading.RLock()
 
 
 _LEASE_AUTHORITY_LOCK = threading.RLock()
@@ -274,25 +291,36 @@ class _LeaseAuthorityAccess:
         claims = state.fim_scan_claims
         if claims is None:
             return False
-        prior_generation, issued_claims = claims.get(module_name, (0, set()))
+        prior_generation, issued_claims, history = claims.get(
+            module_name, (0, set(), {})
+        )
         if scan_generation < prior_generation:
             return False
         if scan_generation > prior_generation:
             issued_claims = set()
-            claims[module_name] = (scan_generation, issued_claims)
-        if scan_claim in issued_claims:
+        if scan_claim in issued_claims or (scan_generation, scan_claim) in history:
             return False
         issued_claims.add(scan_claim)
+        history[(scan_generation, scan_claim)] = None
+        # A lease lasts at most 75 minutes. Keep enough exact issued claims
+        # for later AAR checks without an unbounded long-running cache.
+        if len(history) > 8192:
+            history.pop(next(iter(history)))
+        claims[module_name] = (scan_generation, issued_claims, history)
         return True
 
     def _fim_scan_claim_was_issued(
         self, module_name: str, scan_generation: object, scan_claim: str
     ) -> bool:
         state = object.__getattribute__(self, "_LeaseAuthorityAccess__state")
-        issued_generation, issued_claims = (state.fim_scan_claims or {}).get(
-            module_name, (0, set())
+        _latest_generation, _latest_claims, history = (
+            state.fim_scan_claims or {}
+        ).get(
+            module_name, (0, set(), {})
         )
-        return scan_generation == issued_generation and scan_claim in issued_claims
+        return type(scan_generation) is int and (
+            scan_generation, scan_claim
+        ) in history
 
     def _revoke_native_enrollment(self) -> None:
         state = object.__getattribute__(self, "_LeaseAuthorityAccess__state")
@@ -742,10 +770,6 @@ class _ProducerReceiptCapability:
         lease, state = authority
         assert state.lock is not None
         with state.lock:
-            module_name = str(getattr(producer, "name", ""))
-            enrollment = getattr(producer, "_angerona_contract", None)
-            operational = BaseModule.operational_snapshot(producer)
-            enrolled_generation = state._native_generation(module_name)
             raw_command = process.get("cmdline") or []
             command = (
                 " ".join(str(value) for value in raw_command)
@@ -753,7 +777,12 @@ class _ProducerReceiptCapability:
                 else str(raw_command)
             )
             token_match = _PROCESS_TOKEN.search(command)
-            token = token_match.group(0) if token_match else ""
+            # Ordinary host processes have no enrolled drill challenge and
+            # cannot receive a validation receipt. Reject them before the
+            # full lease check, which reopens every retained drill marker.
+            if token_match is None:
+                return {}
+            token = token_match.group(0)
             identity = self.__process_validator(
                 state,
                 pid=process.get("pid"),
@@ -765,6 +794,15 @@ class _ProducerReceiptCapability:
                 require_live=False,
                 allow_observation_pending=True,
             )
+            # A nonce-shaped command without an enrolled pid/birth challenge
+            # is equally ineligible; the full lease check is still mandatory
+            # for every challenge-bearing observation that can be signed.
+            if not identity:
+                return {}
+            module_name = str(getattr(producer, "name", ""))
+            enrollment = getattr(producer, "_angerona_contract", None)
+            operational = BaseModule.operational_snapshot(producer)
+            enrolled_generation = state._native_generation(module_name)
             if (
                 producer is not state._native_module(module_name)
                 or not state._native_capability_is(module_name, self)
@@ -778,7 +816,6 @@ class _ProducerReceiptCapability:
                 or state.released
                 or time.monotonic() > state.run_deadline_monotonic
                 or not RedTeamValidationLease._state_matches(lease)
-                or not identity
             ):
                 return {}
             self.__serial += 1
@@ -1101,6 +1138,33 @@ def _marker_path_identity(
         return None, {}
 
 
+def _dispose_windows_handle(handle: int) -> bool:
+    """Delete one DELETE-capable Windows object even if its name was moved."""
+    class _DispositionEx(ctypes.Structure):
+        _fields_ = [("flags", ctypes.c_uint32)]
+
+    class _Disposition(ctypes.Structure):
+        _fields_ = [("delete_file", ctypes.c_ubyte)]
+
+    function = ctypes.windll.kernel32.SetFileInformationByHandle
+    function.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
+    ]
+    function.restype = ctypes.c_int
+    disposition_ex = _DispositionEx(0x1 | 0x2 | 0x10)
+    applied = bool(function(
+        ctypes.c_void_p(handle), 21, ctypes.byref(disposition_ex),
+        ctypes.sizeof(disposition_ex),
+    ))
+    if not applied:
+        disposition = _Disposition(1)
+        applied = bool(function(
+            ctypes.c_void_p(handle), 4, ctypes.byref(disposition),
+            ctypes.sizeof(disposition),
+        ))
+    return applied
+
+
 def _dispose_held_marker(
     descriptor: int,
     candidate: Path,
@@ -1110,12 +1174,6 @@ def _dispose_held_marker(
     if os.name == "nt":
         import msvcrt
 
-        class _DispositionEx(ctypes.Structure):
-            _fields_ = [("flags", ctypes.c_uint32)]
-
-        class _Disposition(ctypes.Structure):
-            _fields_ = [("delete_file", ctypes.c_ubyte)]
-
         delete_descriptor, current = _marker_path_identity(
             candidate, hold=True, delete_access=True
         )
@@ -1124,33 +1182,8 @@ def _dispose_held_marker(
                 os.close(delete_descriptor)
             return False
         handle = msvcrt.get_osfhandle(delete_descriptor)
-        function = ctypes.windll.kernel32.SetFileInformationByHandle
-        function.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_int,
-            ctypes.c_void_p,
-            ctypes.c_uint32,
-        ]
-        function.restype = ctypes.c_int
-        # Windows 10+ exact-object disposition, with a legacy exact-handle
-        # fallback. Both target the held file object even if its name moved.
-        disposition_ex = _DispositionEx(0x1 | 0x2 | 0x10)
-        applied = bool(function(
-            ctypes.c_void_p(handle),
-            21,  # FileDispositionInfoEx
-            ctypes.byref(disposition_ex),
-            ctypes.sizeof(disposition_ex),
-        ))
-        if not applied:
-            disposition = _Disposition(1)
-            applied = bool(function(
-                ctypes.c_void_p(handle),
-                13,  # FileDispositionInfo
-                ctypes.byref(disposition),
-                ctypes.sizeof(disposition),
-            ))
         try:
-            return applied
+            return _dispose_windows_handle(handle)
         finally:
             os.close(delete_descriptor)
 
@@ -1172,8 +1205,21 @@ def _dispose_held_marker(
         return False
 
 
-def _validation_target_markers_safe(target: Path) -> bool:
+def _validation_target_markers_safe(
+    target: Path,
+    *,
+    exclusive_handoffs: dict[str, dict[str, object]] | None = None,
+    move_lock: threading.RLock | None = None,
+) -> bool:
     """Reject reparse/multi-link marker aliases at readiness and consumption."""
+    if move_lock is not None:
+        # A Combat rename must not remove a DirEntry between enumeration and
+        # the exact identity check. Keep the entire scan coherent with moves,
+        # while preserving all no-follow/content/link validation below.
+        with move_lock:
+            return _validation_target_markers_safe(
+                target, exclusive_handoffs=exclusive_handoffs,
+            )
     root = Path(target)
     if not root.exists():
         return True
@@ -1196,8 +1242,28 @@ def _validation_target_markers_safe(target: Path) -> bool:
                 count += 1
                 if count > _MAX_VALIDATION_TARGET_MARKERS:
                     return False
+                candidate = root / entry.name
+                enrolled = (exclusive_handoffs or {}).get(
+                    os.path.normcase(str(candidate))
+                )
+                if enrolled is not None:
+                    # Combat temporarily denies every new open while taking
+                    # the exact file. Windows stat still reports the name's
+                    # identity/link count; a replacement or alias fails here.
+                    named = candidate.stat(follow_symlinks=False)
+                    if (
+                        not stat.S_ISREG(named.st_mode)
+                        or bool(getattr(named, "st_file_attributes", 0) & 0x400)
+                        or int(getattr(named, "st_nlink", 1)) != 1
+                        or (named.st_dev, named.st_ino, named.st_size,
+                            named.st_mtime_ns)
+                        != tuple(enrolled.get(field) for field in
+                                 ("device", "inode", "size", "mtime_ns"))
+                    ):
+                        return False
+                    continue
                 descriptor, identity = _marker_path_identity(
-                    root / entry.name, hold=False
+                    candidate, hold=False
                 )
                 if descriptor is not None or not identity:
                     return False
@@ -1453,7 +1519,11 @@ class RedTeamValidationLease:
             state = _lease_authority(self)
         except RedTeamValidationError:
             return False
-        if state.released or state.process_epoch != _LEASE_PROCESS_EPOCH:
+        if (
+            state.released
+            or state.artifact_custody_failed
+            or state.process_epoch != _LEASE_PROCESS_EPOCH
+        ):
             return False
         if type(state.module) is not PurpleGuard:
             return False
@@ -1463,7 +1533,15 @@ class RedTeamValidationLease:
             return False
         if not _target_identity_matches(state):
             return False
-        if not _validation_target_markers_safe(state.target):
+        handoffs = {
+            key: record[1]
+            for key in (state.artifact_handoffs or set())
+            if (record := (state.artifact_handles or {}).get(key)) is not None
+        }
+        if not _validation_target_markers_safe(
+            state.target, exclusive_handoffs=handoffs,
+            move_lock=state.marker_move_lock,
+        ):
             return False
         modules = getattr(state.manager, "modules", {})
         if (
@@ -1739,6 +1817,7 @@ class RedTeamValidationLease:
             authority_live = RedTeamValidationLease._state_matches(self)
             if (
                 state.released
+                or state.artifact_custody_failed
                 or not state.consumed
                 or str(run_id) != state.bound_run_id
                 or not direct_child
@@ -1775,6 +1854,267 @@ class RedTeamValidationLease:
             assert state.artifact_handles is not None
             state.artifact_handles[key] = (descriptor, copy.deepcopy(identity))
             return copy.deepcopy(identity)
+
+    @staticmethod
+    def discard_unenrolled_marker(descriptor: int, path: Path) -> bool:
+        """Dispose only the still-open object created by a refused drill step."""
+        candidate = Path(path)
+        held_descriptor: int | None = None
+        try:
+            original = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(original.st_mode)
+                or int(getattr(original, "st_nlink", 1)) != 1
+                or bool(getattr(original, "st_file_attributes", 0) & 0x400)
+            ):
+                return False
+            if os.name == "nt":
+                import msvcrt
+
+                # The creator kept DELETE access. Its original handle remains
+                # authoritative even after a hostile same-name replacement.
+                return _dispose_windows_handle(msvcrt.get_osfhandle(descriptor))
+            held_descriptor, identity = _marker_path_identity(candidate, hold=True)
+            if held_descriptor is None or not identity:
+                return False
+            current = os.fstat(held_descriptor)
+            if (
+                (original.st_dev, original.st_ino)
+                != (current.st_dev, current.st_ino)
+                or int(getattr(current, "st_nlink", 1)) != 1
+            ):
+                return False
+            return _dispose_held_marker(held_descriptor, candidate, identity)
+        except (OSError, RuntimeError, ValueError):
+            return False
+        finally:
+            if held_descriptor is not None:
+                os.close(held_descriptor)
+
+    def assert_live_producers(self, *, run_id: str) -> None:
+        """Cheap pre-creation check; full receipt validation still follows."""
+        state = _lease_authority(self)
+        assert state.lock is not None
+        with state.lock:
+            purple = BaseModule.operational_snapshot(state.module)
+            process = (
+                BaseModule.operational_snapshot(state.process_module)
+                if isinstance(state.process_module, BaseModule) else {}
+            )
+            process_readiness = state.readiness.get("process_sensor") or {}
+            modules = getattr(state.manager, "modules", {})
+            if (
+                state.released
+                or state.artifact_custody_failed
+                or not state.consumed
+                or str(run_id) != state.bound_run_id
+                or time.monotonic() > state.run_deadline_monotonic
+                or state.process_epoch != _LEASE_PROCESS_EPOCH
+                or getattr(state.manager, "bus", None) is not state.bus
+                or not isinstance(modules, dict)
+                or modules.get(state.module.name) is not state.module
+                or modules.get("Process Monitor") is not state.process_module
+                or getattr(state.module, "_bus", None) is not state.bus
+                or getattr(state.process_module, "_bus", None) is not state.bus
+                or purple.get("status") != "running"
+                or purple.get("thread_alive") is not True
+                or int(purple.get("health", 0)) < 90
+                or int(purple.get("lifecycle_generation", -1))
+                != int(state.readiness.get("sensor_generation") or -2)
+                or process.get("status") != "running"
+                or process.get("thread_alive") is not True
+                or process.get("first_cycle_complete") is not True
+                or int(process.get("health", 0)) < 50
+                or int(process.get("event_overflow_count", -1)) != 0
+                or int(process.get("lifecycle_generation", -1))
+                != int(process_readiness.get("generation", -2))
+            ):
+                raise RedTeamValidationError("validation producers are no longer live")
+
+    @contextmanager
+    def marker_move_guard(self, path: Path):
+        """Serialize one enrolled-target rename with whole-target scans.
+
+        The lock grants no containment authority. Combat still proves the
+        signed receipt and exact pinned file before mutating the host.
+        """
+        state = _lease_authority(self)
+        candidate = Path(os.path.abspath(path))
+        if candidate.parent != state.target or state.marker_move_lock is None:
+            raise RedTeamValidationError("marker move is outside the leased target")
+        with state.marker_move_lock:
+            yield
+
+    def begin_marker_containment(
+        self, combat: object, event: object, path: Path,
+    ) -> dict[str, object]:
+        """Release one enrolled read handle for Combat's exclusive exact pin."""
+        from angerona.modules.adversary_combat import AdversaryCombat
+
+        state = _lease_authority(self)
+        candidate = Path(os.path.abspath(path))
+        key = os.path.normcase(str(candidate))
+        details = getattr(event, "details", {}) or {}
+        if not isinstance(details, dict):
+            raise RedTeamValidationError("marker response has no signed details")
+        assert state.lock is not None
+        with state.lock:
+            modules = getattr(state.manager, "modules", {})
+            record = (state.artifact_handles or {}).get(key)
+            supplied = str(details.get("detector_receipt_mac") or "")
+            signed_core = {
+                field: details.get(field) for field in _PURPLE_RECEIPT_V2_FIELDS
+            }
+            if (
+                os.name != "nt"
+                or type(combat) is not AdversaryCombat
+                or not isinstance(modules, dict)
+                or modules.get(combat.name) is not combat
+                or getattr(combat, "_bus", None) is not state.bus
+                or getattr(event, "module", "") != state.module.name
+                or getattr(state.module, "_validation_lease", None) is not self
+                or state.released
+                or state.artifact_custody_failed
+                or not state.consumed
+                or time.monotonic() > state.run_deadline_monotonic
+                or candidate.parent != state.target
+                or record is None
+                or record[0] is None
+                or key in (state.artifact_handoffs or set())
+                or details.get("redteam_detector_receipt_version") != 2
+                or details.get("receipt_type") != "purple_simulation_validation"
+                or details.get("evidence_kind") != "inert_file_marker"
+                or details.get("lease_id") != state.lease_id
+                or details.get("receipt_id") != state.receipt_id
+                or details.get("run_id") != state.bound_run_id
+                or details.get("target") != str(state.target)
+                or details.get("observed_target_digest") != _sha256(str(candidate))
+                or details.get("artifact_identity_sha256")
+                != record[1].get("identity_sha256")
+                or details.get("observed_content_sha256") != record[1].get("sha256")
+                or not re.fullmatch(r"[0-9a-f]{64}", supplied)
+                or not state._verify_hmac(supplied, _canonical_json(signed_core))
+                or not RedTeamValidationLease._state_matches(self)
+                or RedTeamValidationLease._validated_artifact_identity(
+                    state, str(candidate)
+                ) != record[1]
+            ):
+                raise RedTeamValidationError("marker containment handoff refused")
+            descriptor, enrolled = record
+            assert descriptor is not None
+            os.close(descriptor)
+            assert state.artifact_handles is not None
+            assert state.artifact_handoffs is not None
+            state.artifact_handles[key] = (None, enrolled)
+            state.artifact_handoffs.add(key)
+            return copy.deepcopy(enrolled)
+
+    def complete_marker_containment(
+        self, combat: object, path: Path, descriptor: int,
+    ) -> None:
+        """Keep Combat's exclusive moved handle as the AAR witness."""
+        from angerona.modules.adversary_combat import AdversaryCombat
+
+        state = _lease_authority(self)
+        candidate = Path(os.path.abspath(path))
+        key = os.path.normcase(str(candidate))
+        retained = False
+        try:
+            assert state.lock is not None
+            with state.lock:
+                record = (state.artifact_handles or {}).get(key)
+                if (
+                    type(combat) is not AdversaryCombat
+                    or state.released
+                    or key not in (state.artifact_handoffs or set())
+                    or record is None
+                    or record[0] is not None
+                ):
+                    raise RedTeamValidationError("marker handoff is not pending")
+                enrolled = record[1]
+                before = os.fstat(descriptor)
+                if (
+                    (before.st_dev, before.st_ino, before.st_size,
+                     before.st_mtime_ns)
+                    != tuple(enrolled.get(field) for field in
+                             ("device", "inode", "size", "mtime_ns"))
+                    or not stat.S_ISREG(before.st_mode)
+                    or int(getattr(before, "st_nlink", 1)) != 1
+                    or bool(getattr(before, "st_file_attributes", 0) & 0x400)
+                ):
+                    raise RedTeamValidationError("moved marker identity changed")
+                try:
+                    candidate.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise RedTeamValidationError("original marker name still exists")
+                position = os.lseek(descriptor, 0, os.SEEK_CUR)
+                try:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    digest = hashlib.sha256()
+                    remaining = int(before.st_size)
+                    while remaining:
+                        chunk = os.read(descriptor, min(64 * 1024, remaining))
+                        if not chunk:
+                            raise RedTeamValidationError("moved marker was truncated")
+                        digest.update(chunk)
+                        remaining -= len(chunk)
+                finally:
+                    os.lseek(descriptor, position, os.SEEK_SET)
+                after = os.fstat(descriptor)
+                if (
+                    (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                    != (before.st_dev, before.st_ino, before.st_size,
+                        before.st_mtime_ns)
+                    or int(getattr(after, "st_nlink", 1)) != 1
+                    or digest.hexdigest() != enrolled.get("sha256")
+                ):
+                    raise RedTeamValidationError("moved marker digest changed")
+                assert state.artifact_handles is not None
+                state.artifact_handles[key] = (descriptor, enrolled)
+                retained = True
+        finally:
+            if not retained:
+                os.close(descriptor)
+
+    def abort_marker_containment(
+        self, combat: object, path: Path, *, recapture: bool,
+    ) -> None:
+        """Drop a moved witness before rollback; only rehold the original ID."""
+        from angerona.modules.adversary_combat import AdversaryCombat
+
+        if type(combat) is not AdversaryCombat:
+            return
+        state = _lease_authority(self)
+        candidate = Path(os.path.abspath(path))
+        key = os.path.normcase(str(candidate))
+        assert state.lock is not None
+        with state.lock:
+            if key not in (state.artifact_handoffs or set()):
+                return
+            record = (state.artifact_handles or {}).get(key)
+            if record is None:
+                return
+            descriptor, enrolled = record
+            if descriptor is not None:
+                os.close(descriptor)
+                assert state.artifact_handles is not None
+                state.artifact_handles[key] = (None, enrolled)
+            if recapture and not state.released:
+                reopened, current = _marker_path_identity(candidate, hold=True)
+                recaptured = False
+                if reopened is not None:
+                    if current == enrolled:
+                        assert state.artifact_handles is not None
+                        state.artifact_handles[key] = (reopened, enrolled)
+                        recaptured = True
+                    else:
+                        os.close(reopened)
+                if not recaptured:
+                    state.artifact_custody_failed = True
+                assert state.artifact_handoffs is not None
+                state.artifact_handoffs.discard(key)
 
     def assert_target_identity(self, *, run_id: str) -> None:
         """Fail before marker/cleanup work if the held directory was replaced."""
@@ -2229,6 +2569,8 @@ class RedTeamValidationLease:
         if record is None:
             return {}
         held_descriptor, enrolled = record
+        if held_descriptor is None:
+            return {}
         try:
             held = os.fstat(held_descriptor)
         except OSError:
@@ -2312,6 +2654,8 @@ class RedTeamValidationLease:
             if record is None:
                 return {}
             descriptor, enrolled = record
+            if descriptor is None:
+                return {}
             if enrolled.get("sha256") != signed_content_sha256:
                 return {}
             before = os.fstat(descriptor)
@@ -2370,6 +2714,17 @@ class RedTeamValidationLease:
             return {}
         assert state.lock is not None
         with state.lock:
+            if evidence_kind == "inert_file_marker":
+                try:
+                    candidate = Path(os.path.abspath(observed_target))
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    return {}
+                if os.path.normcase(str(candidate)) not in (state.artifact_handles or {}):
+                    return {}
+            elif evidence_kind == "nonce_tagged_process":
+                _pid, separator, token = str(observed_target).partition(":")
+                if not separator or token not in (state.process_challenges or {}):
+                    return {}
             if (
                 producer is not state.module
                 or not state.consumed
@@ -2889,7 +3244,7 @@ class RedTeamValidationLease:
                 and type(scan_receipt.get("scan_generation")) is int
                 and scan_receipt.get("scan_generation", 0) > 0
                 and scan_receipt.get("scan_generation")
-                == int(getattr(producer, "_scan_generation", -1))
+                <= int(getattr(producer, "_scan_generation", -1))
                 and scan_receipt.get("producer_generation")
                 == int(getattr(producer, "lifecycle_generation", -1))
                 and type(scan_receipt.get("started_monotonic_ns")) is int
@@ -3078,11 +3433,14 @@ class RedTeamValidationLease:
             pass
         state._revoke_native_enrollment()
         for descriptor, _identity in tuple((state.artifact_handles or {}).values()):
+            if descriptor is None:
+                continue
             try:
                 os.close(descriptor)
             except OSError:
                 pass
         (state.artifact_handles or {}).clear()
+        (state.artifact_handoffs or set()).clear()
         _close_directory_handle(state.target_handle)
         state.target_handle = None
         if state.target_registered_by_lease:

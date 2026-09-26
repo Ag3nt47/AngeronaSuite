@@ -105,7 +105,9 @@ class PacketSnifferModule(BaseModule):
     def __init__(self) -> None:
         super().__init__()
         self._worker_lock = threading.Lock()
+        self._worker_termination_lock = threading.Lock()
         self._worker: subprocess.Popen[str] | None = None
+        self._reaping_worker: subprocess.Popen[str] | None = None
         self._worker_failures = 0
 
     def _launch_worker(self) -> subprocess.Popen[str]:
@@ -126,24 +128,35 @@ class PacketSnifferModule(BaseModule):
         )
 
     def _terminate_worker(self, worker: subprocess.Popen[str] | None = None) -> None:
-        with self._worker_lock:
-            target = worker if worker is not None else self._worker
-        if target is None:
-            return
-        try:
-            if target.poll() is None:
-                target.terminate()
-                try:
-                    target.wait(timeout=_WORKER_STOP_TIMEOUT)
-                except subprocess.TimeoutExpired:
-                    target.kill()
-                    target.wait(timeout=_WORKER_STOP_TIMEOUT)
-        except Exception:
-            pass
-        finally:
+        # stop() and the capture thread can both retire the same child. One
+        # owner performs the bounded terminate -> kill sequence at a time;
+        # the other observes its result without racing Popen.wait/kill.
+        with self._worker_termination_lock:
             with self._worker_lock:
-                if self._worker is target:
-                    self._worker = None
+                target = worker if worker is not None else self._worker
+            if target is None:
+                return
+            try:
+                if target.poll() is None:
+                    try:
+                        target.terminate()
+                    except Exception:
+                        # A failed graceful termination must still attempt
+                        # the force-kill path for this exact capture child.
+                        target.kill()
+                        target.wait(timeout=_WORKER_STOP_TIMEOUT)
+                    else:
+                        try:
+                            target.wait(timeout=_WORKER_STOP_TIMEOUT)
+                        except subprocess.TimeoutExpired:
+                            target.kill()
+                            target.wait(timeout=_WORKER_STOP_TIMEOUT)
+            except Exception:
+                pass
+            finally:
+                with self._worker_lock:
+                    if self._worker is target:
+                        self._worker = None
 
     def _capture_once(self) -> _CaptureResult | None:
         """Run one bounded capture generation.
@@ -356,7 +369,30 @@ class PacketSnifferModule(BaseModule):
 
     def stop(self) -> None:
         super().stop()
-        self._terminate_worker()
+        with self._worker_lock:
+            worker = self._worker
+            if worker is None or self._reaping_worker is worker:
+                return
+            self._reaping_worker = worker
+
+        def reap() -> None:
+            try:
+                self._terminate_worker(worker)
+            finally:
+                with self._worker_lock:
+                    if self._reaping_worker is worker:
+                        self._reaping_worker = None
+
+        # The capture thread also retires this exact child in its finally
+        # block, before its generation can exit and a replacement can start.
+        # A non-daemon reaper preserves stop's terminate/kill cleanup at app
+        # shutdown without making a Chill-mode click wait on the child.
+        try:
+            threading.Thread(
+                target=reap, name="AngeronaPacketWorkerReaper", daemon=False,
+            ).start()
+        except RuntimeError:
+            reap()
 
     def self_test(self) -> tuple[bool, str]:
         isolated = "subprocess"

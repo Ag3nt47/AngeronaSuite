@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 import uuid
+import weakref
 from pathlib import Path
 from urllib.parse import quote
 
@@ -7296,6 +7297,7 @@ class SettingsDialog(QDialog):
     aria_test_result = Signal(str)
     voice_model_result = Signal(str, bool)
     process_baseline_result = Signal(str, bool)
+    combat_history_result = Signal(object, object, str)
 
     _SANDBOX_TARGETS = {
         "Overview": ("src/angerona/gui/pages.py", "def _tab_overview"),
@@ -7324,6 +7326,19 @@ class SettingsDialog(QDialog):
         self._check_updates  = check_updates_fn
         self._apply_theme    = apply_theme_fn
         self._process_baseline = process_baseline
+        self._accept_async_results = True
+        self._combat_history_loading = False
+        self._combat_history_refresh_pending = False
+        self._combat_history_reversible = False
+        self._combat_start_pending = bool(getattr(
+            getattr(parent, "manager", None),
+            "_settings_combat_activation_pending", False,
+        ))
+        self.combat_history_result.connect(self._apply_combat_history_result)
+        parent_signal = getattr(parent, "_settings_combat_status", None)
+        self._combat_parent_signal = parent_signal
+        if parent_signal is not None:
+            parent_signal.connect(self._on_combat_activation_status)
         self._voice_model_loading_token: str | None = None
         self._aria_test_loading_tokens: list[str] = []
 
@@ -7423,6 +7438,25 @@ class SettingsDialog(QDialog):
                     if wanted in tabs.tabText(i).casefold():
                         tabs.setCurrentIndex(i)
                         break
+
+    def done(self, result: int) -> None:
+        self._accept_async_results = False
+        self._detach_combat_parent_signal()
+        super().done(result)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        self._accept_async_results = False
+        self._detach_combat_parent_signal()
+        super().closeEvent(event)
+
+    def _detach_combat_parent_signal(self) -> None:
+        signal = self._combat_parent_signal
+        self._combat_parent_signal = None
+        if signal is not None:
+            try:
+                signal.disconnect(self._on_combat_activation_status)
+            except (RuntimeError, TypeError):
+                pass
 
     def _find_setting(self, query: str) -> None:
         """Jump to the most relevant settings area without hiding any controls."""
@@ -7884,10 +7918,14 @@ class SettingsDialog(QDialog):
         self._combat_enabled_chk = QCheckBox(
             "Arm Adversary Combat and act automatically on my behalf"
         )
-        self._combat_enabled_chk.setChecked(bool(getattr(
-            self._cfg, "adversary_combat_enabled", True
-        )))
+        self._combat_enabled_chk.setChecked(
+            bool(getattr(self._cfg, "adversary_combat_enabled", True))
+            and self._cfg.module_states.get("Adversary Combat", True) is True
+        )
         lay.addWidget(self._combat_enabled_chk)
+        self._combat_arm_status = QLabel()
+        self._combat_arm_status.setWordWrap(True)
+        lay.addWidget(self._combat_arm_status)
 
         grid = QGridLayout()
         grid.addWidget(QLabel("Response level:"), 0, 0)
@@ -7998,15 +8036,142 @@ class SettingsDialog(QDialog):
         manager = getattr(parent, "manager", None)
         return getattr(manager, "modules", {}).get("Adversary Combat") if manager else None
 
+    def _on_combat_activation_status(self, state: str, message: str) -> None:
+        if not self._accept_async_results:
+            return
+        manager = getattr(self.parent(), "manager", None)
+        self._combat_start_pending = bool(getattr(
+            manager, "_settings_combat_activation_pending", False,
+        ))
+        self._combat_arm_status.setText(message)
+        allow_undo = (
+            self._combat_history_reversible
+            and not self._combat_history_loading
+            and not self._combat_start_pending
+        )
+        for control in (
+            self._combat_undo_selector,
+            self._combat_undo_btn,
+            self._combat_undo_all_btn,
+        ):
+            control.setEnabled(allow_undo)
+        if state != "pending":
+            self._combat_readiness.refresh()
+
+    def _request_combat_activation(self, manager, combat) -> None:
+        """Start and check Combat off the GUI thread after settings commit."""
+        config = self._cfg
+        parent_signal = getattr(self.parent(), "_settings_combat_status", None)
+        active_worker = getattr(manager, "_settings_combat_activation_worker", None)
+        if (getattr(manager, "_settings_combat_activation_pending", False)
+                and active_worker is not None and active_worker.is_alive()):
+            message = "Combat activation is already pending; check live readiness."
+            if parent_signal is not None:
+                parent_signal.emit("pending", message)
+            else:
+                self._on_combat_activation_status("pending", message)
+            return
+        generation = int(getattr(
+            manager, "_settings_combat_activation_generation", 0,
+        )) + 1
+        manager._settings_combat_activation_generation = generation
+        manager._settings_combat_activation_pending = True
+        message = "Combat activation is pending; saved policy alone is not readiness."
+        if parent_signal is not None:
+            parent_signal.emit("pending", message)
+        else:
+            self._on_combat_activation_status("pending", message)
+
+        def selected() -> bool:
+            return (
+                getattr(manager, "modules", {}).get("Adversary Combat") is combat
+                and config.adversary_combat_enabled is True
+                and config.module_states.get("Adversary Combat") is True
+            )
+
+        def current() -> bool:
+            return getattr(
+                manager, "_settings_combat_activation_generation", None,
+            ) == generation
+
+        def activate() -> None:
+            state = "failed"
+            detail = "Combat did not reach armed readiness."
+            try:
+                if not selected() or not current():
+                    state = "canceled"
+                    detail = "Combat activation was superseded before startup."
+                elif not manager.start_if_enabled(combat):
+                    if not selected() or not current():
+                        state = "canceled"
+                        detail = "Combat activation was superseded or disarmed."
+                    else:
+                        detail = "The module manager refused to start Combat."
+                else:
+                    deadline = time.monotonic() + 30.0
+                    while True:
+                        if not selected() or not current():
+                            if not selected() and config.adversary_combat_enabled is False:
+                                combat.stop()
+                            state = "canceled"
+                            detail = "Combat activation was superseded or disarmed."
+                            break
+                        snapshot = combat.response_snapshot()
+                        if not isinstance(snapshot, dict):
+                            detail = "Combat returned no live readiness state."
+                            break
+                        if snapshot.get("ready") is True:
+                            state = "ready"
+                            detail = "Combat is armed and ready for authenticated response."
+                            break
+                        status = str(snapshot.get("state") or "UNKNOWN")
+                        if status in {"RECOVERY REQUIRED", "JOURNAL FULL", "DISABLED"}:
+                            detail = f"Combat is not ready: {status}."
+                            break
+                        if time.monotonic() >= deadline:
+                            detail = f"Combat readiness timed out: {status}."
+                            break
+                        time.sleep(0.1)
+            except Exception as exc:
+                detail = f"Combat startup failed: {type(exc).__name__}: {exc}"
+            finally:
+                if current():
+                    manager._settings_combat_activation_pending = False
+                if state == "ready" and (not selected() or not current()):
+                    state = "canceled"
+                    detail = "Combat activation was superseded or disarmed."
+                if parent_signal is not None:
+                    try:
+                        parent_signal.emit(state, detail[:300])
+                    except RuntimeError:
+                        pass
+
+        worker = threading.Thread(
+            target=activate, name="CombatSettingsActivation", daemon=True,
+        )
+        manager._settings_combat_activation_worker = worker
+        try:
+            worker.start()
+        except Exception as exc:
+            manager._settings_combat_activation_pending = False
+            if parent_signal is not None:
+                parent_signal.emit(
+                    "failed", f"Combat activation could not start: {type(exc).__name__}.",
+                )
+
     def _refresh_combat_actions(self) -> None:
         label = getattr(self, "_combat_history_status", None)
         if label is None:
+            return
+        if self._combat_history_loading:
+            self._combat_history_refresh_pending = True
             return
         selector = getattr(self, "_combat_undo_selector", None)
         undo_button = getattr(self, "_combat_undo_btn", None)
         undo_all_button = getattr(self, "_combat_undo_all_btn", None)
         if selector is not None:
             selector.clear()
+        self._combat_history_reversible = False
         module = self._combat_module()
         if module is None:
             label.setText("Adversary Combat is not attached to this Settings window yet.")
@@ -8017,7 +8182,53 @@ class SettingsDialog(QDialog):
             if undo_all_button is not None:
                 undo_all_button.setEnabled(False)
             return
-        actions = module.list_actions(limit=100)
+        label.setText("Loading verified Combat action history…")
+        if selector is not None:
+            selector.setEnabled(False)
+        if undo_button is not None:
+            undo_button.setEnabled(False)
+        if undo_all_button is not None:
+            undo_all_button.setEnabled(False)
+        self._combat_history_loading = True
+        owner_ref = weakref.ref(self)
+
+        def load() -> None:
+            try:
+                actions = module.list_actions(limit=100)
+                if not isinstance(actions, list) or any(
+                    not isinstance(action, dict) for action in actions
+                ):
+                    raise ValueError("Combat returned an invalid action history")
+                error = ""
+            except Exception as exc:
+                actions = []
+                error = f"{type(exc).__name__}: {exc}"
+            owner = owner_ref()
+            if owner is not None:
+                _emit_if_accepting(
+                    owner, "combat_history_result", module, actions, error[:300],
+                )
+
+        threading.Thread(
+            target=load, name="CombatHistoryLoad", daemon=True,
+        ).start()
+
+    def _apply_combat_history_result(self, module, actions: list, error: str) -> None:
+        if not self._accept_async_results:
+            return
+        self._combat_history_loading = False
+        if (self._combat_history_refresh_pending
+                or module is not self._combat_module()):
+            self._combat_history_refresh_pending = False
+            self._refresh_combat_actions()
+            return
+        label = self._combat_history_status
+        selector = self._combat_undo_selector
+        undo_button = self._combat_undo_btn
+        undo_all_button = self._combat_undo_all_btn
+        if error:
+            label.setText(f"Combat action history unavailable: {error}")
+            return
         if not actions:
             label.setText("No combat actions have been recorded.")
             if selector is not None:
@@ -8046,6 +8257,7 @@ class SettingsDialog(QDialog):
             and action.get("integrity_status") == "verified"
             and action.get("status") == "applied"
         ]
+        self._combat_history_reversible = bool(reversible)
         if selector is not None:
             for action in reversible:
                 target = str(action.get("target") or "")
@@ -8055,11 +8267,11 @@ class SettingsDialog(QDialog):
                     f"{action.get('action')} · {target}",
                     str(action.get("action_id") or ""),
                 )
-            selector.setEnabled(bool(reversible))
+            selector.setEnabled(bool(reversible) and not self._combat_start_pending)
         if undo_button is not None:
-            undo_button.setEnabled(bool(reversible))
+            undo_button.setEnabled(bool(reversible) and not self._combat_start_pending)
         if undo_all_button is not None:
-            undo_all_button.setEnabled(bool(reversible))
+            undo_all_button.setEnabled(bool(reversible) and not self._combat_start_pending)
 
     def _undo_selected_combat_action(self) -> None:
         module = self._combat_module()
@@ -9979,6 +10191,11 @@ class SettingsDialog(QDialog):
         candidate.require_signed_aar = self._require_signed_aar_chk.isChecked()
         candidate.entropy_pool_enabled = self._entropy_pool_chk.isChecked()
         candidate.adversary_combat_enabled = self._combat_enabled_chk.isChecked()
+        # Arming must also select the module for the manager's lifecycle gate.
+        # Disarming clears both sources of authority in the same settings save.
+        candidate.module_states["Adversary Combat"] = (
+            candidate.adversary_combat_enabled
+        )
         candidate.adversary_combat_mode = str(
             self._combat_mode_combo.currentData() or "maximum"
         )
@@ -10396,14 +10613,21 @@ class SettingsDialog(QDialog):
             except Exception:
                 pass
         combat = self._combat_module()
+        combat_to_start = None
         if combat is not None:
             try:
+                manager = getattr(self.parent(), "manager", None)
                 if self._cfg.adversary_combat_enabled:
-                    if getattr(combat, "status", "stopped") != "running":
-                        combat.start()
-                elif getattr(combat, "status", "stopped") == "running":
+                    if manager is None:
+                        raise RuntimeError("the module manager is unavailable")
+                    combat_to_start = (manager, combat)
+                else:
+                    if manager is not None:
+                        manager._settings_combat_activation_generation = int(
+                            getattr(manager, "_settings_combat_activation_generation", 0)
+                        ) + 1
+                        manager._settings_combat_activation_pending = False
                     combat.stop()
-                self._refresh_combat_actions()
             except Exception as exc:
                 QMessageBox.warning(
                     self,
@@ -10419,4 +10643,6 @@ class SettingsDialog(QDialog):
         if retention_worker is not None:
             from angerona.core.alert_retention import RetentionPolicy
             retention_worker.update_policy(RetentionPolicy.from_config(self._cfg))
+        if combat_to_start is not None:
+            self._request_combat_activation(*combat_to_start)
         self.accept()
