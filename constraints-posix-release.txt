@@ -19,7 +19,7 @@ urllib3==2.7.0
 defusedxml==0.7.1
 yara-x==1.19.0
 setuptools==83.0.0
-wheel==0.47.0
+wheel==0.48.0
 sounddevice==0.5.5
 pyttsx3==2.99
 tqdm==4.68.4
