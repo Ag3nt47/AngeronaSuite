@@ -77,3 +77,13 @@ the listener's one-second accept timeout and key reload while retaining live
 authentication and old-helper retirement checks; the six-test lifecycle module
 passed. These are fixture-bound changes, not product timeout or security-policy
 relaxations. A new exact-commit gate was required for the combined tree.
+
+The second exact-commit gate on `8be9d125273829500feebf3b60e801a349bafb73`
+again passed the four non-pytest checks, then finished **4,365 passed / 20
+skipped / 1 failed** without a Qt abort. The sole failure was the read-only
+Windows QEMU bootstrap fixture: a PowerShell child exceeded its 20-second
+test deadline under that run's load. The focused case and all **33** QEMU setup
+module tests pass. Its fixture now allows 60 seconds for cold PowerShell startup
+and Program Files ACL inspection; exit status, no-compiler, no-mutation, and
+protected-path assertions remain unchanged. No QEMU production code was changed.
+A further exact-commit full gate was required for these combined test fixes.

@@ -331,10 +331,11 @@ def test_native_readonly_bootstrap_pins_program_files_without_compiler_or_mutati
     assert 'Add-Type' not in script and 'New-ProtectedDirectory $' not in script
     environment = sanitized_child_environment(source={})
     environment['PATH'] = str(system)
+    # Cold PowerShell startup and Program Files ACL reads can lag on a loaded host.
     result = subprocess.run(
         [str(powershell), '-NoProfile', '-NonInteractive', '-EncodedCommand',
          base64.b64encode(script.encode('utf-16-le')).decode('ascii')],
-        cwd=str(system), env=environment, capture_output=True, timeout=20,
+        cwd=str(system), env=environment, capture_output=True, timeout=60,
         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
     )
     assert result.returncode == 0, result.stderr.decode(errors='replace')

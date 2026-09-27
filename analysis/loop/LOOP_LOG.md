@@ -3884,3 +3884,17 @@ increase to tolerate the one-second listener accept timeout and key reload;
 its exact gate assertion was not retained by the evidence summary. Six Fleet
 and six IPC module tests pass after the adjustments. A new exact-commit gate
 was required before this follow-up could be published.
+
+The next exact-commit gate on `8be9d125273829500feebf3b60e801a349bafb73`
+passed bytecode, dependency audit, documentation drift, and lint, but pytest
+ended 4,365 passed / 20 skipped / 1 failed in 1,957.75 seconds, again with no
+native Qt abort. The sole failure was a 20-second subprocess cap in the
+read-only native QEMU bootstrap fixture. Focused reproduction passed, and all
+33 QEMU setup tests pass with a 60-second fixture cap for cold PowerShell and
+Program Files ACL inspection; its no-compiler/no-mutation and exit assertions
+are unchanged. No QEMU product path was modified. A separate read-only host
+sample near the QEMU test found 100% CPU saturation, with Defender using about
+2.24 cores; after the test tree exited, Defender fell below one core and host
+CPU to about 65%. This plausibly explains timing pressure but does not prove
+causation. No Angerona/QEMU test process remained in the later sample. A further
+exact-commit gate was required for the combined tree.
