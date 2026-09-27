@@ -687,7 +687,11 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 assert console._report_results["red_team"] == {
                     "count": 37, "eligible": 37, "outcome": "verified",
                 }
-                assert "Verified containment" in console.live_status.text()
+                assert "Verified simulation containment" in console.live_status.text()
+                assert (
+                    "native analytics: 0/37 overall; 36 file-marker opportunities"
+                    in console.live_status.text()
+                )
                 assert shown_aar and "RED TEAM ATTACK" in shown_aar[-1]
                 assert not modal_errors
         finally:

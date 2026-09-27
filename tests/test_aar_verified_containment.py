@@ -10,6 +10,7 @@ import pytest
 from angerona.core import report_attest
 from angerona.core.eventbus import BusAuthority, Event, EventBus, Severity
 from angerona.shark import aar_report as aar
+from angerona.shark.run_manifest import expected_red_team_plan
 
 
 _DIGEST = hashlib.sha256(b"inert report fixture").hexdigest()
@@ -148,6 +149,105 @@ def test_probe_cleanup_and_absence_are_never_response_evidence():
     assert row.catch is not None
     assert row.remediation is None
     assert not row.target_containment_verified
+
+
+def test_aar_labels_simulation_only_match_without_implying_native_detection():
+    history = _history()
+    simulation = Event(
+        "Purple Remediation Guard", "inert validation", Severity.HIGH, 101.0,
+        {"evidence_type": "simulation_contract_validation"},
+    )
+    row = aar.StepVerdict(
+        "Initial Access", "T1566.001 marker", "inert local fixture", 100.0, True,
+        simulation_validation=simulation, simulation_validation_latency=1.0,
+        catch=simulation, catch_latency=1.0,
+    )
+    rendered = aar.render(history, [row], "RED TEAM")
+    assert (
+        "Matched detection evidence (simulation validation or native analytics): 1/1"
+        in rendered
+    )
+    assert "Native analytics   : 0/1" in rendered
+    assert "Analytic catches on expected-positive steps" not in rendered
+    assert "Actions reported   : 0/1 steps with matched detection evidence" in rendered
+    assert "analytic catches" not in rendered.casefold()
+
+
+def _comprehensive_planned_verdicts():
+    safety = {"cycles": 1, "comprehensive": True, "campaign": True}
+    plan = expected_red_team_plan(safety)
+    history = {
+        "run_id": "planned-native-opportunity", "kind": "red_team",
+        "status": "completed", "safety_contract": safety,
+        "campaign": {"score_eligible": True, "expected_plan": plan},
+        "generated": "test", "steps": [],
+    }
+    rows = [
+        aar.StepVerdict(
+            str(row["stage"]), str(row["technique"]), "planned inert step",
+            100.0 + index, True, category=str(row["category"]),
+        )
+        for index, row in enumerate(plan)
+    ]
+    return history, rows
+
+
+def test_comprehensive_native_opportunities_keep_process_observation_separate():
+    history, rows = _comprehensive_planned_verdicts()
+    opportunity = aar._redteam_native_opportunities(history, 37)
+    assert opportunity == {
+        "file_marker_steps": 36,
+        "process_observation_only_steps": 1,
+        "unclassified_steps": 0,
+        "total_expected_positive_steps": 37,
+        "basis": "reviewed Red Team plan; opportunity only, not sensor coverage",
+    }
+    rendered = aar.render(history, rows, "RED TEAM")
+    assert "Native analytics   : 0/37" in rendered
+    assert (
+        "Planned native opportunities: 36 FIM file-marker step(s); "
+        "1 process observation-only; 0 unclassified."
+    ) in rendered
+
+
+def test_missing_or_changed_plan_claims_no_classified_native_opportunities():
+    history, rows = _comprehensive_planned_verdicts()
+    history["campaign"].pop("expected_plan")
+    missing = aar._redteam_native_opportunities(history, 37)
+    assert missing["file_marker_steps"] == 0
+    assert missing["process_observation_only_steps"] == 0
+    assert missing["unclassified_steps"] == 37
+
+    history, rows = _comprehensive_planned_verdicts()
+    history["campaign"]["expected_plan"][0]["key"] = "future_unreviewed_step"
+    altered = aar._redteam_native_opportunities(history, 37)
+    assert altered["file_marker_steps"] == 0
+    assert altered["unclassified_steps"] == 37
+
+
+def test_withheld_native_opportunities_are_counts_only_and_signed(
+    tmp_path, monkeypatch,
+):
+    key_path = tmp_path / "fixture.key"
+    key_path.write_text((b"r" * 32).hex(), encoding="ascii")
+    monkeypatch.setattr(report_attest, "_key_path", lambda: key_path)
+    history, rows = _comprehensive_planned_verdicts()
+    history["status"] = "incomplete"
+    history["campaign"]["score_eligible"] = False
+    rendered = aar.render(history, rows, "RED TEAM")
+    assert "Native analytics   : WITHHELD (0/37 planned contracts)" in rendered
+    assert "Planned native opportunities: 36 FIM file-marker" in rendered
+    result = aar._write_report(tmp_path, history, rows, rendered, "redteam_aar")
+    payload = json.loads(result.report_bytes)
+    assert report_attest.verify(payload) == "ok"
+    taxonomy = payload["evidence_taxonomy"]
+    assert taxonomy["denominator"] == 37
+    assert taxonomy["native_analytic_detection"] == {"count": 0, "rate": None}
+    assert taxonomy["native_analytic_opportunity"]["file_marker_steps"] == 36
+    assert "rate" not in taxonomy["native_analytic_opportunity"]
+    forged = copy.deepcopy(payload)
+    forged["evidence_taxonomy"]["native_analytic_opportunity"]["file_marker_steps"] = 37
+    assert report_attest.verify(forged) != "ok"
 
 
 @pytest.mark.parametrize("origin_digest", ["exact", "wrong", "missing"])

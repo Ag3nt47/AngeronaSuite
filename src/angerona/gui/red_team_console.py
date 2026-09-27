@@ -142,6 +142,8 @@ class RedTeamConsole(QDialog):
         self._stage_messages: dict[str, list[str]] = {}
         self._report_runs: dict[str, str] = {}
         self._report_results: dict[str, dict] = {}
+        self._report_native_analytics: dict[str, tuple[int, int] | None] = {}
+        self._report_native_opportunities: dict[str, int | None] = {}
         self._containment_requested = True
         self._run_cancelled = False
         self._run_pending = False
@@ -489,6 +491,8 @@ class RedTeamConsole(QDialog):
             self._launch_queued = False
             self._report_runs = dict(result.get("runs") or {})
             self._report_results = {}
+            self._report_native_analytics = {}
+            self._report_native_opportunities = {}
             self._containment_requested = bool((cfg or {}).get("auto_remediate", True))
             self.live_status.setText(
                 "Containment test running — results require verified evidence."
@@ -507,6 +511,47 @@ class RedTeamConsole(QDialog):
             )
             self.live_status.setStyleSheet("color:#fbbf24; font-size:11px;")
         self.log.append(self.live_status.text())
+
+    @staticmethod
+    def _native_analytic_metric(payload: object) -> tuple[int, int] | None:
+        """Read a native score only from the verified AAR's exact count fields."""
+        if not isinstance(payload, dict):
+            return None
+        taxonomy = payload.get("evidence_taxonomy")
+        if not isinstance(taxonomy, dict):
+            return None
+        native = taxonomy.get("native_analytic_detection")
+        denominator = taxonomy.get("denominator")
+        if not isinstance(native, dict):
+            return None
+        count = native.get("count")
+        if (type(count) is not int or type(denominator) is not int
+                or denominator <= 0 or not 0 <= count <= denominator):
+            return None
+        return count, denominator
+
+    @staticmethod
+    def _native_file_opportunities(payload: object) -> int | None:
+        """Show only a complete, internally consistent signed-plan breakdown."""
+        if not isinstance(payload, dict):
+            return None
+        taxonomy = payload.get("evidence_taxonomy")
+        if not isinstance(taxonomy, dict):
+            return None
+        opportunity = taxonomy.get("native_analytic_opportunity")
+        if not isinstance(opportunity, dict):
+            return None
+        denominator = taxonomy.get("denominator")
+        file_count = opportunity.get("file_marker_steps")
+        process_count = opportunity.get("process_observation_only_steps")
+        unknown_count = opportunity.get("unclassified_steps")
+        total = opportunity.get("total_expected_positive_steps")
+        if (any(type(value) is not int or value < 0 for value in (
+                file_count, process_count, unknown_count, total, denominator,
+        )) or total <= 0 or total != denominator
+                or file_count + process_count + unknown_count != total):
+            return None
+        return file_count
 
     def record_verified_report(
         self, kind: str, run_id: str, payload: dict | None, *, error: str = "",
@@ -531,6 +576,12 @@ class RedTeamConsole(QDialog):
         except (KeyError, TypeError, ValueError) as exc:
             result = {"count": 0, "eligible": 0, "outcome": "inconclusive", "error": str(exc)}
         self._report_results[kind] = result
+        self._report_native_analytics[kind] = (
+            self._native_analytic_metric(payload) if not error else None
+        )
+        self._report_native_opportunities[kind] = (
+            self._native_file_opportunities(payload) if not error else None
+        )
         pending = set(self._report_runs) - set(self._report_results)
         if pending:
             self.live_status.setText("Awaiting authenticated evidence for: " + ", ".join(sorted(pending)))
@@ -539,6 +590,20 @@ class RedTeamConsole(QDialog):
         eligible = sum(row["eligible"] for row in self._report_results.values())
         inconclusive = any(row["outcome"] == "inconclusive" for row in self._report_results.values())
         errors = "; ".join(row["error"] for row in self._report_results.values() if row.get("error"))
+        native_metrics = list(self._report_native_analytics.values())
+        native_status = (
+            f"{sum(row[0] for row in native_metrics)}/"
+            f"{sum(row[1] for row in native_metrics)}"
+            if native_metrics and all(row is not None for row in native_metrics)
+            else "unavailable"
+        )
+        opportunity_counts = list(self._report_native_opportunities.values())
+        if opportunity_counts and all(row is not None for row in opportunity_counts):
+            native_status += (
+                f" overall; {sum(opportunity_counts)} file-marker opportunities"
+            )
+        elif native_status != "unavailable":
+            native_status += " overall; file-marker opportunities unavailable"
         self.run_spinner.stop()
         self._run_pending = False
         self.launch_btn.setEnabled(True)
@@ -552,7 +617,10 @@ class RedTeamConsole(QDialog):
             message = f"Containment inconclusive — {count}/{eligible} verified. " + (errors or "Review the report for incomplete evidence.")
             color = "#fbbf24"
         elif count == eligible and all(row["outcome"] == "verified" for row in self._report_results.values()):
-            message = f"Verified containment — {count}/{eligible} tested targets contained."
+            message = (
+                f"Verified simulation containment — {count}/{eligible} tested targets "
+                f"contained; native analytics: {native_status}."
+            )
             color = "#2fe38a"
             self.run_spinner.start("Containment verified")
             self.run_spinner.finish("Containment verified")

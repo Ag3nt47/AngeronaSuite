@@ -37,6 +37,9 @@ from angerona.core.storage import FlightRecorder
 from angerona.shark.run_manifest import (
     DrillHistoryIntegrityError,
     MAX_ADMITTED_DRILL_SECONDS,
+    MAX_CYCLES,
+    MAX_STEPS,
+    expected_red_team_plan,
     load_verified_history,
 )
 
@@ -1160,6 +1163,69 @@ def _score_eligible(history: dict, verdicts: List[StepVerdict]) -> bool:
     )
 
 
+# These reviewed Red Team plan keys create inert files that FIM can scan. A
+# future detection step is unclassified until its native opportunity is
+# explicitly reviewed; being a detection contract does not imply FIM coverage.
+_FIM_FILE_MARKER_PLAN_KEYS = frozenset({
+    "initial_access", "credential_access", "privilege_escalation",
+    "wmi_persistence", "defense_evasion", "scheduled_task",
+    "registry_runkey", "lateral_movement", "c2_beacon",
+    "exfil_staging", "ransomware_canary", "data_destruction",
+    "public_facing_app", "user_execution", "credential_store",
+    "unsecured_credentials", "account_discovery", "network_service_discovery",
+    "network_connections_discovery", "software_discovery",
+    "exploitation_privilege", "create_account", "web_shell",
+    "dll_side_loading", "obfuscated_files", "masquerading",
+    "impair_defenses", "remote_desktop", "wmi_lateral",
+    "tool_transfer", "protocol_tunneling", "automated_collection",
+    "local_data", "exfil_c2", "exfil_web_service", "inhibit_recovery",
+})
+
+
+def _redteam_native_opportunities(history: dict, detection_count: int) -> dict | None:
+    """Count reviewed native opportunities from the exact planned inventory.
+
+    This describes what the drill could expose to FIM, not whether FIM was
+    enrolled, online, or quicker than Combat. Incomplete runs retain the
+    planned denominator; absent or altered plans claim no classified coverage.
+    """
+    if history.get("kind") != "red_team":
+        return None
+    result = {
+        "file_marker_steps": 0,
+        "process_observation_only_steps": 0,
+        "unclassified_steps": detection_count,
+        "total_expected_positive_steps": detection_count,
+        "basis": "reviewed Red Team plan; opportunity only, not sensor coverage",
+    }
+    campaign = history.get("campaign")
+    safety = history.get("safety_contract")
+    if not isinstance(campaign, dict) or not isinstance(safety, dict):
+        return result
+    cycles = safety.get("cycles")
+    planned = campaign.get("expected_plan")
+    if (type(cycles) is not int or not 1 <= cycles <= MAX_CYCLES
+            or not isinstance(planned, list) or len(planned) > MAX_STEPS
+            or planned != expected_red_team_plan(safety)):
+        return result
+    detection_plan = [
+        row for row in planned
+        if isinstance(row, dict) and row.get("category") == "detection"
+    ]
+    if len(detection_plan) != detection_count:
+        return result
+    file_markers = sum(
+        row.get("key") in _FIM_FILE_MARKER_PLAN_KEYS for row in detection_plan
+    )
+    process_only = sum(
+        row.get("key") == "random_processes" for row in detection_plan
+    )
+    result["file_marker_steps"] = file_markers
+    result["process_observation_only_steps"] = process_only
+    result["unclassified_steps"] = detection_count - file_markers - process_only
+    return result
+
+
 def _containment_metrics(history: dict, verdicts: List[StepVerdict]) -> dict:
     rows = [row for row in verdicts if row.category == "detection"]
     count = sum(1 for row in rows if row.target_containment_verified)
@@ -1204,6 +1270,7 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
     observed = sum(1 for v in detection if v.observation)
     native_caught = sum(1 for v in detection if v.native_catch)
     simulation_validated = sum(1 for v in detection if v.simulation_validation)
+    native_opportunity = _redteam_native_opportunities(history, len(detection))
     det_remediated = sum(1 for v in detection if v.remediation)
     verified_upgrades = sum(
         1 for v in detection if v.finding_resolved and v.verification_catch)
@@ -1211,8 +1278,11 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
     unscored = [v for v in verdicts if v.category in {"informational", "unmonitored"}]
     lines.append(f" Steps run  : {n}     Expected-positive: {len(detection)}     "
                  f"Benign checks: {len(benign)}     Informational: {len(unscored)}")
-    lines.append(f" Analytic catches on expected-positive steps: {det_caught}/{len(detection)}; "
-                 f"correlated SOAR actions: {det_remediated}/{det_caught}")
+    lines.append(
+        " Matched detection evidence (simulation validation or native analytics): "
+        f"{det_caught}/{len(detection)}; "
+        f"correlated response actions: {det_remediated}/{det_caught}"
+    )
     readiness = history.get("validation_readiness")
     if isinstance(readiness, dict) and readiness:
         lines.append(
@@ -1368,7 +1438,21 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
         lines.append(
             "   Detection coverage : WITHHELD — incomplete mandatory run"
         )
-    lines.append(f"   Actions reported   : {det_remediated}/{det_caught} analytic catches")
+    if native_opportunity is not None:
+        lines.append(
+            "   Planned native opportunities: "
+            f"{native_opportunity['file_marker_steps']} FIM file-marker step(s); "
+            f"{native_opportunity['process_observation_only_steps']} process "
+            "observation-only; "
+            f"{native_opportunity['unclassified_steps']} unclassified."
+        )
+        lines.append(
+            "   Plan counts do not establish native producer readiness or detection."
+        )
+    lines.append(
+        f"   Actions reported   : {det_remediated}/{det_caught} steps with "
+        "matched detection evidence"
+    )
     if containment["rate"] is None:
         lines.append("   Response success   : WITHHELD — incomplete run or no eligible targets")
     else:
@@ -1852,6 +1936,7 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
     observed = sum(1 for v in detection if v.observation)
     native_caught = sum(1 for v in detection if v.native_catch)
     simulation_validated = sum(1 for v in detection if v.simulation_validation)
+    native_opportunity = _redteam_native_opportunities(history, len(detection))
     det_remediated = sum(1 for v in detection if v.remediation)
     verified_upgrades = sum(
         1 for v in detection if v.finding_resolved and v.verification_catch)
@@ -2017,6 +2102,8 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
             for v in verdicts
         ],
     }
+    if native_opportunity is not None:
+        payload["evidence_taxonomy"]["native_analytic_opportunity"] = native_opportunity
     # Attest the structured payload with the per-install HMAC key so the
     # self-hardening loop can prove this AAR wasn't forged or tampered with
     # before it learns weaknesses from it (see core/report_attest.py). Signing

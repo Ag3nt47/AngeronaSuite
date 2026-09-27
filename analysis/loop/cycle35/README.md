@@ -141,9 +141,11 @@ the full-gate abort is a **supported inference, not proven causation**.
 That test fixture now closes and joins its constructor worker in `finally` and
 drains Qt events. The patched Sentinel module passed **20 tests / 1 skip**;
 the diagnostic probe observed zero running threads at every boundary, and the
-focused close suite passed **4/4**. Those results check the leak correction but
-do not replace a rerun of the exact combined-tree release gate. No GitHub
-publication is claimed.
+focused close suite passed **4/4**. The subsequent exact-commit five-check
+gate on `5feda7322c44bc0d5cc0149b2ef5031573c557fd` passed, including
+**4,353 pytest passes and 20 skips**. The guarded publisher verified that the
+canonical public `main` and working branch reached that commit by fast-forward,
+the worktree stayed clean, and all five public README images matched.
 
 ## Responsiveness evidence and remaining work
 

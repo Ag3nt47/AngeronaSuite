@@ -90,7 +90,7 @@ def test_combined_run_requires_both_matching_report_ids(console):
 
 
 @pytest.mark.parametrize("count,eligible,outcome,expected", [
-    (1, 1, "verified", "Verified containment"),
+    (1, 1, "verified", "Verified simulation containment"),
     (0, 1, "failed", "Containment failed"),
     (0, 1, "inconclusive", "Containment inconclusive"),
     (0, 1, "verified", "Containment inconclusive"),
@@ -104,7 +104,73 @@ def test_only_complete_verified_containment_is_success(
     _accepted(dialog)
     dialog.record_verified_report("red_team", "redteam-current", _result(count, eligible, outcome))
     assert expected in dialog.live_status.text()
-    assert dialog.run_spinner._done_timer.isActive() == (expected == "Verified containment")
+    assert dialog.run_spinner._done_timer.isActive() == (expected == "Verified simulation containment")
+
+
+def test_verified_simulation_containment_displays_native_zero_beside_pass(console):
+    dialog, _ = console
+    _accepted(dialog)
+    payload = _result(37, 37)
+    payload["evidence_taxonomy"] = {
+        "denominator": 37,
+        "native_analytic_detection": {"count": 0, "rate": 0.0},
+        "native_analytic_opportunity": {
+            "file_marker_steps": 36,
+            "process_observation_only_steps": 1,
+            "unclassified_steps": 0,
+            "total_expected_positive_steps": 37,
+        },
+    }
+    dialog.record_verified_report("red_team", "redteam-current", payload)
+    assert dialog.live_status.text() == (
+        "Verified simulation containment — 37/37 tested targets contained; "
+        "native analytics: 0/37 overall; 36 file-marker opportunities."
+    )
+    assert dialog.run_spinner._done_timer.isActive()
+
+
+@pytest.mark.parametrize("opportunity", [
+    None,
+    {"file_marker_steps": 36, "process_observation_only_steps": 1,
+     "unclassified_steps": 1, "total_expected_positive_steps": 37},
+    {"file_marker_steps": True, "process_observation_only_steps": 1,
+     "unclassified_steps": 0, "total_expected_positive_steps": 37},
+])
+def test_valid_native_count_survives_missing_or_malformed_opportunity(
+    console, opportunity,
+):
+    dialog, _ = console
+    _accepted(dialog)
+    payload = _result(37, 37)
+    payload["evidence_taxonomy"] = {
+        "denominator": 37,
+        "native_analytic_detection": {"count": 0, "rate": 0.0},
+    }
+    if opportunity is not None:
+        payload["evidence_taxonomy"]["native_analytic_opportunity"] = opportunity
+    dialog.record_verified_report("red_team", "redteam-current", payload)
+    assert "native analytics: 0/37 overall; file-marker opportunities unavailable." in (
+        dialog.live_status.text()
+    )
+
+
+@pytest.mark.parametrize("taxonomy", [
+    None,
+    {},
+    {"denominator": 37, "native_analytic_detection": {"count": True}},
+    {"denominator": 37, "native_analytic_detection": {"count": 38}},
+    {"denominator": 0, "native_analytic_detection": {"count": 0}},
+])
+def test_missing_or_malformed_native_metric_is_unavailable(console, taxonomy):
+    dialog, _ = console
+    _accepted(dialog)
+    payload = _result()
+    if taxonomy is not None:
+        payload["evidence_taxonomy"] = taxonomy
+    dialog.record_verified_report("red_team", "redteam-current", payload)
+    assert "Verified simulation containment" in dialog.live_status.text()
+    assert "native analytics: unavailable." in dialog.live_status.text()
+    assert dialog.run_spinner._done_timer.isActive()
 
 
 def test_report_error_cannot_turn_green(console):
@@ -281,7 +347,7 @@ def test_main_result_uses_only_verified_immutable_bytes(console, tmp_path, monke
     )
     MainWindow._show_aar_dialog(window, handoff)
     assert seen == [handoff]
-    assert ("Verified containment" in dialog.live_status.text()) == verified
+    assert ("Verified simulation containment" in dialog.live_status.text()) == verified
     if not verified:
         assert "report authentication failed" in dialog.live_status.text()
 

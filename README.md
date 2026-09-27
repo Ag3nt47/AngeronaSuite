@@ -37,6 +37,23 @@ identifiers, timestamps, and counts are synthetic.
 
 ## What's new
 
+The [Cycle 36 scoring and performance follow-up](analysis/loop/cycle36/README.md)
+clarifies native versus simulation scores. In an actual FIM-enabled GUI drill, all **38/38**
+steps completed; the signed AAR credited **37/37 verified simulation
+containment responses** and **14/37 native analytic detections overall**. The
+reviewed plan had **36 file-marker opportunities** for FIM and one process
+observation-only step, so the file result was **14/36**. An independent process
+matched all 36 quarantined files by SHA-256 after custody release and checked
+three tagged process exits. A separate concurrent base test credited **11/12**
+native file-marker detections and **13/13** verified responses. These are inert
+drill measurements, not real-attack efficacy estimates.
+
+A controlled offscreen six-minute Chill → Full → Chill run with Process Monitor,
+FIM and YARA Scanner enabled saw **zero Qt heartbeat gaps over 250 ms**; CPU
+averaged **11.01%, 34.92%, and 8.27% of one core** in the three phases. This
+selected-worker result does not establish all-worker or long physical-host
+stability. Targeted checks remain distinct from the exact-commit release gate.
+
 The [September 26 Red Team and responsiveness maintenance](analysis/loop/cycle35/README.md)
 repairs the simulation's response path and makes its score harder to spoof:
 
@@ -73,11 +90,10 @@ repairs the simulation's response path and makes its score harder to spoof:
   integrity while withholding Practice Fix after a binding error. Five new UI
   tests and 60 selected existing UI tests pass.
 
-The initial Cycle 35 release gate passed four non-pytest checks but failed
-pytest with a Qt abort. A later full one-process run reached 100% without an
-abort, with **4,345 passed, 20 skipped, and 3 failed**; focused fixes followed.
-No passing full gate on the combined tree is recorded here.
-[Validation sequence](analysis/loop/cycle35/README.md#post-commit-release-gate-follow-up).
+Cycle 35's final five-check gate passed on commit `5feda732`, including
+**4,353 tests passed and 20 skipped**; the guarded publisher verified that
+commit on canonical public `main`. Its earlier failed gate attempts and fixes
+remain in the [validation sequence](analysis/loop/cycle35/README.md#post-commit-release-gate-follow-up).
 
 The [September 23 maintenance upgrade](analysis/upgrade-20260923/README.md)
 repairs a real detection-to-response gap and reduces repeated background work:
@@ -292,6 +308,10 @@ Contributions: [Contributing](CONTRIBUTING.md) · [Architecture](docs/architectu
 [Research comparison and proposed follow-ups](analysis/upgrade-20260923/comparison.md).
 Maintainer publication uses `python tools/publish_github_update.py`, which checks
 canonical fast-forward publication and the public bytes of every README image.
+
+Latest published release evidence: Cycle 35's exact-commit five-check gate on
+`5feda7322c44bc0d5cc0149b2ef5031573c557fd` passed **4,353 tests with 20
+skips** and the guarded publisher verified canonical public `main`.
 
 Historical release evidence: **Final Cycle 34 verification.** The gate on commit
 `7eef1f0a0c400b34f170cbd1463cd3c6a454de3b` passes **2882 tests with 15 intentional platform skips**.

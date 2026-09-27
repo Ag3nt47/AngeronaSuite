@@ -3815,5 +3815,56 @@ at original index 1,622 in two runs. A no-GC 1,700-test prefix passed 1,693 /
 full-gate abort to that worker remains an inference. The test fixture now
 closes/joins its constructor worker in `finally` and drains Qt events; patched
 Sentinel tests passed 20 / 1 skip, the probe found zero running threads at
-every boundary, and focused close tests passed 4/4. A combined-tree exact-
-commit gate rerun is still required; this record claims no publication.
+every boundary, and focused close tests passed 4/4. The later exact-commit
+five-check gate on `5feda7322c44bc0d5cc0149b2ef5031573c557fd` passed,
+including 4,353 pytest passes and 20 skips. The guarded publisher verified
+canonical public `main`, the working branch, a clean worktree, and all five
+public README image bytes at that commit.
+
+## Round 36 — Performance (Cycle 36, 2026-09-26)
+
+An isolated Windows offscreen **real MainWindow** ran with all 84 built-in
+modules discovered for the UI and three real workers enabled: Process Monitor,
+File Integrity Monitor, and YARA Scanner. FIM/YARA watched only 128 benign
+temporary files; response actions were disabled. Across 120-second initial
+Chill, Full, and returned-Chill intervals, process CPU averaged **11.01%,
+34.92%, and 8.27% of one core**. Qt 20 ms heartbeat maximum slips were **105,
+168, and 58 ms**, with **zero gaps above 250 ms** in each interval. RSS ended
+at **129.727, 137.215, and 137.281 MiB** respectively; returned Chill grew
+only **0.18 MiB**. FIM/YARA completed real Full-mode cycles and paused again;
+Process Monitor stayed live. FIM's health 45 reflected an intentionally
+unapproved temporary baseline despite complete 128-file/zero-error coverage.
+
+The first six-minute witness used `QApplication.quit()` and remained in its
+event loop because MainWindow intentionally ignores Close and hides to tray;
+live Python/native stack inspection and an independent minimal Qt reproduction
+identified this harness mistake. Its exact scratch PID was stopped. A separate
+10-second-per-mode repeat used `QApplication.exit(0)`, delivered `aboutToQuit`,
+cleanly stopped modules, and measured 16 ms/<1 ms synchronous Chill→Full and
+Full→Chill requests. No product code or detection cadence changed. The
+controlled offscreen three-worker run does **not** prove all-worker,
+physical-display, concurrent Combat, or all-day performance. Detailed evidence
+and the proposed full-load attribution step are in
+[`cycle36/performance_summary.md`](cycle36/performance_summary.md).
+
+## Round 36 — Scoring and FIM-enabled GUI verification (Cycle 36, 2026-09-26)
+
+Cycle 35's exact-commit five-check gate passed on `5feda7322c44bc0d5cc0149b2ef5031573c557fd`
+with 4,353 pytest passes and 20 skips, and the guarded publisher verified that
+commit on canonical public `main`. Cycle 36 is a separate follow-up. Its AAR
+classifies the reviewed Red Team plan as 36 FIM file-marker opportunities plus
+one process observation-only step and separates matched simulation evidence
+from native analytic detections. The Red Team console displays the verified
+native count alongside simulation containment; invalid or missing native
+fields are displayed as unavailable.
+
+In an actual FIM-enabled offscreen GUI clickthrough, 38/38 comprehensive steps
+completed. The signed AAR credited 37/37 exact verified simulation responses
+and 14/37 native analytic detections overall, including 14/36 file-marker
+opportunities. A separate-process OS witness matched all 36 quarantine hashes
+and three birth-bound tagged process exits. A concurrent base FIM+Combat run
+credited 11/12 native file-marker detections and 13/13 verified responses.
+These are inert drill measurements, not real-attack efficacy. The selected-
+sensor Chill/Full/Chill performance result and its limits are in the preceding
+entry and [Cycle 36 record](cycle36/README.md). Targeted results remain
+distinct from the exact-commit full gate and guarded publication.

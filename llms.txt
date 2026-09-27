@@ -22,7 +22,34 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST (v1.13.0 — Cycle 35 improvement loop, 2026-09-26)
+## LATEST (v1.13.0 — Cycle 36 scoring and performance follow-up, 2026-09-26)
+
+- Canonical record: analysis/loop/cycle36/README.md. Cycle 35's five-check
+  exact-commit gate passed on `5feda7322c44bc0d5cc0149b2ef5031573c557fd`
+  with 4,353 pytest passes and 20 skips; guarded publication verified public
+  canonical `main`. Cycle 36 results are a separate follow-up; targeted checks
+  remain distinct from the exact-commit release gate.
+- An actual offscreen FIM-enabled GUI clickthrough completed 38/38 Red Team
+  steps and received a signed AAR with 37/37 exact simulation-containment
+  responses and 14/37 native analytic detections overall. The reviewed plan
+  has 36 file-marker FIM opportunities and one process observation-only step:
+  native file-marker credit was 14/36. Independent OS witness matched all 36
+  quarantine SHA-256 hashes and checked three birth-bound process exits. A
+  separate concurrent base FIM+Combat test passed 11/12 native file-marker
+  detections and 13/13 verified responses. Inert drill scores do not establish
+  real-adversary efficacy.
+- The current AAR and Red Team UI distinguish native analytics from matched
+  simulation evidence and show signed-plan native opportunity counts. Missing
+  or inconsistent score fields are shown as unavailable, not counted as zero
+  native detections. Opportunity does not prove sensor readiness or coverage.
+- A selected-sensor offscreen 120-second Chill/Full/Chill witness enabled real
+  Process Monitor, FIM, and YARA workers over 128 benign temporary files. CPU
+  averaged 11.01/34.92/8.27% of one core; maximum Qt heartbeat slips were
+  105/168/58 ms, with zero gaps over 250 ms. Returned-Chill RSS changed about
+  0.18 MiB. All-worker, physical-display, concurrent Combat, and all-day
+  behavior remain outside this witness. No scan cadence was reduced.
+
+## PRIOR (v1.13.0 — Cycle 35 improvement loop, 2026-09-26)
 
 - Canonical record: analysis/loop/cycle35/README.md and its round notes. The
   version remains 1.13.0 and static discovery remains 84 modules; no module
@@ -75,8 +102,10 @@ kernel component is a product capability.
   rechecks it. Combat status clears stale green readiness and guides disabled
   or full-queue cases. Red Team AAR shows report integrity and disables
   Practice Fix after binding/reload errors. Five new UI tests and 60 selected
-  existing UI tests pass. No combined-tree full-gate or publication result is
-  recorded here.
+  existing UI tests pass. The later exact-commit five-check gate on `5feda732`
+  passed 4,353 tests with 20 skips and guarded publication verified canonical
+  public `main`; earlier failed attempts remain historical evidence in the
+  Cycle 35 record.
 - Component evidence: 100 unenrolled process offers/68 markers, 1,832.75 to
   0.49 ms median; offscreen Packet Sniffer full-timeout stop, 3,000.8 to 1.0
   ms. Loaded GUI construction and Settings save were slow under shared load;
