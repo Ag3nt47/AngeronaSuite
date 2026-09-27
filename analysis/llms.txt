@@ -33,8 +33,9 @@ gates. Persistent process trust remains in Settings → Trusted Processes.
   two consecutive GUI Settings Arm → Red Team Launch runs each completed 38/38
   comprehensive inert steps; each signed AAR credited 37/37 Purple simulation
   validations and 37/37 exact responses. Native analytic detection was 0/37
-  in both. This is validation of a
-  local simulation contract, not a real-attack detection score.
+  in both because this GUI fixture omitted FIM; a separate genuine FIM receipt
+  test passed. This validates a local simulation contract, not real-attack
+  detection coverage.
 - Independent two-phase Python-process witness checked 36 original paths
   absent, quarantine basenames present, and tagged PID/birth identities gone
   before cleanup in each run; after Windows lease release it compared 36
@@ -48,9 +49,21 @@ gates. Persistent process trust remains in Settings → Trusted Processes.
 - Ollama guardrail checks complete forwarded JSON size and scans all original
   model-facing fields; Packet Sniffer child teardown moves off Qt. An
   unenrolled process receipt avoids repeated whole-lease scans.
-- Targeted gates and component benchmarks are in the Cycle 35 record. Full
-  exact-commit release validation and physical-host long Chill/Full soak are
-  distinct; neither is inferred from a targeted GUI pass.
+- The first exact-commit release gate passed four non-pytest checks but failed
+  full pytest with a Qt abort. A hidden unsigned Event fixture was corrected;
+  global PanelRevealOverlay shutdown, 100 ms deferred QThread close retries,
+  and unchanged Settings Save avoiding a repeat Task Scheduler query passed
+  focused checks. A forced-GC 1,700-case prefix passed 1,693 with 7 skips and
+  no abort. A later full one-process pytest run reached 100% without Qt abort:
+  4,345 passed / 20 skipped / 3 failed in 1,641.28 s. Failures were narrowed
+  to QEMU fixture pipe ownership, a ransomware classifier fixture's 2-second
+  budget under load, and Windows registry-manifest WinError 5. Focused fixes
+  passed without weakening the production QEMU pipe path or ransomware budget.
+- Read-only Red Team containment readiness, honest Combat status/guidance, and
+  AAR saved-report integrity status/Practice Fix gating were added. Five new
+  UI tests and 60 selected existing UI tests pass. No combined-tree full-gate
+  or publication result is recorded; physical-host long Chill/Full soak remains
+  a separate measure. [Cycle details](loop/cycle35/README.md).
 
 ## PRIOR (v1.13.0 — Cycle 34 improvement loop)
 

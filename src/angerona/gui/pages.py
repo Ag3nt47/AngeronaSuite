@@ -6982,15 +6982,24 @@ class AARDialog(QDialog):
         self._fix_done.connect(self._show_fix_result)
         self._apply_done.connect(lambda t: self.body.appendPlainText("\n" + t))
         self._fix_progress.connect(self._on_fix_progress)
-        self.setWindowTitle("Shark Attack — After-Action Report")
+        report_title = "Red Team Attack" if self._redteam else "Shark Attack"
+        self.setWindowTitle(f"{report_title} — After-Action Report")
         self.setMinimumSize(760, 600)
         if parent:
             self.setStyleSheet(parent.styleSheet())
         lay = QVBoxLayout(self)
 
-        title = QLabel("\U0001F988  Shark Attack — After-Action Report")
+        title = QLabel(f"{report_title} — After-Action Report")
         title.setObjectName("PageTitle")
         lay.addWidget(title)
+
+        self._report_status = QLabel()
+        self._report_status.setObjectName("AARReportIntegrityStatus")
+        self._report_status.setAccessibleName("Report integrity status")
+        self._report_status.setTextFormat(Qt.PlainText)
+        self._report_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._report_status.setWordWrap(True)
+        lay.addWidget(self._report_status)
 
         self.body = QPlainTextEdit()
         self.body.setReadOnly(True)
@@ -7043,6 +7052,33 @@ class AARDialog(QDialog):
         close.clicked.connect(self._clean_and_close)
         row.addWidget(close)
         lay.addLayout(row)
+        self._update_report_status()
+
+    def _update_report_status(self, *, saved_verified: bool = False) -> None:
+        """Separate delivered report text from saved-copy authentication."""
+        if not self._redteam:
+            self._report_status.hide()
+            return
+        binding = self._report_binding if isinstance(self._report_binding, dict) else {}
+        error = str(binding.get("error") or "").strip()
+        if error:
+            message = (
+                "Report verification failed: " + error[:300]
+                + ". Practice Fix is unavailable until a verified report loads."
+            )
+            color = "#f87171"
+        elif saved_verified and binding.get("run_id") and binding.get("sha256"):
+            message = "Saved Red Team report authenticated for this run."
+            color = "#4ade80"
+        else:
+            message = (
+                "Report text delivered. Reload verified report to authenticate "
+                "the saved copy."
+            )
+            color = "#9fb3c8"
+        self._report_status.setText(message)
+        self._report_status.setStyleSheet(f"color:{color}; font-weight:600;")
+        self._fix_btn.setEnabled(not error)
 
     def _clean_and_close(self) -> None:
         """Sweep the drill's marker files, then close the report."""
@@ -7097,9 +7133,10 @@ class AARDialog(QDialog):
         self._fix_spinner.set_pct(percent)
 
     def _show_fix_result(self, text: str) -> None:
-        self._fix_btn.setEnabled(True)
+        binding = self._report_binding if isinstance(self._report_binding, dict) else {}
+        self._fix_btn.setEnabled(not bool(binding.get("error")))
         self._test_fix_btn.setEnabled(True)
-        verified = "[PRACTICE FIX VERIFIED]" in text
+        verified = "[PRACTICE FIX VERIFIED]" in text and not binding.get("error")
         if self._redteam:
             if verified:
                 # The practice receipt updates the lifecycle state, so re-render
@@ -7158,6 +7195,7 @@ class AARDialog(QDialog):
             if self._redteam
             else "Re-evaluating against the flight-recorder ledger…"
         )
+        saved_verified = False
         try:
             if self._redteam:
                 # The one-use Red Team validation lease is deliberately revoked
@@ -7198,6 +7236,7 @@ class AARDialog(QDialog):
                     expected_head_sha256=expected_head_sha256,
                     expected_sequence=expected_sequence,
                 )
+                saved_verified = True
             else:
                 from angerona.shark.aar_report import generate_aar
 
@@ -7209,6 +7248,8 @@ class AARDialog(QDialog):
                     manager=getattr(owner, "manager", None),
                 )
         except Exception as exc:
+            if self._redteam and isinstance(self._report_binding, dict):
+                self._report_binding["error"] = str(exc)
             text = (
                 f"Could not load authenticated report: {exc}"
                 if self._redteam
@@ -7277,6 +7318,9 @@ class AARDialog(QDialog):
                     self._report_binding["error"] = ""
             except (OSError, UnicodeDecodeError, ValueError, TypeError) as exc:
                 self._report_binding["error"] = str(exc)
+                saved_verified = False
+        if isinstance(self, AARDialog):
+            self._update_report_status(saved_verified=saved_verified)
 
 
 
@@ -10474,10 +10518,16 @@ class SettingsDialog(QDialog):
             return
         config_before = copy.deepcopy(vars(self._cfg))
         environment_before = dict(os.environ)
-        current_autostart = bool(autostart_module.is_enabled())
+        previous_autostart = bool(config_before["autostart_enabled"])
         autostart_requested = (
-            candidate.autostart_enabled
-            != bool(config_before.get("autostart_enabled", current_autostart))
+            candidate.autostart_enabled != previous_autostart
+        )
+        # A Windows Task Scheduler query can wait up to ten seconds. The OS
+        # state is needed for an actual autostart change and its rollback, but
+        # not for a save that leaves the checkbox unchanged.
+        current_autostart = (
+            bool(autostart_module.is_enabled())
+            if autostart_requested else previous_autostart
         )
         autostart_changed = False
 

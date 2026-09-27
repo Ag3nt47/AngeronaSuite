@@ -29,9 +29,18 @@ class _PayloadWorker(_BlockingWorker):
 
     finished = Signal(dict)
 
+    def __init__(
+        self, ready: threading.Event, release: threading.Event,
+        emit_allowed: threading.Event, parent=None,
+    ) -> None:
+        super().__init__(ready, release, parent)
+        self._emit_allowed = emit_allowed
+
     def run(self) -> None:
-        super().run()
+        self._ready.set()
+        self._emit_allowed.wait(timeout=3.0)
         self.finished.emit({"verdict": "benign"})
+        self._release.wait(timeout=3.0)
 class _WorkerDialog(QDialog):
     def __init__(self, ready: threading.Event, release: threading.Event) -> None:
         super().__init__()
@@ -50,18 +59,22 @@ def test_close_is_nonblocking_and_defers_qthread_destruction() -> None:
     release = threading.Event()
     dialog = _WorkerDialog(ready, release)
     dialog.show()
-    dialog.worker.start()
-    assert ready.wait(timeout=1.0)
+    worker = dialog.worker
+    worker.start()
+    try:
+        assert ready.wait(timeout=1.0)
 
-    started = time.perf_counter()
-    assert dialog.close() is False
-    assert time.perf_counter() - started < 0.2
-    assert not dialog.isVisible()
-    assert dialog._angerona_deferred_close is True
-    assert dialog.worker.isRunning()
+        started = time.perf_counter()
+        assert dialog.close() is False
+        assert time.perf_counter() - started < 0.2
+        assert not dialog.isVisible()
+        assert dialog._angerona_deferred_close is True
+        assert worker.isRunning()
+    finally:
+        release.set()
+        worker.wait(3_000)
 
-    release.set()
-    assert dialog.worker.wait(1_000)
+    assert not worker.isRunning()
     deadline = time.monotonic() + 1.0
     while shiboken6.isValid(dialog) and time.monotonic() < deadline:
         app.processEvents()
@@ -77,21 +90,38 @@ def test_alert_detail_defers_close_during_standalone_analysis() -> None:
     app = QApplication.instance() or QApplication([])
     ready = threading.Event()
     release = threading.Event()
+    emit_allowed = threading.Event()
+    result_seen = threading.Event()
     dialog = AlertDetailDialog(
         Event(module="Lifecycle Test", message="benign", severity=Severity.INFO)
     )
     dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-    dialog._analyze_worker = _PayloadWorker(ready, release, dialog)
+    dialog._analyze_worker = _PayloadWorker(ready, release, emit_allowed, dialog)
     dialog.show()
-    dialog._analyze_worker.start()
-    assert ready.wait(timeout=1.0)
+    worker = dialog._analyze_worker
+    worker.finished.connect(lambda _payload: result_seen.set())
+    worker.start()
+    try:
+        assert ready.wait(timeout=1.0)
 
-    assert dialog.close() is False
-    assert dialog._angerona_deferred_close is True
-    assert not dialog.isVisible()
+        assert dialog.close() is False
+        assert dialog._angerona_deferred_close is True
+        assert not dialog.isVisible()
 
-    release.set()
-    assert dialog._analyze_worker.wait(1_000)
+        # Deliver the shadowed result signal while native run() is blocked.
+        # The close helper must retry after this early callback.
+        emit_allowed.set()
+        deadline = time.monotonic() + 1.0
+        while not result_seen.is_set() and time.monotonic() < deadline:
+            app.processEvents()
+        assert result_seen.is_set()
+        assert worker.isRunning()
+    finally:
+        emit_allowed.set()
+        release.set()
+        worker.wait(3_000)
+
+    assert not worker.isRunning()
     deadline = time.monotonic() + 1.0
     while shiboken6.isValid(dialog) and time.monotonic() < deadline:
         app.processEvents()
@@ -120,17 +150,19 @@ def test_analysis_result_precedes_native_thread_completion_without_shadowing() -
     worker.result_ready.connect(lambda _result: result_seen.set())
     worker.finished.connect(native_finished.set)
     worker.start()
+    try:
+        deadline = time.monotonic() + 1.0
+        while not result_seen.is_set() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+        assert result_seen.is_set()
+        assert worker.isRunning()
+        assert not native_finished.is_set()
+    finally:
+        release.set()
+        worker.wait(3_000)
 
-    deadline = time.monotonic() + 1.0
-    while not result_seen.is_set() and time.monotonic() < deadline:
-        app.processEvents()
-        time.sleep(0.005)
-    assert result_seen.is_set()
-    assert worker.isRunning()
-    assert not native_finished.is_set()
-
-    release.set()
-    assert worker.wait(1_000)
+    assert not worker.isRunning()
     deadline = time.monotonic() + 1.0
     while not native_finished.is_set() and time.monotonic() < deadline:
         app.processEvents()

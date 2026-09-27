@@ -47,8 +47,9 @@ repairs the simulation's response path and makes its score harder to spoof:
   independent process checked original marker removal, quarantine names and
   tagged process identities before cleanup, then matched all 36 quarantine
   files by SHA-256 after Windows handles were released in each run. Native
-  analytic detection was **0/37** in both; the drill is an inert canary, not a claim
-  about detecting real attacks.
+  analytic detection was **0/37** in both because the isolated GUI fixture did
+  not enroll FIM; a separate genuine FIM receipt test passed. The drill is an
+  inert canary, not a claim about detecting real attacks.
 - **Exact response accounting:** Windows marker custody and Combat quarantine
   now coordinate exact-object handoff and synchronized moves. Short-lived
   authenticated process requests receive queue priority. AAR containment
@@ -64,6 +65,19 @@ repairs the simulation's response path and makes its score harder to spoof:
 - **Local AI request hardening:** The Ollama guardrail caps the complete
   forwarded request and scans model-facing fields beyond the prompt for
   instruction injection. No module was added; the catalog remains 84.
+- **GUI lifecycle follow-up:** Overlay shutdown now releases global window
+  filters and masks; deferred QThread closes retry until the native worker has
+  stopped. Saving unrelated settings avoids a second Windows Task Scheduler
+  query when autostart is unchanged. Red Team now previews containment
+  readiness, Combat status clears stale green state, and the AAR shows report
+  integrity while withholding Practice Fix after a binding error. Five new UI
+  tests and 60 selected existing UI tests pass.
+
+The initial Cycle 35 release gate passed four non-pytest checks but failed
+pytest with a Qt abort. A later full one-process run reached 100% without an
+abort, with **4,345 passed, 20 skipped, and 3 failed**; focused fixes followed.
+No passing full gate on the combined tree is recorded here.
+[Validation sequence](analysis/loop/cycle35/README.md#post-commit-release-gate-follow-up).
 
 The [September 23 maintenance upgrade](analysis/upgrade-20260923/README.md)
 repairs a real detection-to-response gap and reduces repeated background work:

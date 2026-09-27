@@ -703,6 +703,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 timer.stop()
         window._flow_writer.close()
         window._posture_reader.close()
+        window._panel_reveal.shutdown()
         window.tray.hide()
         window.hide()
         recorder.close()

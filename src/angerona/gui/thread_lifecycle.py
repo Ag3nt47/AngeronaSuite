@@ -17,6 +17,9 @@ from typing import Any
 from PySide6.QtCore import QTimer
 
 
+_RETRY_INTERVAL_MS = 100
+
+
 def _is_running(worker: Any) -> bool:
     if worker is None:
         return False
@@ -31,10 +34,31 @@ def _running_workers(owner: Any) -> list[Any]:
     return [worker for worker in workers if _is_running(worker)]
 
 
+def _schedule_deferred_close_retry(owner: Any) -> None:
+    """Retain one timer while a worker is still unwinding after its signal."""
+    if getattr(owner, "_angerona_close_retry_pending", False):
+        return
+    owner._angerona_close_retry_pending = True
+
+    def retry() -> None:
+        try:
+            owner._angerona_close_retry_pending = False
+            if getattr(owner, "_angerona_deferred_close", False):
+                _retry_deferred_close(owner)
+        except RuntimeError:
+            pass  # Qt already destroyed the window.
+
+    QTimer.singleShot(_RETRY_INTERVAL_MS, retry)
+
+
 def _retry_deferred_close(owner: Any) -> None:
     """Finish a deferred close once its last worker leaves ``run()``."""
     try:
         if _running_workers(owner):
+            # finished() can be emitted before isRunning() becomes false. A
+            # result-bearing shadow signal can even fire inside run(). Keep a
+            # bounded-rate timer and strong owner reference until native exit.
+            _schedule_deferred_close_retry(owner)
             return
         owner._angerona_deferred_close = False
         owner._angerona_close_wait_connected = False

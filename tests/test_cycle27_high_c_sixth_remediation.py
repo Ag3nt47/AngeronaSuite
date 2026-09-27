@@ -155,7 +155,7 @@ def test_ransomware_receipts_drive_changed_and_missing_transitions(
 
 
 def test_ransomware_suffix_only_and_strided_encryption_are_scored(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = tmp_path / "Documents"
     root.mkdir()
@@ -171,10 +171,15 @@ def test_ransomware_suffix_only_and_strided_encryption_are_scored(
             stream.write(random_pattern * (ransomware.CONTENT_WINDOW_BYTES // 256))
     module = ransomware.RansomwareHeuristicsModule()
 
+    # This case verifies content classification, while separate tests exercise
+    # the production wall-clock budget. Give held Windows reads time under
+    # shared CI load without changing the module's runtime limit.
+    monkeypatch.setattr(ransomware, "TRAVERSAL_MAX_S", 20.0)
+
     candidates, _snapshot, coverage = module._scan_root(root, time.time())
 
     by_name = {Path(candidate.path).name: candidate for candidate in candidates}
-    assert coverage["complete"] is True
+    assert coverage["complete"] is True, coverage
     assert by_name["encrypted.zip"].sample_entropy >= ransomware.ENTROPY_THRESHOLD
     assert by_name["strided.bin"].sample_entropy >= ransomware.ENTROPY_THRESHOLD
     assert by_name["strided.bin"].high_entropy_fraction >= 0.49

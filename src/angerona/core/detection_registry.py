@@ -24,6 +24,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from angerona.core.atomic_io import replace_with_retry
 from angerona.core.detection_packages import (
     MAX_PACKAGE_BYTES,
     DetectionPackage,
@@ -762,7 +763,7 @@ class DetectionPackageRegistry:
                 stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(name, self.manifest_path)
+            replace_with_retry(Path(name), self.manifest_path)
         finally:
             try:
                 os.unlink(name)

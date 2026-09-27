@@ -3773,4 +3773,33 @@ enrollment and two failed-commit cases). Isolated speed fixtures measured
 1,832.75 → 0.49 ms for 100 denied process offers/68 markers and 3,000.8 →
 1.0 ms for a full-timeout Packet Sniffer stop. Loaded GUI construction and
 Settings save remained slow under shared load; a long physical-host Chill/Full
-soak and exact-commit release gate remain to be completed separately.
+soak remained open. The two GUI fixtures omitted FIM, so their 0/37 native
+analytic score is fixture-specific; a separate genuine historical FIM receipt
+test passed.
+
+The initial exact-commit release gate on
+`4c29b5e55e37a2e8ec9a0d08d4650e247d960021` passed bytecode, dependency
+audit, documentation drift, and lint, but full pytest failed and Qt aborted.
+A hidden Combat test fixture was repaired to use a signed Event. Global
+PanelRevealOverlay shutdown now releases filters, masks and pending windows;
+the exact same-process GUI lifecycle sequence improved from 4 failed / 21
+passed to 25 passed. Settings Save skips a repeat Task Scheduler query when
+autostart is unchanged (111 ms isolated save); changed autostart still reads
+OS state. Deferred QThread close retries at 100 ms until native exit, and
+close tests clean up blocked workers on failure. A forced-GC diagnostic pytest
+selection of the first 1,700 cases passed 1,693 / 7 skipped with no abort;
+2,667 remaining cases were deselected. A later full one-process pytest run
+on the then-current tree reached 100% without Qt abort: **4,345 passed / 20
+skipped / 3 failed in 1,641.28 s**. The failures were QEMU test pipe ownership,
+a ransomware content fixture's 2-second coverage budget under load, and
+registry-manifest `WinError 5`. Focused fixes passed: the QEMU fixture now
+matches production pipe ownership/startup bound, content classification tests
+separate their own scan budget from production budget assertions and report
+coverage on failure, and registry manifest replacement uses bounded atomic
+retry. Production QEMU and ransomware runtime limits were not relaxed.
+
+Read-only Red Team containment readiness preview, Combat status/guidance that
+clears stale green state, and Red Team AAR report-integrity status with Practice
+Fix disabled on binding/reload error were added. The five new UI tests pass;
+60 selected existing UI tests pass after a wording correction. No combined-tree
+full-gate or GitHub-publication result is recorded by these targeted tests.

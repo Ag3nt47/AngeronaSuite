@@ -321,6 +321,19 @@ class RedTeamConsole(QDialog):
         remediation_help.setWordWrap(True)
         remediation_help.setStyleSheet("color:#9fb3c8; margin-left:24px;")
         ol.addWidget(remediation_help)
+        self.response_readiness = QLabel()
+        self.response_readiness.setObjectName("RedTeamResponseReadiness")
+        self.response_readiness.setAccessibleName("Containment readiness preview")
+        self.response_readiness.setTextFormat(Qt.PlainText)
+        self.response_readiness.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.response_readiness.setWordWrap(True)
+        ol.addWidget(self.response_readiness)
+        self.refresh_readiness_btn = QPushButton("Refresh containment readiness")
+        self.refresh_readiness_btn.clicked.connect(self._refresh_response_readiness)
+        ol.addWidget(self.refresh_readiness_btn)
+        for option in (self.cb_shark, self.cb_apt, self.cb_remediate):
+            option.toggled.connect(self._refresh_response_readiness)
+        self._refresh_response_readiness()
         lay.addWidget(opt)
 
         lay.addStretch(1)
@@ -408,6 +421,46 @@ class RedTeamConsole(QDialog):
         self._run_splitter = splitter
         self._live_panel = live
         return w
+
+    def _refresh_response_readiness(self, *_unused) -> None:
+        """Show a current, read-only preview; launch performs its own check."""
+        if not (self.cb_shark.isChecked() or self.cb_apt.isChecked()):
+            message = "Select an attack profile to check containment readiness."
+            color = "#fbbf24"
+        elif not self.cb_remediate.isChecked():
+            message = (
+                "Detection-only run selected. Combat readiness is not required, "
+                "and the report will not assign a containment pass."
+            )
+            color = "#9fb3c8"
+        else:
+            from angerona.core.drill_readiness import assess_drill_response
+
+            assessment = assess_drill_response(
+                getattr(self._parent, "manager", None),
+                require_process=self.cb_apt.isChecked(),
+            )
+            state = str(assessment.get("state") or "UNKNOWN")
+            reason = str(assessment.get("reason") or "No reason was supplied.")
+            scope = "APT process checks" if self.cb_apt.isChecked() else "Shark checks"
+            if assessment.get("ready") is True and state == "ARMED":
+                message = (
+                    f"Containment readiness now ({scope}): ARMED. {reason} "
+                    "Launch checks again; signed report receipts decide the result."
+                )
+                color = "#4ade80"
+            else:
+                message = (
+                    f"Containment readiness now ({scope}): {state}. {reason} "
+                    "If this persists, containment launch will be refused. Review "
+                    "Settings > Adversary Combat, or choose detection-only."
+                )
+                color = "#fbbf24"
+        self.response_readiness.setText(message)
+        self.response_readiness.setStyleSheet(
+            f"color:{color}; background:#172033; border:1px solid #334155; "
+            "border-radius:6px; padding:8px;"
+        )
 
     def finish_run(self) -> None:
         """Engine completion starts evidence review; it does not prove containment."""
@@ -575,6 +628,8 @@ class RedTeamConsole(QDialog):
 
     def _on_tab_changed(self, idx: int) -> None:
         try:
+            if idx == 0:
+                self._refresh_response_readiness()
             if "History" in self._tabs.tabText(idx):
                 self._load_history()
         except Exception:
@@ -1254,6 +1309,7 @@ class RedTeamConsole(QDialog):
     def _launch(self) -> None:
         if self._run_pending:
             return
+        self._refresh_response_readiness()
         if not (self.cb_shark.isChecked() or self.cb_apt.isChecked()):
             QMessageBox.information(self, "Red Team", "Pick at least one attack profile.")
             return

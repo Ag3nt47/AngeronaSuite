@@ -30,9 +30,10 @@ kernel component is a product capability.
 - Two consecutive real offscreen Windows MainWindow runs saved Settings Arm,
   launched the comprehensive Red Team drill, completed 38/38 steps each, and
   produced signed AARs with 37/37 Purple simulation validations and 37/37
-  exact verified responses each. Native analytic detection was 0/37 in both.
-  The score verifies inert
-  canary/response contracts, not real-adversary efficacy.
+  exact verified responses each. Native analytic detection was 0/37 in both
+  because the isolated GUI fixture did not enroll FIM; a separate genuine FIM
+  receipt test passed. The score verifies inert canary/response contracts, not
+  real-adversary efficacy.
 - A separate-process two-phase OS witness checked all 36 source markers absent,
   matching quarantine names, and three captured-birth tagged processes gone
   before cleanup in each run; after Windows custody release it matched all 36
@@ -56,8 +57,26 @@ kernel component is a product capability.
   receipts skip full Red Team lease validation without changing telemetry.
 - Focused live response regression: 7/7, including base 13/13, comprehensive
   37/37, historical FIM, stale enrollment, and commit rollback. Round 1 compile
-  403/403 and second selfcheck 26/26; final exact-commit release gate is a
-  separate pending check.
+  403/403 and second selfcheck 26/26. The first exact-commit release gate passed
+  bytecode, dependency audit, documentation drift, and lint, but full pytest
+  failed and Qt aborted. A stale unsigned test fixture was repaired to use a
+  signed Event. A same-process GUI lifecycle sequence improved from 4 failed /
+  21 passed to 25 passed after global PanelRevealOverlay shutdown; deferred
+  QThread close retries every 100 ms and unchanged Settings Save skips a repeat
+  Task Scheduler query. A forced-GC 1,700-test diagnostic prefix passed 1,693
+  with 7 skips and no abort. A later full one-process run on the then-current
+  tree reached 100% without Qt abort: 4,345 passed / 20 skipped / 3 failed in
+  1,641.28 s. The failures were QEMU fixture pipe ownership, a ransomware
+  classifier fixture hitting its 2-second coverage budget under load, and a
+  Windows registry-manifest WinError 5. Focused fixes pass: QEMU test pipe and
+  startup-bound correction, classification-test budget isolation and coverage
+  diagnostics, and bounded atomic replace retry for the registry manifest.
+- Red Team console now previews read-only containment readiness; launch still
+  rechecks it. Combat status clears stale green readiness and guides disabled
+  or full-queue cases. Red Team AAR shows report integrity and disables
+  Practice Fix after binding/reload errors. Five new UI tests and 60 selected
+  existing UI tests pass. No combined-tree full-gate or publication result is
+  recorded here.
 - Component evidence: 100 unenrolled process offers/68 markers, 1,832.75 to
   0.49 ms median; offscreen Packet Sniffer full-timeout stop, 3,000.8 to 1.0
   ms. Loaded GUI construction and Settings save were slow under shared load;

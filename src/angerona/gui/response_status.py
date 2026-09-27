@@ -58,6 +58,9 @@ class ResponseStatusPanel(QFrame):
             snapshot = None
         if not isinstance(snapshot, dict):
             self.state_label.setText("Response status unavailable")
+            self.state_label.setStyleSheet(
+                "font-size:16px; font-weight:700; color:#9fb3c8;"
+            )
             self.reason_label.setText("Open Settings from the running dashboard to inspect Combat.")
             self.activity_label.clear()
             self.guidance_label.clear()
@@ -82,6 +85,18 @@ class ResponseStatusPanel(QFrame):
                 "history. Preserve the journal, protected anchor and witness together; "
                 "use verified recovery before rearming. Restarting or changing response "
                 "severity does not repair this hold."
+            )
+        elif snapshot.get("state") == "DISABLED":
+            guidance = (
+                "Automatic response is off. To run a containment test, enable "
+                "Adversary Combat in Settings, save, and wait for ARMED status. "
+                "Detection-only drills do not require Combat."
+            )
+        elif snapshot.get("state") == "QUEUE FULL":
+            guidance = (
+                "The response queue cannot accept more requests now. Check queue "
+                "depth, drops, and verified action receipts; an alert does not "
+                "mean its response was applied."
             )
         else:
             guidance = (

@@ -52,8 +52,10 @@ button. Each completed all **38/38** comprehensive drill steps and received a
 signed AAR reporting **37/37 Purple simulation-contract validations and 37/37
 verified exact responses**. The runs took **90.422 s** and **98.562 s**. This is
 a passing score for Angerona's inert simulation contract. Each AAR also recorded
-**0/37 native analytic detections**; the simulation score does not establish
-detection or containment efficacy against real attacks.
+**0/37 native analytic detections** because this GUI fixture did not enroll
+FIM or another native analytic producer. Separate focused FIM verification
+passed for a genuine historical receipt. The GUI simulation score does not
+establish detection or containment efficacy against real attacks.
 
 The GUI test also used a separate Python process as an independent OS witness,
 instead of relying only on AAR claims. Before evidence cleanup it checked that
@@ -78,8 +80,52 @@ explicit optional or platform skips. A later release selfcheck first hit a
 load-sensitive 12-second AI Triage timeout; its serial rerun passed **26/26**
 with the same **67 passed, 0 failed, 18 skipped** self-test result. The skip
 reflects a missing fresh local model attestation, not live inference coverage.
-These are targeted checkpoints; final
-exact-commit release validation and GitHub publication are separate gates.
+These are targeted checkpoints; final exact-commit release validation and
+GitHub publication are separate gates.
+
+## Post-commit release-gate follow-up
+
+The first exact-commit release gate on `4c29b5e55e37a2e8ec9a0d08d4650e247d960021`
+passed bytecode, dependency audit, documentation drift, and lint. Its full
+pytest check failed and the Qt process aborted, so that gate **did not pass**.
+An early stop-on-first-failure probe identified a fixture still passing a
+`SimpleNamespace` where the strengthened Combat action now requires a signed
+`Event`; the fixture was repaired to use the real Event type.
+
+The live GUI test exposed a global `PanelRevealOverlay` that remained installed
+after its window was gone, changing close behavior in later GUI tests in the
+same process. Shutdown now removes its event filters, pending windows and
+captured masks. The exact same-process lifecycle sequence changed from **4
+failed / 21 passed** to **25 passed**. Settings Save now avoids a repeat Windows
+Task Scheduler query when autostart is unchanged; an isolated unchanged-save
+probe measured **111 ms**. An actual autostart change still queries OS state
+and retains rollback. Deferred QThread close now retries every **100 ms** until
+the native thread has stopped; close tests release blocked workers even when
+an assertion fails.
+
+A diagnostic first-1,700-test pytest selection with forced garbage collection
+finished **1,693 passed / 7 skipped**, with no Qt abort. It deselected the
+remaining 2,667 cases. A later full, one-process pytest run on the then-current
+tree reached **100% with no Qt abort**: **4,345 passed / 20 skipped / 3 failed
+in 1,641.28 s**. This was not a passing release gate. The three failures were
+an empty QEMU child-pipe fixture, a ransomware content-classification fixture
+whose production 2-second traversal budget expired under load, and a Windows
+`WinError 5` replacing the detection-registry manifest. Focused repairs now
+make the QEMU fixture mirror production pipe ownership and startup bound,
+isolate the classifier's content assertion from the runtime-budget test with
+coverage diagnostics, and use the existing bounded atomic-replace retry for
+the registry manifest. The focused cases pass; production QEMU pipe ownership
+and the ransomware runtime budget were not weakened.
+
+The operator UI now shows a read-only Red Team containment-readiness preview
+for the selected profile; Launch still makes its own current readiness check.
+Combat status clears an earlier green state when its snapshot is unavailable
+and gives guidance for disabled or full-queue states. The Red Team AAR names
+the report, shows delivered-text versus saved-copy integrity status, and
+disables **Practice Fix** on a binding or reload error. All **5** new UI tests
+pass, and the selected existing UI tests pass **60/60** after a wording
+correction. These targeted gates do not establish a passing full gate on the
+combined tree or GitHub publication.
 
 ## Responsiveness evidence and remaining work
 

@@ -4,10 +4,13 @@ import itertools
 import json
 import os
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import shiboken6
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication, QFileDialog, QPushButton, QWidget
 
 from angerona.core.sentinel_lens import (
@@ -263,6 +266,45 @@ def test_only_plain_loopback_ai_endpoints_are_admitted(monkeypatch) -> None:
     assert calls[0]["neutralized_telemetry"] == "private evidence"
     assert "private evidence" not in calls[0]["payload"]["prompt"]
     local.close()
+
+
+def test_immediate_close_retains_constructor_snapshot_worker_until_native_exit(
+    monkeypatch,
+) -> None:
+    from angerona.gui import sentinel_lens as lens_gui
+
+    app = QApplication.instance() or QApplication([])
+    entered = threading.Event()
+    release = threading.Event()
+    original_build = lens_gui.build_sentinel_snapshot
+
+    def blocked_build(*args, **kwargs):
+        entered.set()
+        release.wait(timeout=3.0)
+        return original_build(*args, **kwargs)
+
+    monkeypatch.setattr(lens_gui, "build_sentinel_snapshot", blocked_build)
+    dialog = SentinelLensDialog(None)
+    worker = dialog._snapshot_worker
+    try:
+        assert worker is not None
+        assert entered.wait(timeout=2.0)
+        assert worker.isRunning()
+        assert dialog.close() is False
+        assert dialog._angerona_deferred_close is True
+        app.processEvents()  # Deliver the first retry while run() is blocked.
+        assert shiboken6.isValid(dialog)
+        assert worker.isRunning()
+    finally:
+        release.set()
+        if worker is not None:
+            worker.wait()
+
+    deadline = time.monotonic() + 2.0
+    while shiboken6.isValid(dialog) and time.monotonic() < deadline:
+        app.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert not shiboken6.isValid(dialog)
 
 
 def test_safe_file_import_rejects_symlinks_and_accepts_stable_regular_files(

@@ -441,8 +441,10 @@ class PanelRevealOverlay(QWidget):
         self._previous_mask = QRegion()
         self._mode = "idle"
         self._global_windows = False
+        self._shut_down = False
         self._motion_config = None
         self._pending_windows: list[weakref.ReferenceType[QWidget]] = []
+        self._captured_windows: weakref.WeakSet[QWidget] = weakref.WeakSet()
         self._last_click_global = QPoint()
         self._last_click_at = 0.0
         self._animation = QPropertyAnimation(self, b"revealProgress", self)
@@ -502,6 +504,8 @@ class PanelRevealOverlay(QWidget):
 
     def enable_global_windows(self, enabled: bool = True) -> None:
         """Apply the reveal/reverse-close transition to newly shown app windows."""
+        if self._shut_down:
+            return
         self._global_windows = bool(enabled)
         app = QApplication.instance()
         if app is None:
@@ -512,6 +516,42 @@ class PanelRevealOverlay(QWidget):
         elif not self._armed and self._target is None:
             self._clear_pending_windows()
             app.removeEventFilter(self)
+
+    def shutdown(self) -> None:
+        """Release every filter and mask owned by this transition coordinator."""
+        self._shut_down = True
+        self._global_windows = False
+        self._armed = False
+        self._animation.stop()
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        self._clear_pending_windows()
+        for target in tuple(self._captured_windows):
+            try:
+                target.removeEventFilter(self)
+                original = getattr(target, "_angerona_reveal_original_mask", None)
+                if isinstance(original, QRegion):
+                    if original.isEmpty():
+                        target.clearMask()
+                    else:
+                        target.setMask(original)
+                setattr(target, "_angerona_reverse_reveal_close", False)
+                setattr(target, "_angerona_close_bypass", True)
+            except RuntimeError:
+                # Qt may have destroyed a captured window before Python does.
+                pass
+        self._captured_windows.clear()
+        if self._frame is not None:
+            try:
+                self._frame.deleteLater()
+            except RuntimeError:
+                pass
+        self._frame = None
+        self._target = None
+        self._previous_mask = QRegion()
+        self._progress = 0.0
+        self._mode = "idle"
 
     def _animation_busy(self) -> bool:
         """Treat a torn-down Qt animation as unavailable during app shutdown."""
@@ -665,6 +705,7 @@ class PanelRevealOverlay(QWidget):
         if app is not None and not self._global_windows:
             app.removeEventFilter(self)
         self._target = target
+        self._captured_windows.add(target)
         pending_mask = getattr(
             target,
             "_angerona_pending_reveal_original_mask",

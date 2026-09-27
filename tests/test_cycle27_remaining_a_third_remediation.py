@@ -4,13 +4,14 @@ import json
 import shutil
 import threading
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from angerona.core.eventbus import EventBus
+from angerona.core.eventbus import BusAuthority, Event, EventBus
 from angerona.modules.adversary_combat import (
     AdversaryCombat,
     CombatAction,
@@ -170,11 +171,15 @@ def test_a03_terminal_proof_is_returned_from_retained_writer(tmp_path: Path) -> 
     source = tmp_path / "inert-terminal-proof.bin"
     source.write_bytes(b"third remediation exact-object proof")
     module = AdversaryCombat(tmp_path, rollback_anchor={})
-    event = SimpleNamespace(
+    event = Event(
         module="inert-third-remediation",
+        message="Inert terminal proof fixture",
         ts=1.0,
         details={"response_authorized": True},
     )
+    authority = BusAuthority(_CONTINUITY_KEY)
+    event = replace(event, hmac_sig=authority.sign(event))
+    assert authority.verify(event)
 
     result = module._quarantine_file(
         str(source), event, "combat-000000000012"

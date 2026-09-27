@@ -334,6 +334,11 @@ def test_native_suspended_process_pipe_allowlist_job_and_reaping():
                    "import sys; print('native pipe fixture', flush=True); sys.stdin.readline()"]
         process, thread, pid = native.create(command, system, environment, child_input, child_output)
         handles.extend((process, thread))
+        # Match the supervisor's ownership: only the child retains these ends.
+        # Otherwise an early child exit is hidden by the parent's write handle.
+        for child_handle in (child_input, child_output):
+            native.close(child_handle)
+            handles.remove(child_handle)
         native.assign(job, process)
         image, observed_pid = native.image_and_pid(process)
         assert observed_pid == pid and image == interpreter
@@ -341,12 +346,16 @@ def test_native_suspended_process_pipe_allowlist_job_and_reaping():
         assert native.process.GetPriorityClass(process) == 0x4000  # BELOW_NORMAL_PRIORITY_CLASS.
         assert native.read(parent_output) == b''  # Suspended child ran no code.
         assert native.resume(thread) == 1
-        output = b''
-        deadline = time.monotonic() + 5
-        while not output and time.monotonic() < deadline:
-            output = native.read(parent_output)
-            time.sleep(.01)
-        assert output.strip() == b'native pipe fixture'
+        output = bytearray()
+        deadline = time.monotonic() + qemu.BOOT_SECONDS
+        while b'\n' not in output and time.monotonic() < deadline:
+            output.extend(native.read(parent_output))
+            if b'\n' not in output and native.exited(process):
+                exit_code = native.process.GetExitCodeProcess(process)
+                pytest.fail(f'Fixture child exited before output (exit code {exit_code}).')
+            if b'\n' not in output:
+                time.sleep(.01)
+        assert bytes(output).strip() == b'native pipe fixture'
         native.write(parent_input, b'G')
         native.reap(process, job)
         assert native.exited(process)
