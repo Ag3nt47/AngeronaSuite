@@ -127,6 +127,24 @@ pass, and the selected existing UI tests pass **60/60** after a wording
 correction. These targeted gates do not establish a passing full gate on the
 combined tree or GitHub publication.
 
+The next exact-commit gate on `3f48e7f` again passed bytecode, dependency
+audit, documentation drift, and lint. Its pytest process aborted in Windows
+Qt6Core with `0xC0000409` at collected test index 1,687 (about 38%), without
+an ordinary assertion failure. Windows Error Reporting showed destruction of
+a Python-owned `QThread` while it was still running. A read-only teardown probe
+found one live SentinelLens `_SnapshotWorker` immediately after
+`test_only_plain_loopback_ai_endpoints_are_admitted` at its original index
+1,622 in two runs. A no-GC 1,700-test prefix finished **1,693 passed / 7
+skipped / 2,673 deselected** and retained one such worker. Its connection to
+the full-gate abort is a **supported inference, not proven causation**.
+
+That test fixture now closes and joins its constructor worker in `finally` and
+drains Qt events. The patched Sentinel module passed **20 tests / 1 skip**;
+the diagnostic probe observed zero running threads at every boundary, and the
+focused close suite passed **4/4**. Those results check the leak correction but
+do not replace a rerun of the exact combined-tree release gate. No GitHub
+publication is claimed.
+
 ## Responsiveness evidence and remaining work
 
 The unenrolled-process fixture with 100 process offers and 68 inert markers

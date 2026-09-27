@@ -3803,3 +3803,17 @@ clears stale green state, and Red Team AAR report-integrity status with Practice
 Fix disabled on binding/reload error were added. The five new UI tests pass;
 60 selected existing UI tests pass after a wording correction. No combined-tree
 full-gate or GitHub-publication result is recorded by these targeted tests.
+
+The subsequent exact-commit gate on `3f48e7f` passed bytecode, dependency
+audit, documentation drift and lint, but pytest aborted in Windows Qt6Core
+with `0xC0000409` near collected index 1,687 (about 38%) and no ordinary test
+failure. Windows Error Reporting indicated Python-owned running QThread
+destruction. A read-only teardown probe found the sole live SentinelLens
+`_SnapshotWorker` after `test_only_plain_loopback_ai_endpoints_are_admitted`
+at original index 1,622 in two runs. A no-GC 1,700-test prefix passed 1,693 /
+7 skipped / 2,673 deselected and retained one such worker. Attribution of the
+full-gate abort to that worker remains an inference. The test fixture now
+closes/joins its constructor worker in `finally` and drains Qt events; patched
+Sentinel tests passed 20 / 1 skip, the probe found zero running threads at
+every boundary, and focused close tests passed 4/4. A combined-tree exact-
+commit gate rerun is still required; this record claims no publication.

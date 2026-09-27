@@ -217,6 +217,17 @@ def test_snapshot_stops_consuming_an_unbounded_source_and_rejects_bad_rows() -> 
 
 
 def test_only_plain_loopback_ai_endpoints_are_admitted(monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+
+    def close_snapshot_dialog(dialog: SentinelLensDialog) -> None:
+        worker = dialog._snapshot_worker
+        dialog.close()
+        if worker is not None:
+            assert worker.wait(3_000)
+        for _ in range(2):
+            app.processEvents()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
     assert _loopback_ollama_url("http://localhost:11434") == "http://localhost:11434"
     assert _loopback_ollama_url("http://127.0.0.1:11434/") == "http://127.0.0.1:11434"
     assert _loopback_ollama_url("http://[::1]:11434") == "http://[::1]:11434"
@@ -247,10 +258,12 @@ def test_only_plain_loopback_ai_endpoints_are_admitted(monkeypatch) -> None:
     remote = SentinelLensDialog(
         None, config=SimpleNamespace(ollama_host="https://models.example.com")
     )
-    with pytest.raises(SentinelLensInputError):
-        remote._ask_loopback_ai("private evidence")
-    assert calls == []
-    remote.close()
+    try:
+        with pytest.raises(SentinelLensInputError):
+            remote._ask_loopback_ai("private evidence")
+        assert calls == []
+    finally:
+        close_snapshot_dialog(remote)
 
     local = SentinelLensDialog(
         None,
@@ -260,12 +273,14 @@ def test_only_plain_loopback_ai_endpoints_are_admitted(monkeypatch) -> None:
             ollama_keep_alive="5m",
         ),
     )
-    assert local._ask_loopback_ai("private evidence") == "bounded local narrative"
-    assert calls[0]["host"] == "http://127.0.0.1:11434"
-    assert calls[0]["path"] == "/api/generate"
-    assert calls[0]["neutralized_telemetry"] == "private evidence"
-    assert "private evidence" not in calls[0]["payload"]["prompt"]
-    local.close()
+    try:
+        assert local._ask_loopback_ai("private evidence") == "bounded local narrative"
+        assert calls[0]["host"] == "http://127.0.0.1:11434"
+        assert calls[0]["path"] == "/api/generate"
+        assert calls[0]["neutralized_telemetry"] == "private evidence"
+        assert "private evidence" not in calls[0]["payload"]["prompt"]
+    finally:
+        close_snapshot_dialog(local)
 
 
 def test_immediate_close_retains_constructor_snapshot_worker_until_native_exit(
