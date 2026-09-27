@@ -259,15 +259,16 @@ def test_ipc_restart_retires_accept_and_connection_helpers(
             lambda: module._server_generation is not None
             and module._server_generation.srv is not None
             and module._server_generation.accept_thread is not None
-            and module._server_generation.accept_thread.is_alive()
-        )
+            and module._server_generation.accept_thread.is_alive(),
+            timeout=5.0,
+        ), (module.status, module.last_error, module.health_note)
         old_generation = module._server_generation
         assert old_generation is not None and old_generation.srv is not None
         old_accept = old_generation.accept_thread
         port = old_generation.srv.getsockname()[1]
 
-        client = socket.create_connection((ipc_guard._HOST, port), timeout=1.0)
-        client.settimeout(1.0)
+        client = socket.create_connection((ipc_guard._HOST, port), timeout=5.0)
+        client.settimeout(5.0)
         assert client.recv(256).startswith(b"CHALLENGE ")
         assert _wait_until(lambda: len(old_generation.helpers) == 1)
         old_helpers = list(old_generation.helpers)
@@ -280,7 +281,14 @@ def test_ipc_restart_retires_accept_and_connection_helpers(
             and module._server_generation is not None
             and module._server_generation is not old_generation
             and module._server_generation.accept_thread is not None
-            and module._server_generation.accept_thread.is_alive()
+            and module._server_generation.accept_thread.is_alive(),
+            timeout=5.0,
+        ), (
+            module.status,
+            module.lifecycle_generation,
+            module.last_error,
+            module.health_note,
+            old_generation.fatal_error,
         )
         assert old_accept is not None and not old_accept.is_alive()
         assert all(not helper.is_alive() for helper in old_helpers)

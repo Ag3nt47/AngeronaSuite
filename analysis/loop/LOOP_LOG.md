@@ -3868,3 +3868,19 @@ These are inert drill measurements, not real-attack efficacy. The selected-
 sensor Chill/Full/Chill performance result and its limits are in the preceding
 entry and [Cycle 36 record](cycle36/README.md). Targeted results remain
 distinct from the exact-commit full gate and guarded publication.
+
+The first Cycle 36 exact-commit gate on `0600bcecf79f54af0b25dc99431604c4e3e473db`
+passed bytecode, dependency audit, documentation drift, and lint, then ended
+with 4,363 pytest passes, 20 skips, and three timing-test failures. No native
+Qt abort occurred. Windows isolated sandbox startup exceeded its 3-second
+fixture cap twice in focused reproduction; only that test's cap was raised to
+20 seconds and its offline/disposable assertions retained. The separate
+0.25-second hanging-child deadline test still passes. Fleet's partial-request
+stop exceeded a 1-second wall assertion at 1.062 seconds; its test bound now
+accounts for the 0.35-second graceful and 0.5-second forced-drain windows,
+while still checking full handler/ledger release. IPC restart passed 20/20
+fresh-process focused repetitions before a test-only readiness/socket deadline
+increase to tolerate the one-second listener accept timeout and key reload;
+its exact gate assertion was not retained by the evidence summary. Six Fleet
+and six IPC module tests pass after the adjustments. A new exact-commit gate
+was required before this follow-up could be published.

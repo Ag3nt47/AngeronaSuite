@@ -159,10 +159,10 @@ def test_isolated_sandbox_uses_disposable_data_and_offline_environment(tmp_path)
 
     passed, output = run_isolated_self_test(
         "env_probe_pkg.probe", "EnvironmentProbe", "Environment Probe",
-        timeout=3, source_root=Path(tmp_path),
+        timeout=20, source_root=Path(tmp_path),
     )
 
-    assert passed is True
+    assert passed is True, output
     assert "angerona-sandbox-" in output
 
 

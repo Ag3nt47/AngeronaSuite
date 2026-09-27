@@ -63,7 +63,10 @@ def test_partial_requests_repeatably_drain_and_release_replay_ledger(tmp_path):
         try:
             started = time.monotonic()
             assert service.stop(timeout=0.35)
-            assert time.monotonic() - started < 1.0
+            # stop() has a 0.35 s graceful deadline followed by a bounded
+            # 0.5 s forced drain. Allow scheduler/SQLite overhead while still
+            # rejecting a return to the 30 s partial-client timeout.
+            assert time.monotonic() - started < 1.5
             assert service._server is None
             assert service.auth._replay._db is None
             ledger = root / "replay.sqlite3"

@@ -61,3 +61,19 @@ stability; a full-host freeze trace remains a separate acceptance measure.
 The targeted results above do not replace an exact-commit full release gate or
 guarded GitHub publication. Release status is established by the gate evidence
 and publisher for the final commit.
+
+The first exact-commit gate on `0600bcecf79f54af0b25dc99431604c4e3e473db`
+passed bytecode, dependency audit, documentation drift, and lint, but full
+pytest ended at **4,363 passed / 20 skipped / 3 failed** without a native Qt
+abort. The failures were timing assertions in IPC restart, isolated Windows
+sandbox startup, and Fleet partial-request shutdown. The sandbox's 3-second
+fixture startup cap failed twice even alone; its offline/disposable assertions
+remain unchanged with a 20-second fixture cap, while the separate hanging-child
+deadline remains 0.25 seconds. Fleet's stop test now allows its documented
+graceful-plus-forced drain and still checks replay-ledger release; its six-test
+module passed. The IPC case passed 20 fresh-process repetitions before any
+edit, so its exact gate assertion is unknown. Its fixture deadlines now allow
+the listener's one-second accept timeout and key reload while retaining live
+authentication and old-helper retirement checks; the six-test lifecycle module
+passed. These are fixture-bound changes, not product timeout or security-policy
+relaxations. A new exact-commit gate was required for the combined tree.
