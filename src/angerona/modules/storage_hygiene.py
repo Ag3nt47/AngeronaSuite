@@ -92,6 +92,14 @@ def _existing_path_has_reparse(path: Path) -> bool:
         current = parent
 
 
+class _TreeInspectionUnavailable(OSError):
+    """The monitor cannot claim complete coverage within its work budget."""
+
+
+_TREE_MAX_ENTRIES = 2048
+_TREE_MAX_SECONDS = 1.0
+
+
 def _tree_has_reparse(root: Path) -> bool:
     """Inspect a migration tree without following links or junctions."""
     if _existing_path_has_reparse(root):
@@ -105,22 +113,32 @@ def _tree_has_reparse(root: Path) -> bool:
     if not stat.S_ISDIR(root_info.st_mode):
         return True
     pending = [root]
+    visited = 0
+    deadline = time.monotonic() + _TREE_MAX_SECONDS
     while pending:
         directory = pending.pop()
         try:
-            entries = list(directory.iterdir())
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if visited >= _TREE_MAX_ENTRIES or time.monotonic() >= deadline:
+                        raise _TreeInspectionUnavailable(
+                            "source tree exceeds bounded inspection coverage"
+                        )
+                    visited += 1
+                    info = entry.stat(follow_symlinks=False)
+                    if _is_link_or_reparse(Path(entry.path)) or stat.S_ISLNK(info.st_mode) or bool(
+                        getattr(info, "st_file_attributes", 0) & 0x400
+                    ):
+                        return True
+                    if stat.S_ISDIR(info.st_mode):
+                        pending.append(Path(entry.path))
+                    elif not stat.S_ISREG(info.st_mode):
+                        return True
+        except _TreeInspectionUnavailable:
+            raise
         except OSError:
             # An unreadable source is unsafe to move or delete while elevated.
             return True
-        for entry in entries:
-            try:
-                info = entry.lstat()
-            except OSError:
-                return True
-            if _is_link_or_reparse(entry):
-                return True
-            if stat.S_ISDIR(info.st_mode):
-                pending.append(entry)
     return False
 
 
@@ -143,8 +161,11 @@ def _migration_safety_error(source: Path, dest: Path) -> str | None:
         return "source and destination overlap"
     if _existing_path_has_reparse(dest):
         return "destination traverses a link or reparse point"
-    if _tree_has_reparse(source):
-        return "source contains or traverses a link, reparse point, or unreadable entry"
+    try:
+        if _tree_has_reparse(source):
+            return "source contains or traverses a link, reparse point, or unreadable entry"
+    except _TreeInspectionUnavailable as exc:
+        return f"source inspection unavailable: {exc}"
     return None
 
 
@@ -211,7 +232,9 @@ def inspect_stray(source: Path, dest: Path) -> dict[str, object]:
     source_identity = _directory_identity(info)
     safety_error = _migration_safety_error(source, dest)
     if safety_error:
-        result.update(status="unsafe", reason=safety_error)
+        status = ("unavailable" if safety_error.startswith("source inspection unavailable:")
+                  else "unsafe")
+        result.update(status=status, reason=safety_error)
         return result
     still_bound, reason = _root_still_bound(source, source_identity)
     if not still_bound:

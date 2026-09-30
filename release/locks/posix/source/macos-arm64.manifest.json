@@ -106,11 +106,11 @@
       "version": "3.18"
     },
     {
-      "filename": "urllib3-2.7.0-py3-none-any.whl",
+      "filename": "urllib3-2.8.0-py3-none-any.whl",
       "name": "urllib3",
-      "sha256": "9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897",
-      "size": 131087,
-      "version": "2.7.0"
+      "sha256": "0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3",
+      "size": 135717,
+      "version": "2.8.0"
     },
     {
       "filename": "defusedxml-0.7.1-py2.py3-none-any.whl",

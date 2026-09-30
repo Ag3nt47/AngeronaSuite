@@ -10,11 +10,12 @@ scapy>=2.5 ; sys_platform == "win32"     # packet sniffer (also needs Npcap inst
 pywintrace>=0.2 ; sys_platform == "win32"  # ETW real-time process sensor (ETWR); needs elevation
 yara-x>=1.15 ; sys_platform == "win32"       # in-process rules engine; stable ABI wheel
 yara-x>=1.15 ; sys_platform == "linux" or sys_platform == "darwin"
-PyJWT[crypto]>=2.8 ; sys_platform == "win32" # authenticated Microsoft Teams connector
+PyJWT[crypto]>=2.15.0 ; sys_platform == "win32" # authenticated Microsoft Teams connector
 cryptography>=50.0.0                         # AES-GCM/HKDF; includes 2026 oracle fix
 
 # ── AI triage ────────────────────────────────────────────────────────────────
 requests>=2.31
+urllib3>=2.8.0                     # fixed HTTP parsing dependency floor
 
 # ── Optional cloud escalation (only used if you supply keys) ──────────────────
 # google-genai

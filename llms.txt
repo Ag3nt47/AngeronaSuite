@@ -33,6 +33,9 @@ kernel component is a product capability.
 - Signed AAR history loads asynchronously with bounded inventory and rendering.
   YARA scanners stay on their creator thread. Flight-cache eviction, ransomware
   histograms and module-panel policy reads have targeted optimizations.
+- Storage Hygiene bounds recursive inspection to 2048 entries and a one-second
+  traversal budget; exhausted coverage stays unavailable. Source dependency
+  floors and release locks upgrade PyJWT to 2.15.0 and urllib3 to 2.8.0.
 - A 66-worker production-recorder soak measured maximum Qt slips of 1480,
   527 and 1074 ms across Chill/Full/Chill; the independent Qt process peaked
   at 43 ms. All 1079 accepted ledger events persisted. Freezes remain open;

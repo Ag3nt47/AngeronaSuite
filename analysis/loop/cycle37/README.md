@@ -103,6 +103,22 @@ all-day run. A clean short soak cannot certify those longer conditions.
 
 ## Release requirements
 
+The first exact-commit gate passed **4400 tests, 23 skips**, bytecode, lint,
+and documentation checks. Dependency auditing first encountered HTTP 503;
+its retry found 15 reported vulnerabilities in PyJWT 2.13.0 and urllib3
+2.7.0. The follow-up upgrades verified universal wheels to PyJWT 2.15.0 and
+urllib3 2.8.0, raises source-install floors, and refreshes Windows/POSIX pins,
+hashes and artifact manifests. Wheel bytes were checked against PyPI metadata.
+
+The follow-up also bounds Storage Hygiene's recursive inspection to 2048
+entries and a one-second traversal budget, avoiding whole-directory lists.
+An exhausted budget reports unavailable coverage and health 30; it never
+reports a clean tree or enables mutation. Individual OS metadata calls can
+still block beyond the traversal deadline. Targeted storage/security checks
+passed **35/35** after retaining the existing reparse inspection boundary.
+This change has not yet been repeated in the 66-worker soak above and has no
+claimed whole-application speedup. The combined tree requires a fresh gate.
+
 The final reviewed commit must pass the fixed bytecode, dependency-audit,
 documentation-drift, lint, and full pytest gate. GitHub completion is proved
 by `tools/publish_github_update.py`, including canonical HTTPS origin,

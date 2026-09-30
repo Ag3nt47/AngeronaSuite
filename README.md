@@ -46,6 +46,8 @@ verified **37/37 containment responses**; native detections were **34/37 and
 In a 66-worker, 90-second-per-mode run, Full's maximum Qt pause was **527 ms**;
 Chill still paused for **1,480 ms and 1,074 ms**. A separate Qt control peaked
 at **43 ms**. Freezes and variable native coverage remain open issues.
+The follow-up bounds Storage Hygiene's tree inspection with visible incomplete
+coverage and upgrades PyJWT/urllib3 with refreshed release hashes.
 
 The [Cycle 36 scoring and performance follow-up](analysis/loop/cycle36/README.md)
 clarifies native versus simulation scores. In an actual FIM-enabled GUI drill, all **38/38**

@@ -3912,6 +3912,14 @@ slips versus 43 ms in a simultaneous separate Qt process. All 1079 events
 persisted. Chill freezes and variable native coverage remain open. See
 `cycle37/README.md` for scopes, unsuccessful attempts and validation limits.
 
+The initial gate passed 4400 tests with 23 skips, compilation, lint and docs.
+Dependency auditing hit HTTP 503, then identified 15 PyJWT/urllib3 advisories.
+Verified-wheel follow-up upgrades PyJWT to 2.15.0 and urllib3 to 2.8.0 across
+source floors and release locks. Storage Hygiene now bounds recursive tree
+inspection and reports exhausted coverage as unavailable, retaining reparse
+checks and retired mutation behavior. Targeted storage/security checks: 35/35.
+The combined commit must pass a fresh release gate before publication.
+
 - **R37-01 (MEDIUM):** Shark's fixed BYOVD marker name could truncate a pre-existing hardlink or file in a selected drill directory; inert Windows proof succeeded on the baseline, and the candidate exclusive-create patch refused it.
 - **R37-02 (MEDIUM):** Shark Stop & clean could unlink an unrelated same-name replacement; inert baseline proof succeeded, and candidate identity-bound cleanup preserved the replacement.
 - **R37-03 (LOW):** the historical AAR tab rendered forged unsigned report text as a past score; a candidate signed-JSON/text-digest viewer refused the forged pair in an independent offscreen UI challenge.

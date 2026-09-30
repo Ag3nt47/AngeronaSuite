@@ -41,6 +41,7 @@ dependencies = [
     "PySide6>=6.6",
     "psutil>=5.9",
     "requests>=2.31",
+    "urllib3>=2.8.0",
     "python-dotenv>=1.0",
     "cryptography>=50.0.0",
     "PyYAML>=6.0.2",
@@ -61,7 +62,7 @@ windows = [
     "WMI>=1.5",
     "scapy>=2.5",
     "yara-x>=1.15",
-    "PyJWT[crypto]>=2.8",
+    "PyJWT[crypto]>=2.15.0",
     "pywintrace>=0.2",
 ]
 macos = [
