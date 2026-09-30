@@ -114,7 +114,6 @@ class YaraScannerModule(BaseModule):
         super().__init__()
         self._rules_lock = threading.RLock()
         self._compiled_rules = None
-        self._scanner = None
         self._active_rules = ""
         self._seen_matches: dict[tuple[str, str], int] = {}
         self._scan_cache: OrderedDict[str, tuple[int, ...]] = OrderedDict()
@@ -174,10 +173,13 @@ class YaraScannerModule(BaseModule):
 
     def _activate(self, path: Path):
         compiled = self._compile_rules(path)
-        scanner = self._make_scanner(compiled)
+        # yara-x Scanner is thread-bound. Validate configuration here, then
+        # release this temporary scanner on its creator thread. The run thread
+        # owns its own scanner and can safely replace it after a rules reload.
+        probe = self._make_scanner(compiled)
+        del probe
         with self._rules_lock:
             self._compiled_rules = compiled
-            self._scanner = scanner
             self._active_rules = str(path.resolve())
             self._scan_cache.clear()
             self._seen_matches.clear()
@@ -207,6 +209,8 @@ class YaraScannerModule(BaseModule):
                     + "\n\n// auto-generated (evolution engine)\n" + auto_text,
                     encoding="utf-8")
                 compiled = self._compile_rules(candidate)
+                probe = self._make_scanner(compiled)
+                del probe
                 if candidate_text is not None:
                     auto.parent.mkdir(parents=True, exist_ok=True)
                     auto_candidate = auto.with_suffix(".candidate")
@@ -215,7 +219,6 @@ class YaraScannerModule(BaseModule):
                 os.replace(candidate, active)
                 with self._rules_lock:
                     self._compiled_rules = compiled
-                    self._scanner = self._make_scanner(compiled)
                     self._active_rules = str(active.resolve())
                     self._scan_cache.clear()
                     self._seen_matches.clear()
@@ -469,14 +472,21 @@ class YaraScannerModule(BaseModule):
             return False
 
     @staticmethod
-    def _response_classification(path: Path, payload: bytes) -> str:
+    def _response_classification(
+        path: Path, payload: bytes, *, observed_content_sha256: str,
+        observed_file_identity: dict[str, int],
+    ) -> str:
         # A keyword in a report or source file must not quarantine that file.
         # Automatic authority is independent of editable rule names/metadata.
         marker = b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE"
         if marker in payload or b"ANGERONA-BYOVD-DRILL-BENIGN-MARKER" in payload:
             from types import SimpleNamespace
             from angerona.core.practice_scope import provenance_for_event
-            provenance = provenance_for_event(SimpleNamespace(details={"path": str(path)}))
+            provenance = provenance_for_event(SimpleNamespace(details={
+                "path": str(path),
+                "observed_content_sha256": observed_content_sha256,
+                "observed_file_identity": observed_file_identity,
+            }))
             if provenance is not None and provenance.kind in {"shark", "red-team"}:
                 return "registered-antimalware-probe"
             standard = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}" + b"$" + marker + b"!$H+H*"
@@ -519,8 +529,14 @@ class YaraScannerModule(BaseModule):
             cache_key = str(path)
             flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
             with os.fdopen(os.open(path, flags), "rb") as handle:
-                if self._file_identity(os.fstat(handle.fileno())) != identity:
+                opened = os.fstat(handle.fileno())
+                if self._file_identity(opened) != identity:
                     raise OSError("file changed before signature inspection")
+                observed_file_identity = {
+                    "device": int(opened.st_dev),
+                    "inode": int(opened.st_ino),
+                    "birthtime_ns": int(getattr(opened, "st_birthtime_ns", 0) or 0),
+                }
                 # Windows Path.stat and fstat have different ctime semantics
                 # in Python 3.12. Use the native handle ChangeTime, also for
                 # cache admission, so restoring mtime cannot suppress rescans.
@@ -533,9 +549,13 @@ class YaraScannerModule(BaseModule):
                 payload = handle.read(MAX_FILE_BYTES + 1)
                 if len(payload) > MAX_FILE_BYTES:
                     raise OSError("file grew beyond signature budget")
+                digest = hashlib.sha256(payload).hexdigest()
                 results = scanner.scan(payload)
                 matches = {str(match.identifier): "" for match in results.matching_rules}
-                classification = self._response_classification(path, payload)
+                classification = self._response_classification(
+                    path, payload, observed_content_sha256=digest,
+                    observed_file_identity=observed_file_identity,
+                )
                 archive_error = ""
                 # Inspect ZIP members in memory only; no extraction, recursion,
                 # archive paths, encryption, or unbounded decompression.
@@ -544,7 +564,10 @@ class YaraScannerModule(BaseModule):
                         for member, content in self._archive_contents(payload):
                             for match in scanner.scan(content).matching_rules:
                                 matches.setdefault(str(match.identifier), member)
-                            classification = classification or self._response_classification(path, content)
+                            classification = classification or self._response_classification(
+                                path, content, observed_content_sha256=digest,
+                                observed_file_identity=observed_file_identity,
+                            )
                     except Exception as exc:
                         # Loss of archive coverage must not erase a positive
                         # signature already proved in the outer bytes or an
@@ -554,11 +577,11 @@ class YaraScannerModule(BaseModule):
                         or FileIntegrityModule._handle_change_token(handle.fileno()) != change_token
                         or self._file_identity(path.stat(follow_symlinks=False)) != identity):
                     raise OSError("file changed during signature inspection")
-            digest = hashlib.sha256(payload).hexdigest()
             for rule, member in matches.items():
                 details = {
                     "path": str(path), "artifact_path": str(path), "rule": rule,
                     "observed_content_sha256": digest,
+                    "observed_file_identity": observed_file_identity,
                     "evidence_type": "native_analytic_detection", "detector_verdict": "positive",
                     "producer_generation": self.lifecycle_generation,
                     "detector_receipt_nonce": secrets.token_hex(16),
@@ -628,6 +651,7 @@ class YaraScannerModule(BaseModule):
             return
         try:
             compiled = self._activate(Path(rules))
+            scanner = self._make_scanner(compiled)
         except Exception as exc:
             self.status = "error"
             self.last_error = str(exc)
@@ -641,7 +665,18 @@ class YaraScannerModule(BaseModule):
         self.emit(f"YARA scanner active ({Path(rules).name}).", Severity.INFO)
         while not self.stopping:
             with self._rules_lock:
-                scanner = self._scanner
+                active_rules = self._compiled_rules
+            if active_rules is not compiled:
+                try:
+                    replacement = self._make_scanner(active_rules)
+                except Exception as exc:
+                    self.last_error = str(exc)
+                    self.set_health(20, "reloaded YARA rules could not be activated")
+                    self.emit(f"YARA scanner reload rejected: {exc}", Severity.HIGH)
+                    self.sleep(_scan_interval())
+                    continue
+                scanner = replacement
+                compiled = active_rules
             scanned = 0
             failed = 0
             skipped = 0

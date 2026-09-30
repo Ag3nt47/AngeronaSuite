@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 import threading
 import time
 
@@ -23,6 +24,18 @@ def _empty_practice_scope():
 
 def _critical(module: str, message: str = "detected", **details) -> Event:
     return Event(module, message, Severity.CRITICAL, details=details)
+
+
+def _observed_critical(module: str, *, path: str, **details) -> Event:
+    leaf = Path(path)
+    info = leaf.stat(follow_symlinks=False)
+    return _critical(module, path=path, **details,
+        observed_file_identity={
+            "device": int(info.st_dev), "inode": int(info.st_ino),
+            "birthtime_ns": int(getattr(info, "st_birthtime_ns", 0) or 0),
+        },
+        observed_content_sha256=hashlib.sha256(leaf.read_bytes()).hexdigest(),
+    )
 
 
 @pytest.mark.parametrize(
@@ -78,14 +91,58 @@ def test_only_exact_registered_artifact_is_practice(tmp_path: Path) -> None:
     run_id = "redteam-registered-abc123"
     registered = tmp_path / "one" / "_redteam_lsass_dump_same.txt"
     lookalike = tmp_path / "two" / registered.name
+    registered.parent.mkdir()
+    registered.write_text("inert drill marker", encoding="utf-8")
     practice_scope.register_artifact(registered, run_id, kind="red-team")
 
-    exact = _critical("File Integrity Monitor", path=str(registered))
+    exact = _observed_critical("File Integrity Monitor", path=str(registered))
     copied_name = _critical("File Integrity Monitor", path=str(lookalike))
 
     assert event_disposition(exact) == "practice"
     assert not is_active_threat(exact)
     assert event_disposition(copied_name) == "active"
+
+
+def test_registered_file_identity_refuses_same_name_replacement(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "_redteam_lsass_dump_probe.txt"
+    marker.write_text("inert original", encoding="utf-8")
+    assert practice_scope.register_artifact(marker, "live-run", kind="red-team")
+    event = _observed_critical(
+        "File Integrity Monitor", path=str(marker), practice_run_id="live-run",
+    )
+    assert event_disposition(event) == "practice"
+
+    moved = tmp_path / "original-moved.txt"
+    marker.rename(moved)
+    marker.write_text("attacker replacement", encoding="utf-8")
+    replacement_event = _observed_critical("FIM", path=str(marker), active_attack=True)
+    assert event_disposition(replacement_event) == "active"
+    assert is_active_threat(replacement_event)
+    assert event_disposition(event) == "practice"  # Earlier benign observation remains attributed.
+    assert moved.read_text(encoding="utf-8") == "inert original"
+
+
+def test_registration_requires_created_file_and_matching_held_descriptor(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "marker.txt"
+    assert practice_scope.register_artifact(marker, "live-run") == ""
+    marker.write_text("later unrelated file", encoding="utf-8")
+    assert event_disposition(_critical("FIM", path=str(marker))) == "active"
+
+    with marker.open("rb") as stream:
+        moved = tmp_path / "held-original.txt"
+        try:
+            marker.rename(moved)
+        except OSError as exc:
+            pytest.skip(f"open-file rename unavailable: {exc}")
+        marker.write_text("new pathname occupant", encoding="utf-8")
+        assert practice_scope.register_artifact(
+            marker, "live-run", descriptor=stream.fileno(),
+        ) == ""
+    assert event_disposition(_critical("FIM", path=str(marker))) == "active"
 
 
 @pytest.mark.parametrize("registration", ["none", "run", "process", "artifact"])
@@ -97,7 +154,9 @@ def test_ordinary_event_never_resolves_unregistered_paths(
     elif registration == "process":
         practice_scope.register_process("practice-token", "live-run", pid=42)
     elif registration == "artifact":
-        practice_scope.register_artifact(tmp_path / "registered.txt", "live-run")
+        registered = tmp_path / "registered.txt"
+        registered.write_text("inert", encoding="utf-8")
+        practice_scope.register_artifact(registered, "live-run")
 
     resolutions = []
 
@@ -122,12 +181,14 @@ def test_registered_alias_requires_fresh_resolution_after_retargeting(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     alias = tmp_path / "junction" / "marker.txt"
+    alias.parent.mkdir()
+    alias.write_text("inert", encoding="utf-8")
     trusted = practice_scope._path_key(tmp_path / "registered" / "marker.txt")
     unrelated = practice_scope._path_key(tmp_path / "unrelated" / "marker.txt")
     current_target = [trusted]
     monkeypatch.setattr(practice_scope, "_path_key", lambda value: current_target[0])
     practice_scope.register_artifact(alias, "live-run")
-    event = _critical("File Integrity Monitor", path=str(alias))
+    event = _observed_critical("File Integrity Monitor", path=str(alias))
 
     assert practice_scope.provenance_for_event(event).run_id == "live-run"
     current_target[0] = unrelated
@@ -138,6 +199,7 @@ def test_slow_registered_resolution_does_not_block_revocation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     marker = tmp_path / "marker.txt"
+    marker.write_text("inert", encoding="utf-8")
     key = practice_scope.register_artifact(marker, "live-run")
     revoked = threading.Event()
 
@@ -155,7 +217,7 @@ def test_slow_registered_resolution_does_not_block_revocation(
     monkeypatch.setattr(practice_scope, "_path_key", resolve_during_revocation)
     try:
         assert practice_scope.provenance_for_event(
-            _critical("File Integrity Monitor", path=str(marker))
+            _observed_critical("File Integrity Monitor", path=str(marker))
         ) is None
     finally:
         if worker.ident is not None:
@@ -170,11 +232,14 @@ def test_retired_artifact_never_triggers_path_resolution(
     monkeypatch.setattr(practice_scope.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(practice_scope, "_MAX_ARTIFACTS", 1)
     marker = tmp_path / "retired.txt"
+    marker.write_text("inert", encoding="utf-8")
     practice_scope.register_artifact(marker, "live-run", ttl=1.0)
     if revocation == "expired":
         clock[0] = 102.0
     elif revocation == "evicted":
-        practice_scope.register_artifact(tmp_path / "new.txt", "new-run")
+        newer = tmp_path / "new.txt"
+        newer.write_text("inert", encoding="utf-8")
+        practice_scope.register_artifact(newer, "new-run")
     else:
         assert practice_scope.unregister_artifact(marker)
 
@@ -183,7 +248,7 @@ def test_retired_artifact_never_triggers_path_resolution(
 
     monkeypatch.setattr(practice_scope, "_path_key", unexpected_resolution)
     assert practice_scope.provenance_for_event(
-        _critical("File Integrity Monitor", path=str(marker))
+        _observed_critical("File Integrity Monitor", path=str(marker))
     ) is None
 
 
@@ -191,10 +256,11 @@ def test_completed_run_revokes_artifact_and_process_provenance(tmp_path: Path) -
     run_id = "redteam-finished-abc123"
     marker = tmp_path / "_redteam_lsass_dump_reused.txt"
     token = "ANGERONA_REDTEAM_deadbeef"
+    marker.write_text("inert", encoding="utf-8")
     practice_scope.register_artifact(marker, run_id, kind="red-team")
     practice_scope.register_process(token, run_id, pid=4242, kind="red-team")
 
-    assert event_disposition(_critical("FIM", path=str(marker))) == "practice"
+    assert event_disposition(_observed_critical("FIM", path=str(marker))) == "practice"
     assert event_disposition(_critical(
         "Telemetry Scanner", correlation_token=token, pid=4242,
     )) == "practice"
@@ -238,8 +304,9 @@ def test_practice_registration_expires(monkeypatch: pytest.MonkeyPatch,
     clock = [100.0]
     monkeypatch.setattr(practice_scope.time, "monotonic", lambda: clock[0])
     marker = tmp_path / "marker.txt"
+    marker.write_text("inert", encoding="utf-8")
     practice_scope.register_artifact(marker, "run-expiring", ttl=1.0)
-    event = _critical("YARA Scanner", path=str(marker))
+    event = _observed_critical("YARA Scanner", path=str(marker))
     assert event_disposition(event) == "practice"
 
     clock[0] = 102.0
@@ -354,7 +421,7 @@ def test_redteam_engine_registers_exact_marker_before_detection(tmp_path: Path) 
     practice_scope.register_run(engine.run_id, kind="red-team")
 
     marker = engine._marker("_redteam_lsass_dump_12345678.txt", "inert")
-    exact = _critical("File Integrity Monitor", path=str(marker))
+    exact = _observed_critical("File Integrity Monitor", path=str(marker))
     other = _critical(
         "File Integrity Monitor",
         path=str(target / "_redteam_lsass_dump_87654321.txt"),
@@ -362,6 +429,25 @@ def test_redteam_engine_registers_exact_marker_before_detection(tmp_path: Path) 
 
     assert event_disposition(exact) == "practice"
     assert event_disposition(other) == "active"
+
+
+def test_redteam_step_record_cannot_trust_replacement_marker(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    engine = RedTeamEngine(tmp_path / "data", documents_dir=target)
+    engine.run_id = "redteam-replacement-test"
+    practice_scope.register_run(engine.run_id, kind="red-team")
+    marker = engine._marker("_redteam_lsass_dump_probe.txt", "inert")
+    event = _observed_critical("File Integrity Monitor", path=str(marker))
+    assert event_disposition(event) == "practice"
+
+    marker.rename(tmp_path / "original-marker.txt")
+    marker.write_text("attacker replacement", encoding="utf-8")
+    engine._record(
+        "Credential Access", "T1003 marker", "inert drill step", time.time(),
+        artifact_paths=[str(marker)],
+    )
+    assert event_disposition(_observed_critical("FIM", path=str(marker))) == "active"
+    assert event_disposition(event) == "practice"
 
 
 def test_defender_resource_normalization_is_local_and_unambiguous() -> None:
@@ -377,9 +463,11 @@ def test_defender_resource_normalization_is_local_and_unambiguous() -> None:
     assert not _local_artifact_paths([r"file:_C:\safe.txt", "process:_1234"])
 
 
-def test_mixed_defender_resources_cannot_hide_a_real_file() -> None:
-    practice = r"C:\Drill\eicar.txt"
-    malicious = r"C:\Temp\payload.exe"
+def test_mixed_defender_resources_cannot_hide_a_real_file(tmp_path: Path) -> None:
+    practice = tmp_path / "eicar.txt"
+    malicious = tmp_path / "payload.exe"
+    practice.write_text("inert", encoding="utf-8")
+    malicious.write_text("unrelated", encoding="utf-8")
     practice_scope.register_artifact(practice, "shark-run-one", kind="shark")
     mixed = _critical(
         "AV Telemetry Bridge",
@@ -392,4 +480,41 @@ def test_mixed_defender_resources_cannot_hide_a_real_file() -> None:
     )
 
     assert event_disposition(mixed) == "active"
-    assert event_disposition(exact) == "practice"
+    assert event_disposition(exact) == "active"  # Defender supplies no observed file ID.
+
+
+@pytest.mark.parametrize("same_inode", [False, True])
+def test_observed_replacement_cannot_be_blessed_by_restoring_marker(tmp_path, same_inode):
+    marker = tmp_path / "marker.txt"
+    marker.write_bytes(b"original inert marker")
+    assert practice_scope.register_artifact(marker, "live-run")
+    if same_inode:
+        marker.write_bytes(b"unrelated replacement bytes")
+        captured = _observed_critical("FIM", path=str(marker), active_attack=True)
+        marker.write_bytes(b"original inert marker")
+    else:
+        original = tmp_path / "original.txt"
+        marker.rename(original)
+        marker.write_bytes(b"original inert marker")  # A byte-identical copy still has a different file ID.
+        captured = _observed_critical("FIM", path=str(marker), active_attack=True)
+        marker.unlink()
+        original.rename(marker)
+    assert event_disposition(captured) == "active"
+    assert event_disposition(_observed_critical("FIM", path=str(marker))) == "practice"
+    assert event_disposition(_critical("FIM", path=str(marker), practice_run_id="live-run")) == "active"
+
+
+def test_real_fim_scan_carries_practice_identity_without_validation_lease(tmp_path, monkeypatch):
+    from angerona.modules import file_integrity
+    marker = tmp_path / "marker.txt"
+    marker.write_bytes(b"original inert marker")
+    assert practice_scope.register_artifact(marker, "live-run")
+    monkeypatch.setattr(file_integrity, "watch_roots", lambda: [str(tmp_path)])
+    detector = file_integrity.FileIntegrityModule()
+    observed = []
+    detector.emit = lambda message, severity, **details: observed.append(
+        Event(detector.name, message, severity, details=details)
+    )
+    detector._evaluate_snapshot(detector._scan())
+    marker_event = next(event for event in observed if event.details.get("path") == str(marker))
+    assert event_disposition(marker_event) == "practice"

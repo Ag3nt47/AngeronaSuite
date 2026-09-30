@@ -24,6 +24,7 @@ import re
 import sqlite3
 import threading
 import time
+from collections import deque
 
 from angerona.core.module_base import BaseModule, Severity
 
@@ -46,6 +47,7 @@ class FlightCache:
         self._pending_writes = 0
         self._seq = 0
         self._nrows = 0   # authoritative live row count (put() is the only mutator)
+        self._row_ids: deque[int] = deque()  # successful insertion order; failed ID gaps stay absent
         self.hits = 0
         self.misses = 0
         with self._lock:
@@ -67,17 +69,18 @@ class FlightCache:
                     "INSERT INTO events (id, ts, module, severity, message, details) "
                     "VALUES (?,?,?,?,?,?)",
                     (self._seq, ts, module, int(severity), message, det))
-                # evict oldest beyond cap. Track the row count in-process instead of
-                # running a `SELECT COUNT(*)` on every insert (an O(n) scan on the hot
-                # path — put() runs for every bus event). put() is the sole mutator, so
-                # the maintained counter is exact; verified identical to COUNT(*).
+                # put() is the sole mutator. Retain only successful row IDs so a
+                # failed insert's sequence gap never changes which row is oldest.
+                self._row_ids.append(self._seq)
                 self._nrows += 1
                 over = self._nrows - self.cap
-                if over > 0:
+                while over > 0 and self._row_ids:
+                    oldest = self._row_ids[0]
                     self._db.execute(
-                        "DELETE FROM events WHERE id IN "
-                        "(SELECT id FROM events ORDER BY id ASC LIMIT ?)", (over,))
-                    self._nrows -= over
+                        "DELETE FROM events WHERE id = ?", (oldest,))
+                    self._row_ids.popleft()
+                    self._nrows -= 1
+                    over -= 1
                 # This cache is process-local and all access uses this one
                 # connection under the lock, so readers see pending writes
                 # immediately. Batch transaction finalization to keep EventBus

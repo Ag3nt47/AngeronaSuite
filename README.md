@@ -37,6 +37,16 @@ identifiers, timestamps, and counts are synthetic.
 
 ## What's new
 
+The [Cycle 37 security, simulation and performance repairs](analysis/loop/cycle37/README.md)
+bind practice markers to observed file identity and content, fix Windows FIM
+reads during containment, keep YARA scanners on their owning thread, and load
+authenticated AAR history asynchronously. Two FIM-enabled GUI drills each
+verified **37/37 containment responses**; native detections were **34/37 and
+11/37**, independently checked against quarantine hashes and process exits.
+In a 66-worker, 90-second-per-mode run, Full's maximum Qt pause was **527 ms**;
+Chill still paused for **1,480 ms and 1,074 ms**. A separate Qt control peaked
+at **43 ms**. Freezes and variable native coverage remain open issues.
+
 The [Cycle 36 scoring and performance follow-up](analysis/loop/cycle36/README.md)
 clarifies native versus simulation scores. In an actual FIM-enabled GUI drill, all **38/38**
 steps completed; the signed AAR credited **37/37 verified simulation

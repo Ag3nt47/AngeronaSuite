@@ -2,7 +2,7 @@
 
 Practice artifacts intentionally look suspicious.  Their *names and contents*
 must never be used as an allowlist, though: malware can copy either.  This
-module records the exact paths, process tokens, and run identifiers generated
+module records exact file identities, process tokens, and run identifiers generated
 by an in-process drill immediately before/after creation.  Consumers may then
 label matching evidence as practice without weakening the evidence severity.
 
@@ -13,6 +13,8 @@ remains ordinary hostile evidence.
 from __future__ import annotations
 
 import os
+import hashlib
+import stat
 import threading
 import time
 from dataclasses import dataclass
@@ -25,6 +27,7 @@ _MAX_ARTIFACTS = 4096
 _MAX_PROCESSES = 1024
 _ID_MAX = 160
 _TOKEN_MAX = 256
+_ARTIFACT_HASH_MAX = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,8 @@ class PracticeProvenance:
     kind: str
     expires_at: float
     pid: int | None = None
+    file_identity: tuple[int, int, int] | None = None
+    content_sha256: str = ""
 
 
 _lock = threading.RLock()
@@ -88,6 +93,100 @@ def _lexical_path_key(value: object) -> str:
         return ""
 
 
+def _file_identity(info: os.stat_result) -> tuple[int, int, int] | None:
+    """A stable file ID; names, bytes, and mutable timestamps grant no trust."""
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or int(getattr(info, "st_nlink", 0)) != 1
+        or int(getattr(info, "st_ino", 0)) <= 0
+        or int(getattr(info, "st_file_attributes", 0)) & 0x400
+    ):
+        return None
+    return (
+        int(info.st_dev),
+        int(info.st_ino),
+        int(getattr(info, "st_birthtime_ns", 0) or 0),
+    )
+
+
+def _artifact_identity(path: object, descriptor: int | None = None) -> tuple[int, int, int] | None:
+    """Compare the named leaf with a held ordinary file, without following links."""
+    opened: int | None = None
+    try:
+        leaf = Path(os.fspath(path))
+        before = _file_identity(leaf.stat(follow_symlinks=False))
+        if before is None:
+            return None
+        if descriptor is None:
+            opened = os.open(
+                leaf,
+                os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            descriptor = opened
+        held = _file_identity(os.fstat(descriptor))
+        after = _file_identity(leaf.stat(follow_symlinks=False))
+        return before if before == held == after else None
+    except (OSError, TypeError, ValueError, RuntimeError):
+        return None
+    finally:
+        if opened is not None:
+            os.close(opened)
+
+
+def _artifact_digest(
+    path: object, identity: tuple[int, int, int], descriptor: int | None,
+) -> str:
+    """Hash a bounded completed file while its created identity still owns the name."""
+    opened: int | None = None
+    saved_offset: int | None = None
+    try:
+        if descriptor is None:
+            opened = os.open(
+                path,
+                os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            reader = opened
+        else:
+            reader = descriptor
+            saved_offset = os.lseek(reader, 0, os.SEEK_CUR)
+            os.lseek(reader, 0, os.SEEK_SET)
+        before = os.fstat(reader)
+        if (
+            _file_identity(before) != identity
+            or before.st_size < 0
+            or before.st_size > _ARTIFACT_HASH_MAX
+        ):
+            return ""
+        digest = hashlib.sha256()
+        remaining = _ARTIFACT_HASH_MAX
+        while True:
+            chunk = os.read(reader, min(65536, remaining + 1))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            if remaining < 0:
+                return ""
+            digest.update(chunk)
+        after = os.fstat(reader)
+        if (
+            _file_identity(after) != identity
+            or after.st_size != before.st_size
+            or after.st_mtime_ns != before.st_mtime_ns
+            or _artifact_identity(path, descriptor) != identity
+        ):
+            return ""
+        return digest.hexdigest()
+    except (OSError, TypeError, ValueError, RuntimeError):
+        return ""
+    finally:
+        if saved_offset is not None and descriptor is not None:
+            os.lseek(descriptor, saved_offset, os.SEEK_SET)
+        if opened is not None:
+            os.close(opened)
+
+
 def _rebuild_artifact_candidates_locked() -> None:
     # Retain at most the original spelling and canonical path for each live
     # registration.  Unregistered aliases deliberately fail closed.
@@ -132,15 +231,26 @@ def register_run(run_id: object, *, kind: str = "practice",
 
 
 def register_artifact(path: object, run_id: object, *, kind: str = "practice",
-                      ttl: float = _DEFAULT_TTL_S) -> str:
-    """Register exactly one path created by an already-authorized practice run."""
+                      ttl: float = _DEFAULT_TTL_S,
+                      descriptor: int | None = None) -> str:
+    """Register only an existing ordinary file bound to its held file ID."""
+    identity = _artifact_identity(path, descriptor)
+    if identity is None:
+        return ""
+    digest = _artifact_digest(path, identity, descriptor)
+    if not digest:
+        return ""
     key = _path_key(path)
+    if not key or _artifact_identity(path, descriptor) != identity:
+        return ""
     rid = register_run(run_id, kind=kind, ttl=ttl)
-    if not key or not rid:
+    if not rid:
         return ""
     now = time.monotonic()
     record = PracticeProvenance(rid, _safe_id(kind) or "practice",
-                                now + max(1.0, float(ttl)))
+                                now + max(1.0, float(ttl)),
+                                file_identity=identity,
+                                content_sha256=digest)
     with _lock:
         _prune_locked(now)
         _bounded_put(_artifacts, key, record, _MAX_ARTIFACTS)
@@ -224,7 +334,28 @@ def unregister_run(run_id: object) -> int:
     return removed
 
 
-def _registered_artifact(value: object) -> tuple[str, PracticeProvenance] | None:
+def _observed_file_proof(
+    details: dict,
+) -> tuple[tuple[int, int, int], str] | None:
+    raw = details.get("observed_file_identity")
+    digest = details.get("observed_content_sha256")
+    if not isinstance(raw, dict) or not isinstance(digest, str):
+        return None
+    device, inode = raw.get("device"), raw.get("inode")
+    birth = raw.get("birthtime_ns", 0)
+    if (
+        type(device) is not int or type(inode) is not int
+        or type(birth) is not int or inode <= 0 or birth < 0
+        or len(digest) != 64
+        or any(char not in "0123456789abcdef" for char in digest)
+    ):
+        return None
+    return (device, inode, birth), digest
+
+
+def _registered_artifact(
+    value: object, observed: tuple[int, int, int], digest: str,
+) -> tuple[str, PracticeProvenance] | None:
     candidate = _lexical_path_key(value)
     with _lock:
         if not candidate or candidate not in _artifact_candidate_keys:
@@ -236,7 +367,24 @@ def _registered_artifact(value: object) -> tuple[str, PracticeProvenance] | None
     key = _path_key(value)
     with _lock:
         record = _artifacts.get(key) if key else None
-        if record is not None and record.expires_at > time.monotonic():
+    if record is None or record.expires_at <= time.monotonic():
+        return None
+    enrolled = record.file_identity
+    if (
+        enrolled is None
+        or enrolled[:2] != observed[:2]
+        or (observed[2] and enrolled[2] != observed[2])
+        or record.content_sha256 != digest
+    ):
+        return None
+    # Classify the object the detector observed, even if response has since
+    # quarantined it. Reopening the current pathname cannot establish the
+    # identity of an earlier observation and adds blocking filesystem work.
+    with _lock:
+        if (
+            _artifacts.get(key) is record
+            and record.expires_at > time.monotonic()
+        ):
             return key, record
     return None
 
@@ -257,36 +405,38 @@ def provenance_for_event(event: object) -> PracticeProvenance | None:
             return None
         has_artifacts = bool(_artifacts)
 
-    if has_artifacts:
-        for field in ("artifact_path", "path", "file_path"):
-            match = _registered_artifact(details.get(field))
-            if match is not None:
-                return match[1]
-
-        # Multi-resource detections are practice only when every local artifact
-        # is registered to the same live run.  A mixed real+practice Defender
-        # alert must remain active.
-        values = details.get("artifact_paths")
-        if isinstance(values, (list, tuple)) and values:
-            records = []
-            for value in values[:65]:
-                match = _registered_artifact(value)
-                if match is None:
-                    records = []
-                    break
-                records.append(match)
-            if (
-                records
-                and len(records) == len(values)
-                and len({record.run_id for _, record in records}) == 1
+    path_values = [
+        details[field]
+        for field in ("artifact_path", "path", "file_path")
+        if details.get(field)
+    ]
+    resources = details.get("artifact_paths")
+    if resources is not None:
+        if not isinstance(resources, (list, tuple)):
+            return None
+        path_values.extend(resources)
+    if path_values:
+        # Every stated file resource must be bound to this same live run. A
+        # registered artifact beside a real file cannot suppress that file.
+        proof = _observed_file_proof(details)
+        if not has_artifacts or len(path_values) > 68 or proof is None:
+            return None
+        records = []
+        for value in path_values:
+            match = _registered_artifact(value, *proof)
+            if match is None:
+                return None
+            records.append(match)
+        if len({record.run_id for _, record in records}) != 1:
+            return None
+        with _lock:
+            now = time.monotonic()
+            if all(
+                _artifacts.get(key) is record and record.expires_at > now
+                for key, record in records
             ):
-                with _lock:
-                    now = time.monotonic()
-                    if all(
-                        _artifacts.get(key) is record and record.expires_at > now
-                        for key, record in records
-                    ):
-                        return records[0][1]
+                return records[0][1]
+        return None
 
     with _lock:
         _prune_locked(time.monotonic())

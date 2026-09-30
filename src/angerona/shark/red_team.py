@@ -189,8 +189,6 @@ class RedTeamEngine:
         step = RedTeamStep(stage=stage, technique=technique, description=description,
                            ts_start=ts_start, ts_end=time.time(), **kw)
         self.steps.append(step)
-        for path in step.artifact_paths:
-            register_artifact(path, self.run_id, kind="red-team")
         for token in step.correlation_tokens:
             register_process(token, self.run_id, kind="red-team")
         return step
@@ -269,15 +267,11 @@ class RedTeamEngine:
                     "marker creation did not yield one regular single-link file"
                 )
             # Ownership begins only after exclusive creation proved that this
-            # exact leaf did not pre-exist. Real-time AV/FIM can then resolve
-            # provenance before the first content byte is written, without a
-            # failed O_EXCL attempt ever granting cleanup authority over an
-            # attacker-planted alias.
+            # exact leaf did not pre-exist. Practice provenance is issued only
+            # for completed bytes bound to this held file identity.
             registered = False
             enrolled = False
             try:
-                register_artifact(p, self.run_id, kind="red-team")
-                registered = True
                 offset = 0
                 while offset < len(encoded):
                     written = os.write(descriptor, encoded[offset:])
@@ -299,6 +293,13 @@ class RedTeamEngine:
                     raise RedTeamValidationError(
                         "marker identity changed during exclusive creation"
                     )
+                if not register_artifact(
+                    p, self.run_id, kind="red-team", descriptor=descriptor,
+                ):
+                    raise RedTeamValidationError(
+                        "marker could not be bound to its completed bytes"
+                    )
+                registered = True
                 if type(lease) is RedTeamValidationLease:
                     RedTeamValidationLease.register_artifact_handle(
                         lease, p, run_id=self.run_id

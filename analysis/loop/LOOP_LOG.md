@@ -3898,3 +3898,21 @@ sample near the QEMU test found 100% CPU saturation, with Defender using about
 CPU to about 65%. This plausibly explains timing pressure but does not prove
 causation. No Angerona/QEMU test process remained in the later sample. A further
 exact-commit gate was required for the combined tree.
+
+## Round 1 — Red Team (Cycle 37)
+
+Completed-code follow-up: held-identity/content practice provenance, exclusive
+Shark artifacts and identity-bound Windows cleanup, authenticated asynchronous
+AAR history, YARA thread ownership, Windows FIM sharing and bounded churn
+retry, plus flight-cache/histogram/panel optimizations. Two FIM-enabled GUI
+runs verified 37/37 containment each; native results were 34/37 and 11/37.
+Independent OS witnesses matched quarantine hashes and process exits.
+The 66-worker repeat measured 1480/527/1074 ms maximum Chill/Full/Chill Qt
+slips versus 43 ms in a simultaneous separate Qt process. All 1079 events
+persisted. Chill freezes and variable native coverage remain open. See
+`cycle37/README.md` for scopes, unsuccessful attempts and validation limits.
+
+- **R37-01 (MEDIUM):** Shark's fixed BYOVD marker name could truncate a pre-existing hardlink or file in a selected drill directory; inert Windows proof succeeded on the baseline, and the candidate exclusive-create patch refused it.
+- **R37-02 (MEDIUM):** Shark Stop & clean could unlink an unrelated same-name replacement; inert baseline proof succeeded, and candidate identity-bound cleanup preserved the replacement.
+- **R37-03 (LOW):** the historical AAR tab rendered forged unsigned report text as a past score; a candidate signed-JSON/text-digest viewer refused the forged pair in an independent offscreen UI challenge.
+- **R37-04 (LOW):** synchronous unbounded AAR and stale Shark marker reads could stall the UI/drill; candidate viewer and Shark inventory now impose byte/item bounds, with combined validation pending.

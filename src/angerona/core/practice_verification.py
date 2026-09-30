@@ -60,6 +60,25 @@ def _emit_progress(progress: Callable[[int, str], None] | None,
         pass
 
 
+def _write_registered_marker(path: Path, body: str, run_id: str) -> None:
+    """Create one inert control exclusively, then bind its held file ID."""
+    descriptor = os.open(
+        path,
+        os.O_RDWR | os.O_CREAT | os.O_EXCL
+        | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(body.encode("utf-8"))
+        stream.flush()
+        os.fsync(stream.fileno())
+        if not register_artifact(
+            path, run_id, kind="practice-verification",
+            descriptor=stream.fileno(),
+        ):
+            raise OSError("practice marker could not be bound to its created file ID")
+
+
 @contextmanager
 def _scoped_practice_response(root: Path):
     keys = (
@@ -230,25 +249,20 @@ def verify_practice_fixes(
         _emit_progress(progress, base_pct, f"Testing {mitre} positive control")
         try:
             priority_cursor = bus.priority_revision()
-            register_artifact(
+            _write_registered_marker(
                 negative,
+                "PRACTICE NEGATIVE CONTROL — ordinary benign note.\n",
                 verification_id,
-                kind="practice-verification",
             )
-            negative.write_text("PRACTICE NEGATIVE CONTROL — ordinary benign note.\n", encoding="utf-8")
             if mitre in _FILE_TOKENS:
                 token = _FILE_TOKENS[mitre]
                 positive = root / (
                     f"_redteam_{token}_practice_{verification_id}.txt"
                 )
-                register_artifact(
+                _write_registered_marker(
                     positive,
-                    verification_id,
-                    kind="practice-verification",
-                )
-                positive.write_text(
                     "ANGERONA PRACTICE TEST — inert positive marker; never executed.\n",
-                    encoding="utf-8",
+                    verification_id,
                 )
             elif mitre == _PROCESS_TECHNIQUE:
                 _probe, process = _publish_process_probe(bus, verification_id)

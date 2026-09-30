@@ -26,7 +26,7 @@ import os
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
     QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 
 from angerona.core.data_paths import data_dir
 from angerona.core.source_sandbox import SourceSandboxWorkspace
+from angerona.gui.aar_history import HistoryListing, list_history, load_verified_history_text
 from angerona.gui.animations import RunSpinner
 from angerona.shark.run_manifest import RED_TEAM_COMPREHENSIVE_PLAN
 
@@ -88,6 +89,45 @@ _INTENSITY_DESC = {
 
 
 _RED_TEAM_SOURCE = "src/angerona/shark/red_team.py"
+_MAX_HISTORY_RENDER_CHARS = 512 * 1024
+
+_HISTORY_POOL: QThreadPool | None = None
+
+
+def _history_pool() -> QThreadPool:
+    """Keep bounded report I/O away from the Qt thread and dialog lifetime."""
+    global _HISTORY_POOL
+    if _HISTORY_POOL is None:
+        pool = QThreadPool()
+        pool.setMaxThreadCount(2)
+        pool.setExpiryTimeout(10_000)
+        _HISTORY_POOL = pool
+    return _HISTORY_POOL
+
+
+class _HistorySignals(QObject):
+    finished = Signal(str, str, object)
+
+
+class _HistoryWorker(QRunnable):
+    def __init__(self, operation: str, root: Path, name: str = "") -> None:
+        super().__init__()
+        self.operation = operation
+        self.root = root
+        self.name = name
+        self.signals = _HistorySignals()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = (
+                list_history(self.root)
+                if self.operation == "list"
+                else load_verified_history_text(self.root, self.name)
+            )
+        except Exception as exc:
+            result = {"error": str(exc)}
+        self.signals.finished.emit(self.operation, self.name, result)
 
 
 class _StageChip(QLabel):
@@ -148,6 +188,14 @@ class RedTeamConsole(QDialog):
         self._run_cancelled = False
         self._run_pending = False
         self._launch_queued = False
+        self._history_pool = _history_pool()
+        self._hist_accept_results = True
+        self._hist_listing = False
+        self._hist_refresh_pending = False
+        self._hist_reading = False
+        self._hist_pending_name: str | None = None
+        self._hist_active_name: str | None = None
+        self.finished.connect(self._stop_history_loads)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 14)
@@ -635,7 +683,7 @@ class RedTeamConsole(QDialog):
     def _build_history_tab(self) -> QWidget:
         w = QWidget(); lay = QVBoxLayout(w)
         lay.addWidget(self._h("Past After-Action Reports"))
-        lay.addWidget(QLabel("Previous drill reports, newest first — click one to view it."))
+        lay.addWidget(QLabel("Previous drill reports, newest first. Text appears only after its signed metadata and digest verify."))
         body = QHBoxLayout()
         self._hist_list = QListWidget(); self._hist_list.setFixedWidth(320)
         self._hist_list.currentItemChanged.connect(self._on_hist_select)
@@ -659,40 +707,115 @@ class RedTeamConsole(QDialog):
             return data_dir() / "aar_history"
 
     def _load_history(self) -> None:
+        if not self._hist_accept_results:
+            return
+        if self._hist_listing:
+            self._hist_refresh_pending = True
+            return
+        self._hist_listing = True
+        self._hist_active_name = None
+        self._hist_pending_name = None
         self._hist_list.clear()
+        self._hist_view.setPlainText("Loading report history…")
+        worker = _HistoryWorker("list", self._history_dir())
+        worker.signals.finished.connect(self._on_history_result)
         try:
-            files = sorted(self._history_dir().glob("*_aar_*.txt"),
-                           key=lambda p: p.stat().st_mtime, reverse=True)
-        except Exception:
-            files = []
+            self._history_pool.start(worker)
+        except Exception as exc:
+            self._hist_listing = False
+            self._hist_view.setPlainText(f"Could not load report history: {exc}")
+
+    @Slot(str, str, object)
+    def _on_history_result(self, operation: str, name: str, result: object) -> None:
+        if not self._hist_accept_results:
+            return
+        if operation == "text":
+            self._hist_reading = False
+            pending = self._hist_pending_name
+            self._hist_pending_name = None
+            if pending is not None and pending != name:
+                self._start_history_read(pending)
+                return
+            current = self._hist_list.currentItem()
+            selected = current.data(Qt.ItemDataRole.UserRole) if current else None
+            if selected != name or self._hist_active_name != name:
+                return
+            label = current.text()
+            for prefix in ("◌ ", "✓ ", "⚠ "):
+                label = label.removeprefix(prefix)
+            if isinstance(result, str):
+                current.setText("✓ " + label)
+                if len(result) > _MAX_HISTORY_RENDER_CHARS:
+                    self._hist_view.setPlainText(
+                        result[:_MAX_HISTORY_RENDER_CHARS]
+                        + "\n\n[Display shortened after full signature verification. Open the report folder to read the complete signed file.]"
+                    )
+                else:
+                    self._hist_view.setPlainText(result)
+            else:
+                current.setText("⚠ " + label)
+                reason = result.get("error", "unknown error") if isinstance(result, dict) else "unknown error"
+                self._hist_view.setPlainText(f"Report authenticity could not be verified: {reason}")
+            return
+
+        self._hist_listing = False
+        if self._hist_refresh_pending:
+            self._hist_refresh_pending = False
+            self._load_history()
+            return
+        if isinstance(result, dict) and "error" in result:
+            self._hist_view.setPlainText(f"Could not load report history: {result['error']}")
+            return
+        listing = result if isinstance(result, HistoryListing) else HistoryListing([])
+        files = listing.rows
         if not files:
-            it = QListWidgetItem("(no past reports yet — run a simulation)")
+            label = "(history scan limited; no verified reports found)" if listing.limited else "(no past reports yet — run a simulation)"
+            it = QListWidgetItem(label)
             it.setData(Qt.ItemDataRole.UserRole, None)
             self._hist_list.addItem(it)
-            self._hist_view.setPlainText("")
+            self._hist_view.setPlainText("History scan reached its safety limit; no authenticated report was found." if listing.limited else "No authenticated report history is available.")
             return
-        for p in files:
-            kind = "RED TEAM" if "redteam" in p.name.lower() else "SHARK"
+        for name, modified, basename in files:
+            kind = "RED TEAM" if basename == "redteam_aar" else "SHARK"
             try:
-                ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(p.stat().st_mtime))
+                ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(modified))
             except Exception:
                 ts = "?"
-            it = QListWidgetItem(f"{kind}  ·  {ts}")
-            it.setData(Qt.ItemDataRole.UserRole, str(p))
+            it = QListWidgetItem(f"◌ {kind}  ·  {ts}")
+            it.setData(Qt.ItemDataRole.UserRole, name)
+            self._hist_list.addItem(it)
+        if listing.limited:
+            it = QListWidgetItem("(history scan limited; showing verified reports found)")
+            it.setData(Qt.ItemDataRole.UserRole, None)
             self._hist_list.addItem(it)
         self._hist_list.setCurrentRow(0)
 
     def _on_hist_select(self, cur, _prev) -> None:
         if cur is None:
             return
-        path = cur.data(Qt.ItemDataRole.UserRole)
-        if not path:
+        name = cur.data(Qt.ItemDataRole.UserRole)
+        if not name:
             self._hist_view.setPlainText("")
             return
+        self._hist_active_name = name
+        self._hist_view.setPlainText("Verifying report signature and text…")
+        if self._hist_reading:
+            self._hist_pending_name = name
+            return
+        self._start_history_read(name)
+
+    def _start_history_read(self, name: str) -> None:
+        self._hist_reading = True
+        worker = _HistoryWorker("text", self._history_dir(), name)
+        worker.signals.finished.connect(self._on_history_result)
         try:
-            self._hist_view.setPlainText(Path(path).read_text(encoding="utf-8", errors="replace"))
+            self._history_pool.start(worker)
         except Exception as exc:
-            self._hist_view.setPlainText(f"Could not read report: {exc}")
+            self._hist_reading = False
+            self._hist_view.setPlainText(f"Could not verify report history: {exc}")
+
+    def _stop_history_loads(self, _result: int) -> None:
+        self._hist_accept_results = False
 
     def _on_tab_changed(self, idx: int) -> None:
         try:

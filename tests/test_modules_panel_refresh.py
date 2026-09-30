@@ -81,7 +81,7 @@ def panel_factory(monkeypatch):
     monkeypatch.setattr(pages, "QTableWidget", _ItemOnlyTable)
     monkeypatch.setattr(
         pages, "_module_assurance",
-        lambda manager, module, operational=None: SimpleNamespace(
+        lambda manager, module, operational=None, *, enabled=None: SimpleNamespace(
             score=module.assurance_score, reasons=(), dimensions=(),
         ),
     )
@@ -177,6 +177,44 @@ def test_unchanged_refresh_preserves_every_item_without_policy_writes(panel_fact
         assert all(old is new for old, new in zip(old_items, _items(panel, name)))
     assert manager.enable_calls == []
     assert changes.count() == 0
+
+
+def test_refresh_uses_one_current_policy_snapshot_per_module(panel_factory, monkeypatch):
+    panel, manager = panel_factory([_ProbeModule("Alpha"), _ProbeModule("Bravo")])
+    calls = []
+    assured = []
+
+    def read_usage(name):
+        calls.append(name)
+        enabled = manager.enabled[name]
+        return SimpleNamespace(enabled=enabled, reason=f"policy: {enabled}")
+
+    def assess(_manager, module, _operational=None, *, enabled=None):
+        assured.append((module.name, enabled))
+        return SimpleNamespace(score=module.assurance_score, reasons=(), dimensions=())
+
+    monkeypatch.setattr(manager, "module_usage", read_usage, raising=False)
+    monkeypatch.setattr(pages, "_module_assurance", assess)
+    monkeypatch.setattr(
+        manager, "is_enabled",
+        lambda _name: pytest.fail("policy was re-evaluated during row render"),
+    )
+    manager.enabled["Bravo"] = False
+    panel.refresh()
+
+    assert calls == ["Alpha", "Bravo"]
+    assert assured == [("Alpha", True), ("Bravo", False)]
+    assert _items(panel, "Bravo")[0].checkState() == Qt.Unchecked
+    assert _items(panel, "Bravo")[0].toolTip() == "policy: False"
+
+    calls.clear()
+    assured.clear()
+    manager.enabled["Bravo"] = True
+    panel.refresh()
+    assert calls == ["Alpha", "Bravo"]
+    assert assured == [("Alpha", True), ("Bravo", True)]
+    assert _items(panel, "Bravo")[0].checkState() == Qt.Checked
+    assert _items(panel, "Bravo")[0].toolTip() == "policy: True"
 
 
 def test_programmatic_refresh_uses_authoritative_enabled_state(panel_factory):

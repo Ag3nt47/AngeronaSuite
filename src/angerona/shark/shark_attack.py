@@ -83,9 +83,11 @@ variants — only ``technique``/``description`` and the mechanics do.
 from __future__ import annotations
 
 import hashlib
+import fnmatch
 import os
 import random
 import socket
+import stat
 import threading
 import time
 import uuid
@@ -95,7 +97,9 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from angerona.core.archive_safety import read_bounded_member, validate_zip_members
-from angerona.core.practice_scope import register_artifact, register_run
+from angerona.core.practice_scope import (
+    register_artifact, register_run, unregister_artifact, unregister_run,
+)
 from angerona.shark.run_manifest import (
     build_run_history,
     preflight_run,
@@ -145,36 +149,69 @@ def _pick_exfil_host() -> str:
     return host
 
 
+_MARKER_READ_MAX_BYTES = 1024 * 1024
+_MARKER_SAMPLE_BYTES = 4096
+
+
+def _plain_single_link(info: os.stat_result) -> bool:
+    return bool(
+        stat.S_ISREG(info.st_mode)
+        and int(getattr(info, "st_nlink", 0)) == 1
+        and not (int(getattr(info, "st_file_attributes", 0)) & 0x400)
+    )
+
+
 def _file_has_marker(p: Path) -> bool:
-    """True if p's content contains EICAR_MARKER — the single safety check
-    that lets cleanup ever delete anything (see _cleanup_stale_artifacts).
-    Zip archives need their own path since the marker text is compressed,
-    not literally present in the raw file bytes."""
+    """Inspect a small, ordinary file; this grants no deletion authority."""
+    descriptor: int | None = None
     try:
+        named = p.stat(follow_symlinks=False)
+        if (
+            not _plain_single_link(named)
+            or named.st_size < 0
+            or named.st_size > _MARKER_READ_MAX_BYTES
+        ):
+            return False
+        descriptor = os.open(
+            p, os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        held = os.fstat(descriptor)
+        if (
+            not _plain_single_link(held)
+            or held.st_size != named.st_size
+            or (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)
+        ):
+            return False
         if p.suffix.lower() == ".zip":
-            with zipfile.ZipFile(p) as zf:
+            with os.fdopen(os.dup(descriptor), "rb") as stream, zipfile.ZipFile(stream) as zf:
                 members = validate_zip_members(
                     zf.infolist(),
                     max_files=64,
-                    max_member_bytes=2 * 1024 * 1024,
-                    max_total_bytes=16 * 1024 * 1024,
+                    max_member_bytes=_MARKER_READ_MAX_BYTES,
+                    max_total_bytes=_MARKER_READ_MAX_BYTES,
                     max_ratio=100,
                 )
                 for member in members:
                     sample = read_bounded_member(
                         zf,
                         member,
-                        max_bytes=2 * 1024 * 1024,
+                        max_bytes=_MARKER_READ_MAX_BYTES,
                     )
                     if EICAR_MARKER in sample.decode("ascii", errors="ignore"):
                         return True
             return False
-        text = p.read_text(encoding="ascii", errors="ignore")
+        text = os.read(descriptor, _MARKER_SAMPLE_BYTES).decode(
+            "ascii", errors="ignore"
+        )
         # EICAR for the lure/persistence markers, plus the benign BYOVD-drill
         # marker (kept as a literal here to avoid an import cycle at module load).
         return EICAR_MARKER in text or "ANGERONA-BYOVD-DRILL-BENIGN-MARKER" in text
     except Exception:
         return False
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 @dataclass
@@ -222,6 +259,9 @@ class SharkAttackEngine:
         self._cancel = threading.Event()
         self.run_id = ""
         self.steps: List[SharkStep] = []
+        # Only a successful exclusive create grants this run cleanup custody.
+        self._owned_artifacts: dict[Path, tuple[int, int, int, int]] = {}
+        self._artifact_lock = threading.RLock()
 
     def _narrate(self, msg: str) -> None:
         if self._on_event:
@@ -276,6 +316,8 @@ class SharkAttackEngine:
         self.run_id = f"shark-{int(time.time())}-{uuid.uuid4().hex[:6]}"
         register_run(self.run_id, kind="shark")
         self.steps = []
+        with self._artifact_lock:
+            self._owned_artifacts.clear()
         self._running.set()
         self._thread = threading.Thread(
             target=self._run_playbook, args=(jitter_range, noise_chance),
@@ -285,45 +327,229 @@ class SharkAttackEngine:
         return True
 
     def stop_and_clean(self) -> None:
-        """Best-effort cleanup of anything the last run created that the SOAR
-        engine hasn't already removed. Safe to call any time."""
+        """Remove only files whose exact identity this run created."""
         self._cancel.set()
         self._running.clear()
         worker = self._thread
         if worker is not None and worker.is_alive() and worker is not threading.current_thread():
             worker.join(timeout=0.25)
-        for step in self.steps:
-            for p in step.artifact_paths:
+            if worker.is_alive():
+                # The worker will call this from its finally block. Never
+                # clean a pathname while that worker may still be writing it.
+                return
+        with self._artifact_lock:
+            owned = tuple(self._owned_artifacts.items())
+        for path, identity in owned:
+            if self._remove_owned_artifact(path, identity):
+                with self._artifact_lock:
+                    self._owned_artifacts.pop(path, None)
+        unregister_run(self.run_id)
+
+    @staticmethod
+    def _open_new_artifact(path: Path) -> int:
+        """Create a new leaf, refusing an existing file, link, or reparse leaf."""
+        if os.name != "nt":
+            return os.open(
+                path,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+
+        import ctypes
+        import msvcrt
+
+        kernel = ctypes.windll.kernel32
+        create = kernel.CreateFileW
+        create.argtypes = [
+            ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+        ]
+        create.restype = ctypes.c_void_p
+        handle = create(
+            str(path),
+            0x80000000 | 0x40000000 | 0x00010000,  # read, write, delete
+            0x1 | 0x2 | 0x4,  # share read, write, delete with sensors
+            None,
+            1,  # CREATE_NEW, including no replacement of an existing link
+            0x00200000,  # FILE_FLAG_OPEN_REPARSE_POINT
+            None,
+        )
+        if handle in (None, ctypes.c_void_p(-1).value):
+            error = int(kernel.GetLastError())
+            if error in {80, 183}:
+                raise FileExistsError(error, "drill artifact already exists", str(path))
+            raise OSError(error, "exclusive drill artifact creation failed", str(path))
+        try:
+            return msvcrt.open_osfhandle(
+                int(handle), os.O_RDWR | getattr(os, "O_BINARY", 0)
+            )
+        except Exception:
+            kernel.CloseHandle(ctypes.c_void_p(handle))
+            raise
+
+    @staticmethod
+    def _identity(info: os.stat_result) -> tuple[int, int, int, int]:
+        return (
+            int(info.st_dev), int(info.st_ino),
+            int(info.st_size), int(info.st_mtime_ns),
+        )
+
+    @staticmethod
+    def _dispose_windows_descriptor(descriptor: int) -> bool:
+        import ctypes
+        import msvcrt
+
+        class Disposition(ctypes.Structure):
+            _fields_ = [("delete_file", ctypes.c_ubyte)]
+
+        setter = ctypes.windll.kernel32.SetFileInformationByHandle
+        setter.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
+        ]
+        setter.restype = ctypes.c_int
+        value = Disposition(1)
+        return bool(setter(
+            ctypes.c_void_p(msvcrt.get_osfhandle(descriptor)),
+            4, ctypes.byref(value), ctypes.sizeof(value),
+        ))
+
+    @classmethod
+    def _remove_owned_artifact(
+        cls, path: Path, expected: tuple[int, int, int, int],
+    ) -> bool:
+        """Refuse a swapped pathname; only Windows can delete the held object."""
+        descriptor: int | None = None
+        try:
+            if os.name == "nt":
+                import ctypes
+                import msvcrt
+
+                kernel = ctypes.windll.kernel32
+                create = kernel.CreateFileW
+                create.argtypes = [
+                    ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+                    ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+                    ctypes.c_void_p,
+                ]
+                create.restype = ctypes.c_void_p
+                handle = create(
+                    str(path), 0x80000000 | 0x00010000,
+                    0x1 | 0x2 | 0x4, None, 3,
+                    0x00200000, None,  # OPEN_EXISTING, OPEN_REPARSE_POINT
+                )
+                if handle in (None, ctypes.c_void_p(-1).value):
+                    return False
                 try:
-                    Path(p).unlink(missing_ok=True)
+                    descriptor = msvcrt.open_osfhandle(
+                        int(handle), os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                    )
                 except Exception:
-                    pass
+                    kernel.CloseHandle(ctypes.c_void_p(handle))
+                    raise
+            else:
+                descriptor = os.open(
+                    path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_CLOEXEC", 0)
+                )
+            held = os.fstat(descriptor)
+            named = path.stat(follow_symlinks=False)
+            if (
+                not _plain_single_link(held)
+                or not _plain_single_link(named)
+                or cls._identity(held) != expected
+                or cls._identity(named) != expected
+            ):
+                return False
+            if os.name == "nt":
+                # A later name swap cannot redirect a disposition on this
+                # DELETE-capable handle to the replacement file.
+                return cls._dispose_windows_descriptor(descriptor)
+            # POSIX unlink/rename are pathname operations. A swap after the
+            # checks above could move an unrelated replacement into custody;
+            # leave this file for operator review instead of touching it.
+            return False
+        except (OSError, RuntimeError, ValueError):
+            return False
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
-    # Cleanup safety limits — see _cleanup_stale_artifacts() docstring for why
-    # these exist: the first version of this method deleted every leftover
-    # artifact at once and it backfired badly. A real run showed File
-    # Integrity Monitor firing SIX simultaneous HIGH "watched file deleted"
-    # alerts, which SOAR Automation correlated and AI Triage then read as
-    # "a previously unknown file was unexpectedly deleted... appearing to be
-    # part of a persistence mechanism; Malicious" — a false alarm that pushed
-    # the live threat level to HIGH, self-inflicted by Angerona's own
-    # housekeeping. FIM alerting on deletion is CORRECT behavior (ransomware/
-    # wipers delete files — that's genuinely worth a HIGH alert) and must
-    # not be weakened; the fix is to never give it a reason to look like a
-    # mass wipe in the first place.
-    _CLEANUP_MIN_AGE_S = 600   # never touch anything younger than this — keeps
-                               # cleanup completely out of the way of a run
-                               # that might still be inside another module's
-                               # detection window
-    _CLEANUP_MAX_PER_RUN = 2   # drains a backlog gradually across several
-                               # drills instead of all at once
-    _CLEANUP_SPACING_S = 2.0   # and even within one run, one at a time with a
-                               # gap — a trickle reads nothing like a wipe
+    def _create_artifact(
+        self, path: Path, writer: Callable[[int], None], *, durable: bool = True,
+    ) -> Path:
+        """Write through an exclusive handle and remember only its file ID."""
+        descriptor: int | None = None
+        created: os.stat_result | None = None
+        registered = False
+        try:
+            descriptor = self._open_new_artifact(path)
+            created = os.fstat(descriptor)
+            if not _plain_single_link(created):
+                raise OSError("drill artifact is not one ordinary single-link file")
+            writer(descriptor)
+            if durable:
+                os.fsync(descriptor)
+            after = os.fstat(descriptor)
+            if (
+                not _plain_single_link(after)
+                or (created.st_dev, created.st_ino)
+                != (after.st_dev, after.st_ino)
+            ):
+                raise OSError("drill artifact changed identity while writing")
+            try:
+                named = path.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                # A live responder may have already moved the exact marker.
+                # The write happened; no cleanup or practice trust is granted
+                # to a now-reusable pathname.
+                return path
+            if not _plain_single_link(named) or self._identity(named) != self._identity(after):
+                raise OSError("drill artifact name changed while writing")
+            if not register_artifact(
+                path, self.run_id, kind="shark", descriptor=descriptor,
+            ):
+                raise OSError("drill artifact could not be bound to its completed bytes")
+            registered = True
+            with self._artifact_lock:
+                self._owned_artifacts[path] = self._identity(after)
+            return path
+        except Exception:
+            if registered:
+                unregister_artifact(path, run_id=self.run_id)
+            if descriptor is not None and created is not None:
+                if os.name == "nt" and _plain_single_link(os.fstat(descriptor)):
+                    self._dispose_windows_descriptor(descriptor)
+                elif os.name != "nt":
+                    self._remove_owned_artifact(path, self._identity(os.fstat(descriptor)))
+            raise
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
-    # Every filename pattern any variant below can produce, so cleanup finds
-    # all of them. Kept as one list (rather than re-deriving from the step
-    # code) so it's easy to audit — and easy to extend when a new variant is
-    # added.
+    def _write_bytes_artifact(
+        self, path: Path, encoded: bytes, *, durable: bool = True,
+    ) -> Path:
+        def write(descriptor: int) -> None:
+            offset = 0
+            while offset < len(encoded):
+                count = os.write(descriptor, encoded[offset:])
+                if count <= 0:
+                    raise OSError("drill artifact write made no progress")
+                offset += count
+
+        return self._create_artifact(path, write, durable=durable)
+
+    def _write_text_artifact(self, path: Path, body: str, *, encoding: str) -> Path:
+        return self._write_bytes_artifact(path, body.encode(encoding))
+
+    # Old-run files have no in-memory creation custody. A bounded inventory may
+    # tell the operator they exist, but names and marker substrings never grant
+    # permission to delete someone else's file after an application restart.
+    _CLEANUP_MIN_AGE_S = 600
+    _CLEANUP_MAX_SCAN_ENTRIES = 64
+    _CLEANUP_MAX_MATCHES = 2
+
     _CLEANUP_GLOBS = [
         # (directory attribute name, glob pattern)
         ("downloads_dir", "invoice_*.txt"),
@@ -335,49 +561,37 @@ class SharkAttackEngine:
     ]
 
     def _cleanup_stale_artifacts(self) -> None:
-        """Sweep up leftover marker files from PRIOR runs before this one
-        starts. stop_and_clean() only knows about the run that made a given
-        SharkAttackEngine instance's own self.steps, which doesn't survive
-        an app restart — so without this, every drill leaves artifacts in
-        Downloads/Documents behind, forever. Left unchecked, those pile up
-        and YARA/FIM keep re-matching old ones on every scan, muddying every
-        later status snapshot (and AAR diagnosis) with detections that
-        aren't from the current run.
-
-        Content-verified via _file_has_marker() before deleting anything —
-        so this can never touch a real user file that merely happens to
-        share a naming pattern. Age-gated, capped, and spaced out (see the
-        constants above) so it can never itself look like the kind of mass
-        file deletion a real intrusion would cause."""
+        """Survey a few old markers without granting heuristic deletion."""
         now = time.time()
-        candidates: List[Path] = []
-        for dir_attr, pattern in self._CLEANUP_GLOBS:
-            directory = getattr(self, dir_attr)
+        by_directory: dict[Path, list[str]] = {}
+        for attr, pattern in self._CLEANUP_GLOBS:
+            by_directory.setdefault(getattr(self, attr), []).append(pattern)
+        found = 0
+        for directory, patterns in by_directory.items():
             try:
-                for p in directory.glob(pattern):
-                    try:
-                        if now - p.stat().st_mtime < self._CLEANUP_MIN_AGE_S:
+                with os.scandir(directory) as entries:
+                    for index, entry in enumerate(entries):
+                        if index >= self._CLEANUP_MAX_SCAN_ENTRIES or self._cancel.is_set():
+                            break
+                        if not any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in patterns):
                             continue
-                        if _file_has_marker(p):
-                            candidates.append(p)
-                    except Exception:
-                        continue
-            except Exception:
+                        info = entry.stat(follow_symlinks=False)
+                        if now - info.st_mtime < self._CLEANUP_MIN_AGE_S:
+                            continue
+                        if _file_has_marker(Path(entry.path)):
+                            found += 1
+                            if found >= self._CLEANUP_MAX_MATCHES:
+                                break
+            except OSError:
                 continue
-
-        removed = 0
-        for p in candidates[: self._CLEANUP_MAX_PER_RUN]:
-            try:
-                p.unlink()
-                removed += 1
-                if self._cancel.wait(self._CLEANUP_SPACING_S):
-                    break
-            except Exception:
-                continue
-        if removed:
-            self._narrate(f"\U0001F9F9 Cleaned up {removed} leftover artifact(s) from "
-                          "earlier drills (aged, capped, and spaced out — never the "
-                          "current run's own files, never a burst).")
+            if found >= self._CLEANUP_MAX_MATCHES:
+                break
+        if found:
+            self._narrate(
+                f"\U0001F9F9 Found {found} older marker-looking artifact(s); "
+                "left in place for operator review because this run cannot "
+                "prove their original file identity."
+            )
 
     # ── Playbook ─────────────────────────────────────────────────────────
     def _jitter(self, lo: float, hi: float, note: str = "") -> None:
@@ -466,14 +680,7 @@ class SharkAttackEngine:
         step = SharkStep(stage=stage, technique=technique, description=description,
                           ts_start=ts_start, ts_end=time.time(), **kw)
         self.steps.append(step)
-        for path in step.artifact_paths:
-            register_artifact(path, self.run_id, kind="shark")
         return step
-
-    def _practice_artifact(self, path: Path) -> Path:
-        """Register an exact drill output before a real-time sensor can see it."""
-        register_artifact(path, self.run_id, kind="shark")
-        return path
 
     # 1) Initial Access — drop a known-inert test file where the YARA
     #    scanner already looks (Downloads). VARIETY ENGINE axis 1: four
@@ -491,45 +698,49 @@ class SharkAttackEngine:
             self.downloads_dir.mkdir(parents=True, exist_ok=True)
             hexid = uuid.uuid4().hex[:8]
             if variant == "plain_text":
-                path = self._practice_artifact(
-                    self.downloads_dir / f"invoice_{hexid}.txt"
-                )
+                path = self.downloads_dir / f"invoice_{hexid}.txt"
                 self._narrate("▶ STAGE: Initial Access [plain text lure] — dropping an inert "
                               f"EICAR-marker test file into {self.downloads_dir} (mimics opening "
                               "a malicious email attachment).")
-                path.write_text(f"{EICAR_MARKER} :: Angerona Shark Attack drill sample\n",
-                               encoding="ascii")
+                self._write_text_artifact(
+                    path, f"{EICAR_MARKER} :: Angerona Shark Attack drill sample\n",
+                    encoding="ascii",
+                )
                 technique = "T1204-style file drop (plain text)"
             elif variant == "double_extension":
-                path = self._practice_artifact(
-                    self.downloads_dir / f"resume_{hexid}.pdf.txt"
-                )
+                path = self.downloads_dir / f"resume_{hexid}.pdf.txt"
                 self._narrate("▶ STAGE: Initial Access [double-extension lure] — dropping a "
                               f"file disguised to look like a PDF into {self.downloads_dir} "
                               "(a classic real-world phishing filename trick).")
-                path.write_text(f"{EICAR_MARKER} :: Angerona Shark Attack drill sample "
-                               "(double-extension lure)\n", encoding="ascii")
+                self._write_text_artifact(
+                    path, f"{EICAR_MARKER} :: Angerona Shark Attack drill sample "
+                    "(double-extension lure)\n", encoding="ascii",
+                )
                 technique = "T1204-style file drop (double extension)"
             elif variant == "zipped":
-                path = self._practice_artifact(
-                    self.downloads_dir / f"shipping_label_{hexid}.zip"
-                )
+                path = self.downloads_dir / f"shipping_label_{hexid}.zip"
                 self._narrate("▶ STAGE: Initial Access [zipped lure] — dropping an EICAR-marker "
                               f"test file inside a real .zip archive into {self.downloads_dir} "
                               "(tests whether signature scanning looks inside archives).")
-                with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
-                    zf.writestr("shipping_label.txt",
-                               f"{EICAR_MARKER} :: Angerona Shark Attack drill sample (zipped)\n")
+                def write_zip(descriptor: int) -> None:
+                    with os.fdopen(os.dup(descriptor), "w+b") as stream:
+                        with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as zf:
+                            zf.writestr(
+                                "shipping_label.txt",
+                                f"{EICAR_MARKER} :: Angerona Shark Attack drill sample (zipped)\n",
+                            )
+
+                self._create_artifact(path, write_zip)
                 technique = "T1204-style file drop (zipped)"
             else:  # html_lure
-                path = self._practice_artifact(
-                    self.downloads_dir / f"urgent_invoice_{hexid}.html"
-                )
+                path = self.downloads_dir / f"urgent_invoice_{hexid}.html"
                 self._narrate("▶ STAGE: Initial Access [HTML lure] — dropping a static "
                               f"'view invoice' page containing the EICAR marker into "
                               f"{self.downloads_dir} (no scripts, purely static text).")
-                path.write_text(f"<html><body><h1>Invoice</h1><p>{EICAR_MARKER}</p>"
-                               "</body></html>\n", encoding="ascii")
+                self._write_text_artifact(
+                    path, f"<html><body><h1>Invoice</h1><p>{EICAR_MARKER}</p>"
+                    "</body></html>\n", encoding="ascii",
+                )
                 technique = "T1204-style file drop (HTML lure)"
             self._narrate(f"   done — wrote {path}")
             self._record("Initial Access", technique,
@@ -596,10 +807,8 @@ class SharkAttackEngine:
                 self._narrate("▶ STAGE: Persistence (SIMULATED) [single marker] — dropping one "
                               f"marker file in {self.documents_dir}. The registry, Startup "
                               "folder, and Task Scheduler are never touched.")
-                p = self._practice_artifact(
-                    self.documents_dir / f"_shark_persistence_marker_{uuid.uuid4().hex[:8]}.txt"
-                )
-                p.write_text(body, encoding="ascii")
+                p = self.documents_dir / f"_shark_persistence_marker_{uuid.uuid4().hex[:8]}.txt"
+                self._write_text_artifact(p, body, encoding="ascii")
                 paths.append(p)
                 technique = "T1547-style marker only (single)"
             elif variant == "double_marker":
@@ -608,10 +817,8 @@ class SharkAttackEngine:
                               "dropper leaves multiple artifacts). The registry, Startup folder, "
                               "and Task Scheduler are never touched.")
                 for _ in range(2):
-                    p = self._practice_artifact(
-                        self.documents_dir / f"_shark_persistence_marker_{uuid.uuid4().hex[:8]}.txt"
-                    )
-                    p.write_text(body, encoding="ascii")
+                    p = self.documents_dir / f"_shark_persistence_marker_{uuid.uuid4().hex[:8]}.txt"
+                    self._write_text_artifact(p, body, encoding="ascii")
                     paths.append(p)
                 technique = "T1547-style marker only (double)"
             else:  # renamed_lure
@@ -620,10 +827,8 @@ class SharkAttackEngine:
                               "dropping a marker file named like a plausible startup helper in "
                               f"{self.documents_dir}. The registry, Startup folder, and Task "
                               "Scheduler are never touched.")
-                p = self._practice_artifact(
-                    self.documents_dir / f"_shark_{name}_{uuid.uuid4().hex[:8]}.txt"
-                )
-                p.write_text(body, encoding="ascii")
+                p = self.documents_dir / f"_shark_{name}_{uuid.uuid4().hex[:8]}.txt"
+                self._write_text_artifact(p, body, encoding="ascii")
                 paths.append(p)
                 technique = "T1547-style marker only (startup-suggestive name)"
             self._narrate("   done — wrote " + ", ".join(str(p) for p in paths))
@@ -653,9 +858,11 @@ class SharkAttackEngine:
                 f"driver ({BYOVD_DRILL_DRIVER}) into {self.documents_dir}, mimicking a vulnerable-"
                 "driver drop + 'sc.exe create' registration. No real .sys is created, loaded, or "
                 "registered — this only tests whether the Ring 1 Driver-Intel Shield intercepts it.")
-            p = self._practice_artifact(self.documents_dir / BYOVD_DRILL_DRIVER)
-            p.write_text(f"{BYOVD_DRILL_MARKER} :: simulated BYOVD driver drop "
-                         "(benign -- NOT a real driver, never loaded)\n", encoding="utf-8")
+            p = self.documents_dir / BYOVD_DRILL_DRIVER
+            self._write_text_artifact(
+                p, f"{BYOVD_DRILL_MARKER} :: simulated BYOVD driver drop "
+                "(benign -- NOT a real driver, never loaded)\n", encoding="utf-8",
+            )
             self._narrate(f"   done — wrote {p} (simulated driver-registration telemetry)")
             self._record("BYOVD (simulated)",
                          "T1068 / T1543.003-style driver drop (marker only)",
@@ -684,11 +891,11 @@ class SharkAttackEngine:
             self._narrate(f"▶ STAGE: Custom [user-defined: {name}] — writing the text you supplied "
                           f"as an INERT marker into {self.documents_dir}. It is written verbatim and "
                           "never executed — this tests content detection only.")
-            p = self._practice_artifact(
-                self.documents_dir / f"_shark_custom_{safe}_{hexid}.txt"
+            p = self.documents_dir / f"_shark_custom_{safe}_{hexid}.txt"
+            self._write_text_artifact(
+                p, f"ANGERONA custom drill marker — INERT, never executed.\n"
+                f"Technique: {name}\n---\n{payload}\n", encoding="utf-8",
             )
-            p.write_text(f"ANGERONA custom drill marker — INERT, never executed.\n"
-                         f"Technique: {name}\n---\n{payload}\n", encoding="utf-8")
             self._record("Custom (simulated)", f"user-defined: {name}",
                          "User-defined benign marker written (content only, never executed).",
                          ts, artifact_paths=[str(p)])
@@ -705,22 +912,28 @@ class SharkAttackEngine:
         self._jitter(*jitter_range, note="Noise Injection — legitimate heavy CPU/IO task")
         ts = time.time()
         variant = random.choice(["io_heavy", "cpu_heavy", "many_small_files"])
+        if variant == "many_small_files" and os.name != "nt":
+            # The churn variant needs exact-object deletion of 200 files.
+            # A portable pathname unlink can race and remove another file.
+            variant = "cpu_heavy"
         try:
             if variant == "io_heavy":
-                tmp = self._practice_artifact(
-                    self.data_dir / f"_shark_noise_{uuid.uuid4().hex[:8]}.zip"
-                )
+                tmp = self.data_dir / f"_shark_noise_{uuid.uuid4().hex[:8]}.zip"
                 self._narrate(f"▶ STAGE: Noise Injection [I/O-heavy] — hashing + zipping 8MB of "
                               f"throwaway in-memory data to {tmp}.")
                 blob = os.urandom(8_000_000)
                 h = hashlib.sha256()
-                with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for i in range(8):
-                        if self._cancel.is_set():
-                            break
-                        chunk = blob[i * 1_000_000:(i + 1) * 1_000_000]
-                        h.update(chunk)
-                        zf.writestr(f"chunk_{i}.bin", chunk)
+                def write_noise(descriptor: int) -> None:
+                    with os.fdopen(os.dup(descriptor), "w+b") as stream:
+                        with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as zf:
+                            for i in range(8):
+                                if self._cancel.is_set():
+                                    break
+                                chunk = blob[i * 1_000_000:(i + 1) * 1_000_000]
+                                h.update(chunk)
+                                zf.writestr(f"chunk_{i}.bin", chunk)
+
+                self._create_artifact(tmp, write_noise)
                 self._narrate(f"   done — wrote {tmp} (sha256 {h.hexdigest()[:16]}…)")
                 technique, paths, detail = "false-positive resilience check (I/O-heavy)", [str(tmp)], h.hexdigest()[:16]
             elif variant == "cpu_heavy":
@@ -735,19 +948,34 @@ class SharkAttackEngine:
                 self._narrate(f"   done — {n} hash iterations in ~3s, purely in-process.")
                 technique, paths, detail = "false-positive resilience check (CPU-heavy)", [], f"{n} iters"
             else:  # many_small_files
-                scratch = self.data_dir / f"_shark_noise_scratch_{uuid.uuid4().hex[:8]}"
+                scratch = self.data_dir / f"_shark_noise_scratch_{uuid.uuid4().hex}"
                 self._narrate("▶ STAGE: Noise Injection [I/O churn] — writing and deleting many "
                               f"small throwaway files in {scratch} (simulates a build tool/"
                               "installer's file churn) — checks the SOAR engine doesn't "
                               "overreact to burst I/O alone.")
-                scratch.mkdir(parents=True, exist_ok=True)
-                for i in range(200):
-                    if self._cancel.is_set():
-                        break
-                    (scratch / f"chunk_{i}.tmp").write_bytes(os.urandom(4096))
-                for f in scratch.glob("*.tmp"):
-                    f.unlink(missing_ok=True)
-                scratch.rmdir()
+                scratch.mkdir(parents=True, exist_ok=False)
+                written: list[Path] = []
+                try:
+                    for i in range(200):
+                        if self._cancel.is_set():
+                            break
+                        path = scratch / f"chunk_{i}.tmp"
+                        # These chunks are deleted by this same step; a disk
+                        # flush per 4 KiB file would add needless I/O stalls.
+                        self._write_bytes_artifact(
+                            path, os.urandom(4096), durable=False,
+                        )
+                        written.append(path)
+                finally:
+                    for path in written:
+                        with self._artifact_lock:
+                            identity = self._owned_artifacts.get(path)
+                        if identity is not None and self._remove_owned_artifact(path, identity):
+                            with self._artifact_lock:
+                                self._owned_artifacts.pop(path, None)
+                    # An injected or replaced file is deliberately left for
+                    # review; never sweep scratch with a pathname glob.
+                    scratch.rmdir()
                 self._narrate("   done — 200 small files written + deleted.")
                 technique, paths, detail = "false-positive resilience check (I/O churn)", [], "200 files"
             self._record("Noise Injection", technique,

@@ -242,13 +242,13 @@ def _fast_assurance_operational(
     }
 
 
-def _module_assurance(manager, module, operational=None):
+def _module_assurance(manager, module, operational=None, *, enabled=None):
     return assess_capability(
         module,
         contract=getattr(module, "_angerona_contract", None),
         operational=operational,
         platform=getattr(manager, "platform", None),
-        enabled=_manager_enabled(manager, module),
+        enabled=_manager_enabled(manager, module) if enabled is None else bool(enabled),
         source_anchor=cached_declaration_anchor(module),
     )
 
@@ -3031,17 +3031,26 @@ class ModulesPanel(QFrame):
         items, selection, and scroll position throughout discovery.
         """
         rows = {}
+        usage_reader = getattr(self.manager, "module_usage", None)
         for name, mod in self._sorted_items():
             health_summary = mod.health_summary()
             status, health, health_state = health_summary
+            # Production is_enabled() itself calls module_usage(). Reuse one
+            # policy snapshot for the checkbox, tooltip, and assurance score.
+            # A full table refresh otherwise repeats the same availability
+            # and optional-policy assessment three times per visible module.
+            usage = usage_reader(name) if callable(usage_reader) else None
+            enabled = (
+                bool(usage.enabled) if usage is not None
+                else bool(self.manager.is_enabled(name))
+            )
             assurance = _module_assurance(
-                self.manager, mod, _fast_assurance_operational(mod, health_summary)
+                self.manager, mod, _fast_assurance_operational(mod, health_summary),
+                enabled=enabled,
             )
             contract = _capability_summary(mod)
-            usage_reader = getattr(self.manager, "module_usage", None)
-            usage = usage_reader(name) if callable(usage_reader) else None
             rows[name] = (
-                bool(self.manager.is_enabled(name)),
+                enabled,
                 f"{_avatar(mod.category)}  {mod.name}",
                 f"{status} {health}%" if status == "running" else status,
                 HEALTH_COLOR.get(health_state, "#e5e7eb"),

@@ -1,0 +1,34 @@
+[
+  {
+    "id": "R37-01",
+    "title": "Shark's predictable BYOVD marker overwrites an existing file",
+    "severity": "MEDIUM",
+    "component": "src/angerona/shark/shark_attack.py:644-663",
+    "status": "OPEN",
+    "recommendation": "Create the marker exclusively through a held no-follow, single-link regular-file handle; refuse pre-existing output and bind the step to the created object's identity."
+  },
+  {
+    "id": "R37-02",
+    "title": "Shark Stop & clean deletes a replacement at a recorded path",
+    "severity": "MEDIUM",
+    "component": "src/angerona/shark/shark_attack.py:287-300",
+    "status": "OPEN",
+    "recommendation": "Delete only the exact drill-created object through held object identity/custody; fail closed on changed identity instead of unlinking a replacement path."
+  },
+  {
+    "id": "R37-03",
+    "title": "Historical AAR tab displays unauthenticated text as a report",
+    "severity": "LOW",
+    "component": "src/angerona/gui/red_team_console.py:661-695",
+    "status": "OPEN",
+    "recommendation": "Authenticate the paired archive JSON and exact text SHA-256 before listing or showing historical text; reject unsafe links and show unverified status on failure."
+  },
+  {
+    "id": "R37-04",
+    "title": "Drill history and stale-cleanup reads are unbounded on the UI/run path",
+    "severity": "LOW",
+    "component": "src/angerona/gui/red_team_console.py:661-695; src/angerona/shark/shark_attack.py:148-178,337-372",
+    "status": "OPEN",
+    "recommendation": "Apply per-file byte, candidate, and time budgets; stream marker checks and move archive reads/verification off the Qt thread."
+  }
+]

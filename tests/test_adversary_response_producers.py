@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 
 from defusedxml import ElementTree as ET
 
@@ -13,6 +14,15 @@ from angerona.modules.purple_guard import PurpleGuard, install_policies
 from angerona.modules.sysmon_listener import _build_details
 
 
+def _observed_file(path: Path) -> dict:
+    info = path.stat()
+    return {
+        "observed_file_identity": {"device": int(info.st_dev), "inode": int(info.st_ino),
+                                   "birthtime_ns": int(getattr(info, "st_birthtime_ns", 0) or 0)},
+        "observed_content_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+
+
 def test_fim_benign_noise_requires_exact_live_red_team_provenance(tmp_path: Path) -> None:
     marker = tmp_path / "_redteam_benign_note_probe.txt"
     marker.write_text("inert", encoding="utf-8")
@@ -20,7 +30,7 @@ def test_fim_benign_noise_requires_exact_live_red_team_provenance(tmp_path: Path
     assert _registered_benign_noise(str(marker)) is False
     register_artifact(marker, "producer-test-red-team", kind="red-team")
     try:
-        assert _registered_benign_noise(str(marker)) is True
+        assert _registered_benign_noise(str(marker), **_observed_file(marker)) is True
         lookalike = tmp_path / "_redteam_benign_note_lookalike.txt"
         lookalike.write_text("unregistered", encoding="utf-8")
         assert _registered_benign_noise(str(lookalike)) is False
@@ -131,6 +141,7 @@ def test_registered_byovd_practice_contract_is_exact(tmp_path: Path) -> None:
     try:
         contract = _combat_file_contract(
             str(marker),
+            **_observed_file(marker),
             allow_host_isolation=True,
             allow_deception=True,
         )["response_contract"]

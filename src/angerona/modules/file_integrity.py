@@ -56,7 +56,10 @@ def _combat_intervals() -> tuple[float, float]:
     return 10.0, 30.0
 
 
-def _registered_benign_noise(path: str) -> bool:
+def _registered_benign_noise(
+    path: str, *, observed_content_sha256: str = "",
+    observed_file_identity: dict | None = None,
+) -> bool:
     """Ignore only the exact in-memory registered Red Team noise artifact."""
     name = os.path.basename(path).casefold()
     if not (name.startswith("_redteam_benign_note_") and name.endswith(".txt")):
@@ -66,7 +69,11 @@ def _registered_benign_noise(path: str) -> bool:
 
         from angerona.core.practice_scope import provenance_for_event
 
-        provenance = provenance_for_event(SimpleNamespace(details={"path": path}))
+        provenance = provenance_for_event(SimpleNamespace(details={
+            "path": path,
+            "observed_content_sha256": observed_content_sha256,
+            "observed_file_identity": observed_file_identity,
+        }))
         return provenance is not None and provenance.kind == "red-team"
     except Exception:
         return False
@@ -75,6 +82,8 @@ def _registered_benign_noise(path: str) -> bool:
 def _combat_file_contract(
     path: str,
     *,
+    observed_content_sha256: str = "",
+    observed_file_identity: dict | None = None,
     allow_host_isolation: bool = False,
     allow_deception: bool = False,
 ) -> dict:
@@ -94,7 +103,11 @@ def _combat_file_contract(
             from angerona.core.practice_scope import provenance_for_event
 
             provenance = provenance_for_event(
-                SimpleNamespace(details={"path": str(path)})
+                SimpleNamespace(details={
+                    "path": str(path),
+                    "observed_content_sha256": observed_content_sha256,
+                    "observed_file_identity": observed_file_identity,
+                })
             )
             if provenance is None or provenance.kind != "red-team":
                 return {}
@@ -185,6 +198,37 @@ _MAX_FILE_BYTES = 1024 * 1024 * 1024
 _MAX_SCAN_CONTENT_BYTES = 8 * 1024 * 1024 * 1024
 _FSCTL_READ_FILE_USN_DATA = 0x000900EB
 _WINDOWS_USN_OUTPUT_BYTES = 1024
+
+
+@lru_cache(maxsize=1)
+def _windows_reader_api():
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                       ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    return ctypes, kernel, create
+
+
+def _open_read_descriptor(path: str) -> int:
+    """Let response retain/delete its object while the sensor holds a read handle."""
+    if os.name != "nt":
+        return os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    import msvcrt
+    ctypes, kernel, create = _windows_reader_api()
+    handle = create(str(path), 0x80000000, 0x1 | 0x2 | 0x4,
+                    None, 3, 0x00200000, None)
+    if handle in (None, ctypes.c_void_p(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return msvcrt.open_osfhandle(int(handle), os.O_RDONLY | os.O_BINARY)
+    except Exception:
+        kernel.CloseHandle(handle)
+        raise
 
 
 @lru_cache(maxsize=1)
@@ -694,7 +738,7 @@ class FileIntegrityModule(BaseModule):
                 or before.st_size > _MAX_FILE_BYTES
             ):
                 return ""
-            with open(path, "rb") as f:
+            with os.fdopen(_open_read_descriptor(path), "rb") as f:
                 opened = os.fstat(f.fileno())
                 if self._file_identity(opened) != self._file_identity(before):
                     return ""
@@ -728,9 +772,7 @@ class FileIntegrityModule(BaseModule):
     ) -> Optional[Tuple[int, int, int, int, int]]:
         try:
             before = os.lstat(path)
-            descriptor = os.open(
-                path, os.O_RDONLY | getattr(os, "O_BINARY", 0)
-            )
+            descriptor = _open_read_descriptor(path)
             try:
                 opened = os.fstat(descriptor)
                 identity = self._file_identity(opened)
@@ -816,8 +858,24 @@ class FileIntegrityModule(BaseModule):
             "next_report": time.monotonic() + 1.0,
         }
         try:
-            return self._scan_snapshot()
+            result = self._scan_snapshot()
+            receipt = self._last_scan_receipt
+            # A responder can remove a leaf between directory enumeration and
+            # hashing. Retry one small snapshot instead of waiting for the
+            # incomplete-scan backoff. The first snapshot remains ineligible;
+            # only an independently complete second scan can earn receipts.
+            churn = int(getattr(self._scan_work, "transient_leaf_disappearances", 0))
+            if (
+                churn > 0 and churn == receipt.get("error_count")
+                and int(receipt.get("files_visited", 0)) <= 256
+                and int(receipt.get("content_bytes_hashed", 0)) <= 16 * 1024 * 1024
+                and not self._scan_work.stop_event.wait(0.05)
+            ):
+                result = self._scan_snapshot()
+            return result
         finally:
+            if hasattr(self._scan_work, "transient_leaf_disappearances"):
+                del self._scan_work.transient_leaf_disappearances
             del self._scan_work.progress
             del self._scan_work.stop_event
 
@@ -843,6 +901,7 @@ class FileIntegrityModule(BaseModule):
         new_stat_cache: Dict[str, Tuple[int, int, int, int, int]] = {}
         errors: list[str] = []
         error_count_total = 0
+        transient_leaf_disappearances = 0
         covered_roots: list[str] = []
         visited = 0
         hashed = 0
@@ -855,6 +914,17 @@ class FileIntegrityModule(BaseModule):
             error_count_total += 1
             if len(errors) < 32:
                 errors.append(message[:500])
+
+        def _vanished(path: str) -> bool:
+            nonlocal transient_leaf_disappearances
+            try:
+                os.lstat(path)
+            except FileNotFoundError:
+                transient_leaf_disappearances += 1
+                return True
+            except OSError:
+                pass
+            return False
 
         scan_roots = self._canonical_roots()
         for root in scan_roots:
@@ -910,6 +980,7 @@ class FileIntegrityModule(BaseModule):
                     st = self._stat(full)
                     self._report_scan_work(files=1)
                     if st is None:
+                        _vanished(full)
                         _error(f"file metadata unavailable: {full}")
                         continue
                     visited += 1
@@ -934,6 +1005,7 @@ class FileIntegrityModule(BaseModule):
                             _error(f"file exceeds per-object hash budget: {full}")
                             continue
                     except OSError as exc:
+                        _vanished(full)
                         _error(f"file identity failed: {full}: {exc}")
                         continue
                     cached_st = stat_cache_at_start.get(full)
@@ -958,6 +1030,7 @@ class FileIntegrityModule(BaseModule):
                             stopped_for_budget = True
                             break
                         if not digest:
+                            _vanished(full)
                             _error(f"stable content hash unavailable: {full}")
                     if digest:
                         snap[full] = digest
@@ -974,6 +1047,7 @@ class FileIntegrityModule(BaseModule):
                 break
 
         completed_monotonic_ns = time.monotonic_ns()
+        self._scan_work.transient_leaf_disappearances = transient_leaf_disappearances
         complete = not errors and not stopped_for_budget
         receipt: dict[str, object] = {
             "schema": "angerona.fim-scan-receipt.v1",
@@ -1276,6 +1350,26 @@ class FileIntegrityModule(BaseModule):
         """Emit exact create/delete/change results against the retained baseline."""
         scan_context = self._claim_scan_evaluation(current)
         current_view = dict(current)
+        def _observed_practice_proof(path: str) -> dict[str, object]:
+            # Only the exact scan custody can describe the object observed.
+            # This metadata grants no native receipt or response authority.
+            if scan_context is None:
+                return {}
+            identities = scan_context.get("identities")
+            identity = identities.get(path) if isinstance(identities, dict) else None
+            if (
+                not isinstance(identity, tuple) or len(identity) != 5
+                or any(type(value) is not int for value in identity)
+            ):
+                return {}
+            return {
+                "observed_file_identity": {
+                    "device": identity[0], "inode": identity[1],
+                    "birthtime_ns": 0,
+                },
+                "observed_content_sha256": current_view[path],
+            }
+
         active_roots = [
             os.path.normcase(os.path.abspath(root)) for root in watch_roots()
         ]
@@ -1325,7 +1419,8 @@ class FileIntegrityModule(BaseModule):
         base_keys = {path for path in self._baseline if _still_watched(path)}
         cur_keys = set(current_view)
         for path in cur_keys - base_keys:
-            if _registered_benign_noise(path):
+            observed = _observed_practice_proof(path)
+            if _registered_benign_noise(path, **observed):
                 continue
             alert = self._driver_alert(path)
             if alert:
@@ -1338,10 +1433,11 @@ class FileIntegrityModule(BaseModule):
                     path=path,
                     **_combat_file_contract(
                         path,
+                        **observed,
                         allow_host_isolation=True,
                         allow_deception=True,
                     ),
-                    **receipt,
+                    **{**observed, **receipt},
                 )
             else:
                 message = f"New file created: {path}"
@@ -1352,8 +1448,8 @@ class FileIntegrityModule(BaseModule):
                     message,
                     Severity.MEDIUM,
                     path=path,
-                    **_combat_file_contract(path),
-                    **receipt,
+                    **_combat_file_contract(path, **observed),
+                    **{**observed, **receipt},
                 )
         for path in base_keys - cur_keys:
             self.emit(
@@ -1365,6 +1461,7 @@ class FileIntegrityModule(BaseModule):
         for path in base_keys & cur_keys:
             if self._baseline[path] == current_view[path]:
                 continue
+            observed = _observed_practice_proof(path)
             alert = self._driver_alert(path)
             if alert:
                 receipt = _redteam_scan_receipt(
@@ -1376,10 +1473,11 @@ class FileIntegrityModule(BaseModule):
                     path=path,
                     **_combat_file_contract(
                         path,
+                        **observed,
                         allow_host_isolation=True,
                         allow_deception=True,
                     ),
-                    **receipt,
+                    **{**observed, **receipt},
                 )
             else:
                 message = f"Watched file modified: {path}"
@@ -1390,8 +1488,8 @@ class FileIntegrityModule(BaseModule):
                     message,
                     Severity.HIGH,
                     path=path,
-                    **_combat_file_contract(path, allow_host_isolation=True),
-                    **receipt,
+                    **_combat_file_contract(path, **observed, allow_host_isolation=True),
+                    **{**observed, **receipt},
                 )
 
     def self_test(self) -> tuple[bool, str]:

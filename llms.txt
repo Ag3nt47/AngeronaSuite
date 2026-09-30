@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.13.0
-Date: 2026-09-26
+Date: 2026-09-30
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -22,7 +22,23 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST (v1.13.0 — Cycle 36 scoring and performance follow-up, 2026-09-26)
+## LATEST (v1.13.0 — Cycle 37 maintenance, 2026-09-30)
+
+- Record: analysis/loop/cycle37/README.md. Practice provenance now requires
+  observed file identity and completed-byte digest. Windows FIM readers permit
+  a held containment handle; incomplete scans never earn native credit.
+- Two FIM-enabled GUI runs verified 37/37 containment each, with native
+  detections 34/37 and 11/37. Separate OS witnesses matched quarantine hashes
+  and tagged process exits. Coverage remains variable.
+- Signed AAR history loads asynchronously with bounded inventory and rendering.
+  YARA scanners stay on their creator thread. Flight-cache eviction, ransomware
+  histograms and module-panel policy reads have targeted optimizations.
+- A 66-worker production-recorder soak measured maximum Qt slips of 1480,
+  527 and 1074 ms across Chill/Full/Chill; the independent Qt process peaked
+  at 43 ms. All 1079 accepted ledger events persisted. Freezes remain open;
+  short offscreen runs do not establish sustained physical-host stability.
+
+## PREVIOUS (v1.13.0 — Cycle 36 scoring and performance follow-up, 2026-09-26)
 
 - Canonical record: analysis/loop/cycle36/README.md. Cycle 35's five-check
   exact-commit gate passed on `5feda7322c44bc0d5cc0149b2ef5031573c557fd`

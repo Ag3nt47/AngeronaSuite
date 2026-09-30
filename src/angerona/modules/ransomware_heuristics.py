@@ -2018,13 +2018,22 @@ class RansomwareHeuristicsModule(BaseModule):
                 range_size += read_size
                 aggregate_size += read_size
                 remaining -= read_size
-                window.extend(chunk)
-                while len(window) >= CONTENT_WINDOW_BYTES:
-                    fixed = bytes(window[:CONTENT_WINDOW_BYTES])
-                    del window[:CONTENT_WINDOW_BYTES]
+                if not window and read_size == CONTENT_WINDOW_BYTES:
+                    # The proof histogram is exactly this complete entropy
+                    # window. Reusing it avoids a second byte-by-byte pass
+                    # (and its GIL hold when NumPy is unavailable) without
+                    # changing the digest, window boundaries, or decision.
                     window_entropies.append(
-                        (_shannon_entropy(fixed), CONTENT_WINDOW_BYTES)
+                        (_entropy_from_histogram(counts, read_size), read_size)
                     )
+                else:
+                    window.extend(chunk)
+                    while len(window) >= CONTENT_WINDOW_BYTES:
+                        fixed = bytes(window[:CONTENT_WINDOW_BYTES])
+                        del window[:CONTENT_WINDOW_BYTES]
+                        window_entropies.append(
+                            (_shannon_entropy(fixed), CONTENT_WINDOW_BYTES)
+                        )
             if len(window) >= MIN_FILE_BYTES:
                 window_entropies.append((_shannon_entropy(bytes(window)), len(window)))
             range_entropies.append(_entropy_from_histogram(range_counts, range_size))

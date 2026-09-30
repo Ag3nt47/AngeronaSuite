@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import builtins
+import os
 import threading
 
 import pytest
@@ -27,7 +27,7 @@ def test_hash_cancels_between_chunks_without_retrying_or_returning_partial_diges
     module, watched = _module(tmp_path, monkeypatch)
     target = watched / "bounded.bin"
     target.write_bytes(b"x" * (3 * 65536))
-    original_open = builtins.open
+    original_open = os.fdopen
     reads = []
     opens = []
 
@@ -50,14 +50,14 @@ def test_hash_cancels_between_chunks_without_retrying_or_returning_partial_diges
             module.stop()
             return chunk
 
-    def open_file(path, mode="r", *args, **kwargs):
-        handle = original_open(path, mode, *args, **kwargs)
-        if str(path) == str(target) and mode == "rb":
-            opens.append(str(path))
+    def open_file(descriptor, mode="r", *args, **kwargs):
+        handle = original_open(descriptor, mode, *args, **kwargs)
+        if mode == "rb":
+            opens.append(str(target))
             return StopAfterRead(handle)
         return handle
 
-    monkeypatch.setattr(builtins, "open", open_file)
+    monkeypatch.setattr(os, "fdopen", open_file)
     monkeypatch.setattr(module, "_handle_change_token", lambda _fd: 1)
     monkeypatch.setattr(module, "_handle_usn", lambda _fd: None)
     assert module._hash(str(target)) == ""
