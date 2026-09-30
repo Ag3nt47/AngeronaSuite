@@ -36,6 +36,17 @@ kernel component is a product capability.
 - Storage Hygiene bounds recursive inspection to 2048 entries and a one-second
   traversal budget; exhausted coverage stays unavailable. Source dependency
   floors and release locks upgrade PyJWT to 2.15.0 and urllib3 to 2.8.0.
+- The storage-bound gate passed 4403 tests with 23 skips, but its subsequent
+  mode repeat paused for 2402/1167/8480 ms. Freezes remain unresolved. The
+  no-NumPy histogram now uses Counter, with 42% less thread CPU in a paired
+  64 KiB component benchmark and 44 passing detector/lifecycle checks.
+- Owning-thread YARA cleanup also detaches native objects from retained error
+  frames; expanded detector/lifecycle/ownership checks passed 48/48. Independent
+  profiling exposed fixture resource-polling overhead. Without that polling,
+  a 66-worker repeat measured maximum slips 1776/699/683 ms and 5/0/0 long
+  gaps in initial Chill/Full/returned Chill; its separate Qt control peaked
+  at 43 ms. Initial-mode pauses remain unresolved. Short runs are not a
+  universal stability or efficacy certification.
 - A 66-worker production-recorder soak measured maximum Qt slips of 1480,
   527 and 1074 ms across Chill/Full/Chill; the independent Qt process peaked
   at 43 ms. All 1079 accepted ledger events persisted. Freezes remain open;

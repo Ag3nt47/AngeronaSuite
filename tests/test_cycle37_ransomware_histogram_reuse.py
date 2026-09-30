@@ -10,6 +10,15 @@ import pytest
 from angerona.modules import ransomware_heuristics as ransomware
 
 
+@pytest.mark.parametrize("data", [b"", b"A" * 65536, bytes(range(256)) * 256],
+                         ids=["empty", "uniform", "all-bins"])
+def test_standard_library_histogram_preserves_exact_bins(data, monkeypatch):
+    monkeypatch.setattr(ransomware, "_HAVE_NUMPY", False)
+    histogram = ransomware._byte_histogram(data)
+    assert histogram == [data.count(value) for value in range(256)]
+    assert sum(histogram) == len(data)
+
+
 @pytest.mark.parametrize("complete", [True, False])
 def test_full_window_histogram_reuse_matches_partial_read_path(
     tmp_path, monkeypatch, complete,

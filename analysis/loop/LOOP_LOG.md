@@ -3920,6 +3920,24 @@ inspection and reports exhausted coverage as unavailable, retaining reparse
 checks and retired mutation behavior. Targeted storage/security checks: 35/35.
 The combined commit must pass a fresh release gate before publication.
 
+Continued performance iteration: the storage-bound gate passed all five
+checks with 4403 tests and 23 skips, but the subsequent soak still paused up
+to 8.48 seconds. Replaced the no-NumPy Python byte loop with an exact Counter
+histogram (paired component thread CPU 6.771→3.906 ms/64 KiB). Added owning-thread
+YARA cleanup for exception-frame retention; 48 targeted checks passed and a
+native profiled shutdown no longer printed the ownership error. Independent
+py-spy collected 2445 samples with 244 read errors and exposed a contribution
+from GUI-thread resource polling in the fixture. A separate low-overhead
+mode witness disables that polling; no passing freeze claim is inferred.
+
+Completed low-overhead witness: 66 real workers, 90 seconds per phase, maximum
+slips 1776/699/683 ms and 5/0/0 long gaps in initial Chill/Full/returned Chill,
+with 43 ms maximum in the simultaneous separate Qt control. Recorder drained
+and YARA shutdown error did not recur. Initial-mode stalls remain open; the
+combined reviewed commit requires its own five-check gate and guarded public
+main publication. Different instrumentation precludes an exact whole-app
+before/after speedup claim.
+
 - **R37-01 (MEDIUM):** Shark's fixed BYOVD marker name could truncate a pre-existing hardlink or file in a selected drill directory; inert Windows proof succeeded on the baseline, and the candidate exclusive-create patch refused it.
 - **R37-02 (MEDIUM):** Shark Stop & clean could unlink an unrelated same-name replacement; inert baseline proof succeeded, and candidate identity-bound cleanup preserved the replacement.
 - **R37-03 (LOW):** the historical AAR tab rendered forged unsigned report text as a past score; a candidate signed-JSON/text-digest viewer refused the forged pair in an independent offscreen UI challenge.

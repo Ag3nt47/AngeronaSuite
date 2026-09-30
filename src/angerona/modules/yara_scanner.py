@@ -166,9 +166,15 @@ class YaraScannerModule(BaseModule):
     def _make_scanner(compiled):
         import yara_x
         scanner = yara_x.Scanner(compiled)
-        scanner.set_timeout(10)
-        scanner.max_matches_per_pattern(64)
-        scanner.fast_scan(True)
+        try:
+            scanner.set_timeout(10)
+            scanner.max_matches_per_pattern(64)
+            scanner.fast_scan(True)
+        except BaseException:
+            # A retained configuration traceback must not carry this
+            # thread-bound native object into another thread's garbage collector.
+            scanner = None
+            raise
         return scanner
 
     def _activate(self, path: Path):
@@ -618,6 +624,12 @@ class YaraScannerModule(BaseModule):
         except Exception as exc:
             self.last_error = str(exc)
             return "failed"
+        finally:
+            # Exception frames can outlive the worker. Detach native aliases
+            # while still on the scanner's owning thread.
+            scanner = None
+            results = None
+            match = None
 
     def self_test(self) -> tuple[bool, str]:
         marker = "EICAR-STANDARD-ANTIVIRUS-TEST-FILE"
@@ -641,6 +653,9 @@ class YaraScannerModule(BaseModule):
             return True, "PASS - in-process YARA compiled rules and detected EICAR"
         except Exception as exc:
             return False, f"FAIL - {exc}"
+        finally:
+            scanner = None
+            matches = None
 
     def run(self) -> None:
         rules = self._find_rules()
@@ -659,138 +674,142 @@ class YaraScannerModule(BaseModule):
             self.emit(f"YARA disabled: {exc}", Severity.MEDIUM)
             return
 
-        state_status = self._load_cursor_state()
-        if state_status not in {"new", "ok"}:
-            self.set_health(40, f"fair traversal cursor unavailable ({state_status})")
-        self.emit(f"YARA scanner active ({Path(rules).name}).", Severity.INFO)
-        while not self.stopping:
-            with self._rules_lock:
-                active_rules = self._compiled_rules
-            if active_rules is not compiled:
-                try:
-                    replacement = self._make_scanner(active_rules)
-                except Exception as exc:
-                    self.last_error = str(exc)
-                    self.set_health(20, "reloaded YARA rules could not be activated")
-                    self.emit(f"YARA scanner reload rejected: {exc}", Severity.HIGH)
-                    self.sleep(_scan_interval())
-                    continue
-                scanner = replacement
-                compiled = active_rules
-            scanned = 0
-            failed = 0
-            skipped = 0
-            traversal_errors = 0
-            incomplete_roots = 0
-            truncated_roots = 0
-            existing_roots = 0
-            cycle_coverage: dict[str, dict[str, object]] = {}
-            roots_state = self._cursor_state.setdefault("roots", {})
-            if not isinstance(roots_state, dict):
-                roots_state = {}
-                self._cursor_state["roots"] = roots_state
-            for root in scan_roots():
-                if self.stopping:
-                    break
-                if not root.is_dir():
-                    continue
-                existing_roots += 1
-                token = self._root_token(root)
-                record = roots_state.get(token)
-                if not isinstance(record, dict):
-                    record = {"cursor": "", "incomplete_since": 0.0, "wraps": 0}
-                batch = self._fair_batch(root, str(record.get("cursor", "")))
-                traversal_errors += batch.errors
-                incomplete_roots += int(batch.incomplete)
-                truncated_roots += int(batch.discovery_truncated)
-                for path in batch.paths:
+        try:
+            state_status = self._load_cursor_state()
+            if state_status not in {"new", "ok"}:
+                self.set_health(40, f"fair traversal cursor unavailable ({state_status})")
+            self.emit(f"YARA scanner active ({Path(rules).name}).", Severity.INFO)
+            while not self.stopping:
+                with self._rules_lock:
+                    active_rules = self._compiled_rules
+                if active_rules is not compiled:
+                    try:
+                        replacement = self._make_scanner(active_rules)
+                    except Exception as exc:
+                        self.last_error = str(exc)
+                        self.set_health(20, "reloaded YARA rules could not be activated")
+                        self.emit(f"YARA scanner reload rejected: {exc}", Severity.HIGH)
+                        self.sleep(_scan_interval())
+                        continue
+                    scanner = replacement
+                    compiled = active_rules
+                scanned = 0
+                failed = 0
+                skipped = 0
+                traversal_errors = 0
+                incomplete_roots = 0
+                truncated_roots = 0
+                existing_roots = 0
+                cycle_coverage: dict[str, dict[str, object]] = {}
+                roots_state = self._cursor_state.setdefault("roots", {})
+                if not isinstance(roots_state, dict):
+                    roots_state = {}
+                    self._cursor_state["roots"] = roots_state
+                for root in scan_roots():
                     if self.stopping:
                         break
-                    outcome = self._scan_file(scanner, path)
-                    if outcome == "scanned":
-                        scanned += 1
-                    elif outcome == "failed":
-                        failed += 1
-                    else:
-                        skipped += 1
-                now = time.time()
-                incomplete_since = float(record.get("incomplete_since", 0.0) or 0.0)
-                if batch.incomplete and incomplete_since <= 0:
-                    incomplete_since = now
-                elif not batch.incomplete:
-                    incomplete_since = 0.0
-                roots_state[token] = {
-                    "cursor": batch.next_cursor,
-                    "incomplete_since": incomplete_since,
-                    "wraps": int(record.get("wraps", 0)) + int(batch.wrapped),
-                }
-                cycle_coverage[token] = {
-                    "root": str(root),
-                    "visited": len(batch.paths),
-                    "discovered": batch.discovered,
-                    "errors": batch.errors,
-                    "incomplete": batch.incomplete,
-                    "discovery_truncated": batch.discovery_truncated,
-                    "wrapped": batch.wrapped,
-                    "oldest_unscanned_age_seconds": (
-                        max(0.0, now - incomplete_since) if incomplete_since > 0 else 0.0
-                    ),
-                }
-            self._coverage_snapshot = cycle_coverage
-            state_saved = self._save_cursor_state()
+                    if not root.is_dir():
+                        continue
+                    existing_roots += 1
+                    token = self._root_token(root)
+                    record = roots_state.get(token)
+                    if not isinstance(record, dict):
+                        record = {"cursor": "", "incomplete_since": 0.0, "wraps": 0}
+                    batch = self._fair_batch(root, str(record.get("cursor", "")))
+                    traversal_errors += batch.errors
+                    incomplete_roots += int(batch.incomplete)
+                    truncated_roots += int(batch.discovery_truncated)
+                    for path in batch.paths:
+                        if self.stopping:
+                            break
+                        outcome = self._scan_file(scanner, path)
+                        if outcome == "scanned":
+                            scanned += 1
+                        elif outcome == "failed":
+                            failed += 1
+                        else:
+                            skipped += 1
+                    now = time.time()
+                    incomplete_since = float(record.get("incomplete_since", 0.0) or 0.0)
+                    if batch.incomplete and incomplete_since <= 0:
+                        incomplete_since = now
+                    elif not batch.incomplete:
+                        incomplete_since = 0.0
+                    roots_state[token] = {
+                        "cursor": batch.next_cursor,
+                        "incomplete_since": incomplete_since,
+                        "wraps": int(record.get("wraps", 0)) + int(batch.wrapped),
+                    }
+                    cycle_coverage[token] = {
+                        "root": str(root),
+                        "visited": len(batch.paths),
+                        "discovered": batch.discovered,
+                        "errors": batch.errors,
+                        "incomplete": batch.incomplete,
+                        "discovery_truncated": batch.discovery_truncated,
+                        "wrapped": batch.wrapped,
+                        "oldest_unscanned_age_seconds": (
+                            max(0.0, now - incomplete_since) if incomplete_since > 0 else 0.0
+                        ),
+                    }
+                self._coverage_snapshot = cycle_coverage
+                state_saved = self._save_cursor_state()
 
-            if self._cursor_state_status not in {"new", "ok"} or not state_saved:
-                health = 35
-                note = (
-                    "YARA scanning active but authenticated fair cursor is unavailable "
-                    f"({self._cursor_state_status}); coverage continuity is unproven"
-                )
-            elif truncated_roots:
-                health = 35
-                note = (
-                    f"YARA discovery bound reached in {truncated_roots} root(s); "
-                    f"visited {scanned}, failures {failed}, traversal errors {traversal_errors}"
-                )
-            elif traversal_errors or failed:
-                health = 60
-                note = (
-                    f"YARA coverage partial: scanned {scanned}, skipped {skipped}, "
-                    f"file failures {failed}, traversal errors {traversal_errors}"
-                )
-            elif incomplete_roots:
-                health = 75
-                note = (
-                    f"YARA fair rotation incomplete in {incomplete_roots} root(s): "
-                    f"scanned {scanned}, skipped {skipped}; durable cursor will resume"
-                )
-            elif skipped:
-                health = 85
-                note = (
-                    f"YARA traversal complete but {skipped} bounded/reparse file(s) "
-                    f"were not content-scanned; scanned {scanned}"
-                )
-            elif existing_roots == 0:
-                health = 50
-                note = "no configured YARA scan root currently exists"
-            else:
-                health = 100
-                note = (
-                    f"complete YARA traversal: scanned {scanned}, skipped {skipped}, "
-                    f"roots {existing_roots}"
-                )
-            self.set_health(health, note)
-            alert_key = f"{health}:{truncated_roots}:{traversal_errors}:{failed}"
-            if health < 70 and alert_key != self._last_coverage_alert:
-                self._last_coverage_alert = alert_key
-                self.emit(
-                    note,
-                    Severity.HIGH if health <= 35 else Severity.MEDIUM,
-                    finding_code="yara.coverage.incomplete",
-                    response_authorized=False,
-                    coverage=cycle_coverage,
-                )
-            elif health >= 70:
-                self._last_coverage_alert = ""
-            if len(self._seen_matches) > 4096:
-                self._seen_matches.clear()
-            self.sleep(_scan_interval())
+                if self._cursor_state_status not in {"new", "ok"} or not state_saved:
+                    health = 35
+                    note = (
+                        "YARA scanning active but authenticated fair cursor is unavailable "
+                        f"({self._cursor_state_status}); coverage continuity is unproven"
+                    )
+                elif truncated_roots:
+                    health = 35
+                    note = (
+                        f"YARA discovery bound reached in {truncated_roots} root(s); "
+                        f"visited {scanned}, failures {failed}, traversal errors {traversal_errors}"
+                    )
+                elif traversal_errors or failed:
+                    health = 60
+                    note = (
+                        f"YARA coverage partial: scanned {scanned}, skipped {skipped}, "
+                        f"file failures {failed}, traversal errors {traversal_errors}"
+                    )
+                elif incomplete_roots:
+                    health = 75
+                    note = (
+                        f"YARA fair rotation incomplete in {incomplete_roots} root(s): "
+                        f"scanned {scanned}, skipped {skipped}; durable cursor will resume"
+                    )
+                elif skipped:
+                    health = 85
+                    note = (
+                        f"YARA traversal complete but {skipped} bounded/reparse file(s) "
+                        f"were not content-scanned; scanned {scanned}"
+                    )
+                elif existing_roots == 0:
+                    health = 50
+                    note = "no configured YARA scan root currently exists"
+                else:
+                    health = 100
+                    note = (
+                        f"complete YARA traversal: scanned {scanned}, skipped {skipped}, "
+                        f"roots {existing_roots}"
+                    )
+                self.set_health(health, note)
+                alert_key = f"{health}:{truncated_roots}:{traversal_errors}:{failed}"
+                if health < 70 and alert_key != self._last_coverage_alert:
+                    self._last_coverage_alert = alert_key
+                    self.emit(
+                        note,
+                        Severity.HIGH if health <= 35 else Severity.MEDIUM,
+                        finding_code="yara.coverage.incomplete",
+                        response_authorized=False,
+                        coverage=cycle_coverage,
+                    )
+                elif health >= 70:
+                    self._last_coverage_alert = ""
+                if len(self._seen_matches) > 4096:
+                    self._seen_matches.clear()
+                self.sleep(_scan_interval())
+        finally:
+            scanner = None
+            replacement = None

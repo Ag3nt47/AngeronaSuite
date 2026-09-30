@@ -48,6 +48,15 @@ Chill still paused for **1,480 ms and 1,074 ms**. A separate Qt control peaked
 at **43 ms**. Freezes and variable native coverage remain open issues.
 The follow-up bounds Storage Hygiene's tree inspection with visible incomplete
 coverage and upgrades PyJWT/urllib3 with refreshed release hashes.
+A later repeat still paused for **8.48 seconds** after returning to Chill;
+lower CPU did not resolve responsiveness. The no-NumPy byte histogram now uses
+an exact C-backed counter, with **42% less thread CPU** in a paired component
+benchmark; this alone is not evidence of freeze-free mode operation.
+Independent sampling exposed overhead in the test fixture's own resource
+polling. With that polling disabled, a 66-worker repeat measured **699/683 ms**
+maximum pauses in Full/returned Chill and no gaps over one second, while
+initial Chill still paused for **1,776 ms**. The separate Qt control peaked at
+**43 ms**. Initial-mode pauses and variable native coverage remain open.
 
 The [Cycle 36 scoring and performance follow-up](analysis/loop/cycle36/README.md)
 clarifies native versus simulation scores. In an actual FIM-enabled GUI drill, all **38/38**
@@ -321,7 +330,7 @@ Contributions: [Contributing](CONTRIBUTING.md) · [Architecture](docs/architectu
 Maintainer publication uses `python tools/publish_github_update.py`, which checks
 canonical fast-forward publication and the public bytes of every README image.
 
-Latest published release evidence: Cycle 35's exact-commit five-check gate on
+Historical published release evidence: Cycle 35's exact-commit five-check gate on
 `5feda7322c44bc0d5cc0149b2ef5031573c557fd` passed **4,353 tests with 20
 skips** and the guarded publisher verified canonical public `main`.
 

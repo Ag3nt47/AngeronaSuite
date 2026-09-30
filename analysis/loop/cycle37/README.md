@@ -116,8 +116,35 @@ An exhausted budget reports unavailable coverage and health 30; it never
 reports a clean tree or enables mutation. Individual OS metadata calls can
 still block beyond the traversal deadline. Targeted storage/security checks
 passed **35/35** after retaining the existing reparse inspection boundary.
-This change has not yet been repeated in the 66-worker soak above and has no
-claimed whole-application speedup. The combined tree requires a fresh gate.
+The earlier soak table predates this change and establishes no
+whole-application speedup. The combined tree requires a fresh gate.
+
+That follow-up's five-check gate passed **4403 tests, 23 skips** and a clean
+dependency audit. Its subsequent mode repeat still measured maximum pauses
+of **2402 / 1167 / 8480 ms**; lower CPU did not resolve freezing. The current
+performance iteration replaces the no-NumPy Python byte-count loop with an
+exact C-backed Counter histogram, measuring **42% less thread CPU** in a
+paired 64 KiB fixture. It passed **44/44** detector/lifecycle checks. Neither
+the component speedup nor the passing functional gate certifies freeze-free
+mode operation. The latest combined commit requires its own release gate.
+
+Native shutdown then exposed another YARA ownership failure: retained
+exception frames can carry native objects to another thread's collector.
+Owning-thread cleanup now detaches scanner and result aliases. The expanded
+detector/lifecycle/traceback checks passed **48/48**; a native profiled run
+exited without the error. The independent profiler collected **2445 samples**
+and **244 read errors**, and exposed overhead from the harness's own GUI-thread
+resource polling. A separate repeat disables that polling rather than treating
+the attribution fixture as a clean latency measurement. Both negative runs
+and the profiler limits are retained in the performance analysis.
+
+The low-overhead 66-worker repeat completed 90 seconds per phase: maximum
+slips **1776 / 699 / 683 ms**, p99 **293 / 136 / 214 ms**, and **5 / 0 / 0**
+gaps over one second in initial Chill / Full / returned Chill. Its separate
+Qt control peaked at **43 ms**; shutdown and recorder drain were clean.
+Steady Full and returned Chill improved in this witness, but initial-Chill
+pauses remain open, and different instrumentation prevents a precise
+whole-application before/after speedup claim.
 
 The final reviewed commit must pass the fixed bytecode, dependency-audit,
 documentation-drift, lint, and full pytest gate. GitHub completion is proved

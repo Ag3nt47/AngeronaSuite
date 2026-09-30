@@ -191,3 +191,72 @@ The component speedups do not prove reduced whole-application CPU usage.
 Raw local records: `.tmp/cycle37_instrumented_mode_soak_result.json` and
 `.tmp/cycle37_qt_control_result.json`; the fixture uses production async
 recorder wiring and disposable data, with the exclusions stated above.
+
+## Storage-bound follow-up and no-NumPy hotspot
+
+The storage-bound commit `259e38e1a5d79a18a7af50ee650b8ca1900ebc2c`
+passed all five release checks: 4403 pytest passes, 23 skips, and no known
+audited dependency vulnerabilities. Its subsequent 90-second-per-phase soak
+still failed responsiveness: maximum slips were **2402 / 1167 / 8480 ms**,
+with **15 / 2 / 6** gaps above one second in Chill / Full / returned Chill.
+Initial Chill and Full CPU averaged 81.73% and 82.24% of one core. Lower CPU
+did not establish acceptable responsiveness. The separate control's final
+file was not produced after the turn interruption; this repeat therefore
+has no completed simultaneous-control comparison. The earlier 43 ms control
+result must not be substituted for it. Local raw application result:
+`.tmp/cycle37_final_mode_soak_result.json`.
+
+Ransomware Heuristics remained the leading CPU consumer (20.391 seconds in
+Full). The local runtime had NumPy unavailable, so its advertised C-backed
+fallback was actually executing a Python per-byte loop. The follow-up uses
+`collections.Counter` and constructs the same 256 integer bins. Seven paired
+rounds of 120 seeded-random 64 KiB blocks measured median thread CPU of
+**6.771 → 3.906 ms/block**, about **42% less**, with exact empty, uniform,
+all-bin and random fixture equivalence. Counter still holds the GIL; no GIL
+release or whole-application latency improvement is inferred from this
+component benchmark. Detector/proof/lifecycle checks passed **44/44**.
+Its all-worker repeat and fresh combined-commit gate are separate evidence.
+
+The Counter repeat still measured **4980 / 4230 / 1136 ms** maximum slips,
+with **7 / 17 / 2** gaps above one second. Its simultaneous separate Qt
+control peaked at **293 ms**. The component speedup did not certify sustained
+mode responsiveness. That native run also printed a YARA Scanner ownership
+error during final destruction, despite the earlier thread-local creation fix.
+The follow-up detaches scanner/result aliases in owning-thread cleanup paths,
+including worker exit, configuration errors and retained exception tracebacks.
+Retained-traceback owner/destructor cases plus detector/lifecycle checks passed
+**48/48**. The subsequent native profiled run exited without that error.
+
+An independent-process py-spy 0.4.2 profile collected **2445 GIL-held samples**
+with **244 stack-read errors** in 60 seconds of Full, using nonblocking
+49 Hz sampling. The downloaded profiler wheel was verified against PyPI's
+SHA-256 and installed only in an ignored test-tool directory. Counter update
+accounted for 469 leaf samples; Windows process metadata remained another
+hotspot. The process metadata collector already shares a short 1.5-second
+cache and revalidates PID birth identity; no freshness reduction was applied.
+Profiler documentation: https://github.com/benfred/py-spy.
+
+Crucially, **324 recorded samples** were in the harness's own per-thread CPU
+polling on the GUI thread. That establishes a harness contribution, not that
+all prior pauses were fictitious. The profiled run measured **3605 / 2620 /
+2308 ms** maximum slips, with **10 / 11 / 15** long gaps and a **340 ms**
+separate-control maximum. Sampling overhead and incomplete stacks limit
+direct comparison with unprofiled runs.
+
+A separate low-overhead repeat disables periodic resource/thread polling
+entirely, retains the 20 ms heartbeat and lightweight callback timing, and
+reads resource totals only at phase boundaries. Endpoint RSS/thread counts
+are labelled as endpoints, not sampled peaks. Its completed result is distinct
+from the instrumented attribution fixtures above.
+
+The low-overhead 66-worker run completed 90 seconds per phase with maximum
+slips of **1776 / 699 / 683 ms**, p99 slips of **293 / 136 / 214 ms**, and
+**5 / 0 / 0** gaps over one second in initial Chill / Full / returned Chill.
+The simultaneous minimal Qt process peaked at **43 ms**, with no large gaps.
+The recorder drained and no YARA thread-ownership error appeared at shutdown.
+This distinguishes a better steady-mode result from initial-Chill pauses;
+it does not establish all-day, physical-display, every-module, or universal
+freeze-free behavior. The profiling fixtures are unsuitable for claiming
+an exact before/after whole-application speedup because their instrumentation
+overhead differs. Local records: `.tmp/cycle38_light_mode_soak_result.json`
+and `.tmp/cycle38_light_qt_control_result.json`.

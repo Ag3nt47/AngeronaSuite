@@ -48,7 +48,7 @@ import secrets
 import stat
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -391,14 +391,14 @@ def _byte_histogram(data: bytes):
     buffer→bincount work) — measured ~4× faster than the per-byte Python loop,
     so it holds the GIL a quarter as long per file. When NumPy isn't installed
     we fall back to the original tight loop, which benchmarks as the fastest
-    pure-Python option (bytes.count×256 and Counter both tested slower), so the
-    no-NumPy path is never a regression versus the previous code."""
+    standard-library Counter's C-backed byte count. Both paths preserve the
+    exact 256-bin integer result; Counter still holds the GIL during counting.
+    A paired 64 KiB random-byte fixture measured less thread CPU than the
+    previous Python loop when NumPy was unavailable."""
     if _HAVE_NUMPY:
         return _np.bincount(_np.frombuffer(data, dtype=_np.uint8), minlength=256)
-    counts = [0] * 256
-    for value in data:
-        counts[value] += 1
-    return counts
+    counts = Counter(data)
+    return [counts.get(value, 0) for value in range(256)]
 
 
 def _shannon_entropy(data: bytes) -> float:
