@@ -3942,3 +3942,31 @@ before/after speedup claim.
 - **R37-02 (MEDIUM):** Shark Stop & clean could unlink an unrelated same-name replacement; inert baseline proof succeeded, and candidate identity-bound cleanup preserved the replacement.
 - **R37-03 (LOW):** the historical AAR tab rendered forged unsigned report text as a past score; a candidate signed-JSON/text-digest viewer refused the forged pair in an independent offscreen UI challenge.
 - **R37-04 (LOW):** synchronous unbounded AAR and stale Shark marker reads could stall the UI/drill; candidate viewer and Shark inventory now impose byte/item bounds, with combined validation pending.
+
+## Cycle 39 — 2026-10-01
+
+Scan Center now reports read, signature and directory traversal failures as
+incomplete coverage. Signature consumption and passive inventory copies are
+bounded before materialization; signature-cap exhaustion is visible. Its
+native scanner/result aliases detach on the creating thread even when failure
+tracebacks survive the worker. The UI surfaces bounded coverage errors.
+Six new challenges fail against the published baseline and pass on the updated
+source; expanded focused validation passed 43 tests with two skips. See
+`cycle39/README.md` for the running-mode witness and remaining coverage limits.
+Completion requires the fixed exact-commit gate and guarded public-main proof.
+
+Follow-up: flight-cache event serialization no longer holds the database lock.
+Optional SQL queries have 50,000-VM-operation and cache-cap result-row budgets;
+exhaustion is explicit and leaves later writes working. Three additional
+baseline challenges reproduced the old behavior; 35 cache/performance checks
+passed. The staged-start mode witness still recorded a 2152 ms returned-Chill
+pause and four long gaps, despite draining all 1482 accepted ledger events.
+Its timing preceded the cache patch and briefly overlapped focused tests;
+no whole-application before/after improvement is claimed.
+
+Periodic module-panel projection now coalesces requests and yields between
+bounded batches; 29 GUI/runtime checks passed. The final combined-source
+simultaneous-start stress witness measured 5809/1495/605 ms maximum pauses,
+with 9/1/0 long gaps and a 58 ms separate Qt control. Initial Chill and Full
+remain slow. Its 1051 primary accepted events persisted, but one late shutdown
+spool segment remained; fixture worker-stop ordering limits shutdown claims.

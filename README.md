@@ -37,6 +37,23 @@ identifiers, timestamps, and counts are synthetic.
 
 ## What's new
 
+The [Cycle 39 Scan Center update](analysis/loop/cycle39/README.md) makes read and
+signature failures visibly incomplete, bounds signature-result consumption,
+and clears thread-bound native scanners even when exception tracebacks survive
+their workers. Six regression challenges fail against the published baseline
+and pass with the repairs. Earlier mode freezes and variable native Red Team
+coverage remain open; this update does not claim complete detection.
+The optional flight cache now moves event serialization outside its database
+lock and rejects SQL queries that exceed operation or result-row budgets.
+Three cache challenges reproduce the old behavior and pass after the repair.
+Periodic module-table refreshes now project small batches between Qt events,
+coalesce repeated requests, and cancel stale work after explicit UI actions.
+The staged-start mode witness still paused for **2.152 seconds** in returned
+Chill; sustained responsiveness remains unresolved.
+With the combined patch, a separate simultaneous-start stress run measured
+**5.809/1.495/0.605 seconds** in initial Chill/Full/returned Chill; its separate
+Qt control peaked at **58 ms**. Initial-mode and Full freezes remain open.
+
 The [Cycle 37 security, simulation and performance repairs](analysis/loop/cycle37/README.md)
 bind practice markers to observed file identity and content, fix Windows FIM
 reads during containment, keep YARA scanners on their owning thread, and load

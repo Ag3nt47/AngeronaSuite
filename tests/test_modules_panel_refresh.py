@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import os
+import time
 from types import SimpleNamespace
 
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QTableWidget
 
@@ -177,6 +178,62 @@ def test_unchanged_refresh_preserves_every_item_without_policy_writes(panel_fact
         assert all(old is new for old, new in zip(old_items, _items(panel, name)))
     assert manager.enable_calls == []
     assert changes.count() == 0
+
+
+def test_periodic_projection_coalesces_and_yields_to_gui(panel_factory, monkeypatch):
+    modules = [_ProbeModule(f"Module {index:03}") for index in range(40)]
+    panel, manager = panel_factory(modules)
+    calls, heartbeats = [], []
+    original = panel._project_module_row
+
+    def project(name, mod):
+        calls.append(name)
+        time.sleep(0.002)  # model a slow provider without starting real modules
+        return original(name, mod)
+
+    monkeypatch.setattr(panel, "_project_module_row", project)
+    timer = QTimer(panel)
+    timer.timeout.connect(lambda: heartbeats.append(panel._refresh_timer.isActive()))
+    timer.start(1)
+    manager.enabled[modules[0].name] = False
+    for _ in range(10):
+        panel.refresh_incremental()
+    assert calls == []
+    deadline = time.monotonic() + 5
+    while panel._refresh_timer.isActive() and time.monotonic() < deadline:
+        QTest.qWait(10)
+    timer.stop()
+    assert not panel._refresh_timer.isActive()
+    assert calls == [module.name for module in modules]
+    assert sum(heartbeats) >= 2
+    assert panel.table.item(_row(panel, modules[0].name), 0).checkState() == Qt.Unchecked
+    assert manager.enable_calls == []
+
+
+def test_explicit_refresh_cancels_pending_projection(panel_factory):
+    panel, manager = panel_factory([_ProbeModule("Alpha"), _ProbeModule("Bravo")])
+    panel.refresh_incremental()
+    panel._advance_refresh()
+    manager.modules.pop("Alpha")
+    panel.refresh()
+    assert not panel._refresh_timer.isActive()
+    assert _visible_names(panel) == ["Bravo"]
+    QTest.qWait(20)
+    assert _visible_names(panel) == ["Bravo"]
+
+
+def test_discovery_change_during_projection_restarts_before_render(panel_factory):
+    panel, manager = panel_factory([_ProbeModule("Alpha")])
+    panel.refresh_incremental()
+    panel._refresh_rows["Alpha"] = panel._project_module_row("Alpha", manager.modules["Alpha"])
+    panel._refresh_index = 1
+    manager.modules["Bravo"] = _ProbeModule("Bravo")
+    panel._advance_refresh()
+    deadline = time.monotonic() + 3
+    while panel._refresh_timer.isActive() and time.monotonic() < deadline:
+        QTest.qWait(10)
+    assert not panel._refresh_timer.isActive()
+    assert set(_visible_names(panel)) == {"Alpha", "Bravo"}
 
 
 def test_refresh_uses_one_current_policy_snapshot_per_module(panel_factory, monkeypatch):

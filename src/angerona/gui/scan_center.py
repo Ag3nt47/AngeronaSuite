@@ -598,12 +598,16 @@ class ScanCenterPanel(QFrame):
         self.progress.setValue(100)
         result_status = str(data.get("status", "completed")).casefold()
         if result_status == "cancelled":
-            self.status.setText("Cancelled · Defender process stopped")
+            self.status.setText("Cancelled · scan stopped")
             self.progress.setFormat("Cancelled")
         elif result_status in {
             "error", "limited", "partial", "rejected", "unsupported"
         }:
-            self.status.setText(f"Finished with {result_status} status")
+            self.status.setText(
+                "Coverage incomplete · review scan details"
+                if result_status in {"limited", "partial"}
+                else f"Finished with {result_status} status"
+            )
             self.progress.setFormat(result_status.title())
         elif result_status == "completed":
             self.status.setText(f"Complete · {len(findings)} finding(s)")
@@ -616,6 +620,10 @@ class ScanCenterPanel(QFrame):
             self.log.setPlainText(summary)
         else:
             self.log.setPlainText(json.dumps(summary, indent=2, sort_keys=True))
+        errors = data.get("errors", [])
+        if isinstance(errors, (list, tuple)) and errors:
+            details = "\n".join(str(item)[:300] for item in errors[:32])
+            self.log.appendPlainText("\nCoverage errors:\n" + details)
 
     def _show_finding_detail(self, row: int, _column: int) -> None:
         cell = self.findings.item(row, 0)

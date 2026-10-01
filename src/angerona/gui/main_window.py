@@ -1149,7 +1149,10 @@ class MainWindow(QMainWindow):
             # Heavier panels: every 2 s in Full, every 10 s in quiet Chill, and
             # once per minute while minimized.
             # skip the others (or blow up the whole tick).
-            for _fn in (self.cards.refresh, self.modules_panel.refresh,
+            module_refresh = getattr(
+                self.modules_panel, "refresh_incremental", self.modules_panel.refresh,
+            )
+            for _fn in (self.cards.refresh, module_refresh,
                         self.alerts_panel.refresh, self.soar_panel.refresh,
                         self.live_defense_activity.refresh):
                 try:

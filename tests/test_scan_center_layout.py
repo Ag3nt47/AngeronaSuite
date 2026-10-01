@@ -13,6 +13,21 @@ from angerona.gui.scan_center import ScanCenterPanel
 _QAPP: QApplication | None = None
 
 
+def test_incomplete_scan_displays_coverage_errors() -> None:
+    app = _app()
+    panel = ScanCenterPanel()
+    panel._apply_result({
+        "status": "limited", "summary": "Scanned one local file.",
+        "findings": [], "errors": ["yara-file-scan:RuntimeError"],
+    })
+    app.processEvents()
+    assert "Coverage incomplete" in panel.status.text()
+    assert "yara-file-scan:RuntimeError" in panel.log.toPlainText()
+    panel.close()
+    panel.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 def _app() -> QApplication:
     global _QAPP
     _QAPP = QApplication.instance() or QApplication([])

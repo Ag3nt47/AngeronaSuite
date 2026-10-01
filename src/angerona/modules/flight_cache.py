@@ -37,6 +37,7 @@ class FlightCache:
     """Thread-safe bounded in-memory mirror of the events ledger."""
 
     _COMMIT_EVERY = 128
+    _QUERY_VM_STEPS = 50_000
 
     def __init__(self, cap: int = 5000) -> None:
         self.cap = cap
@@ -59,10 +60,14 @@ class FlightCache:
 
     def put(self, ts: float, module: str, severity: int, message: str,
             details: dict | str | None = None) -> None:
+        if self._closed:
+            return
+        # Serialization needs no database lock. Large event details otherwise
+        # block cache readers and unrelated producers before SQLite work begins.
+        det = details if isinstance(details, str) else json.dumps(details or {})
         with self._lock:
             if self._closed:
                 return   # cache closed (module stopped) — ephemeral tier, safe to drop
-            det = details if isinstance(details, str) else json.dumps(details or {})
             try:
                 self._seq += 1
                 self._db.execute(
@@ -124,10 +129,28 @@ class FlightCache:
         with self._lock:
             if self._closed:
                 return []
+            steps = 0
+
+            def budget_exhausted() -> int:
+                nonlocal steps
+                steps += 1000
+                return int(steps >= self._QUERY_VM_STEPS)
+
+            self._db.set_progress_handler(budget_exhausted, 1000)
             try:
-                rows = self._db.execute(sql, params).fetchall()
-            except sqlite3.Error:
+                cursor = self._db.execute(sql, params)
+                try:
+                    rows = cursor.fetchmany(self.cap + 1)
+                finally:
+                    cursor.close()
+                if len(rows) > self.cap:
+                    raise ValueError("flight cache query exceeds result-row budget")
+            except sqlite3.Error as exc:
+                if steps >= self._QUERY_VM_STEPS:
+                    raise ValueError("flight cache query exceeds SQLite work budget") from exc
                 return []
+            finally:
+                self._db.set_progress_handler(None, 0)
         self.hits += 1
         return [dict(r) for r in rows]
 

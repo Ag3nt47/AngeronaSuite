@@ -2985,6 +2985,12 @@ class ModulesPanel(QFrame):
         self.table.setColumnWidth(0, 72)
         lay.addWidget(self.table)
         self._rendered_rows = None
+        self._refresh_items = []
+        self._refresh_rows = {}
+        self._refresh_index = 0
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setInterval(1)
+        self._refresh_timer.timeout.connect(self._advance_refresh)
         self._build()
 
     def _sort_changed(self, *_args) -> None:
@@ -3030,35 +3036,43 @@ class ModulesPanel(QFrame):
         Native check states need no child widgets; unchanged rows keep their
         items, selection, and scroll position throughout discovery.
         """
-        rows = {}
+        self._cancel_refresh()
+        rows = {
+            name: self._project_module_row(name, mod)
+            for name, mod in self._sorted_items()
+        }
+        self._render_rows(rows)
+
+    def _project_module_row(self, name, mod):
         usage_reader = getattr(self.manager, "module_usage", None)
-        for name, mod in self._sorted_items():
-            health_summary = mod.health_summary()
-            status, health, health_state = health_summary
-            # Production is_enabled() itself calls module_usage(). Reuse one
-            # policy snapshot for the checkbox, tooltip, and assurance score.
-            # A full table refresh otherwise repeats the same availability
-            # and optional-policy assessment three times per visible module.
-            usage = usage_reader(name) if callable(usage_reader) else None
-            enabled = (
-                bool(usage.enabled) if usage is not None
-                else bool(self.manager.is_enabled(name))
-            )
-            assurance = _module_assurance(
-                self.manager, mod, _fast_assurance_operational(mod, health_summary),
-                enabled=enabled,
-            )
-            contract = _capability_summary(mod)
-            rows[name] = (
-                enabled,
-                f"{_avatar(mod.category)}  {mod.name}",
-                f"{status} {health}%" if status == "running" else status,
-                HEALTH_COLOR.get(health_state, "#e5e7eb"),
-                assurance.score, _assurance_tooltip(assurance), mod.category,
-                str(contract.get("mode", "legacy")),
-                str(contract.get("implementation_version", mod.version)),
-                usage.reason if usage is not None else "",
-            )
+        health_summary = mod.health_summary()
+        status, health, health_state = health_summary
+        # Production is_enabled() itself calls module_usage(). Reuse one
+        # policy snapshot for the checkbox, tooltip, and assurance score.
+        # A full table refresh otherwise repeats the same availability
+        # and optional-policy assessment three times per visible module.
+        usage = usage_reader(name) if callable(usage_reader) else None
+        enabled = (
+            bool(usage.enabled) if usage is not None
+            else bool(self.manager.is_enabled(name))
+        )
+        assurance = _module_assurance(
+            self.manager, mod, _fast_assurance_operational(mod, health_summary),
+            enabled=enabled,
+        )
+        contract = _capability_summary(mod)
+        return (
+            enabled,
+            f"{_avatar(mod.category)}  {mod.name}",
+            f"{status} {health}%" if status == "running" else status,
+            HEALTH_COLOR.get(health_state, "#e5e7eb"),
+            assurance.score, _assurance_tooltip(assurance), mod.category,
+            str(contract.get("mode", "legacy")),
+            str(contract.get("implementation_version", mod.version)),
+            usage.reason if usage is not None else "",
+        )
+
+    def _render_rows(self, rows) -> None:
         if rows == self._rendered_rows:
             return
 
@@ -3128,12 +3142,65 @@ class ModulesPanel(QFrame):
             table.setUpdatesEnabled(updates)
             table.blockSignals(blocked)
 
+    def _cancel_refresh(self) -> None:
+        self._refresh_timer.stop()
+        self._refresh_items = []
+        self._refresh_rows = {}
+        self._refresh_index = 0
+
     def refresh(self) -> None:
-        # Also detects same-count replacements, mode changes, and external
-        # enable/disable operations. Unchanged presentation does no Qt writes.
+        # Explicit requests (filters, inspectors, tests) reconcile immediately.
+        self._cancel_refresh()
         self._build()
 
+    def refresh_incremental(self) -> None:
+        """Coalesce periodic projection and yield Qt between bounded row batches."""
+        if self._refresh_timer.isActive():
+            return
+        self._refresh_items = self._sorted_items()
+        self._refresh_inventory = tuple(
+            (name, id(mod)) for name, mod in self.manager.modules.items()
+        )
+        self._refresh_rows = {}
+        self._refresh_index = 0
+        self._refresh_timer.start()
+
+    def _advance_refresh(self) -> None:
+        deadline = time.monotonic() + 0.004
+        try:
+            for _ in range(8):
+                if self._refresh_index >= len(self._refresh_items):
+                    inventory = tuple(
+                        (name, id(mod)) for name, mod in self.manager.modules.items()
+                    )
+                    if inventory != self._refresh_inventory:
+                        self._cancel_refresh()
+                        self.refresh_incremental()
+                        return
+                    rows = self._refresh_rows
+                    self._cancel_refresh()
+                    self._render_rows(rows)
+                    return
+                name, mod = self._refresh_items[self._refresh_index]
+                # Discovery/removal during a batch cannot publish departed rows.
+                if self.manager.modules.get(name) is not mod:
+                    self._cancel_refresh()
+                    self.refresh_incremental()
+                    return
+                self._refresh_rows[name] = self._project_module_row(name, mod)
+                self._refresh_index += 1
+                if time.monotonic() >= deadline:
+                    return
+        except Exception:
+            self._cancel_refresh()
+            self._rendered_rows = None
+
+    def closeEvent(self, event) -> None:
+        self._cancel_refresh()
+        super().closeEvent(event)
+
     def _on_toggle(self, item: QTableWidgetItem) -> None:
+        self._cancel_refresh()
         if item.column() != 0:
             return
         name = item.data(Qt.UserRole)

@@ -19,6 +19,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +74,7 @@ class _TraversalState:
     entries_seen: int = 0
     directories_seen: int = 0
     directories_discovered: int = 0
+    unreadable_entries: int = 0
     limited: bool = False
     timed_out: bool = False
     cancelled: bool = False
@@ -780,8 +782,12 @@ class SecurityScanCenter:
                             elif entry.is_file(follow_symlinks=False):
                                 yield path, path.relative_to(root)
                         except (OSError, ValueError):
+                            state.unreadable_entries += 1
+                            state.limited = True
                             continue
             except OSError:
+                state.unreadable_entries += 1
+                state.limited = True
                 continue
 
     def _make_yara_scanner(self) -> tuple[Any | None, str]:
@@ -792,6 +798,7 @@ class SecurityScanCenter:
             except ImportError:
                 return None, "unavailable"
         rules = resource_root() / "rules.yar"
+        scanner = None
         try:
             if not rules.is_file() or rules.stat().st_size > 2 * 1024 * 1024:
                 return None, "rules-unavailable"
@@ -805,7 +812,12 @@ class SecurityScanCenter:
             scanner.max_matches_per_pattern(64)
             scanner.fast_scan(True)
             return scanner, "active"
-        except Exception:
+        except BaseException as exc:
+            # Native scanners must be dropped on their creating thread, even
+            # when a caller retains the configuration failure traceback.
+            scanner = None
+            if not isinstance(exc, Exception):
+                raise
             return None, "compile-error"
 
     @staticmethod
@@ -880,159 +892,174 @@ class SecurityScanCenter:
                 errors=("invalid-local-scope",),
             )
         scanner, yara_status = self._make_yara_scanner()
-        findings: list[ScanFinding] = []
-        errors: list[str] = []
-        files = 0
-        scanned_bytes = 0
-        skipped_oversize = 0
-        skipped_budget = 0
-        unsafe_scope_skips = 0
-        timed_out = False
-        traversal = _TraversalState()
-        for candidate, relative in self._iter_local_files(
-            root,
-            cancellation=cancellation,
-            deadline=deadline,
-            traversal=traversal,
-        ):
-            if self._cancelled(cancellation):
-                break
-            if self._monotonic() >= deadline:
-                timed_out = True
-                break
-            if files >= self.max_files:
-                break
-            try:
-                content, info, disposition = _read_scoped_file(
-                    root,
-                    root_identity,
-                    candidate,
-                    self.max_file_bytes,
-                    self.max_total_bytes - scanned_bytes,
-                    normalized_root,
-                    root_is_file=root_is_file,
-                    cancellation=cancellation,
-                    deadline=deadline,
-                    monotonic=self._monotonic,
-                )
-                if disposition == "cancelled":
+        result = match = None
+        try:
+            findings: list[ScanFinding] = []
+            errors: list[str] = []
+            files = 0
+            scanned_bytes = 0
+            skipped_oversize = 0
+            skipped_budget = 0
+            unsafe_scope_skips = 0
+            timed_out = False
+            signature_limit_reached = False
+            traversal = _TraversalState()
+            for candidate, relative in self._iter_local_files(
+                root,
+                cancellation=cancellation,
+                deadline=deadline,
+                traversal=traversal,
+            ):
+                if self._cancelled(cancellation):
                     break
-                if disposition == "timed-out":
+                if self._monotonic() >= deadline:
                     timed_out = True
                     break
-                if disposition == "oversize":
-                    skipped_oversize += 1
-                    continue
-                if disposition == "budget":
-                    skipped_budget += 1
+                if files >= self.max_files:
                     break
-                if content is None:
-                    raise _UnsafeScanPath("validated-content-snapshot-missing")
-                files += 1
-                scanned_bytes += len(content)
-                if len(findings) < MAX_FINDINGS:
-                    findings.extend(
-                        self._metadata_findings(candidate, relative, info.st_mode, content[:4096])[
-                            : MAX_FINDINGS - len(findings)
-                        ]
+                try:
+                    content, info, disposition = _read_scoped_file(
+                        root,
+                        root_identity,
+                        candidate,
+                        self.max_file_bytes,
+                        self.max_total_bytes - scanned_bytes,
+                        normalized_root,
+                        root_is_file=root_is_file,
+                        cancellation=cancellation,
+                        deadline=deadline,
+                        monotonic=self._monotonic,
                     )
-                if scanner is not None and len(findings) < MAX_FINDINGS:
-                    if self._cancelled(cancellation):
+                    if disposition == "cancelled":
                         break
-                    if self._monotonic() >= deadline:
+                    if disposition == "timed-out":
                         timed_out = True
                         break
-                    try:
-                        # Scan the already validated, bounded snapshot. Reopening
-                        # by pathname would reintroduce a link/reparse swap race.
-                        result = scanner.scan(content)
+                    if disposition == "oversize":
+                        skipped_oversize += 1
+                        continue
+                    if disposition == "budget":
+                        skipped_budget += 1
+                        break
+                    if content is None:
+                        raise _UnsafeScanPath("validated-content-snapshot-missing")
+                    files += 1
+                    scanned_bytes += len(content)
+                    if len(findings) < MAX_FINDINGS:
+                        findings.extend(
+                            self._metadata_findings(candidate, relative, info.st_mode, content[:4096])[
+                                : MAX_FINDINGS - len(findings)
+                            ]
+                        )
+                    if scanner is not None and len(findings) < MAX_FINDINGS:
                         if self._cancelled(cancellation):
                             break
                         if self._monotonic() >= deadline:
                             timed_out = True
                             break
-                        for match in tuple(getattr(result, "matching_rules", ()))[:32]:
-                            rule = re.sub(r"[^A-Za-z0-9_.-]", "_", str(match.identifier))[:80]
-                            findings.append(ScanFinding(
-                                _finding_id("yara.match", _private_location(relative), rule),
-                                "high", "Malware signatures", "YARA-X rule matched selected content",
-                                (
-                                    f"Rule: {rule or '<unnamed>'}",
-                                    f"Selected-root relative location: {_private_location(relative)}",
-                                ),
-                                (
-                                    "Do not execute the file.",
-                                    "Validate the detection, file origin, and signature before a separately approved containment action.",
-                                ),
-                            ))
-                            if len(findings) >= MAX_FINDINGS:
+                        try:
+                            # Scan the already validated, bounded snapshot. Reopening
+                            # by pathname would reintroduce a link/reparse swap race.
+                            result = scanner.scan(content)
+                            if self._cancelled(cancellation):
                                 break
-                    except Exception as exc:
-                        if len(errors) < MAX_ERRORS:
-                            errors.append(f"yara-file-scan:{type(exc).__name__}")
-            except _UnsafeScanPath as exc:
-                unsafe_scope_skips += 1
-                if len(errors) < MAX_ERRORS:
-                    errors.append(f"unsafe-file-scope:{exc}")
-            except OSError as exc:
-                if len(errors) < MAX_ERRORS:
-                    errors.append(f"unreadable-file:{type(exc).__name__}")
-            if files == 1 or files % 25 == 0:
-                self._notify(
-                    progress,
-                    ScanProgress("scanning", files, self.max_files, "Selected local content"),
-                )
-            if self._cancelled(cancellation):
-                break
-            if self._monotonic() >= deadline:
-                timed_out = True
-                break
-        timed_out = timed_out or traversal.timed_out or self._monotonic() >= deadline
-        cancelled = traversal.cancelled or self._cancelled(cancellation)
-        limited = (
-            files >= self.max_files or scanned_bytes >= self.max_total_bytes
-            or skipped_oversize > 0 or skipped_budget > 0 or unsafe_scope_skips > 0
-            or len(findings) >= MAX_FINDINGS or timed_out or traversal.limited
-        )
-        status = "cancelled" if cancelled else "limited" if limited else "completed"
-        self._notify(progress, ScanProgress(status, files, self.max_files, "Scan finished"))
-        return self._result(
-            operation, started, status=status, supported=True, executed=True,
-            summary=(
-                f"Scanned {files} local file(s); produced {len(findings)} review finding(s). "
-                f"YARA-X status: {yara_status}. No containment or remediation was performed."
-            ),
-            findings=findings,
-            metrics={
-                "files_scanned": files,
-                "bytes_scanned": scanned_bytes,
-                "oversize_files_skipped": skipped_oversize,
-                "budget_skips": skipped_budget,
-                "unsafe_scope_skips": unsafe_scope_skips,
-                "directory_entries_seen": traversal.entries_seen,
-                "directories_seen": traversal.directories_seen,
-                "directories_discovered": traversal.directories_discovered,
-                "file_limit": self.max_files,
-                "byte_limit": self.max_total_bytes,
-                "per_file_limit": self.max_file_bytes,
-                "directory_entry_limit": self.max_directory_entries,
-                "directory_limit": self.max_directories,
-                "traversal_limit_reason": traversal.limit_reason,
-                "finding_limit": MAX_FINDINGS,
-                "duration_limit_seconds": self.max_duration_seconds,
-                "timed_out": timed_out,
-                "deadline_enforcement": (
-                    "cooperative; a blocking platform read or YARA call is marked late after "
-                    "it returns and is never reported completed"
+                            if self._monotonic() >= deadline:
+                                timed_out = True
+                                break
+                            for match_index, match in enumerate(
+                                islice(getattr(result, "matching_rules", ()), 32), start=1,
+                            ):
+                                signature_limit_reached |= match_index == 32
+                                rule = re.sub(r"[^A-Za-z0-9_.-]", "_", str(match.identifier))[:80]
+                                findings.append(ScanFinding(
+                                    _finding_id("yara.match", _private_location(relative), rule),
+                                    "high", "Malware signatures", "YARA-X rule matched selected content",
+                                    (
+                                        f"Rule: {rule or '<unnamed>'}",
+                                        f"Selected-root relative location: {_private_location(relative)}",
+                                    ),
+                                    (
+                                        "Do not execute the file.",
+                                        "Validate the detection, file origin, and signature before a separately approved containment action.",
+                                    ),
+                                ))
+                                if len(findings) >= MAX_FINDINGS:
+                                    break
+                        except Exception as exc:
+                            if len(errors) < MAX_ERRORS:
+                                errors.append(f"yara-file-scan:{type(exc).__name__}")
+                except _UnsafeScanPath as exc:
+                    unsafe_scope_skips += 1
+                    if len(errors) < MAX_ERRORS:
+                        errors.append(f"unsafe-file-scope:{exc}")
+                except OSError as exc:
+                    if len(errors) < MAX_ERRORS:
+                        errors.append(f"unreadable-file:{type(exc).__name__}")
+                if files == 1 or files % 25 == 0:
+                    self._notify(
+                        progress,
+                        ScanProgress("scanning", files, self.max_files, "Selected local content"),
+                    )
+                if self._cancelled(cancellation):
+                    break
+                if self._monotonic() >= deadline:
+                    timed_out = True
+                    break
+            timed_out = timed_out or traversal.timed_out or self._monotonic() >= deadline
+            if traversal.unreadable_entries and len(errors) < MAX_ERRORS:
+                errors.append(f"unreadable-traversal-entries:{traversal.unreadable_entries}")
+            cancelled = traversal.cancelled or self._cancelled(cancellation)
+            limited = (
+                files >= self.max_files or scanned_bytes >= self.max_total_bytes
+                or skipped_oversize > 0 or skipped_budget > 0 or unsafe_scope_skips > 0
+                or len(findings) >= MAX_FINDINGS or timed_out or traversal.limited or bool(errors)
+                or signature_limit_reached
+            )
+            status = "cancelled" if cancelled else "limited" if limited else "completed"
+            self._notify(progress, ScanProgress(status, files, self.max_files, "Scan finished"))
+            return self._result(
+                operation, started, status=status, supported=True, executed=True,
+                summary=(
+                    f"Scanned {files} local file(s); produced {len(findings)} review finding(s). "
+                    f"YARA-X status: {yara_status}. No containment or remediation was performed."
                 ),
-                "yara_status": yara_status,
-            },
-            errors=errors,
-            privacy=(
-                "The operator-selected root stays local and is never returned; findings use only "
-                "bounded relative locations. File contents are not retained or logged."
-            ),
-        )
+                findings=findings,
+                metrics={
+                    "files_scanned": files,
+                    "bytes_scanned": scanned_bytes,
+                    "oversize_files_skipped": skipped_oversize,
+                    "budget_skips": skipped_budget,
+                    "unsafe_scope_skips": unsafe_scope_skips,
+                    "directory_entries_seen": traversal.entries_seen,
+                    "directories_seen": traversal.directories_seen,
+                    "directories_discovered": traversal.directories_discovered,
+                    "unreadable_traversal_entries": traversal.unreadable_entries,
+                    "file_limit": self.max_files,
+                    "byte_limit": self.max_total_bytes,
+                    "per_file_limit": self.max_file_bytes,
+                    "directory_entry_limit": self.max_directory_entries,
+                    "directory_limit": self.max_directories,
+                    "traversal_limit_reason": traversal.limit_reason,
+                    "finding_limit": MAX_FINDINGS,
+                    "signature_limit_reached": signature_limit_reached,
+                    "duration_limit_seconds": self.max_duration_seconds,
+                    "timed_out": timed_out,
+                    "deadline_enforcement": (
+                        "cooperative; a blocking platform read or YARA call is marked late after "
+                        "it returns and is never reported completed"
+                    ),
+                    "yara_status": yara_status,
+                },
+                errors=errors,
+                privacy=(
+                    "The operator-selected root stays local and is never returned; findings use only "
+                    "bounded relative locations. File contents are not retained or logged."
+                ),
+            )
+        finally:
+            # A callback or provider can retain a traceback containing this
+            # frame. Detach native objects before the worker returns or raises.
+            match = result = scanner = None
 
     @staticmethod
     def _endpoint(endpoint: object) -> tuple[str, int]:
@@ -1077,7 +1104,7 @@ class SecurityScanCenter:
                 summary="Listening-port audit requires psutil; no network activity was attempted.",
             )
         try:
-            connections = tuple(psutil.net_connections(kind="inet"))[:MAX_CONNECTIONS]
+            connections = tuple(islice(psutil.net_connections(kind="inet"), MAX_CONNECTIONS))
         except Exception as exc:
             return self._result(
                 operation, started, status="error", supported=True, executed=True,
@@ -1197,7 +1224,7 @@ class SecurityScanCenter:
         limited = len(stats) > MAX_INTERFACES
         deadline = self._monotonic() + self.max_duration_seconds
         timed_out = False
-        for index, (name, state) in enumerate(tuple(stats.items())[:MAX_INTERFACES], start=1):
+        for index, (name, state) in enumerate(islice(stats.items(), MAX_INTERFACES), start=1):
             if self._cancelled(cancellation):
                 break
             if self._monotonic() >= deadline:
@@ -1210,7 +1237,7 @@ class SecurityScanCenter:
             if any(token in low_name for token in ("wi-fi", "wifi", "wireless", "wlan", "airport")):
                 wireless += 1
             interface_non_loopback = False
-            for address in tuple(addresses.get(name, ()))[:16]:
+            for address in islice(addresses.get(name, ()), 16):
                 if address_count >= MAX_INTERFACE_ADDRESSES:
                     limited = True
                     break

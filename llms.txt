@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.13.0
-Date: 2026-09-30
+Date: 2026-10-01
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -22,7 +22,33 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST (v1.13.0 — Cycle 37 maintenance, 2026-09-30)
+## LATEST (v1.13.0 — Cycle 39 maintenance, 2026-10-01)
+
+- Record: analysis/loop/cycle39/README.md. Scan Center reports local read,
+  signature errors and per-file match-cap exhaustion as incomplete coverage.
+  Bounded match/inventory iteration avoids eager unbounded collection copies.
+- On-demand workers clear native scanner/result aliases before retained
+  tracebacks can outlive their creating threads. The UI displays coverage
+  errors. Six baseline failure challenges now pass; expanded focused checks
+  passed 43 tests with two skips. Sustained freezes and variable native Red Team
+  detection remain open; this is not complete efficacy certification.
+- Flight-cache serialization runs outside the database lock; optional queries
+  reject more than 50,000 SQLite VM operations or more results than the cache
+  row cap. Three published-baseline challenges now pass; 35 cache/performance
+  regression checks passed. A staged-start 66-worker mode witness measured
+  683/793/2152 ms maximum slips; returned Chill had four long gaps. All 1482
+  accepted ledger events persisted. This pre-cache-change witness is limited
+  by short duration, fixture exclusions and brief overlapping focused tests.
+- Periodic module-panel projection coalesces requests and yields Qt after
+  eight rows or a cooperative four-millisecond budget. Explicit actions cancel
+  pending work; discovery changes restart before rendering. 29 module-panel,
+  runtime-reader and dashboard checks passed. Providers can overrun a batch;
+  this is not a hard real-time responsiveness guarantee.
+- Final combined-source simultaneous-start stress witness: maximum slips
+  5809/1495/605 ms, with 9/1/0 long gaps across initial Chill/Full/returned
+  Chill. The separate Qt control peaked at 58 ms. All 1051 primary accepted
+  events persisted; one late event remained in the durable shutdown spool.
+  Worker drain does not establish complete primary-ledger persistence.
 
 - Record: analysis/loop/cycle37/README.md. Practice provenance now requires
   observed file identity and completed-byte digest. Windows FIM readers permit
