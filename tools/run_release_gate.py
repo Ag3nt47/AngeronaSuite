@@ -50,13 +50,26 @@ def _project_version() -> str:
     raise ValueError("pyproject.toml has no project version")
 
 
-def _run(check_id: str, command: tuple[str, ...], timeout: int) -> QualityCheckEvidence:
+def _run(
+    check_id: str, command: tuple[str, ...], timeout: int,
+    *, pytest_trace: Path | None = None,
+) -> QualityCheckEvidence:
     started = time.monotonic()
     timed_out = False
+    kwargs = {}
+    if pytest_trace is not None:
+        environment = dict(os.environ)
+        plugins = environment.get("PYTEST_PLUGINS", "").strip()
+        environment["PYTEST_PLUGINS"] = ",".join(filter(None, (
+            plugins, "tools.pytest_execution_trace",
+        )))
+        environment["ANGERONA_PYTEST_TRACE_PATH"] = str(pytest_trace.resolve())
+        kwargs["env"] = environment
     try:
         result = subprocess.run(
             command, cwd=ROOT, capture_output=True, timeout=timeout,
             stdin=subprocess.DEVNULL, shell=False,
+            **kwargs,
         )
         output = (result.stdout or b"") + b"\n" + (result.stderr or b"")
         exit_code = int(result.returncode)
@@ -79,10 +92,21 @@ def main() -> int:
         default=ROOT / "analysis" / "release-evidence-local.json",
     )
     parser.add_argument("--timeout-seconds", type=int, default=1800)
+    parser.add_argument(
+        "--pytest-trace", action="store_true",
+        help="Record test outcomes and Qt fatal messages beside the evidence pack",
+    )
     args = parser.parse_args()
+    if args.pytest_trace:
+        trace_path = args.output.with_suffix(".pytest.jsonl")
+        if trace_path.exists():
+            parser.error("pytest trace already exists; select a fresh --output destination")
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
     timeout = max(60, min(int(args.timeout_seconds), 3600))
     checks = tuple(
-        _run(check_id, command, timeout)
+        _run(check_id, command, timeout, pytest_trace=args.output.with_suffix(".pytest.jsonl"))
+        if args.pytest_trace and check_id == "unit-tests"
+        else _run(check_id, command, timeout)
         for check_id, command in sorted(CHECKS.items())
     )
     source_epoch = int(os.environ.get(
@@ -96,6 +120,8 @@ def main() -> int:
         limitations=(
             "Local gate evidence is content-addressed but not a publisher signature.",
             "Long-duration physical-host soak and external penetration tests are separate gates.",
+            *(('Opt-in pytest execution trace observes outcomes and Qt messages; test commands and assertions are unchanged.',)
+              if args.pytest_trace else ()),
         ),
     )
     write_evidence_pack(args.output.resolve(), pack)

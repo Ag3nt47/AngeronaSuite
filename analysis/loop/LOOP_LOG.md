@@ -3978,3 +3978,11 @@ cases now pass all 35 QEMU checks without changing production thresholds.
 Three native YARA-X Scan Center workers also passed an inert rule/content
 probe and subsequent main-thread GC. Original failed gate evidence is retained;
 the test-fixture follow-up requires a new exact-commit full gate.
+
+The follow-up passed four checks, but pytest aborted with 0xC0000409 in
+Qt6Core.dll after two assertion failures and ~37% progress. Focused verbose
+Cycle 26/27/29 diagnostics passed 743 tests with four skips. The native fault
+remains unresolved. Added opt-in pytest execution journaling to retain test
+identity/outcome and Qt fatal messages before termination. Two isolated
+assertion/qFatal challenges preserve nonzero outcomes and flushed trace lines;
+six diagnostic/release-evidence checks passed. A new traced full gate is required.

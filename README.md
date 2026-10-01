@@ -53,6 +53,10 @@ Chill; sustained responsiveness remains unresolved.
 With the combined patch, a separate simultaneous-start stress run measured
 **5.809/1.495/0.605 seconds** in initial Chill/Full/returned Chill; its separate
 Qt control peaked at **58 ms**. Initial-mode and Full freezes remain open.
+An opt-in [gate execution trace](tools/pytest_execution_trace.py) preserves
+failing test identities and Qt fatal messages if a full test process aborts.
+The observed native Qt abort remains unresolved; isolated subgroup passes do
+not certify whole-suite stability.
 
 The [Cycle 37 security, simulation and performance repairs](analysis/loop/cycle37/README.md)
 bind practice markers to observed file identity and content, fix Windows FIM

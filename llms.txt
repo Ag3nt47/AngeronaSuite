@@ -54,6 +54,13 @@ kernel component is a product capability.
   explicitly; added low-space rejection cases retain production thresholds.
   All 35 QEMU checks passed. Three real YARA-X Scan Center worker probes passed
   with main-thread GC after worker exit. The follow-up requires a fresh gate.
+- The workspace-TEMP follow-up passed four checks, then pytest aborted with
+  0xC0000409 in Qt6Core.dll after two assertion failures (~37% progress).
+  A verbose Cycle 26/27/29 diagnostic run passed 743 tests with four skips;
+  the native fault remains unresolved. New opt-in --pytest-trace journals
+  test identities, outcomes and Qt fatal messages without changing grading.
+  Isolated assertion/real-qFatal failures stay nonzero and leave trace evidence;
+  six diagnostic/release-evidence checks passed. The traced full gate is separate.
 
 - Record: analysis/loop/cycle37/README.md. Practice provenance now requires
   observed file identity and completed-byte digest. Windows FIM readers permit

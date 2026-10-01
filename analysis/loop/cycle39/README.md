@@ -86,6 +86,37 @@ changes or a replacement of its failure history.
 The follow-up gate uses a disposable workspace `TEMP`/`TMP` directory rather
 than adding temporary test files to the low-space system volume.
 
+That follow-up on `9582a93` passed four gate checks, then pytest exited with
+**0xC0000409** after two assertion failures and approximately 37% progress.
+Windows Error Reporting identifies **Qt6Core.dll**; the faulting pytest process
+was PID 1952. Read-only stack samples showed progress through SQLite fixture
+initialization and isolated judgment verification before the abort. The gate's
+short output tail did not retain the failing test identities. The original
+pack remains `.tmp/cycle39_release_evidence_followup.json`.
+
+A separate verbose diagnostic run covering the affected Cycle 26/27/29 groups
+completed **743 passed, 4 skipped** using normal temporary-file selection;
+it did not reproduce the native abort. This does not resolve that fault.
+The suite's existing per-test Angerona data isolation remains on the workspace
+drive. No native-crash repair or complete stability claim follows from a retry.
+
+New diagnostic module: `tools/pytest_execution_trace.py`. Enable it with
+`tools/run_release_gate.py --pytest-trace --output <fresh evidence path>`.
+It journals test starts, phase outcomes, bounded failure details and Qt
+critical/fatal messages beside the evidence pack. Records flush to survive
+process abort without per-test fsync. Existing journals are never overwritten.
+Qt messages are forwarded to their prior handler (or stderr); the observer
+does not change collection, assertions or test exit grading. The fixed pytest
+command is unchanged, with the opt-in plugin recorded in evidence limitations.
+
+Two isolated subprocess challenges verify assertion failure remains nonzero
+and a real Qt `qFatal` remains nonzero while recording the last test and fatal
+message before native termination. PySide normalizes the Python qFatal message,
+so its severity, identity and nonempty content are verified. The diagnostic
+module plus release-evidence checks passed **6 tests**. The next traced full
+gate uses normal tempfile selection; these observations must not be mistaken
+for a successful gate until it completes.
+
 ## Running-mode witness
 
 The 66-selected-worker staged-start witness completed approximately 90 seconds
