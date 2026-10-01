@@ -65,6 +65,27 @@ slow row provider confirms heartbeat callbacks execute while a coalesced
 projection is still pending; ten requests produce one row pass. Discovery
 changes restart projection and explicit refresh prevents stale later writes.
 
+The real YARA-X backend also completed **3/3** on-demand Scan Center scans on
+separate workers against an inert custom rule and text marker. Each returned
+one high-severity signature finding with active YARA coverage; main-thread GC
+after worker exit completed without native ownership errors. This verifies the
+native service boundary, not Red Team efficacy. Evidence:
+`.tmp/cycle39_native_scan_probe_result.json`.
+
+The first exact-commit gate on `a1bcae6ebb786d91113707e4c53b197515682e24`
+passed bytecode, dependency audit, documentation drift and lint. Full pytest
+reported **4419 passed, 23 skipped, 3 failed**. All three failures were QEMU
+setup workflows that used the real temporary-volume free space instead of a
+synthetic value; the 2 GiB production admission guard rejected setup during
+that run. The fixture now models sufficient space, and two explicit low-space
+cases prove staging/application-drive rejection before download or install.
+Production space thresholds remain unchanged. **35 QEMU setup checks passed**.
+The original failed pack is retained at `.tmp/cycle39_release_evidence.json`;
+the reviewed follow-up requires a fresh full gate, not selective assertion
+changes or a replacement of its failure history.
+The follow-up gate uses a disposable workspace `TEMP`/`TMP` directory rather
+than adding temporary test files to the low-space system volume.
+
 ## Running-mode witness
 
 The 66-selected-worker staged-start witness completed approximately 90 seconds

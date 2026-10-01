@@ -257,6 +257,9 @@ def workflow(tmp_path, monkeypatch, catalog):
     monkeypatch.setattr(setup, 'os', SimpleNamespace(name='nt', fstat=os.fstat, fsync=os.fsync))
     monkeypatch.setattr(setup.platform, 'machine', lambda: 'AMD64')
     monkeypatch.setattr(setup, '_require_unprivileged', lambda: None)
+    # The workflow's filesystem/install boundaries are synthetic. Disk-space
+    # admission must also be synthetic rather than depending on the host drive.
+    monkeypatch.setattr(setup.shutil, 'disk_usage', lambda _path: SimpleNamespace(free=8 * 1024**3))
     monkeypatch.setattr(privilege, '_windows_known_folder', lambda _kind: program_files)
     monkeypatch.setattr(tool_analysis_jobs, 'transaction', lambda _root: contextlib.nullcontext())
     monkeypatch.setattr(setup.analysis_qemu_runtime, 'trusted_installation', lambda: contextlib.nullcontext())
@@ -279,6 +282,24 @@ def test_missing_vendor_install_downloads_then_configures(workflow):
     root, _program_files, calls = workflow
     assert 'configured' in setup.install_and_configure(root, Operation())
     assert calls == ['download', 'install', 'configure']
+
+
+@pytest.mark.parametrize('low_drive', ['downloads', 'application'])
+def test_insufficient_space_rejects_before_download_or_install(workflow, monkeypatch, low_drive):
+    root, program_files, calls = workflow
+
+    def disk_usage(path):
+        if low_drive == 'downloads' and Path(path) == root / 'downloads':
+            return SimpleNamespace(free=512 * 1024**2 - 1)
+        if low_drive == 'application' and Path(path) == program_files:
+            return SimpleNamespace(free=2 * 1024**3 - 1)
+        return SimpleNamespace(free=8 * 1024**3)
+
+    monkeypatch.setattr(setup.shutil, 'disk_usage', disk_usage)
+    with pytest.raises(ValueError, match='free'):
+        setup.install_and_configure(root, Operation())
+    assert calls == []
+    assert not (program_files / 'qemu').exists()
 
 
 @pytest.mark.parametrize('machine', ['ARM64', 'aarch64', 'x86'])

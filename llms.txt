@@ -49,6 +49,11 @@ kernel component is a product capability.
   Chill. The separate Qt control peaked at 58 ms. All 1051 primary accepted
   events persisted; one late event remained in the durable shutdown spool.
   Worker drain does not establish complete primary-ledger persistence.
+- The first gate passed four checks but pytest had three QEMU fixture failures
+  under real-host low space (4419 passed, 23 skipped). Fixtures now model space
+  explicitly; added low-space rejection cases retain production thresholds.
+  All 35 QEMU checks passed. Three real YARA-X Scan Center worker probes passed
+  with main-thread GC after worker exit. The follow-up requires a fresh gate.
 
 - Record: analysis/loop/cycle37/README.md. Practice provenance now requires
   observed file identity and completed-byte digest. Windows FIM readers permit

@@ -3970,3 +3970,11 @@ simultaneous-start stress witness measured 5809/1495/605 ms maximum pauses,
 with 9/1/0 long gaps and a 58 ms separate Qt control. Initial Chill and Full
 remain slow. Its 1051 primary accepted events persisted, but one late shutdown
 spool segment remained; fixture worker-stop ordering limits shutdown claims.
+
+The first exact-commit gate passed four checks; pytest reported 4419 passed,
+23 skipped and three QEMU workflow fixture failures due to real-host free
+space. Synthetic workflow-space admission and two explicit low-space negative
+cases now pass all 35 QEMU checks without changing production thresholds.
+Three native YARA-X Scan Center workers also passed an inert rule/content
+probe and subsequent main-thread GC. Original failed gate evidence is retained;
+the test-fixture follow-up requires a new exact-commit full gate.
