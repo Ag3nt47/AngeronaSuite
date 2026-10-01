@@ -3986,3 +3986,9 @@ remains unresolved. Added opt-in pytest execution journaling to retain test
 identity/outcome and Qt fatal messages before termination. Two isolated
 assertion/qFatal challenges preserve nonzero outcomes and flushed trace lines;
 six diagnostic/release-evidence checks passed. A new traced full gate is required.
+
+The first traced gate stopped with diagnostic clock interference after 326
+passes/two skips. Bound original clock/serializer/Qt installer references now
+avoid test mocks; seven diagnostic checks and four traced focused cases passed.
+Local editable metadata is aligned offline from 1.10.0 to source 1.13.0, with
+clean pip check and source-root imports. No native Qt or freeze repair is claimed.

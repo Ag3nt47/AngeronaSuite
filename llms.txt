@@ -61,6 +61,11 @@ kernel component is a product capability.
   test identities, outcomes and Qt fatal messages without changing grading.
   Isolated assertion/real-qFatal failures stay nonzero and leave trace evidence;
   six diagnostic/release-evidence checks passed. The traced full gate is separate.
+- The first traced gate stopped after 326 passes/two skips because the observer
+  consumed a mocked clock. Its clock/serializer/Qt installer now bind before
+  tests; seven diagnostic checks and the formerly blocked test with tracing
+  pass. Original failed packs remain. Offline editable metadata now matches
+  source 1.13.0; pip check is clean. Native Qt abort/freezes remain unresolved.
 
 - Record: analysis/loop/cycle37/README.md. Practice provenance now requires
   observed file identity and completed-byte digest. Windows FIM readers permit

@@ -8,6 +8,9 @@ import threading
 import time
 from pathlib import Path
 
+_CLOCK = time.monotonic
+_ENCODE = json.dumps
+_install_handler = None
 _stream = None
 _lock = threading.RLock()
 _current = ""
@@ -19,7 +22,7 @@ def _record(kind: str, **fields) -> None:
     with _lock:
         if _stream is None:
             return
-        _stream.write(json.dumps({"kind": kind, "monotonic": time.monotonic(), **fields}) + "\n")
+        _stream.write(_ENCODE({"kind": kind, "monotonic": _CLOCK(), **fields}) + "\n")
         _stream.flush()  # survive process abort; no per-test durable fsync
 
 
@@ -36,24 +39,27 @@ def _qt_handler(mode, context, message):
 
 def _install_qt_handler() -> None:
     global _previous_qt_handler, _installed
-    try:
-        from PySide6.QtCore import qInstallMessageHandler
-    except ImportError:
+    if _install_handler is None:
         return
-    previous = qInstallMessageHandler(_qt_handler)
+    previous = _install_handler(_qt_handler)
     if previous is not _qt_handler:
         _previous_qt_handler = previous
     _installed = True
 
 
 def pytest_configure(config):
-    global _stream
+    global _stream, _install_handler
     output = os.environ.get("ANGERONA_PYTEST_TRACE_PATH")
     if not output:
         return
     # The gate selects this explicit diagnostic output; existing evidence must
     # not be overwritten. Opening errors fail setup instead of hiding them.
     _stream = Path(output).open("x", encoding="utf-8", buffering=1)
+    try:
+        from PySide6.QtCore import qInstallMessageHandler
+        _install_handler = qInstallMessageHandler
+    except ImportError:
+        pass
     _record("session-start")
 
 
@@ -76,8 +82,7 @@ def pytest_runtest_logreport(report):
 def pytest_unconfigure(config):
     global _stream, _installed
     if _installed:
-        from PySide6.QtCore import qInstallMessageHandler
-        qInstallMessageHandler(_previous_qt_handler)
+        _install_handler(_previous_qt_handler)
         _installed = False
     with _lock:
         if _stream is not None:

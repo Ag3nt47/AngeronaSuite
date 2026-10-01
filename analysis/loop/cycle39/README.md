@@ -117,6 +117,23 @@ module plus release-evidence checks passed **6 tests**. The next traced full
 gate uses normal tempfile selection; these observations must not be mistaken
 for a successful gate until it completes.
 
+The first traced gate on `d46563c` passed four checks, then stopped with a
+diagnostic-plugin `StopIteration` after **326 passed, 2 skipped**. Its observer
+called the shared `time.monotonic` while a test had replaced that function with
+a finite sequence. The observer now binds its clock, serializer and native Qt
+handler installer before tests run. A mocked-clock/serializer subprocess case
+proves its two clock samples and custom serializer remain untouched; all
+**7 diagnostic/release-evidence checks passed**. The exact formerly blocked
+QEMU deadline test plus all observer subprocess cases passed **4 tests with
+tracing enabled**. Failed evidence is retained at
+`.tmp/cycle39_release_evidence_traced.json` with its execution journal.
+
+Local editable distribution metadata was also stale at 1.10.0 despite source
+version 1.13.0. An offline, no-dependency, no-build-isolation editable install
+aligned it to **1.13.0**. `pip check` reports no broken requirements and imports
+still resolve to this checkout's `src/angerona/__init__.py`. This is metadata
+alignment, not evidence of a freeze or native-crash repair.
+
 ## Running-mode witness
 
 The 66-selected-worker staged-start witness completed approximately 90 seconds

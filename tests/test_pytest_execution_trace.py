@@ -12,7 +12,7 @@ import pytest
 from angerona.core.privilege import sanitized_child_environment
 
 
-@pytest.mark.parametrize("fault", ["assertion", "qt-fatal"])
+@pytest.mark.parametrize("fault", ["assertion", "qt-fatal", "mocked-functions"])
 def test_trace_preserves_failure_and_last_test_identity(tmp_path, fault):
     if fault == "qt-fatal":
         pytest.importorskip("PySide6.QtCore")
@@ -27,7 +27,18 @@ def test_trace_preserves_failure_and_last_test_identity(tmp_path, fault):
             "    from PySide6.QtCore import qFatal\n"
             "    qFatal('isolated fatal trace probe')\n"
         )
-    probe.write_text("def test_inert_probe():\n" + body, encoding="utf-8")
+    if fault == "mocked-functions":
+        body = (
+            "    import time, json\n"
+            "    clock = iter([1.0, 2.0])\n"
+            "    monkeypatch.setattr(time, 'monotonic', lambda: next(clock))\n"
+            "    monkeypatch.setattr(json, 'dumps', lambda *_args, **_kwargs: 'mocked serializer')\n"
+            "    assert time.monotonic() == 1.0\n"
+            "    assert json.dumps({}) == 'mocked serializer'\n"
+            "    assert time.monotonic() == 2.0\n"
+        )
+    parameters = "monkeypatch" if fault == "mocked-functions" else ""
+    probe.write_text(f"def test_inert_probe({parameters}):\n" + body, encoding="utf-8")
     trace = tmp_path / "execution.jsonl"
     environment = sanitized_child_environment(source={})
     environment["QT_QPA_PLATFORM"] = "offscreen"
@@ -38,15 +49,20 @@ def test_trace_preserves_failure_and_last_test_identity(tmp_path, fault):
         capture_output=True, timeout=60,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
-    assert result.returncode != 0, "diagnostic observation must never turn failure into success"
+    if fault == "mocked-functions":
+        assert result.returncode == 0, result.stdout.decode(errors="replace")
+    else:
+        assert result.returncode != 0, "diagnostic observation must never turn failure into success"
     records = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
     assert any(row["kind"] == "test-start" and row["nodeid"].endswith("test_inert_probe") for row in records)
     if fault == "assertion":
         assert any(row.get("outcome") == "failed" and row.get("when") == "call" for row in records)
-    else:
+    elif fault == "qt-fatal":
         assert any(
             row["kind"] == "qt-message" and row["severity"] == "QtFatalMsg"
             # PySide can normalize Python qFatal messages to its own text.
             and row["message"] and row["nodeid"].endswith("test_inert_probe")
             for row in records
         )
+    else:
+        assert any(row.get("outcome") == "passed" and row.get("when") == "call" for row in records)
