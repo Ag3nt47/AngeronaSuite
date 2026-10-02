@@ -26,6 +26,8 @@ from typing import Optional
 
 from cryptography.exceptions import InvalidSignature
 
+from angerona.core.atomic_io import replace_with_retry
+
 
 FORMAT = "angerona-device-security-lab-v1"
 STATE_FORMAT = "angerona-device-security-lab-state-v1"
@@ -1283,7 +1285,7 @@ class DeviceSecurityLab:
                 stream.write(encoded)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, self._state_path)
+            replace_with_retry(temporary, self._state_path)
             try:
                 os.chmod(self._state_path, 0o600)
             except OSError:

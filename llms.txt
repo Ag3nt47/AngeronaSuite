@@ -33,6 +33,10 @@ kernel component is a product capability.
 - Deferred dialogs retain independent ownership until native worker exit;
   SentinelLens rejects post-close async work. Native parent destruction and late
   callback challenges reproduce the published lifetime defects.
+- Alert rotation uses the held file's end offset and preserves replacement
+  bytes. Device-lab, temporal and CVE ledger writers use bounded replacement
+  retries. Six native sharing-lock cases verify recovery and permanent failure;
+  authenticated state and temporal blindness on storage failure remain enforced.
 
 ## Cycle 39 maintenance (2026-10-01)
 

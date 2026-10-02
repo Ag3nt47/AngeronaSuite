@@ -329,7 +329,7 @@ def test_cve_ledger_updates_are_atomic_across_threads(tmp_path, monkeypatch):
         results = list(pool.map(stage, range(24)))
 
     ledger = cve_fix_advisor._load_applied()
-    assert all(result["ok"] for result in results)
+    assert all(result["ok"] for result in results), [result for result in results if not result["ok"]]
     assert len(ledger) == 24
     assert all(record["staged"] and not record["executed"] for record in ledger.values())
     assert not list((tmp_path / "shared_logs").glob(".angerona-cve-ledger-*.tmp"))

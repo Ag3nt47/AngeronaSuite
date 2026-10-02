@@ -4036,3 +4036,14 @@ unconfirmed; add fixture and directory diagnostics and require fresh CI.
 The 66-worker simultaneous-start witness retained an initial Chill 4262 ms
 gap (Full 324 ms, returned Chill 855 ms, separate control 152 ms). Recorder
 744/744 drained and captured module workers exited. Freezes remain open.
+
+Full gate on 3f191a5 completed 4430/23 with three failures: device-lab atomic
+replacement WinError 5, temporal overflow reporting blindness, and concurrent
+CVE proposal ledger saves. All four other gate checks passed; alert rotation,
+two-pass GUI OS witness, live containment and VMware checks passed. Use the
+existing bounded replacement helper in these three writers. Six native
+deny-delete reader challenges verify released-lock recovery and permanent-lock
+failure with old bytes retained; temporal stays blind on permanent failure.
+Old writers reject each released-reader challenge. Focused suite passed 44/1.
+Exact underlying OS errors for temporal/CVE remain unconfirmed; improve failure
+diagnostics and require adjacent validation plus fresh hosted CI.

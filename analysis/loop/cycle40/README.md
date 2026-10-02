@@ -113,6 +113,36 @@ not an all-module, all-day soak or a native simulation score. Evidence is
 retained in `.tmp/cycle40_mode_soak_result.json` and
 `.tmp/cycle40_qt_control_result.json`.
 
+## Windows persistence follow-up
+
+The full local gate on 3f191a5 completed with 4430 passes, 23 skips and three
+failures in 1704.18 seconds. Bytecode, dependency audit, documentation and lint
+passed. Alert rotation, the two-pass live GUI drill (187.75 seconds), both
+containment profiles, worker teardown and VMware cases passed. Failures were
+device-lab state replacement (WinError 5), temporal overflow becoming blind,
+and concurrent CVE proposal ledger updates. Evidence remains in
+`.tmp/cycle40_release_evidence_rotation_fix.json` and its journal.
+
+All three writers used one atomic replacement attempt, unlike other state
+writers that already tolerate short Windows sharing locks. They now use the
+existing bounded `replace_with_retry` helper. Temporary-file fsync, authenticated
+state, prior-file preservation, temporal blindness after permanent storage
+failure and inert-only CVE proposals remain enforced. A native Windows reader
+denying delete access forces the actual replacement error in each writer.
+Releasing it after the first error permits save and reload; retaining it
+exhausts seven attempts, preserves the old bytes and removes the temporary.
+The temporal engine still locks persistence and reports blind/unavailable.
+All six native cases passed; all three old writers reject the released-reader
+challenge. Focused persistence/helper tests passed 44 with one skip.
+
+These tests demonstrate the unhandled-lock defects. The device-lab traceback
+identified access denial; the exact OS error behind the other full-run states
+was not captured. Their existing assertions now report persistence status or
+failed proposal results. This is not a claim that every storage error is
+transient. Relevant adjacent UI tests and fresh whole-suite hosted CI are
+required before reporting this follow-up complete. Adjacent proposal, temporal
+health and device/UI validation subsequently passed 12 tests.
+
 ## Remaining limits
 
 Cycle 39's full local gate passed 4427 tests with 23 skips and publication

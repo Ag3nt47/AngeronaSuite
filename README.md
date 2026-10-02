@@ -44,6 +44,9 @@ and removes redundant module-table changes. Mode freezes and variable native
 simulation coverage remain under investigation.
 Deferred dialogs survive parent destruction until their workers finish, and
 closing SentinelLens rejects callbacks that could restart snapshot work.
+Alert rotation preserves oversized and replacement content. Device-lab,
+temporal-correlation and CVE proposal state saves tolerate bounded Windows
+sharing locks; permanent storage failures remain visible.
 
 The [Cycle 39 Scan Center update](analysis/loop/cycle39/README.md) makes read and
 signature failures visibly incomplete, bounds signature-result consumption,

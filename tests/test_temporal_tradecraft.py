@@ -149,7 +149,7 @@ def test_missing_blind_and_overflow_are_explicit(tmp_path: Path) -> None:
             _event("session" if index % 2 else "path", 900.0 + index, str(index)),
             integrity_verified=True,
         )
-    assert result.state == "overflow"
+    assert result.state == "overflow", (result.state, result.persistence_status)
     assert result.dropped_signals == 1
     assert result.response_authorized is False
 

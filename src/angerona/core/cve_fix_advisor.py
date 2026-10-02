@@ -36,6 +36,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
+from angerona.core.atomic_io import replace_with_retry
 from angerona.core.url_policy import (
     OLLAMA_SERVICE_POLICY,
     local_service_url,
@@ -459,7 +460,7 @@ def _write_applied_unlocked(data: dict) -> None:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, p)
+        replace_with_retry(temporary, p)
     finally:
         if descriptor >= 0:
             os.close(descriptor)

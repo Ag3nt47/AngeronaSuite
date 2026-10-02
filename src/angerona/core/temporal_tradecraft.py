@@ -27,6 +27,7 @@ import stat
 import time
 from typing import Any, Final, Iterable, Mapping
 
+from angerona.core.atomic_io import replace_with_retry
 from angerona.core.eventbus import Event
 
 
@@ -318,7 +319,7 @@ def _secure_state_write(path: Path, payload: bytes) -> None:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        replace_with_retry(temporary, path)
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or _is_reparse(info):
             raise OSError("temporal state destination changed file type")
