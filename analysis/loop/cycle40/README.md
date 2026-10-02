@@ -183,7 +183,19 @@ chips avoid resetting unchanged styles on numeric updates, while real color
 transitions still restyle. Three visible-widget tests count native Qt style
 events; all reject the published refresh methods. The repaired dashboard and
 module-panel tests passed 20 cases, with 36 adjacent dashboard tests passing.
-This follow-up requires its own guarded publication and hosted checks.
+This follow-up was published as f2ca02e, with all five public images verified.
+Its Python 3.10, 3.11 and 3.12 suites passed, but Python 3.13 failed after 4455
+passes and 11 skips: the plain VMware custody fixture exceeded its unchanged
+90-second PowerShell bound without a phase marker. Security assurance passed
+all three jobs. The fixture now uses a private module-analysis cache, restricts
+module discovery to the trusted inbox directory and explicitly imports the
+required inbox modules before installing its host-mutation overrides. Native
+cmdlets, the reviewed production body, foreign-directory rejection and ancestor
+rename challenges remain intact. Earlier entry/module-loading markers improve
+future attribution. This removes shared cache and module discovery inputs;
+the blank failure log does not prove they caused the timeout. Fresh hosted
+validation is required for this fixture follow-up. All 26 VMware setup tests
+passed locally with these isolated module inputs.
 
 ## Remaining limits
 

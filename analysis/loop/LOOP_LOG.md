@@ -4062,3 +4062,12 @@ each change. A three-phase 66-worker fixture persisted all 1050 events and
 stopped every captured worker. Chill/Full/returned Chill p95 gaps were
 74/43/43 ms; maxima 3011/1527/2121 ms leave freezes open. Short fixture runs,
 host variability and native profiler sampling lag limit performance claims.
+
+Cycle 40 follow-up f2ca02e published with five images verified. Python 3.13
+reported 4455 passes, 11 skips and a 90-second plain VMware fixture timeout
+without phase output; Python 3.11 and 3.12 passed. The fixture isolates its
+PowerShell analysis cache and imports the required trusted inbox modules
+explicitly. Its production custody body, native commands, deadline and
+adversarial assertions remain intact. Initial script/module markers improve
+attribution; the cache/discovery contribution is not established by that log.
+All 26 VMware setup tests passed locally with the isolated module inputs.

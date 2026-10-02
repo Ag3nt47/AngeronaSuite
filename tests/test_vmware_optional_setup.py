@@ -179,7 +179,16 @@ def test_service_program_rejects_other_directory_and_denies_ancestor_rename(tmp_
     foreign.parent.mkdir()
     foreign.write_bytes(b"inert fixture")
     prelude = r'''
+[Console]::Error.WriteLine('fixture: script entered')
 $ProgressPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Stop'
+$PSModuleAutoLoadingPreference = 'None'
+# Exercise the actual inbox cmdlets without discovering unrelated user or
+# runner-installed modules. Import before defining the host-mutation guards.
+[Console]::Error.WriteLine('fixture: inbox module loading')
+Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1"
+Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1"
+[Console]::Error.WriteLine('fixture: inbox modules ready')
 function Get-CimInstance { [pscustomobject]@{PathName=$env:FIXTURE_SERVICE_IMAGE} }
 function Set-Service { throw 'Fixture forbids any host service modification' }
 function Start-Service { throw 'Fixture forbids any host service startup' }
@@ -221,6 +230,10 @@ if ($env:FIXTURE_REPARSE -eq '1') {
     environment.update({
         "TEMP": str(temporary),
         "TMP": str(temporary),
+        # Windows PowerShell 5.1 otherwise shares its user-level analysis
+        # cache with unrelated subprocesses in the whole-suite run.
+        "PSModuleAnalysisCachePath": str(temporary / "ModuleAnalysisCache"),
+        "PSModulePath": str(trusted_powershell_path().parent / "Modules"),
         "ANGERONA_VMWARE_EXPECTED_DIRECTORY": str(expected),
         "FIXTURE_PARENT": str(expected.parent),
         "FIXTURE_REPARSE": "1" if fixture_kind == "reported-reparse-directory" else "0",
@@ -249,7 +262,8 @@ if ($env:FIXTURE_REPARSE -eq '1') {
             except subprocess.TimeoutExpired as exc:
                 detail = (exc.stderr or b"").decode(errors="replace").replace(str(tmp_path), "<fixture>")
                 pytest.fail(
-                    f"PowerShell custody fixture exceeded its 90s bound; {detail[-2000:]}",
+                    f"PowerShell custody fixture {fixture_kind}/{target.parent.name} "
+                    f"exceeded its 90s bound; {detail[-2000:]}",
                     pytrace=False,
                 )
             detail = result.stderr.decode(errors="replace").replace(str(tmp_path), "<fixture>")
