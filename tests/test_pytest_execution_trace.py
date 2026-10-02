@@ -41,6 +41,10 @@ def test_trace_preserves_failure_and_last_test_identity(tmp_path, fault):
     probe.write_text(f"def test_inert_probe({parameters}):\n" + body, encoding="utf-8")
     trace = tmp_path / "execution.jsonl"
     environment = sanitized_child_environment(source={})
+    # These child probes exercise only the explicitly selected observer.
+    environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    environment["TEMP"] = str(tmp_path)
+    environment["TMP"] = str(tmp_path)
     environment["QT_QPA_PLATFORM"] = "offscreen"
     environment["ANGERONA_PYTEST_TRACE_PATH"] = str(trace)
     result = subprocess.run(

@@ -4006,3 +4006,12 @@ verified against the published renderer. Focused groups passed 33 and 18 tests.
 Cycle 39's final exact-commit gate passed 4427/23 and public images matched;
 local green did not certify remote runner stability. Running-mode freezes and
 native coverage variability remain open.
+
+Cycle 40's first full gate failed 4/4425/23: physical redirected interpreter
+identity mismatch, observer assertion-child startup timeout, and both live
+containment deadlines. Resolve the fixture interpreter before exact comparison;
+isolate observer child plugin discovery and TEMP/TMP. Four corrected cases
+passed. Both containment profiles passed isolated with unchanged deadlines.
+Concurrent host copying and D: queue depth eight were observed, but no exclusive
+cause or throughput repair is claimed. Retain the failed pack/journal and run
+the corrected exact-commit gate before publication.

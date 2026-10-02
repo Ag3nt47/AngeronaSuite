@@ -37,6 +37,23 @@ Focused validation: 33 Red Team/VMware tests passed, followed by 18 module-table
 and delayed teardown checks. Full exact-commit validation and guarded GitHub
 publication are required before completion.
 
+The first full gate on 10a3464 failed: 4425 passed, 23 skipped, four failures
+in 1666 seconds. The native QEMU fixture compared the redirected C: interpreter
+path with Windows' physical D: image. It now resolves the launch path before
+the exact image/PID assertion. The assertion-only observer child exceeded 60
+seconds; isolated observer probes now disable unrelated pytest plugin autoload
+and use private TEMP/TMP, retaining the explicit observer and all assertions.
+These four focused native/observer cases passed after correction.
+
+Both live containment profiles also left queued responses beyond their original
+deadlines in that full run. Both passed an isolated follow-up with unchanged
+deadlines. A separate host migration was copying data; one disk sample showed
+D: queue length eight and approximately 82 MB/s throughput. Contention is a
+plausible contributor, not exclusive causal proof or a repaired performance
+defect. No journal fsync, custody check or containment assertion was removed.
+Failed evidence remains in `.tmp/cycle40_release_evidence.json` and its JSONL
+journal. The corrected commit requires a fresh whole-suite gate.
+
 ## Remaining limits
 
 Cycle 39's full local gate passed 4427 tests with 23 skips and publication

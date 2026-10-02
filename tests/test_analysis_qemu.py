@@ -329,7 +329,7 @@ def test_native_suspended_process_pipe_allowlist_job_and_reaping():
         # privilege change, model load, or source-controlled executable script.
         # Windows venv python.exe is a redirector that spawns a second process;
         # the single-process job correctly forbids that. Use the base image.
-        interpreter = Path(getattr(sys, '_base_executable', sys.executable))
+        interpreter = Path(getattr(sys, '_base_executable', sys.executable)).resolve(strict=True)
         command = [str(interpreter), '-I', '-S', '-c',
                    "import sys; print('native pipe fixture', flush=True); sys.stdin.readline()"]
         process, thread, pid = native.create(command, system, environment, child_input, child_output)
