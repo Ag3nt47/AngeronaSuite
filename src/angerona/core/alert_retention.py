@@ -299,15 +299,18 @@ def _append_lines(root, texts):
     with _transaction(root, create=True) as directory:
         active = directory.open(ACTIVE_NAME, create=True)
         try:
-            size = active.info().st_size
-            os.lseek(active.descriptor, 0, os.SEEK_END)
+            active.info()  # Retain the single-link/plain-file custody check.
+            size = os.lseek(active.descriptor, 0, os.SEEK_END)
             for text in texts:
                 raw = _encoded_line(text)
                 if size and size + len(raw) > SEGMENT_BYTES:
                     active.rename(f"runtime_alerts.{time.time_ns()}.{uuid.uuid4().hex}.log")
                     active.close()
                     active = directory.open(ACTIVE_NAME, create=True)
-                    size = active.info().st_size
+                    active.info()
+                    # OPEN_ALWAYS can encounter an existing replacement; never
+                    # overwrite its bytes or trust a separate metadata size.
+                    size = os.lseek(active.descriptor, 0, os.SEEK_END)
                 pending = memoryview(raw)
                 while pending:
                     written = os.write(active.descriptor, pending)

@@ -117,10 +117,50 @@ def test_append_rotates_legacy_oversize_without_loading_or_truncating_it(tmp_pat
     active = tmp_path / "diagnostics" / retention.ACTIVE_NAME
     with active.open("ab") as stream:
         stream.truncate(20 * 1024**2)
+    assert active.stat().st_size == 20 * 1024**2, "Oversized fixture was not established"
     retention.append_runtime_alert(tmp_path, "new tail")
     archives = [path for path in active.parent.iterdir() if retention._ARCHIVE.fullmatch(path.name)]
+    assert len(archives) == 1, [(path.name, path.stat().st_size) for path in active.parent.iterdir()]
+    assert archives[0].stat().st_size == 20 * 1024**2
+    assert b"new tail" in active.read_bytes() and active.stat().st_size < 100
+
+
+def test_rotation_preserves_oversize_when_metadata_size_is_stale(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    retention.append_runtime_alert(tmp_path, "first")
+    active = tmp_path / "diagnostics" / retention.ACTIVE_NAME
+    with active.open("r+b") as stream:
+        stream.truncate(20 * 1024**2)
+    original = retention._File.info
+
+    def stale_size(file):
+        info = original(file)  # Execute all actual custody validation.
+        return SimpleNamespace(st_size=0) if file.name == retention.ACTIVE_NAME else info
+
+    monkeypatch.setattr(retention._File, "info", stale_size)
+    retention.append_runtime_alert(tmp_path, "new tail")
+    archives = [p for p in active.parent.iterdir() if retention._ARCHIVE.fullmatch(p.name)]
     assert len(archives) == 1 and archives[0].stat().st_size == 20 * 1024**2
     assert b"new tail" in active.read_bytes() and active.stat().st_size < 100
+
+
+def test_rotation_appends_to_replacement_created_between_handles(tmp_path, monkeypatch):
+    retention.append_runtime_alert(tmp_path, "first")
+    active = tmp_path / "diagnostics" / retention.ACTIVE_NAME
+    with active.open("r+b") as stream:
+        stream.truncate(20 * 1024**2)
+    original = retention._File.rename
+    preserved = b"replacement content must survive\n"
+
+    def create_replacement(file, target):
+        original(file, target)
+        active.write_bytes(preserved)
+
+    monkeypatch.setattr(retention._File, "rename", create_replacement)
+    retention.append_runtime_alert(tmp_path, "new tail")
+    contents = active.read_bytes()
+    assert contents.startswith(preserved) and b"new tail" in contents[len(preserved):]
 
 
 def test_append_bounds_unicode_input_and_segment_size(tmp_path, monkeypatch):

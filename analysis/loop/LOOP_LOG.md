@@ -4025,3 +4025,14 @@ parents, and reject async work after accepted SentinelLens close. Native parent
 destruction survives new code and aborts the published helper; old snapshot
 callbacks fail the late-close test. Combined lifecycle/SentinelLens/Fleet
 validation passed 41/1. Full gate and GitHub publication remain required.
+
+73b4f79 passed the exact local gate (4431/23) and guarded publication, but
+hosted CI 37066045684 failed Python 3.12 alert rotation; 11 other jobs and
+Security assurance passed. Harden rotation/append using the held descriptor's
+end offset, preserving metadata custody checks. Two negative challenges reject
+the published writer for stale size and existing replacement preservation;
+focused retention/integration passed 46/2. The remote failure's cause remains
+unconfirmed; add fixture and directory diagnostics and require fresh CI.
+The 66-worker simultaneous-start witness retained an initial Chill 4262 ms
+gap (Full 324 ms, returned Chill 855 ms, separate control 152 ms). Recorder
+744/744 drained and captured module workers exited. Freezes remain open.

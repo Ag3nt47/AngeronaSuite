@@ -78,6 +78,41 @@ Combined QThread/SentinelLens/Fleet Fabric validation passed 41 tests with one
 skip. These challenges prove the defects, not attribution of the earlier
 destroyed worker. A fresh whole-suite run remains necessary.
 
+## Published gate and rotation follow-up
+
+The exact-commit local gate on 73b4f79 passed all five checks: 4431 tests
+passed and 23 skipped in 1259.74 seconds. The guarded publisher verified
+public main and all five README images. Hosted CI run 37066045684 passed
+11 of 12 jobs, including Python 3.10, 3.11 and 3.13; Security assurance
+run 37066045685 passed. Python 3.12 instead failed the oversized alert-log
+rotation test (4443 passed, 10 skipped). CI was therefore still failing.
+
+The local Python 3.12.10 retention suite passed 37 tests with two skips;
+the hosted failure's precise cause remains unconfirmed. Its assertion now
+checks the oversized fixture before writing and reports directory names/sizes
+if no archive appears. The writer now uses the held descriptor's end offset
+for its rotation size and append position, while retaining plain-file and
+single-link validation. Previously it discarded that offset and relied on
+metadata; after rotation it also wrote from offset zero if a replacement
+file already existed. New tests preserve a real oversized archive under
+injected stale size metadata and preserve replacement bytes created between
+handles. Both reject the published writer. The repaired retention and
+integration suites passed 46 tests with two skips. These challenges prove
+the defects, not attribution of the hosted failure; fresh CI remains required.
+
+The simultaneous-start mode witness on published 73b4f79 ran 66 selected real
+workers from 84 discovered modules, with private data and inert watch files.
+Its three 90-second phases measured maximum heartbeat gaps of 4262 ms in
+initial Chill, 324 ms in Full and 855 ms after returning to Chill. An adjacent
+separate Qt control peaked at 152 ms. All 744 accepted recorder events were
+persisted, with no pending queue/spool and no captured module threads left
+after bounded shutdown. Initial Chill still froze; no instrumented callback
+explained its entire maximum gap. Excluded host-mutating modules, offscreen
+rendering, short duration and host scheduling limit this witness. This is
+not an all-module, all-day soak or a native simulation score. Evidence is
+retained in `.tmp/cycle40_mode_soak_result.json` and
+`.tmp/cycle40_qt_control_result.json`.
+
 ## Remaining limits
 
 Cycle 39's full local gate passed 4427 tests with 23 skips and publication
