@@ -42,6 +42,8 @@ waits for fixture-owned validation workers before deleting their data, gives
 PowerShell custody tests private temporary storage and timeout phase evidence,
 and removes redundant module-table changes. Mode freezes and variable native
 simulation coverage remain under investigation.
+Deferred dialogs survive parent destruction until their workers finish, and
+closing SentinelLens rejects callbacks that could restart snapshot work.
 
 The [Cycle 39 Scan Center update](analysis/loop/cycle39/README.md) makes read and
 signature failures visibly incomplete, bounds signature-result consumption,

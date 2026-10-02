@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -11,6 +14,65 @@ from PySide6.QtCore import QCoreApplication, QEvent, QThread, Qt, Signal
 from PySide6.QtWidgets import QApplication, QDialog
 
 from angerona.gui.thread_lifecycle import defer_close_until_threads
+
+
+def test_parent_destruction_and_gc_cannot_destroy_deferred_worker(tmp_path):
+    from angerona.core.privilege import sanitized_child_environment
+
+    script = r'''
+import gc, os, threading, time, weakref
+if os.name == 'nt':
+    import ctypes
+    ctypes.windll.kernel32.SetErrorMode(0x8007)
+import shiboken6
+from PySide6.QtCore import QThread, Qt, QCoreApplication, QEvent
+from PySide6.QtWidgets import QApplication, QDialog, QWidget
+from angerona.gui.thread_lifecycle import defer_close_until_threads, _DEFERRED_OWNERS
+app = QApplication([])
+ready, release = threading.Event(), threading.Event()
+class Worker(QThread):
+    def run(self):
+        ready.set()
+        release.wait(5)
+class Dialog(QDialog):
+    def closeEvent(self, event):
+        if not defer_close_until_threads(self, event, (self.worker,)):
+            super().closeEvent(event)
+parent = QWidget()
+dialog = Dialog(parent)
+dialog.setAttribute(Qt.WA_DeleteOnClose, True)
+dialog.worker = Worker(dialog)
+worker = dialog.worker
+worker.start()
+assert ready.wait(3)
+try:
+    assert dialog.close() is False
+    reference, key = weakref.ref(dialog), id(dialog)
+    shiboken6.delete(parent)
+    del parent, dialog
+    gc.collect()
+    assert reference() is not None and worker.isRunning()
+    assert key in _DEFERRED_OWNERS
+finally:
+    release.set()
+    assert worker.wait(3000)
+deadline = time.monotonic() + 3
+while key in _DEFERRED_OWNERS and time.monotonic() < deadline:
+    app.processEvents()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+assert key not in _DEFERRED_OWNERS
+assert reference() is None or not shiboken6.isValid(reference())
+print('deferred native worker survived parent destruction and GC')
+'''
+    environment = sanitized_child_environment(source={})
+    environment.update({"QT_QPA_PLATFORM": "offscreen", "TEMP": str(tmp_path), "TMP": str(tmp_path)})
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[1],
+        env=environment, capture_output=True, timeout=60,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")[-2000:]
+    assert b"survived parent destruction and GC" in result.stdout
 
 
 class _BlockingWorker(QThread):

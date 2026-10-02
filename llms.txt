@@ -30,6 +30,9 @@ kernel component is a product capability.
 - Module rows avoid redundant Qt mutations. Tooltip-only updates emit one
   model change versus two in the published baseline; no total latency gain is
   claimed. Mode freezes and variable native scores remain unresolved.
+- Deferred dialogs retain independent ownership until native worker exit;
+  SentinelLens rejects post-close async work. Native parent destruction and late
+  callback challenges reproduce the published lifetime defects.
 
 ## Cycle 39 maintenance (2026-10-01)
 

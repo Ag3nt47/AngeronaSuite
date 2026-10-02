@@ -404,7 +404,7 @@ class SentinelLensDialog(QDialog):
         return bus_revision, len(events), fingerprint, self._import_generation
 
     def refresh(self, *, force: bool = False) -> None:
-        if getattr(self, "_angerona_deferred_close", False):
+        if getattr(self, "_closing", False):
             return
         active = self._snapshot_worker
         if active is not None and active.isRunning():
@@ -449,7 +449,7 @@ class SentinelLensDialog(QDialog):
             self.detail.setPlainText(str(exc)[:2_000])
 
     def _apply_snapshot(self, snapshot: dict) -> None:
-        if getattr(self, "_angerona_deferred_close", False):
+        if getattr(self, "_closing", False):
             return
         self._snapshot = snapshot
         self._nodes = {
@@ -484,18 +484,18 @@ class SentinelLensDialog(QDialog):
 
     def _snapshot_failed(self, reason: str) -> None:
         self._last_source_key = None
-        if not getattr(self, "_angerona_deferred_close", False):
+        if not getattr(self, "_closing", False):
             self.status.setText(f"Snapshot unavailable: {reason[:240]}")
 
     def _snapshot_finished(self) -> None:
         if (
             self._refresh_pending
-            and not getattr(self, "_angerona_deferred_close", False)
+            and not getattr(self, "_closing", False)
         ):
             self._pending_refresh_timer.start(0)
 
     def _run_pending_refresh(self) -> None:
-        if getattr(self, "_angerona_deferred_close", False):
+        if getattr(self, "_closing", False):
             return
         self._refresh_pending = False
         self.refresh(force=True)
@@ -644,6 +644,8 @@ class SentinelLensDialog(QDialog):
         return related
 
     def _ask_local_ai(self) -> None:
+        if getattr(self, "_closing", False):
+            return
         if not self._selected_node:
             self.detail.appendPlainText("\nSelect a node before requesting a narrative.")
             return
@@ -695,6 +697,8 @@ class SentinelLensDialog(QDialog):
         return str(result["response"])[:12_000]
 
     def _on_ai_result(self, text: str) -> None:
+        if getattr(self, "_closing", False):
+            return
         self.detail.appendPlainText("\n\nGOVERNED LOCAL-AI NARRATIVE\n" + text)
         self.local_ai.setEnabled(True)
         self.local_ai.setText("Explain selection with strict loopback local AI")
@@ -789,6 +793,8 @@ class SentinelLensDialog(QDialog):
         return body
 
     def _import_logs(self) -> None:
+        if getattr(self, "_closing", False):
+            return
         selected, _filter = QFileDialog.getOpenFileName(
             self,
             "Import standardized security logs (local, memory-only)",
@@ -816,7 +822,7 @@ class SentinelLensDialog(QDialog):
             self.status.setText(f"Import rejected: {type(exc).__name__}: {str(exc)[:240]}")
 
     def _import_complete(self, records: list, name: str) -> None:
-        if getattr(self, "_angerona_deferred_close", False):
+        if getattr(self, "_closing", False):
             return
         for record in records:
             self._imported.append(record)
@@ -827,7 +833,7 @@ class SentinelLensDialog(QDialog):
         self.refresh(force=True)
 
     def _import_failed(self, reason: str) -> None:
-        if not getattr(self, "_angerona_deferred_close", False):
+        if not getattr(self, "_closing", False):
             self.status.setText(f"Import rejected: {reason[:240]}")
 
     @staticmethod
@@ -835,6 +841,7 @@ class SentinelLensDialog(QDialog):
         return list(parse_log_bundle(body, source_format=mode, suffix=suffix))
 
     def closeEvent(self, event) -> None:
+        self._closing = True
         from angerona.gui.thread_lifecycle import defer_close_until_threads
 
         self._refresh_timer.stop()

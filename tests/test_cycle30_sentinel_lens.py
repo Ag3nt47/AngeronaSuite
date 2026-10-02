@@ -462,6 +462,22 @@ def test_live_view_reserves_a_fair_lane_for_explicit_imports() -> None:
     app.processEvents()
 
 
+def test_accepted_close_rejects_late_snapshot_completion_and_refresh() -> None:
+    app = QApplication.instance() or QApplication([])
+    dialog = SentinelLensDialog(_Bus())
+    worker = dialog._snapshot_worker
+    assert worker is not None and worker.wait(3_000)
+    app.processEvents()
+    dialog._refresh_pending = True
+    assert dialog.close() is True
+    # Model a completion queued before close, delivered before DeferredDelete.
+    dialog._snapshot_finished()
+    assert not dialog._pending_refresh_timer.isActive()
+    dialog.refresh(force=True)
+    assert dialog._snapshot_worker is worker
+    app.processEvents()
+
+
 def test_background_service_subscribes_and_continuously_builds_local_snapshot() -> None:
     bus = EventBus(ring_size=16)
     service = SentinelLensService(

@@ -18,6 +18,8 @@ from PySide6.QtCore import QTimer
 
 
 _RETRY_INTERVAL_MS = 100
+# Callback cycles are collectable; active native threads need an external root.
+_DEFERRED_OWNERS: dict[int, Any] = {}
 
 
 def _is_running(worker: Any) -> bool:
@@ -64,8 +66,17 @@ def _retry_deferred_close(owner: Any) -> None:
         owner._angerona_close_wait_connected = False
         owner._angerona_close_workers = ()
         owner._angerona_close_bypass = True
-        QTimer.singleShot(0, owner.close)
+        def finish_close() -> None:
+            try:
+                owner.close()
+            except RuntimeError:
+                pass  # Another queued completion may already have closed it.
+            finally:
+                _DEFERRED_OWNERS.pop(id(owner), None)
+
+        QTimer.singleShot(0, finish_close)
     except RuntimeError:
+        _DEFERRED_OWNERS.pop(id(owner), None)
         return
 
 
@@ -78,9 +89,14 @@ def defer_close_until_threads(owner: Any, event: Any, workers: Iterable[Any]) ->
         return False
 
     event.ignore()
+    _DEFERRED_OWNERS[id(owner)] = owner
     owner._angerona_deferred_close = True
     owner._angerona_close_workers = tuple(running)
     owner.hide()
+    # Destroying a parent bypasses a child's closeEvent, even when Python keeps
+    # its wrapper alive. The hidden window is now owned by this close operation.
+    if owner.parent() is not None:
+        owner.setParent(None, owner.windowFlags())
 
     if not getattr(owner, "_angerona_close_wait_connected", False):
         owner._angerona_close_wait_connected = True

@@ -54,6 +54,30 @@ defect. No journal fsync, custody check or containment assertion was removed.
 Failed evidence remains in `.tmp/cycle40_release_evidence.json` and its JSONL
 journal. The corrected commit requires a fresh whole-suite gate.
 
+## Native Qt lifecycle investigation
+
+The corrected gate on a33e1fa aborted at approximately 37%, exit 0xC0000409.
+Its journal captured `QThread: Destroyed while thread '' is still running`.
+The active Fleet Fabric pruning test owns no Qt worker; its identity does not
+identify the destroyed worker.
+
+Deferred close relied on collectable callback cycles and retained Qt parent
+ownership. Parent destruction could bypass closeEvent and destroy an active
+worker. Deferred owners now have an external strong registry and detach from
+their parent while hidden. The registry releases them after worker exit and
+the close callback. Closing stays nonblocking; workers are not terminated.
+
+SentinelLens allowed queued completion to schedule a fresh snapshot after
+accepted close. Its terminal closing flag now rejects late snapshot/import/AI
+callbacks and new refresh/import/AI work. A regression delivers completion
+between accepted close and deferred deletion and verifies no refresh starts.
+
+The native parent-destruction/GC child survives the repair; the published helper
+aborts with 0xC0000409. Published snapshot callbacks fail the late-close test.
+Combined QThread/SentinelLens/Fleet Fabric validation passed 41 tests with one
+skip. These challenges prove the defects, not attribution of the earlier
+destroyed worker. A fresh whole-suite run remains necessary.
+
 ## Remaining limits
 
 Cycle 39's full local gate passed 4427 tests with 23 skips and publication

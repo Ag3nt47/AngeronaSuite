@@ -4015,3 +4015,13 @@ passed. Both containment profiles passed isolated with unchanged deadlines.
 Concurrent host copying and D: queue depth eight were observed, but no exclusive
 cause or throughput repair is claimed. Retain the failed pack/journal and run
 the corrected exact-commit gate before publication.
+
+The follow-up gate aborted at ~37%, exit 0xC0000409. The observer captured the
+missing fatal message: QThread destroyed while still running. Active Fleet
+Fabric pruning owns no Qt worker, so attribution remains open. Deferred-close
+callback cycles/Qt parent destruction and SentinelLens post-close refresh were
+reproducible defects. Retain deferred owners externally, detach them from
+parents, and reject async work after accepted SentinelLens close. Native parent
+destruction survives new code and aborts the published helper; old snapshot
+callbacks fail the late-close test. Combined lifecycle/SentinelLens/Fleet
+validation passed 41/1. Full gate and GitHub publication remain required.
