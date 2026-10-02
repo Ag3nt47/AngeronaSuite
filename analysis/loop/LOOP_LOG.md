@@ -3992,3 +3992,17 @@ passes/two skips. Bound original clock/serializer/Qt installer references now
 avoid test mocks; seven diagnostic checks and four traced focused cases passed.
 Local editable metadata is aligned offline from 1.10.0 to source 1.13.0, with
 clean pip check and source-root imports. No native Qt or freeze repair is claimed.
+
+## Cycle 40 — 2026-10-02
+
+Investigated remote CI run 36896881189: Python 3.12 fixture deletion raced
+nonblocking module stop; Python 3.13 VMware custody subprocess timed out.
+Validation fixtures now retain temporary producers through bounded thread drain.
+PowerShell fixtures use private TEMP/TMP and report bounded timeout-phase stderr,
+without extending deadlines or removing custody challenges. The remote timeout
+root cause remains uncertain until new CI evidence. Module rows avoid redundant
+Qt changes; a tooltip-only update drops model notifications from two to one,
+verified against the published renderer. Focused groups passed 33 and 18 tests.
+Cycle 39's final exact-commit gate passed 4427/23 and public images matched;
+local green did not certify remote runner stability. Running-mode freezes and
+native coverage variability remain open.

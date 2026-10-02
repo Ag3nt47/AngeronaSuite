@@ -37,6 +37,12 @@ identifiers, timestamps, and counts are synthetic.
 
 ## What's new
 
+The [Cycle 40 CI and presentation update](analysis/loop/cycle40/README.md)
+waits for fixture-owned validation workers before deleting their data, gives
+PowerShell custody tests private temporary storage and timeout phase evidence,
+and removes redundant module-table changes. Mode freezes and variable native
+simulation coverage remain under investigation.
+
 The [Cycle 39 Scan Center update](analysis/loop/cycle39/README.md) makes read and
 signature failures visibly incomplete, bounds signature-result consumption,
 and clears thread-bound native scanners even when exception tracebacks survive

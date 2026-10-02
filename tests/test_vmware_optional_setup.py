@@ -206,8 +206,21 @@ if ($env:FIXTURE_REPARSE -eq '1') {
         "} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }\nfinally",
     )
     assert program != setup._CONFIGURE_SCRIPT
+    # Preserve the reviewed body, but identify cold-start/compile stalls.
+    for statement, phase in (
+        ("    $serviceRecord = Get-CimInstance", "service lookup"),
+        ("    Add-Type -Namespace", "native compilation"),
+        ("    foreach ($parentPath in $parents)", "directory custody"),
+        ("        $signature = Get-AuthenticodeSignature", "rename challenge"),
+    ):
+        assert statement in program
+        program = program.replace(statement, f"[Console]::Error.WriteLine('fixture: {phase}')\n" + statement)
     environment = sanitized_child_environment(source={})
+    temporary = tmp_path / "powershell-temp"
+    temporary.mkdir()
     environment.update({
+        "TEMP": str(temporary),
+        "TMP": str(temporary),
         "ANGERONA_VMWARE_EXPECTED_DIRECTORY": str(expected),
         "FIXTURE_PARENT": str(expected.parent),
         "FIXTURE_REPARSE": "1" if fixture_kind == "reported-reparse-directory" else "0",
@@ -233,8 +246,12 @@ if ($env:FIXTURE_REPARSE -eq '1') {
                     # invokes the native C# compiler for Add-Type on first use.
                     timeout=90, check=False, creationflags=subprocess.CREATE_NO_WINDOW,
                 )
-            except subprocess.TimeoutExpired:
-                pytest.fail("PowerShell custody fixture exceeded its 90s startup/compile bound", pytrace=False)
+            except subprocess.TimeoutExpired as exc:
+                detail = (exc.stderr or b"").decode(errors="replace").replace(str(tmp_path), "<fixture>")
+                pytest.fail(
+                    f"PowerShell custody fixture exceeded its 90s bound; {detail[-2000:]}",
+                    pytrace=False,
+                )
             detail = result.stderr.decode(errors="replace").replace(str(tmp_path), "<fixture>")
             if result.returncode != expected_code:
                 pytest.fail(

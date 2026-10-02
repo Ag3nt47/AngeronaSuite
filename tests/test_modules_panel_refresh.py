@@ -180,6 +180,19 @@ def test_unchanged_refresh_preserves_every_item_without_policy_writes(panel_fact
     assert changes.count() == 0
 
 
+def test_usage_tooltip_change_emits_only_one_model_change(panel_factory):
+    panel, manager = panel_factory([_ProbeModule("Alpha")])
+    rows = dict(panel._rendered_rows)
+    values = list(rows["Alpha"])
+    values[-1] = "Updated runtime usage"
+    rows["Alpha"] = tuple(values)
+    changes = QSignalSpy(panel.table.model().dataChanged)
+    panel._render_rows(rows)
+    assert changes.count() == 1
+    assert _items(panel, "Alpha")[0].toolTip() == "Updated runtime usage"
+    assert manager.enable_calls == []
+
+
 def test_periodic_projection_coalesces_and_yields_to_gui(panel_factory, monkeypatch):
     modules = [_ProbeModule(f"Module {index:03}") for index in range(40)]
     panel, manager = panel_factory(modules)

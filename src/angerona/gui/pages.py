@@ -3120,17 +3120,27 @@ class ModulesPanel(QFrame):
                     elif item.text() != text:
                         item.setText(text)
                 on_item = table.item(row, 0)
-                on_item.setFlags(
-                    (on_item.flags() | Qt.ItemIsUserCheckable) & ~Qt.ItemIsEditable
-                )
-                on_item.setCheckState(Qt.Checked if enabled else Qt.Unchecked)
-                on_item.setToolTip(usage_note)
-                table.item(row, 2).setForeground(QColor(color))
+                flags = (on_item.flags() | Qt.ItemIsUserCheckable) & ~Qt.ItemIsEditable
+                if on_item.flags() != flags:
+                    on_item.setFlags(flags)
+                check = Qt.Checked if enabled else Qt.Unchecked
+                if on_item.checkState() != check:
+                    on_item.setCheckState(check)
+                if on_item.toolTip() != usage_note:
+                    on_item.setToolTip(usage_note)
+                status_item = table.item(row, 2)
+                status_color = QColor(color)
+                if status_item.foreground().color() != status_color:
+                    status_item.setForeground(status_color)
                 assurance_item = table.item(row, 3)
                 assurance_item.score = score
-                assurance_item.setData(_PERCENT_SORT_ROLE, score)
-                assurance_item.setForeground(QColor(_assurance_color(score)))
-                assurance_item.setToolTip(tooltip)
+                if assurance_item.data(_PERCENT_SORT_ROLE) != score:
+                    assurance_item.setData(_PERCENT_SORT_ROLE, score)
+                assurance_color = QColor(_assurance_color(score))
+                if assurance_item.foreground().color() != assurance_color:
+                    assurance_item.setForeground(assurance_color)
+                if assurance_item.toolTip() != tooltip:
+                    assurance_item.setToolTip(tooltip)
             self._rendered_rows = rows
         except Exception:
             # A half-applied render must not be mistaken for an unchanged

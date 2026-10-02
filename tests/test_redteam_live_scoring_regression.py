@@ -5,12 +5,55 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+
+def _drain_validation_workers(manager, lease) -> None:
+    # Capture lease-inserted producers before release removes them from inventory.
+    modules = tuple(manager.modules.values())
+    threads = tuple(
+        thread for module in modules
+        if (thread := module._thread) is not None
+    )
+    if lease is not None:
+        lease.release()
+    for module in modules:
+        module.stop()
+    deadline = time.monotonic() + 10.0
+    for thread in threads:
+        assert thread is not threading.current_thread()
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    assert not any(thread.is_alive() for thread in threads), "validation worker outlived fixture"
+
+
+def test_validation_teardown_waits_for_removed_producer_final_write(tmp_path):
+    stopping = threading.Event()
+    final_write = tmp_path / "last-event"
+
+    def worker():
+        assert stopping.wait(5)
+        time.sleep(0.05)
+        final_write.write_text("final event", encoding="utf-8")
+
+    thread = threading.Thread(target=worker)
+    producer = SimpleNamespace(_thread=thread, stop=stopping.set)
+    manager = SimpleNamespace(modules={"temporary producer": producer})
+    lease = SimpleNamespace(release=manager.modules.clear)
+    thread.start()
+    try:
+        _drain_validation_workers(manager, lease)
+        assert not manager.modules
+        assert not thread.is_alive()
+        assert final_write.read_text(encoding="utf-8") == "final event"
+    finally:
+        stopping.set()
+        thread.join(timeout=5)
 
 
 @pytest.fixture
@@ -212,9 +255,7 @@ def test_live_redteam_marker_custody_allows_verified_containment(
             scope = engine.evidence_cleanup_scope()
             engine.release_evidence_after_aar(scope)
         finally:
-            if lease is not None:
-                lease.release()
-            guard.stop()
+            _drain_validation_workers(manager, lease)
             recorder.close()
 
 
@@ -382,10 +423,7 @@ def test_live_fim_evidence_survives_later_scans_in_the_aar(
             scope = engine.evidence_cleanup_scope()
             engine.release_evidence_after_aar(scope)
         finally:
-            if lease is not None:
-                lease.release()
-            guard.stop()
-            fim.stop()
+            _drain_validation_workers(manager, lease)
             recorder.close()
 
 
@@ -481,9 +519,7 @@ def test_stale_enrollment_discards_only_the_created_marker_and_stops(
             scope = engine.evidence_cleanup_scope()
             engine.release_evidence_after_aar(scope)
         finally:
-            if lease is not None:
-                lease.release()
-            guard.stop()
+            _drain_validation_workers(manager, lease)
             recorder.close()
 
 
@@ -640,7 +676,5 @@ def test_failed_quarantine_commit_never_credits_replacement_marker(
             scope = engine.evidence_cleanup_scope()
             engine.release_evidence_after_aar(scope)
         finally:
-            if lease is not None:
-                lease.release()
-            guard.stop()
+            _drain_validation_workers(manager, lease)
             recorder.close()

@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.13.0
-Date: 2026-10-01
+Date: 2026-10-02
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -22,7 +22,16 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST (v1.13.0 — Cycle 39 maintenance, 2026-10-01)
+## LATEST (v1.13.0 — Cycle 40 CI and presentation, 2026-10-02)
+
+- Record: analysis/loop/cycle40/README.md. Fixture-owned validation workers
+  drain before runtime deletion. VMware custody fixtures use private temporary
+  storage and retain bounded timeout-phase evidence and security assertions.
+- Module rows avoid redundant Qt mutations. Tooltip-only updates emit one
+  model change versus two in the published baseline; no total latency gain is
+  claimed. Mode freezes and variable native scores remain unresolved.
+
+## Cycle 39 maintenance (2026-10-01)
 
 - Record: analysis/loop/cycle39/README.md. Scan Center reports local read,
   signature errors and per-file match-cap exhaustion as incomplete coverage.
