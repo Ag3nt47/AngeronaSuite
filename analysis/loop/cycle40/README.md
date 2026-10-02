@@ -197,6 +197,35 @@ the blank failure log does not prove they caused the timeout. Fresh hosted
 validation is required for this fixture follow-up. All 26 VMware setup tests
 passed locally with these isolated module inputs.
 
+## Repaired-startup native profile and ETW fallback
+
+A second native-stack capture on 9347f84 collected 1110 samples with 11 errors
+and reported sampling lag. ARP startup no longer appeared in that capture.
+The ETW fallback accounted for 6.3 seconds of inclusive stack weight, with
+5.65 seconds in Windows parent-ID queries. The fixture's instrumented maximum
+timer gap was 12.652 seconds; its separate Qt control maximum was 26 ms.
+This is diagnostic evidence of remaining stalls, not a clean latency benchmark.
+All 381 accepted events persisted, queues drained and captured workers stopped.
+Raw artifacts use the `.tmp/cycle40_repaired_native_*` prefix.
+
+The ETW process fallback previously fetched PID, parent ID and name for every
+process on every poll, although it publishes metadata only for newly observed
+PIDs. Windows psutil's parent-ID accessor enumerates its native parent map.
+The fallback now diffs PID-only observations and enriches new processes with
+the same public metadata API. A process that exits during enrichment is removed
+from the known-PID set so later reuse can be observed. Security-channel reads,
+cursor custody and the polling interval remain unchanged.
+
+A native test spies on the real psutil parent accessor and creates an owned
+inert child. Baseline queries fell from 265 on the published method to zero;
+the child still receives one creation event with its actual parent and name,
+and steady polls do not re-enrich it. The old method fails this challenge.
+A separate disappearing-birth case guards the baseline race. Relevant ETW,
+cursor and event-log integrity validation passed 28 tests with one skip.
+The earlier attempt to spy on the accessor omitted psutil's cache hooks and
+failed in the test harness; preserving them with `functools.wraps` repaired
+the observer before running either comparison.
+
 ## Remaining limits
 
 Cycle 39's full local gate passed 4427 tests with 23 skips and publication

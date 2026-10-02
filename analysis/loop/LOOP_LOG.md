@@ -4071,3 +4071,14 @@ explicitly. Its production custody body, native commands, deadline and
 adversarial assertions remain intact. Initial script/module markers improve
 attribution; the cache/discovery contribution is not established by that log.
 All 26 VMware setup tests passed locally with the isolated module inputs.
+
+Further native profiling on 9347f84 captured 1110 samples/11 errors with
+sampling lag: no ARP startup thread appeared, while ETW parent-ID lookups
+occupied 5.65 seconds of inclusive sample weight. Its instrumented maximum
+timer gap was 12.652 s, versus a separate Qt control maximum of 26 ms;
+381 accepted events persisted and workers drained. This is not a clean
+latency comparison. ETW fallback now diffs PID-only records and enriches
+births, removing vanished births from its baseline. A real parent-accessor
+spy rejects the old method (265 baseline queries) and verifies the repaired
+zero-query baseline plus an owned child's accurate creation metadata.
+Relevant ETW/cursor/integrity tests passed 28 with one skip.

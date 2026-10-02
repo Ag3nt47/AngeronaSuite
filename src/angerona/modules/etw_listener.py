@@ -2754,12 +2754,19 @@ class EtwListenerModule(BaseModule):
             return []
         out = []
         current = {}
-        for p in psutil.process_iter(["pid", "ppid", "name"]):
-            current[p.info["pid"]] = p.info
+        # On Windows each ppid() query enumerates the native parent map.
+        # Existing PIDs only participate in the diff; enrich births rather
+        # than repeating that enumeration for every process on every tick.
+        for p in psutil.process_iter(["pid"]):
+            current[p.info["pid"]] = p
         new_pids = set(current) - self._known_pids
         if self._known_pids:      # skip the first baseline sweep
             for pid in new_pids:
-                info = current[pid]
+                try:
+                    info = current[pid].as_dict(attrs=["pid", "ppid", "name"])
+                except psutil.NoSuchProcess:
+                    current.pop(pid, None)
+                    continue  # The birth exited before enrichment completed.
                 out.append({"eid": 4688, "kind": "process_created",
                             "inserts": [], "psutil": info})
         self._known_pids = set(current)
