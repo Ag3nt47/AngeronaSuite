@@ -4047,3 +4047,18 @@ failure with old bytes retained; temporal stays blind on permanent failure.
 Old writers reject each released-reader challenge. Focused suite passed 44/1.
 Exact underlying OS errors for temporal/CVE remain unconfirmed; improve failure
 diagnostics and require adjacent validation plus fresh hosted CI.
+
+### Cycle 40 performance follow-up
+
+Published 80896ea passed all 12 CI and three security assurance jobs. Native
+stack sampling identified aggregate Scapy protocol loading during ARP startup;
+capture now loads its send/receive and L2 APIs. Cold real-frame decoding keeps
+candidate provenance and shutdown checks intact (21 capture/baseline passes).
+SSH service discovery reuses its snapshot PID (64 passes, one skip), fixing a
+restart association race. Visible dashboard tests verify note-only tooltip
+updates and zero style events for unchanged colors (20 passes; 36 adjacent
+dashboard passes). Independent challenges reject the old implementation for
+each change. A three-phase 66-worker fixture persisted all 1050 events and
+stopped every captured worker. Chill/Full/returned Chill p95 gaps were
+74/43/43 ms; maxima 3011/1527/2121 ms leave freezes open. Short fixture runs,
+host variability and native profiler sampling lag limit performance claims.

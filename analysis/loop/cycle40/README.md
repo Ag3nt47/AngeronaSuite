@@ -143,6 +143,48 @@ transient. Relevant adjacent UI tests and fresh whole-suite hosted CI are
 required before reporting this follow-up complete. Adjacent proposal, temporal
 health and device/UI validation subsequently passed 12 tests.
 
+## Hosted CI confirmation and performance follow-up
+
+Commit 80896ea passed all 12 hosted CI jobs, including Python 3.10 through
+3.13, and all three security assurance jobs. Runs:
+https://github.com/Ag3nt47/AngeronaSuite/actions/runs/37071908551 and
+https://github.com/Ag3nt47/AngeronaSuite/actions/runs/37071908575.
+
+A separate native-stack sampling technique identified ARP startup importing
+the aggregate Scapy protocol suite, including unrelated Kerberos, DCERPC and
+certificate decoding. The 60-second profile captured 1142 samples with two
+errors; ARP startup accounted for 36.35 seconds of inclusive sample weight.
+The profiler reported sampling lag, so these weights are diagnostic evidence,
+not an uninstrumented latency measurement. ARP capture now imports only its
+send/receive API and L2 decoding. Real encoded Ethernet/ARP packets still reach
+candidate provenance without granting implicit baseline trust. Capture and
+baseline tests passed 21 cases; the published startup fails the new cold-import
+challenge.
+
+Windows SSH discovery reuses the PID already present in its service status
+snapshot, avoiding a redundant native query and incorrect association after
+a restart. SSH and host-adaptation tests passed 64 cases with one skip; the old
+collector fails the restart challenge.
+
+A separate three-phase, 90-second-per-phase fixture without an attached
+profiler exercised 66 selected workers. The repaired ARP/SSH working tree
+produced initial Chill / Full / returned Chill p95 timer gaps of 74 / 43 / 43
+milliseconds, with maxima of 3011 / 1527 / 2121 milliseconds. All 1050 accepted
+events persisted, queues and spools drained, and captured workers stopped.
+The separate Qt control's maximum gap was 74 milliseconds. The earlier profiled
+boundary witness had initial Chill p95 2870 milliseconds and maximum 9605;
+host conditions differ, and these short simultaneous-start fixture runs do
+not establish all-day performance. Source hashes and raw evidence remain in
+`.tmp/cycle40_arp_fix_source_snapshot.json` and related fixture artifacts.
+Multi-second stalls remain open. Dashboard changes were applied after this run.
+
+Dashboard health chips now update note-only tooltips. Health and resource
+chips avoid resetting unchanged styles on numeric updates, while real color
+transitions still restyle. Three visible-widget tests count native Qt style
+events; all reject the published refresh methods. The repaired dashboard and
+module-panel tests passed 20 cases, with 36 adjacent dashboard tests passing.
+This follow-up requires its own guarded publication and hosted checks.
+
 ## Remaining limits
 
 Cycle 39's full local gate passed 4427 tests with 23 skips and publication

@@ -2502,7 +2502,10 @@ def collect_local_ssh_runtime(
                 })
                 try:
                     if str(value.get("status")).casefold() == "running":
-                        pid = int(service.pid())
+                        # as_dict already includes the PID from its status
+                        # snapshot. Re-querying adds native work and can bind
+                        # this service to a later process after a restart.
+                        pid = int(value.get("pid"))
                         pid_identity[pid] = str(value.get("name") or "")
                 except Exception:
                     pass

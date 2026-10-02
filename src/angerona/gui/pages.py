@@ -6425,8 +6425,8 @@ class StatusStrip(QFrame):
         self._lay.setContentsMargins(8, 4, 8, 4)
         self._lay.setSpacing(4)
         self._chips: dict[str, QLabel] = {}
-        # Cache last visual state per chip: (health_state, pct_text)
-        self._prev: dict[str, tuple[str, str]] = {}
+        # Cache the health state, displayed percentage and coverage note.
+        self._prev: dict[str, tuple[str, str, str]] = {}
         self._built_count = -1
         self._build()
 
@@ -6461,22 +6461,26 @@ class StatusStrip(QFrame):
             state = mod.health_state if enabled else "off"
             pct_text = ((f"{mod.health}%" if mod.status == "running"
                          else mod.status[:3].upper()) if enabled else "OFF")
-            key = (state, pct_text)
+            note = str(mod.health_note or "")
+            key = (state, pct_text, note)
             if self._prev.get(name) == key:
                 continue                     # nothing changed — skip repaint
             self._prev[name] = key
             color = HEALTH_COLOR.get(state, "#6b7280")
             code  = _short_code(mod)
-            chip.setText(f"{code}\n{pct_text}")
-            chip.setToolTip(
-                f"{mod.name}  {pct_text}"
-                + (f"  [{mod.health_note}]" if mod.health_note else "")
-            )
-            chip.setStyleSheet(
+            text = f"{code}\n{pct_text}"
+            tooltip = f"{mod.name}  {pct_text}" + (f"  [{note}]" if note else "")
+            if chip.text() != text:
+                chip.setText(text)
+            if chip.toolTip() != tooltip:
+                chip.setToolTip(tooltip)
+            style = (
                 f"background:{color}1a; color:{color};"
                 f"border:1px solid {color}55; border-radius:8px;"
                 f"padding:1px 3px; font-weight:700;"
             )
+            if chip.styleSheet() != style:
+                chip.setStyleSheet(style)
 
 
 # ── Resource-intensity strip ──────────────────────────────────────────────────
@@ -6520,7 +6524,7 @@ class ResourceStrip(QFrame):
         self._lay.setContentsMargins(8, 2, 8, 4)
         self._lay.setSpacing(4)
         self._chips: dict[str, QLabel] = {}
-        self._prev: dict[str, tuple[int, bool]] = {}
+        self._prev: dict[str, tuple[int, bool, bool]] = {}
         self._built_count = -1
         self._build()
 
@@ -6572,13 +6576,19 @@ class ResourceStrip(QFrame):
             self._prev[name] = key
             color = _intensity_color(pct, running) if enabled else HEALTH_COLOR["off"]
             label = f"{pct}%" if enabled else "OFF"
-            chip.setText(f"{_short_code(mod)}\n{label}")
-            chip.setToolTip(f"{mod.name} — resource intensity {pct}%"
-                            + ("" if running else " (stopped)"))
-            chip.setStyleSheet(
+            text = f"{_short_code(mod)}\n{label}"
+            tooltip = (f"{mod.name} — resource intensity {pct}%"
+                       + ("" if running else " (stopped)"))
+            if chip.text() != text:
+                chip.setText(text)
+            if chip.toolTip() != tooltip:
+                chip.setToolTip(tooltip)
+            style = (
                 f"background:{color}1a; color:{color};"
                 f"border:1px solid {color}55; border-radius:8px;"
                 f"padding:1px 3px; font-weight:700;")
+            if chip.styleSheet() != style:
+                chip.setStyleSheet(style)
 
     def _resource_snapshot(self, name: str) -> dict:
         module = self.manager.modules.get(name)

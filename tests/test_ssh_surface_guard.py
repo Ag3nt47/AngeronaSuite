@@ -839,6 +839,40 @@ def test_windows_runtime_collector_includes_non_service_server_and_client(
         assert forbidden not in serialized
 
 
+def test_windows_service_pid_uses_same_snapshot_as_status(monkeypatch) -> None:
+    class Service:
+        pid_calls = 0
+
+        def as_dict(self):
+            return {"name": "sshd", "display_name": "OpenSSH server",
+                    "binpath": r"C:\Windows\System32\OpenSSH\sshd.exe",
+                    "status": "running", "start_type": "automatic", "pid": 101}
+
+        def pid(self):
+            self.pid_calls += 1
+            return 202  # A restart happened after the status snapshot.
+
+    service = Service()
+    process = types.SimpleNamespace(info={
+        "pid": 101, "name": "sshd.exe",
+        "exe": r"C:\Windows\System32\OpenSSH\sshd.exe", "create_time": 1000.0,
+    })
+    connection = types.SimpleNamespace(
+        pid=101, status="LISTEN", laddr=("0.0.0.0", 22), raddr=(),
+    )
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(
+        CONN_LISTEN="LISTEN", win_service_iter=lambda: (service,),
+        process_iter=lambda _attributes: (process,),
+        net_connections=lambda kind: (connection,) if kind == "tcp" else (),
+    ))
+    result = ssh.collect_local_ssh_runtime(
+        privacy_key=MASTER, platform="windows", environ={"SystemRoot": r"C:\Windows"},
+    )
+    assert len(result.services) == 1 and len(result.listeners) == 1
+    assert result.listeners[0].service_token == result.services[0].service_token
+    assert service.pid_calls == 0
+
+
 def _windows_openssh_xml(
     *,
     channel: str = "OpenSSH/Operational",

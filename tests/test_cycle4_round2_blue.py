@@ -17,7 +17,14 @@ from angerona.modules.arp_watchdog import ARPWatchdogModule
 def _fake_scapy_module(monkeypatch, async_sniffer=None, sniff=None) -> ModuleType:
     package = ModuleType("scapy")
     package.__path__ = []  # type: ignore[attr-defined]
-    all_module = ModuleType("scapy.all")
+    all_module = ModuleType("scapy.sendrecv")
+    layers = ModuleType("scapy.layers")
+    layers.__path__ = []  # type: ignore[attr-defined]
+    layer2 = ModuleType("scapy.layers.l2")
+    layer2.ARP = type("ARP", (), {})  # type: ignore[attr-defined]
+    layers.l2 = layer2  # type: ignore[attr-defined]
+    package.layers = layers  # type: ignore[attr-defined]
+    package.sendrecv = all_module  # type: ignore[attr-defined]
     if async_sniffer is not None:
         all_module.AsyncSniffer = async_sniffer  # type: ignore[attr-defined]
     if sniff is not None:
@@ -25,6 +32,9 @@ def _fake_scapy_module(monkeypatch, async_sniffer=None, sniff=None) -> ModuleTyp
     package.all = all_module  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "scapy", package)
     monkeypatch.setitem(sys.modules, "scapy.all", all_module)
+    monkeypatch.setitem(sys.modules, "scapy.sendrecv", all_module)
+    monkeypatch.setitem(sys.modules, "scapy.layers", layers)
+    monkeypatch.setitem(sys.modules, "scapy.layers.l2", layer2)
     return all_module
 
 

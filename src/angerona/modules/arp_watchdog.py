@@ -101,6 +101,14 @@ def _parse_arp_cache() -> dict[str, str]:
     return result
 
 
+def _load_scapy_capture_api():
+    """Register ARP decoding without importing the aggregate protocol suite."""
+    from scapy import sendrecv
+    from scapy.layers import l2
+
+    return sendrecv, l2.ARP
+
+
 class ARPWatchdogModule(BaseModule):
     CODE = "ARPW"
     NAME = "ARP Watchdog"
@@ -388,7 +396,7 @@ class ARPWatchdogModule(BaseModule):
         capture_stop: Optional[threading.Event] = None
         previous_capture_stopping = False
         try:
-            import scapy.all as scapy  # type: ignore[import]
+            scapy, _ = _load_scapy_capture_api()
 
             with self._scapy_lock:
                 if self.stopping:
