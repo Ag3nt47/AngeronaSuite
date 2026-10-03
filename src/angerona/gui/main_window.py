@@ -18,8 +18,8 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSplitter,
-    QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget,
+    QApplication, QGridLayout, QHBoxLayout, QLabel, QLayout, QMainWindow, QMenu, QMessageBox,
+    QPushButton, QScrollArea, QSizePolicy, QSplitter, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from angerona.academy.security_academy import FlightInstructor
@@ -66,6 +66,14 @@ class _NoAnim:
     keep working while nothing renders."""
     def __getattr__(self, _name):
         return lambda *_args, **_kwargs: None
+
+
+class _DashboardLayout(QVBoxLayout):
+    def hasHeightForWidth(self) -> bool:  # noqa: N802 - Qt signature
+        # QScrollArea otherwise treats the splitters' preferred (previous)
+        # height as a minimum whenever any nested caption wraps. Individual
+        # panels still wrap text; the canvas uses its explicit readable floor.
+        return False
 
 
 def _is_owned_angerona_process(process, project_root: Path) -> bool:
@@ -233,29 +241,36 @@ class MainWindow(QMainWindow):
         # compress. The responsive UI-scale (see resizeEvent) keeps text legible
         # as the window shrinks toward this floor.
         self.setMinimumSize(480, 340)
-        # Live UI-scale factor (1.0 == the 1200×780 design size). resizeEvent
-        # recomputes it and re-applies the stylesheet so buttons and text grow
-        # and shrink with the window while staying inside a readable band.
+        # Auto scale stays within a readable band. A short debounce applies
+        # the scale and reflows the layout after a window resize settles.
         self._ui_scale = 1.0
         self.setStyleSheet(self._qss())
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(120)
+        self._resize_timer.timeout.connect(self._apply_dashboard_layout)
 
         central = QWidget()
-        root = QVBoxLayout(central)
-        root.setContentsMargins(20, 16, 20, 16)
-        root.setSpacing(14)
+        central.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        root = _DashboardLayout(central)
+        root.setSizeConstraint(QLayout.SetNoConstraint)
+        root.setContentsMargins(16, 12, 16, 12)
+        root.setSpacing(10)
+        self._dashboard_content = central
 
         # ── Header: routine actions left, admin actions right, title centered ─
-        # Three equal-stretch (ratio 1:1:1) sections keep the brand centered
-        # at ANY window size (stretch factors scale proportionally in both
-        # directions instead of hitting a hard floor — see setMinimumSize()
-        # below for why that matters for shrinking the window).
+        # Wide desktops use one row; smaller windows place the brand above
+        # the controls, then stack the two action groups when necessary.
         #
         # Self-Test and Shark Attack are the two things you reach for while
         # actively USING the app, so they anchor the left edge, closest to
         # where you're already looking. Settings and Stop are lower-frequency/
         # more consequential actions, so they anchor the right edge — Stop
         # furthest out, since it's the most drastic of the four.
-        header = QHBoxLayout()
+        header = QGridLayout()
+        header.setHorizontalSpacing(16)
+        header.setVerticalSpacing(8)
+        self._header_layout = header
         left = QWidget(); bl = QHBoxLayout(left)
         bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(8)
         adaptation_btn = HeaderActionButton(
@@ -270,7 +285,7 @@ class MainWindow(QMainWindow):
             lambda _checked=False: self._run_header_action(
                 adaptation_btn, self._open_adaptation, "#67e8f9"))
         test_btn = HeaderActionButton(
-            "RUN SELF-TEST",
+            "SELF-TEST",
             "selftest",
             "Run Self-Test",
             "Checks every enabled defensive module and reports what passed, "
@@ -284,7 +299,7 @@ class MainWindow(QMainWindow):
         # are now scenarios inside one configurable simulation (difficulty,
         # target, custom benign technique), launched from this single button.
         sim_btn = HeaderActionButton(
-            "RUN RED TEAM SIMULATION",
+            "RED TEAM SIMULATION",
             "simulation",
             "Red Team Simulation",
             "Configures a safe, reversible drill that tests detection and response "
@@ -512,11 +527,13 @@ class MainWindow(QMainWindow):
         # by its red square icon and definition tooltip.
         self._header_stop_button = stop_btn
 
-        header.addWidget(left, 1)
-        header.addWidget(brand_box, 1)
-        header.addWidget(right, 1)
+        self._header_groups = (left, brand_box, right)
+        self._header_layout_mode = None
+        header.addWidget(left, 0, 0)
+        header.addWidget(brand_box, 0, 1)
+        header.addWidget(right, 0, 2)
         root.addLayout(header)
-        QTimer.singleShot(0, self._update_header_button_modes)
+        QTimer.singleShot(0, self._apply_dashboard_layout)
 
         # ── Stat cards ───────────────────────────────────────────────────────
         self.cards = DashboardCards(bus, storage, manager)
@@ -529,6 +546,8 @@ class MainWindow(QMainWindow):
             allow_cloud=getattr(config, "alert_analysis_cloud_fallback", False),
             bus=bus,
         )
+        self.alerts_panel._details_button.toggled.connect(
+            lambda _expanded: self._resize_timer.start())
         # Right side keeps live evidence, response review, and explicit local
         # scanning together without blocking the dashboard thread.
         self.soar_panel = SoarPanel(bus, manager)
@@ -547,9 +566,9 @@ class MainWindow(QMainWindow):
         top_split = QSplitter(Qt.Horizontal)
         top_split.addWidget(self.modules_panel)
         top_split.addWidget(self._right_tabs)
-        top_split.setStretchFactor(0, 4)
-        top_split.setStretchFactor(1, 6)
-        top_split.setSizes([460, 700])
+        top_split.setStretchFactor(0, 3)
+        top_split.setStretchFactor(1, 7)
+        top_split.setSizes([390, 810])
         self._top_splitter = top_split
 
         self.console = CommandConsolePanel(CommandConsole(
@@ -614,14 +633,19 @@ class MainWindow(QMainWindow):
         body = QSplitter(Qt.Vertical)
         body.addWidget(top_split)
         body.addWidget(bottom)
-        # Give both rows an equal claim on newly available height. The old 3:2
-        # weighting made the Console / System Pulse row the first thing squeezed
-        # on shorter windows even though every panel is independently resizable.
-        body.setStretchFactor(0, 1)
+        # Evidence gets most of the workspace while the lower operational
+        # cards retain readable minimum heights and independently draggable edges.
+        body.setStretchFactor(0, 3)
         body.setStretchFactor(1, 1)
-        body.setSizes([360, 320])
-        root.addWidget(body, 1)
+        body.setSizes([380, 230])
+        self._workspace_tabs = QTabWidget()
+        self._workspace_tabs.addTab(body, "Workspace")
+        self._workspace_tabs.tabBar().hide()
+        self._orbital_dashboard = None
+        root.addWidget(self._workspace_tabs, 1)
         self._body_splitter = body
+        self._workspace_tabs.currentChanged.connect(
+            lambda _index: self._resize_timer.start())
         self._pre_scan_center_sizes: list[int] | None = None
         self._right_tabs.currentChanged.connect(self._on_right_tab_changed)
 
@@ -646,18 +670,36 @@ class MainWindow(QMainWindow):
         # ── Bottom status strip (every module's state) ───────────────────────
         # Chips are clickable → open that module's full window (details, live
         # alerts, self-test, edit code in the Sandbox).
-        self.status_strip = StatusStrip(manager, on_chip_click=self._open_module_window)
+        self.status_strip = StatusStrip(
+            manager, on_chip_click=self._open_module_window, config=self.config,
+        )
         root.addWidget(self.status_strip)
-        # Second row: per-module resource-intensity (0–100%, red=off→green→red).
+        # Second row: estimated activity, aligned with the health ribbon above.
         self.resource_strip = ResourceStrip(manager, self.bus)
         root.addWidget(self.resource_strip)
+        self.status_strip.set_companion(self.resource_strip)
         from angerona.gui.ollama_status import OllamaStatusPanel
         self.ollama_status = OllamaStatusPanel(
             lambda: self.config.ollama_host, central,
         )
         root.addWidget(self.ollama_status)
 
-        self.setCentralWidget(central)
+        # Short/narrow windows scroll a readable dashboard instead of crushing
+        # every nested panel below its usable height. Tables scroll independently.
+        viewport = QScrollArea()
+        viewport.setObjectName("DashboardViewport")
+        viewport.setFrameShape(QScrollArea.NoFrame)
+        viewport.setWidgetResizable(True)
+        viewport.setWidget(central)
+        self.setCentralWidget(viewport)
+        from angerona.gui.dashboard_footer import DashboardFooter
+        self._dashboard_footer = DashboardFooter()
+        self._dashboard_footer.details_requested.connect(self._open_system_pulse_details)
+        self.system_pulse.sample_ready.connect(self._dashboard_footer.update_sample)
+        self.system_pulse.set_external_view_active(True)
+        self.statusBar().setSizeGripEnabled(False)
+        self.statusBar().addPermanentWidget(self._dashboard_footer, 1)
+        QTimer.singleShot(0, self._apply_dashboard_display)
         self._panel_reveal = PanelRevealOverlay(central)
         # Enable after construction so every later top-level Angerona dialog,
         # including older call sites, receives the same reveal and reverse close.
@@ -795,8 +837,8 @@ class MainWindow(QMainWindow):
         """Derive a UI-scale factor from the current window size.
 
         Both dimensions are compared against the 1200×780 design size and the
-        smaller ratio wins, so text never overflows the shorter axis. The raw
-        factor is clamped into a readable band by ``clamp_scale`` (0.75–1.35).
+        smaller ratio wins. Auto scale stays in 0.9–1.1; narrower layouts reflow
+        and scroll so controls remain readable instead of shrinking indefinitely.
 
         When the operator has chosen a FIXED scale in Settings, that value is
         used verbatim (still clamped) and the window size is ignored — handy on
@@ -812,7 +854,9 @@ class MainWindow(QMainWindow):
             raw = min(w / 1200.0, h / 780.0)
         except Exception:
             raw = 1.0
-        return clamp_scale(raw)
+        # Desktop space should reveal more evidence, not keep enlarging every
+        # control. Respect fixed accessibility scaling above; auto stays readable.
+        return max(0.9, min(1.1, clamp_scale(raw)))
 
     def _maybe_rescale_ui(self) -> None:
         """Recompute the scale and, if it moved enough to matter, re-apply the
@@ -835,13 +879,12 @@ class MainWindow(QMainWindow):
         """
         width = max(1, self.width())
         scale = max(0.75, min(1.35, getattr(self, "_ui_scale", 1.0)))
-        icon_extent = round((40 if width >= 1900 else 34) * scale)
-        # Eight destination buttons need roughly one third of a 4K surface
-        # before their complete labels are genuinely comfortable. Everywhere
-        # else the unique icon + definition tooltip is clearer than truncation.
-        nav_compact = width < 3000
-        primary_compact = width < 1900
-        stop_compact = width < 1900
+        icon_extent = round(34 * scale)
+        # Destination icons retain accessible names and definition tooltips.
+        # Primary labels stay visible while their row has sufficient room.
+        nav_compact = width < 2600 * scale
+        primary_compact = width < 1100 * scale
+        stop_compact = width < 1100 * scale
         for button in getattr(self, "_header_nav_buttons", ()):
             button.set_compact(nav_compact, icon_extent)
         for button in getattr(self, "_header_primary_buttons", ()):
@@ -851,18 +894,78 @@ class MainWindow(QMainWindow):
             getattr(self, "loading_indicator", None),
         ):
             if indicator is not None:
-                indicator.set_compact(width < 1900, icon_extent)
+                indicator.set_compact(width < 700, icon_extent)
         stop = getattr(self, "_header_stop_button", None)
         if stop is not None:
             stop.set_compact(stop_compact, icon_extent)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt signature)
-        try:
-            self._maybe_rescale_ui()
-            self._update_header_button_modes()
-        except Exception:
-            pass
+        # Coalesce a drag burst. Reapplying a stylesheet to all table items on
+        # every intermediate resize competes with security presentation work.
+        timer = getattr(self, "_resize_timer", None)
+        if timer is not None:
+            timer.start()
         super().resizeEvent(event)
+
+    def _apply_dashboard_layout(self) -> None:
+        if not hasattr(self, "_console_section"):
+            return
+        self._maybe_rescale_ui()
+        self._update_header_button_modes()
+        width = self.width()
+        scale = self._ui_scale
+        mode = "wide" if width >= 1650 * scale else "stack" if width < 850 * scale else "two"
+        if mode != self._header_layout_mode:
+            layout = self._header_layout
+            left, brand, right = self._header_groups
+            for widget in self._header_groups:
+                layout.removeWidget(widget)
+            for column in range(3):
+                layout.setColumnStretch(column, 0)
+            if mode == "wide":
+                layout.addWidget(left, 0, 0)
+                layout.addWidget(brand, 0, 1)
+                layout.addWidget(right, 0, 2)
+                layout.setColumnStretch(1, 1)
+            elif mode == "two":
+                layout.addWidget(brand, 0, 0, 1, 3)
+                layout.addWidget(left, 1, 0)
+                layout.addWidget(right, 1, 2)
+                layout.setColumnStretch(1, 1)
+            else:
+                layout.addWidget(brand, 0, 0, 1, 3)
+                layout.addWidget(left, 1, 0, 1, 3, Qt.AlignLeft)
+                layout.addWidget(right, 2, 0, 1, 3, Qt.AlignLeft)
+            self._header_layout_mode = mode
+
+        narrow = width < 1000 * scale
+        orientation = Qt.Vertical if narrow else Qt.Horizontal
+        # Clear horizontal card caps before switching orientation. QSplitter
+        # otherwise caches their maximum as the width of the entire column.
+        self.system_pulse.setMaximumWidth(16_777_215 if narrow else 340)
+        self.live_defense_activity.setMaximumWidth(16_777_215 if narrow else 430)
+        if getattr(self, "aria_hud", None) is not None:
+            self.aria_hud.setMaximumWidth(16_777_215 if narrow else 420)
+        if self._top_splitter.orientation() != orientation:
+            self._top_splitter.setOrientation(orientation)
+            self._console_section.setOrientation(orientation)
+            self._top_splitter.setSizes([260, 380] if narrow else [390, 810])
+            sizes = [240, 190, 180] if narrow else [650, 340, 260]
+            if getattr(self, "aria_hud", None) is not None:
+                sizes.insert(0, 170)
+            self._console_section.setSizes(sizes)
+            self._body_splitter.setSizes([640, sum(sizes)] if narrow else [380, 230])
+        self._console_section.setMaximumWidth(16_777_215)
+        # Preserve readable panel heights at laptop sizes and allow all content
+        # to remain reachable even in a small utility-sized window.
+        minimum_height = 950 if narrow and self._orbital_view_active() else 1550 if narrow else 740
+        policy = QSizePolicy.Ignored if self._orbital_view_active() else QSizePolicy.Expanding
+        self._body_splitter.setSizePolicy(policy, policy)
+        self._dashboard_content.setMinimumHeight(max(
+            round(minimum_height * scale),
+            self._dashboard_content.layout().minimumSize().height(),
+        ))
+        self._dashboard_content.setMinimumWidth(440)
 
     def apply_theme(self, theme: str | None = None) -> None:
         # SettingsDialog passes the newly-chosen theme here; callers that just
@@ -878,10 +981,51 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.setStyleSheet(self._qss())
+        self._apply_dashboard_display()
+        self._resize_timer.start()
         try:
             self._holographic_orb.sync_config()
         except Exception:
             pass
+
+    def _orbital_view_active(self) -> bool:
+        tabs = getattr(self, "_workspace_tabs", None)
+        orbital = getattr(self, "_orbital_dashboard", None)
+        return orbital is not None and tabs is not None and tabs.currentWidget() is orbital
+
+    def _apply_dashboard_display(self) -> None:
+        tabs = getattr(self, "_workspace_tabs", None)
+        if tabs is None:
+            return
+        enabled = getattr(self.config, "dashboard_display", "standard") == "orbital"
+        orbital = self._orbital_dashboard
+        if enabled:
+            if orbital is None:
+                from angerona.gui.orbital_dashboard import OrbitalDashboard
+                orbital = OrbitalDashboard(self.bus, self.manager, self.config)
+                orbital.module_requested.connect(self._open_module_window)
+                orbital.posture_requested.connect(self._show_posture_detail)
+                orbital.alerts_requested.connect(self._show_live_alerts_workspace)
+                self.system_pulse.sample_ready.connect(orbital.update_sample)
+                orbital.update_sample(self.system_pulse.snapshot().get("latest", {}))
+                orbital.update_posture(getattr(self, "_last_posture", {}))
+                self._orbital_dashboard = orbital
+            if tabs.indexOf(orbital) < 0:
+                tabs.addTab(orbital, "Orbital overview")
+            tabs.setCurrentWidget(orbital)
+            orbital.refresh()
+        elif orbital is not None:
+            tabs.setCurrentWidget(self._body_splitter)
+            index = tabs.indexOf(orbital)
+            if index >= 0:
+                tabs.removeTab(index)
+            orbital.hide()
+        tabs.tabBar().setVisible(enabled)
+        self._resize_timer.start()
+
+    def _show_live_alerts_workspace(self) -> None:
+        self._workspace_tabs.setCurrentWidget(self._body_splitter)
+        self._right_tabs.setCurrentWidget(self.alerts_panel)
 
     def _run_header_action(self, source: QWidget, callback, color: str) -> None:
         """Route a top-row action through the real destination reveal."""
@@ -999,6 +1143,11 @@ class MainWindow(QMainWindow):
         plan = self._current_refresh_plan()
         if timer is not None and timer.interval() != plan[0]:
             timer.setInterval(plan[0])
+        orbital = getattr(self, "_orbital_dashboard", None)
+        if orbital is not None:
+            orbital.set_idle_mode(
+                self._quiet_chill_active() or not self.isVisible()
+                or self.isMinimized() or not self.isActiveWindow())
         hud = getattr(self, "aria_hud", None)
         if hud is not None and hasattr(hud, "set_idle_mode"):
             visible = self.isVisible() and not self.isMinimized()
@@ -1152,9 +1301,18 @@ class MainWindow(QMainWindow):
             module_refresh = getattr(
                 self.modules_panel, "refresh_incremental", self.modules_panel.refresh,
             )
-            for _fn in (self.cards.refresh, module_refresh,
-                        self.alerts_panel.refresh, self.soar_panel.refresh,
-                        self.live_defense_activity.refresh):
+            refreshers = [self.cards.refresh, module_refresh,
+                          self.live_defense_activity.refresh, self.soar_panel.refresh]
+            if self._orbital_view_active():
+                refreshers.remove(module_refresh)
+                refreshers.append(self._orbital_dashboard.refresh)
+            # Hidden alerts need no SQL snapshots/table reconciliation. SOAR
+            # still reconciles signed response receipts while its tab is hidden;
+            # delaying that work could let bounded event-history receipts expire.
+            current = self._right_tabs.currentWidget()
+            if current is self.alerts_panel and not self._orbital_view_active():
+                refreshers.append(current.refresh)
+            for _fn in refreshers:
                 try:
                     _fn()
                 except Exception:
@@ -1845,10 +2003,14 @@ class MainWindow(QMainWindow):
         self.show()
         self.raise_()
         self.activateWindow()
+        self._workspace_tabs.setCurrentWidget(self._body_splitter)
         self._right_tabs.setCurrentWidget(self.scan_center)
 
     def _on_right_tab_changed(self, index: int) -> None:
         """Give the Scan Center working room, restoring the dashboard afterward."""
+        current = self._right_tabs.currentWidget()
+        if current in (self.alerts_panel, self.soar_panel):
+            current.refresh()
         scan_index = self._right_tabs.indexOf(self.scan_center)
         if index == scan_index:
             if self._pre_scan_center_sizes is None:
@@ -4191,6 +4353,12 @@ class MainWindow(QMainWindow):
     def _apply_posture_snapshot(self, snapshot) -> None:
         p, tooltip = snapshot
         self._last_posture = p
+        footer = getattr(self, "_dashboard_footer", None)
+        if footer is not None:
+            footer.update_posture(p)
+        orbital = getattr(self, "_orbital_dashboard", None)
+        if orbital is not None:
+            orbital.update_posture(p)
         self.posture_lbl.setText(f"POSTURE {p['score']} · {p['label']}")
         self.posture_lbl.setStyleSheet(
             f"color:{p['color']}; font-weight:800; font-size:11px; letter-spacing:1px;")

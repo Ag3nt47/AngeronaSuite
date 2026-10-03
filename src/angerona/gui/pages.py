@@ -27,15 +27,16 @@ import weakref
 from pathlib import Path
 from urllib.parse import quote
 
-from PySide6.QtCore import QRegularExpression, Qt, QTimer, Signal
-from PySide6.QtGui import (QAction, QColor, QFont, QGuiApplication, QKeySequence,
+from PySide6.QtCore import QEvent, QRegularExpression, Qt, QTimer, Signal
+from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication, QKeySequence,
+                           QPainter, QPalette,
                            QRegularExpressionValidator, QShortcut, QTextCursor,
                            QTextFormat)
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFileDialog, QGridLayout, QFrame, QGroupBox,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QGridLayout, QFrame, QGroupBox,
+    QHBoxLayout, QHeaderView, QLabel, QLayout, QLineEdit, QListWidget, QListWidgetItem,
     QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
-    QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QSizePolicy, QSplitter, QStyle, QStyleOption, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
     QTextEdit,
 )
 
@@ -84,6 +85,7 @@ from angerona.core.threat import (
     active_threat_events, event_disposition, threat_label, threat_label_from_active,
 )
 from angerona.gui.animations import begin_loading, finish_loading
+from angerona.gui.alert_preview import AlertPreview
 from angerona.gui.async_snapshot import AsyncSnapshot
 from angerona.gui.dashboard_details import (
     ConsoleDetailDialog,
@@ -1360,11 +1362,23 @@ class _ClickableSection(QLabel):
         self.setObjectName("SectionTitle")
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip(tooltip)
+        self.setWordWrap(True)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAccessibleName(text)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt signature
         if event.button() == Qt.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 # ── Stat cards ───────────────────────────────────────────────────────────────
@@ -1388,6 +1402,37 @@ def _mitre_of(ev) -> str:
     return ""
 
 
+class _FittingCardValue(QLabel):
+    """Fit summary values to their card without a global stylesheet rewrite."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setMinimumWidth(0)
+
+    def _display_font(self) -> QFont:
+        font = QFont(self.font())
+        metrics = QFontMetrics(font)
+        width = metrics.horizontalAdvance(self.text())
+        available = max(1, self.contentsRect().width())
+        if width > available:
+            pixels = font.pixelSize() if font.pixelSize() > 0 else metrics.height()
+            font.setPixelSize(max(14, int(pixels * available / width)))
+        return font
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        option = QStyleOption()
+        option.initFrom(self)
+        self.style().drawPrimitive(QStyle.PE_Widget, option, painter, self)
+        font = self._display_font()
+        painter.setFont(font)
+        painter.setPen(self.palette().color(QPalette.WindowText))
+        painter.drawText(self.contentsRect(), Qt.AlignLeft | Qt.AlignVCenter,
+                         QFontMetrics(font).elidedText(self.text(), Qt.ElideRight,
+                                                     self.contentsRect().width()))
+
+
 class StatCard(QFrame):
     """A dashboard summary tile. Now clickable — emits `clicked` on left press."""
 
@@ -1396,10 +1441,11 @@ class StatCard(QFrame):
     def __init__(self, label: str) -> None:
         super().__init__()
         self.setObjectName("Card")
+        self.setProperty("alert", False)
         self.setCursor(Qt.PointingHandCursor)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 14, 18, 14)
-        self.value = QLabel("—")
+        self.value = _FittingCardValue("—")
         self.value.setObjectName("CardValue")
         self._rendered: tuple[str, str] | None = None
         lay.addWidget(self.value)
@@ -1407,8 +1453,9 @@ class StatCard(QFrame):
         row.setContentsMargins(0, 0, 0, 0)
         cap = QLabel(label)
         cap.setObjectName("CardLabel")
-        row.addWidget(cap)
-        row.addStretch(1)
+        cap.setWordWrap(True)
+        cap.setMinimumWidth(0)
+        row.addWidget(cap, 1)
         chevron = QLabel("›")          # ›  affordance: this tile opens a view
         chevron.setStyleSheet("color:#6b7280; font-size:14px; font-weight:bold;")
         row.addWidget(chevron)
@@ -1418,9 +1465,18 @@ class StatCard(QFrame):
         rendered = (str(text), str(color))
         if rendered == self._rendered:
             return
+        previous = self._rendered
         self._rendered = rendered
         self.value.setText(text)
-        self.value.setStyleSheet(f"color: {color};")
+        self.value.setToolTip(str(text))
+        if previous is None or previous[1] != rendered[1]:
+            self.value.setStyleSheet(f"color: {color};")
+        alert = rendered[1].lower() in {"#ef4444", "#b91c1c"}
+        if bool(self.property("alert")) != alert:
+            self.setProperty("alert", alert)
+            self.style().unpolish(self)
+            self.style().polish(self)
+            self.update()
 
     def mousePressEvent(self, e) -> None:       # noqa: N802 (Qt signature)
         if e.button() == Qt.LeftButton:
@@ -1441,7 +1497,7 @@ class DashboardCards(QWidget):
         self.c_crit = StatCard("Active critical (10m)")
         self.c_threat = StatCard("Threat level")
         for c in (self.c_modules, self.c_alerts, self.c_crit, self.c_threat):
-            lay.addWidget(c)
+            lay.addWidget(c, 1)
         # Each tile opens its own focused detail window.
         self.c_modules.clicked.connect(self._open_modules)
         self.c_alerts.clicked.connect(self._open_alerts)
@@ -2946,8 +3002,10 @@ class ModulesPanel(QFrame):
         )
         self._title.clicked.connect(self._open_overview)
         lay.addWidget(self._title)
-        hint = QLabel("Click a row to inspect its v12 contract. Toggle to enable/disable.")
+        hint = QLabel("Select a module for details · check to enable")
         hint.setStyleSheet("color:#6b7280; font-size:11px;")
+        hint.setWordWrap(True)
+        hint.setToolTip("Click a row to inspect its capability contract. Toggle to enable or disable.")
         lay.addWidget(hint)
 
         sort_row = QHBoxLayout()
@@ -2960,21 +3018,22 @@ class ModulesPanel(QFrame):
         self._module_search.setPlaceholderText("Search capabilities…")
         self._module_search.setClearButtonEnabled(True)
         self._module_search.textChanged.connect(lambda *_: self._build())
-        sort_row.addWidget(self._module_search, 1)
         self._mode_combo = QComboBox()
         self._mode_combo.addItems(
             ["All modes", "unknown", "observe", "detect", "protect", "respond"]
         )
         self._mode_combo.currentIndexChanged.connect(lambda *_: self._build())
         sort_row.addWidget(self._mode_combo)
-        sort_row.addStretch(1)
         lay.addLayout(sort_row)
+        lay.addWidget(self._module_search)
 
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
             ["On", "Module", "Status", "Assurance", "Category", "Mode", "Impl."]
         )
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.table.horizontalHeader().setMinimumSectionSize(62)
+        self.table.setHorizontalScrollMode(QTableWidget.ScrollPerPixel)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -2983,6 +3042,8 @@ class ModulesPanel(QFrame):
         self.table.cellClicked.connect(self._on_click)
         self.table.itemChanged.connect(self._on_toggle)
         self.table.setColumnWidth(0, 72)
+        for column, width in ((1, 230), (2, 110), (3, 100), (4, 135), (5, 90), (6, 110)):
+            self.table.setColumnWidth(column, width)
         lay.addWidget(self.table)
         self._rendered_rows = None
         self._refresh_items = []
@@ -4851,6 +4912,27 @@ class AlertDetailDialog(QDialog):
                         default_filename="alert_research.md", parent=self.window()).show()
 
 
+class _ResponsiveAlertsTable(QTableWidget):
+    """Reserve readable action columns and share spare width between evidence fields."""
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.fit_evidence_columns()
+
+    def fit_evidence_columns(self) -> None:
+        if self.columnCount() != 8:
+            return
+        fixed = sum(self.columnWidth(column) for column in (0, 1, 2, 5, 6, 7))
+        if self.isColumnHidden(4):
+            self.setColumnWidth(3, max(280, self.viewport().width() - fixed))
+            return
+        available = max(460, self.viewport().width() - fixed)
+        message_width = max(280, round(available * 0.6))
+        path_width = max(180, available - message_width)
+        self.setColumnWidth(3, message_width)
+        self.setColumnWidth(4, path_width)
+
+
 class AlertsPanel(QFrame):
     scan_requested = Signal()
     analysis_status = Signal(str, str)
@@ -4882,18 +4964,28 @@ class AlertsPanel(QFrame):
         self._analyze_queue: list[tuple[object, object, str]] = []
         self._max_analyze_workers = 2
         self._max_analyze_queue = 6
+        self._preview_event = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 12, 14, 14)
         self._title = _ClickableSection(
-            "Live Alerts  —  click a header to sort · click a row for detail  "
+            "Live Alerts",
+            "Open a full-size newest-first alert evidence window. "
+            "Click a header to sort · click a row for detail. "
             "· Allow = confirm a 15-minute exact-rule suppression  "
             "· Block = confirm + directly suspend a verified process target  "
             "· Analyze = local AI triage (sanitized cloud fallback only if enabled)",
-            "Open a full-size newest-first alert evidence window.",
         )
         self._title.clicked.connect(self._open_overview)
         title_row = QHBoxLayout()
         title_row.addWidget(self._title, 1)
+        self._details_button = QPushButton("Details")
+        self._details_button.setCheckable(True)
+        self._details_button.setToolTip(
+            "Preview the selected alert beside the table. Double-click an alert for full details. "
+            "In narrow panels this opens the selected alert in its full detail window."
+        )
+        self._details_button.toggled.connect(self._toggle_preview)
+        title_row.addWidget(self._details_button)
         scan_button = QPushButton("🛡  Scan Center")
         scan_button.setToolTip(
             "Scan this computer with bounded Angerona checks, Microsoft Defender, "
@@ -4904,7 +4996,7 @@ class AlertsPanel(QFrame):
         )
         title_row.addWidget(scan_button)
         lay.addLayout(title_row)
-        self.table = QTableWidget(0, 8)
+        self.table = _ResponsiveAlertsTable(0, 8)
         self.table.setHorizontalHeaderLabels(
             [
                 "Time", "Module", "Severity", "Message", "File / artifact path",
@@ -4912,31 +5004,47 @@ class AlertsPanel(QFrame):
             ]
         )
         hdr = self.table.horizontalHeader()
+        hdr.setMinimumSectionSize(76)
         hdr.setSectionResizeMode(1, QHeaderView.Interactive)
-        hdr.setSectionResizeMode(3, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(4, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(3, QHeaderView.Interactive)
+        hdr.setSectionResizeMode(4, QHeaderView.Interactive)
         hdr.setSectionResizeMode(5, QHeaderView.Fixed)
         hdr.setSectionResizeMode(6, QHeaderView.Fixed)
         hdr.setSectionResizeMode(7, QHeaderView.Fixed)
-        self.table.setColumnWidth(0, 72)
-        self.table.setColumnWidth(1, 140)
-        self.table.setColumnWidth(2, 82)
-        self.table.setColumnWidth(5, 68)
-        self.table.setColumnWidth(6, 68)
-        self.table.setColumnWidth(7, 78)
+        self.table.setColumnWidth(0, 92)
+        self.table.setColumnWidth(1, 168)
+        self.table.setColumnWidth(2, 96)
+        self.table.setColumnWidth(3, 380)
+        self.table.setColumnWidth(4, 280)
+        self.table.setColumnWidth(5, 82)
+        self.table.setColumnWidth(6, 82)
+        self.table.setColumnWidth(7, 94)
+        self.table.setHorizontalScrollMode(QTableWidget.ScrollPerPixel)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.cellClicked.connect(self._on_click)
+        self.table.cellDoubleClicked.connect(self._on_double_click)
+        self.table.itemSelectionChanged.connect(self._update_preview)
         # Ctrl+C copies the selected alert row to the clipboard instantly.
         _sc = QShortcut(QKeySequence.Copy, self.table)
         _sc.activated.connect(self._copy_selected)
         # Enable click-to-sort on all column headers; default = newest first.
         self.table.setSortingEnabled(True)
         self.table.sortByColumn(0, Qt.DescendingOrder)
-        lay.addWidget(self.table)
+        self._evidence_splitter = QSplitter(Qt.Horizontal)
+        self._evidence_splitter.setChildrenCollapsible(False)
+        self._evidence_splitter.addWidget(self.table)
+        self._preview = AlertPreview()
+        self._preview.open_requested.connect(self._open_selected_details)
+        self._evidence_splitter.addWidget(self._preview)
+        self._evidence_splitter.setStretchFactor(0, 1)
+        self._evidence_splitter.setStretchFactor(1, 0)
+        self._preview.hide()
+        lay.addWidget(self._evidence_splitter)
         # Status line for Allow/Block feedback
         self._status = QLabel("")
+        self._status.setWordWrap(True)
         self._status.setStyleSheet("color:#94a3b8; font-size:12px; padding:2px 0;")
         status_row = QHBoxLayout()
         status_row.addWidget(self._status, 1)
@@ -4948,6 +5056,70 @@ class AlertsPanel(QFrame):
         self._undo_allow.clicked.connect(self._undo_last_suppression)
         status_row.addWidget(self._undo_allow)
         lay.addLayout(status_row)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if hasattr(self, "_preview") and self.width() < 1000 and not self._preview.isHidden():
+            self._details_button.setChecked(False)
+
+    def _toggle_preview(self, expanded: bool) -> None:
+        if expanded and self.width() < 1000:
+            self._details_button.blockSignals(True)
+            self._details_button.setChecked(False)
+            self._details_button.blockSignals(False)
+            self._open_selected_details()
+            return
+        self._preview.setVisible(expanded)
+        # Artifact paths remain fully available for the selected alert in the
+        # preview; reclaim this table column so response actions stay reachable.
+        self.table.setColumnHidden(4, expanded)
+        self.table.fit_evidence_columns()
+        if expanded:
+            self._evidence_splitter.setSizes([max(460, self.width() - 350), 320])
+            self._update_preview()
+
+    def _selected_event(self):
+        if not self.table.selectionModel().hasSelection():
+            return None
+        row = self.table.currentRow()
+        item = self.table.item(row, 0) if row >= 0 else None
+        return item.data(Qt.UserRole) if item is not None else None
+
+    def _update_preview(self) -> None:
+        if not hasattr(self, "_preview") or self._preview.isHidden():
+            return
+        event = self._selected_event()
+        self._preview_event = event
+        if event is None:
+            self._preview.clear()
+            return
+        _visible_paths, paths = _event_path_display(event)
+        severity = getattr(event, "severity", Severity.INFO)
+        self._preview.show_evidence(
+            module=str(event.module), severity=getattr(severity, "label", str(severity)),
+            timestamp=str(event.time_str), message=str(event.message), paths=paths,
+        )
+
+    def _open_event_details(self, event) -> None:
+        _show_nonmodal_from(
+            self.table,
+            lambda: AlertDetailDialog(event, self.window(), panel=self),
+            _sev_color(getattr(event, "severity", Severity.INFO)),
+        )
+
+    def _open_selected_details(self) -> None:
+        event = self._selected_event()
+        if event is None:
+            self._status.setText("Select an alert to open its evidence details.")
+            return
+        self._open_event_details(event)
+
+    def _on_double_click(self, row: int, col: int) -> None:
+        if not self._preview.isHidden() and col < 5:
+            item = self.table.item(row, 0)
+            event = item.data(Qt.UserRole) if item is not None else None
+            if event is not None:
+                self._open_event_details(event)
 
     def _copy_selected(self) -> None:
         row = self.table.currentRow()
@@ -4972,14 +5144,10 @@ class AlertsPanel(QFrame):
             self._block_event(event)
         elif col == 7:
             self._analyze_event(event, None)
+        elif not self._preview.isHidden():
+            self._update_preview()
         else:
-            _show_nonmodal_from(
-                self.table,
-                lambda: AlertDetailDialog(
-                    event, self.window(), panel=self
-                ),
-                _sev_color(getattr(event, "severity", Severity.INFO)),
-            )
+            self._open_event_details(event)
 
     def _open_overview(self) -> None:
         if self.bus is None:
@@ -5490,11 +5658,12 @@ class AlertsPanel(QFrame):
             )
             self.table.setUpdatesEnabled(True)
         self._rendered_event_ids = identities
+        self._update_preview()
 
 
 # ── Bottom status strip ───────────────────────────────────────────────────────
 # Each chip shows: CODE (acronym, 2-5 chars) on line 1, health-% on line 2.
-# Chips share equal stretch so they fill the bar width automatically.
+# Readable chips scroll horizontally instead of compressing with module count.
 # Change-detection (_prev_states) skips stylesheet regeneration for chips that
 # haven't changed, keeping repaint cost O(new_events) not O(all_modules).
 
@@ -6407,57 +6576,263 @@ class _ClickableChip(QLabel):
         super().__init__()
         self._name = name
         self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAccessibleName(name)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
     def mousePressEvent(self, ev) -> None:  # noqa: N802 (Qt signature)
         if ev.button() == Qt.LeftButton:
             self.clicked.emit(self._name)
         super().mousePressEvent(ev)
 
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self.clicked.emit(self._name)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
-class StatusStrip(QFrame):
-    def __init__(self, manager, on_chip_click=None) -> None:
+    def focusInEvent(self, event) -> None:  # noqa: N802
+        super().focusInEvent(event)
+        ancestor = self.parentWidget()
+        while ancestor is not None:
+            if isinstance(ancestor, _ChipScrollArea):
+                ancestor.interacted.emit()
+                ancestor.ensureWidgetVisible(self, 12, 0)
+                break
+            ancestor = ancestor.parentWidget()
+
+
+class _ChipScrollArea(QScrollArea):
+    """Wheel/trackpad input browses a ribbon without requiring Shift."""
+
+    interacted = Signal()
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        self.interacted.emit()
+        delta = event.pixelDelta()
+        amount = delta.x() or delta.y()
+        if not amount:
+            angle = event.angleDelta()
+            amount = (angle.x() or angle.y()) // 3
+        bar = self.horizontalScrollBar()
+        bar.setValue(bar.value() - amount)
+        event.accept()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        self.interacted.emit()
+        super().keyPressEvent(event)
+
+
+class _ModuleStrip(QFrame):
+    """A labelled, bounded-height ribbon with readable module chips."""
+
+    interacted = Signal()
+
+    def __init__(self, manager, title: str, summary: str) -> None:
         super().__init__()
-        self.setObjectName("StatusStrip")
         self.manager = manager
-        self._on_chip_click = on_chip_click   # callback(name) → open module window
-        self.setFixedHeight(52)
-        self._lay = QHBoxLayout(self)
-        self._lay.setContentsMargins(8, 4, 8, 4)
-        self._lay.setSpacing(4)
-        self._chips: dict[str, QLabel] = {}
-        # Cache the health state, displayed percentage and coverage note.
-        self._prev: dict[str, tuple[str, str, str]] = {}
-        self._built_count = -1
-        self._build()
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(8, 4, 8, 4)
+        outer.setSpacing(10)
+        self._caption = QWidget()
+        caption_layout = QVBoxLayout(self._caption)
+        caption_layout.setContentsMargins(0, 0, 0, 0)
+        caption_layout.setSpacing(1)
+        self._heading = QLabel(title)
+        self._heading.setStyleSheet("font-weight:700; background:transparent;")
+        self._summary = QLabel(summary)
+        self._summary.setStyleSheet("color:#94a3b8; background:transparent;")
+        caption_layout.addWidget(self._heading)
+        caption_layout.addWidget(self._summary)
+        outer.addWidget(self._caption)
+        self._scroll = _ChipScrollArea()
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._scroll.setMinimumWidth(0)
+        self._scroll.setAccessibleName(f"Module {title.lower()} ribbon")
+        self._scroll.setToolTip("Scroll to browse modules · Tab then Enter to open details")
+        self._scroll.interacted.connect(self.interacted)
+        self._scroll.horizontalScrollBar().sliderPressed.connect(self.interacted)
+        self._scroll.horizontalScrollBar().actionTriggered.connect(lambda _action: self.interacted.emit())
+        content = QWidget()
+        content.setObjectName("ModuleRibbonContent")
+        self._lay = QHBoxLayout(content)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(6)
+        self._lay.setSizeConstraint(QLayout.SetMinimumSize)
+        self._lay.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._scroll.setWidget(content)
+        outer.addWidget(self._scroll, 1)
+        self._chips: dict[str, _ClickableChip] = {}
+        self._prev: dict = {}
+        self._built_names: tuple[str, ...] = ()
+        self._dimensions_pending = False
 
-    def _build(self) -> None:
+    def _rebuild(self, callback) -> None:
         while self._lay.count():
             item = self._lay.takeAt(0)
             if item.widget():
+                item.widget().hide()
                 item.widget().deleteLater()
         self._chips.clear()
         self._prev.clear()
-        font = _chip_font()
-        for name in sorted(self.manager.modules):
+        self._built_names = tuple(sorted(self.manager.modules))
+        for name in self._built_names:
             chip = _ClickableChip(name)
             chip.setAlignment(Qt.AlignCenter)
-            chip.setFont(font)
-            chip.setMinimumWidth(0)
-            if self._on_chip_click is not None:
-                chip.clicked.connect(self._on_chip_click)
+            chip.setFont(_chip_font())
+            if callback is not None:
+                chip.clicked.connect(callback)
             self._chips[name] = chip
-            self._lay.addWidget(chip, 1)
-        self._built_count = len(self.manager.modules)
+            self._lay.addWidget(chip)
+        self._update_dimensions()
+        self._queue_dimensions()
+
+    def _update_dimensions(self) -> None:
+        if not hasattr(self, "_chips"):
+            return
+        height = 42
+        # Both rows use the same names/font and therefore stay aligned even
+        # when a plugin supplies an acronym longer than the usual five letters.
+        for name, chip in self._chips.items():
+            code = _short_code(self.manager.modules[name])
+            metrics = chip.fontMetrics()
+            chip.setFixedSize(
+                max(68, metrics.horizontalAdvance(code) + 22,
+                    metrics.horizontalAdvance("100%") + 22),
+                max(42, metrics.lineSpacing() * 2 + 10),
+            )
+            height = max(height, chip.height())
+        metrics = self._heading.fontMetrics()
+        self._caption.setFixedWidth(max(108, metrics.horizontalAdvance("ACTIVITY") + 10,
+                                        metrics.horizontalAdvance("999/999 live") + 10))
+        self.setFixedHeight(max(height, self._caption.sizeHint().height()) +
+                            self._scroll.horizontalScrollBar().sizeHint().height() + 8)
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange):
+            self._queue_dimensions()
+
+    def _queue_dimensions(self) -> None:
+        if not hasattr(self, "_chips") or self._dimensions_pending:
+            return
+        self._dimensions_pending = True
+        QTimer.singleShot(0, self._flush_dimensions)
+
+    def _flush_dimensions(self) -> None:
+        self._dimensions_pending = False
+        self._update_dimensions()
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self.interacted.emit()
+        super().enterEvent(event)
+
+
+class StatusStrip(_ModuleStrip):
+    def __init__(self, manager, on_chip_click=None, config=None) -> None:
+        super().__init__(manager, "HEALTH", "Starting…")
+        self.setObjectName("StatusStrip")
+        self._config = config
+        self._on_chip_click = on_chip_click   # callback(name) → open module window
+        self._manual_until = time.monotonic() + 4.0
+        self._pan_direction = 1
+        self._motion_enabled = False
+        self._companion = None
+        self._pause = QPushButton("Pause")
+        self._pause.setCheckable(True)
+        self._pause.setAccessibleName("Pause automatic module ribbon scrolling")
+        self._pause.setToolTip("Pause automatic scrolling. Wheel, scrollbar and keyboard always work.")
+        self._pause.setStyleSheet("padding:2px 6px; font-size:11px;")
+        self._pause.toggled.connect(self._pause_changed)
+        self._caption.layout().addWidget(self._pause)
+        self.interacted.connect(self.pause_for_interaction)
+        self._pan_timer = QTimer(self)
+        self._pan_timer.setInterval(80)
+        self._pan_timer.timeout.connect(self._advance_pan)
+        self._scroll.horizontalScrollBar().rangeChanged.connect(lambda _low, _high: self._update_motion())
+        self._build()
+
+    def _build(self) -> None:
+        self._rebuild(self._on_chip_click)
+
+    def set_companion(self, strip) -> None:
+        """Keep paired resource/health ribbons aligned with one motion timer."""
+        self._companion = strip
+        left = self._scroll.horizontalScrollBar()
+        right = strip._scroll.horizontalScrollBar()
+        left.valueChanged.connect(right.setValue)
+        right.valueChanged.connect(left.setValue)
+        strip.interacted.connect(self.pause_for_interaction)
+
+    def pause_for_interaction(self) -> None:
+        self._manual_until = time.monotonic() + 12.0
+
+    def _pause_changed(self, paused: bool) -> None:
+        self._pause.setText("Resume" if paused else "Pause")
+        self.pause_for_interaction()
+        self._update_motion()
+
+    def _update_motion(self) -> None:
+        from angerona.gui.header_controls import motion_allowed
+        self._motion_enabled = motion_allowed(self._config)
+        active = (self._motion_enabled and self.isVisible() and not self.window().isMinimized()
+                  and not self._pause.isChecked()
+                  and self._scroll.horizontalScrollBar().maximum() > 0)
+        self._pause.setEnabled(self._motion_enabled)
+        if active:
+            if not self._pan_timer.isActive():
+                self._pan_timer.start()
+        else:
+            self._pan_timer.stop()
+
+    def _advance_pan(self) -> None:
+        if not self.isVisible() or self.window().isMinimized():
+            self._pan_timer.stop()
+            return
+        if not self._motion_enabled or self._pause.isChecked():
+            return
+        strips = (self, self._companion) if self._companion is not None else (self,)
+        focused = QApplication.focusWidget()
+        if any(strip.underMouse() or (focused is not None and
+               (focused is strip._scroll or strip._scroll.isAncestorOf(focused)))
+               for strip in strips):
+            self.pause_for_interaction()
+            return
+        if time.monotonic() < self._manual_until:
+            return
+        bar = self._scroll.horizontalScrollBar()
+        if bar.maximum() <= 0:
+            return
+        next_value = bar.value() + self._pan_direction
+        if next_value < 0 or next_value > bar.maximum():
+            self._pan_direction *= -1
+            self._manual_until = time.monotonic() + 3.0
+            return
+        bar.setValue(next_value)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._update_motion()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self._pan_timer.stop()
+        super().hideEvent(event)
 
     def refresh(self) -> None:
-        if self._built_count != len(self.manager.modules):
+        if self._built_names != tuple(sorted(self.manager.modules)):
             self._build()
-            return
+        self._update_motion()
+        running_count = 0
         for name, chip in self._chips.items():
             mod = self.manager.modules.get(name)
             if not mod:
                 continue
             enabled = _manager_enabled(self.manager, mod)
+            running_count += bool(enabled and mod.status == "running")
             state = mod.health_state if enabled else "off"
             pct_text = ((f"{mod.health}%" if mod.status == "running"
                          else mod.status[:3].upper()) if enabled else "OFF")
@@ -6474,13 +6849,19 @@ class StatusStrip(QFrame):
                 chip.setText(text)
             if chip.toolTip() != tooltip:
                 chip.setToolTip(tooltip)
+                chip.setAccessibleDescription(tooltip)
             style = (
-                f"background:{color}1a; color:{color};"
-                f"border:1px solid {color}55; border-radius:8px;"
-                f"padding:1px 3px; font-weight:700;"
+                f"QLabel {{background:#1a{color[1:]}; color:{color};"
+                f"border:1px solid #55{color[1:]}; border-radius:8px;"
+                f"padding:2px 5px; font-weight:700;}}"
+                "QLabel:focus {border:1px solid #e2e8f0;}"
             )
             if chip.styleSheet() != style:
                 chip.setStyleSheet(style)
+        summary = f"{running_count}/{len(self._chips)} live"
+        if self._summary.text() != summary:
+            self._summary.setText(summary)
+        self._summary.setToolTip("Running sensors / discovered sensors. Each chip shows its coverage health.")
 
 
 # ── Resource-intensity strip ──────────────────────────────────────────────────
@@ -6511,39 +6892,18 @@ def _intensity_color(pct: int, running: bool) -> str:
     return "#f97316"              # heavy → orange-red
 
 
-class ResourceStrip(QFrame):
+class ResourceStrip(_ModuleStrip):
     """Per-module resource-intensity chips (0–100%), aligned under the StatusStrip."""
 
     def __init__(self, manager, bus) -> None:
-        super().__init__()
+        super().__init__(manager, "ACTIVITY", "Estimated")
         self.setObjectName("ResourceStrip")
-        self.manager = manager
         self.bus = bus
-        self.setFixedHeight(46)
-        self._lay = QHBoxLayout(self)
-        self._lay.setContentsMargins(8, 2, 8, 4)
-        self._lay.setSpacing(4)
-        self._chips: dict[str, QLabel] = {}
-        self._prev: dict[str, tuple[int, bool, bool]] = {}
-        self._built_count = -1
+        self._summary.setToolTip("Estimated intensity from recent events and sensor workload; not measured CPU usage.")
         self._build()
 
     def _build(self) -> None:
-        while self._lay.count():
-            item = self._lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self._chips.clear()
-        self._prev.clear()
-        font = _chip_font()
-        for name in sorted(self.manager.modules):
-            chip = _ClickableChip(name)
-            chip.setAlignment(Qt.AlignCenter)
-            chip.setFont(font)
-            chip.clicked.connect(self._open_resource)
-            self._chips[name] = chip
-            self._lay.addWidget(chip, 1)
-        self._built_count = len(self.manager.modules)
+        self._rebuild(self._open_resource)
 
     def _intensity(self, name: str, mod, activity: dict) -> int:
         if getattr(mod, "status", "") != "running":
@@ -6553,9 +6913,8 @@ class ResourceStrip(QFrame):
         return max(1, min(100, base + bonus))
 
     def refresh(self) -> None:
-        if self._built_count != len(self.manager.modules):
+        if self._built_names != tuple(sorted(self.manager.modules)):
             self._build()
-            return
         # Live activity: count recent events per module (cheap, changes over time).
         activity: dict[str, int] = {}
         try:
@@ -6577,16 +6936,19 @@ class ResourceStrip(QFrame):
             color = _intensity_color(pct, running) if enabled else HEALTH_COLOR["off"]
             label = f"{pct}%" if enabled else "OFF"
             text = f"{_short_code(mod)}\n{label}"
-            tooltip = (f"{mod.name} — resource intensity {pct}%"
-                       + ("" if running else " (stopped)"))
+            tooltip = (f"{mod.name} — estimated resource intensity {pct}%"
+                       + ("" if running else " (stopped)")
+                       + ". Based on recent events and sensor workload; not measured CPU usage.")
             if chip.text() != text:
                 chip.setText(text)
             if chip.toolTip() != tooltip:
                 chip.setToolTip(tooltip)
+                chip.setAccessibleDescription(tooltip)
             style = (
-                f"background:{color}1a; color:{color};"
-                f"border:1px solid {color}55; border-radius:8px;"
-                f"padding:1px 3px; font-weight:700;")
+                f"QLabel {{background:#1a{color[1:]}; color:{color};"
+                f"border:1px solid #55{color[1:]}; border-radius:8px;"
+                f"padding:2px 5px; font-weight:700;}}"
+                "QLabel:focus {border:1px solid #e2e8f0;}")
             if chip.styleSheet() != style:
                 chip.setStyleSheet(style)
 
@@ -6645,10 +7007,10 @@ class CommandConsolePanel(QFrame):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 12, 14, 12)
         self._title = _ClickableSection(
-            ("ARIA Console  —  ask ARIA in plain language, or type 'help' for commands"
-             if aria_enabled else
-             "Incident Response Console  —  ARIA is optional and currently off"),
-            "Open the expanded ARIA and guarded-command operations deck.",
+            "ARIA Console" if aria_enabled else "Incident Response Console",
+            "Open the expanded guarded-command operations deck. "
+            + ("Ask ARIA in plain language, or type 'help' for commands."
+               if aria_enabled else "ARIA is optional and currently off; enable it in Settings > ARIA."),
         )
         self._title.clicked.connect(self._open_detail)
         lay.addWidget(self._title)
@@ -7958,6 +8320,24 @@ class SettingsDialog(QDialog):
         dashboard_row.addStretch()
         lay.addLayout(dashboard_row)
 
+        display_row = QHBoxLayout()
+        display_row.addWidget(QLabel("Dashboard display:"))
+        self._dashboard_display = QComboBox()
+        self._dashboard_display.addItem("Standard dashboard", "standard")
+        self._dashboard_display.addItem("Orbital dashboard", "orbital")
+        self._dashboard_display.setToolTip(
+            "Standard shows the monitoring panels. Orbital arranges module sensors "
+            "around the live system core. This changes the classic dashboard; "
+            "the Flow workspace is separate."
+        )
+        display_index = self._dashboard_display.findData(
+            str(getattr(self._cfg, "dashboard_display", "standard")).lower()
+        )
+        self._dashboard_display.setCurrentIndex(display_index if display_index >= 0 else 0)
+        display_row.addWidget(self._dashboard_display)
+        display_row.addStretch()
+        lay.addLayout(display_row)
+
         # UI scale — Auto grows/shrinks buttons + text with the window; Fixed
         # pins a size (useful on large or high-DPI monitors). Values match the
         # readable clamp band in gui/theme.clamp_scale (75–135%).
@@ -7979,11 +8359,10 @@ class SettingsDialog(QDialog):
         scale_row.addWidget(self._ui_scale_combo)
         scale_row.addStretch()
         lay.addLayout(scale_row)
-        self._ui_motion_chk = QCheckBox(
-            "Animate top-row buttons into their destination windows")
+        self._ui_motion_chk = QCheckBox("Enable interface motion")
         self._ui_motion_chk.setToolTip(
-            "Plays a short vertical-line-to-panel reveal before a top-row window "
-            "opens. Angerona still honors Windows reduced-motion accessibility "
+            "Allows window transitions, slow module-ribbon scrolling, and orbital "
+            "motion. Angerona still honors Windows reduced-motion accessibility "
             "settings, and ANGERONA_REDUCE_MOTION=1 always disables it.")
         self._ui_motion_chk.setChecked(
             bool(getattr(self._cfg, "ui_motion_enabled", True)))
@@ -10326,6 +10705,7 @@ class SettingsDialog(QDialog):
         candidate.dashboard_mode = str(
             self._dashboard_mode_combo.currentData() or "classic"
         )
+        candidate.dashboard_display = str(self._dashboard_display.currentData() or "standard")
         candidate.holographic_orb_enabled = self._holographic_orb_chk.isChecked()
         candidate.process_baseline_enabled = self._process_baseline_chk.isChecked()
         candidate.require_signed_aar = self._require_signed_aar_chk.isChecked()

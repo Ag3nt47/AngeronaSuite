@@ -1174,7 +1174,12 @@ class SysmonListenerModule(BaseModule):
             self.sleep(self._FALLBACK_INTERVAL)
             try:
                 current: dict[int, psutil.Process] = {}
-                for proc in psutil.process_iter(["pid", "name", "exe", "cmdline", "ppid"]):
+                # Inventory needs identities only. Rich process_iter attributes
+                # were discarded here and then read again below for new PIDs.
+                # In particular, ppid() can enumerate the native parent map on
+                # Windows: doing that for every unchanged process each tick
+                # adds host-wide work without producing additional telemetry.
+                for proc in psutil.process_iter(["pid"]):
                     try:
                         current[proc.pid] = proc
                     except Exception:

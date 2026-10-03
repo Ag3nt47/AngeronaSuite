@@ -15,7 +15,8 @@ import re
 import time
 from typing import Final
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtGui import QPainter, QPalette
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout
 
 from angerona.core.privacy import redact_text
@@ -109,6 +110,33 @@ class _ActivityRow(QLabel):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        # Two legible lines beat a tiny, clipped run of telemetry. Preserve the
+        # complete sanitized text for accessibility, tooltip and event routing.
+        painter = QPainter(self)
+        metrics = self.fontMetrics()
+        heading, separator, message = self.text().partition(" — ")
+        rect = self.contentsRect().adjusted(2, 1, -2, -1)
+        painter.setPen(self.palette().color(QPalette.Text))
+        painter.drawText(
+            rect.x(), rect.y() + metrics.ascent(),
+            metrics.elidedText(heading, Qt.ElideRight, max(0, rect.width())),
+        )
+        if separator:
+            painter.setPen(self.palette().color(QPalette.Text).darker(120))
+            painter.drawText(
+                rect.x(), rect.y() + metrics.height() + metrics.ascent(),
+                metrics.elidedText(message, Qt.ElideRight, max(0, rect.width())),
+            )
+        if self.hasFocus():
+            painter.setPen(self.palette().color(QPalette.Highlight))
+            painter.drawRect(rect)
+
+    def changeEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange):
+            self.setMinimumHeight(self.fontMetrics().height() * 2 + 4)
 
 
 def _redact_local_identifiers(value: str) -> str:
@@ -227,7 +255,7 @@ class LiveDefenseActivityCard(QFrame):
         root.setSpacing(4)
 
         title_row = QHBoxLayout()
-        title = QLabel("LIVE DEFENSE ACTIVITY")
+        title = QLabel("LIVE ACTIVITY")
         title.setObjectName("SectionTitle")
         title.setTextFormat(Qt.PlainText)
         title.setMinimumWidth(0)
@@ -241,8 +269,7 @@ class LiveDefenseActivityCard(QFrame):
         )
         self._state.setToolTip(explanation)
         self._state.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        title_row.addWidget(title)
-        title_row.addStretch(1)
+        title_row.addWidget(title, 1)
         title_row.addWidget(self._state)
         root.addLayout(title_row)
 
@@ -263,8 +290,9 @@ class LiveDefenseActivityCard(QFrame):
             row.setMinimumWidth(0)
             row.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             row.setStyleSheet(
-                "color:#cbd5e1; font-family:Consolas,monospace; font-size:10px;"
+                "color:#cbd5e1; font-size:12px;"
             )
+            row.setMinimumHeight(row.fontMetrics().height() * 2 + 4)
             row.setAccessibleName(f"Sanitized defense activity {index + 1}")
             row.setToolTip(explanation)
             row.clicked.connect(self._request_event_details)

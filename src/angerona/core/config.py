@@ -222,6 +222,7 @@ class Config:
     ui_scale_mode: str = "auto"                  # "auto" | "fixed"
     ui_scale_fixed: float = 1.0                  # honored only when mode == "fixed"
     ui_motion_enabled: bool = True                # polished panel reveals; OS reduced-motion still wins
+    dashboard_display: str = "standard"           # "standard" | "orbital" (optional visual overview)
     dashboard_mode: str = "classic"              # "classic" | "flow" (Local SOC workspace)
     holographic_orb_enabled: bool = True          # minimized-window token + radial service controls
     # Global center; the pair (-1, -1) selects the active-screen corner. A
@@ -675,6 +676,8 @@ class Config:
                     pass
                 cfg.ui_motion_enabled = _bool_setting(
                     data, "ui_motion_enabled", cfg.ui_motion_enabled)
+                display = str(data.get("dashboard_display", "standard")).strip().lower()
+                cfg.dashboard_display = display if display in {"standard", "orbital"} else "standard"
                 requested_dashboard = str(
                     data.get("dashboard_mode", cfg.dashboard_mode)
                 ).strip().lower()
@@ -942,6 +945,7 @@ class Config:
                     "ui_scale_mode":         self.ui_scale_mode,
                     "ui_scale_fixed":        self.ui_scale_fixed,
                     "ui_motion_enabled":     self.ui_motion_enabled,
+                    "dashboard_display":     self.dashboard_display,
                     "dashboard_mode":        self.dashboard_mode,
                     "holographic_orb_enabled": self.holographic_orb_enabled,
                     "holographic_orb_x":     self.holographic_orb_x,

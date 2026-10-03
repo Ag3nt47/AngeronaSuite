@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from angerona.core.eventbus import EventBus, Severity
-from angerona.modules import process_monitor, purple_guard
+from angerona.modules import process_monitor, purple_guard, sysmon_listener
 from angerona.telemetry import sensors
 
 
@@ -241,6 +241,63 @@ def test_failed_connection_receipt_preserves_epoch_and_retries_after_ttl(
 def test_process_monitor_offline_self_test():
     ok, note = process_monitor.ProcessMonitorModule().self_test()
     assert ok, note
+
+
+def test_sysmon_fallback_enriches_only_new_processes(monkeypatch):
+    """Unchanged host processes need no command-line/image/parent queries."""
+    module = sysmon_listener.SysmonListenerModule()
+    bus = EventBus()
+    module.bind(bus)
+    inventory_attributes, enrichments = [], []
+
+    class Process:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def as_dict(self, attributes):
+            enrichments.append((self.pid, attributes))
+            if self.pid == 702:
+                raise PermissionError("fixture exited or became unreadable")
+            return dict(name="new.exe", exe=r"C:\fixture\new.exe",
+                        cmdline=["new.exe", "--observe"], ppid=1)
+
+    existing = [Process(pid) for pid in range(1, 501)]
+    new, unreadable = Process(701), Process(702)
+    snapshots = [existing, *([existing] * 20),
+                 [*existing, new, unreadable], [*existing, new],
+                 existing, [*existing, new]]
+    pending = iter(snapshots)
+
+    def process_iter(attributes):
+        inventory_attributes.append(attributes)
+        return next(pending)
+
+    def sleep(_seconds):
+        # stop() ends the loop after its final body without a real wait.
+        if len(inventory_attributes) == len(snapshots) - 1:
+            module.stop()
+
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(
+        process_iter=process_iter,
+        Process=lambda _pid: SimpleNamespace(name=lambda: "parent.exe"),
+    ))
+    monkeypatch.setattr(module, "sleep", sleep)
+    module._run_fallback_loop()
+
+    assert inventory_attributes == [["pid"]] * len(snapshots)
+    assert sorted(pid for pid, _attributes in enrichments) == [701, 701, 702]
+    assert all(attributes == ["name", "exe", "cmdline", "ppid"]
+               for _pid, attributes in enrichments)
+    events = bus.recent(100)
+    assert len(events) == 2  # a PID that leaves and reappears is still new
+    for event in events:
+        assert event.severity == Severity.INFO
+        assert event.details == dict(
+            eid=1, label="Process Created (psutil fallback)",
+            mitre_tags=["T1059", "T1106"], image=r"C:\fixture\new.exe",
+            command_line="new.exe --observe", pid=701, parent_pid=1,
+            parent_image="parent.exe", fallback=True,
+        )
 
 
 @pytest.mark.parametrize("fail", [False, True])

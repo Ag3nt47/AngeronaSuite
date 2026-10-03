@@ -265,6 +265,16 @@ class HeaderActionButton(QPushButton):
     def is_compact(self) -> bool:
         return self._compact
 
+    def sizeHint(self):  # noqa: N802 - Qt signature
+        hint = super().sizeHint()
+        if not self._compact:
+            # Elision must not become the next layout's preferred width. Keep
+            # requesting room for the semantic label when space returns.
+            metrics = self.fontMetrics()
+            hint.setWidth(hint.width() + max(0,
+                metrics.horizontalAdvance(self._full_label) - metrics.horizontalAdvance(self.text())))
+        return hint
+
     def set_full_label(self, label: str) -> None:
         """Change the semantic label while preserving the responsive mode."""
         self._full_label = str(label)

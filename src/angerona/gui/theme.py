@@ -23,7 +23,7 @@ SEVERITY_COLOR = {
 # Font stacks — each theme picks either a UI-style or mono-style stack.
 # Segoe UI: Windows system font — crisp, readable, zero-install.
 # Fira Code: beautiful ligature monospace for code / console areas.
-_CYBER_FONT = "'JetBrains Mono','Cascadia Mono','Fira Code','Consolas',monospace"
+_CYBER_FONT = "'Segoe UI','Helvetica Neue','Arial',sans-serif"
 _CRT_FONT   = "'Cascadia Mono','Consolas','Courier New',monospace"
 # Slate theme: Segoe UI for the UI surface, Fira Code in code panels.
 # The QSS `font-family` on * sets the default; code-area widgets
@@ -34,7 +34,7 @@ THEMES = {
     "cyber": {
         "label": "Modern Cyber",
         "bg": "#0a0e14", "panel": "#0f141c", "panel2": "#141b26",
-        "border": "#1b2735", "text": "#d6e2f0", "dim": "#5d6e84",
+        "border": "#263345", "text": "#d6e2f0", "dim": "#94a3b8",
         "accent": "#1f9cff", "accent2": "#ff7a1a", "font": _CYBER_FONT,
         "radius": "10px",
         # Qt stylesheets parse eight-digit hex as #AARRGGBB, not CSS
@@ -141,11 +141,21 @@ def build_qss(name: str = "cyber", accent: str | None = None,
     accent_33 = _qt_alpha(p["accent"], "33")
     accent_44 = _qt_alpha(p["accent"], "44")
     accent_55 = _qt_alpha(p["accent"], "55")
+    # A painted translucent surface gives depth without a platform compositor,
+    # blur effect, extra backing buffers, or continuously animated shadows.
+    surface = p["panel"] if name == "crt" else (
+        "qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+        f"stop:0 {_qt_alpha(p['panel2'], 'ed')}, "
+        f"stop:1 {_qt_alpha(p['panel'], 'f5')})"
+    )
 
     return f"""
 /* ── Base ─────────────────────────────────────────────────────────────── */
 * {{ font-family: {p['font']}; font-size: {fs_base}; color: {p['text']}; }}
 QMainWindow, QWidget {{ background: {p['bg']}; }}
+/* Labels inherit their panel surface instead of painting dark rectangles. */
+QLabel {{ background: transparent; }}
+QScrollArea#DashboardViewport {{ border: none; }}
 
 /* ── Typography helpers ────────────────────────────────────────────────── */
 #Brand     {{ font-size: {fs_brand}; font-weight: 800; letter-spacing: 6px; color: {p['accent']}; }}
@@ -156,10 +166,11 @@ QMainWindow, QWidget {{ background: {p['bg']}; }}
 #Pill {{ border-radius: {r}; padding: {pad_pill}; font-weight: 700; }}
 
 /* ── Panels / cards ────────────────────────────────────────────────────── */
-#Panel {{ background: {p['panel']}; border: 1px solid {p['border']};
+#Panel {{ background: {surface}; border: 1px solid {p['border']};
           border-radius: {r}; }}
-#Card  {{ background: {p['panel']}; border: 1px solid {p['border']};
+#Card  {{ background: {surface}; border: 1px solid {p['border']};
           border-left: 3px solid {p['accent']}; border-radius: {r}; }}
+#Card[alert="true"] {{ border-color: #88ef4444; border-left: 3px solid #ef4444; }}
 #CardValue {{ font-size: {fs_card_v}; font-weight: 800; color: {p['text']}; }}
 #CardLabel {{ color: {p['dim']}; font-size: {fs_card_l}; letter-spacing: 1px; }}
 

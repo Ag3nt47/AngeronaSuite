@@ -28,7 +28,7 @@ os.environ["ANGERONA_REDUCE_MOTION"] = "1"
 os.environ["ANGERONA_PUBLIC_DEMO"] = "1"
 
 from PySide6.QtCore import QModelIndex, QPoint, QItemSelectionModel, Qt  # noqa: E402
-from PySide6.QtGui import QCursor  # noqa: E402
+from PySide6.QtGui import QCursor, QFontDatabase  # noqa: E402
 from PySide6.QtWidgets import QApplication, QAbstractItemView  # noqa: E402
 
 from angerona.core.config import Config  # noqa: E402
@@ -199,6 +199,14 @@ def _build_demo_window():
 
     app = QApplication.instance() or QApplication([])
     app.setApplicationName("Angerona Public Demo")
+    if os.name == "nt" and app.platformName() == "offscreen" and not app.property("demoFontsReady"):
+        fonts = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+        for name in ("segoeui.ttf", "segoeuib.ttf", "consola.ttf", "consolab.ttf",
+                     "arial.ttf", "seguiemj.ttf", "seguisym.ttf"):
+            font = fonts / name
+            if font.is_file():
+                QFontDatabase.addApplicationFont(str(font))
+        app.setProperty("demoFontsReady", True)
 
     config = Config(
         data_dir=DEMO_ROOT,
@@ -221,10 +229,11 @@ def _build_demo_window():
     manager = ModuleManager(bus, config)
     manager.discover()
 
-    for index, module in enumerate(manager.modules.values()):
-        module.status = "running"
-        module.health = 100 if index % 7 else 94
-        module.health_note = "Synthetic public-demo state"
+    for index, (name, module) in enumerate(manager.modules.items()):
+        enabled = manager.is_enabled(name)
+        module.status = "running" if enabled else "stopped"
+        module.health = (100 if index % 7 else 94) if enabled else 0
+        module.health_note = "Synthetic public-demo state" if enabled else "Disabled in demo configuration"
 
     base = 1_785_240_000.0
     for index, (module, severity, message) in enumerate(SYNTHETIC_EVENTS):
@@ -280,6 +289,8 @@ def _build_demo_window():
             "up": 640 * 1024,
         }
     )
+    window._dashboard_footer.update_sample(window.system_pulse.snapshot()["latest"])
+    window._dashboard_footer.update_posture(window._last_posture)
     window.console.out.setPlainText(
         "[PUBLIC DEMO] Synthetic telemetry only — no host data is displayed.\n"
         f"[PASS] {len(manager.modules)} defensive modules discovered\n"
@@ -352,11 +363,15 @@ def _close_demo(app: QApplication, window: MainWindow, storage: FlightRecorder) 
     app.processEvents()
 
 
-def capture(destination: Path) -> None:
+def capture(destination: Path, *, orbital: bool = False) -> None:
     """Capture the backwards-compatible single dashboard image."""
 
     app, window, storage = _build_demo_window()
     try:
+        if orbital:
+            window.config.dashboard_display = "orbital"
+            window._apply_dashboard_display()
+            _settle(app, 0.4)
         _save_widget(window, destination)
         _privacy_guard()
     finally:
@@ -584,6 +599,10 @@ def main() -> int:
         help="single dashboard PNG path (default mode)",
     )
     parser.add_argument(
+        "--orbital", action="store_true",
+        help="capture the optional orbital dashboard using the same synthetic evidence",
+    )
+    parser.add_argument(
         "--gallery",
         type=Path,
         help="directory for dashboard, SOAR, Scan Center, and ARIA PNGs",
@@ -601,7 +620,7 @@ def main() -> int:
             print(output)
     else:
         destination = args.destination.resolve()
-        capture(destination)
+        capture(destination, orbital=args.orbital)
         print(destination)
     return 0
 

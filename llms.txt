@@ -22,7 +22,24 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST (v1.13.0 — Cycle 40 CI and presentation, 2026-10-02)
+## LATEST (v1.13.0 — Dashboard layout and responsiveness, 2026-10-02)
+
+- Record: analysis/dashboard-ui-polish-2026-10-02.md. Readable synchronized
+  module ribbons support automatic slow scrolling, pause, manual wheel/keyboard
+  navigation, reduced motion, and health/resource detail views.
+- Responsive layouts reflow or scroll while preserving legible text. Selected
+  alerts have an optional inline evidence preview. A persistent footer reuses
+  existing CPU/RAM/network/posture samples without adding a sampler.
+- Settings > Appearance > Dashboard display offers Standard (default) or
+  Orbital. Orbital satellites represent discovered modules, not network links;
+  gradients/rings are presentation only. The view adds no animation timers,
+  collectors, threads, or fabricated telemetry.
+- Resize styling is debounced and hidden alert reads are deferred. Hidden SOAR
+  still reconciles signed response receipts. Sysmon fallback inventories PIDs
+  before enriching only new processes. No sensor cadence or response policy is
+  weakened; overall freeze-free performance is not claimed.
+
+## Cycle 40 CI and presentation (2026-10-02)
 
 - Record: analysis/loop/cycle40/README.md. Fixture-owned validation workers
   drain before runtime deletion. VMware custody fixtures use private temporary

@@ -28,14 +28,25 @@ Current version: **v1.13.0** · [Capabilities](ANGERONA_CAPABILITIES.md) ·
 | --- | --- |
 | [![Angerona v1.13.0 Fleet Center, DetectionForge, and AegisPath synthetic Local SOC views](docs/screenshots/angerona-v1.13-enterprise-programs.png)](docs/screenshots/angerona-v1.13-enterprise-programs.png) | [![Angerona v1.12.1 SentinelLens synthetic threat-hunting graph](docs/screenshots/angerona-v1.12-sentinel-lens.png)](docs/screenshots/angerona-v1.12-sentinel-lens.png) |
 | Main defensive dashboard | Human-reviewed SOAR queue |
-| [![Angerona v1.11.0 main dashboard](docs/screenshots/angerona-v1.11-dashboard.png)](docs/screenshots/angerona-v1.11-dashboard.png) | [![Angerona v1.11.0 SOAR review](docs/screenshots/angerona-v1.11-soar-review.png)](docs/screenshots/angerona-v1.11-soar-review.png) |
-| Scan Center |  |
-| [![Angerona v1.11.0 Scan Center](docs/screenshots/angerona-v1.11-scan-center.png)](docs/screenshots/angerona-v1.11-scan-center.png) |  |
+| [![Angerona responsive dashboard with readable module ribbons](docs/screenshots/dashboard-public-demo.png)](docs/screenshots/dashboard-public-demo.png) | [![Angerona v1.11.0 SOAR review](docs/screenshots/angerona-v1.11-soar-review.png)](docs/screenshots/angerona-v1.11-soar-review.png) |
+| Scan Center | Optional orbital dashboard |
+| [![Angerona v1.11.0 Scan Center](docs/screenshots/angerona-v1.11-scan-center.png)](docs/screenshots/angerona-v1.11-scan-center.png) | [![Angerona orbital module-health overview with synthetic data](docs/screenshots/dashboard-orbital-demo.png)](docs/screenshots/dashboard-orbital-demo.png) |
 
 These are reproducible public demonstrations. All displayed telemetry,
 identifiers, timestamps, and counts are synthetic.
 
 ## What's new
+
+The [dashboard layout and responsiveness update](analysis/dashboard-ui-polish-2026-10-02.md)
+adds readable synchronized module ribbons with slow scrolling and manual controls,
+responsive panels, an optional inline alert inspector, and a persistent system
+summary. Choose **Settings → Appearance → Dashboard display → Orbital dashboard**
+for a live module constellation; Standard remains the default. The orbital view
+uses existing snapshots and adds no collectors or animation timers. Resize work
+is coalesced, hidden alert tables defer reads, and the Sysmon fallback avoids
+fetching metadata for unchanged processes. SOAR receipt reconciliation remains
+active while hidden. These bounded improvements do not establish freeze-free
+operation with every sensor running.
 
 The [Cycle 40 CI and presentation update](analysis/loop/cycle40/README.md)
 waits for fixture-owned validation workers before deleting their data, gives

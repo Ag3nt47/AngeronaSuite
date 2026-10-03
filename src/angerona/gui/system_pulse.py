@@ -143,9 +143,11 @@ class SystemPulseCard(QFrame):
         root.addLayout(grid)
 
         self._memory = QLabel("Available memory  --")
+        self._memory.setWordWrap(True)
         self._memory.setStyleSheet("color:#94a3b8; font-size:11px;")
         root.addWidget(self._memory)
         self._network = QLabel("↓ --   ↑ --")
+        self._network.setWordWrap(True)
         self._network.setStyleSheet("color:#38bdf8; font-weight:700;")
         self._network.setToolTip(
             "Aggregate receive and send throughput across active network interfaces."
@@ -154,6 +156,7 @@ class SystemPulseCard(QFrame):
         root.addStretch(1)
 
         self._busy = threading.Event()
+        self._external_view_active = False
         self._closed = threading.Event()
         self._sample_requested = threading.Event()
         self._last_net = None
@@ -183,12 +186,16 @@ class SystemPulseCard(QFrame):
         if (
             self._closed.is_set()
             or self._busy.is_set()
-            or not self.isVisible()
-            or (window is not None and window.isMinimized())
+            or not (self.isVisible() or self._external_view_active)
+            or (window is not None and (not window.isVisible() or window.isMinimized()))
         ):
             return
         self._busy.set()
         self._sample_requested.set()
+
+    def set_external_view_active(self, enabled: bool) -> None:
+        """Share the existing sampler with a visible footer/overview tab."""
+        self._external_view_active = bool(enabled)
 
     def set_chill_mode(self, enabled: bool) -> None:
         """Reduce cosmetic host sampling while quiet Chill is active."""
