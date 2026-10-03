@@ -73,6 +73,14 @@ claimed to be fixed or attributed conclusively to scheduling. No safety gate
 or fixture was relaxed. Exact-commit CI results are available through the
 published commit's GitHub Actions runs.
 
+The first published revision's four Python CI jobs each reported 4,526 passed,
+11 skipped, and the same two failures: Full Setup did not expose the new display
+setting, and the malformed-image fixture depended on the old screenshot name.
+Full Setup now offers Standard/Orbital, and the fixture explicitly supplies
+invalid image references independent of product screenshots. All 18 related
+documentation, full-setup, and display-setting tests passed after these fixes;
+the image and configuration completeness checks remain intact.
+
 Public images are synthetic and reproducible with
 `python tools/capture_public_dashboard.py <destination.png>` and the optional
 `--orbital` flag. Windows offscreen capture registers existing system fonts;

@@ -138,6 +138,12 @@ STEPS: tuple[Step, ...] = (
                 options=("classic", "flow"),
                 note="Flow opens the Local SOC workspace; Classic remains available.",
             ),
+            Field(
+                "combo", "dashboard_display", "Dashboard display",
+                options=("standard", "orbital"),
+                note="Standard shows the monitoring panels; Orbital arranges sensors "
+                     "around the live system core. Applies to the Classic dashboard.",
+            ),
             Field("text", "accent", "Accent colour", "#1f9cff"),
             Field("combo", "ui_scale_mode", "UI scaling", options=("auto", "fixed")),
             Field("double", "ui_scale_fixed", "Fixed UI scale", minimum=0.75, maximum=1.50),

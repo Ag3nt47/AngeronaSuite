@@ -83,13 +83,10 @@ def test_checker_detects_marker_and_module_drift(tmp_path):
         "tests=999 skips=2 modules=999",
         readme,
     )
-    readme = readme.replace(
-        "docs/screenshots/angerona-v1.11-dashboard.png",
-        "docs/screenshots/fake.png",
-    )
-    readme = readme.replace(
-        "docs/screenshots/angerona-v1.11-soar-review.png",
-        "../escape.png",
+    # Invalid image cases must remain present when product screenshots change.
+    readme += (
+        "\n![Malformed image fixture](docs/screenshots/fake.png)\n"
+        "![Unsafe image fixture](../escape.png)\n"
     )
     (tmp_path / "README.md").write_text(readme, encoding="utf-8")
     screenshots = tmp_path / "docs" / "screenshots"
