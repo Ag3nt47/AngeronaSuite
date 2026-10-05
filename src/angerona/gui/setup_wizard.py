@@ -148,6 +148,11 @@ STEPS: tuple[Step, ...] = (
             Field("combo", "ui_scale_mode", "UI scaling", options=("auto", "fixed")),
             Field("double", "ui_scale_fixed", "Fixed UI scale", minimum=0.75, maximum=1.50),
             Field("check", "ui_motion_enabled", "Enable interface motion and panel reveals"),
+            Field(
+                "check", "adaptive_scan_pacing_enabled", "Adaptive background scan pacing",
+                note="On by default. Slow routine scans when the dashboard or CPU is busy; "
+                     "urgent alerts and responses keep their normal priority.",
+            ),
             Field("check", "holographic_orb_enabled", "Enable the minimized holographic globe"),
             Field("action", "reset_orb", "Reset globe position to the active-screen corner"),
         ),

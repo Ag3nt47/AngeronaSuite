@@ -310,15 +310,16 @@ class FrzHeartbeatModule(BaseModule):
         )
 
         consecutive_errors = 0
+        heartbeat_error = ""
         while not self.stopping:
             try:
                 self._write_beat()
                 consecutive_errors = 0
+                heartbeat_error = ""
             except Exception as exc:
                 self.last_error = str(exc)
+                heartbeat_error = str(exc)
                 consecutive_errors += 1
-                if consecutive_errors >= 5:
-                    self.set_health(40, f"mmap write errors: {exc}")
 
             # Check watchdog health
             custody = self._watchdog_custody
@@ -339,6 +340,12 @@ class FrzHeartbeatModule(BaseModule):
                     "External watchdog trust unavailable — authenticated mmap "
                     f"only ({self.last_error or 'missing release pins'})",
                 )
+
+            # A trusted, live watchdog does not prove the writer is advancing.
+            # Preserve the failed heartbeat after the independent custody check;
+            # otherwise every tick immediately overwrote this failure with 100.
+            if consecutive_errors >= 5:
+                self.set_health(40, f"mmap write errors: {heartbeat_error}")
 
             # Jittered write cadence (anti-TOCTOU). Stays well within the
             # watchdog's freeze threshold, so a late beat never false-triggers.

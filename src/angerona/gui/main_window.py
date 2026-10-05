@@ -699,6 +699,14 @@ class MainWindow(QMainWindow):
         self.system_pulse.set_external_view_active(True)
         self.statusBar().setSizeGripEnabled(False)
         self.statusBar().addPermanentWidget(self._dashboard_footer, 1)
+        from angerona.gui.responsiveness_monitor import ResponsivenessMonitor
+        self._responsiveness_monitor = ResponsivenessMonitor(self._dashboard_footer, self)
+        self._responsiveness_monitor.sample_ready.connect(
+            self._dashboard_footer.update_responsiveness)
+        self._responsiveness_monitor.set_enabled(
+            getattr(self.config, "adaptive_scan_pacing_enabled", True))
+        self.system_pulse.sample_ready.connect(self._responsiveness_monitor.update_host_sample)
+        QApplication.instance().aboutToQuit.connect(self._responsiveness_monitor.close)
         QTimer.singleShot(0, self._apply_dashboard_display)
         self._panel_reveal = PanelRevealOverlay(central)
         # Enable after construction so every later top-level Angerona dialog,
@@ -982,6 +990,9 @@ class MainWindow(QMainWindow):
             pass
         self.setStyleSheet(self._qss())
         self._apply_dashboard_display()
+        monitor = getattr(self, "_responsiveness_monitor", None)
+        if monitor is not None:
+            monitor.set_enabled(getattr(self.config, "adaptive_scan_pacing_enabled", True))
         self._resize_timer.start()
         try:
             self._holographic_orb.sync_config()
@@ -1139,6 +1150,9 @@ class MainWindow(QMainWindow):
 
     def _sync_idle_presentation(self) -> None:
         """Gate cosmetic UI work without weakening the incident wake path."""
+        monitor = getattr(self, "_responsiveness_monitor", None)
+        if monitor is not None:
+            monitor.set_active(self.isVisible() and not self.isMinimized())
         timer = getattr(self, "timer", None)
         plan = self._current_refresh_plan()
         if timer is not None and timer.interval() != plan[0]:
@@ -5635,6 +5649,9 @@ class MainWindow(QMainWindow):
 
     def _terminate(self) -> None:
         """Best-effort graceful cleanup, then an unconditional hard exit."""
+        monitor = getattr(self, "_responsiveness_monitor", None)
+        if monitor is not None:
+            monitor.close()
         self._aria_voice_stop = True
         try:
             voice = getattr(self, "aria_voice", None)

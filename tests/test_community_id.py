@@ -83,7 +83,15 @@ def test_network_monitor_emits_community_id_without_changing_severity(monkeypatc
             (message, severity, details)
         ),
     )
-    monkeypatch.setattr(module, "sleep", lambda _seconds: module.stop())
+    sleeps = 0
+
+    def allow_one_poll(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 2:
+            module.stop()
+
+    monkeypatch.setattr(module, "sleep", allow_one_poll)
 
     module.run()
 

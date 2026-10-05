@@ -103,6 +103,7 @@ class _TraversalBatch:
 
 
 class YaraScannerModule(BaseModule):
+    background_pacing_allowed = True
     name = "YARA Scanner"
     version = "1.13.0"
     description = "Scans Downloads and the isolated drill sandbox with in-process YARA."
@@ -719,7 +720,9 @@ class YaraScannerModule(BaseModule):
                     traversal_errors += batch.errors
                     incomplete_roots += int(batch.incomplete)
                     truncated_roots += int(batch.discovery_truncated)
-                    for path in batch.paths:
+                    for path_index, path in enumerate(batch.paths):
+                        if not self.background_checkpoint(path_index, batch_size=8):
+                            break
                         if self.stopping:
                             break
                         outcome = self._scan_file(scanner, path)

@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.13.0
-Date: 2026-10-02
+Date: 2026-10-04
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -22,7 +22,33 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST (v1.13.0 — Dashboard layout and responsiveness, 2026-10-02)
+## LATEST (v1.13.0 — Sustained responsiveness, 2026-10-04)
+
+- Default-on adaptive_scan_pacing_enabled uses a 30-Hz tiny Qt paint heartbeat
+  plus existing CPU samples to pace opted-in routine inventories and inner-loop
+  batches. Delays are bounded and stop-interruptible; watchdogs, streaming event
+  delivery, response actions and direct self-tests keep their original cadence.
+  Routine detection latency can increase while paced.
+- Footer FPS percent is relative to the 30-Hz heartbeat, not GPU FPS. The
+  adjacent Angerona pace bar is 100/multiplier (1,2,4,8); it is a requested scan
+  budget, not CPU quota, measured throughput or security coverage. Hidden
+  dashboards pause measurement; recovery is gradual. Settings > Appearance
+  permits opt-out; legacy config defaults to on.
+- Record: analysis/sustained-responsiveness-2026-10-04.md. Memory Time-Machine
+  avoids repeated full-sweep forwarding above 256 PIDs while preserving bounded
+  fingerprint storage and retry after failed queue admission.
+- The simulation console loads its sandbox editor only on first visit. Protected
+  reads, syntax-checked saves, and confirmed rollback run on one background
+  worker, preserving the isolated-copy boundary and retaining buffers on error.
+- Per-file analysis: analysis/module-review-2026-10-04/README.md and group A/B/C
+  cover all 87 module source files / 84 discovered capabilities. Fixes include
+  priority escalation from routine chatter, uncertain Combat compensation,
+  incomplete scan health, PID reuse, retry retention, provenance cycles,
+  Mobile ECO watchdog exclusion and Smart Deception cancellation.
+- Local watchdog evidence and offline reproductions do not establish that every
+  sustained-load stall is resolved. Response authority checks remain mandatory.
+
+## Dashboard layout and responsiveness (2026-10-02)
 
 - Record: analysis/dashboard-ui-polish-2026-10-02.md. Readable synchronized
   module ribbons support automatic slow scrolling, pause, manual wheel/keyboard

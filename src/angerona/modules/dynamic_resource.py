@@ -7,12 +7,12 @@ can finish.  In quiet periods we step back to normal priority so Angerona
 doesn't steal CPU from the user's foreground work.
 
 What this module does:
-  1. Monitors the event bus rate (events per 10-second window).
+  1. Monitors active HIGH/CRITICAL incident arrivals per 10-second window.
   2. If the rate exceeds HIGH_EVENT_RATE, escalates the Angerona process to
      HIGH_PRIORITY_CLASS on Windows (psutil.HIGH_PRIORITY_CLASS = 0x80).
      This is *not* REALTIME_PRIORITY_CLASS — it will not starve the OS.
   3. After COOLDOWN_S seconds of calm (rate drops below LOW_EVENT_RATE),
-     returns to NORMAL_PRIORITY_CLASS.
+     restores the process's original priority class.
   4. Emits INFO events on each transition so operators can see when the
      governor fired.
 
@@ -41,6 +41,7 @@ from collections import deque
 from typing import Deque
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.threat import is_active_threat
 
 # ── Tuning constants ──────────────────────────────────────────────────────────
 POLL_INTERVAL    = 5.0     # seconds between rate checks
@@ -56,7 +57,7 @@ class DynamicResourceModule(BaseModule):
     name = "Dynamic Resource Governor"
     description = (
         "Escalates process priority to HIGH_PRIORITY_CLASS under incident load "
-        "and returns to NORMAL after COOLDOWN_S seconds of calm."
+        "and restores its original priority after COOLDOWN_S seconds of calm."
     )
     category = "System"
     version = "1.13.0"
@@ -72,19 +73,24 @@ class DynamicResourceModule(BaseModule):
     def __init__(self) -> None:
         super().__init__()
         self._elevated        = False
-        self._event_times: Deque[float] = deque()
+        self._event_times: Deque[float] = deque(maxlen=4096)
         self._calm_since: float = 0.0        # when rate last dropped below LOW
         self._proc = None                    # psutil.Process handle
+        self._original_priority = None
 
     def run(self) -> None:
         try:
             import psutil
+            if not hasattr(psutil, "HIGH_PRIORITY_CLASS"):
+                raise RuntimeError("Windows priority classes are unavailable")
             self._proc = psutil.Process(os.getpid())
-        except ImportError:
-            self.set_health(50, "psutil unavailable — priority control disabled")
+            if not self._elevated:
+                self._original_priority = self._proc.nice()
+        except Exception as exc:
+            self.set_health(50, f"priority control unavailable: {exc}")
             self.emit(
-                "Dynamic Resource Governor: psutil not installed. "
-                "Priority escalation disabled. pip install psutil to enable.",
+                f"Dynamic Resource Governor: priority control unavailable ({exc}); "
+                "process priority is unchanged.",
                 Severity.INFO,
             )
             while not self.stopping:
@@ -99,14 +105,24 @@ class DynamicResourceModule(BaseModule):
             Severity.INFO,
         )
 
-        self._calm_since = time.time()   # start calm
-
-        while not self.stopping:
-            self.sleep(POLL_INTERVAL)
-            self._tick()
+        self._event_times.clear()
+        self._calm_since = time.monotonic()
+        try:
+            while not self.stopping:
+                self.sleep(POLL_INTERVAL)
+                if self.stopping:
+                    break
+                self._tick()
+        finally:
+            # Only the retiring worker restores priority, after its last tick.
+            # Restoring on stop's caller raced an in-flight escalation.
+            if self._elevated:
+                self._restore()
 
     def _tick(self) -> None:
-        now = time.time()
+        if self.stopping:
+            return
+        now = time.monotonic()
         self._drain_bus(now)
         rate = self._current_rate(now)
 
@@ -124,12 +140,15 @@ class DynamicResourceModule(BaseModule):
                 self._calm_since = 0.0   # still elevated — reset calm
 
     def _drain_bus(self, now: float) -> None:
-        """Count new bus events into the sliding window."""
+        """Count active HIGH/CRITICAL incidents by local arrival time."""
         if self._bus is None:
             return
         events, _overflow = self.poll_bus_events()
         for ev in events:
-            self._event_times.append(ev.ts)
+            if is_active_threat(ev):
+                # Source timestamps may arrive out of order or be remote; they
+                # cannot pin an elevated priority or an unbounded history.
+                self._event_times.append(now)
 
         # Evict events outside the window
         cutoff = now - RATE_WINDOW_S
@@ -144,8 +163,11 @@ class DynamicResourceModule(BaseModule):
         """Raise process priority to HIGH_PRIORITY_CLASS."""
         try:
             import psutil
-            self._proc.nice(psutil.HIGH_PRIORITY_CLASS)
-            self._elevated = True
+            with self._lifecycle_lock:
+                if self.stopping or self._original_priority is None:
+                    return
+                self._proc.nice(psutil.HIGH_PRIORITY_CLASS)
+                self._elevated = True
             self.emit(
                 "Priority ESCALATED to HIGH_PRIORITY_CLASS — incident event rate exceeded "
                 f"threshold ({HIGH_EVENT_RATE} events/{RATE_WINDOW_S}s).",
@@ -156,20 +178,21 @@ class DynamicResourceModule(BaseModule):
         except Exception as exc:
             # Non-fatal — log but keep monitoring
             self.emit(
-                f"Priority escalation failed ({exc}) — continuing at normal priority.",
+                f"Priority escalation failed ({exc}) — priority was not changed.",
                 Severity.LOW,
             )
 
     def _restore(self) -> None:
-        """Return process priority to NORMAL_PRIORITY_CLASS."""
+        """Restore the exact priority captured before this worker took control."""
         try:
-            import psutil
-            self._proc.nice(psutil.NORMAL_PRIORITY_CLASS)
+            if self._original_priority is None:
+                return
+            self._proc.nice(self._original_priority)
             self._elevated = False
             self.emit(
-                f"Priority RESTORED to NORMAL_PRIORITY_CLASS after {COOLDOWN_S}s of calm.",
+                "Priority RESTORED to its original class after calm or module shutdown.",
                 Severity.INFO,
-                priority_class="NORMAL",
+                priority_class=str(self._original_priority),
                 cooldown_s=COOLDOWN_S,
             )
         except Exception as exc:
@@ -196,13 +219,7 @@ class DynamicResourceModule(BaseModule):
             return False, str(exc)
 
     def stop(self) -> None:
-        # Always restore normal priority on clean shutdown
-        if self._elevated:
-            try:
-                import psutil
-                self._proc.nice(psutil.NORMAL_PRIORITY_CLASS)
-            except Exception:
-                pass
+        # Signal first; run's finally restores after all in-flight work ends.
         super().stop()
 
 

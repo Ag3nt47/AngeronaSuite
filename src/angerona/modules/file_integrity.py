@@ -744,11 +744,15 @@ class FileIntegrityModule(BaseModule):
                     return ""
                 opened_change = self._handle_change_token(f.fileno())
                 opened_usn = self._handle_usn(f.fileno())
+                chunks_read = 0
                 while not stop_event.is_set():
+                    if not self.background_checkpoint(chunks_read, batch_size=128):
+                        return ""
                     chunk = f.read(65536)
                     if not chunk:
                         break
                     h.update(chunk)
+                    chunks_read += 1
                     self._report_scan_work(bytes_read=len(chunk))
                 if stop_event.is_set():
                     return ""
@@ -971,7 +975,8 @@ class FileIntegrityModule(BaseModule):
                         _error(f"directory identity failed: {child}: {exc}")
                     self._report_scan_work()
                 directories[:] = safe_directories
-                for fn in files:
+                for file_index, fn in enumerate(files):
+                    self.background_checkpoint(file_index, batch_size=16)
                     if stop_event.is_set():
                         _error("scan stopped before coverage completed")
                         stopped_for_budget = True
@@ -1569,7 +1574,7 @@ class FileIntegrityModule(BaseModule):
 
         while not self.stopping:
             _DRIVER_INTERVAL, _FILE_INTERVAL = _combat_intervals()
-            _FILE_INTERVAL = max(_FILE_INTERVAL, self._scan_retry_floor)
+            _FILE_INTERVAL = self.background_interval(max(_FILE_INTERVAL, self._scan_retry_floor))
             # Sweep the (cheap, name-only) driver pool every _DRIVER_INTERVAL for a
             # fast BYOVD catch, while the full file-integrity scan runs every
             # _FILE_INTERVAL. BL-13: shorter driver-pool interval.

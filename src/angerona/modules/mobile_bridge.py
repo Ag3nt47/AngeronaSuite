@@ -2,7 +2,7 @@
 
 State-gated, End-to-End-Encrypted remote orchestration over Signal (via signal-cli).
 The operator's phone can query posture and issue containment commands; every
-state-changing command is gated by a short-lived 4-digit token AND the DPAPI-wrapped
+state-changing command is gated by a short-lived 256-bit token AND the DPAPI-wrapped
 hardware PIN, and unknown/failed input is silently discarded + logged as a spoof
 attempt.
 
@@ -63,6 +63,7 @@ _TTL_SECONDS = 600.0        # token lifetime (10 min)
 _TTL_SWEEP_S = 10.0         # cleanup cadence
 _FLOOD_WINDOW = 60.0        # rate-limit window
 _FLOOD_MAX = 3              # >this many alerts in the window → aggregate to a digest
+_MAX_PENDING_ALERTS = 256    # reject new tokens rather than revoke issued authority
 _COMMAND_FRESHNESS_SECONDS = 120.0
 _COMMAND_FUTURE_SKEW_SECONDS = 30.0
 _ADMIN_NONCE_TTL_SECONDS = 120.0
@@ -466,6 +467,7 @@ class MobileResponseBridge(BaseModule):
         # total instead of retaining every full alert line during a flood.
         self._digest: list[str] = []
         self._digest_count = 0
+        self._token_admission_drops = 0
         self._last_sweep = 0.0
         self._last_digest_flush = 0.0
         self._aria_handler = None                    # optional ARIA chat handler
@@ -1070,6 +1072,17 @@ class MobileResponseBridge(BaseModule):
         pid = details.get("pid")
         module = neutralize_telemetry(str(ev.module), 80)
         threat = neutralize_telemetry(str(ev.message), 200)
+        if len(self.pending_alerts) >= _MAX_PENDING_ALERTS:
+            # Already-issued, exact-scope tokens remain valid until use/expiry.
+            # Preserve the alert in the phone digest and local bus without doing
+            # another process/artifact probe or retaining unbounded authority.
+            self._token_admission_drops += 1
+            self._deliver_alert_line(
+                f"🚨 [{ev.severity.label}] {module} (PID {pid}) — {threat}\n"
+                "No new response token: pending authorization capacity reached. "
+                "Review this alert on the host."
+            )
+            return
         process_target = self._bind_process_target(pid, details)
         rollback_artifact = self._prepare_rollback_artifact(ev)
         response_eligible = (
@@ -1116,11 +1129,16 @@ class MobileResponseBridge(BaseModule):
         )
         line = (f"🚨 [{ev.severity.label}] {module} (PID {pid}) — {threat}\n"
                 f"Token {token}: {command_text}  ·  MUTE {token} <PIN>")
+        self._deliver_alert_line(line)
 
+    def _deliver_alert_line(self, line: str) -> None:
         # Rate-limit: >_FLOOD_MAX alerts in the window → aggregate into a digest.
+        # The most recent MAX+1 arrivals prove whether the window is flooded;
+        # older arrivals cannot change that answer and need not be retained.
         now = time.time()
         self._alert_times = [t for t in self._alert_times if now - t <= _FLOOD_WINDOW]
         self._alert_times.append(now)
+        self._alert_times = self._alert_times[-(_FLOOD_MAX + 1):]
         if len(self._alert_times) > _FLOOD_MAX:
             self._digest_count += 1
             if len(self._digest) < 15:
@@ -1138,8 +1156,16 @@ class MobileResponseBridge(BaseModule):
         body = (f"📥 Angerona digest — {n} alert(s) in the last minute "
                 "(individual texts suppressed to avoid flooding):\n\n"
                 + "\n".join(self._digest))
+        if self._token_admission_drops:
+            body += (
+                f"\n\n{self._token_admission_drops} alert(s) received no new "
+                "response token because pending authorization capacity was full. "
+                "Review those alerts on the host. Existing tokens retain their "
+                "original scope and expiry."
+            )
         self._digest.clear()
         self._digest_count = 0
+        self._token_admission_drops = 0
         self._send(body)
 
     def _new_token(self) -> str:
@@ -1152,6 +1178,8 @@ class MobileResponseBridge(BaseModule):
     # ── TTL sweep ───────────────────────────────────────────────────────────────
     def _sweep_tokens(self) -> None:
         now = time.time()
+        expired = 0
+        token_samples: list[str] = []
         for token, info in list(self.pending_alerts.items()):
             expires_monotonic = float(info.get("expires_monotonic", 0.0) or 0.0)
             not_expired = (
@@ -1162,6 +1190,9 @@ class MobileResponseBridge(BaseModule):
             if not_expired:
                 continue
             self.pending_alerts.pop(token, None)
+            expired += 1
+            if len(token_samples) < 3:
+                token_samples.append(token)
             pid = info.get("pid")
             if pid:
                 self._emit_mitigation(
@@ -1171,12 +1202,14 @@ class MobileResponseBridge(BaseModule):
                     directive_authorized=False,
                     event_type="mobile_token_expiry",
                 )
-                self._send(
-                    f"Token [{token}] expired. No action taken; request a fresh "
-                    "alert token before responding."
-                )
-            else:
-                self._send(f"Token [{token}] expired. No action taken (review-only alert).")
+        if expired:
+            # A burst must not become hundreds of sealed CLI subprocesses when
+            # its tokens expire. Keep each local audit and send one summary.
+            self._send(
+                f"{expired} alert token(s) expired. No action taken; request "
+                "a fresh alert token before responding. "
+                f"Token sample: {', '.join(token_samples)}"
+            )
         # expire mutes
         for m, until in list(self._muted.items()):
             if now >= until:
@@ -1645,16 +1678,35 @@ class MobileResponseBridge(BaseModule):
                 governor_lock = getattr(gov, "_level_lock", None)
                 if hasattr(governor_lock, "__enter__"):
                     locks.enter_context(governor_lock)
-                eligible = [
-                    (str(name), mod)
-                    for name, mod in sorted(
-                        modules.items(), key=lambda item: str(item[0]).casefold()
-                    )
-                    if name != "Adaptive Resource Governor"
-                    and isinstance(mod, BaseModule)
-                    and getattr(mod, "category", "") != "Response"
-                    and hasattr(getattr(mod, "_throttle_lock", None), "__enter__")
-                ]
+                eligible = []
+                ceilings: dict[str, float] = {}
+                for name, mod in sorted(
+                    modules.items(), key=lambda item: str(item[0]).casefold()
+                ):
+                    # Match the release governor's explicit capability policy.
+                    # Category alone includes watchdog/heartbeat/event workers:
+                    # slowing FRZ to 3s exceeds its watchdog's 2s freeze limit.
+                    if (
+                        name == "Adaptive Resource Governor"
+                        or not isinstance(mod, BaseModule)
+                        or type(mod).__dict__.get("adaptive_throttle_allowed") is not True
+                        or getattr(mod, "category", "") == "Response"
+                        or not hasattr(getattr(mod, "_throttle_lock", None), "__enter__")
+                    ):
+                        continue
+                    trust = getattr(manager, "module_trust", {}).get(name, {})
+                    if trust and (
+                        trust.get("origin") != "builtin" or trust.get("trust") != "release"
+                    ):
+                        continue
+                    try:
+                        ceiling = float(type(mod).__dict__["adaptive_throttle_max"])
+                    except (KeyError, TypeError, ValueError, OverflowError):
+                        continue
+                    if not 1.0 <= ceiling <= 8.0:
+                        continue
+                    eligible.append((str(name), mod))
+                    ceilings[str(name)] = ceiling
                 if not eligible:
                     raise RuntimeError("no eligible trusted managed modules")
                 for _name, mod in eligible:
@@ -1666,18 +1718,18 @@ class MobileResponseBridge(BaseModule):
                 if gov is not None:
                     prior_governor = float(getattr(gov, "_level", 1.0))
                 try:
-                    for _name, mod, _prior_level in prior:
+                    for name, mod, _prior_level in prior:
                         floor = float(mod.__dict__.get("_throttle_floor", 1.0))
-                        object.__setattr__(mod, "_throttle", max(floor, level))
+                        object.__setattr__(mod, "_throttle", max(floor, min(level, ceilings[name])))
                     if gov is not None:
                         object.__setattr__(gov, "_level", level)
                     if any(
                         float(mod.__dict__.get("_throttle", 0.0))
                         != max(
                             float(mod.__dict__.get("_throttle_floor", 1.0)),
-                            level,
+                            min(level, ceilings[name]),
                         )
-                        for _name, mod, _prior_level in prior
+                        for name, mod, _prior_level in prior
                     ) or (
                         gov is not None
                         and float(getattr(gov, "_level", 0.0)) != level
@@ -1713,6 +1765,7 @@ class MobileResponseBridge(BaseModule):
             details={
                 "module_count": len(prior),
                 "new_throttle": level,
+                "capability_capped": True,
                 "prior_state_sha256": prior_digest,
             },
         )
@@ -2373,6 +2426,8 @@ class MobileResponseBridge(BaseModule):
                         for purpose, detail in sorted(self._cli_failures.items())
                     )
                     self.set_health(40, failures[:500])
+                elif len(self.pending_alerts) >= _MAX_PENDING_ALERTS:
+                    self.set_health(70, "pending mobile authorization capacity full; new alerts are review-only")
                 elif time.monotonic() - self._last_cli_receipt_at > max(
                     30.0, self.POLL_S * 5
                 ):

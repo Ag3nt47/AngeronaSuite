@@ -33,6 +33,7 @@ import secrets
 import sqlite3
 import stat
 import time
+import threading
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -594,14 +595,23 @@ class SmartDeception(BaseModule):
                 pass
 
     def _deploy(self, names: list[str]) -> None:
+        stopped = self.generation_stop_event()
+        if not self._generation_active(stopped):
+            return
         # Remove previously-deployed decoys first so the daily REFRESH_S
         # regeneration doesn't leave orphaned, unmonitored honeytokens piling up
         # in Documents/Desktop/APPDATA.
         self._cleanup_deployed_decoys()
+        if not self._generation_active(stopped):
+            return
         self._refresh_quarantine_limits()
+        if not self._generation_active(stopped):
+            return
         self._last_quarantine_audit = time.time()
         self._deploy_failures = 0
         for target_path in self._targets:
+            if not self._generation_active(stopped):
+                return
             try:
                 target_path.mkdir(parents=True, exist_ok=True)
             except OSError:
@@ -609,11 +619,17 @@ class SmartDeception(BaseModule):
                 continue
             target = str(target_path)
             for name in random.sample(names, min(_DECOYS_PER_TARGET, len(names))):
+                if not self._generation_active(stopped):
+                    return
                 path = os.path.join(target, name)
                 if self._write_decoy(path):
+                    # Retain even an in-flight creation completed after stop;
+                    # this generation's finally cleanup must own that object.
                     self._decoys.append(path)
                 else:
                     self._deploy_failures += 1
+        if not self._generation_active(stopped):
+            return
         self._write_manifest()
         self.emit(f"Deployed {len(self._decoys)} AI honeytokens across "
                   f"{len(self._targets)} explicitly allowed location(s).", Severity.INFO)
@@ -3090,7 +3106,12 @@ class SmartDeception(BaseModule):
                 os.close(descriptor)
 
     def _restage_tripped_decoy(self, path: str) -> bool:
+        stopped = self.generation_stop_event()
+        if not self._generation_active(stopped):
+            return False
         if not self._retire_tampered_decoy(path):
+            return False
+        if not self._generation_active(stopped):
             return False
         return self._write_decoy(path)
 
@@ -3226,38 +3247,66 @@ class SmartDeception(BaseModule):
             self.set_health(100, note if self._trip_alert_evictions else "")
 
     # ── Loop ──────────────────────────────────────────────────────────────────
+    def _generation_active(self, stopped: threading.Event) -> bool:
+        return stopped is self._stop and not stopped.is_set()
+
     def run(self) -> None:
-        self._deploy(self._generate_names())
-        self._last_refresh = time.time()
+        stopped = self.generation_stop_event()
+        try:
+            if not self._generation_active(stopped):
+                return
+            names = self._generate_names()
+            if not self._generation_active(stopped):
+                return
+            self._deploy(names)
+            self._last_refresh = time.time()
 
-        while not self.stopping:
-            self._monitor_errors = 0
-            for path in list(self._decoys):
-                try:
-                    reason = self._check_decoy(path)
-                    if reason:
-                        self._trip(path, reason)
-                    else:
-                        self._unresolved_trips.discard(self._path_key(path))
-                except Exception:
-                    self._monitor_errors += 1
-                    self._unresolved_trips.add(self._path_key(path))
+            while self._generation_active(stopped):
+                self._monitor_errors = 0
+                for path in list(self._decoys):
+                    if not self._generation_active(stopped):
+                        return
+                    try:
+                        reason = self._check_decoy(path)
+                        if not self._generation_active(stopped):
+                            return
+                        if reason:
+                            self._trip(path, reason)
+                        else:
+                            self._unresolved_trips.discard(self._path_key(path))
+                    except Exception:
+                        self._monitor_errors += 1
+                        self._unresolved_trips.add(self._path_key(path))
 
-            if time.time() - self._last_refresh >= self.REFRESH_S:
-                self._deploy(self._generate_names())
-                self._last_refresh = time.time()
+                if not self._generation_active(stopped):
+                    return
+                if time.time() - self._last_refresh >= self.REFRESH_S:
+                    names = self._generate_names()
+                    if not self._generation_active(stopped):
+                        return
+                    self._deploy(names)
+                    self._last_refresh = time.time()
 
-            now = time.time()
-            self._prune_trip_alerts(now)
-            if now - self._last_quarantine_audit >= _QUARANTINE_AUDIT_S:
-                self._refresh_quarantine_limits()
-                self._last_quarantine_audit = now
-            self._update_health()
-            self.sleep(self.MONITOR_S)
+                if not self._generation_active(stopped):
+                    return
+                now = time.time()
+                self._prune_trip_alerts(now)
+                if now - self._last_quarantine_audit >= _QUARANTINE_AUDIT_S:
+                    self._refresh_quarantine_limits()
+                    self._last_quarantine_audit = now
+                if not self._generation_active(stopped):
+                    return
+                self._update_health()
+                self.sleep(self.MONITOR_S)
+        finally:
+            # BaseModule waits for this entire run before starting a replacement.
+            # Only the retiring worker cleans its owned files, after in-flight
+            # creation/capture has finished and before a new generation exists.
+            if stopped is self._stop:
+                self._cleanup_deployed_decoys()
 
     def stop(self) -> None:
-        # Best-effort cleanup so we don't leave decoys behind on shutdown.
-        self._cleanup_deployed_decoys()
+        # Filesystem retirement belongs to run()'s finally, never the GUI caller.
         super().stop()
 
     def self_test(self) -> tuple[bool, str]:

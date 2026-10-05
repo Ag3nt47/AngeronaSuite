@@ -24,6 +24,8 @@ def _message_id(label: str) -> str:
 
 class _ThrottleTarget(BaseModule):
     category = "Detection"
+    adaptive_throttle_allowed = True
+    adaptive_throttle_max = 8.0
 
     def __init__(self, level: float = 1.0) -> None:
         super().__init__()

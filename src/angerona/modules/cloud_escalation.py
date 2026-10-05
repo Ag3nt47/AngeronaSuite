@@ -11,6 +11,7 @@ bounded, identifier-redacted event summary is sent; event details stay local.
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from typing import Optional
@@ -28,17 +29,38 @@ _SYSTEM = (
 
 
 def _extract_json(text: str) -> Optional[dict]:
-    text = (text or "").strip()
+    if not isinstance(text, str) or len(text) > 64 * 1024:
+        return None
+    text = text.strip()
     try:
-        return json.loads(text)
+        value = json.loads(text)
     except Exception:
         m = re.search(r"\{.*\}", text, re.DOTALL)
-        if m:
-            try:
-                return json.loads(m.group(0))
-            except Exception:
-                return None
-    return None
+        if not m:
+            return None
+        try:
+            value = json.loads(m.group(0))
+        except Exception:
+            return None
+    if not isinstance(value, dict):
+        return None
+    verdict = value.get("verdict")
+    confidence = value.get("confidence")
+    justification = value.get("justification")
+    if type(confidence) not in (float, int):
+        return None
+    try:
+        confidence = float(confidence)
+    except (ValueError, OverflowError):
+        return None
+    if (not isinstance(verdict, str)
+            or verdict.strip().upper() not in {"SAFE", "SUSPICIOUS", "MALICIOUS"}
+            or not math.isfinite(confidence) or not 0 <= confidence <= 1
+            or not isinstance(justification, str) or not justification.strip()
+            or len(justification) > 4000):
+        return None
+    return {"verdict": verdict.strip().upper(), "confidence": float(confidence),
+            "justification": justification.strip()}
 
 
 def _cloud_prompt(module: object, message: object) -> str:
@@ -76,7 +98,10 @@ class CloudEscalationModule(BaseModule):
                 contents=prompt,
                 config={"system_instruction": _SYSTEM, "response_mime_type": "application/json"},
             )
-            return _extract_json(getattr(resp, "text", ""))
+            parsed = _extract_json(getattr(resp, "text", ""))
+            if parsed is None:
+                self.last_error = "Cloud response failed bounded verdict validation"
+            return parsed
         except Exception as exc:
             self.last_error = str(exc)
             return None

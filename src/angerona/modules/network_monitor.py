@@ -186,6 +186,7 @@ def _is_local(ip: str) -> bool:
 
 
 class NetworkMonitorModule(BaseModule):
+    background_pacing_allowed = True
     name = "Network Monitor"
     description = "Watches new outbound connections; alerts on suspicious ports and first-seen external hosts."
     category = "Network"
@@ -310,10 +311,19 @@ class NetworkMonitorModule(BaseModule):
             if ok else "network contract fixture failed",
         )
 
+    def _set_connection_health(self, connections) -> None:
+        """An empty result only proves coverage when its collector succeeded."""
+        if getattr(connections, "complete", None) is True:
+            self.set_health(100, "connection inventory complete")
+        else:
+            reason = str(getattr(connections, "error", "") or "collection receipt unavailable")
+            self.set_health(55, f"connection coverage incomplete: {reason[:300]}")
+
     def run(self) -> None:
         now0 = time.time()
         birth_cache: Dict[int, float | None] = {}
-        for c in list_connections():
+        connections = list_connections()
+        for c in connections:
             key = self._connection_key(c, birth_cache)
             birth = key[1]
             self._seen.add(key)
@@ -329,19 +339,22 @@ class NetworkMonitorModule(BaseModule):
                     self._known_hosts[ip] = now0
                     if isinstance(c.get("pid"), int) and birth is not None:
                         self._known_pid_hosts[(c["pid"], birth, ip)] = now0
-        self.set_health(100, "")
+        self._set_connection_health(connections)
         self.emit("Network monitor active.", Severity.INFO)
 
         last_summary = time.time()
         new_external = 0
         while not self.stopping:
             self.sleep(_poll_interval())
+            if self.stopping:
+                break
             max_age = _snapshot_max_age()
             connections = (
                 list_connections(max_age=max_age)
                 if max_age is not None
                 else list_connections()
             )
+            self._set_connection_health(connections)
             active_connections: Set[Tuple] = set()
             birth_cache = {}
             for c in connections:

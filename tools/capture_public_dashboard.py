@@ -136,6 +136,9 @@ SYNTHETIC_SOAR_RECORDS = (
 
 
 def _stop_background_ui_helpers(window: MainWindow) -> None:
+    monitor = getattr(window, "_responsiveness_monitor", None)
+    if monitor is not None:
+        monitor.close()
     for name in (
         "timer",
         "_timer",
@@ -291,6 +294,12 @@ def _build_demo_window():
     )
     window._dashboard_footer.update_sample(window.system_pulse.snapshot()["latest"])
     window._dashboard_footer.update_posture(window._last_posture)
+    window._dashboard_footer.update_responsiveness({
+        "active": True, "ready": True, "fps": 30.0, "percent": 100.0,
+        "target_fps": 30.0, "worst_lag_ms": 0.0,
+        "pacing": {"enabled": True, "multiplier": 1, "pace_percent": 100.0,
+                   "level": "normal", "reason": "Synthetic public-demo state"},
+    })
     window.console.out.setPlainText(
         "[PUBLIC DEMO] Synthetic telemetry only — no host data is displayed.\n"
         f"[PASS] {len(manager.modules)} defensive modules discovered\n"

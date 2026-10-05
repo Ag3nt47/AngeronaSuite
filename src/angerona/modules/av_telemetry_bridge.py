@@ -84,6 +84,10 @@ _EID_MAP = {
 _NS = "http://schemas.microsoft.com/win/2004/08/events/event"
 
 
+class _DefenderGenerationChanged(ValueError):
+    """A live channel no longer proves the admitted checkpoint/page identity."""
+
+
 class _DefenderEventLogSource(WindowsEventLogSource):
     """Adapt validated modern records to the bridge's existing custody format."""
 
@@ -761,7 +765,7 @@ class AVTelemetryBridgeModule(BaseModule):
                 try:
                     self._drain_outbox()
                     resume_after = max(resume_after, self._current_record_id())
-                    records = source.read_after(resume_after, _MAX_NATIVE_BATCH)
+                    records = self._read_native_page(source, resume_after)
                     consumed_page = self._stage_native_page(records)
                     resume_after = max(resume_after, self._current_record_id())
                     self._drain_outbox()
@@ -779,11 +783,60 @@ class AVTelemetryBridgeModule(BaseModule):
                     # Each bounded EvtQuery owns a fresh handle; retry from
                     # the last authenticated cursor on the next poll.
                     resume_after = self._current_record_id()
+                    if isinstance(exc, _DefenderGenerationChanged):
+                        # The same authenticated checkpoint must not be rebased
+                        # onto a replacement channel generation or bypassed via
+                        # PowerShell. Retain it for explicit continuity recovery.
+                        self._startup_blocked = True
+                        return False
                 self.sleep(poll_interval)
         finally:
             source.close()
             self._close_continuity_state()
         return True
+
+    def _read_native_page(
+        self, source: _DefenderEventLogSource, resume_after: int
+    ) -> list:
+        """Admit one page only while its exact channel generation stays stable."""
+        checkpoint = self._checkpoints.get(_DEFENDER_CHANNEL)
+
+        def verify_checkpoint() -> None:
+            if checkpoint is None or checkpoint.record_id <= 0:
+                return
+            record = source.record_at(checkpoint.record_id)
+            if record is None or not hmac.compare_digest(
+                checkpoint.anchor, self._record_digest(record)
+            ):
+                raise _DefenderGenerationChanged(
+                    "Defender live checkpoint anchor changed or disappeared; "
+                    "explicit continuity recovery is required"
+                )
+
+        verify_checkpoint()
+        records = source.read_after(resume_after, _MAX_NATIVE_BATCH)
+        if len(records) > _MAX_NATIVE_BATCH:
+            raise ValueError("Defender native page exceeds its admission bound")
+        # A clear/refill can preserve increasing record numbers. Verify the
+        # prior anchor again after the query, before staging or publishing any
+        # row. A reader exception remains unavailable evidence, never absence.
+        verify_checkpoint()
+        if records:
+            terminal = records[-1]
+            number = self._record_number(terminal)
+            if not number:
+                raise ValueError("Defender terminal record identity is unavailable")
+            current = source.record_at(number)
+            if current is None or not hmac.compare_digest(
+                self._record_digest(terminal), self._record_digest(current)
+            ):
+                raise _DefenderGenerationChanged(
+                    "Defender page terminal anchor changed or disappeared before admission"
+                )
+            # Reading the terminal must not bless an intervening replacement
+            # of the already-authenticated generation anchor.
+            verify_checkpoint()
+        return records
 
     def _current_record_id(self) -> int:
         checkpoint = self._checkpoints.get(_DEFENDER_CHANNEL)

@@ -39,6 +39,7 @@ from angerona.core.data_paths import data_dir
 from angerona.core.source_sandbox import SourceSandboxWorkspace
 from angerona.gui.aar_history import HistoryListing, list_history, load_verified_history_text
 from angerona.gui.animations import RunSpinner
+from angerona.gui.async_snapshot import AsyncSnapshot
 from angerona.shark.run_manifest import RED_TEAM_COMPREHENSIVE_PLAN
 
 # Canonical kill-chain stages → (stable key, readable label, narration aliases).
@@ -92,6 +93,14 @@ _RED_TEAM_SOURCE = "src/angerona/shark/red_team.py"
 _MAX_HISTORY_RENDER_CHARS = 512 * 1024
 
 _HISTORY_POOL: QThreadPool | None = None
+
+
+def _run_editor_job(operation, work):
+    """Run one protected sandbox operation without retaining any Qt objects."""
+    try:
+        return operation, True, work()
+    except Exception as exc:
+        return operation, False, exc
 
 
 def _history_pool() -> QThreadPool:
@@ -823,6 +832,8 @@ class RedTeamConsole(QDialog):
                 self._refresh_response_readiness()
             if "History" in self._tabs.tabText(idx):
                 self._load_history()
+            if "Sandbox Editor" in self._tabs.tabText(idx) and not self._editor_loaded:
+                self._load_editor()
         except Exception:
             pass
 
@@ -1290,6 +1301,12 @@ class RedTeamConsole(QDialog):
         help_text.setWordWrap(True)
         lay.addWidget(help_text)
         self._editor_workspace: SourceSandboxWorkspace | None = None
+        self._editor_loaded = False
+        self._editor_job = None
+        self._editor_reader = AsyncSnapshot(
+            self, self._prepare_editor_job, self._apply_editor_result,
+            name="RedTeamEditorWorker",
+        )
         self.editor = QPlainTextEdit()
         self.editor.setStyleSheet("font-family:'Fira Code',monospace; font-size:11px;")
         lay.addWidget(self.editor, 1)
@@ -1306,31 +1323,9 @@ class RedTeamConsole(QDialog):
         row.addWidget(self._editor_rollback)
         row.addWidget(self.edit_status, 1)
         lay.addLayout(row)
-        # Load AFTER edit_status exists — _load_editor() writes to it, so calling
-        # it earlier raised 'RedTeamConsole has no attribute edit_status'.
-        try:
-            self._editor_workspace = SourceSandboxWorkspace(
-                "red-team-console", (_RED_TEAM_SOURCE,)
-            )
-            self._load_editor()
-        except Exception as exc:
-            self.editor.setPlainText(
-                f"# sandbox editor unavailable in this session: {exc}"
-            )
-            self.editor.setReadOnly(True)
-            for button in (
-                self._editor_save,
-                self._editor_reload,
-                self._editor_rollback,
-            ):
-                button.setEnabled(False)
-                button.setToolTip(
-                    "The protected working-copy directory is unavailable. "
-                    "Simulation controls are unaffected."
-                )
-            self.edit_status.setText(
-                "❌ sandbox unavailable; simulation controls remain usable"
-            )
+        # Opening Run must not create/check a sandbox for an unvisited tab.
+        self._set_editor_busy(True)
+        self.edit_status.setText("Open this tab to load the isolated working copy.")
         return w
 
     # ── helpers ──────────────────────────────────────────────────────────────
@@ -1555,47 +1550,100 @@ class RedTeamConsole(QDialog):
         self.log.append("■ Stop requested — engines cleaning up their markers.")
 
     # ── editor ───────────────────────────────────────────────────────────────
-    def _load_editor(self) -> None:
-        if self._editor_workspace is None:
-            self.edit_status.setText(
-                "❌ sandbox unavailable; simulation controls remain usable"
-            )
+    def _set_editor_busy(self, busy: bool) -> None:
+        ready = self._editor_loaded and not busy
+        self.editor.setReadOnly(not ready)
+        for button in (self._editor_save, self._editor_rollback):
+            button.setEnabled(ready)
+        self._editor_reload.setEnabled(not busy)
+
+    def _prepare_editor_job(self):
+        operation, work = self._editor_job
+        self._editor_job = None
+        return lambda: _run_editor_job(operation, work)
+
+    def _start_editor_job(self, operation: str, work) -> None:
+        if self._editor_reader.busy:
             return
-        try:
-            source = self._editor_workspace.reload(_RED_TEAM_SOURCE)
-            self.editor.setPlainText(source)
-            suffix = " (modified)" if self._editor_workspace.changed(
-                _RED_TEAM_SOURCE
-            ) else ""
-            self.edit_status.setText(f"Loaded isolated working copy{suffix}")
-        except Exception as exc:
-            self.editor.setPlainText(f"# could not load sandbox working copy: {exc}")
-            self.edit_status.setText("❌ sandbox working copy unavailable")
+        self._editor_job = operation, work
+        self._set_editor_busy(True)
+        self.edit_status.setToolTip("")
+        self.edit_status.setText({
+            "load": "Loading isolated working copy…",
+            "save": "Saving isolated working copy…",
+            "rollback": "Restoring isolated working copy…",
+        }[operation])
+        self._editor_reader.request()
+        if not self._editor_reader.busy:
+            self._editor_job = None
+            self._apply_editor_result((operation, False, RuntimeError("Editor worker unavailable")))
+
+    def _apply_editor_result(self, result) -> None:
+        operation, success, value = result
+        if success:
+            for button in (self._editor_save, self._editor_reload, self._editor_rollback):
+                button.setToolTip("")
+            if operation in ("load", "rollback"):
+                self._editor_workspace, source, modified = value
+                self.editor.setPlainText(source)
+                self._editor_loaded = True
+                suffix = " (modified)" if modified else ""
+                self.edit_status.setText(
+                    "✅ working copy rolled back; live engine unchanged"
+                    if operation == "rollback"
+                    else f"Loaded isolated working copy{suffix}"
+                )
+            else:
+                self.edit_status.setText("✅ isolated working copy saved (live engine unchanged)")
+        else:
+            self.edit_status.setToolTip(str(value))
+            if operation == "load" and not self._editor_loaded:
+                self.edit_status.setText(
+                    "❌ sandbox unavailable; simulation controls remain usable"
+                )
+                for button in (self._editor_save, self._editor_reload, self._editor_rollback):
+                    button.setToolTip(
+                        "The protected working-copy directory is unavailable. "
+                        "Simulation controls are unaffected."
+                    )
+            elif isinstance(value, SyntaxError):
+                self.edit_status.setText(f"❌ syntax error line {value.lineno} — not saved")
+            else:
+                self.edit_status.setText(f"❌ working copy {operation} failed; editor text retained")
+        self._set_editor_busy(False)
+
+    def _load_editor(self) -> None:
+        if self._editor_reader.busy:
+            return
+        workspace, factory = self._editor_workspace, SourceSandboxWorkspace
+
+        def load():
+            active = workspace if workspace is not None else factory(
+                "red-team-console", (_RED_TEAM_SOURCE,)
+            )
+            source = active.reload(_RED_TEAM_SOURCE)
+            return active, source, active.changed(_RED_TEAM_SOURCE)
+
+        self._start_editor_job("load", load)
 
     def _reload_editor(self) -> None:
         """Discard unsaved buffer text and reload the saved sandbox copy."""
         self._load_editor()
 
     def _save_editor(self) -> None:
-        if self._editor_workspace is None:
+        if self._editor_reader.busy:
+            return
+        _editor_workspace = self._editor_workspace
+        if _editor_workspace is None:
             self.edit_status.setText("❌ sandbox working copy unavailable")
             return
         src = self.editor.toPlainText()
-        try:
-            self._editor_workspace.save(_RED_TEAM_SOURCE, src)
-        except SyntaxError as exc:
-            QMessageBox.warning(self, "Syntax error — not saved",
-                                f"Line {exc.lineno}: {exc.msg}")
-            self.edit_status.setText(f"❌ syntax error line {exc.lineno} — not saved")
-            return
-        except Exception as exc:
-            QMessageBox.warning(self, "Save failed", str(exc))
-            self.edit_status.setText("❌ working copy was not saved")
-            return
-        self.edit_status.setText("✅ isolated working copy saved (live engine unchanged)")
+        self._start_editor_job("save", lambda: _editor_workspace.save(_RED_TEAM_SOURCE, src))
 
     def _rollback_editor(self) -> None:
         """Restore only the runtime working copy from immutable installed source."""
+        if self._editor_reader.busy:
+            return
         if self._editor_workspace is None:
             self.edit_status.setText("❌ sandbox working copy unavailable")
             return
@@ -1611,10 +1659,10 @@ class RedTeamConsole(QDialog):
         if answer != QMessageBox.StandardButton.Yes:
             self.edit_status.setText("Rollback cancelled")
             return
-        try:
-            self._editor_workspace.rollback((_RED_TEAM_SOURCE,))
-            self._load_editor()
-            self.edit_status.setText("✅ working copy rolled back; live engine unchanged")
-        except Exception as exc:
-            QMessageBox.warning(self, "Rollback failed", str(exc))
-            self.edit_status.setText("❌ working copy rollback failed")
+        workspace = self._editor_workspace
+
+        def rollback():
+            workspace.rollback((_RED_TEAM_SOURCE,))
+            return workspace, workspace.reload(_RED_TEAM_SOURCE), workspace.changed(_RED_TEAM_SOURCE)
+
+        self._start_editor_job("rollback", rollback)

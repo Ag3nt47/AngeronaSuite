@@ -168,6 +168,25 @@ def _lower_sha256(value: object) -> str | None:
     return value
 
 
+def _ioc_matches(
+    snapshot: _IocSnapshot,
+    value: object,
+    *,
+    hashes: bool = False,
+    response_required: bool = False,
+) -> bool:
+    """Evaluate one immutable snapshot without changing the live IOC cache."""
+    candidate = (
+        _lower_sha256(value.lower()) if isinstance(value, str) else None
+    ) if hashes else _literal_ip(value)
+    return bool(
+        candidate is not None
+        and (not response_required or snapshot.verified)
+        and _fresh(snapshot)
+        and candidate in (snapshot.hashes if hashes else snapshot.ips)
+    )
+
+
 def is_ip_flagged(ip: str) -> bool:
     """Return response-eligible IOC corroboration.
 
@@ -175,42 +194,30 @@ def is_ip_flagged(ip: str) -> bool:
     SHA-256 digest can corroborate response.  Unsigned feed content is visible
     through :func:`is_ip_advisory`, but cannot authorize containment.
     """
-    candidate = _literal_ip(ip)
-    if candidate is None:
-        return False
     with _IOC_LOCK:
         snapshot = _IOC_SNAPSHOT
-        return snapshot.verified and _fresh(snapshot) and candidate in snapshot.ips
+    return _ioc_matches(snapshot, ip, response_required=True)
 
 
 def is_hash_flagged(file_hash: str) -> bool:
     """Return response-eligible SHA-256 IOC corroboration."""
-    candidate = str(file_hash).lower() if isinstance(file_hash, str) else ""
-    if _lower_sha256(candidate) is None:
-        return False
     with _IOC_LOCK:
         snapshot = _IOC_SNAPSHOT
-        return snapshot.verified and _fresh(snapshot) and candidate in snapshot.hashes
+    return _ioc_matches(snapshot, file_hash, hashes=True, response_required=True)
 
 
 def is_ip_advisory(ip: str) -> bool:
     """Return a fresh IOC match regardless of feed verification status."""
-    candidate = _literal_ip(ip)
-    if candidate is None:
-        return False
     with _IOC_LOCK:
         snapshot = _IOC_SNAPSHOT
-        return _fresh(snapshot) and candidate in snapshot.ips
+    return _ioc_matches(snapshot, ip)
 
 
 def is_hash_advisory(file_hash: str) -> bool:
     """Return a fresh SHA-256 match regardless of feed verification status."""
-    candidate = str(file_hash).lower() if isinstance(file_hash, str) else ""
-    if _lower_sha256(candidate) is None:
-        return False
     with _IOC_LOCK:
         snapshot = _IOC_SNAPSHOT
-        return _fresh(snapshot) and candidate in snapshot.hashes
+    return _ioc_matches(snapshot, file_hash, hashes=True)
 
 
 def ioc_stats() -> dict:
@@ -694,25 +701,22 @@ class IntelSyncModule(BaseModule):
         j_ips, j_hashes = _parse_iocs({
             "ips": ["198.51.100.9"], "hashes": [sha_d]
         })
-        global _IOC_SNAPSHOT
         now = time.time()
-        with _IOC_LOCK:
-            prior_snapshot = _IOC_SNAPSHOT
-            _IOC_SNAPSHOT = _IocSnapshot(
-                ips=frozenset(s_ips | j_ips), hashes=frozenset(s_hashes | j_hashes),
-                updated_at=now, expires_at=now + 60, source="offline-self-test",
-                verification="unsigned-advisory", verified=False,
-            )
-        try:
-            ioc_ok = (is_ip_advisory("203.0.113.5")
-                      and is_ip_advisory("198.51.100.9")
-                      and is_hash_advisory(sha_a) and is_hash_advisory(sha_d.upper())
-                      and not is_ip_advisory("8.8.8.8")
-                      and not is_ip_flagged("203.0.113.5")
-                      and not is_hash_flagged(sha_a))
-        finally:
-            with _IOC_LOCK:
-                _IOC_SNAPSHOT = prior_snapshot
+        # Exercise the same lookup path on local immutable data. Publishing a
+        # fixture then restoring the old global snapshot would hide live IOCs
+        # during the test and overwrite any concurrent successful feed refresh.
+        fixture = _IocSnapshot(
+            ips=frozenset(s_ips | j_ips), hashes=frozenset(s_hashes | j_hashes),
+            updated_at=now, expires_at=now + 60, source="offline-self-test",
+            verification="unsigned-advisory", verified=False,
+        )
+        ioc_ok = (_ioc_matches(fixture, "203.0.113.5")
+                  and _ioc_matches(fixture, "198.51.100.9")
+                  and _ioc_matches(fixture, sha_a, hashes=True)
+                  and _ioc_matches(fixture, sha_d.upper(), hashes=True)
+                  and not _ioc_matches(fixture, "8.8.8.8")
+                  and not _ioc_matches(fixture, "203.0.113.5", response_required=True)
+                  and not _ioc_matches(fixture, sha_a, hashes=True, response_required=True))
         ok = ok and ioc_ok
         return (ok, "KEV correlation + driver-intel blocklist + IOC fusion verified (offline)"
                 if ok else f"correlation failed: kev={matches} drv_ok={drv_ok} ioc_ok={ioc_ok}")

@@ -158,6 +158,7 @@ class _SpscRing:
 
 
 class MemoryTimeMachineModule(BaseModule):
+    background_pacing_allowed = True
     CODE = "MTM"
     NAME = "Memory Time-Machine"
     name = "Memory Time-Machine"
@@ -167,7 +168,11 @@ class MemoryTimeMachineModule(BaseModule):
     version = "1.13.0"
 
     _WINDOW = 4096          # sliding hash-cache size per PID
-    _MAX_PIDS = 256         # cap tracked processes (LRU)
+    # A PID-only limit of 256 thrashed on a 257-process host: a complete sweep
+    # evicted every previous PID before it could be revisited. Share the same
+    # historical fingerprint budget across a larger bounded inventory instead.
+    _MAX_PIDS = 4096
+    _MAX_FINGERPRINTS = 256 * 4096
     _CARVE_INTERVAL = 6.0   # seconds between carve sweeps
     _MAX_DELTA_STRINGS = 256
     _MAX_DELTA_BYTES = 128 * 1024
@@ -178,6 +183,7 @@ class MemoryTimeMachineModule(BaseModule):
         self.state_lock = threading.Lock()
         self._caches: "OrderedDict[int, deque]" = OrderedDict()
         self._cache_sets: dict[int, set] = {}
+        self._cached_fingerprints = 0
         self.delta_queue: "queue.Queue[dict]" = queue.Queue(maxsize=8192)
         self._ring: _SpscRing | None = None
         self._seen = 0
@@ -253,15 +259,29 @@ class MemoryTimeMachineModule(BaseModule):
 
     def _cache_for(self, pid: int):
         with self.state_lock:
-            if pid not in self._caches:
-                if len(self._caches) >= self._MAX_PIDS:
-                    old, _ = self._caches.popitem(last=False)
-                    self._cache_sets.pop(old, None)
-                self._caches[pid] = deque(maxlen=self._WINDOW)
-                self._cache_sets[pid] = set()
-            else:
-                self._caches.move_to_end(pid)
-            return self._caches[pid], self._cache_sets[pid]
+            return self._cache_for_locked(pid)
+
+    def _discard_cache_locked(self, pid: int) -> None:
+        window = self._caches.pop(pid, None)
+        if window is not None:
+            self._cached_fingerprints -= len(window)
+        self._cache_sets.pop(pid, None)
+
+    def _cache_for_locked(self, pid: int):
+        if pid not in self._caches:
+            while len(self._caches) >= self._MAX_PIDS:
+                self._discard_cache_locked(next(iter(self._caches)))
+            self._caches[pid] = deque(maxlen=self._WINDOW)
+            self._cache_sets[pid] = set()
+        else:
+            self._caches.move_to_end(pid)
+        return self._caches[pid], self._cache_sets[pid]
+
+    def _trim_cache_locked(self) -> None:
+        while self._cached_fingerprints > self._MAX_FINGERPRINTS and self._caches:
+            # Eviction forgets suppression only. An evicted observation is sent
+            # again, never silently treated as delivered or omitted.
+            self._discard_cache_locked(next(iter(self._caches)))
 
     @staticmethod
     def _string_fingerprint(value: str) -> bytes:
@@ -282,32 +302,42 @@ class MemoryTimeMachineModule(BaseModule):
         so backpressure cannot silently turn undelivered observations into
         "already seen" data.
         """
-        window, seen = self._cache_for(pid)
         delta: list[str] = []
         with self.state_lock:
-            candidate_window = deque(window, maxlen=window.maxlen)
-            candidate_seen = set(seen)
+            window, seen = self._cache_for_locked(pid)
+            candidate_window = None
+            candidate_seen = seen
             for s in strings:
                 h = self._string_fingerprint(s)
                 self._seen += 1
                 if h in candidate_seen:
                     continue
+                if candidate_window is None:
+                    # Quiet sweeps need no copy/rewrite of a full historical
+                    # cache. Simulate window eviction only once a novel string
+                    # appears; preview mode still cannot acknowledge delivery.
+                    candidate_window = deque(window, maxlen=window.maxlen)
+                    candidate_seen = set(seen)
                 if len(candidate_window) == candidate_window.maxlen:
                     candidate_seen.discard(candidate_window[0])
                 candidate_window.append(h)
                 candidate_seen.add(h)
                 delta.append(s)
-            if commit:
+            if commit and candidate_window is not None:
+                old_count = len(window)
                 window.clear()
                 window.extend(candidate_window)
                 seen.clear()
                 seen.update(candidate_seen)
+                self._cached_fingerprints += len(window) - old_count
+                self._trim_cache_locked()
         return delta
 
     def _commit_delta(self, pid: int, strings: list[str]) -> None:
         """Commit an already-admitted delta without double-counting it."""
-        window, seen = self._cache_for(pid)
         with self.state_lock:
+            window, seen = self._cache_for_locked(pid)
+            old_count = len(window)
             for value in strings:
                 fingerprint = self._string_fingerprint(value)
                 if fingerprint in seen:
@@ -316,6 +346,8 @@ class MemoryTimeMachineModule(BaseModule):
                     seen.discard(window[0])
                 window.append(fingerprint)
                 seen.add(fingerprint)
+            self._cached_fingerprints += len(window) - old_count
+            self._trim_cache_locked()
 
     def _bounded_delta(self, values: list[str]) -> list[list[str]]:
         """Bound individual and aggregate work-queue payloads."""
@@ -351,6 +383,8 @@ class MemoryTimeMachineModule(BaseModule):
             ring = self._ring
             ring_available = ring is not None and not getattr(ring, "_closed", False)
             ring_depth = ring.depth() if ring_available else 0
+            cached_pids = len(self._caches)
+            cached_fingerprints = self._cached_fingerprints
         reduction = (1 - self._forwarded / self._seen) * 100 if self._seen else 0.0
         return {"strings_seen": self._seen, "forwarded": self._forwarded,
                 "reduction_pct": round(reduction, 1),
@@ -361,6 +395,9 @@ class MemoryTimeMachineModule(BaseModule):
                 "ring_overwrites": self._ring_overwrites,
                 "collector_failures": self._collector_failures,
                 "payload_truncations": self._payload_truncations,
+                "cached_pids": cached_pids,
+                "cached_fingerprints": cached_fingerprints,
+                "fingerprint_limit": self._MAX_FINGERPRINTS,
                 "delivery_incomplete": self._delivery_incomplete,
                 "ring_available": ring_available}
 
@@ -425,17 +462,30 @@ class MemoryTimeMachineModule(BaseModule):
             self._last_sweep_collector_failures += 1
         if stop_event.is_set():
             return
+        # Keep only a bounded snapshot of existing cache keys. A PID absent
+        # from a complete inventory has exited; releasing its suppression also
+        # ensures a later process reusing that PID is observed afresh. Incomplete
+        # enumeration must not be mistaken for confirmed process exits.
+        with self.state_lock:
+            # Negative keys belong to synthetic self-tests, not OS processes;
+            # the self-test owns their lifetime even if a sweep overlaps it.
+            unseen_cached_pids = {pid for pid in self._caches if pid >= 0}
+        inventory_complete = True
         try:
             processes = psutil.process_iter(["pid"])
-            for proc in processes:
+            for process_index, proc in enumerate(processes):
+                if not self.background_checkpoint(process_index, batch_size=8):
+                    return
                 if stop_event.is_set():
                     break
                 try:
                     pid = int(proc.info["pid"])
                 except Exception:
+                    inventory_complete = False
                     self._collector_failures += 1
                     self._last_sweep_collector_failures += 1
                     continue
+                unseen_cached_pids.discard(pid)
                 proc_connections = (None if connections_by_pid is None
                                     else connections_by_pid.get(pid, ()))
                 strings = self._process_strings(proc, proc_connections)
@@ -446,7 +496,10 @@ class MemoryTimeMachineModule(BaseModule):
                 delta = self.delta_for(pid, strings, commit=False)
                 if not delta:
                     continue
+                source_offset = 0
                 for admitted in self._bounded_delta(delta):
+                    originals = delta[source_offset:source_offset + len(admitted)]
+                    source_offset += len(admitted)
                     # Serialize only bounded admission/receipt work with stop;
                     # never hold this lock across native process collection.
                     with self._lifecycle_lock:
@@ -464,7 +517,11 @@ class MemoryTimeMachineModule(BaseModule):
 
                         # Commit dedup only after queue admission. The mmap
                         # receives pseudonymous receipts, never source strings.
-                        self._commit_delta(pid, admitted)
+                        # Admission is for this bounded representation of the
+                        # original strings. Retain their original fingerprints;
+                        # hashing the truncated payload re-forwarded every long
+                        # command line on every later sweep.
+                        self._commit_delta(pid, originals)
                         self._forwarded += len(admitted)
                         batch += len(admitted)
                         if ring is not None:
@@ -481,10 +538,15 @@ class MemoryTimeMachineModule(BaseModule):
                             self._queue_highwater, self.delta_queue.qsize()
                         )
         except Exception:
+            inventory_complete = False
             self._collector_failures += 1
             self._last_sweep_collector_failures += 1
         if stop_event.is_set():
             return
+        if inventory_complete:
+            with self.state_lock:
+                for pid in unseen_cached_pids:
+                    self._discard_cache_locked(pid)
         st = self.stats()
         health = 100
         reasons: list[str] = []
@@ -522,8 +584,7 @@ class MemoryTimeMachineModule(BaseModule):
         first = self.delta_for(pid, sample)
         second = self.delta_for(pid, sample)
         with self.state_lock:
-            self._caches.pop(pid, None)
-            self._cache_sets.pop(pid, None)
+            self._discard_cache_locked(pid)
         if len(first) == len(sample) and second == []:
             return True, f"dedup verified ({len(first)}→0 on repeat)"
         return False, f"dedup broken: first={len(first)} second={len(second)}"

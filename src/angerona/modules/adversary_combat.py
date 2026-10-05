@@ -4082,6 +4082,7 @@ class AdversaryCombat(BaseModule):
             if action is not None:
                 actions.append(action)
         action: CombatAction | None = None
+        suspend_started = False
         try:
             exact_suspend_only = (
                 "suspend_process" in allowed and "terminate_process" not in allowed
@@ -4106,14 +4107,16 @@ class AdversaryCombat(BaseModule):
                     },
                 )
                 with self._journaled_mutation(action):
+                    suspend_started = True
                     process.suspend()
                     time.sleep(0.05)
                     verified = process.status() == getattr(
                         psutil, "STATUS_STOPPED", "stopped"
                     )
                     if not verified:
-                        self._journal_failure(
-                            action, "process suspend postcondition failed"
+                        self._rollback_uncertain_reversible_mutation(
+                            action, "process suspend postcondition failed",
+                            release_custody=lambda: None,
                         )
                         return actions
                     committed = self._commit_after_mutation(action)
@@ -4141,7 +4144,13 @@ class AdversaryCombat(BaseModule):
                 return actions
         except Exception as exc:
             if action is not None:
-                self._journal_failure(action, f"{type(exc).__name__}: {exc}")
+                if suspend_started:
+                    self._rollback_uncertain_reversible_mutation(
+                        action, f"process suspend boundary failed: {type(exc).__name__}",
+                        release_custody=lambda: None,
+                    )
+                else:
+                    self._journal_failure(action, f"{type(exc).__name__}: {exc}")
         return actions
 
     def _run_firewall(self, arguments: list[str]) -> bool:
@@ -4166,17 +4175,18 @@ class AdversaryCombat(BaseModule):
                 return True
             operation = tuple(value.casefold() for value in arguments[:2])
             if operation == ("add", "rule"):
-                return self._firewall_rule_exists(rule_name)
+                return self._firewall_rule_exists(rule_name) is True
             if operation == ("delete", "rule"):
-                return not self._firewall_rule_exists(rule_name)
+                return self._firewall_rule_exists(rule_name) is False
             return True
         except Exception:
             return False
 
     @staticmethod
-    def _firewall_rule_exists(rule_name: str) -> bool:
+    def _firewall_rule_exists(rule_name: str) -> bool | None:
+        """Return exact presence, proven absence, or unavailable evidence."""
         if os.name != "nt" or not rule_name:
-            return False
+            return None
         try:
             from angerona.core.win import run_hidden
 
@@ -4194,13 +4204,16 @@ class AdversaryCombat(BaseModule):
                 + "\n"
                 + str(getattr(result, "stderr", "") or "")
             ).casefold()
-            return (
-                int(getattr(result, "returncode", 1)) == 0
-                and rule_name.casefold() in output
-                and "no rules match" not in output
-            )
+            if "no rules match" in output:
+                return False
+            if (int(getattr(result, "returncode", 1)) == 0
+                    and rule_name.casefold() in output):
+                return True
+            # An error, empty response, or unsupported/localized output is not
+            # proof that an intent-bound firewall mutation has disappeared.
+            return None
         except Exception:
-            return False
+            return None
 
     @staticmethod
     def _managed_rule(action: str, rule: str) -> bool:
@@ -4472,9 +4485,12 @@ class AdversaryCombat(BaseModule):
                 return binding is not None and binding[0].is_file()
             if action in {"block_remote_ip", "isolate_program", "isolate_host"}:
                 rules = [str(value) for value in details.get("rules", []) if value]
-                return self._valid_rule_set(action, rules) and any(
-                    self._firewall_rule_exists(rule) for rule in rules
-                )
+                if not self._valid_rule_set(action, rules):
+                    raise JournalIntegrityError("pending firewall rule set is invalid")
+                states = [self._firewall_rule_exists(rule) for rule in rules]
+                if any(state is None for state in states):
+                    raise JournalIntegrityError("pending firewall postcondition is unavailable")
+                return any(states)
             if action == "suspend_process" and psutil is not None:
                 process = psutil.Process(int(details["pid"]))
                 return (
@@ -4489,6 +4505,8 @@ class AdversaryCombat(BaseModule):
                     if self._manager else None
                 )
                 return module is not None and module.status == "running"
+        except JournalIntegrityError:
+            raise
         except Exception:
             return False
         return False
@@ -4927,10 +4945,12 @@ class AdversaryCombat(BaseModule):
                     ]):
                         applied.append(f"{rule}-{direction}")
                 if len(applied) != 2:
-                    for partial in applied:
-                        self._run_firewall(["delete", "rule", f"name={partial}"])
-                    self._journal_failure(
-                        action, "firewall block was incomplete and rolled back"
+                    # A failed add/postcondition can still leave its rule.
+                    # Reverse the complete intent-bound set and retain recovery
+                    # authority until every rule is proven absent.
+                    self._rollback_uncertain_reversible_mutation(
+                        action, "firewall block postcondition was incomplete",
+                        release_custody=lambda: None,
                     )
                     return None
                 self._blocked_ips.add(remote_ip)
@@ -4969,8 +4989,9 @@ class AdversaryCombat(BaseModule):
                     "add", "rule", f"name={rule}", "dir=out", "action=block",
                     f"program={exe}", "enable=yes",
                 ]):
-                    self._journal_failure(
-                        action, "program firewall postcondition failed"
+                    self._rollback_uncertain_reversible_mutation(
+                        action, "program firewall postcondition failed",
+                        release_custody=lambda: None,
                     )
                     return None
                 identity_matches = False
@@ -4988,13 +5009,9 @@ class AdversaryCombat(BaseModule):
                 except Exception:
                     identity_matches = False
                 if not identity_matches:
-                    rolled_back = self._run_firewall([
-                        "delete", "rule", f"name={rule}",
-                    ])
-                    self._journal_failure(
-                        action,
-                        "program identity changed after firewall mutation; rule "
-                        + ("rolled back" if rolled_back else "rollback failed"),
+                    self._rollback_uncertain_reversible_mutation(
+                        action, "program identity changed after firewall mutation",
+                        release_custody=lambda: None,
                     )
                     return None
                 self._blocked_programs.add(program_key)
@@ -5026,11 +5043,9 @@ class AdversaryCombat(BaseModule):
                     ]):
                         rules.append(name)
                 if len(rules) != 2:
-                    for partial in rules:
-                        self._run_firewall(["delete", "rule", f"name={partial}"])
-                    self._journal_failure(
-                        action,
-                        "host isolation was incomplete and rolled back",
+                    self._rollback_uncertain_reversible_mutation(
+                        action, "host isolation postcondition was incomplete",
+                        release_custody=lambda: None,
                     )
                     return None
                 self._host_isolated = True
@@ -5303,12 +5318,15 @@ class AdversaryCombat(BaseModule):
                     ):
                         return False, "program binding does not match"
                 for rule in rules:
-                    if self._firewall_rule_exists(rule) and not self._run_firewall(
+                    state = self._firewall_rule_exists(rule)
+                    if state is None:
+                        return False, f"managed firewall rule state unavailable: {rule}"
+                    if state is True and not self._run_firewall(
                         ["delete", "rule", f"name={rule}"]
                     ):
                         return False, f"managed firewall rule remains: {rule}"
-                if any(self._firewall_rule_exists(rule) for rule in rules):
-                    return False, "one or more managed firewall rules remain"
+                if any(self._firewall_rule_exists(rule) is not False for rule in rules):
+                    return False, "managed firewall rule absence was not proven"
                 if action == "isolate_host":
                     self._host_isolated = False
                 elif action == "block_remote_ip":

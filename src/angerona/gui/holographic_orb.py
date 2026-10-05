@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QToolTip,
     QWidget,
 )
+from shiboken6 import isValid
 
 from angerona.gui.header_controls import motion_allowed
 
@@ -924,10 +925,28 @@ class HolographicOrbController(QObject):
                 self._remember_geometry(watched)
         elif event_type == QEvent.WindowStateChange and self.enabled():
             if watched.windowState() & Qt.WindowMinimized:
-                QTimer.singleShot(0, lambda window=watched: self.collapse_window(window))
+                self._defer_collapse(watched)
         elif event_type == QEvent.Destroy:
             self._drop_window(watched)
         return super().eventFilter(watched, event)
+
+    def _defer_collapse(self, window: QWidget) -> None:
+        # A dialog can be restored or deleted before this deferred action runs.
+        # Qt cancels the callback with its target context; weak references also
+        # avoid keeping a deleted widget's Python wrapper alive until delivery.
+        # A context-free callback could otherwise reach recycled native widget
+        # state and corrupt a later paint/garbage-collection pass.
+        window_ref, controller_ref = weakref.ref(window), weakref.ref(self)
+
+        def collapse() -> None:
+            target, controller = window_ref(), controller_ref()
+            if (target is None or controller is None
+                    or not isValid(target) or not isValid(controller)):
+                return
+            if target.windowState() & Qt.WindowMinimized:
+                controller.collapse_window(target)
+
+        QTimer.singleShot(0, window, collapse)
 
     def _remember_geometry(self, window: QWidget) -> None:
         try:

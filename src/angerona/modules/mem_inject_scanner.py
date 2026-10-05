@@ -20,7 +20,7 @@ False-positive mitigations:
     but the process is still scanned and still produces an event.
   • We skip our own PID (the Angerona process) to avoid self-flagging.
   • We require RegionSize ≥ 4096 bytes (ignores transient 1-page stubs).
-  • Re-alerts for the same PID are suppressed for 300s.
+  • Re-alerts for the same handle-bound PID/creation time are suppressed for 300s.
 
 Privilege note:
   Opening remote processes with PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
@@ -37,6 +37,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes
 import hmac
+import math
 import os
 import sys
 import time
@@ -258,6 +259,7 @@ def _try_load_kernel32() -> Optional[ctypes.WinDLL]:
 
 
 class MemInjectScannerModule(BaseModule):
+    background_pacing_allowed = True
     CODE = "MINJ"
     NAME = "Memory Injection Scanner"
     name = "Memory Injection Scanner"
@@ -280,6 +282,9 @@ class MemInjectScannerModule(BaseModule):
     _MAX_ADDRESS = 0x7FFFFFFF0000   # stay below kernel space on 64-bit Windows
     _MAX_QUERIES_PER_PID = 32_768
     _PID_TRAVERSAL_SECONDS = 2.0
+    # Cooperative waits do not consume the native-work budget. Their total
+    # allowance is still bounded: at most 128 batches * 50ms per PID.
+    _PID_PACING_ALLOWANCE_SECONDS = 6.4
     _MAX_PROCESS_RECORDS = 65_536
 
     @property
@@ -296,7 +301,7 @@ class MemInjectScannerModule(BaseModule):
         self._self_pid = os.getpid()
         # pid → last aggregated-alert ts (per-process cooldown; also throttles the
         # heavy psutil enrichment so it can't run every scan for the same process)
-        self._seen: dict[int, float] = {}
+        self._seen: dict[tuple[int, float], float] = {}
         self._coverage = ProcessCoverage()
 
     def run(self) -> None:
@@ -379,7 +384,9 @@ class MemInjectScannerModule(BaseModule):
                 partial=partial, scan_complete=complete and not partial,
             )
 
-        for pid, proc_name in processes.items():
+        for process_index, (pid, proc_name) in enumerate(processes.items()):
+            if not self.background_checkpoint(process_index, batch_size=8):
+                break
             if not self._generation_active(stopped):
                 break
             if pid == self._self_pid:
@@ -480,6 +487,7 @@ class MemInjectScannerModule(BaseModule):
             regions: list[tuple[int, int, int]] = []   # (base, size, protect)
             queried = 0
             deadline = time.monotonic() + self._PID_TRAVERSAL_SECONDS
+            pacing_allowance = self._PID_PACING_ALLOWANCE_SECONDS
             limit_reason = ""
 
             while addr < self._MAX_ADDRESS:
@@ -488,6 +496,18 @@ class MemInjectScannerModule(BaseModule):
                 if queried >= self._MAX_QUERIES_PER_PID or time.monotonic() >= deadline:
                     limit_reason = "native traversal budget reached"
                     break
+                if queried and queried % 256 == 0:
+                    before_yield = time.monotonic()
+                    if not self.background_checkpoint(queried, batch_size=256):
+                        return _PidScanResult(True, False, "cancelled")
+                    allowance = min(
+                        max(0.0, time.monotonic() - before_yield), pacing_allowance,
+                    )
+                    deadline += allowance
+                    pacing_allowance -= allowance
+                    if time.monotonic() >= deadline:
+                        limit_reason = "native traversal budget reached"
+                        break
                 ctypes.set_last_error(0)
                 ret = self._k32.VirtualQueryEx(
                     handle,
@@ -525,12 +545,19 @@ class MemInjectScannerModule(BaseModule):
 
             # One aggregated alert per process (not one per region) — this is what
             # turned a JIT app's dozens of RWX regions into an alert storm.
-            if regions and time.time() - self._seen.get(pid, 0.0) >= _DEDUP_TTL:
+            birth = self._bound_process_birth(handle) if regions else None
+            cooldown_key = (pid, birth) if birth is not None else None
+            if regions and (
+                cooldown_key is None
+                or time.time() - self._seen.get(cooldown_key, 0.0) >= _DEDUP_TTL
+            ):
                 # Resolve/hash the executable from this still-open process
                 # object only after a suspicious region exists. Ordinary
                 # processes pay no image-hash cost and no PID lookup can grant
                 # a pre-scan exclusion.
                 bound_image = self._bound_image_identity(handle)
+                if birth is not None:
+                    bound_image = {**bound_image, "process_create_time": birth}
                 if not self._generation_active(stopped):
                     return _PidScanResult(True, False, "cancelled")
                 self._alert(
@@ -560,6 +587,21 @@ class MemInjectScannerModule(BaseModule):
                     pass
 
     # ── Enrichment helpers ────────────────────────────────────────────────────
+    def _bound_process_birth(self, process_handle: int) -> float | None:
+        """Read cheap creation identity from the scanned object, never a PID lookup."""
+        try:
+            created, exited, kernel, user = (FILETIME() for _ in range(4))
+            if not self._k32.GetProcessTimes(
+                process_handle, ctypes.byref(created), ctypes.byref(exited),
+                ctypes.byref(kernel), ctypes.byref(user),
+            ):
+                return None
+            ticks = (int(created.dwHighDateTime) << 32) | int(created.dwLowDateTime)
+            birth = (ticks - 116444736000000000) / 10_000_000
+            return birth if math.isfinite(birth) and birth > 0 else None
+        except (AttributeError, OSError, TypeError, ValueError):
+            return None
+
     def _bound_image_identity(self, process_handle: int) -> dict[str, object]:
         """Resolve the image path from the exact opened process object."""
         stopped = self.generation_stop_event()
@@ -575,23 +617,8 @@ class MemInjectScannerModule(BaseModule):
             path = os.path.normcase(os.path.normpath(buffer.value))
             if not path or not os.path.isabs(path):
                 return {}
-            created = FILETIME()
-            exited = FILETIME()
-            kernel = FILETIME()
-            user = FILETIME()
-            if not self._k32.GetProcessTimes(
-                process_handle,
-                ctypes.byref(created),
-                ctypes.byref(exited),
-                ctypes.byref(kernel),
-                ctypes.byref(user),
-            ):
-                return {}
-            windows_ticks = (
-                int(created.dwHighDateTime) << 32
-            ) | int(created.dwLowDateTime)
-            created_epoch = (windows_ticks - 116444736000000000) / 10_000_000
-            if created_epoch <= 0:
+            created_epoch = self._bound_process_birth(process_handle)
+            if created_epoch is None:
                 return {}
             if not self._generation_active(stopped):
                 return {}
@@ -740,11 +767,18 @@ class MemInjectScannerModule(BaseModule):
         if not self._generation_active(stopped):
             return
         now = time.time()
-        if now - self._seen.get(pid, 0.0) < _DEDUP_TTL:
+        birth = (bound_image or {}).get("process_create_time")
+        cooldown_key = (
+            (pid, float(birth))
+            if type(birth) in (int, float) and math.isfinite(birth) and birth > 0
+            else None
+        )
+        if cooldown_key is not None and now - self._seen.get(cooldown_key, 0.0) < _DEDUP_TTL:
             return
-        # Start the per-process cooldown up front so an allowlisted or repeat
-        # process isn't re-enriched (heavy psutil) on every 30s scan.
-        self._seen[pid] = now
+        # Only exact scanned-object identity can own a cooldown. Missing birth
+        # evidence must not suppress a later process which reuses the same PID.
+        if cooldown_key is not None:
+            self._seen[cooldown_key] = now
 
         # Largest region drives the technique prediction and the headline detail.
         base, size, protect = max(regions, key=lambda r: r[1])
@@ -758,8 +792,8 @@ class MemInjectScannerModule(BaseModule):
         # Deep enrichment triggered only upon detection
         ctx = self._enrich_process(pid)
         if not self._generation_active(stopped):
-            if self._seen.get(pid) == now:
-                self._seen.pop(pid, None)
+            if cooldown_key is not None and self._seen.get(cooldown_key) == now:
+                self._seen.pop(cooldown_key, None)
             return
         if bound_image:
             ctx.update(bound_image)
@@ -797,8 +831,8 @@ class MemInjectScannerModule(BaseModule):
 
         with self._lifecycle_lock:
             if not self._generation_active(stopped):
-                if self._seen.get(pid) == now:
-                    self._seen.pop(pid, None)
+                if cooldown_key is not None and self._seen.get(cooldown_key) == now:
+                    self._seen.pop(cooldown_key, None)
                 return
             self.emit(
                 "\n".join(parts),

@@ -1171,7 +1171,7 @@ class SysmonListenerModule(BaseModule):
             self._seen_pids = set()
 
         while not self.stopping:
-            self.sleep(self._FALLBACK_INTERVAL)
+            self.sleep(self.background_interval(self._FALLBACK_INTERVAL))
             try:
                 current: dict[int, psutil.Process] = {}
                 # Inventory needs identities only. Rich process_iter attributes

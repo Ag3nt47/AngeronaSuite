@@ -71,17 +71,46 @@ def test_footer_reflows_at_480_and_restores_single_row_for_larger_windows():
         footer.show()
         QApplication.instance().processEvents()
         assert footer.width() == 480
-        assert footer.height() <= footer.fontMetrics().height() * 2 + 12
+        assert footer.height() <= footer._row_height() * 3 + 12
         font = footer.font()
         font.setPixelSize(22)
         footer.setFont(font)
         QApplication.instance().processEvents()
-        assert footer.height() == footer.fontMetrics().height() * 2 + 12
+        assert footer.height() == footer._row_height() * 3 + 12
         assert "Network receive: 1e+10 bytes/s" in footer.toolTip()
-        footer.resize(1600, footer.height())
+        # Six metrics at an intentionally large 22px font need more width than
+        # the old four-cell footer before every caption fits on one row.
+        footer.resize(2400, footer.height())
         QApplication.instance().processEvents()
-        assert footer.height() == footer.fontMetrics().height() + 12
+        assert footer.height() == footer._row_height() + 12
         assert not footer.grab().isNull()
+    finally:
+        footer.close()
+        footer.deleteLater()
+
+
+def test_footer_fps_and_pacing_bar_do_not_claim_cpu_quota_or_security_percentage():
+    footer = DashboardFooter()
+    try:
+        footer.update_sample(dict(cpu=10, ram=50, down=0, up=0))
+        footer.update_responsiveness({
+            "active": True, "ready": True, "fps": 15.0, "percent": 50.0,
+            "worst_lag_ms": 125.0,
+            "pacing": {"enabled": True, "multiplier": 4, "level": "strained",
+                       "reason": "UI responsiveness"},
+        })
+        assert footer._fps == "FPS 15 (50%)"
+        assert footer._pace == "Angerona pace 25%"
+        assert footer._pace_percent == 25.0
+        assert "CPU: 10%" in footer.toolTip()
+        assert "not GPU or display frame rate" in footer.toolTip()
+        assert "not a CPU quota, measured throughput, or security coverage percentage" in footer.toolTip()
+        for width in (480, 1920):
+            footer.resize(width, footer.height())
+            footer.show()
+            QApplication.instance().processEvents()
+            assert footer._rows == (3 if width == 480 else 1)
+            assert not footer.grab().isNull()
     finally:
         footer.close()
         footer.deleteLater()

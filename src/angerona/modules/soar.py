@@ -112,6 +112,7 @@ class SOARModule(BaseModule):
         self._attempts = 0
         self._manager = None
         self._delivery_failures: dict[str, int] = {}
+        self._delivery_bus = None
         self._dead_lettered = 0
 
     def bind_manager(self, manager) -> None:
@@ -272,7 +273,17 @@ class SOARModule(BaseModule):
         if self._bus is None:
             return 0
         process_policy = _process_policy_snapshot()
+        if self._delivery_bus is not self._bus:
+            self._delivery_failures.clear()
+            self._delivery_bus = self._bus
         events, legacy_cursor = self._pending_security_events()
+        # Evicted evidence cannot be retried. Do not retain its failure state
+        # indefinitely when a busy bounded lane replaces it before retry three.
+        retained_keys = {self._cursor_key(event) for _, event in events}
+        self._delivery_failures = {
+            key: attempts for key, attempts in self._delivery_failures.items()
+            if key in retained_keys
+        }
         handled = 0
         for revision, ev in events:
             if legacy_cursor and not self._is_unseen(ev):

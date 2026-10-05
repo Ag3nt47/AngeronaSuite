@@ -37,6 +37,21 @@ identifiers, timestamps, and counts are synthetic.
 
 ## What's new
 
+The [sustained responsiveness follow-up](analysis/sustained-responsiveness-2026-10-04.md)
+adds **default-on adaptive routine scan pacing**. Low dashboard FPS or high host
+CPU progressively delays routine scans, then restores their pace as load eases.
+The footer shows a 30-Hz paint-heartbeat FPS percentage and a separate
+**Angerona pace** bar. Pace is the requested scan budget, not a CPU quota,
+measured throughput or protection percentage. Watchdogs, event delivery and
+urgent response keep their cadence; delayed routine scans can discover changes later.
+Change pacing under **Settings → Appearance**.
+
+The same update fixes repeated Memory Time-Machine forwarding above 256
+processes and moves sandbox-editor file work off the GUI thread. The
+[complete module review](analysis/module-review-2026-10-04/README.md) covers all
+87 module source files and records tested fixes and remaining limits. These
+changes do not establish that every source of sustained host load is resolved.
+
 The [dashboard layout and responsiveness update](analysis/dashboard-ui-polish-2026-10-02.md)
 adds readable synchronized module ribbons with slow scrolling and manual controls,
 responsive panels, an optional inline alert inspector, and a persistent system

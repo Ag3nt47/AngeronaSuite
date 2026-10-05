@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -86,11 +87,21 @@ def test_simulation_console_survives_unavailable_editor_sandbox(
     )
     dialog = RedTeamConsole(parent, default_target=str(tmp_path))
     try:
+        editor_index = next(
+            index for index in range(dialog._tabs.count())
+            if "Sandbox Editor" in dialog._tabs.tabText(index)
+        )
+        dialog._tabs.setCurrentIndex(editor_index)
+        deadline = time.monotonic() + 5
+        while dialog._editor_reader.busy and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.002)
+        assert not dialog._editor_reader.busy
         assert dialog.launch_btn.isEnabled()
         assert dialog.stop_btn.isEnabled()
         assert dialog.editor.isReadOnly()
         assert not dialog._editor_save.isEnabled()
-        assert not dialog._editor_reload.isEnabled()
+        assert dialog._editor_reload.isEnabled()  # failed reads may be retried
         assert not dialog._editor_rollback.isEnabled()
         assert "working-copy directory" in dialog._editor_save.toolTip()
         assert "simulation controls remain usable" in dialog.edit_status.text()

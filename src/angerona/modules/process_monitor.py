@@ -48,6 +48,7 @@ def _process_identity(process: dict) -> tuple[tuple[int, str, str] | None, bool]
 
 
 class ProcessMonitorModule(BaseModule):
+    background_pacing_allowed = True
     name = "Process Monitor"
     description = "Flags suspicious process spawns and execution from risky locations."
     category = "Processes"
@@ -302,7 +303,9 @@ class ProcessMonitorModule(BaseModule):
         name = (p.get("name") or "").lower()
         exe = (p.get("exe") or "").lower()
         ppid = p.get("ppid")
-        parent = self._names.get(ppid, names.get(ppid, "")).lower()
+        # A PID may have been reused since the previous inventory. Prefer the
+        # parent observed alongside this child; cache only fills a missing row.
+        parent = names.get(ppid, self._names.get(ppid, "")).lower()
 
         if name in SUSPICIOUS_CHILDREN and parent in OFFICE_PARENTS:
             pid = p.get("pid")

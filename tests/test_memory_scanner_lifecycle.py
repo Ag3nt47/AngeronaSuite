@@ -105,6 +105,57 @@ def test_complete_native_walk_still_counts_as_scanned(scanner):
     assert scanner._k32.closed == [101]
 
 
+def test_native_walk_preserves_query_coverage_while_pacing_between_batches(scanner, monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(memory.time, "monotonic", lambda: now[0])
+    scanner._k32.query = lambda address: (address, 4096, 0x04) if address < 512 * 4096 else None
+    checkpoints = []
+
+    def checkpoint(completed, *, batch_size):
+        checkpoints.append((completed, batch_size))
+        now[0] += 1.1
+        return True
+
+    monkeypatch.setattr(scanner, "background_checkpoint", checkpoint)
+    result = scanner._scan_pid(101, "fixture.exe", ())
+    assert result == memory._PidScanResult(True, True, "scanned")
+    assert checkpoints == [(256, 256), (512, 256)]
+    assert scanner._k32.queries == 513
+    assert scanner._k32.closed == [101]
+    assert scanner._bus.recent(10) == []
+
+
+def test_native_walk_pacing_allowance_is_bounded_and_never_claims_complete(scanner, monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(memory.time, "monotonic", lambda: now[0])
+    scanner._k32.query = lambda address: (address, 4096, 0x04)
+
+    def checkpoint(_completed, *, batch_size):
+        assert batch_size == 256
+        now[0] += 10.0
+        return True
+
+    monkeypatch.setattr(scanner, "background_checkpoint", checkpoint)
+    assert scanner._scan_pid(101, "fixture.exe", ()) == memory._PidScanResult(True, False, "partial")
+    assert scanner._k32.queries == 256
+    assert scanner._k32.closed == [101]
+
+
+def test_native_walk_stop_during_cooperative_wait_closes_handle_without_more_queries(scanner, monkeypatch):
+    scanner._k32.query = lambda address: (address, 4096, 0x04)
+
+    def checkpoint(_completed, *, batch_size):
+        assert batch_size == 256
+        scanner._stop.set()
+        return False
+
+    monkeypatch.setattr(scanner, "background_checkpoint", checkpoint)
+    assert scanner._scan_pid(101, "fixture.exe", ()) == memory._PidScanResult(True, False, "cancelled")
+    assert scanner._k32.queries == 256
+    assert scanner._k32.closed == [101]
+    assert scanner._bus.recent(10) == []
+
+
 def test_cancel_inside_native_query_stops_before_hash_or_alert(scanner, monkeypatch):
     def query(address):
         scanner.stop()
@@ -146,7 +197,8 @@ def test_cancel_during_enrichment_does_not_emit_or_consume_cooldown(scanner, mon
 def test_existing_cooldown_precedes_hash_and_enrichment_but_never_skips_memory_scan(scanner, monkeypatch):
     now = [1000.0]
     monkeypatch.setattr(memory.time, "time", lambda: now[0])
-    scanner._seen[101] = now[0]
+    scanner._seen[(101, 900.0)] = now[0]
+    monkeypatch.setattr(scanner, "_bound_process_birth", lambda _handle: 900.0)
     scanner._k32.query = lambda address: (0, 8192, memory.PAGE_EXECUTE_READWRITE) if address == 0 else None
     hashes, enrichments = [], []
     monkeypatch.setattr(scanner, "_bound_image_identity", lambda _handle: hashes.append(1) or {})
@@ -160,6 +212,31 @@ def test_existing_cooldown_precedes_hash_and_enrichment_but_never_skips_memory_s
     assert scanner._scan_pid(101, "fixture.exe", ()).scanned
     assert hashes == enrichments == [1]
     assert len(scanner._bus.recent(10)) == 1
+
+
+def test_reused_pid_has_independent_cooldown_bound_to_scanned_handle(scanner, monkeypatch):
+    birth = [100.0]
+    scanner._k32.query = lambda address: (0, 8192, memory.PAGE_EXECUTE_READWRITE) if address == 0 else None
+    monkeypatch.setattr(scanner, "_bound_process_birth", lambda _handle: birth[0])
+    hashes = []
+    monkeypatch.setattr(scanner, "_bound_image_identity", lambda _handle: hashes.append(1) or {})
+    for created in (100.0, 200.0, 200.0):
+        birth[0] = created
+        assert scanner._scan_pid(101, "fixture.exe", ()).scanned
+    assert scanner._k32.queries == 6
+    assert len(hashes) == 2
+    events = scanner._bus.recent(10)
+    assert sorted(event.details["process_create_time"] for event in events) == [100.0, 200.0]
+    assert set(scanner._seen) == {(101, 100.0), (101, 200.0)}
+
+
+def test_missing_birth_evidence_cannot_create_pid_only_cooldown(scanner, monkeypatch):
+    scanner._k32.query = lambda address: (0, 8192, memory.PAGE_EXECUTE_READWRITE) if address == 0 else None
+    monkeypatch.setattr(scanner, "_bound_process_birth", lambda _handle: None)
+    for _ in range(2):
+        assert scanner._scan_pid(101, "fixture.exe", ()).scanned
+    assert len(scanner._bus.recent(10)) == 2
+    assert scanner._seen == {}
 
 
 def test_cancelled_sweep_does_not_publish_health_or_completed_cycle(scanner, monkeypatch):

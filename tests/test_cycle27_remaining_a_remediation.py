@@ -246,6 +246,9 @@ def test_defender_first_start_processes_retained_native_record(
         def read_after(self, offset, _limit):
             return [record] if offset < 3 else []
 
+        def record_at(self, record_id):
+            return record if record_id == 3 else None
+
     fake = FakeEventLogSource()
     monkeypatch.setattr(
         "angerona.modules.av_telemetry_bridge._DefenderEventLogSource", lambda: fake

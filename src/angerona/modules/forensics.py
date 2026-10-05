@@ -286,6 +286,8 @@ class ForensicsModule(BaseModule):
         addr = 0
         out = case_dir / "mem_strings.txt"
         read_total = 0
+        attempted_total = 0
+        failed_reads = 0
         written_total = 0
         regions = 0
         truncated = False
@@ -337,7 +339,13 @@ class ForensicsModule(BaseModule):
                         region_base = int(mbi.BaseAddress or addr)
                         region_offset = 0
                         while region_offset < region_size:
-                            remaining = _MEMORY_READ_BUDGET - read_total
+                            if self.stopping:
+                                truncated = True
+                                break
+                            # Failed/partial native reads still cost work. A
+                            # hostile or inaccessible large mapping must not
+                            # bypass this budget by returning no bytes.
+                            remaining = _MEMORY_READ_BUDGET - attempted_total
                             if remaining <= 0:
                                 truncated = True
                                 break
@@ -348,14 +356,18 @@ class ForensicsModule(BaseModule):
                             )
                             buf = ctypes.create_string_buffer(chunk_size)
                             read = ctypes.c_size_t(0)
-                            if k32.ReadProcessMemory(
+                            attempted_total += chunk_size
+                            read_ok = k32.ReadProcessMemory(
                                 handle,
                                 ctypes.c_void_p(region_base + region_offset),
                                 buf,
                                 chunk_size,
                                 ctypes.byref(read),
-                            ):
-                                read_total += int(read.value)
+                            )
+                            if not read_ok or int(read.value) != chunk_size:
+                                failed_reads += 1
+                            if read_ok:
+                                read_total += min(chunk_size, int(read.value))
                                 for match in rx.findall(buf.raw[: read.value]):
                                     line = bytes(match) + b"\n"
                                     if written_total + len(line) > _MEMORY_OUTPUT_BUDGET:
@@ -381,15 +393,22 @@ class ForensicsModule(BaseModule):
                 "complete": False,
                 "reason": str(exc)[:240],
                 "read_bytes": read_total,
+                "attempted_bytes": attempted_total,
+                "failed_reads": failed_reads,
                 "written_bytes": written_total,
                 "regions": regions,
             }
         finally:
             k32.CloseHandle(handle)
         return {
-            "complete": not truncated,
-            "reason": "budget reached" if truncated else "complete",
+            "complete": not truncated and failed_reads == 0,
+            "reason": (
+                "stopped or budget reached" if truncated
+                else "memory reads incomplete" if failed_reads else "complete"
+            ),
             "read_bytes": read_total,
+            "attempted_bytes": attempted_total,
+            "failed_reads": failed_reads,
             "written_bytes": written_total,
             "regions": regions,
             "path": str(out),
@@ -405,6 +424,14 @@ class ForensicsModule(BaseModule):
                 text=True,
                 timeout=5.0,
             )
+            returncode = getattr(res, "returncode", None)
+            if type(returncode) is not int or returncode != 0:
+                return {
+                    "complete": False,
+                    "reason": "socket collector exited unsuccessfully",
+                    "returncode": returncode if type(returncode) is int else None,
+                    "written_bytes": 0,
+                }
             needle = str(int(pid))   # coerce; the PID is the last column of each row
             rows = [ln for ln in (res.stdout or "").splitlines()
                     if ln.split() and ln.split()[-1] == needle]

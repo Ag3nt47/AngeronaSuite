@@ -151,7 +151,7 @@ class ProvenanceGraph:
             return
         # keep it acyclic: skip an edge that would close a cycle (child already
         # an ancestor of parent).
-        if parent in self._ancestor_ids(child):
+        if child in self._ancestor_ids(parent):
             return
         self.edges.setdefault(parent, set()).add(child)
         self.parents.setdefault(child, set()).add(parent)

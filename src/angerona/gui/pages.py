@@ -8367,6 +8367,15 @@ class SettingsDialog(QDialog):
         self._ui_motion_chk.setChecked(
             bool(getattr(self._cfg, "ui_motion_enabled", True)))
         lay.addWidget(self._ui_motion_chk)
+        self._adaptive_scan_pacing_chk = QCheckBox("Adaptive background scan pacing")
+        self._adaptive_scan_pacing_chk.setChecked(
+            bool(getattr(self._cfg, "adaptive_scan_pacing_enabled", True)))
+        self._adaptive_scan_pacing_chk.setToolTip(
+            "Enabled by default. Dashboard frame delays or high CPU load increase "
+            "the pauses between routine scans and process inventories. Scans may "
+            "finish later; urgent alerts, active responses, and stop controls "
+            "keep their normal priority. The footer shows FPS and active pacing.")
+        lay.addWidget(self._adaptive_scan_pacing_chk)
         self._holographic_orb_chk = QCheckBox(
             "Show the holographic Angerona Orb when windows minimize")
         self._holographic_orb_chk.setToolTip(
@@ -10702,6 +10711,7 @@ class SettingsDialog(QDialog):
             except (TypeError, ValueError):
                 pass
         candidate.ui_motion_enabled = self._ui_motion_chk.isChecked()
+        candidate.adaptive_scan_pacing_enabled = self._adaptive_scan_pacing_chk.isChecked()
         candidate.dashboard_mode = str(
             self._dashboard_mode_combo.currentData() or "classic"
         )

@@ -20,7 +20,7 @@ import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass
 
-from angerona.core.eventbus import Event, Severity
+from angerona.core.eventbus import Event, Severity, is_remote_observe_only
 from angerona.core.module_base import BaseModule
 from angerona.core.response_contract import authorize_response, process_response
 
@@ -160,6 +160,12 @@ class EvidenceLattice:
         self._lock = threading.Lock()
 
     def ingest(self, event: Event, now: float | None = None) -> EvidenceFinding | None:
+        # A remote peer describes its own host, even when a structured PID/IP
+        # happens to match two local observations. Never retain that evidence
+        # in a local-response bucket or strip its observe-only provenance by
+        # issuing a new receiver-local correlation event.
+        if is_remote_observe_only(event):
+            return None
         # Strong alerts already have their own incident/SOAR paths. The lattice
         # exists specifically to elevate independent weak evidence without
         # creating duplicate alerts for an already-HIGH detection.

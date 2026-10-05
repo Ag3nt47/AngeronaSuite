@@ -299,11 +299,19 @@ def test_program_firewall_rule_is_removed_if_pid_identity_changes_after_netsh(
     )
     module = _combat(tmp_path)
     calls: list[list[str]] = []
-    monkeypatch.setattr(
-        module,
-        "_run_firewall",
-        lambda args: calls.append(list(args)) or True,
-    )
+    rules: set[str] = set()
+
+    def firewall(args):
+        calls.append(list(args))
+        name = next(value[5:] for value in args if value.startswith("name="))
+        if args[0] == "add":
+            rules.add(name)
+        else:
+            rules.discard(name)
+        return True
+
+    monkeypatch.setattr(module, "_run_firewall", firewall)
+    monkeypatch.setattr(module, "_firewall_rule_exists", lambda name: name in rules)
 
     result = module._block_program(
         expected_exe,

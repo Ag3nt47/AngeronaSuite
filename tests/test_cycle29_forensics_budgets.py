@@ -52,7 +52,7 @@ def test_socket_artifact_has_a_hard_output_budget(tmp_path, monkeypatch) -> None
     monkeypatch.setattr(
         forensics,
         "run_hidden",
-        lambda *args, **kwargs: SimpleNamespace(stdout=rows),
+        lambda *args, **kwargs: SimpleNamespace(stdout=rows, returncode=0),
     )
 
     receipt = module._audit_sockets(77, tmp_path)

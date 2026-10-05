@@ -378,6 +378,9 @@ class BaseModule:
     # response paths therefore remain at their declared cadence by default.
     adaptive_throttle_allowed: bool = False
     adaptive_throttle_max: float = 1.0
+    # UI/host responsiveness pacing is separate, default enabled, and only
+    # applies to explicitly reviewed inventory workers or specific intervals.
+    background_pacing_allowed: bool = False
 
     def __init__(self) -> None:
         self._bus: Optional[EventBus] = None
@@ -728,6 +731,10 @@ class BaseModule:
         with self._throttle_lock:
             throttle = float(self._throttle)
         wait_seconds = max(0.0, float(seconds)) * throttle
+        if type(self).__dict__.get("background_pacing_allowed") is True:
+            # Independent cosmetic/governor settings never disable this policy.
+            # Use the larger wait, not a product of two independent governors.
+            wait_seconds = max(wait_seconds, self.background_interval(seconds))
         if cycle_complete:
             self.mark_cycle_complete(interval_seconds=wait_seconds)
         else:
@@ -743,6 +750,45 @@ class BaseModule:
                         now + wait_seconds + self._watchdog_work_budget_seconds()
                     )
         self.generation_stop_event().wait(timeout=wait_seconds)
+
+    def background_interval(self, seconds: float) -> float:
+        """Pace an explicitly routine interval only in its running worker.
+
+        Direct self-tests, response calls and GUI work do not inherit the wait.
+        Mixed workers can opt in only a specific inventory interval with this
+        helper, leaving their event-consumption and fast-response loops alone.
+        """
+        base = max(0.0, float(seconds))
+        if self._thread is not threading.current_thread():
+            return base
+        from angerona.core.background_pacing import get_pacing_controller
+        return get_pacing_controller().interval(base)
+
+    def background_checkpoint(self, completed: int, *, batch_size: int = 32) -> bool:
+        """Yield between routine batches without dropping work or marking ready.
+
+        Returns false when this generation stopped. Callers keep their existing
+        interrupted/incomplete-coverage path; no successful receipt is implied.
+        """
+        stop_event = self.generation_stop_event()
+        if stop_event.is_set():
+            return False
+        if (self._thread is not threading.current_thread() or completed <= 0
+                or completed % max(1, int(batch_size))):
+            return True
+        from angerona.core.background_pacing import get_pacing_controller
+        delay = get_pacing_controller().batch_delay()
+        if delay <= 0:
+            return True
+        started = time.monotonic()
+        stopped = stop_event.wait(delay)
+        elapsed = time.monotonic() - started
+        # Intentional yields are not missing work cycles. Extend only an
+        # existing deadline, without advancing readiness or cycle counters.
+        with self._cycle_lock:
+            if self._watchdog_deadline_at > 0:
+                self._watchdog_deadline_at += elapsed
+        return not stopped
 
     def mark_cycle_complete(self, *, interval_seconds: Optional[float] = None) -> None:
         """Publish completion of one module work cycle."""

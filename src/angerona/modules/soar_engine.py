@@ -101,6 +101,7 @@ class ActiveResponseSOAR(BaseModule):
         self._general_cursor = 0
         self._manager = None
         self._delivery_failures: dict[str, int] = {}
+        self._delivery_bus = None
         self._dead_lettered = 0
 
     def bind_manager(self, manager) -> None:
@@ -262,7 +263,17 @@ class ActiveResponseSOAR(BaseModule):
             return 0
         floor = self._min_severity()
         process_policy = _process_policy_snapshot()
+        if self._delivery_bus is not self._bus:
+            self._delivery_failures.clear()
+            self._delivery_bus = self._bus
         events, legacy_cursor, priority_snapshot = self._pending_security_events()
+        # Retry bookkeeping belongs only to evidence still available in this
+        # bounded delivery snapshot, not every failed event since startup.
+        retained_keys = {self._cursor_key(event) for _, event in events}
+        self._delivery_failures = {
+            key: attempts for key, attempts in self._delivery_failures.items()
+            if key in retained_keys
+        }
         actions = 0
         batch_complete = True
         for revision, ev in events:
