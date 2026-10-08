@@ -298,6 +298,19 @@ class EventBus:
                     "total_delivery_ms": 0.0,
                 }
 
+    def unsubscribe(self, fn: Subscriber) -> None:
+        """Detach one callback; an already copied delivery may still finish.
+
+        Lifecycle consumers must also close their own admission gate so an
+        in-flight publisher cannot enqueue work for a stopped generation.
+        """
+        with self._lock:
+            for index, registered in enumerate(self._subs):
+                if registered == fn:
+                    self._subs.pop(index)
+                    self._subscriber_stats.pop(id(registered), None)
+                    break
+
     def publish(self, event: Event) -> None:
         # G3-A: sign the event if an authority is registered
         if self._authority is not None:

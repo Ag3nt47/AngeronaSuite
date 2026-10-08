@@ -114,3 +114,24 @@ def test_footer_fps_and_pacing_bar_do_not_claim_cpu_quota_or_security_percentage
     finally:
         footer.close()
         footer.deleteLater()
+
+
+def test_footer_exposes_automatic_response_holds_without_claiming_readiness():
+    footer = DashboardFooter()
+    try:
+        footer.update_response({"state": "ARMED", "ready": False})
+        assert footer._response == "Auto UNAVAILABLE"
+        footer.update_response({"state": "RECOVERY REQUIRED", "ready": False,
+                                "reason": "<b>checkpoint mismatch</b>"})
+        assert footer._display_cells()[-1].startswith("Auto HELD")
+        assert "<b>checkpoint mismatch</b>" in footer.accessibleName()
+        assert "&lt;b&gt;checkpoint mismatch&lt;/b&gt;" in footer.toolTip()
+        footer.update_response({"state": "ARMED", "ready": True,
+                                "reason": "Waiting for exact evidence"})
+        assert footer._response == "Auto ARMED"
+        footer.update_response({"state": "DISABLED", "ready": False})
+        assert footer._response == "Auto OFF"
+        assert not footer.findChildren(QTimer)
+    finally:
+        footer.close()
+        footer.deleteLater()

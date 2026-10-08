@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import html
 
 from PySide6.QtCore import QEvent, QRect, QSize, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QPainter, QPalette
@@ -51,6 +52,8 @@ class DashboardFooter(QAbstractButton):
         self._posture = "Posture —"
         self._posture_description = "Posture has not been evaluated yet."
         self._posture_color = QColor()
+        self._response = "Auto —"
+        self._response_description = "Automatic response status has not been checked yet."
         self._fps = "FPS —"
         self._fps_description = "Dashboard paint heartbeat has not been measured yet."
         self._pace = "Angerona pace 100%"
@@ -152,12 +155,13 @@ class DashboardFooter(QAbstractButton):
         self._sync_presentation()
 
     def _sync_presentation(self) -> None:
-        summary = f"{self._sample_description} {self._posture_description} {self._fps_description}"
+        summary = (f"{self._sample_description} {self._posture_description} "
+                   f"{self._response_description} {self._fps_description}")
         if summary != self._rendered_accessibility:
             self._rendered_accessibility = summary
             self.setAccessibleName(f"System pulse. {summary}")
             self.setAccessibleDescription("Open system pulse details. Press Enter or Space.")
-            self.setToolTip(f"{summary}\nOpen system pulse details.")
+            self.setToolTip(f"<p>{html.escape(summary)}</p><p>Open system pulse details.</p>")
         self._fit_rows()
         self.updateGeometry()
         self.update()
@@ -168,7 +172,36 @@ class DashboardFooter(QAbstractButton):
                      for text in self._display_cells())
 
     def _display_cells(self) -> tuple[str, ...]:
-        return self._metrics[:2] + (self._fps, self._pace, self._metrics[2], self._posture)
+        return self._metrics[:2] + (
+            self._fps, self._pace, self._metrics[2], f"{self._response} · {self._posture}",
+        )
+
+    @Slot(object)
+    def update_response(self, snapshot) -> None:
+        """Expose standing-response holds using the existing memory snapshot."""
+        snapshot = snapshot if isinstance(snapshot, dict) else {}
+        state = snapshot.get("state")
+        if not isinstance(state, str):
+            state = None
+        if state == "ARMED" and snapshot.get("ready") is True:
+            text = "Auto ARMED"
+        elif state == "DISABLED":
+            text = "Auto OFF"
+        elif state == "STARTING":
+            text = "Auto STARTING"
+        elif state in {"RECOVERY REQUIRED", "JOURNAL FULL", "QUEUE FULL"}:
+            text = "Auto HELD"
+        else:
+            text = "Auto UNAVAILABLE"
+        reason = " ".join(str(snapshot.get("reason") or "Status unavailable.").split())[:500]
+        description = (
+            f"Automatic response: {text.removeprefix('Auto ')}. {reason} "
+            "View effective rules and action history in Settings > Adversary Combat."
+        )
+        if (text, description) == (self._response, self._response_description):
+            return
+        self._response, self._response_description = text, description
+        self._sync_presentation()
 
     def _row_height(self) -> int:
         return self.fontMetrics().height() + 5

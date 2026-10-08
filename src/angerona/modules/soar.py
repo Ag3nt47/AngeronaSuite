@@ -1,12 +1,10 @@
 """SOAR — Security Orchestration, Automation & Response.
 
-Watches the event stream and runs response *playbooks* when serious events fire.
-By default it operates in RECOMMEND mode (it suggests the containment action and
-logs it). Set the env var ANGERONA_SOAR_AUTOCONTAIN=1 to let it request an
-automatic action from the hardened Adversary Combat response sink.
-
-Auto-containment is opt-in on purpose: automatically freezing processes is
-powerful and occasionally wrong, so you choose when to hand it the keys.
+Watches serious events and reports ownership by Adversary Combat's standing
+rules when a signed exact contract matches its effective policy. Otherwise its
+legacy playbooks default to RECOMMEND mode. ANGERONA_SOAR_AUTOCONTAIN=1 opts
+those playbooks into requesting a response from Combat; it never grants new
+authority or proves that a request was admitted or completed.
 """
 from __future__ import annotations
 
@@ -45,7 +43,7 @@ _CORROBORATION_MIN      = 2   # signals from ≥2 distinct modules
 
 # ── Under-attack detection ────────────────────────────────────────────────────
 # A burst of HIGH+ events across multiple processes in a short window means the
-# host is being actively attacked. When that happens we engage ACTIVE DEFENSE:
+# host is being actively attacked. When explicitly enabled, ACTIVE DEFENSE:
 # corroborated CRITICAL threats are contained automatically even if single-event
 # auto-contain is off — the protected-process allowlist and 2-signal corroboration
 # still apply, so we never freeze Windows itself.
@@ -98,9 +96,8 @@ class SOARModule(BaseModule):
         self._priority_bus_id: int | None = None
         self._priority_overflow_count = 0
         self._auto = os.environ.get("ANGERONA_SOAR_AUTOCONTAIN", "0") == "1"
-        # Active defense: contain corroborated threats automatically WHEN under
-        # attack. On by default (the whole point of an EDR); ANGERONA_ACTIVE_DEFENSE=0
-        # to disable and stay recommend-only.
+        # Legacy burst-triggered delegation is opt-in. Combat's independent
+        # standing policy is reported separately and is never enabled here.
         self._active_defense = os.environ.get("ANGERONA_ACTIVE_DEFENSE", "0") == "1"
         # G3-B corroboration state is bound to one exact process generation.
         # A PID alone is reusable and must never let signals for a dead process
@@ -166,9 +163,10 @@ class SOARModule(BaseModule):
         mode = ("AUTO-CONTAIN" if self._auto
                 else "ACTIVE-DEFENSE" if self._active_defense else "RECOMMEND")
         self.emit(
-            f"SOAR online — playbook mode: {mode}. Corroborated threats are contained "
-            "automatically while under attack; 2-signal corroboration + protected-process "
-            "allowlist are always enforced.",
+            f"SOAR online — legacy playbook mode: {mode}. "
+            f"{self._delegation_description()} "
+            "Adversary Combat's separate standing-rule ownership is reported "
+            "per alert; only verified response receipts prove action.",
             Severity.INFO,
         )
         while not self.stopping:
@@ -322,6 +320,134 @@ class SOARModule(BaseModule):
         return handled
 
     # ── Playbooks ────────────────────────────────────────────────────────────
+    def _delegation_description(self) -> str:
+        if self._auto:
+            return (
+                "Legacy automatic requests are enabled, subject to exact identity, "
+                "2-signal corroboration and Combat's safety checks."
+            )
+        if self._active_defense:
+            return (
+                "Legacy active-defense requests are enabled during an attack burst, "
+                "subject to exact identity, corroboration and Combat's safety checks."
+            )
+        return "Legacy automatic requests and active defense are disabled."
+
+    def _report_combat_ownership(self, ev) -> bool:
+        """Describe standing rules, never admission, execution or new authority.
+
+        Combat independently receives these events from the same signed bus.
+        Its memory snapshot is diagnostic only: do not call response_ready(),
+        list_actions(), a process probe or _submit() to construct this message.
+        Unknown policy/contract state falls back to the legacy playbooks.
+        """
+        bus = self._bus
+        details = ev.details if isinstance(ev.details, dict) else {}
+        if (
+            bus is None or not getattr(bus, "integrity_enabled", False)
+            or not getattr(ev, "hmac_sig", "")
+            or is_remote_observe_only(ev)
+            or str(details.get("disposition", "")).strip().casefold() == "health"
+        ):
+            return False
+        try:
+            if not bus.verify(ev):
+                return False
+            disposition = event_disposition(ev)
+            if disposition not in {"active", "practice"}:
+                return False
+            combat = getattr(self._manager, "modules", {}).get("Adversary Combat")
+            if combat is None or getattr(combat, "_bus", None) is not bus:
+                return False
+            from angerona.modules.adversary_combat import AdversaryCombat, CombatPolicy
+
+            policy = combat.policy()
+            if (
+                not isinstance(policy, CombatPolicy) or policy.enabled is not True
+                or policy.mode not in {"contain", "aggressive", "maximum"}
+                or policy.process_action not in {"suspend", "terminate"}
+                or not isinstance(policy.min_severity, Severity)
+                or ev.severity < policy.min_severity
+                or any(type(value) is not bool for value in (
+                    policy.block_network, policy.quarantine_files,
+                    policy.isolate_host, policy.activate_honeypots,
+                ))
+            ):
+                return False
+            actions = AdversaryCombat._response_actions(ev)
+            if not actions:
+                return False
+            covered = set()
+            if policy.block_network:
+                covered.update(actions.intersection({"block_remote_ip", "isolate_program"}))
+            if policy.quarantine_files and "quarantine_file" in actions:
+                covered.add("quarantine_file")
+            # Match Combat's choice between alternatives without probing or
+            # revalidating the live process; its mutation boundary owns that.
+            suspend = (
+                ("suspend_process" in actions and "terminate_process" not in actions)
+                or policy.process_action == "suspend" or policy.mode == "contain"
+            )
+            selected = "suspend_process" if suspend else "terminate_process"
+            if selected in actions:
+                covered.add(selected)
+            if policy.activate_honeypots and "activate_honeypots" in actions:
+                covered.add("activate_honeypots")
+            if (
+                policy.isolate_host and policy.mode == "maximum"
+                and disposition == "active" and ev.severity >= Severity.CRITICAL
+                and "isolate_host" in actions
+            ):
+                covered.add("isolate_host")
+            # Lower-severity host isolation also requires Combat's live causal
+            # threshold. Do not infer that threshold from an aggregate count.
+            if not covered:
+                return False
+            snapshot = combat.response_snapshot()
+            if (
+                not isinstance(snapshot, dict)
+                or type(snapshot.get("ready")) is not bool
+                or not isinstance(snapshot.get("state"), str)
+                or not isinstance(snapshot.get("reason"), str)
+            ):
+                return False
+            state = " ".join(snapshot["state"].split())[:80]
+            reason = " ".join(snapshot["reason"].split())[:500]
+            if not state or snapshot["ready"] != (state == "ARMED"):
+                return False
+        except Exception:
+            return False
+        action_names = ", ".join(sorted(covered))
+        held = not snapshot["ready"]
+        if held:
+            message = (
+                f"Playbook[automatic]: Adversary Combat standing rules cover "
+                f"{action_names}; response HELD — {state}: {reason}. "
+            )
+        else:
+            message = (
+                f"Playbook[automatic]: Adversary Combat owns automatic review of "
+                f"{action_names} under its standing rules. "
+            )
+        self.emit(
+            message + "Admission and completion are unconfirmed here; only verified "
+            "Combat receipts prove action. Exact-target and safety checks still apply.",
+            Severity.MEDIUM if held else Severity.INFO,
+            trigger=ev.module,
+            trigger_ts=ev.ts,
+            response_owner="Adversary Combat",
+            response_state="held" if held else "automatic-review",
+            policy_actions=sorted(covered),
+            combat_state=state,
+            disposition="health",
+            response_authorized=False,
+            action_succeeded=False,
+            admission_confirmed=False,
+            postcondition_verified=False,
+            mitigated=False,
+        )
+        return True
+
     def _event_integrity_ok(self, ev) -> bool:
         """Re-verify authenticated evidence at the response action sink.
 
@@ -352,6 +478,8 @@ class SOARModule(BaseModule):
                 "containment is forbidden.",
                 Severity.INFO,
             )
+            return
+        if self._report_combat_ownership(ev):
             return
         pid = ev.details.get("pid")
 
@@ -395,8 +523,7 @@ class SOARModule(BaseModule):
                 self.emit(
                     f"Playbook[contain]: recommend SUSPEND pid {pid} "
                     f"(trigger: {ev.module} — {ev.message[:60]}). "
-                    "Active defense engages automatically under attack; set "
-                    "ANGERONA_SOAR_AUTOCONTAIN=1 to always auto-act.",
+                    f"{self._delegation_description()}",
                     Severity.MEDIUM, pid=pid,
                 )
             return
@@ -528,8 +655,9 @@ class SOARModule(BaseModule):
             return
         submit(ev)
         self.emit(
-            f"Playbook[contain]: queued exact process instance pid {pid} for "
-            "Adversary Combat; only Combat's signed completion receipt counts as success.",
+            f"Playbook[contain]: submitted exact process instance pid {pid} to "
+            "Adversary Combat; admission is unconfirmed and only Combat's signed "
+            "completion receipt counts as success.",
             Severity.INFO,
             pid=pid,
             action="combat_delegate",
@@ -537,6 +665,7 @@ class SOARModule(BaseModule):
             trigger_module=ev.module,
             action_succeeded=False,
             action_pending=True,
+            admission_confirmed=False,
             response_authorized=False,
         )
 
@@ -572,8 +701,7 @@ class SOARModule(BaseModule):
 
     # ── under-attack detection + active-defense state ────────────────────────
     def _track_attack(self, ev) -> None:
-        """Record a HIGH+ event and, on a multi-process burst, declare UNDER ATTACK
-        so active defense engages automatically."""
+        """Record a burst for legacy delegation when its policy is enabled."""
         now = time.time()
         pid = ev.details.get("pid")
         self._high_events.append((now, pid, ev.module))
@@ -584,8 +712,8 @@ class SOARModule(BaseModule):
             if now >= self._under_attack_until:      # newly entering attack state
                 self.emit(
                     f"⚠ UNDER ATTACK — {len(self._high_events)} high-severity events across "
-                    f"{len(pids)} process(es) in {int(_ATTACK_WINDOW_S)}s. Active defense engaged: "
-                    "corroborated threats will be contained automatically.",
+                    f"{len(pids)} process(es) in {int(_ATTACK_WINDOW_S)}s. "
+                    f"{self._delegation_description()}",
                     Severity.CRITICAL, under_attack=True, pids=sorted(pids))
             self._under_attack_until = now + _ACTIVE_DEFENSE_HOLD_S
 

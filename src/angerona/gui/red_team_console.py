@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from html import escape
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
@@ -368,13 +369,14 @@ class RedTeamConsole(QDialog):
         self.cb_remediate = QCheckBox("Auto-contain detected markers during the run")
         self.cb_remediate.setChecked(True)
         self.cb_remediate.setToolTip(
-            "Requires an armed response module and a compatible containment policy. "
+            "Attempts containment through the current response policy. If Combat is "
+            "unready, the selected simulation still runs with a warning. "
             "Uncheck for a detection-only run."
         )
         ol.addWidget(self.cb_remediate)
         remediation_help = QLabel(
-            "A running module may still be unable to respond. Containment tests "
-            "check response readiness before launch and require verified results. "
+            "The selected simulation can run even when Combat needs recovery. "
+            "Response limits stay in effect, and containment requires verified results. "
             "Uncheck this option for a detection-only run."
         )
         remediation_help.setWordWrap(True)
@@ -411,6 +413,15 @@ class RedTeamConsole(QDialog):
         self.live_status.setWordWrap(True)
         self.live_status.setStyleSheet("color:#9fb3c8; font-size:11px;")
         live_lay.addWidget(self.live_status)
+        self.launch_warning = QLabel()
+        self.launch_warning.setObjectName("RedTeamLaunchWarning")
+        self.launch_warning.setAccessibleName("Simulation response warning")
+        self.launch_warning.setTextFormat(Qt.PlainText)
+        self.launch_warning.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.launch_warning.setWordWrap(True)
+        self.launch_warning.setStyleSheet("color:#fbbf24; font-size:11px;")
+        self.launch_warning.hide()
+        live_lay.addWidget(self.launch_warning)
         self._chip_wrap = QWidget(); self._chips: dict[str, _StageChip] = {}
         self._active_stage: str | None = None
         cl = QGridLayout(self._chip_wrap)
@@ -511,8 +522,9 @@ class RedTeamConsole(QDialog):
             else:
                 message = (
                     f"Containment readiness now ({scope}): {state}. {reason} "
-                    "If this persists, containment launch will be refused. Review "
-                    "Settings > Adversary Combat, or choose detection-only."
+                    "Launch will continue with a warning. Response permissions will "
+                    "not be expanded; unavailable containment stays unverified. "
+                    "Review Settings > Adversary Combat for response recovery."
                 )
                 color = "#fbbf24"
         self.response_readiness.setText(message)
@@ -541,6 +553,9 @@ class RedTeamConsole(QDialog):
             self.log.append("Additional launch refused — " + reason)
             return
         self.run_spinner.stop()
+        warning = str(result.get("response_warning") or "") if status == "accepted" else ""
+        self.launch_warning.setText(warning)
+        self.launch_warning.setVisible(bool(warning))
         if status == "accepted":
             self.launch_btn.setEnabled(False)
             self._run_pending = True
@@ -568,6 +583,8 @@ class RedTeamConsole(QDialog):
             )
             self.live_status.setStyleSheet("color:#fbbf24; font-size:11px;")
         self.log.append(self.live_status.text())
+        if warning:
+            self.log.append(escape("Containment warning — " + warning))
 
     @staticmethod
     def _native_analytic_metric(payload: object) -> tuple[int, int] | None:
@@ -681,6 +698,12 @@ class RedTeamConsole(QDialog):
             color = "#2fe38a"
             self.run_spinner.start("Containment verified")
             self.run_spinner.finish("Containment verified")
+        elif count == 0 and self.launch_warning.text():
+            message = (
+                f"Containment unverified — 0/{eligible} verified; response was "
+                "unavailable at launch. Review the report."
+            )
+            color = "#fbbf24"
         else:
             message = f"Containment {'partial' if count else 'failed'} — {count}/{eligible} verified; {eligible - count} remain unverified. Review the report."
             color = "#fbbf24" if count else "#ff7373"

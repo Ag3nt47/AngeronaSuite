@@ -84,6 +84,7 @@ _SIGNED_RECORD_TYPES = frozenset({
 })
 _RECOVERY_AUTHORIZATION_SCOPE = "response/adversary-combat"
 _RECOVERY_AUTHORIZATION_MAX_AGE_S = 300.0
+_STARTUP_REQUEST_MAX_AGE_S = 30.0
 _RECOVERY_DISPOSITIONS = frozenset({"confirmed_applied", "confirmed_not_applied"})
 _MUTATION_GENERATION = re.compile(r"[0-9a-f]{32}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -1189,6 +1190,9 @@ class AdversaryCombat(BaseModule):
         # commands or rollback. Admission owns only bounded in-memory state.
         self._admission_lock = threading.Lock()
         self._response_initialized = False
+        self._startup_buffering = False
+        self._startup_admitted_at: dict[int, float] = {}
+        self._admitted_identities: dict[int, str] = {}
         self._response_counts: dict[str, int] = {}
         self._last_response_decision = "waiting"
         self._seen_order: deque[str] = deque(maxlen=8192)
@@ -1393,7 +1397,89 @@ class AdversaryCombat(BaseModule):
         if self._bus is None:
             self.set_health(0, "event bus unavailable")
             return
-        if not self._reconcile_state():
+        # Subscribe before journal I/O so detectors starting alongside Combat
+        # cannot lose their first exact contracts. This only admits new events;
+        # historical EventBus records are deliberately never replayed.
+        bus = self._bus
+        stop = self.generation_stop_event()
+        # Overflow diagnostics publish inline and may re-enter this callback.
+        admission_lock = threading.RLock()
+        admission_open = True
+        self._startup_buffering = True
+
+        def submit_current(event: Event) -> None:
+            with admission_lock:
+                if admission_open and not stop.is_set():
+                    self._submit(event)
+
+        def close_admission() -> None:
+            nonlocal admission_open
+            with admission_lock:
+                admission_open = False
+                self._startup_buffering = False
+                while not self._queue.empty():
+                    try:
+                        discarded = self._queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    else:
+                        self._queue.task_done()
+                        self._forget_unhandled_submission(discarded)
+                        self._response_decision("generation_discarded")
+                self._startup_admitted_at.clear()
+                self._admitted_identities.clear()
+            bus.unsubscribe(submit_current)
+
+        bus.subscribe(submit_current)
+        try:
+            self._run_response_generation(stop, admission_lock, close_admission)
+        finally:
+            close_admission()
+            self._response_initialized = False
+
+    def _reconcile_startup_once(self) -> bool:
+        """Permit one narrowly proven no-effect checkpoint repair at startup."""
+        if self._reconcile_state():
+            return True
+        original_error = self._journal_error
+        if (
+            not self.policy().enabled
+            or original_error != (
+                "combat journal rollback or incomplete anchor transaction detected"
+            )
+            or self.stopping
+        ):
+            return False
+        try:
+            from angerona.core.combat_checkpoint_recovery import recover_drill_checkpoint
+
+            def require_active_startup() -> None:
+                if self.stopping or not self.policy().enabled:
+                    raise RuntimeError("response startup is no longer armed")
+
+            report = recover_drill_checkpoint(self, before_commit=require_active_startup)
+            if report.get("recovered") is True and not self.stopping:
+                # The helper never re-arms authority. Normal strict reconciliation
+                # must independently validate the advanced checkpoint and journal.
+                reconciled = self._reconcile_state()
+                if reconciled:
+                    self.emit(
+                        "Adversary Combat repaired a proven no-effect drill "
+                        "checkpoint and verified its action journal. No host "
+                        "containment was performed by this accounting repair.",
+                        Severity.INFO, disposition="health",
+                        response_authorized=False,
+                        event_type="combat_startup_checkpoint_recovered",
+                    )
+                return reconciled
+        except Exception:
+            pass
+        self._journal_error = original_error
+        return False
+
+    def _run_response_generation(self, stop, admission_lock, close_admission) -> None:
+        if not self._reconcile_startup_once():
+            close_admission()
             self._mutation_blocked = True
             self.set_health(0, f"RECOVERY REQUIRED — {self._journal_error or 'journal unavailable'}")
             recovery_error = " ".join(
@@ -1410,12 +1496,17 @@ class AdversaryCombat(BaseModule):
             # A failed authority prerequisite is a blocked capability, not a
             # crashed worker. Keep the original diagnosis and wait interruptibly
             # for shutdown/operator repair instead of triggering restart storms.
-            while not self.stopping:
+            while not stop.is_set():
                 self.sleep(30.0)
             return
-        self._bus.subscribe(self._submit)
-        self._response_initialized = True
+        if stop.is_set():
+            return
+        with admission_lock:
+            self._startup_buffering = False
+            self._response_initialized = True
         policy = self.policy()
+        if stop.is_set():
+            return
         if policy.enabled and policy.activate_honeypots and not self._mutation_blocked:
             self._ensure_honeypots()
         if self._mutation_blocked or self._journal_saturated:
@@ -1437,7 +1528,7 @@ class AdversaryCombat(BaseModule):
         # empty wakeups without adding response latency, and each completed
         # wait/work cycle renews the watchdog's bounded liveness deadline.
         self.mark_cycle_complete(interval_seconds=1.0)
-        stop = self.generation_stop_event()
+        expiry_reported = False
         try:
             while not stop.is_set():
                 try:
@@ -1447,7 +1538,33 @@ class AdversaryCombat(BaseModule):
                     continue
                 try:
                     if stop.is_set():
+                        self._forget_unhandled_submission(event)
+                        self._response_decision("generation_discarded")
                         return
+                    with self._admission_lock:
+                        admitted_at = self._startup_admitted_at.pop(id(event), None)
+                    if (
+                        admitted_at is not None
+                        and (
+                            time.monotonic() - admitted_at > _STARTUP_REQUEST_MAX_AGE_S
+                            or not isinstance(event.ts, (int, float))
+                            or not math.isfinite(event.ts)
+                            or not -1.0 <= time.time() - event.ts <= _STARTUP_REQUEST_MAX_AGE_S
+                        )
+                    ):
+                        self._forget_unhandled_submission(event)
+                        self._response_decision("startup_expired")
+                        if not expiry_reported:
+                            expiry_reported = True
+                            self.emit(
+                                "Adversary Combat discarded startup requests older "
+                                "than 30 seconds; fresh detector evidence is required.",
+                                Severity.MEDIUM, disposition="health",
+                                response_authorized=False,
+                            )
+                        continue
+                    with self._admission_lock:
+                        self._admitted_identities.pop(id(event), None)
                     self._handle(event)
                     self.mark_cycle_complete(interval_seconds=1.0)
                 finally:
@@ -1509,8 +1626,39 @@ class AdversaryCombat(BaseModule):
             and abs(start - contracted_start) <= 0.001
         )
 
+    @staticmethod
+    def _submission_identity(event: Event) -> str:
+        details = event.details if isinstance(event.details, dict) else {}
+        queue_request_id = str(details.get("queue_request_id") or "").casefold()
+        return (
+            f"soar:{queue_request_id}"
+            if re.fullmatch(r"[0-9a-f]{32}", queue_request_id)
+            else str(getattr(event, "hmac_sig", "") or "")
+        ) or (
+            f"{event.module}\0{event.ts:.9f}\0{event.message}\0"
+            f"{json.dumps(event.details or {}, sort_keys=True, default=str)}"
+        )
+
+    def _forget_unhandled_submission(self, event: Event) -> None:
+        """Discarding queued work must not poison a fresh authenticated retry."""
+        with self._admission_lock:
+            self._startup_admitted_at.pop(id(event), None)
+            # Event.details is mutable. Release only the identity actually
+            # reserved at admission, never a later caller-supplied replacement.
+            identity = self._admitted_identities.pop(id(event), None)
+            if identity is None:
+                return
+            self._seen.discard(identity)
+            try:
+                self._seen_order.remove(identity)
+            except ValueError:
+                pass
+
     def _submit(self, event: Event) -> None:
-        if self.status != "running" or self.stopping or self._mutation_blocked:
+        if (
+            self.status != "running" or self.stopping
+            or (self._mutation_blocked and not self._startup_buffering)
+        ):
             return
         policy = self.policy()
         if not policy.enabled or event.module in _SELF_MODULES:
@@ -1536,17 +1684,9 @@ class AdversaryCombat(BaseModule):
         if not self._integrity_ok(event):
             self._response_decision("integrity_failed")
             return
-        signature = str(getattr(event, "hmac_sig", "") or "")
         details = event.details if isinstance(event.details, dict) else {}
         queue_request_id = str(details.get("queue_request_id") or "").casefold()
-        identity = (
-            f"soar:{queue_request_id}"
-            if re.fullmatch(r"[0-9a-f]{32}", queue_request_id)
-            else signature
-        ) or (
-            f"{event.module}\0{event.ts:.9f}\0{event.message}\0"
-            f"{json.dumps(event.details or {}, sort_keys=True, default=str)}"
-        )
+        identity = self._submission_identity(event)
         with self._admission_lock:
             if identity in self._seen:
                 return
@@ -1554,24 +1694,33 @@ class AdversaryCombat(BaseModule):
                 self._seen.discard(self._seen_order[0])
             self._seen_order.append(identity)
             self._seen.add(identity)
-        try:
-            if (
-                isinstance(self._queue, _ResponseEventQueue)
-                and self._time_sensitive_process_request(event)
-            ):
-                self._queue.put_urgent_nowait(event)
-            else:
-                self._queue.put_nowait(event)
-        except queue.Full:
-            # Admission failed, so the dedup claim must fail with it. Keeping
-            # the identity would poison this exact request forever even after
-            # capacity returns.
-            with self._admission_lock:
+            # Register bookkeeping before queue visibility. A ready worker can
+            # dequeue immediately, and must not leave a late map entry behind.
+            self._admitted_identities[id(event)] = identity
+            if self._startup_buffering:
+                self._startup_admitted_at[id(event)] = time.monotonic()
+            saturated = False
+            try:
+                if (
+                    isinstance(self._queue, _ResponseEventQueue)
+                    and self._time_sensitive_process_request(event)
+                ):
+                    self._queue.put_urgent_nowait(event)
+                else:
+                    self._queue.put_nowait(event)
+            except queue.Full:
+                saturated = True
+                self._admitted_identities.pop(id(event), None)
+                self._startup_admitted_at.pop(id(event), None)
                 self._seen.discard(identity)
                 try:
                     self._seen_order.remove(identity)
                 except ValueError:
                     pass
+        if saturated:
+            # Admission failed, so the dedup claim must fail with it. Keeping
+            # the identity would poison this exact request forever even after
+            # capacity returns.
             self._dropped_events += 1
             self._response_decision("queue_saturated")
             self.set_health(30, "combat event queue saturated")

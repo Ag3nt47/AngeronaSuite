@@ -18,7 +18,7 @@ if errorlevel 1 (
 echo [*] Terminating Angerona-owned Python processes only ...
 set "ANGERONA_ROOT=%~dp0"
 set "ANGERONA_OWNER_SCRIPT=%~dp0tools\angerona_process_owner.ps1"
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command ". $env:ANGERONA_OWNER_SCRIPT; $root=[IO.Path]::GetFullPath($env:ANGERONA_ROOT); Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'python.exe' -or $_.Name -eq 'pythonw.exe') -and (Test-AngeronaProcessOwnership -Process $_ -Root $root) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command ". $env:ANGERONA_OWNER_SCRIPT; $root=[IO.Path]::GetFullPath($env:ANGERONA_ROOT); $snapshot=@(Get-CimInstance Win32_Process); $snapshot | Where-Object { ($_.Name -eq 'python.exe' -or $_.Name -eq 'pythonw.exe') -and (Test-AngeronaProcessOwnership -Process $_ -Root $root -ProcessSnapshot $snapshot) } | Sort-Object CreationDate -Descending | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 
 echo [*] Unloading Angerona's llama3 model ...
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "$ProgressPreference='SilentlyContinue'; foreach($m in @('llama3','llama3:8b','llama3:latest')) {try {$body=@{model=$m;prompt='';keep_alive=0;stream=$false}|ConvertTo-Json -Compress; Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:11434/api/generate' -ContentType 'application/json' -Body $body -TimeoutSec 4|Out-Null} catch {}}" >nul 2>&1

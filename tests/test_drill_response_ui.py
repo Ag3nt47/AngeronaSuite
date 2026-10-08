@@ -205,7 +205,7 @@ def _launch_window():
     return window, lines
 
 
-def test_response_gate_refuses_before_environment_or_engine_changes(monkeypatch):
+def test_response_hold_warns_without_changing_response_authority(monkeypatch):
     window, lines = _launch_window()
     monkeypatch.setattr(
         "angerona.core.drill_readiness.assess_drill_response",
@@ -213,13 +213,56 @@ def test_response_gate_refuses_before_environment_or_engine_changes(monkeypatch)
                                   "reason": "journal hold", "checked_at": 0, "policy": {}},
     )
     monkeypatch.setenv("ANGERONA_SOAR_KILL_AND_ROLLBACK", "0")
-    result = window._run_simulation({"run_redteam": True, "auto_remediate": True})
-    assert result["status"] == "rejected"
+    result = window._check_simulation_response({"run_redteam": True, "auto_remediate": True})
+    assert result["status"] == "warning"
     assert "journal hold" in result["reason"]
-    assert "not necessarily armed" in result["reason"]
+    assert "selected simulation will run" in result["reason"]
     assert os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] == "0"
     assert not hasattr(window, "_shark_prev_armed")
-    assert "Containment test blocked" in lines[-1]
+    assert "Containment warning" in lines[-1]
+
+
+def test_readiness_warning_persists_through_run_and_unverified_result(console, monkeypatch):
+    dialog, _ = console
+    warning = "RECOVERY REQUIRED: <b>journal hold</b>. Containment stays unverified."
+    monkeypatch.setattr(
+        "angerona.core.drill_readiness.assess_drill_response",
+        lambda *_args, **_kwargs: {"ready": False, "state": "RECOVERY REQUIRED",
+                                  "reason": "journal hold"},
+    )
+    dialog._refresh_response_readiness()
+    assert "Launch will continue with a warning" in dialog.response_readiness.text()
+    dialog.set_launch_status(
+        {"status": "accepted", "runs": {"red_team": "redteam-current"},
+         "response_warning": warning},
+        {"auto_remediate": True},
+    )
+    assert dialog._containment_requested
+    assert dialog.launch_warning.text() == warning
+    assert not dialog.launch_warning.isHidden()
+    assert "<b>journal hold</b>" in dialog.log.toPlainText()
+    assert not dialog.run_spinner._done_timer.isActive()
+    dialog.finish_run()
+    assert dialog.launch_warning.text() == warning
+    dialog.record_verified_report("red_team", "redteam-current", _result(0, 37, "failed"))
+    assert "Containment unverified" in dialog.live_status.text()
+    assert "0/37 verified" in dialog.live_status.text()
+    assert "#fbbf24" in dialog.live_status.styleSheet()
+    assert dialog.launch_warning.text() == warning
+    assert not dialog.launch_warning.isHidden()
+    assert not dialog.run_spinner._done_timer.isActive()
+
+
+def test_new_ready_run_clears_previous_readiness_warning(console):
+    dialog, _ = console
+    dialog.set_launch_status(
+        {"status": "accepted", "runs": {"red_team": "redteam-current"},
+         "response_warning": "Prior recovery hold"}, {"auto_remediate": True},
+    )
+    dialog.record_verified_report("red_team", "redteam-current", _result(0, 1, "failed"))
+    _accepted(dialog)
+    assert dialog.launch_warning.isHidden()
+    assert dialog.launch_warning.text() == ""
 
 
 def test_detection_only_allows_readiness_hold_without_arming(monkeypatch):

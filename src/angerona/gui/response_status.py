@@ -18,7 +18,39 @@ _DECISIONS = {
     "recovery_required": "Journal recovery or capacity prevents automatic action.",
     "executed": "A response action was recorded as applied.",
     "no_eligible_target": "No action completed: check policy, target and action receipts.",
+    "startup_expired": "Startup evidence exceeded 30 seconds; a fresh detector observation is required.",
+    "generation_discarded": "Pending work was discarded when this worker stopped or failed startup.",
 }
+
+
+def _rule_summary(policy) -> str:
+    """Describe the effective standing policy without granting action authority."""
+    if policy is None:
+        return "Automatic rules unavailable; no policy could be read."
+    minimum = getattr(getattr(policy, "min_severity", None), "name", "UNKNOWN")
+    mode = getattr(policy, "mode", "unknown")
+    process = ("suspend" if mode == "contain" else
+               getattr(policy, "process_action", "unknown"))
+    process = {"suspend": "Suspend", "terminate": "Terminate"}.get(process, "Unavailable")
+    on = lambda name: getattr(policy, name, None) is True
+    lines = [
+        f"Effective automatic rules · {minimum}+ authenticated detector evidence",
+        "Verified file → " + ("Quarantine with Undo" if on("quarantine_files") else "No automatic quarantine"),
+        "Exact process instance → " + process + " (protected processes excluded)",
+        "Named remote address/program → " + ("Block with Undo" if on("block_network") else "No automatic network block"),
+    ]
+    if on("isolate_host") and mode == "maximum":
+        count = getattr(policy, "isolation_event_threshold", "?")
+        seconds = getattr(policy, "isolation_window_seconds", "?")
+        lines.append(f"Explicit local-host evidence → Isolate on CRITICAL or {count} distinct causes within {seconds}s")
+    else:
+        lines.append("Whole-host isolation → Off for this policy")
+    lines.append("Deception → " + ("Keep honeypots active" if on("activate_honeypots") else "No automatic activation"))
+    lines.append(
+        "Rules run without per-alert approval when ARMED. Each action still needs "
+        "an exact detector-authorized target; health, exposure and AI advice are not containment commands."
+    )
+    return "\n".join(lines)
 
 
 class ResponseStatusPanel(QFrame):
@@ -34,8 +66,10 @@ class ResponseStatusPanel(QFrame):
         self.reason_label = QLabel()
         self.activity_label = QLabel()
         self.guidance_label = QLabel()
+        self.rules_label = QLabel()
         for label in (
             self.state_label, self.reason_label, self.activity_label, self.guidance_label,
+            self.rules_label,
         ):
             label.setTextFormat(Qt.PlainText)
             label.setWordWrap(True)
@@ -64,6 +98,7 @@ class ResponseStatusPanel(QFrame):
             self.reason_label.setText("Open Settings from the running dashboard to inspect Combat.")
             self.activity_label.clear()
             self.guidance_label.clear()
+            self.rules_label.clear()
             return
         self.state_label.setText("Automatic response: " + str(snapshot.get("state", "UNKNOWN")))
         color = "#4ade80" if snapshot.get("ready") else "#fbbf24"
@@ -83,8 +118,9 @@ class ResponseStatusPanel(QFrame):
             guidance = (
                 "Automatic action is held. Review the recovery error and verified action "
                 "history. Preserve the journal, protected anchor and witness together; "
-                "use verified recovery before rearming. Restarting or changing response "
-                "severity does not repair this hold."
+                "use verified recovery before rearming. Startup can repair only a proven "
+                "unapplied fixed simulation-marker checkpoint. Other holds need separate "
+                "verified recovery; changing severity does not repair them."
             )
         elif snapshot.get("state") == "DISABLED":
             guidance = (
@@ -105,6 +141,14 @@ class ResponseStatusPanel(QFrame):
                 "bound to an exact action and target."
             )
         self.guidance_label.setText(guidance)
+        try:
+            reader = getattr(module, "policy", None)
+            policy = reader() if callable(reader) else None
+        except Exception:
+            policy = None
+        rules = _rule_summary(policy)
+        if self.rules_label.text() != rules:
+            self.rules_label.setText(rules)
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)

@@ -37,6 +37,18 @@ identifiers, timestamps, and counts are synthetic.
 
 ## What's new
 
+The [simulation and unattended-response update](analysis/unattended-response-2026-10-08.md)
+lets benign Shark and Red Team exercises continue with a visible warning when
+Combat response is unavailable. Selected techniques still run; a warning never
+counts as verified containment. The dashboard footer now shows **Auto ARMED**,
+**Auto HELD**, or the applicable inactive state. **Settings → Adversary Combat**
+lists the effective automatic rules beside readiness and verified action history.
+Automatic defense already defaults to enabled and follows exact authenticated
+detector contracts without per-alert approval or an AI-model dependency.
+Fresh alerts arriving during response startup enter a bounded queue. A narrowly
+proved, unapplied fixed simulation-marker checkpoint can recover at startup
+with verified private backups; unrelated recovery holds remain visible.
+
 The [sustained responsiveness follow-up](analysis/sustained-responsiveness-2026-10-04.md)
 adds **default-on adaptive routine scan pacing**. Low dashboard FPS or high host
 CPU progressively delays routine scans, then restores their pace as load eases.

@@ -2059,6 +2059,8 @@ class MainWindow(QMainWindow):
     def _restore_simulation_response_policy(self) -> None:
         import os
 
+        if getattr(self, "_sim_response_escalated", True) is False:
+            return  # A warning-only launch never changed the operator's policy.
         for key, previous in (
             ("ANGERONA_SOAR_KILL_AND_ROLLBACK", getattr(self, "_shark_prev_armed", None)),
             ("ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY",
@@ -2076,6 +2078,7 @@ class MainWindow(QMainWindow):
         result = {"status": status, "reason": reason}
         if status == "accepted":
             result["runs"] = dict(getattr(self, "_sim_report_runs", {}))
+            result["response_warning"] = str(getattr(self, "_sim_response_warning", ""))
         rtc = getattr(self, "_rt_console", None)
         if rtc is not None:
             rtc.set_launch_status(result, cfg)
@@ -2083,7 +2086,7 @@ class MainWindow(QMainWindow):
         return result
 
     def _check_simulation_response(self, cfg: dict) -> dict:
-        """Read memory-only readiness; never arm or repair response authority."""
+        """Warn on response limits without blocking the benign drill itself."""
         from angerona.core.drill_readiness import assess_drill_response
 
         require_process = bool(cfg.get("run_redteam"))
@@ -2092,14 +2095,17 @@ class MainWindow(QMainWindow):
         )
         self._sim_response_readiness_start = dict(readiness)
         self._sim_response_require_process = require_process
+        self._sim_response_warning = ""
         if bool(cfg.get("auto_remediate", True)) and not readiness["ready"]:
             reason = (
-                f"{readiness['state']}: {readiness['reason']}. "
-                "A running module is not necessarily armed for response. "
-                "Review Combat readiness, or select a detection-only run."
+                f"{readiness['state']}: {readiness['reason']} "
+                "The selected simulation will run. Response permissions will not be "
+                "expanded; unavailable containment stays unverified. "
+                "Only authenticated action receipts can prove containment."
             )
-            self.console._append(f"[red-team] Containment test blocked: {reason}")
-            return self._simulation_launch_status("rejected", reason, cfg)
+            self._sim_response_warning = reason
+            self.console._append(f"[red-team] Containment warning: {reason}")
+            return {"status": "warning", "reason": reason}
         return {"status": "ready", "reason": str(readiness.get("reason") or "")}
 
     def _abort_simulation_launch(self, reason: str, started: tuple = ()) -> None:
@@ -2178,12 +2184,15 @@ class MainWindow(QMainWindow):
         self._shark_prev_armed = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK")
         self._shark_prev_minsev = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY")
         self._shark_prev_scope = os.environ.get("ANGERONA_SOAR_RESPONSE_SCOPE")
-        # Auto-remediation (ON by default): arm SOAR's kill+rollback tier and lower
-        # the response threshold for the drill so it actually contains the benign
-        # MEDIUM/HIGH marker detections (the self-kill guard means this only rolls
-        # back the dropped artifacts). Restored to the user's default when done.
+        # Preserve the requested test/scoring mode even when response is held.
+        # Only an already-ready Combat snapshot permits the existing temporary
+        # drill scope/tier; a readiness warning never repairs or grants authority.
         self._sim_auto_remediate = bool(cfg.get("auto_remediate", True))
-        if self._sim_auto_remediate:
+        self._sim_response_escalated = (
+            self._sim_auto_remediate
+            and self._sim_response_readiness_start.get("ready") is True
+        )
+        if self._sim_response_escalated:
             os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = "1"
             os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY"] = "MEDIUM"
             scope_roots = [str(self.config.data_dir / "drill-sandbox")]
@@ -2451,8 +2460,11 @@ class MainWindow(QMainWindow):
             return
         import os
         self._shark_prev_armed = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK")
-        os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = "1"
-        reconcile_module_usage(self.manager)
+        self._sim_auto_remediate = True
+        self._sim_response_escalated = self._sim_response_readiness_start.get("ready") is True
+        if self._sim_response_escalated:
+            os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = "1"
+            reconcile_module_usage(self.manager)
         self.shark_monitor.reset()
         self.shark_monitor.append("Launching Red Team Engine…")
         self.shark_monitor.show()
@@ -2510,10 +2522,11 @@ class MainWindow(QMainWindow):
             self._legacy_redteam_watch = None
             self._legacy_redteam_active = False
             self._redteam_report_pending = False
-            if self._shark_prev_armed is None:
-                os.environ.pop("ANGERONA_SOAR_KILL_AND_ROLLBACK", None)
-            else:
-                os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = self._shark_prev_armed
+            if self._sim_response_escalated:
+                if self._shark_prev_armed is None:
+                    os.environ.pop("ANGERONA_SOAR_KILL_AND_ROLLBACK", None)
+                else:
+                    os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = self._shark_prev_armed
             self.shark_swim.stop()
             self.shark_banner.stop()
             return
@@ -2659,12 +2672,13 @@ class MainWindow(QMainWindow):
             if getattr(self, "_legacy_redteam_active", False):
                 import os
 
-                if self._shark_prev_armed is None:
-                    os.environ.pop("ANGERONA_SOAR_KILL_AND_ROLLBACK", None)
-                else:
-                    os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = (
-                        self._shark_prev_armed
-                    )
+                if getattr(self, "_sim_response_escalated", True):
+                    if self._shark_prev_armed is None:
+                        os.environ.pop("ANGERONA_SOAR_KILL_AND_ROLLBACK", None)
+                    else:
+                        os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = (
+                            self._shark_prev_armed
+                        )
                 self._legacy_redteam_active = False
             self._redteam_report_pending = False
             self._simulation_aar_finished()
@@ -4370,6 +4384,12 @@ class MainWindow(QMainWindow):
         footer = getattr(self, "_dashboard_footer", None)
         if footer is not None:
             footer.update_posture(p)
+            try:
+                combat = getattr(self.manager, "modules", {}).get("Adversary Combat")
+                response = combat.response_snapshot() if combat is not None else None
+            except Exception:
+                response = None
+            footer.update_response(response)
         orbital = getattr(self, "_orbital_dashboard", None)
         if orbital is not None:
             orbital.update_posture(p)

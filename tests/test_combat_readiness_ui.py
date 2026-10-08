@@ -339,7 +339,8 @@ def test_shark_only_does_not_require_redteam_process_policy(monkeypatch):
     combined = MainWindow._check_simulation_response(
         window, {"run_shark": True, "run_redteam": True, "auto_remediate": True},
     )
-    assert combined["status"] == "rejected"
+    assert combined["status"] == "warning"
+    assert "process response unavailable" in combined["reason"]
     assert window._sim_response_require_process is True
     assert requests == [False, True]
 

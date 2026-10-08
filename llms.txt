@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.13.0
-Date: 2026-10-04
+Date: 2026-10-08
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -22,7 +22,29 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST (v1.13.0 — Sustained responsiveness, 2026-10-04)
+## LATEST (v1.13.0 — Simulation and unattended response, 2026-10-08)
+
+- Record: analysis/unattended-response-2026-10-08.md. Benign simulations continue
+  with a persistent plain-text warning when Combat is unready. Requested
+  techniques and receipt-based containment scoring remain intact; no response
+  success is inferred from a completed simulation. Unready launches do not
+  temporarily escalate SOAR authority.
+- Combat standing authority already defaults on. It acts on exact authenticated
+  detector evidence independently of Ollama and per-incident human approval.
+  The footer exposes ARMED/HELD/inactive status; Settings > Adversary Combat
+  describes the effective predetermined rules and retains verified action/Undo history.
+- Current-generation startup alerts enter the bounded response queue before
+  reconciliation; only fresh authenticated evidence is handled after readiness.
+  There is no historical-ring replay. Expired/discarded requests cannot claim
+  successful action. SOAR reports effective Combat ownership/hold without
+  duplicate submission or fabricated admission/completion.
+- One exact unapplied fixed drill-marker quarantine checkpoint can recover
+  during enabled startup after full signed-chain, anchor/witness, pinned identity,
+  byte/hash and absent-destination proof plus verified private backups. Other
+  recovery holds remain. tools/recover_combat_drill.py inspects read-only by
+  default; explicit apply also requires stopped app and a fresh matching token.
+
+## Sustained responsiveness (2026-10-04)
 
 - Default-on adaptive_scan_pacing_enabled uses a 30-Hz tiny Qt paint heartbeat
   plus existing CPU samples to pace opted-in routine inventories and inner-loop

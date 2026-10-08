@@ -21,7 +21,7 @@ function Test-AngeronaPathUnderRoot {
 }
 
 function Test-AngeronaProcessOwnership {
-    param($Process, [string]$Root)
+    param($Process, [string]$Root, [object[]]$ProcessSnapshot = @())
     try {
         $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd([char]92, [char]47)
         $exe = if ($Process.ExecutablePath) { [IO.Path]::GetFullPath([string]$Process.ExecutablePath) } else { '' }
@@ -35,16 +35,47 @@ function Test-AngeronaProcessOwnership {
         })
         $approvedModules = @(
             'angerona',
+            'angerona.startup',
             'angerona.resilience.scanner',
             'angerona.resilience.status_ui',
             'angerona.resilience.watchdog'
         )
         if (
-            $suiteInterpreter -and
             $tokens.Count -ge 3 -and
             $tokens[1] -ceq '-m' -and
             $tokens[2] -cin $approvedModules
-        ) { return $true }
+        ) {
+            if ($suiteInterpreter) { return $true }
+            # Windows venv launchers retain a redirector parent while the real
+            # interpreter runs outside the checkout. A base-Python module name
+            # alone is not ownership: require the exact suite parent, identical
+            # invocation, and an older parent birth time from the same snapshot.
+            if ([IO.Path]::GetFileName($exe) -notin @('python.exe', 'pythonw.exe')) {
+                return $false
+            }
+            $parents = @($ProcessSnapshot | Where-Object {
+                $_.ProcessId -eq $Process.ParentProcessId -and
+                $_.ProcessId -ne $Process.ProcessId
+            })
+            if ($parents.Count -ne 1) { return $false }
+            $parent = $parents[0]
+            $parentExe = [IO.Path]::GetFullPath([string]$parent.ExecutablePath)
+            if (-not [bool]($suiteInterpreters | Where-Object {
+                $parentExe.Equals($_, [StringComparison]::OrdinalIgnoreCase)
+            })) { return $false }
+            if ($null -eq $Process.CreationDate -or $null -eq $parent.CreationDate) {
+                return $false
+            }
+            if ([datetime]$parent.CreationDate -gt [datetime]$Process.CreationDate) {
+                return $false
+            }
+            $parentTokens = @(Get-AngeronaCommandLineTokens ([string]$parent.CommandLine))
+            if ($parentTokens.Count -ne $tokens.Count) { return $false }
+            for ($index = 1; $index -lt $tokens.Count; $index++) {
+                if ($parentTokens[$index] -cne $tokens[$index]) { return $false }
+            }
+            return $true
+        }
 
         if ($tokens.Count -lt 2) { return $false }
         $approvedScripts = @(
