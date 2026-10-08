@@ -48,6 +48,8 @@ detector contracts without per-alert approval or an AI-model dependency.
 Fresh alerts arriving during response startup enter a bounded queue. A narrowly
 proved, unapplied fixed simulation-marker checkpoint can recover at startup
 with verified private backups; unrelated recovery holds remain visible.
+Window teardown and worker cleanup are hardened, and package installation uses
+the tested PySide6 6.11.1 runtime.
 
 The [sustained responsiveness follow-up](analysis/sustained-responsiveness-2026-10-04.md)
 adds **default-on adaptive routine scan pacing**. Low dashboard FPS or high host

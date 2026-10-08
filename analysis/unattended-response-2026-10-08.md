@@ -84,7 +84,7 @@ Focused tests use inert targets, isolated authority and mocked host boundaries.
 The simulation changes preserve actual response authorization and truthful
 receipt scoring; the footer and rules panel grant no authority.
 
-The complete Windows regression suite passed: **4,757 passed, 23 skipped** in
+The initial complete Windows regression suite passed: **4,757 passed, 23 skipped** in
 791.36 seconds. This includes the live dashboard's two-run Red Team clickthrough
 with independent OS containment checks and automatic YARA response/Undo tests.
 The offline selfcheck passed **26/26 phases**. Its combined SelfTestRunner
@@ -109,3 +109,55 @@ the same captured process inventory, suite-local interpreter parent, identical
 approved invocation and creation-time ordering. It stops children before
 parents. Unrelated Python applications, changed invocations and reused-parent
 identities are excluded.
+
+## CI-discovered Qt lifetime follow-up
+
+The first published commit passed local validation with PySide6 6.11.1, but the
+four Windows Python-version jobs installed 6.12.0 and encountered native heap
+faults. Eleven other checks passed. The traces included background connection
+collection and widget teardown; they were not failing Python assertions.
+
+Review confirmed two unsafe lifetime paths. The orb's application event filter
+queried native window state during destruction and unrelated lifecycle events.
+It now checks the event type first, handles Destroy using Python bookkeeping
+only, and inspects valid widgets only for its four supported operational events.
+The native minimize/delete/repaint/GC regression now verifies that its child
+process uses the same actual PySide binding as the parent test.
+
+A separate instrumented probe confirmed that Top Talkers' auto-deleted runnable
+destroyed its GUI-affinity signal object on a pool thread. Both connection and
+AI workers now give the signal carrier application ownership and schedule its
+deletion back to the GUI thread, including rejected pool starts. The same probe
+then observed destruction on the GUI thread. This follows Qt's documented
+[thread-affinity and deferred-deletion contract](https://doc.qt.io/qtforpython-6/overviews/qtdoc-threads-qobject.html).
+Closing a dialog remains nonblocking, with existing single-flight and late-result
+guards. These are confirmed hazards; the crash traces alone do not establish a
+single cause for every native failure.
+
+The isolated full-suite rerun with 6.12.0 still reproduced a native abort.
+Package metadata therefore pins **PySide6 6.11.1**, matching the existing
+hash-locked release runtime and the operator's unchanged installation. The
+6.12.0 combination is not represented as validated or supported by this update.
+Both confirmed lifetime fixes remain, and the final suite is rerun with the
+supported binding, retaining the complete test selection.
+
+Focused validation passed on each actual binding: **21 orb lifecycle tests**
+and **32 Top Talkers tests** on both 6.11.1 and 6.12.0. Four new worker cases
+verify GUI-thread destruction after the dialog has already been deleted and
+after rejected starts, for both connection and AI work. The table-render-only
+test uses an inert collector; native worker lifetime remains separately tested.
+
+The broader rerun also exposed two test-fixture assumptions under host load.
+The Windows enrollment retry regression now records real native 1175 errors
+and proves both exact-unchanged reconciliations before every permitted retry,
+including the unchanged attempt limit. The scan deadline tests use the existing
+injected monotonic clock and advance it only inside the operation being tested;
+they prove the operation ran and a late YARA finding is discarded. Production
+retry and scan-deadline behavior is unchanged. These focused files passed
+**23 tests with 3 existing skips** and **15 tests**, respectively.
+
+Final supported-runtime regression result: **4,773 passed, 23 skipped** in
+767.05 seconds using PySide6 6.11.1, with the complete 4,796-test selection.
+The final master manual remains 46 pages; its Qt-version note changed only
+page 46, which was visually rechecked. All other rendered pages match the
+previously approved render byte-for-byte.

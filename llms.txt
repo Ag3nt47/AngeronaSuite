@@ -43,6 +43,10 @@ kernel component is a product capability.
   byte/hash and absent-destination proof plus verified private backups. Other
   recovery holds remain. tools/recover_combat_drill.py inspects read-only by
   default; explicit apply also requires stopped app and a fresh matching token.
+- Qt lifecycle follow-up avoids native widget inspection during destruction and
+  retires Top Talkers worker signals on the GUI thread. PySide6 is pinned to
+  6.11.1, matching the release lock; isolated 6.12.0 still reproduced a native
+  full-suite fault and is not represented as supported.
 
 ## Sustained responsiveness (2026-10-04)
 

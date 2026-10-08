@@ -5,7 +5,6 @@ import io
 import json
 import os
 from pathlib import Path
-import time
 import types
 
 import pytest
@@ -249,14 +248,24 @@ def test_late_direct_file_read_is_truthfully_timed_out(
     target = tmp_path / "late.bin"
     target.write_bytes(b"bounded")
     real_read = scan_module.os.read
+    elapsed = 0.0
+    reads: list[bytes] = []
 
     def delayed_read(descriptor: int, count: int) -> bytes:
-        time.sleep(0.03)
-        return real_read(descriptor, count)
+        nonlocal elapsed
+        content = real_read(descriptor, count)
+        reads.append(content)
+        elapsed = 0.03
+        return content
 
-    monkeypatch.setattr(scan_module.os, "read", delayed_read)
-    result = _center(max_duration_seconds=0.01).scan_path(target)
+    # Keep the injected read and clock local to this scanner; unrelated worker
+    # IO must not advance the test's deadline before the selected file is read.
+    scoped_os = types.SimpleNamespace(**vars(scan_module.os))
+    scoped_os.read = delayed_read
+    monkeypatch.setattr(scan_module, "os", scoped_os)
+    result = _center(max_duration_seconds=0.01, monotonic=lambda: elapsed).scan_path(target)
 
+    assert reads == [b"bounded"]
     assert result.status == "limited"
     assert result.metrics["timed_out"] is True
     assert result.metrics["files_scanned"] == 0
@@ -267,16 +276,24 @@ def test_late_yara_result_is_discarded_and_never_reported_completed(
 ) -> None:
     target = tmp_path / "late-yara.bin"
     target.write_bytes(b"bounded")
-    center = _center(max_duration_seconds=0.1)
+    elapsed = 0.0
+    scanned: list[bytes] = []
+    center = _center(max_duration_seconds=0.1, monotonic=lambda: elapsed)
 
     class SlowScanner:
-        def scan(self, _content: bytes):
-            time.sleep(0.15)
-            return type("Result", (), {"matching_rules": ()})()
+        def scan(self, content: bytes):
+            nonlocal elapsed
+            scanned.append(content)
+            elapsed = 0.15
+            return types.SimpleNamespace(matching_rules=(
+                types.SimpleNamespace(identifier="late_result_must_be_discarded"),
+            ))
 
     monkeypatch.setattr(center, "_make_yara_scanner", lambda: (SlowScanner(), "active"))
     result = center.scan_path(target)
 
+    assert scanned == [b"bounded"]
+    assert not any(finding.category == "Malware signatures" for finding in result.findings)
     assert result.status == "limited"
     assert result.metrics["timed_out"] is True
     assert result.metrics["files_scanned"] == 1

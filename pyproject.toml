@@ -38,7 +38,8 @@ classifiers = [
     "Topic :: Security",
 ]
 dependencies = [
-    "PySide6>=6.6",
+    # Match the validated, hash-locked runtime; 6.12.0 reproduces native faults.
+    "PySide6==6.11.1",
     "psutil>=5.9",
     "requests>=2.31",
     "urllib3>=2.8.0",

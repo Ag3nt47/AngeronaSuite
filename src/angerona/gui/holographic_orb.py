@@ -895,7 +895,8 @@ class HolographicOrbController(QObject):
             self.orb.show_token()
 
     def _is_managed_window(self, watched) -> bool:
-        if not isinstance(watched, QWidget) or not watched.isWindow():
+        if (not isinstance(watched, QWidget) or not isValid(watched)
+                or not watched.isWindow()):
             return False
         if watched is self.orb or bool(watched.property("_angerona_orb_ignore")):
             return False
@@ -917,18 +918,29 @@ class HolographicOrbController(QObject):
         return True
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt signature
-        if self._shutting_down or not self._is_managed_window(watched):
-            return super().eventFilter(watched, event)
+        if self._shutting_down:
+            return False
         event_type = event.type()
+        # QApplication filters also see construction/destruction traffic.
+        # isValid() can still be true during QWidget's Destroy event, when its
+        # native window state is already being dismantled. Drop Python-only
+        # bookkeeping without calling isWindow/property/windowType/parentWidget.
+        if event_type == QEvent.Destroy:
+            self._drop_window(watched)
+            return False
+        if event_type not in (
+            QEvent.Show, QEvent.Move, QEvent.Resize, QEvent.WindowStateChange,
+        ):
+            return False
+        if not self._is_managed_window(watched):
+            return False
         if event_type in (QEvent.Show, QEvent.Move, QEvent.Resize):
             if not (watched.windowState() & Qt.WindowMinimized):
                 self._remember_geometry(watched)
         elif event_type == QEvent.WindowStateChange and self.enabled():
             if watched.windowState() & Qt.WindowMinimized:
                 self._defer_collapse(watched)
-        elif event_type == QEvent.Destroy:
-            self._drop_window(watched)
-        return super().eventFilter(watched, event)
+        return False
 
     def _defer_collapse(self, window: QWidget) -> None:
         # A dialog can be restored or deleted before this deferred action runs.

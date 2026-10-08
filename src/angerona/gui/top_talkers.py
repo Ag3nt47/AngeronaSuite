@@ -16,7 +16,7 @@ import weakref
 from collections import defaultdict
 from typing import Callable, Optional
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtCore import QCoreApplication, QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QHeaderView, QLabel, QMessageBox, QPushButton, QTableWidget,
@@ -154,15 +154,21 @@ class _TopTalkersWorker(QRunnable):
     def __init__(self, resolve_hostnames: bool) -> None:
         super().__init__()
         self._resolve_hostnames = resolve_hostnames
-        self.signals = _TopTalkersWorkerSignals()
+        # QThreadPool destroys auto-delete runnables on its worker thread. Give
+        # the GUI-affinity signal carrier Qt ownership until its deferred delete
+        # is delivered, rather than dropping its last owner on that worker.
+        self.signals = _TopTalkersWorkerSignals(QCoreApplication.instance())
 
     @Slot()
     def run(self) -> None:
         try:
-            snapshot = _collect_top_talkers(self._resolve_hostnames)
-        except Exception as exc:
-            snapshot = {"error": f"Could not collect connections: {exc}"}
-        self.signals.finished.emit(snapshot)
+            try:
+                snapshot = _collect_top_talkers(self._resolve_hostnames)
+            except Exception as exc:
+                snapshot = {"error": f"Could not collect connections: {exc}"}
+            self.signals.finished.emit(snapshot)
+        finally:
+            self.signals.deleteLater()
 
 
 class _AskAiWorkerSignals(QObject):
@@ -186,15 +192,18 @@ class _AskAiWorker(QRunnable):
         self._name = name
         self._pid = pid
         self._dest = dest
-        self.signals = _AskAiWorkerSignals()
+        self.signals = _AskAiWorkerSignals(QCoreApplication.instance())
 
     @Slot()
     def run(self) -> None:
         try:
-            result = self._request(self._name, self._pid, self._dest)
-        except Exception as exc:
-            result = f"Local AI request failed: {exc}"
-        self.signals.finished.emit(self._token, result)
+            try:
+                result = self._request(self._name, self._pid, self._dest)
+            except Exception as exc:
+                result = f"Local AI request failed: {exc}"
+            self.signals.finished.emit(self._token, result)
+        finally:
+            self.signals.deleteLater()
 
 
 class TopTalkersDialog(QDialog):
@@ -279,6 +288,7 @@ class TopTalkersDialog(QDialog):
         try:
             self._pool.start(worker)
         except Exception as exc:
+            worker.signals.deleteLater()
             self._refresh_in_flight = False
             self.summary.setText(f"Could not start connection refresh: {exc}")
 
@@ -538,6 +548,7 @@ class TopTalkersDialog(QDialog):
             # Interactive work runs ahead of periodic connection snapshots.
             self._pool.start(worker, 10)
         except Exception as exc:
+            worker.signals.deleteLater()
             self._ai_in_flight = False
             self._ai_context = None
             button.setEnabled(True)

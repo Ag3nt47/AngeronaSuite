@@ -157,6 +157,9 @@ def test_module_resource_table_rebuilds_only_when_events_change(monkeypatch) -> 
 
 def test_top_talkers_skips_unchanged_table_rebuild(monkeypatch) -> None:
     _app()
+    # Rendering alone must not launch a real OS connection walk that outlives
+    # this fixture; blocked collector teardown has a dedicated lifecycle test.
+    monkeypatch.setattr("angerona.gui.top_talkers.psutil", None)
     dialog = TopTalkersDialog()
     dialog._timer.stop()
     snapshot = {

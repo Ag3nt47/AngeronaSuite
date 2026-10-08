@@ -437,29 +437,62 @@ def test_hard_link_injected_when_replace_fails_keeps_exact_alias_diagnosis(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="ReplaceFileW reconciliation is Windows-only")
+@pytest.mark.parametrize("injected_failures", [1, 2])
 def test_windows_1175_retries_only_after_exact_unchanged_reconciliation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    injected_failures: int,
 ) -> None:
     store = _provisional(tmp_path)
     original_replace = auth_extensions._replace_baseline_file
+    original_reconcile = store._reconcile_windows_promotion
     calls = 0
+    native_errors: list[int | None] = []
+    reconciliations: list[str] = []
+    successful_native_calls = 0
 
-    def fail_once(temporary, destination, *, parent_descriptor):
-        nonlocal calls
+    def observe_reconciliation(**kwargs):
+        state = original_reconcile(**kwargs)
+        reconciliations.append(state)
+        return state
+
+    def fail_then_replace(temporary, destination, *, parent_descriptor):
+        nonlocal calls, successful_native_calls
+        # Every retry needs both the post-error and immediately-before-retry
+        # identity/content proof. This observes the real reconciler, not a stub.
+        assert reconciliations == ["unchanged"] * (2 * calls)
         calls += 1
-        if calls == 1:
+        if calls <= injected_failures:
             raise OSError(1175, "simulated unable-to-remove-replaced")
-        return original_replace(
-            temporary,
-            destination,
-            parent_descriptor=parent_descriptor,
-        )
+        try:
+            original_replace(
+                temporary,
+                destination,
+                parent_descriptor=parent_descriptor,
+            )
+        except OSError as exc:
+            native_errors.append(auth_extensions._windows_error_code(exc))
+            raise
+        successful_native_calls += 1
 
-    monkeypatch.setattr(auth_extensions, "_replace_baseline_file", fail_once)
+    monkeypatch.setattr(store, "_reconcile_windows_promotion", observe_reconciliation)
+    monkeypatch.setattr(auth_extensions, "_replace_baseline_file", fail_then_replace)
     _enroll(store)
 
-    assert calls == 2
+    # ReplaceFileW may itself report a transient 1175 after the injected
+    # failures. Account for each observed native error exactly; never
+    # accept an unexplained extra attempt or a retry without unchanged evidence.
+    assert native_errors == [1175] * len(native_errors)
+    assert calls == injected_failures + len(native_errors) + successful_native_calls
+    assert calls <= len(auth_extensions._WINDOWS_REPLACE_RETRY_DELAYS) + 1
+    expected_reconciliations = ["unchanged"] * (2 * (calls - 1))
+    if not successful_native_calls:
+        # ReplaceFileW may report 1175 after completing the exact promotion.
+        assert native_errors
+        expected_reconciliations.append("promoted")
+    else:
+        assert successful_native_calls == 1
+    assert reconciliations == expected_reconciliations
     assert store.observe(_snapshot()).status == "stable"
     assert not tuple(store.path.parent.glob(f".{store.path.name}.tmp-*"))
 
