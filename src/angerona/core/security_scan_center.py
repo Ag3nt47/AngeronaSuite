@@ -170,6 +170,9 @@ class ScanCancellationToken:
     def cancel(self) -> None:
         self._event.set()
 
+    def wait(self, timeout: float) -> bool:
+        return self._event.wait(timeout)
+
     @property
     def cancelled(self) -> bool:
         return self._event.is_set()
@@ -768,6 +771,10 @@ class SecurityScanCenter:
                         if should_stop():
                             return
                         state.entries_seen += 1
+                        if state.entries_seen % 256 == 0:
+                            self._cooperative_pause(cancellation, deadline)
+                            if should_stop():
+                                return
                         path = Path(entry.path)
                         try:
                             if entry.is_symlink() or _is_reparse_or_link(path):
@@ -789,6 +796,19 @@ class SecurityScanCenter:
                 state.unreadable_entries += 1
                 state.limited = True
                 continue
+
+    def _cooperative_pause(self, cancellation, deadline) -> None:
+        """Yield routine scan work under GUI pressure; preserve wall deadlines."""
+        from angerona.core.background_pacing import get_pacing_controller
+
+        delay = get_pacing_controller().batch_delay()
+        if deadline is not None:
+            delay = min(delay, max(0.0, deadline - self._monotonic()))
+        if delay > 0:
+            if cancellation is not None:
+                cancellation.wait(delay)
+            else:
+                time.sleep(delay)
 
     def _make_yara_scanner(self) -> tuple[Any | None, str]:
         module = self._yara
@@ -904,12 +924,14 @@ class SecurityScanCenter:
             timed_out = False
             signature_limit_reached = False
             traversal = _TraversalState()
-            for candidate, relative in self._iter_local_files(
+            for index, (candidate, relative) in enumerate(self._iter_local_files(
                 root,
                 cancellation=cancellation,
                 deadline=deadline,
                 traversal=traversal,
-            ):
+            )):
+                if index and index % 8 == 0:
+                    self._cooperative_pause(cancellation, deadline)
                 if self._cancelled(cancellation):
                     break
                 if self._monotonic() >= deadline:

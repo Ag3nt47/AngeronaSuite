@@ -37,6 +37,13 @@ identifiers, timestamps, and counts are synthetic.
 
 ## What's new
 
+The [October 9 simulation and diagnostic review](analysis/simulation-responsiveness-2026-10-09.md)
+moves simulation preparation and cleanup off the GUI thread, bounds Black Box
+refresh work, and extends adaptive pacing to scanner discovery and Scan Center
+batches. It also fixes repeated sandbox tests and strengthens isolated test
+resource limits. The review explains the October 9 incomplete run separately from
+older scored reports; a partial run never becomes a passing containment score.
+
 The [simulation and unattended-response update](analysis/unattended-response-2026-10-08.md)
 lets benign Shark and Red Team exercises continue with a visible warning when
 Combat response is unavailable. Selected techniques still run; a warning never

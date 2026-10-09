@@ -28,6 +28,12 @@ def test_complete_small_tree_keeps_stray_and_clean_distinct(tmp_path):
     source = tmp_path / "legacy"
     source.mkdir()
     destination = tmp_path / "runtime"
-    assert hygiene.inspect_stray(source, destination)["status"] == "clean"
+    # Materialize the fresh fixture before taking an inspection baseline. On
+    # the Windows test host, a transient attribute flag settled on enumeration;
+    # production still rejects metadata changes during its own inspection.
+    assert list(source.iterdir()) == []
+    assessment = hygiene.inspect_stray(source, destination)
+    assert assessment["status"] == "clean", assessment["reason"]
     (source / "proof").write_bytes(b"preserve")
-    assert hygiene.inspect_stray(source, destination)["status"] == "stray"
+    assessment = hygiene.inspect_stray(source, destination)
+    assert assessment["status"] == "stray", assessment["reason"]

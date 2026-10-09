@@ -189,6 +189,7 @@ class FlowWindow(QDialog):
 
     def __init__(self, bus, storage, manager, config, parent=None):
         super().__init__(parent)
+        self._closing = False
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.bus, self.storage, self.manager, self.config = bus, storage, manager, config
         self.setWindowTitle("World View — System Flow (live)")
@@ -481,9 +482,11 @@ class FlowWindow(QDialog):
 
     def closeEvent(self, event):
         """Stop background threads before the dialog is destroyed."""
+        self._closing = True
         self._timer.stop()
         if hasattr(self, "_ollama_timer"):
             self._ollama_timer.stop()
+            self._ollama_initial_timer.stop()
         from angerona.gui.thread_lifecycle import defer_close_until_threads
 
         worker = getattr(self, "_ollama_worker", None)
@@ -545,7 +548,10 @@ class FlowWindow(QDialog):
             self._ollama_timer = QTimer(self)
             self._ollama_timer.timeout.connect(self._kick_ollama)
             self._ollama_timer.start(8000)          # poll every 8 s
-            QTimer.singleShot(500, self._kick_ollama)  # first fetch soon after open
+            self._ollama_initial_timer = QTimer(self)
+            self._ollama_initial_timer.setSingleShot(True)
+            self._ollama_initial_timer.timeout.connect(self._kick_ollama)
+            self._ollama_initial_timer.start(500)
         else:
             self._wv_engine = None
 
@@ -587,7 +593,7 @@ class FlowWindow(QDialog):
 
     def _kick_ollama(self) -> None:
         """Fire the Ollama worker if one isn't already running."""
-        if self._wv_engine is None:
+        if self._closing or self._wv_engine is None:
             return
         if self._ollama_worker is not None and self._ollama_worker.isRunning():
             return                          # still fetching — skip this cycle
@@ -597,10 +603,18 @@ class FlowWindow(QDialog):
         self._ollama_worker.finished.connect(
             lambda token=loading_token: finish_loading(token)
         )
-        self._ollama_worker.start()
+        try:
+            self._ollama_worker.start()
+        except (RuntimeError, OSError) as exc:
+            worker, self._ollama_worker = self._ollama_worker, None
+            worker.deleteLater()
+            finish_loading(loading_token)
+            self._on_ollama_result({"available": False, "reason": type(exc).__name__})
 
     def _on_ollama_result(self, data: dict) -> None:
         """Slot — receives Ollama data on the GUI thread via Signal."""
+        if self._closing:
+            return
         if data.get("available"):
             self._tele_ollama.setText(
                 f"model <b>{data.get('model','?')}</b> · "

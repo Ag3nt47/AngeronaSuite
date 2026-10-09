@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.13.0
-Date: 2026-10-08
+Date: 2026-10-09
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -22,7 +22,25 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST (v1.13.0 — Simulation and unattended response, 2026-10-08)
+## LATEST (v1.13.0 — Simulation responsiveness and diagnostic bounds, 2026-10-09)
+
+- Record: analysis/simulation-responsiveness-2026-10-09.md. Simulation preparation
+  and stop cleanup run off Qt with explicit handoff/cancellation and single-flight
+  ownership. Existing exercises, response gates and receipt scoring are retained.
+- Black Box uses background firewall/SOAR refresh, bounded log previews, intact
+  source evidence and PID/birth-bound CPU samples. Scanner discovery and Scan
+  Center batches cooperate with the existing FPS/host-pressure governor.
+- Flow windows cancel the initial AI poll on close and reject late worker starts
+  and results, fixing a reproduced native Qt crash during full-suite integration.
+- Standalone scanner owns one loop, closes handles on failure and interrupts
+  sleeps on stop. Sandbox repeated-test/selection/undo bugs are fixed; source,
+  history, output and trusted baseline child execution are bounded. Edited
+  candidate code remains AST-only and never replaces production sources.
+- The operator's October 9 Red Team manifest is incomplete (27 of 80 planned
+  steps), after validation producers became unavailable. No new finalized AAR
+  was present; September 23 graded results must not be attributed to that run.
+
+## Simulation and unattended response (2026-10-08)
 
 - Record: analysis/unattended-response-2026-10-08.md. Benign simulations continue
   with a persistent plain-text warning when Combat is unready. Requested

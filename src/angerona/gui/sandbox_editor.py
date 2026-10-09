@@ -28,7 +28,7 @@ import traceback
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from PySide6.QtCore import Qt, QRegularExpression, QThread, Signal
+from PySide6.QtCore import Qt, QRegularExpression, QThread, Signal, Slot
 from PySide6.QtGui import (
     QColor, QFont, QKeySequence, QShortcut, QSyntaxHighlighter, QTextCharFormat,
     QTextCursor)
@@ -41,6 +41,10 @@ from PySide6.QtWidgets import (
 from angerona.core.module_base import BaseModule
 from angerona.core.sandbox_runner import run_isolated_self_test
 from angerona.core.source_sandbox import SourceSandboxWorkspace
+
+_MAX_SESSION_BACKUPS = 20
+_MAX_SESSION_BACKUP_BYTES = 16 * 1024 * 1024
+_MAX_HISTORY_ENTRIES = 200
 
 
 # ── Syntax highlighting ───────────────────────────────────────────────────────
@@ -271,6 +275,7 @@ class SandboxEditor(QMainWindow):
         rl.addWidget(QLabel("Test console / results"))
         self.console = QTextEdit()
         self.console.setReadOnly(True)
+        self.console.document().setMaximumBlockCount(1000)
         self.console.setFont(QFont("Consolas", 10))
         rl.addWidget(self.console, 1)
         split.addWidget(right)
@@ -365,15 +370,19 @@ class SandboxEditor(QMainWindow):
         self._log(f"Opened isolated working copy for {name}: {item.working_path}")
 
     def _run_test(self) -> None:
-        name = self._selected_name() or self._current
+        # The editor buffer belongs to the opened module, not an unrelated row
+        # that was merely selected after opening it.
+        name = self._current
         if not name:
-            self._log("[!] select a module first.")
+            self._log("[!] open a module before validating its sandbox copy.")
             return
         mod = self.manager.modules.get(name)
         if mod is None:
             self._log(f"[!] {name} not found.")
             return
-        if self._test_worker is not None and self._test_worker.isRunning():
+        from angerona.gui.thread_lifecycle import _is_running
+
+        if _is_running(self._test_worker):
             self._log("[!] an isolated self-test is already running.")
             return
         try:
@@ -392,8 +401,16 @@ class SandboxEditor(QMainWindow):
         )
         self._test_worker = IsolatedTestWorker(mod, workspace, relative, self)
         self._test_worker.done.connect(self._on_test_done)
-        self._test_worker.finished.connect(self._test_worker.deleteLater)
+        self._test_worker.finished.connect(self._on_test_finished)
         self._test_worker.start()
+
+    @Slot()
+    def _on_test_finished(self) -> None:
+        worker = self.sender()
+        if self._test_worker is worker:
+            self._test_worker = None
+        if worker is not None:
+            worker.deleteLater()
 
     def _on_test_done(self, passed: bool, output: str) -> None:
         tag = "PASS ✓" if passed else "FAIL ✗"
@@ -408,6 +425,12 @@ class SandboxEditor(QMainWindow):
             mod = self.manager.modules.get(self._current)
             workspace, relative = self._workspace_for_module(self._current, mod)
             prior = workspace.reload(relative)
+            backups = [value for entries in self._backups.values() for value in entries]
+            if (len(backups) >= _MAX_SESSION_BACKUPS
+                    or sum(len(value.encode("utf-8")) for value in backups)
+                    + len(prior.encode("utf-8")) > _MAX_SESSION_BACKUP_BYTES):
+                self._log("[!] Session undo storage is full. Revert changes or reopen the editor before saving more copies.")
+                return
             workspace.save(relative, new_src)
         except SyntaxError as exc:
             self._log(f"[BLOCKED] Syntax error line {exc.lineno}: {exc.msg} — not saved.")
@@ -432,7 +455,7 @@ class SandboxEditor(QMainWindow):
         if not stack:
             self._log("[!] no previous version to revert to for this session.")
             return
-        prior = stack.pop()
+        prior = stack[-1]
         mod = self.manager.modules.get(self._current)
         try:
             workspace, relative = self._workspace_for_module(self._current, mod)
@@ -441,6 +464,7 @@ class SandboxEditor(QMainWindow):
         except Exception as exc:
             self._log(f"[!] sandbox revert failed: {exc}")
             return
+        stack.pop()
         self._record_history(self._current, "revert", len(prior.encode()),
                              "restored previous sandbox version")
         self._log(
@@ -536,8 +560,10 @@ class SandboxEditor(QMainWindow):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
     def _record_history(self, name: str, action: str, nbytes: int, note: str) -> None:
-        self._history.setdefault(name, []).append(
+        history = self._history.setdefault(name, [])
+        history.append(
             {"ts": time.time(), "action": action, "bytes": nbytes, "note": note})
+        del history[:-_MAX_HISTORY_ENTRIES]
 
     def _highlight_error(self, lineno: Optional[int]) -> None:
         if not lineno:

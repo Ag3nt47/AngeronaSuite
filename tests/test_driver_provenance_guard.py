@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import threading
+from types import SimpleNamespace
+
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from angerona.core.eventbus import EventBus, Severity
+from angerona.core import module_base
+from angerona.core.module_contract import build_capability_contract
+from angerona.modules import driver_provenance_guard
 from angerona.modules.driver_provenance_guard import (
     SCHEMA,
     DriverCollection,
@@ -199,6 +205,54 @@ class Provider:
 
     def collect(self):
         return self.collection
+
+
+def test_driver_watchdog_covers_bounded_collection_and_still_expires(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BoundedProvider:
+        def collect(self):
+            entered.set()
+            assert release.wait(5)
+            return DriverCollection((), False, "fixture-unavailable")
+
+    guard = DriverProvenanceGuard(BoundedProvider())
+    guard._angerona_contract = build_capability_contract(
+        guard, capability_id="angerona.modules.driver_provenance_guard"
+    )
+    monkeypatch.setattr(driver_provenance_guard, "sys", SimpleNamespace(platform="win32"))
+    guard.start()
+    try:
+        assert entered.wait(5)
+        assert not guard.first_cycle_complete
+        assert guard._watchdog_startup_budget_seconds() == 60.0
+        assert guard._watchdog_work_budget_seconds() == 60.0
+        with monkeypatch.context() as clock:
+            clock.setattr(
+                module_base.time, "monotonic", lambda: guard._generation_started_at + 55.0
+            )
+            assert not guard.operational_snapshot()["watchdog_deadline_missed"]
+            clock.setattr(
+                module_base.time, "monotonic", lambda: guard._generation_started_at + 61.0
+            )
+            assert guard.operational_snapshot()["watchdog_deadline_missed"]
+
+        release.set()
+        assert guard.wait_for_first_cycle(5)
+        assert guard._watchdog_deadline_at == pytest.approx(
+            guard._last_cycle_completed_at + guard._INTERVAL + 60.0
+        )
+        with monkeypatch.context() as clock:
+            clock.setattr(
+                module_base.time, "monotonic", lambda: guard._watchdog_deadline_at + 1.0
+            )
+            assert guard.operational_snapshot()["watchdog_deadline_missed"]
+    finally:
+        guard.stop()
+        release.set()
+        guard._thread.join(5)
+    assert not guard._thread.is_alive()
 
 
 def test_module_emits_only_tokenized_observe_only_driver_evidence():

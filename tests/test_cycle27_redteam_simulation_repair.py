@@ -805,15 +805,19 @@ def test_safe_end_to_end_campaign_validates_all_13_pipeline_canaries(
 
 
 def test_both_gui_launchers_fail_closed_and_honor_engine_start_boolean() -> None:
+    from angerona.gui.simulation_launch import SimulationLaunch
+
     unified = inspect.getsource(MainWindow._run_simulation)
     legacy = inspect.getsource(MainWindow._start_red_team)
     abort = inspect.getsource(MainWindow._abort_simulation_launch)
+    worker = inspect.getsource(SimulationLaunch._prepare)
 
-    for source in (unified, legacy):
-        assert "acquire_redteam_validation_lease" in source
-        assert "validation_lease" in source
-        assert "if not self.red_team_engine.start" in source
-    assert "auto_remediate" not in unified[unified.index("acquire_redteam_validation_lease"):]
+    assert "SimulationLaunch(" in unified
+    assert "self._run_simulation(" in legacy
+    assert "acquire_redteam_validation_lease" in worker
+    assert "validation_lease=self.lease" in worker
+    assert "if not self.red_team_engine.start" in worker
+    assert "auto_remediate" not in worker[worker.index("acquire_redteam_validation_lease"):]
     assert "self._sim_aar_pending = 0" in abort
     assert "cancel_evidence_hold" in abort
     assert "_release_redteam_validation_lease" in abort

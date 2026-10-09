@@ -2,12 +2,14 @@ import hashlib
 import hmac
 import json
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from angerona.core.platforms import declared_platforms_from_source
+from angerona.core import background_pacing
 from angerona.core.eventbus import EventBus
 from angerona.core.network_trust import (
     COLLECTION_SOURCES,
@@ -294,6 +296,60 @@ def test_monitor_eventbus_output_is_tokenized_and_observe_only():
     assert "192.168.10.1" not in representation
     assert all(event.details.get("response_authorized") is False for event in events)
     assert all(event.details.get("response_authority") == "observe-only" for event in events)
+
+
+def test_monitor_paces_only_poll_wait_and_collects_fresh_findings(monkeypatch):
+    now = [100.0]
+    controller = background_pacing.BackgroundPacingController(clock=lambda: now[0])
+    for _ in range(3):
+        controller.report_ui(8, worst_lag_ms=400)
+        now[0] += 2
+    assert controller.multiplier() == 8
+    monkeypatch.setattr(background_pacing, "_CONTROLLER", controller)
+    observations = []
+    snapshots = iter((
+        _snapshot(_link(wifi_security="open")),
+        _snapshot(_link(wifi_security="open", dns_servers=("192.0.2.53",))),
+    ))
+
+    def observe():
+        snapshot = next(snapshots)
+        observations.append(snapshot)
+        return snapshot
+
+    bus = EventBus()
+    module = NetworkTrustMonitorModule(
+        observer=observe, privacy_key=KEY, gateway_loader=lambda: None
+    )
+    module.bind(bus)
+
+    class CapturedStop:
+        def __init__(self):
+            self.waits = []
+            self.findings_at_wait = []
+
+        def is_set(self):
+            return len(self.waits) == 2
+
+        def wait(self, timeout):
+            self.waits.append(timeout)
+            self.findings_at_wait.append({
+                event.details.get("finding_type") for event in bus.recent(100)
+            })
+            return self.is_set()
+
+    stop = CapturedStop()
+    module._stop = stop
+    module._thread = threading.current_thread()
+    module.run()
+
+    assert len(observations) == 2
+    assert stop.waits == [60.0, 60.0]  # The governor adds at most 30 seconds.
+    assert "network.wifi_security_weak" in stop.findings_at_wait[0]
+    assert "network.dns_drift" in stop.findings_at_wait[1]
+    assert all(event.details.get("response_authorized") is False for event in bus.recent(100))
+    module._thread = None
+    assert module.background_interval(network_trust_monitor.POLL_INTERVAL) == 30.0
 
 
 class _GatewayTransport:
@@ -756,6 +812,44 @@ def test_inventory_child_output_is_stopped_at_the_in_flight_cap():
     assert result.complete is False
     assert result.reason == "output-limit"
     assert result.text == ""
+
+
+def test_windows_default_route_query_filters_at_provider_and_preserves_families(monkeypatch):
+    commands = []
+    rows = [
+        {
+            "InterfaceAlias": "Ethernet",
+            "InterfaceIndex": 7,
+            "AddressFamily": family,
+            "NextHop": gateway,
+            "RouteMetric": metric,
+            "InterfaceMetric": 10,
+        }
+        for family, gateway, metric in (
+            ("IPv4", "192.0.2.1", 5),
+            ("IPv4", "192.0.2.2", 20),
+            ("IPv6", "2001:db8::1", 5),
+        )
+    ]
+
+    def run(arguments):
+        commands.append(arguments)
+        return network_trust_monitor._CommandObservation(json.dumps(rows), True, "ok")
+
+    monkeypatch.setattr(network_trust_monitor, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(network_trust_monitor, "_run_observation_command_result", run)
+    routes, complete = network_trust_monitor._default_routes({})
+
+    assert len(commands) == 1
+    command = commands[0][-1]
+    assert "-DestinationPrefix '0.0.0.0/0','::/0'" in command
+    assert "-PolicyStore ActiveStore" in command
+    assert "Where-Object" not in command
+    assert complete == frozenset({"ipv4", "ipv6"})
+    assert [route.gateway for route in routes["Ethernet"]] == [
+        "192.0.2.1", "192.0.2.2", "2001:db8::1"
+    ]
+    assert [route.metric for route in routes["Ethernet"]] == [15, 30, 15]
 
 
 def test_windows_route_rejections_are_accounted_per_address_family():

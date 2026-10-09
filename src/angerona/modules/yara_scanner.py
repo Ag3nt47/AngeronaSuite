@@ -21,7 +21,7 @@ import zipfile
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from angerona.core.atomic_io import replace_with_retry
 from angerona.core.data_paths import data_dir, resource_root
@@ -376,19 +376,26 @@ class YaraScannerModule(BaseModule):
         return bool(int(getattr(stat_result, "st_file_attributes", 0)) & 0x400)
 
     @classmethod
-    def _fair_batch(cls, root: Path, cursor: str) -> _TraversalBatch:
+    def _fair_batch(
+        cls, root: Path, cursor: str, *, checkpoint: Callable[[int], bool] | None = None,
+    ) -> _TraversalBatch:
         """Inventory one bounded root and rotate after the durable relative cursor."""
         candidates: list[tuple[str, Path]] = []
         stack = [root]
         errors = 0
         discovered_entries = 0
         discovery_truncated = False
+        work = 0
         while stack and not discovery_truncated:
             current = stack.pop()
             try:
                 entries = []
                 with os.scandir(current) as iterator:
                     for entry in iterator:
+                        work += 1
+                        if checkpoint is not None and not checkpoint(work):
+                            discovery_truncated = True
+                            break
                         discovered_entries += 1
                         if (
                             discovered_entries > MAX_DISCOVERY_ENTRIES_PER_ROOT
@@ -403,6 +410,10 @@ class YaraScannerModule(BaseModule):
             entries.sort(key=lambda item: (item.name.casefold(), item.name))
             child_dirs: list[Path] = []
             for entry in entries:
+                work += 1
+                if checkpoint is not None and not checkpoint(work):
+                    discovery_truncated = True
+                    break
                 try:
                     stat_result = entry.stat(follow_symlinks=False)
                     if entry.is_symlink() or cls._is_reparse(stat_result):
@@ -716,7 +727,12 @@ class YaraScannerModule(BaseModule):
                     record = roots_state.get(token)
                     if not isinstance(record, dict):
                         record = {"cursor": "", "incomplete_since": 0.0, "wraps": 0}
-                    batch = self._fair_batch(root, str(record.get("cursor", "")))
+                    batch = self._fair_batch(
+                        root, str(record.get("cursor", "")),
+                        checkpoint=lambda count: self.background_checkpoint(count, batch_size=256),
+                    )
+                    if self.stopping:
+                        break
                     traversal_errors += batch.errors
                     incomplete_roots += int(batch.incomplete)
                     truncated_roots += int(batch.discovery_truncated)
@@ -732,6 +748,8 @@ class YaraScannerModule(BaseModule):
                             failed += 1
                         else:
                             skipped += 1
+                    if self.stopping:
+                        break
                     now = time.time()
                     incomplete_since = float(record.get("incomplete_since", 0.0) or 0.0)
                     if batch.incomplete and incomplete_since <= 0:
@@ -755,6 +773,8 @@ class YaraScannerModule(BaseModule):
                             max(0.0, now - incomplete_since) if incomplete_since > 0 else 0.0
                         ),
                     }
+                if self.stopping:
+                    break
                 self._coverage_snapshot = cycle_coverage
                 state_saved = self._save_cursor_state()
 

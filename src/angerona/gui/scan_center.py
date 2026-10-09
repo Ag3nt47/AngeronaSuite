@@ -514,7 +514,11 @@ class ScanCenterPanel(QFrame):
         self._worker_thread = threading.Thread(
             target=worker, name="AngeronaScanCenter", daemon=True
         )
-        self._worker_thread.start()
+        try:
+            self._worker_thread.start()
+        except Exception as exc:
+            self._worker_thread = None
+            self._apply_error(f"Could not start scan worker: {type(exc).__name__}: {exc}")
 
     def _cancel(self) -> None:
         cancellation = self._cancellation

@@ -498,8 +498,7 @@ def _default_routes(
     complete_families: set[str] = set()
     if os.name == "nt":
         command = (
-            "Get-NetRoute -PolicyStore ActiveStore | Where-Object { "
-            "$_.DestinationPrefix -eq '0.0.0.0/0' -or $_.DestinationPrefix -eq '::/0' } | "
+            "Get-NetRoute -PolicyStore ActiveStore -DestinationPrefix '0.0.0.0/0','::/0' | "
             "Select-Object InterfaceAlias,InterfaceIndex,AddressFamily,NextHop,RouteMetric,InterfaceMetric | "
             "ConvertTo-Json -Compress"
         )
@@ -767,6 +766,8 @@ class NetworkTrustMonitorModule(BaseModule):
     version = "1.13.0"
     supported_platforms = SUPPORTED_PLATFORMS
     capability_mode = "observe"
+    # Only the routine inventory wait is paced; findings publish within _tick.
+    background_pacing_allowed = True
 
     def __init__(
         self,

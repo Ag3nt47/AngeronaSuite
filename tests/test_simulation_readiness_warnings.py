@@ -36,11 +36,13 @@ def launch(tmp_path, monkeypatch):
         console=SimpleNamespace(_append=lines.append),
         shark_monitor=Mock(), shark_swim=Mock(), shark_banner=Mock(),
         _sim_check_done=Mock(),
+        destroyed=Mock(),
     )
     for name in (
         "_simulation_launch_status", "_check_simulation_response", "_run_simulation",
         "_abort_simulation_launch", "_release_redteam_validation_lease",
         "_restore_simulation_response_policy",
+        "_poll_simulation_launch",
     ):
         setattr(window, name, MethodType(getattr(MainWindow, name), window))
     monkeypatch.setattr(main_window, "QTimer", lambda *_: Mock())
@@ -49,6 +51,7 @@ def launch(tmp_path, monkeypatch):
         side_effect=AssertionError("a readiness warning must not request confirmation")))
     reconcile = Mock()
     monkeypatch.setattr(main_window, "reconcile_module_usage", reconcile)
+    monkeypatch.setattr("angerona.gui.simulation_launch.reconcile_module_usage", reconcile)
     for module_name in ("file_integrity", "yara_scanner"):
         monkeypatch.setattr(f"angerona.modules.{module_name}.register_runtime_watch", Mock(return_value=True))
         monkeypatch.setattr(f"angerona.modules.{module_name}.unregister_runtime_watch", Mock())
@@ -66,9 +69,36 @@ def launch(tmp_path, monkeypatch):
            "intensity": "Extreme", "complexity": 4, "campaign": True,
            "comprehensive": True, "target_dir": str(tmp_path / "selected"),
            "custom": {"name": "inert", "payload": "literal marker text"}}
-    return SimpleNamespace(window=window, cfg=cfg, readiness=readiness,
-                           acquire=acquire, lease=lease, reconcile=reconcile,
-                           preflight=preflight, lines=lines)
+    statuses = []
+    status = window._simulation_launch_status
+    def capture_status(*args, **kwargs):
+        result = status(*args, **kwargs)
+        statuses.append(result)
+        return result
+    window._simulation_launch_status = capture_status
+    fixture = SimpleNamespace(window=window, cfg=cfg, readiness=readiness,
+                              acquire=acquire, lease=lease, reconcile=reconcile,
+                              preflight=preflight, lines=lines, statuses=statuses)
+    yield fixture
+    job = getattr(window, "_sim_launch_job", None)
+    if job is not None:
+        job.cancel()
+        job.thread.join(5)
+        assert not job.thread.is_alive()
+
+
+def _settle(launch):
+    job = launch.window._sim_launch_job
+    assert job.ready.wait(5)
+    launch.window._poll_simulation_launch()
+    job.thread.join(5)
+    assert not job.thread.is_alive()
+    return launch.statuses[-1]
+
+
+def _run(launch, cfg):
+    assert launch.window._run_simulation(cfg)["status"] == "preparing"
+    return _settle(launch)
 
 
 @pytest.mark.parametrize("prior", [None, "0", "1"])
@@ -81,7 +111,7 @@ def test_recovery_hold_launches_all_selected_profiles_without_policy_escalation(
         else:
             monkeypatch.setenv(key, value)
     before = {key: os.environ.get(key) for key in _POLICY_KEYS}
-    result = launch.window._run_simulation(dict(launch.cfg))
+    result = _run(launch, dict(launch.cfg))
     assert result["status"] == "accepted"
     assert "RECOVERY REQUIRED" in result["response_warning"]
     assert "journal hold" in result["response_warning"]
@@ -107,7 +137,7 @@ def test_recovery_hold_launches_all_selected_profiles_without_policy_escalation(
 def test_readiness_warning_does_not_bypass_validation_lease_refusal(launch, monkeypatch):
     monkeypatch.setenv(_POLICY_KEYS[0], "0")
     launch.acquire.side_effect = RuntimeError("authenticated recorder unavailable")
-    result = launch.window._run_simulation(launch.cfg)
+    result = _run(launch, launch.cfg)
     assert result["status"] == "rejected"
     assert "authenticated recorder unavailable" in result["reason"]
     launch.window.red_team_engine.start.assert_not_called()
@@ -119,7 +149,7 @@ def test_readiness_warning_does_not_bypass_validation_lease_refusal(launch, monk
 
 def test_readiness_warning_does_not_bypass_engine_safety_refusal(launch):
     launch.window.red_team_engine.start.return_value = False
-    result = launch.window._run_simulation(launch.cfg)
+    result = _run(launch, launch.cfg)
     assert result["status"] == "rejected"
     assert "safety preflight rejected" in result["reason"]
     launch.window.shark_engine.start.assert_not_called()
@@ -129,7 +159,7 @@ def test_readiness_warning_does_not_bypass_engine_safety_refusal(launch):
 
 def test_readiness_warning_does_not_bypass_target_safety_preflight(launch):
     launch.preflight.return_value = SimpleNamespace(accepted=False, violations=["unsafe target"])
-    result = launch.window._run_simulation(launch.cfg)
+    result = _run(launch, launch.cfg)
     assert result["status"] == "rejected"
     assert "unsafe target" in result["reason"]
     launch.acquire.assert_not_called()
@@ -142,14 +172,15 @@ def test_legacy_launcher_warns_without_escalating_response(launch, monkeypatch):
     monkeypatch.setenv(_POLICY_KEYS[0], "0")
     launch.window._red_team_check_done = Mock()
     MainWindow._start_red_team(launch.window)
-    assert launch.window._legacy_redteam_active
-    assert launch.window._redteam_report_pending
+    assert _settle(launch)["status"] == "accepted"
+    assert launch.window._sim_aar_pending == 1
     assert "RECOVERY REQUIRED" in launch.window._sim_response_warning
     assert not launch.window._sim_response_escalated
     assert launch.window._sim_auto_remediate
     assert os.environ[_POLICY_KEYS[0]] == "0"
     launch.reconcile.assert_not_called()
     launch.window.red_team_engine.start.assert_called_once_with(
+        intensity=None, campaign=False, comprehensive=False, custom=None,
         target_dir=str(launch.window.red_team_engine.default_documents_dir),
         validation_lease=launch.lease,
     )
@@ -160,7 +191,7 @@ def test_ready_launch_keeps_scoped_response_and_restores_original_policy(launch,
     originals = ("0", "CRITICAL", "prior scope")
     for key, value in zip(_POLICY_KEYS, originals):
         monkeypatch.setenv(key, value)
-    result = launch.window._run_simulation(launch.cfg)
+    result = _run(launch, launch.cfg)
     assert result["status"] == "accepted"
     assert result["response_warning"] == ""
     assert launch.window._sim_response_escalated

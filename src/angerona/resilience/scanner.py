@@ -22,10 +22,12 @@ Config via env / argv:
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from typing import Iterable
 
@@ -112,7 +114,7 @@ class RawProcessSensor:
         self._known: set[int] = set()
         self._seeded = False
 
-    def poll(self) -> Iterable[bytes]:
+    def poll(self, *, enrich: bool = True) -> Iterable[bytes]:
         try:
             import psutil
         except Exception:
@@ -134,6 +136,11 @@ class RawProcessSensor:
         frames: list[bytes] = []
         if self._seeded:
             for pid, process in new_processes.items():
+                if not enrich:
+                    # The host counts these INFO frames as shed load. Do not
+                    # query executable/command-line evidence merely to drop it.
+                    frames.append(json.dumps({"type": "process_creation", "pid": pid}).encode())
+                    continue
                 try:
                     with process.oneshot():
                         parent = process.ppid()
@@ -168,7 +175,10 @@ class RawProcessSensor:
 class ScannerHost:
     def __init__(self, interval: float = 1.0, ring_name: str = "telemetry",
                  token_raw: bytes | None = None):
-        self.interval = interval
+        interval = float(interval)
+        if not math.isfinite(interval) or interval <= 0:
+            raise ValueError("Scanner interval must be a finite positive number")
+        self.interval = max(0.05, interval)
         self.ring = ipc_ring.RingWriter(ipc_ring.ring_path(ring_name))
         self.beat = hb.HeartbeatWriter(hb.COMPONENT_SCANNER if hasattr(hb, "COMPONENT_SCANNER")
                                        else "scanner", token_raw=token_raw)
@@ -176,6 +186,8 @@ class ScannerHost:
         self._events = 0
         self._dropped = 0
         self._stop = False
+        self._stop_event = threading.Event()
+        self._run_claim = threading.Lock()
         self._last_status = 0.0
         self._last_ping_poll = 0.0
         self._last_ping = ""
@@ -228,27 +240,35 @@ class ScannerHost:
         return False
 
     def run(self) -> None:
-        self._last_ping = self._read_ping()
-        self._write_status()
-        self._last_status = time.monotonic()
-        self._last_ping_poll = self._last_status
-        while not self._stop:
-            if tok.is_standdown_requested():
-                break                                   # graceful maintenance exit
-            downsample = self.ring.backpressure         # shed load at the source
-            for sensor in self.sensors:
-                for frame in sensor.poll():
-                    if downsample:
-                        self._dropped += 1
-                        continue
-                    if self.ring.write(frame, schema_ver=SCHEMA, sensor_id=sensor.sensor_id):
-                        self._events += 1
-                    else:
-                        self._dropped += 1
-            self.beat.beat()
-            self._maybe_write_status(time.monotonic())
-            time.sleep(self.interval)                    # low, steady CPU
-        self._shutdown()
+        if not self._run_claim.acquire(blocking=False):
+            raise RuntimeError("ScannerHost can only run once")
+        try:
+            self._last_ping = self._read_ping()
+            self._write_status()
+            self._last_status = time.monotonic()
+            self._last_ping_poll = self._last_status
+            while not self._stop:
+                if tok.is_standdown_requested():
+                    break                               # graceful maintenance exit
+                downsample = self.ring.backpressure
+                for sensor in self.sensors:
+                    frames = (sensor.poll(enrich=not downsample)
+                              if isinstance(sensor, RawProcessSensor) else sensor.poll())
+                    for frame in frames:
+                        if self._stop:
+                            break
+                        if downsample:
+                            self._dropped += 1
+                            continue
+                        if self.ring.write(frame, schema_ver=SCHEMA, sensor_id=sensor.sensor_id):
+                            self._events += 1
+                        else:
+                            self._dropped += 1
+                self.beat.beat()
+                self._maybe_write_status(time.monotonic())
+                self._stop_event.wait(self.interval)
+        finally:
+            self._shutdown()
 
     def _shutdown(self) -> None:
         try:
@@ -262,6 +282,7 @@ class ScannerHost:
 
     def stop(self) -> None:
         self._stop = True
+        self._stop_event.set()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -277,12 +298,11 @@ def main(argv: list[str] | None = None) -> int:
     # Themed window (matches Angerona's look) unless disabled or unavailable.
     # The sensor loop runs on a background thread so the window stays responsive
     # while the sensor itself stays lean.
+    worker = None
     if os.environ.get("ANGERONA_SCANNER_UI", "1") not in ("0", "false", "no", "off"):
         try:
             from PySide6.QtWidgets import QApplication, QMainWindow
             from angerona.resilience import status_ui
-            import threading as _th
-            _th.Thread(target=host.run, daemon=True).start()
             app = QApplication.instance() or QApplication(sys.argv)
             qss = status_ui._qss()
             if qss:
@@ -299,11 +319,20 @@ def main(argv: list[str] | None = None) -> int:
                 motion_config = None
             install_global_window_reveal(win, config=motion_config)
             win.showMinimized()
+            # Finish all fallible GUI preparation before starting the sensor.
+            # A presentation failure must never start a second host.run loop.
+            worker = threading.Thread(target=host.run, name="TelemetryScanner", daemon=True)
+            worker.start()
             rc = app.exec()
             host.stop()
+            worker.join(timeout=2)
             return rc
         except Exception:
-            pass   # no PySide6 / no display → fall through to headless
+            if worker is not None and worker.ident is not None:
+                host.stop()
+                worker.join(timeout=2)
+                return 1
+            # No worker started: a GUI setup failure may fall back to headless.
 
     import signal
     def _sig(_s, _f):

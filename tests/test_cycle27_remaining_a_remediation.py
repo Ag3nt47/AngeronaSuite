@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from contextlib import nullcontext
 from pathlib import Path
@@ -302,25 +303,45 @@ def test_defender_tampered_cursor_stays_degraded_and_emits_gap(
 ) -> None:
     first = AVTelemetryBridgeModule(tmp_path, continuity_key=_CONTINUITY_KEY)
     first.bind(EventBus())
-    assert first._open_continuity_state() is True
-    first._stage_native_record(_defender_record(11))
-    first._close_continuity_state()
+    try:
+        assert first._open_continuity_state() is True
+        # This case tests cursor authentication, independently of outbox
+        # delivery/retry (covered by the adjacent retained-record tests).
+        # A failed delivery can legitimately persist an empty incomplete
+        # cursor; replacing a literal record ID in that document is a no-op.
+        assert first._save_checkpoint(
+            11, first._record_digest(_defender_record(11)),
+        ) is True
+        assert first._checkpoint_status == "authenticated"
+        assert first._current_record_id() == 11
+    finally:
+        first._close_continuity_state()
     cursor = tmp_path / "sensor-cursors" / "defender.json"
     body = cursor.read_text(encoding="utf-8")
-    cursor.write_text(body.replace('"record_id":11', '"record_id":12'), encoding="utf-8")
+    document = json.loads(body)
+    assert len(document["channels"]) == 1
+    channel = next(iter(document["channels"].values()))
+    assert channel["record_id"] == 11
+    signature = document["_angerona_hmac"]
+    channel["record_id"] = 12
+    tampered = json.dumps(document, sort_keys=True, separators=(",", ":"))
+    assert tampered != body
+    assert json.loads(tampered)["_angerona_hmac"] == signature
+    cursor.write_text(tampered, encoding="utf-8")
 
     bus = EventBus()
     restarted = AVTelemetryBridgeModule(tmp_path, continuity_key=_CONTINUITY_KEY)
     restarted.bind(bus)
-    assert restarted._open_continuity_state() is True
-
-    assert restarted._checkpoint_status == "untrusted"
-    assert restarted.health == 45
-    assert any(
-        event.details.get("reason_code") == "defender.cursor.untrusted"
-        for event in bus.recent(20)
-    )
-    restarted._close_continuity_state()
+    try:
+        assert restarted._open_continuity_state() is True
+        assert restarted._checkpoint_status == "untrusted"
+        assert restarted.health == 45
+        assert any(
+            event.details.get("reason_code") == "defender.cursor.untrusted"
+            for event in bus.recent(20)
+        )
+    finally:
+        restarted._close_continuity_state()
 
 
 def test_defender_powershell_retained_detection_is_durable_across_restart(

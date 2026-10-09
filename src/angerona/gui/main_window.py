@@ -1421,7 +1421,8 @@ class MainWindow(QMainWindow):
         # A drill/AAR owns its explicit sensor lease. Real incident leases cool
         # only after the wake worker has finished and ten quiet minutes elapsed.
         drill_busy = (
-            self.shark_engine.is_running
+            getattr(self, "_sim_launch_job", None) is not None
+            or self.shark_engine.is_running
             or self.red_team_engine.is_running
             or int(getattr(self, "_sim_aar_pending", 0)) > 0
         )
@@ -2074,8 +2075,10 @@ class MainWindow(QMainWindow):
 
         reconcile_module_usage(self.manager)
 
-    def _simulation_launch_status(self, status: str, reason: str, cfg=None) -> dict:
+    def _simulation_launch_status(self, status: str, reason: str, cfg=None, *, busy=False) -> dict:
         result = {"status": status, "reason": reason}
+        if busy:
+            result["busy"] = True
         if status == "accepted":
             result["runs"] = dict(getattr(self, "_sim_report_runs", {}))
             result["response_warning"] = str(getattr(self, "_sim_response_warning", ""))
@@ -2147,7 +2150,12 @@ class MainWindow(QMainWindow):
             self.chill_return_requested.emit()
 
     def _run_simulation(self, cfg) -> dict:
-        if (self.shark_engine.is_running or self.red_team_engine.is_running
+        if (bool(getattr(self, "_simulation_closing", False))
+                or getattr(self, "_sim_launch_job", None) is not None
+                or getattr(self, "_sim_stop_timer", None) is not None
+                or (getattr(self, "_sim_stop_complete", None) is not None
+                    and not self._sim_stop_complete.is_set())
+                or self.shark_engine.is_running or self.red_team_engine.is_running
                 or int(getattr(self, "_sim_aar_pending", 0)) > 0
                 or bool(getattr(self, "_redteam_report_pending", False))):
             QMessageBox.information(
@@ -2157,6 +2165,7 @@ class MainWindow(QMainWindow):
             )
             return self._simulation_launch_status(
                 "rejected", "A drill or its evidence-preserving report is already running.", cfg,
+                busy=True,
             )
         # A drill must test real detector/response paths, not sensors that Chill
         # intentionally parked. Wake them first and launch only after the staged
@@ -2180,177 +2189,159 @@ class MainWindow(QMainWindow):
         response_check = self._check_simulation_response(cfg)
         if response_check["status"] == "rejected":
             return response_check
-        import os
-        self._shark_prev_armed = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK")
-        self._shark_prev_minsev = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY")
-        self._shark_prev_scope = os.environ.get("ANGERONA_SOAR_RESPONSE_SCOPE")
-        # Preserve the requested test/scoring mode even when response is held.
-        # Only an already-ready Combat snapshot permits the existing temporary
-        # drill scope/tier; a readiness warning never repairs or grants authority.
+        from angerona.gui.simulation_launch import SimulationLaunch
+
         self._sim_auto_remediate = bool(cfg.get("auto_remediate", True))
         self._sim_response_escalated = (
             self._sim_auto_remediate
             and self._sim_response_readiness_start.get("ready") is True
         )
-        if self._sim_response_escalated:
-            os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = "1"
-            os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY"] = "MEDIUM"
-            scope_roots = [str(self.config.data_dir / "drill-sandbox")]
-            selected_target = str(cfg.get("target_dir") or "").strip()
-            if selected_target:
-                scope_roots.append(selected_target)
-            os.environ["ANGERONA_SOAR_RESPONSE_SCOPE"] = os.pathsep.join(
-                dict.fromkeys(scope_roots)
-            )
-            reconcile_module_usage(self.manager)
-        # Analogy coaching is retained behind the configuration key for a later
-        # Red Team UI, but the current focused run view keeps it disabled.
         self._fi_enabled = bool(cfg.get("analogy", False))
-        try:
-            self.shark_monitor.fi_check.setChecked(self._fi_enabled)
-        except Exception:
-            pass
+        self.shark_monitor.fi_check.setChecked(self._fi_enabled)
         self._sim_ran_shark = bool(cfg.get("run_shark"))
         self._sim_ran_redteam = bool(cfg.get("run_redteam"))
         self._sim_aar_pending = 0
-        import threading
         self._sim_aar_lock = threading.Lock()
-        if not self._sim_ran_shark and not self._sim_ran_redteam:
-            self._abort_simulation_launch("no drill scenario was selected")
-            return
-        # The Red Team console shows engine narration itself, so the legacy Live
-        # Offense Monitor is no longer popped up. It is still reset and fed
-        # silently for backward compatibility.
-        self.shark_monitor.reset()
-        self.shark_monitor.append(
-            f"Launching Red Team Simulation — intensity={cfg.get('intensity', cfg.get('complexity'))}, "
-            f"campaign={bool(cfg.get('campaign'))}, shark={self._sim_ran_shark}, "
-            f"apt={self._sim_ran_redteam}, auto-remediate={self._sim_auto_remediate}"
-            + (", +custom technique" if cfg.get('custom') else "") + "…")
-        self.shark_swim.start(); self.shark_banner.start()
-        # Always pass one explicit intended target to validation, sensor-watch,
-        # engine preflight, response scope, and the signed run manifest.
-        _target = str(
-            cfg.get("target_dir")
-            or self.red_team_engine.default_documents_dir
-        ).strip()
-        _custom = cfg.get("custom") or None
         self._sim_runtime_watch = None
         self._redteam_validation_lease = None
-        started: list = []
+        self.shark_monitor.reset()
+        self.shark_monitor.append(
+            "Preparing simulation — checking target safety, fresh detector cycles "
+            "and authenticated recorder delivery. Stop remains available."
+        )
+        job = SimulationLaunch(
+            cfg=cfg, manager=self.manager, bus=self.bus, storage=self.storage,
+            data_root=self.config.data_dir, red_team_engine=self.red_team_engine,
+            shark_engine=self.shark_engine, response_escalated=self._sim_response_escalated,
+        )
+        self._sim_launch_job = job
+        # This callback retains only the detached job, never Qt in its worker.
+        self.destroyed.connect(job.cancel)
+        self._sim_launch_timer = QTimer(self)
+        self._sim_launch_timer.setInterval(40)
+        self._sim_launch_timer.timeout.connect(self._poll_simulation_launch)
         try:
-            from angerona.modules.file_integrity import register_runtime_watch
+            job.start()
+        except Exception as exc:
+            self._sim_launch_job = None
+            self.destroyed.disconnect(job.cancel)
+            self._sim_launch_timer.deleteLater()
+            return self._simulation_launch_status("rejected", str(exc), cfg)
+        self._sim_launch_timer.start()
+        return self._simulation_launch_status(
+            "preparing", "Waiting for validated detector and recorder readiness.", cfg,
+        )
 
-            if not register_runtime_watch(_target):
-                raise RuntimeError(
-                    f"File Integrity Monitor refused runtime target {_target!r}"
-                )
-            self._sim_runtime_watch = _target
-            from angerona.modules.yara_scanner import register_runtime_watch as watch_yara
-            if not watch_yara(_target):
-                raise RuntimeError(f"YARA Scanner refused runtime target {_target!r}")
-            if self._sim_ran_shark:
-                from angerona.shark.run_manifest import preflight_run
-
-                shark_preflight = preflight_run(
-                    kind="shark",
-                    cycles=cfg.get("complexity", 1),
-                    jitter_range=(2.0, 9.0),
-                    noise_chance=0.25,
-                    target_dir=_target,
-                    custom=_custom,
-                )
-                if not shark_preflight.accepted:
-                    raise RuntimeError(
-                        "Shark safety preflight rejected the run: "
-                        + "; ".join(shark_preflight.violations)
-                    )
-            if self._sim_ran_redteam:
-                from angerona.shark.red_team import INTENSITY_LEVELS
-                from angerona.shark.run_manifest import preflight_run
-
-                preset = INTENSITY_LEVELS.get(str(cfg.get("intensity")))
-                red_preflight = preflight_run(
-                    kind="red_team",
-                    cycles=preset["cycles"] if preset else 1,
-                    jitter_range=preset["jitter"] if preset else (2.0, 7.0),
-                    noise_chance=preset["noise"] if preset else 0.25,
-                    target_dir=_target,
-                    custom=_custom,
-                    campaign=bool(cfg.get("campaign", False)),
-                    comprehensive=bool(cfg.get("comprehensive", True)),
-                )
-                if not red_preflight.accepted:
-                    raise RuntimeError(
-                        "Red Team safety preflight rejected the run: "
-                        + "; ".join(red_preflight.violations)
-                    )
-                from angerona.modules.purple_guard import (
-                    acquire_redteam_validation_lease,
-                )
-
-                lease = acquire_redteam_validation_lease(
-                    self.manager,
-                    self.bus,
-                    self.storage,
-                    self.config.data_dir,
-                    _target,
-                    comprehensive=bool(cfg.get("comprehensive", True)),
-                )
-                self._redteam_validation_lease = lease
-                readiness = dict(lease.readiness)
+    def _poll_simulation_launch(self) -> None:
+        job = getattr(self, "_sim_launch_job", None)
+        if job is None or not job.ready.is_set():
+            return
+        if bool(getattr(self, "_simulation_closing", False)):
+            job.cancel()
+            return
+        if job.success and job.claim():
+            self._sim_launch_timer.stop()
+            self._sim_launch_timer.deleteLater()
+            self._sim_launch_job = None
+            self.destroyed.disconnect(job.cancel)
+            self._shark_prev_armed = job.previous_policy.get("ANGERONA_SOAR_KILL_AND_ROLLBACK")
+            self._shark_prev_minsev = job.previous_policy.get("ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY")
+            self._shark_prev_scope = job.previous_policy.get("ANGERONA_SOAR_RESPONSE_SCOPE")
+            self._sim_runtime_watch = job.runtime_watch
+            self._redteam_validation_lease = job.lease
+            if job.readiness:
                 self.console._append(
                     "[red-team] Simulation validation plane ready: "
-                    f"{readiness.get('policy_count', 0)}/"
-                    f"{readiness.get('policy_count', 0)} exact contracts, "
-                    f"sensor health {readiness.get('sensor_health', 0)}%, "
+                    f"{job.readiness.get('policy_count', 0)} exact contracts, "
+                    f"sensor health {job.readiness.get('sensor_health', 0)}%, "
                     "authenticated recorder echo verified."
                 )
+            self._sim_aar_pending = len(job.started)
+            self._sim_report_runs = {
+                kind: str(engine.run_id)
+                for kind, engine in (("red_team", self.red_team_engine), ("shark", self.shark_engine))
+                if engine in job.started
+            }
+            self.shark_swim.start()
+            self.shark_banner.start()
+            self._sim_poll = QTimer(self)
+            self._sim_poll.timeout.connect(self._sim_check_done)
+            self._sim_poll.start(500)
+            self._simulation_launch_status("accepted", "Drill accepted.", job.cfg)
+        elif job.finished.is_set():
+            self._sim_launch_timer.stop()
+            self._sim_launch_timer.deleteLater()
+            self._sim_launch_job = None
+            self.destroyed.disconnect(job.cancel)
+            self._sim_response_escalated = False  # Worker already restored policy.
+            self._sim_aar_pending = 0
+            self.shark_swim.stop()
+            self.shark_banner.stop()
+            self.console._append(f"[red-team] Simulation launch stopped: {job.reason}")
+            self._simulation_launch_status("rejected", job.reason, job.cfg)
+            if self._eco_on and self._chill_policy.enabled:
+                self.chill_return_requested.emit()
 
-                self.red_team_engine.hold_evidence_for_aar()
-                if not self.red_team_engine.start(
-                    intensity=cfg.get("intensity"),
-                    campaign=bool(cfg.get("campaign", False)),
-                    comprehensive=bool(cfg.get("comprehensive", True)),
-                    target_dir=_target,
-                    custom=_custom,
-                    validation_lease=lease,
-                ):
-                    self.red_team_engine.cancel_evidence_hold()
-                    raise RuntimeError("Red Team engine safety preflight rejected the run")
-                started.append(self.red_team_engine)
+    def _cancel_simulation_launch(self) -> bool:
+        self._pending_simulation_cfg = None
+        job = getattr(self, "_sim_launch_job", None)
+        if job is None:
+            return False
+        job.cancel()
+        return True
 
-            if self._sim_ran_shark:
-                # Shark keeps the legacy complexity interface, but refusal is a
-                # launch failure rather than permission to report stale history.
-                if not self.shark_engine.start(
-                    complexity=cfg.get("complexity", 1),
-                    target_dir=_target,
-                    custom=_custom,
-                ):
-                    raise RuntimeError("Shark engine safety preflight rejected the run")
-                started.append(self.shark_engine)
+    def _stop_simulation(self) -> None:
+        if self._cancel_simulation_launch():
+            return  # The preparation worker owns its exact resources and rollback.
+        completed = getattr(self, "_sim_stop_complete", None)
+        if completed is not None and not completed.is_set():
+            return
+        previous_timer = getattr(self, "_sim_stop_timer", None)
+        if previous_timer is not None:
+            previous_timer.stop()
+            previous_timer.deleteLater()
+            self._sim_stop_timer = None
+        from angerona.gui.simulation_launch import stop_engines
+
+        completed = threading.Event()
+        self._sim_stop_complete = completed
+        self._sim_stop_errors = []
+        worker = threading.Thread(
+            target=stop_engines,
+            args=((self.red_team_engine, self.shark_engine), completed, self._sim_stop_errors),
+            name="simulation-stop", daemon=True,
+        )
+        self._sim_stop_thread = worker
+        try:
+            worker.start()
         except Exception as exc:
-            self._abort_simulation_launch(
-                f"{type(exc).__name__}: {exc}", tuple(started)
-            )
-            return {"status": "rejected", "reason": f"{type(exc).__name__}: {exc}"}
+            completed.set()
+            self.console._append(f"[red-team] Could not dispatch marker cleanup: {exc}")
+            return
+        self._sim_stop_timer = QTimer(self)
+        self._sim_stop_timer.setInterval(40)
+        self._sim_stop_timer.timeout.connect(self._poll_simulation_stop)
+        self._sim_stop_timer.start()
 
-        self._sim_aar_pending = len(started)
-        if not self._sim_aar_pending:
-            self._abort_simulation_launch("no engine accepted the run")
-            return {"status": "rejected", "reason": "No engine accepted the run."}
-        self._sim_report_runs = {
-            kind: str(engine.run_id)
-            for kind, engine in (("red_team", self.red_team_engine), ("shark", self.shark_engine))
-            if engine in started
-        }
-        self._sim_poll = QTimer(self)
-        self._sim_poll.timeout.connect(self._sim_check_done)
-        self._sim_poll.start(500)
-        return self._simulation_launch_status("accepted", "Drill accepted.", cfg)
+    def _poll_simulation_stop(self) -> None:
+        timer = getattr(self, "_sim_stop_timer", None)
+        if timer is None or not self._sim_stop_complete.is_set():
+            return
+        timer.stop()
+        timer.deleteLater()
+        self._sim_stop_timer = None
+        errors = self._sim_stop_errors
+        if errors:
+            message = "Marker cleanup incomplete: " + "; ".join(errors)
+            self.console._append(f"[red-team] {message}")
+            rtc = getattr(self, "_rt_console", None)
+            if rtc is not None:
+                rtc.record_cleanup_failure(message)
 
     def _sim_check_done(self) -> None:
+        cleanup = getattr(self, "_sim_stop_complete", None)
+        if cleanup is not None and not cleanup.is_set():
+            return
         if self.shark_engine.is_running or self.red_team_engine.is_running:
             return
         self._sim_poll.stop()
@@ -2439,7 +2430,8 @@ class MainWindow(QMainWindow):
     # ── Red Team Attack (its own distinct drill) ─────────────────────────────
     def _start_red_team(self) -> None:
         if (
-            self.red_team_engine.is_running
+            getattr(self, "_sim_launch_job", None) is not None
+            or self.red_team_engine.is_running
             or self.shark_engine.is_running
             or int(getattr(self, "_sim_aar_pending", 0)) > 0
             or bool(getattr(self, "_redteam_report_pending", False))
@@ -2455,84 +2447,10 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply != QMessageBox.Yes:
             return
-        cfg = {"run_redteam": True, "run_shark": False, "auto_remediate": True}
-        if self._check_simulation_response(cfg)["status"] == "rejected":
-            return
-        import os
-        self._shark_prev_armed = os.environ.get("ANGERONA_SOAR_KILL_AND_ROLLBACK")
-        self._sim_auto_remediate = True
-        self._sim_response_escalated = self._sim_response_readiness_start.get("ready") is True
-        if self._sim_response_escalated:
-            os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = "1"
-            reconcile_module_usage(self.manager)
-        self.shark_monitor.reset()
-        self.shark_monitor.append("Launching Red Team Engine…")
-        self.shark_monitor.show()
-        self.shark_monitor.raise_()
-        self.shark_monitor.activateWindow()
-        self.shark_swim.start()
-        self.shark_banner.start()
-        target = str(self.red_team_engine.default_documents_dir)
-        self._legacy_redteam_watch = None
-        self._redteam_validation_lease = None
-        try:
-            from angerona.modules.file_integrity import register_runtime_watch
-            from angerona.modules.purple_guard import acquire_redteam_validation_lease
-
-            if not register_runtime_watch(target):
-                raise RuntimeError(
-                    f"File Integrity Monitor refused runtime target {target!r}"
-                )
-            self._legacy_redteam_watch = target
-            lease = acquire_redteam_validation_lease(
-                self.manager,
-                self.bus,
-                self.storage,
-                self.config.data_dir,
-                target,
-            )
-            self._redteam_validation_lease = lease
-            self.red_team_engine.hold_evidence_for_aar()
-            if not self.red_team_engine.start(
-                target_dir=target,
-                validation_lease=lease,
-            ):
-                self.red_team_engine.cancel_evidence_hold()
-                raise RuntimeError("Red Team engine safety preflight rejected the run")
-            self._legacy_redteam_active = True
-            self._redteam_report_pending = True
-            self._sim_report_runs = {"red_team": str(self.red_team_engine.run_id)}
-            self._simulation_launch_status("accepted", "Drill accepted.", cfg)
-        except Exception as exc:
-            self.shark_monitor.append(
-                "Red Team validation/start failed closed before marker creation: "
-                f"{type(exc).__name__}: {exc}"
-            )
-            try:
-                self.red_team_engine.cancel_evidence_hold()
-                self._release_redteam_validation_lease()
-            except Exception:
-                pass
-            try:
-                from angerona.modules.file_integrity import unregister_runtime_watch
-
-                unregister_runtime_watch(self._legacy_redteam_watch)
-            except Exception:
-                pass
-            self._legacy_redteam_watch = None
-            self._legacy_redteam_active = False
-            self._redteam_report_pending = False
-            if self._sim_response_escalated:
-                if self._shark_prev_armed is None:
-                    os.environ.pop("ANGERONA_SOAR_KILL_AND_ROLLBACK", None)
-                else:
-                    os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = self._shark_prev_armed
-            self.shark_swim.stop()
-            self.shark_banner.stop()
-            return
-        self._rt_poll = QTimer(self)
-        self._rt_poll.timeout.connect(self._red_team_check_done)
-        self._rt_poll.start(500)
+        self._run_simulation({
+            "run_redteam": True, "run_shark": False, "auto_remediate": True,
+            "comprehensive": False,  # Preserve this older entry point's base plan.
+        })
 
     def _red_team_check_done(self) -> None:
         if self.red_team_engine.is_running:
@@ -5669,6 +5587,10 @@ class MainWindow(QMainWindow):
 
     def _terminate(self) -> None:
         """Best-effort graceful cleanup, then an unconditional hard exit."""
+        self._simulation_closing = True
+        preparing = getattr(self, "_sim_launch_job", None)
+        if preparing is not None:
+            preparing.cancel()
         monitor = getattr(self, "_responsiveness_monitor", None)
         if monitor is not None:
             monitor.close()
@@ -5689,9 +5611,17 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         try:
-            for engine in (self.red_team_engine, self.shark_engine):
-                engine.stop_and_clean()
-            self._release_redteam_validation_lease()
+            cleanup = getattr(self, "_sim_stop_complete", None)
+            if preparing is not None:
+                # Its worker owns unclaimed resources, including a lease that
+                # may still be arriving. Never race a second cleanup against it.
+                preparing.finished.wait(timeout=1.0)
+            elif cleanup is not None and not cleanup.is_set():
+                cleanup.wait(timeout=1.0)
+            else:
+                for engine in (self.red_team_engine, self.shark_engine):
+                    engine.stop_and_clean()
+                self._release_redteam_validation_lease()
         except Exception:
             pass
         modules_stopped = False

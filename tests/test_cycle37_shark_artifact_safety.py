@@ -23,10 +23,13 @@ def _engine(tmp_path: Path) -> SharkAttackEngine:
     return engine
 
 
-def test_byovd_step_refuses_preexisting_file(tmp_path: Path) -> None:
+def test_byovd_step_refuses_preexisting_file(tmp_path: Path, monkeypatch) -> None:
     engine = _engine(tmp_path)
     engine.documents_dir.mkdir()
-    marker = engine.documents_dir / "angerona_byovd_drill.sys"
+    monkeypatch.setattr(
+        "angerona.shark.shark_attack.uuid.uuid4", lambda: SimpleNamespace(hex="a" * 32),
+    )
+    marker = engine.documents_dir / ("angerona_byovd_drill_" + "a" * 32 + ".sys")
     marker.write_bytes(b"original operator file")
 
     engine._step_simulated_byovd((0.0, 0.0))
@@ -37,12 +40,15 @@ def test_byovd_step_refuses_preexisting_file(tmp_path: Path) -> None:
     assert marker.read_bytes() == b"original operator file"
 
 
-def test_byovd_step_refuses_hardlink_alias(tmp_path: Path) -> None:
+def test_byovd_step_refuses_hardlink_alias(tmp_path: Path, monkeypatch) -> None:
     engine = _engine(tmp_path)
     engine.documents_dir.mkdir()
     original = tmp_path / "original.bin"
     original.write_bytes(b"hardlink target")
-    marker = engine.documents_dir / "angerona_byovd_drill.sys"
+    monkeypatch.setattr(
+        "angerona.shark.shark_attack.uuid.uuid4", lambda: SimpleNamespace(hex="a" * 32),
+    )
+    marker = engine.documents_dir / ("angerona_byovd_drill_" + "a" * 32 + ".sys")
     try:
         os.link(original, marker)
     except OSError as exc:
@@ -62,7 +68,7 @@ def test_cleanup_keeps_replacement_at_owned_marker_name(tmp_path: Path) -> None:
     engine._step_simulated_byovd((0.0, 0.0))
     assert engine.steps[-1].ok
     marker = Path(engine.steps[-1].artifact_paths[0])
-    assert marker.name == BYOVD_DRILL_DRIVER
+    assert marker.stem.startswith(Path(BYOVD_DRILL_DRIVER).stem + "_")
     assert BYOVD_DRILL_MARKER in marker.read_text(encoding="utf-8")
     assert is_known_bad_driver(marker.name)["drill"] is True
     info = marker.stat()

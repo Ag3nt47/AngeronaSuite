@@ -319,11 +319,22 @@ class SharkAttackEngine:
         with self._artifact_lock:
             self._owned_artifacts.clear()
         self._running.set()
-        self._thread = threading.Thread(
-            target=self._run_playbook, args=(jitter_range, noise_chance),
-            name="SharkAttackEngine", daemon=True,
-        )
-        self._thread.start()
+        try:
+            self._thread = threading.Thread(
+                target=self._run_playbook, args=(jitter_range, noise_chance),
+                name="SharkAttackEngine", daemon=True,
+            )
+            self._thread.start()
+        except (RuntimeError, OSError) as exc:
+            self._running.clear()
+            self._cancel.set()
+            self._thread = None
+            unregister_run(self.run_id)
+            self._narrate(
+                "Shark drill refused: worker launch failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return False
         return True
 
     def stop_and_clean(self) -> None:
@@ -558,6 +569,7 @@ class SharkAttackEngine:
         ("downloads_dir", "urgent_invoice_*.html"),
         ("documents_dir", "_shark_*.txt"),
         ("documents_dir", "angerona_byovd_drill.sys"),
+        ("documents_dir", "angerona_byovd_drill_*.sys"),
     ]
 
     def _cleanup_stale_artifacts(self) -> None:
@@ -853,12 +865,16 @@ class SharkAttackEngine:
         try:
             from angerona.modules.intel_sync import BYOVD_DRILL_DRIVER, BYOVD_DRILL_MARKER
             self.documents_dir.mkdir(parents=True, exist_ok=True)
+            # Each phase retains its own evidence until the run is reviewed.
+            # Never overwrite an earlier phase or an operator-owned lookalike.
+            p = self.documents_dir / (
+                f"{Path(BYOVD_DRILL_DRIVER).stem}_{uuid.uuid4().hex}.sys"
+            )
             self._narrate(
                 "▶ STAGE: BYOVD (SIMULATED) — writing a benign marker file named like a kernel "
-                f"driver ({BYOVD_DRILL_DRIVER}) into {self.documents_dir}, mimicking a vulnerable-"
+                f"driver ({p.name}) into {self.documents_dir}, mimicking a vulnerable-"
                 "driver drop + 'sc.exe create' registration. No real .sys is created, loaded, or "
                 "registered — this only tests whether the Ring 1 Driver-Intel Shield intercepts it.")
-            p = self.documents_dir / BYOVD_DRILL_DRIVER
             self._write_text_artifact(
                 p, f"{BYOVD_DRILL_MARKER} :: simulated BYOVD driver drop "
                 "(benign -- NOT a real driver, never loaded)\n", encoding="utf-8",

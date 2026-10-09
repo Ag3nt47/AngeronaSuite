@@ -594,9 +594,27 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 trace("launch_clicked", run_index=run_index,
                       run_id=window.red_team_engine.run_id)
                 assert console._run_pending
-                assert console._report_runs.get("red_team")
-                assert not console._report_runs.get("shark")
+                # Preparation runs off Qt. Only its accepted GUI handoff may
+                # publish the actual run ID; a pending click is not acceptance.
                 deadline = time.monotonic() + 180.0
+                acceptance_deadline = min(deadline, time.monotonic() + 30.0)
+                while (
+                    console._run_pending
+                    and not console._report_runs.get("red_team")
+                    and time.monotonic() < acceptance_deadline
+                ):
+                    app.processEvents()
+                    time.sleep(0.05)
+                assert console._report_runs.get("red_team"), {
+                    "console": console.live_status.text(),
+                    "modal_errors": modal_errors,
+                    "preparing": console._launch_preparing,
+                }
+                assert not console._launch_preparing
+                assert console._report_runs["red_team"] == window.red_team_engine.run_id
+                assert not console._report_runs.get("shark")
+                trace("launch_accepted", run_index=run_index,
+                      run_id=console._report_runs["red_team"])
                 next_trace = time.monotonic() + 10.0
                 while len(delivered) == previous_deliveries and time.monotonic() < deadline:
                     app.processEvents()
@@ -698,6 +716,18 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
             modal_timer.stop()
     finally:
         trace("cleanup_start")
+        # A failed assertion can leave preparation holding the manager and
+        # recorder. Cancel and let that worker release its exact lease/watches
+        # before their fixtures are stopped or closed.
+        preparing = getattr(window, "_sim_launch_job", None)
+        if preparing is not None:
+            window._cancel_simulation_launch()
+            cleanup_deadline = time.monotonic() + 30.0
+            while preparing.thread.is_alive() and time.monotonic() < cleanup_deadline:
+                app.processEvents()
+                preparing.thread.join(timeout=0.05)
+            assert not preparing.thread.is_alive(), "Simulation preparation did not retire"
+            window._poll_simulation_launch()
         if window.red_team_engine.is_running:
             window.red_team_engine.stop_and_clean()
         manager.stop_all()

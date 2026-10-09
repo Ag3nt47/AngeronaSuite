@@ -33,6 +33,7 @@ already in Angerona's venv, so no new dependency is introduced.
 from __future__ import annotations
 
 import ctypes
+import codecs
 import datetime as _dt
 import hashlib
 import io
@@ -182,6 +183,8 @@ HEALTH_POLL_S = 3.0
 THREAD_POLL_S = 3.0
 CONFIG_POLL_S = 4.0
 MEM_POLL_S = 5.0
+MAX_LOG_READ_BYTES = 16 * 1024
+MAX_LOG_PREVIEW_BYTES = 64 * 1024
 
 
 def _selftest_failures(data) -> List[Dict]:
@@ -356,16 +359,29 @@ def find_angerona_pid() -> Optional[int]:
     """Read-only discovery of core processes, preferring a venv launcher's child."""
     candidates = {}
     try:
-        processes = psutil.process_iter(["pid", "ppid", "name", "cmdline", "memory_info"])
+        # Command lines and memory counters are expensive on Windows. Query
+        # them only for candidate interpreters, not every host process three
+        # times per monitoring cycle.
+        processes = psutil.process_iter(["pid", "name"])
         for proc in processes:
             try:
                 info = proc.info
-                if info["pid"] == os.getpid() or not _is_angerona_core(
-                    info.get("name") or "", info.get("cmdline") or []
+                name = (info.get("name") or "").casefold()
+                if info["pid"] == os.getpid() or not (
+                    name == "angerona.exe" or
+                    re.fullmatch(r"pythonw?(?:\d+(?:\.\d+)*)?(?:\.exe)?", name)
                 ):
                     continue
-                memory = info.get("memory_info")
-                candidates[info["pid"]] = (info.get("ppid"), memory.rss if memory else 0)
+                command = info.get("cmdline")
+                if command is None:
+                    command = [] if name == "angerona.exe" else proc.cmdline()
+                if not _is_angerona_core(name, command):
+                    continue
+                memory = info.get("memory_info") or proc.memory_info()
+                parent = info.get("ppid")
+                if parent is None:
+                    parent = proc.ppid()
+                candidates[info["pid"]] = (parent, memory.rss if memory else 0)
             except (psutil.Error, OSError, TypeError, ValueError, AttributeError):
                 continue
     except (psutil.Error, OSError):
@@ -405,8 +421,10 @@ def safe_tail_bytes(path: Path, offset: int) -> Tuple[bytes, int]:
     try:
         with open(path, "rb") as fh:
             fh.seek(offset)
-            data = fh.read(size - offset)
-        return data, size
+            data = fh.read(min(size - offset, MAX_LOG_READ_BYTES))
+        # Drain a burst over several polls, without discarding the source log
+        # or submitting a multi-megabyte document layout to the GUI at once.
+        return data, offset + len(data)
     except OSError:
         return b"", offset
 
@@ -439,6 +457,9 @@ class LogTailWorker(QThread):
         self._running = True
         # file → last byte offset already consumed
         self._offsets: Dict[Path, int] = {}
+        self._tail_decoders = {}
+        self._tail_contexts: Dict[Path, str] = {}
+        self._tail_identities = {}
         self._seen_snaps: set = set()
 
     def stop(self) -> None:
@@ -457,16 +478,43 @@ class LogTailWorker(QThread):
     def _severity_for(text: str) -> str:
         return "critical" if CRITICAL_MARKERS.search(text) else "info"
 
-    def _emit_text(self, source: str, text: str) -> None:
+    def _emit_text(self, source: str, text: str, *, context: str = "") -> None:
         text = text.strip("\n")
         if not text:
             return
-        sev = self._severity_for(text)
-        hints = self._hints_for(text)
+        # Preserve classification when a bounded read splits an error marker.
+        # Only bounded context is classified; displayed/source bytes are not
+        # duplicated, and each file has an independent incremental decoder.
+        classified = context + text
+        sev = self._severity_for(classified)
+        hints = self._hints_for(classified)
         header = f"──[ {source} @ {_dt.datetime.now():%H:%M:%S} ]" + "─" * 24
         self.block.emit(header + "\n" + text, sev, hints)
         if sev == "critical":
             self.exception_at.emit(time.time())
+
+    def _consume_tail(self, path: Path, label: str) -> None:
+        try:
+            info = path.stat()
+        except OSError:
+            return
+        identity = (info.st_dev, info.st_ino)
+        previous_identity = self._tail_identities.get(path)
+        offset = self._offsets.get(path, 0)
+        reset = (previous_identity is not None and previous_identity != identity) or info.st_size < offset
+        if reset:
+            offset = 0
+        self._tail_identities[path] = identity
+        data, following = safe_tail_bytes(path, offset)
+        if reset or following < offset or path not in self._tail_decoders:
+            self._tail_decoders[path] = codecs.getincrementaldecoder("utf-8")("replace")
+            self._tail_contexts[path] = ""
+        self._offsets[path] = following
+        if data:
+            decoded = self._tail_decoders[path].decode(data)
+            context = self._tail_contexts.get(path, "")
+            self._emit_text(label, decoded, context=context)
+            self._tail_contexts[path] = (context + decoded)[-512:]
 
     # All plain appended-text logs the recorder tails, across BOTH the repo-side
     # diagnostics dir and the per-user data dir (so no crash evidence is missed).
@@ -495,9 +543,7 @@ class LogTailWorker(QThread):
         while self._running:
             # 1) plain appended-text logs (repo + data dir)
             for p, label in self._TAIL_FILES:
-                data, self._offsets[p] = safe_tail_bytes(p, self._offsets.get(p, 0))
-                if data:
-                    self._emit_text(label, data.decode("utf-8", "replace"))
+                self._consume_tail(p, label)
 
             # 2) selftest_failures.json — re-read on change, render failures
             try:
@@ -517,7 +563,11 @@ class LogTailWorker(QThread):
                         if f.name not in self._seen_snaps and f.is_file():
                             self._seen_snaps.add(f.name)
                             try:
-                                raw = f.read_text("utf-8", "replace")
+                                with f.open("rb") as stream:
+                                    preview = stream.read(MAX_LOG_PREVIEW_BYTES + 1)
+                                raw = preview[:MAX_LOG_PREVIEW_BYTES].decode("utf-8", "replace")
+                                if len(preview) > MAX_LOG_PREVIEW_BYTES:
+                                    raw += "\n[Preview limited; complete evidence remains in the source file.]"
                             except OSError:
                                 continue
                             self._emit_text(f"crash_snapshots/{f.name}", raw)
@@ -601,6 +651,8 @@ class SuiteHealthWorker(QThread):
         self._running = True
         self._last_bus_sample = None
         self._last_bus_state = "OBSERVED"
+        self._cpu_sample_process = None
+        self._cpu_sample_identity = None
 
     def stop(self) -> None:
         self._running = False
@@ -621,9 +673,15 @@ class SuiteHealthWorker(QThread):
                 process = psutil.Process(info["pid"])
                 with process.oneshot():
                     status = process.status()
-                    info["cpu"] = process.cpu_percent(interval=0.0)
                     info["rss"] = process.memory_info().rss
                     info["create_time"] = process.create_time()
+                identity = (info["pid"], info["create_time"])
+                if identity != self._cpu_sample_identity:
+                    self._cpu_sample_process = process
+                    self._cpu_sample_identity = identity
+                # cpu_percent needs the previous sample from the same Process
+                # instance; recreating it each poll always reported zero.
+                info["cpu"] = self._cpu_sample_process.cpu_percent(interval=0.0)
                 info["state"] = {
                     psutil.STATUS_STOPPED: "STOPPED", psutil.STATUS_DISK_SLEEP: "WAITING",
                     psutil.STATUS_ZOMBIE: "DEAD", psutil.STATUS_DEAD: "DEAD",
@@ -1248,6 +1306,7 @@ class LogConsole(QWidget):
         split = QSplitter(Qt.Horizontal)
         self.console = QPlainTextEdit()
         self.console.setReadOnly(True)
+        self.console.setLineWrapMode(QPlainTextEdit.NoWrap)
         self.console.setMaximumBlockCount(20000)   # bound memory, never truncate a trace
         self.console.setStyleSheet(
             f"QPlainTextEdit{{background:{BG};color:{TEXT};border:1px solid {BORDER};"
@@ -1766,47 +1825,69 @@ class SoarEventsTab(QWidget):
         refresh.clicked.connect(self.refresh)
         bar.addWidget(refresh)
         root.addLayout(bar)
+        from angerona.gui.async_snapshot import AsyncSnapshot
+        self._reader = AsyncSnapshot(
+            self, lambda: SoarEventsTab._read_records, self._apply_records,
+            name="BlackBoxSoarReader",
+            status=lambda state: self.status.setText(
+                "Loading recent SOAR events…" if state == "updating" else
+                "Could not refresh SOAR events; previous snapshot retained."
+            ) if state != "current" else None,
+        )
         self.refresh()
 
     def refresh(self) -> None:
-        # Walk every known data dir for soar_queue.json
-        paths = []
-        for candidate in [
-            DATA_DIR / "shared_logs" / "soar_queue.json",
-        ]:
-            if candidate.exists():
-                paths.append(candidate)
+        if not self._reader.busy:
+            self._reader.request()
 
-        records = []
-        for p in paths:
-            try:
-                for line in p.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if line:
-                        try:
-                            records.append(json.loads(line))
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-
-        # de-dup by ts+message
+    @staticmethod
+    def _read_records() -> list:
+        path = DATA_DIR / "shared_logs" / "soar_queue.json"
+        try:
+            with path.open("rb") as stream:
+                size = stream.seek(0, 2)
+                offset = max(0, size - 1024 * 1024)
+                stream.seek(offset)
+                raw = stream.read(1024 * 1024)
+            if offset:
+                # The first partial record cannot be trusted as a whole row.
+                raw = raw.partition(b"\n")[2]
+        except FileNotFoundError:
+            return []
         seen, unique = set(), []
-        for r in records:
-            key = (r.get("ts", 0), r.get("message", "")[:60])
+        for line in reversed(raw.splitlines()):
+            try:
+                r = json.loads(line)
+            except (ValueError, UnicodeError):
+                continue
+            if not isinstance(r, dict):
+                continue
+            stamp = _finite_number(r.get("ts"))
+            if stamp is None:
+                continue
+            try:
+                rendered_time = time.strftime("%m-%d %H:%M:%S", time.localtime(stamp))
+            except (ValueError, OverflowError, OSError):
+                continue
+            r = {key: str(r.get(key, ""))[:2048]
+                 for key in ("origin_module", "severity", "message")} | {
+                     "ts": stamp, "display_time": rendered_time,
+                 }
+            key = (stamp, r["origin_module"], r["severity"], r["message"])
             if key not in seen:
                 seen.add(key)
                 unique.append(r)
+                if len(unique) >= 200:
+                    break
         unique.sort(key=lambda r: r.get("ts", 0), reverse=True)
+        return unique
 
+    def _apply_records(self, unique: list) -> None:
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         for rec in unique[:200]:
             row = self.table.rowCount(); self.table.insertRow(row)
-            import time as _time
-            ts = _time.strftime("%m-%d %H:%M:%S",
-                                _time.localtime(rec.get("ts", 0)))
-            self.table.setItem(row, 0, QTableWidgetItem(ts))
+            self.table.setItem(row, 0, QTableWidgetItem(rec["display_time"]))
             self.table.setItem(row, 1, QTableWidgetItem(rec.get("origin_module", "")))
             sev = QTableWidgetItem(rec.get("severity", ""))
             sev.setForeground(QColor(RED if "CRITICAL" in rec.get("severity", "")
@@ -1816,7 +1897,7 @@ class SoarEventsTab(QWidget):
             self.table.setItem(row, 3, QTableWidgetItem(rec.get("message", "")[:200]))
 
         self.table.setSortingEnabled(True)
-        self.status.setText(f"{len(unique)} SOAR event(s) on record.")
+        self.status.setText(f"{len(unique)} recent SOAR event(s); showing up to 200 from the latest 1 MiB.")
 
     def snapshot_text(self) -> str:
         rows = []
@@ -2022,6 +2103,87 @@ class FirewallRuleDetailDialog(QDialog):
         super().closeEvent(event)
 
 
+_MAX_FIREWALL_OUTPUT_BYTES = 4 * 1024 * 1024
+_MAX_FIREWALL_RULES = 2000
+_MAX_FIREWALL_VISIBLE_RULES = 500
+
+
+def _read_firewall_command(command: list[str], *, timeout: float) -> str:
+    """Collect a fixed read-only query without unbounded ``communicate`` output."""
+    import subprocess
+    import threading
+    from angerona.resilience._selftest_environment import (
+        _assign_windows_kill_job, _resume_windows_process, _stop_process_custody,
+    )
+
+    if not math.isfinite(timeout) or not 0 < timeout <= 15:
+        raise ValueError("Firewall query needs a bounded deadline")
+    captured = bytearray()
+    done, overflow, failed = threading.Event(), threading.Event(), threading.Event()
+    process = job = reader = None
+    try:
+        kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                      stderr=subprocess.DEVNULL, close_fds=True, bufsize=0)
+        if os.name == "nt":
+            from angerona.core.privilege import (
+                sanitized_child_environment, trusted_powershell_path,
+                trusted_windows_directories,
+            )
+            command = list(command)
+            if command[0] in {"powershell", "netsh"}:
+                _windows, system = trusted_windows_directories()
+                command[0] = str(trusted_powershell_path() if command[0] == "powershell"
+                                 else system / "netsh.exe")
+                kwargs["cwd"] = str(system)
+                kwargs["env"] = sanitized_child_environment(source={})
+            kwargs["creationflags"] = (
+                subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+                | subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000004  # CREATE_SUSPENDED
+            )
+        else:
+            kwargs["start_new_session"] = True
+        process = subprocess.Popen(command, **kwargs)
+        if os.name == "nt":
+            job = _assign_windows_kill_job(process)
+            _resume_windows_process(process)
+
+        def read() -> None:
+            try:
+                while True:
+                    remaining = _MAX_FIREWALL_OUTPUT_BYTES - len(captured)
+                    chunk = process.stdout.read(min(16384, remaining + 1))
+                    if not chunk:
+                        return
+                    captured.extend(chunk[:remaining])
+                    if len(chunk) > remaining:
+                        overflow.set()
+                        return
+            except (OSError, ValueError):
+                failed.set()
+            finally:
+                done.set()
+
+        reader = threading.Thread(target=read, name="BlackBoxFirewallOutput", daemon=True)
+        reader.start()
+        deadline = time.monotonic() + timeout
+        if not done.wait(timeout):
+            raise TimeoutError("Firewall query exceeded its deadline")
+        if overflow.is_set():
+            raise ValueError("Firewall query exceeded the 4 MiB output limit")
+        if failed.is_set():
+            raise OSError("Firewall query output could not be read")
+        process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        if process.returncode:
+            raise OSError(f"Firewall query failed with exit {process.returncode}")
+        return captured.decode("utf-8", errors="replace")
+    finally:
+        _stop_process_custody(process, job)
+        if reader is not None and reader.ident is not None:
+            reader.join(timeout=2)
+        if process is not None and process.stdout is not None:
+            process.stdout.close()
+
+
 class FirewallTab(QWidget):
     """Snapshot of Windows Firewall rules via PowerShell / netsh."""
 
@@ -2058,48 +2220,73 @@ class FirewallTab(QWidget):
 
         self._all_rules: list = []
         self._visible_rules: list = []
+        from angerona.gui.async_snapshot import AsyncSnapshot
+        self._reader = AsyncSnapshot(
+            self, lambda: FirewallTab._read_rules, self._apply_rules,
+            name="BlackBoxFirewallReader",
+            status=lambda state: self.status.setText(
+                "Loading firewall rules…" if state == "updating" else
+                "Could not refresh firewall rules; previous snapshot retained."
+            ) if state != "current" else None,
+        )
 
     def refresh(self) -> None:
-        self.status.setText("Loading firewall rules (PowerShell)…")
-        self._all_rules = []
+        if not self._reader.busy:
+            self._reader.request()
+
+    @staticmethod
+    def _read_rules() -> list:
+        rules = []
         try:
-            import subprocess as _sub
-            out = _sub.check_output(
-                ["powershell", "-NoProfile", "-Command",
-                 "Get-NetFirewallRule | Select-Object DisplayName,Name,Direction,"
-                 "Action,Enabled | ConvertTo-Json -Compress -Depth 2"],
-                timeout=12, stderr=_sub.DEVNULL, text=True
+            out = _read_firewall_command(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); "
+                 "Get-NetFirewallRule -ErrorAction Stop | Select-Object -First 2000 DisplayName,Name,"
+                 "@{n='Direction';e={$_.Direction.ToString()}},"
+                 "@{n='Action';e={$_.Action.ToString()}},"
+                 "@{n='Enabled';e={$_.Enabled.ToString()}} | ConvertTo-Json -Compress -Depth 2"],
+                timeout=12,
             )
             raw = json.loads(out)
             if isinstance(raw, dict):
                 raw = [raw]
-            for r in raw[:2000]:
-                name     = r.get("DisplayName", "")
-                rule_id  = r.get("Name", "")
-                dirn     = r.get("Direction", {}).get("Value", str(r.get("Direction", "")))
-                act      = r.get("Action",    {}).get("Value", str(r.get("Action",    "")))
-                en       = r.get("Enabled",   {}).get("Value", "?")
-                self._all_rules.append({
+            if raw is None:
+                raw = []
+            if not isinstance(raw, list):
+                raise ValueError("Unexpected firewall snapshot")
+            for r in raw[:_MAX_FIREWALL_RULES]:
+                if not isinstance(r, dict):
+                    continue
+                def value(key):
+                    result = r.get(key, "")
+                    if isinstance(result, dict):
+                        result = result.get("Value", "")
+                    return str(result or "")[:2048]
+                name, rule_id = value("DisplayName"), value("Name")
+                dirn, act, en = value("Direction"), value("Action"), value("Enabled")
+                rules.append({
                     "name": name, "rule_id": rule_id, "use_display": False,
                     "direction": dirn, "action": act,
                     "enabled": str(en), "proto": "", "port": "",
                 })
-        except Exception as exc:
+        except Exception:
             # Fallback: netsh
+            rules = []
             try:
-                import subprocess as _sub
-                out = _sub.check_output(
+                out = _read_firewall_command(
                     ["netsh", "advfirewall", "firewall", "show", "rule", "name=all"],
-                    timeout=10, stderr=_sub.DEVNULL, text=True, encoding="utf-8",
-                    errors="replace",
+                    timeout=10,
                 )
                 current: dict = {}
                 for line in out.splitlines():
                     if line.startswith("Rule Name:"):
                         if current:
-                            self._all_rules.append(current)
-                        current = {"name": line.split(":", 1)[1].strip(),
-                                   "rule_id": line.split(":", 1)[1].strip(),
+                            rules.append(current)
+                            if len(rules) >= _MAX_FIREWALL_RULES:
+                                current = {}
+                                break
+                        current = {"name": line.split(":", 1)[1].strip()[:2048],
+                                   "rule_id": line.split(":", 1)[1].strip()[:2048],
                                    "use_display": True,
                                    "direction": "", "action": "",
                                    "enabled": "", "proto": "", "port": ""}
@@ -2107,23 +2294,24 @@ class FirewallTab(QWidget):
                         k, v = line.split(":", 1)
                         k = k.strip().lower()
                         if "direction" in k:
-                            current["direction"] = v.strip()
+                            current["direction"] = v.strip()[:2048]
                         elif "action" in k:
-                            current["action"] = v.strip()
+                            current["action"] = v.strip()[:2048]
                         elif "enabled" in k:
-                            current["enabled"] = v.strip()
+                            current["enabled"] = v.strip()[:2048]
                         elif "protocol" in k:
-                            current["proto"] = v.strip()
+                            current["proto"] = v.strip()[:2048]
                         elif "localport" in k:
-                            current["port"] = v.strip()
+                            current["port"] = v.strip()[:2048]
                 if current:
-                    self._all_rules.append(current)
-            except Exception as exc2:
-                self.status.setText(f"Could not read firewall rules: {exc2}")
-                return
+                    rules.append(current)
+            except Exception as exc:
+                raise RuntimeError("Could not read firewall rules") from exc
+        return rules
 
+    def _apply_rules(self, rules: list) -> None:
+        self._all_rules = rules[:_MAX_FIREWALL_RULES]
         self._apply_filter()
-        self.status.setText(f"{len(self._all_rules)} firewall rule(s) loaded.")
 
     def _apply_filter(self) -> None:
         kw = self.filter_edit.text().lower()
@@ -2131,12 +2319,14 @@ class FirewallTab(QWidget):
                  if not kw or kw in r["name"].lower()
                  or kw in r["action"].lower()
                  or kw in r["direction"].lower()]
-        self._visible_rules = rules[:500]
+        self._visible_rules = rules[:_MAX_FIREWALL_VISIBLE_RULES]
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         for r in self._visible_rules:
             row = self.table.rowCount(); self.table.insertRow(row)
-            self.table.setItem(row, 0, QTableWidgetItem(r["name"]))
+            item = QTableWidgetItem(r["name"])
+            item.setData(Qt.UserRole, r)
+            self.table.setItem(row, 0, item)
             dirn = QTableWidgetItem(r["direction"])
             dirn.setForeground(QColor(RED if "In" in r["direction"] else TEXT))
             self.table.setItem(row, 1, dirn)
@@ -2146,18 +2336,20 @@ class FirewallTab(QWidget):
             self.table.setItem(row, 3, QTableWidgetItem(r.get("proto", "")))
             self.table.setItem(row, 4, QTableWidgetItem(r.get("port", "")))
         self.table.setSortingEnabled(True)
+        self.status.setText(
+            f"Showing {len(self._visible_rules)} of {len(rules)} matching rules in a "
+            f"{len(self._all_rules)}-rule snapshot. Snapshot limit: {_MAX_FIREWALL_RULES}; "
+            f"table limit: {_MAX_FIREWALL_VISIBLE_RULES}. Filtering searches this snapshot only."
+        )
 
     @Slot(int, int)
     def _on_rule_clicked(self, row: int, col: int) -> None:
         if row < 0 or row >= len(self._visible_rules):
             return
-        # Re-map row after sort: find rule whose Name matches col-0 text
-        display_name = (self.table.item(row, 0) or QTableWidgetItem("")).text()
-        rule = next(
-            (r for r in self._visible_rules if r["name"] == display_name),
-            self._visible_rules[row] if row < len(self._visible_rules) else None
-        )
-        if rule is None:
+        # Display names are not unique. Retain the exact rule across sorting.
+        item = self.table.item(row, 0)
+        rule = item.data(Qt.UserRole) if item is not None else None
+        if not isinstance(rule, dict):
             return
         dlg = FirewallRuleDetailDialog(rule, self)
         dlg.exec()

@@ -198,6 +198,7 @@ class RedTeamConsole(QDialog):
         self._run_cancelled = False
         self._run_pending = False
         self._launch_queued = False
+        self._launch_preparing = False
         self._history_pool = _history_pool()
         self._hist_accept_results = True
         self._hist_listing = False
@@ -206,6 +207,7 @@ class RedTeamConsole(QDialog):
         self._hist_pending_name: str | None = None
         self._hist_active_name: str | None = None
         self.finished.connect(self._stop_history_loads)
+        self.finished.connect(self._cancel_preparing_launch)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 14)
@@ -549,10 +551,12 @@ class RedTeamConsole(QDialog):
         """Also receives the eventual launch result after a queued Chill wake-up."""
         status = str(result.get("status") or "rejected")
         reason = str(result.get("reason") or "Launch was not accepted.")
-        if status == "rejected" and self._run_pending and not self._launch_queued:
+        if (status == "rejected" and self._run_pending
+                and (not self._launch_queued or result.get("busy") is True)):
             self.log.append("Additional launch refused — " + reason)
             return
         self.run_spinner.stop()
+        self._launch_preparing = status == "preparing"
         warning = str(result.get("response_warning") or "") if status == "accepted" else ""
         self.launch_warning.setText(warning)
         self.launch_warning.setVisible(bool(warning))
@@ -574,14 +578,22 @@ class RedTeamConsole(QDialog):
             self.live_status.setStyleSheet("color:#9fb3c8; font-size:11px;")
             self.run_spinner.start("Simulation running")
         else:
-            self._launch_queued = status == "queued"
+            self._launch_queued = status in {"queued", "preparing"}
             self._run_pending = self._launch_queued
-            self.launch_btn.setEnabled(status != "queued")
+            if self._launch_queued:
+                # A delayed handoff from the previous run must not overwrite
+                # preparation or re-enable Launch before this attempt settles.
+                self._report_runs = {}
+                self._report_results = {}
+            self.launch_btn.setEnabled(not self._launch_queued)
             self.live_status.setText(
-                ("Launch queued — " if status == "queued" else "Launch blocked — ")
+                ({"queued": "Launch queued — ", "preparing": "Preparing simulation — "}
+                 .get(status, "Launch blocked — "))
                 + reason
             )
             self.live_status.setStyleSheet("color:#fbbf24; font-size:11px;")
+            if self._launch_preparing:
+                self.run_spinner.start("Preparing simulation")
         self.log.append(self.live_status.text())
         if warning:
             self.log.append(escape("Containment warning — " + warning))
@@ -1556,14 +1568,21 @@ class RedTeamConsole(QDialog):
             self._parent._pending_simulation_cfg = None
         if self._run_pending and not self._launch_queued:
             self._run_cancelled = True
-        if self._launch_queued:
+        if self._launch_queued and not self._launch_preparing:
             self._launch_queued = False
             self._run_pending = False
-        for eng in ("red_team_engine", "shark_engine"):
-            try:
-                getattr(self._parent, eng).stop_and_clean()
-            except Exception:
-                pass
+        stop = getattr(self._parent, "_stop_simulation", None)
+        if callable(stop):
+            stop()
+        else:
+            # Detached compatibility hosts also clean up outside Qt.
+            import threading
+            from angerona.gui.simulation_launch import stop_engines
+
+            engines = tuple(getattr(self._parent, name, None) for name in (
+                "red_team_engine", "shark_engine"))
+            threading.Thread(target=stop_engines, args=(engines, threading.Event()),
+                             name="simulation-stop", daemon=True).start()
         try:
             self.run_spinner.stop()
         except Exception:
@@ -1571,6 +1590,17 @@ class RedTeamConsole(QDialog):
         self.live_status.setText("Stop requested — cleaning simulation markers…")
         self.launch_btn.setEnabled(not self._run_pending)
         self.log.append("■ Stop requested — engines cleaning up their markers.")
+
+    def _cancel_preparing_launch(self, *_unused) -> None:
+        cancel = getattr(self._parent, "_cancel_simulation_launch", None)
+        if callable(cancel):
+            cancel()
+
+    def record_cleanup_failure(self, message: str) -> None:
+        self._run_cancelled = True
+        self.live_status.setText(str(message) + " — retry Stop & clean. No cleanup success is claimed.")
+        self.live_status.setStyleSheet("color:#fbbf24; font-size:11px;")
+        self.log.append(escape(str(message)))
 
     # ── editor ───────────────────────────────────────────────────────────────
     def _set_editor_busy(self, busy: bool) -> None:

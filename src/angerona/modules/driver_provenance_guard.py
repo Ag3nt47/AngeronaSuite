@@ -886,6 +886,10 @@ class DriverProvenanceGuard(BaseModule):
         "Windows driver inventory access",
         "file hash and Authenticode query access",
     )
+    # The serialized inventory and boot queries allow 45s + 10s, followed by
+    # bounded evidence processing. Keep both watchdog phases finite and aligned.
+    startup_cycle_timeout = 60.0
+    watchdog_work_budget_seconds = 60.0
     _INTERVAL = 900.0
 
     def __init__(

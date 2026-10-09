@@ -91,6 +91,7 @@ KNOWN_BAD_DRIVERS = {
 
 BYOVD_DRILL_MARKER = "ANGERONA-BYOVD-DRILL-BENIGN-MARKER"
 BYOVD_DRILL_DRIVER = "angerona_byovd_drill.sys"
+_BYOVD_DRILL_INSTANCE = re.compile(r"angerona_byovd_drill_[0-9a-f]{32}\.sys")
 
 
 def is_known_bad_driver(name: str = "", sha256: str = "") -> dict | None:
@@ -98,7 +99,9 @@ def is_known_bad_driver(name: str = "", sha256: str = "") -> dict | None:
     Returns a match dict for a known-vulnerable driver name, or the benign drill
     driver, else None. Name match is case-insensitive on the basename."""
     base = os.path.basename(str(name).replace("\\", "/")).lower().strip()
-    if base == BYOVD_DRILL_DRIVER:
+    # Recognition is detection evidence only. Practice/response authority still
+    # requires the exact registered file identity and completed-content digest.
+    if base == BYOVD_DRILL_DRIVER or _BYOVD_DRILL_INSTANCE.fullmatch(base):
         return {"driver": base, "reason": "Angerona BYOVD drill (benign simulation)",
                 "drill": True}
     if base in KNOWN_BAD_DRIVERS:
