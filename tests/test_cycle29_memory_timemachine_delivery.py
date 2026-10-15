@@ -27,7 +27,7 @@ def _install_psutil(monkeypatch, processes) -> None:
     class FakePsutil:
         @staticmethod
         def net_connections(kind):
-            assert kind == "inet"
+            assert kind == ("tcp" if mtm.os.name == "nt" else "inet")
             return []
 
         @staticmethod

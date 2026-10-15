@@ -15,8 +15,9 @@ Design contract (do not violate)
     The only files this program writes are its own exports under ``archive/`` and
     the diagnostic bundles it produces — never anything Angerona reads.
   • ZERO-INTERFERENCE.  No IPC (loopback :65432 is never touched).  No EventBus.
-  • LOW OVERHEAD.  Every background worker polls on a relaxed 2–5 s cycle and only
-    reads the *appended* bytes of log files (tail-style), never the whole file.
+  • LOW OVERHEAD.  Logs, host telemetry and health continue in the background.
+    Detailed thread, memory and resource inspectors run only while their tab is
+    visible. Log readers consume appended bytes rather than whole files.
   • SAFE I/O.  Files are opened read-only, in binary, with errors ignored, and are
     closed immediately — we never hold a handle Angerona might need to write.
   • THREAD SAFETY.  All background→UI communication goes through Qt Signals/Slots
@@ -43,6 +44,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 import time
 import traceback
 import zipfile
@@ -847,7 +849,46 @@ class SuiteHealthWorker(QThread):
         return out
 
 
-class ThreadStateWorker(QThread):
+class _VisibleInspectorWorker(QThread):
+    """Sleep without polling while a detailed diagnostic view is unattended.
+
+    Visibility never interrupts an in-flight native read. Selecting the tab
+    wakes the existing worker immediately; stop wakes even an inactive worker.
+    Logging and suite-health monitoring have independent, continuous workers.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._running = True
+        self._active = threading.Event()
+        self._wake = threading.Event()
+
+    def set_active(self, active: bool) -> None:
+        if active == self._active.is_set():
+            return
+        if active:
+            self._active.set()
+        else:
+            self._active.clear()
+        self._wake.set()
+
+    def stop(self) -> None:
+        self._running = False
+        self._wake.set()
+
+    def run(self) -> None:
+        while self._running:
+            self._wake.clear()
+            if not self._running:
+                break
+            if self._active.is_set():
+                self._poll()
+                self._wake.wait(self._poll_seconds())
+            else:
+                self._wake.wait()
+
+
+class ThreadStateWorker(_VisibleInspectorWorker):
     """Tab 4 engine: thread-state visualizer.
 
     Read-only.  Prefers a cooperative dump Angerona may drop at
@@ -858,21 +899,12 @@ class ThreadStateWorker(QThread):
 
     threads = Signal(list, str)   # rows, source-label
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._running = True
+    def _poll_seconds(self) -> float:
+        return THREAD_POLL_S
 
-    def stop(self) -> None:
-        self._running = False
-
-    def run(self) -> None:
-        while self._running:
-            rows, src = self._collect()
-            self.threads.emit(rows, src)
-            for _ in range(int(THREAD_POLL_S * 10)):
-                if not self._running:
-                    break
-                self.msleep(100)
+    def _poll(self) -> None:
+        rows, src = self._collect()
+        self.threads.emit(rows, src)
 
     def _collect(self) -> Tuple[List[Dict], str]:
         # Preferred: cooperative JSON dump written by Angerona itself.
@@ -914,7 +946,7 @@ class ThreadStateWorker(QThread):
             return [], f"psutil: {exc.__class__.__name__}"
 
 
-class MemoryProfilerWorker(QThread):
+class MemoryProfilerWorker(_VisibleInspectorWorker):
     """Tab 5 engine: top memory consumers.
 
     Prefers an Angerona-generated ``tracemalloc.json`` (top object types).  If
@@ -924,21 +956,12 @@ class MemoryProfilerWorker(QThread):
 
     rows = Signal(list, str)
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._running = True
+    def _poll_seconds(self) -> float:
+        return MEM_POLL_S
 
-    def stop(self) -> None:
-        self._running = False
-
-    def run(self) -> None:
-        while self._running:
-            rows, src = self._collect()
-            self.rows.emit(rows, src)
-            for _ in range(int(MEM_POLL_S * 10)):
-                if not self._running:
-                    break
-                self.msleep(100)
+    def _poll(self) -> None:
+        rows, src = self._collect()
+        self.rows.emit(rows, src)
 
     def _collect(self) -> Tuple[List[Dict], str]:
         if TRACEMALLOC_SNAP.exists():
@@ -977,25 +1000,16 @@ class MemoryProfilerWorker(QThread):
             return [], f"psutil: {exc.__class__.__name__}"
 
 
-class ConfigDriftWorker(QThread):
+class ConfigDriftWorker(_VisibleInspectorWorker):
     """Tab 6 engine: config-drift + orphaned resource monitor."""
 
     drift = Signal(dict)
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._running = True
+    def _poll_seconds(self) -> float:
+        return CONFIG_POLL_S
 
-    def stop(self) -> None:
-        self._running = False
-
-    def run(self) -> None:
-        while self._running:
-            self.drift.emit(self._collect())
-            for _ in range(int(CONFIG_POLL_S * 10)):
-                if not self._running:
-                    break
-                self.msleep(100)
+    def _poll(self) -> None:
+        self.drift.emit(self._collect())
 
     def _collect(self) -> Dict:
         out: Dict = {"files": [], "sockets": [], "handles": [], "pid": None}
@@ -1628,7 +1642,7 @@ class ThreadTab(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
         root.addWidget(section_label("ACTIVE THREAD STATE  —  spot deadlocks & wedged threads"))
-        self.src_lbl = QLabel("source: —")
+        self.src_lbl = QLabel("Open this tab to collect thread details.")
         self.src_lbl.setStyleSheet(f"color:{DIM};font-size:11px;")
         root.addWidget(self.src_lbl)
         self.table = QTableWidget(0, 4)
@@ -1643,7 +1657,8 @@ class ThreadTab(QWidget):
     @Slot(list, str)
     def on_threads(self, rows: List[Dict], src: str) -> None:
         self.latest = rows
-        self.src_lbl.setText(f"source: {src}")
+        self._captured_at = _dt.datetime.now().isoformat(timespec="seconds")
+        self.src_lbl.setText(f"Last captured {self._captured_at} · source: {src}")
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
         for r, t in enumerate(rows):
@@ -1658,7 +1673,7 @@ class ThreadTab(QWidget):
     def snapshot_text(self) -> str:
         if not self.latest:
             return "no thread data captured"
-        return "\n".join(
+        return f"Last captured {self._captured_at} (updates while tab is visible)\n" + "\n".join(
             f"{t['name']:<20} {t['id']:<10} {t['where']:<40} {t['state']}"
             for t in self.latest)
 
@@ -1673,7 +1688,7 @@ class MemoryTab(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
         root.addWidget(section_label("MEMORY PROFILER  —  top 10 consumers (leak hunt)"))
-        self.src_lbl = QLabel("source: —")
+        self.src_lbl = QLabel("Open this tab to collect memory details.")
         self.src_lbl.setStyleSheet(f"color:{DIM};font-size:11px;")
         root.addWidget(self.src_lbl)
         self.table = QTableWidget(0, 3)
@@ -1687,7 +1702,8 @@ class MemoryTab(QWidget):
     @Slot(list, str)
     def on_rows(self, rows: List[Dict], src: str) -> None:
         self.latest = rows
-        self.src_lbl.setText(f"source: {src}")
+        self._captured_at = _dt.datetime.now().isoformat(timespec="seconds")
+        self.src_lbl.setText(f"Last captured {self._captured_at} · source: {src}")
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
         for r, it in enumerate(rows):
@@ -1701,7 +1717,7 @@ class MemoryTab(QWidget):
     def snapshot_text(self) -> str:
         if not self.latest:
             return "no memory data captured"
-        return "\n".join(
+        return f"Last captured {self._captured_at} (updates while tab is visible)\n" + "\n".join(
             f"{human_bytes(it['size']):>12}  x{it['count']:<6}  {it['label']}"
             for it in self.latest)
 
@@ -1716,6 +1732,8 @@ class ConfigTab(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
         root.addWidget(section_label("CONFIG DRIFT & ORPHANED RESOURCES"))
+        self.src_lbl = QLabel("Open this tab to collect config and resource details.")
+        root.addWidget(self.src_lbl)
 
         root.addWidget(QLabel("Watched config files:"))
         self.files_table = QTableWidget(0, 4)
@@ -1746,6 +1764,8 @@ class ConfigTab(QWidget):
     @Slot(dict)
     def on_drift(self, d: Dict) -> None:
         self.latest = d
+        self._captured_at = _dt.datetime.now().isoformat(timespec="seconds")
+        self.src_lbl.setText(f"Last captured {self._captured_at} · updates while tab is visible")
         files = d.get("files", [])
         self.files_table.setRowCount(len(files))
         for r, f in enumerate(files):
@@ -1783,7 +1803,7 @@ class ConfigTab(QWidget):
         d = self.latest
         if not d:
             return "no config data captured"
-        lines = ["Config files:"]
+        lines = [f"Last captured {self._captured_at} (updates while tab is visible)", "Config files:"]
         for f in d.get("files", []):
             lines.append(f"  {f['label']:<22} {f['mtime']}  ({human_bytes(f['size'])})")
         lines.append("Sockets:")
@@ -2429,6 +2449,29 @@ class BlackBoxWindow(QMainWindow):
         self.btn_sandbox.clicked.connect(self.on_launch_sandbox)
 
         self._start_workers()
+        self.tabs.currentChanged.connect(self._sync_inspectors)
+        self._sync_inspectors()
+
+    def _sync_inspectors(self, *_args) -> None:
+        visible = self.isVisible() and not self.isMinimized()
+        for worker_name, tab_name in (("w_thread", "tab_threads"),
+                                     ("w_mem", "tab_mem"),
+                                     ("w_config", "tab_config")):
+            worker = getattr(self, worker_name, None)
+            if worker is not None:
+                worker.set_active(visible and self.tabs.currentWidget() is getattr(self, tab_name))
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        super().showEvent(event)
+        self._sync_inspectors()
+
+    def hideEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        super().hideEvent(event)
+        self._sync_inspectors()
+
+    def changeEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        super().changeEvent(event)
+        self._sync_inspectors()
 
     # -- workers ------------------------------------------------------------
     def _start_workers(self) -> None:

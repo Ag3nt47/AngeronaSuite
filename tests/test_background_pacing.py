@@ -244,7 +244,7 @@ def test_paced_inventory_still_admits_every_new_observation(monkeypatch):
     module._sweep()
     assert module._forwarded == 64
     assert module.delta_queue.qsize() == 64
-    assert len(module._stop.waits) == 7
+    assert len(module._stop.waits) >= 7  # slow work may yield before the count boundary
     assert all(0 < wait <= 0.05 for wait in module._stop.waits)
     module._sweep()
     assert module._forwarded == 64

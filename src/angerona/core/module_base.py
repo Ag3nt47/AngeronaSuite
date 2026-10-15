@@ -750,6 +750,9 @@ class BaseModule:
                         now + wait_seconds + self._watchdog_work_budget_seconds()
                     )
         self.generation_stop_event().wait(timeout=wait_seconds)
+        pacer = getattr(self._run_context, "routine_pacer", None)
+        if pacer is not None:
+            pacer.resume()
 
     def background_interval(self, seconds: float) -> float:
         """Pace an explicitly routine interval only in its running worker.
@@ -773,16 +776,19 @@ class BaseModule:
         stop_event = self.generation_stop_event()
         if stop_event.is_set():
             return False
-        if (self._thread is not threading.current_thread() or completed <= 0
-                or completed % max(1, int(batch_size))):
+        if self._thread is not threading.current_thread():
             return True
-        from angerona.core.background_pacing import get_pacing_controller
-        delay = get_pacing_controller().batch_delay()
+        pacer = getattr(self._run_context, "routine_pacer", None)
+        if pacer is None:
+            from angerona.core.background_pacing import RoutineWorkPacer
+            pacer = self._run_context.routine_pacer = RoutineWorkPacer()
+        delay = pacer.pause_seconds(completed, batch_size=batch_size)
         if delay <= 0:
             return True
         started = time.monotonic()
         stopped = stop_event.wait(delay)
         elapsed = time.monotonic() - started
+        pacer.resume()
         # Intentional yields are not missing work cycles. Extend only an
         # existing deadline, without advancing readiness or cycle counters.
         with self._cycle_lock:

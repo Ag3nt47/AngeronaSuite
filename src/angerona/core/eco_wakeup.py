@@ -95,11 +95,14 @@ class EcoWakeupWorker(QThread):
     # ── Public ────────────────────────────────────────────────────────────────
     def cancel(self) -> None:
         """Request an early stop; no new module starts after this returns."""
-        # Synchronize with the tiny check+start critical section in run(). If a
-        # start won the race, cancel returns only after start() and the caller can
-        # safely stop it; if cancel won, no later module can start.
+        # Publish the monotonic request before waiting: Lock is not fair, so a
+        # worker finishing start() could otherwise reacquire it for later modules
+        # before a queued cancellation gets to publish its request.
+        self._abort = True
+        # Retain the check+start barrier. An already admitted start must finish
+        # before the caller returns and safely parks the modules it touched.
         with self._control_lock:
-            self._abort = True
+            pass
 
     # ── Health probe ────────────────────────────────────────────────────────
     @staticmethod

@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import zipfile
+from bisect import bisect_right
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -430,11 +431,16 @@ class YaraScannerModule(BaseModule):
 
         candidates.sort(key=lambda item: (item[0].casefold(), item[0]))
         cursor_key = (cursor.casefold(), cursor)
-        after = [item for item in candidates if (item[0].casefold(), item[0]) > cursor_key]
-        before = [item for item in candidates if (item[0].casefold(), item[0]) <= cursor_key]
-        wrapped = bool(cursor and not after)
-        ordered = after + before
-        selected = ordered[:MAX_FILES_PER_ROOT]
+        # The inventory is already sorted by this exact key. Locate the split
+        # in logarithmic time and allocate only the bounded selected batch,
+        # rather than casefolding every path twice and copying the inventory.
+        split = bisect_right(
+            candidates, cursor_key, key=lambda item: (item[0].casefold(), item[0]),
+        )
+        wrapped = bool(cursor and split == len(candidates))
+        selected = candidates[split:split + MAX_FILES_PER_ROOT]
+        if len(selected) < MAX_FILES_PER_ROOT:
+            selected.extend(candidates[:min(split, MAX_FILES_PER_ROOT - len(selected))])
         next_cursor = selected[-1][0] if selected else cursor
         return _TraversalBatch(
             paths=tuple(item[1] for item in selected),
@@ -510,20 +516,25 @@ class YaraScannerModule(BaseModule):
             standard = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}" + b"$" + marker + b"!$H+H*"
             if payload[:68] == standard and not payload[68:].strip(b" \t\r\n\x1a"):
                 return "standard-antimalware-test"
-        if (payload.startswith(b"MZ") and b"PE\x00\x00" in payload[:4096]
-                and all(token in payload.lower() for token in
-                        (b"sekurlsa::", b"logonpasswords", b"gentilkiwi"))):
-            return "credential-dumper-binary-signatures"
+        if payload.startswith(b"MZ") and b"PE\x00\x00" in payload[:4096]:
+            lowered = payload.lower()
+            if all(token in lowered for token in
+                   (b"sekurlsa::", b"logonpasswords", b"gentilkiwi")):
+                return "credential-dumper-binary-signatures"
         return ""
 
     @staticmethod
-    def _archive_contents(payload: bytes):
+    def _archive_contents(
+        payload: bytes, *, checkpoint: Callable[[int], bool] | None = None,
+    ):
         preflight_zip_bytes(payload, max_files=MAX_ARCHIVE_MEMBERS)
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
             remaining = MAX_ARCHIVE_BYTES
-            for member in archive.infolist():
+            for member_index, member in enumerate(archive.infolist(), start=1):
                 if member.is_dir():
                     continue
+                if checkpoint is not None and not checkpoint(member_index):
+                    raise InterruptedError("archive inspection stopped before complete coverage")
                 if (member.flag_bits & 1 or member.file_size > remaining
                         or member.file_size > 1000 * max(1, member.compress_size)):
                     raise OSError("archive expansion or encryption prevents complete inspection")
@@ -579,7 +590,10 @@ class YaraScannerModule(BaseModule):
                 # archive paths, encryption, or unbounded decompression.
                 if payload.startswith(b"PK\x03\x04"):
                     try:
-                        for member, content in self._archive_contents(payload):
+                        for member, content in self._archive_contents(
+                            payload,
+                            checkpoint=lambda count: self.background_checkpoint(count, batch_size=8),
+                        ):
                             for match in scanner.scan(content).matching_rules:
                                 matches.setdefault(str(match.identifier), member)
                             classification = classification or self._response_classification(

@@ -4,6 +4,8 @@ import threading
 import time
 from collections import namedtuple
 
+import pytest
+
 from angerona.core.eventbus import BusAuthority, Event, EventBus, Severity
 
 
@@ -94,7 +96,7 @@ def test_memory_time_machine_uses_one_equivalent_connection_snapshot(monkeypatch
             self.bulk_calls = 0
 
         def net_connections(self, kind):
-            assert kind == "inet"
+            assert kind == ("tcp" if mtm.os.name == "nt" else "inet")
             self.bulk_calls += 1
             return [c1, c2]
 
@@ -169,13 +171,27 @@ def test_speculative_cooldown_state_expires_without_changing_live_cooldowns(monk
     assert not module.speculate({"pid": 2, "message": "still cooling"})
 
 
-def test_cancelled_eco_wakeup_cannot_start_a_later_module() -> None:
+@pytest.mark.parametrize("delegated_start", [False, True])
+def test_cancelled_eco_wakeup_cannot_start_a_later_module(delegated_start) -> None:
     from angerona.core.eco_wakeup import EcoWakeupWorker
     from angerona.core.module_base import BaseModule
 
     entered = threading.Event()
     release = threading.Event()
+    cancel_waiting = threading.Event()
     started: list[str] = []
+
+    class ObservedLock:
+        def __init__(self):
+            self.lock = threading.Lock()
+
+        def __enter__(self):
+            if threading.current_thread().name == "eco-cancel-test":
+                cancel_waiting.set()
+            self.lock.acquire()
+
+        def __exit__(self, *_args):
+            self.lock.release()
 
     class SlowStart(BaseModule):
         name = "first"
@@ -194,22 +210,32 @@ def test_cancelled_eco_wakeup_cannot_start_a_later_module() -> None:
         name = "second"
 
     first, second = SlowStart(), Later()
-    worker = EcoWakeupWorker([first, second], health_timeout=1.0, min_settle=0.0)
+    worker = EcoWakeupWorker(
+        [first, second], health_timeout=1.0, min_settle=0.0,
+        start_module=(lambda module: module.start() or True) if delegated_start else None,
+    )
+    worker._control_lock = ObservedLock()
     runner = threading.Thread(target=worker.run)
     runner.start()
     assert entered.wait(1.0)
 
     cancelled = threading.Event()
-    cancel_thread = threading.Thread(target=lambda: (worker.cancel(), cancelled.set()))
+    cancel_thread = threading.Thread(
+        target=lambda: (worker.cancel(), cancelled.set()), name="eco-cancel-test",
+    )
     cancel_thread.start()
-    time.sleep(0.02)
-    assert not cancelled.is_set()  # cancel is serialized with the active start
-    release.set()
-    cancel_thread.join(1.0)
-    runner.join(1.0)
     try:
+        assert cancel_waiting.wait(1.0)  # prove cancel reached the held start barrier
+        assert worker._abort  # later starts see cancellation before lock acquisition
+        assert not cancelled.is_set()  # cancel still waits for the active start
+        release.set()
+        cancel_thread.join(1.0)
+        runner.join(1.0)
         assert cancelled.is_set()
         assert started == ["first"]
     finally:
+        release.set()
+        cancel_thread.join(1.0)
+        runner.join(1.0)
         first.stop()
         second.stop()

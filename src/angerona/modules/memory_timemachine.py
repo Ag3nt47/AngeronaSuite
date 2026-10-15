@@ -442,20 +442,27 @@ class MemoryTimeMachineModule(BaseModule):
         self._last_sweep_collector_failures = 0
         # Process.connections() performs an OS connection-table query for every
         # PID. On Windows that repeated the same expensive system enumeration
-        # hundreds of times per sweep. Take one equivalent inet snapshot and
-        # partition it by PID. If the platform cannot attribute every row (or the
-        # bulk call fails), fall back to the original per-process path so no
-        # telemetry is lost.
+        # hundreds of times per sweep. Only remote endpoints are carved below;
+        # Windows psutil omits UDP remote endpoints, so TCP preserves those
+        # strings while avoiding both IPv4/IPv6 UDP-table queries there. Other
+        # platforms can expose connected UDP peers and still need inet. Partition
+        # this one snapshot by PID. An unattributed remote endpoint (or a failed
+        # bulk call) still uses the original per-process fallback.
         connections_by_pid: dict[int, list] | None = {}
         try:
-            all_connections = psutil.net_connections(kind="inet")
+            all_connections = psutil.net_connections(kind="tcp" if os.name == "nt" else "inet")
             if any(c.pid is None for c in all_connections):
-                connections_by_pid = None
                 self._collector_failures += 1
                 self._last_sweep_collector_failures += 1
+            if any(c.pid is None and c.raddr for c in all_connections):
+                connections_by_pid = None
             else:
                 for conn in all_connections:
-                    connections_by_pid.setdefault(int(conn.pid), []).append(conn)
+                    # Listeners have no carved remote endpoint. Their missing
+                    # ownership remains a coverage gap but cannot add strings
+                    # through an expensive per-process rescan.
+                    if conn.pid is not None and conn.raddr:
+                        connections_by_pid.setdefault(int(conn.pid), []).append(conn)
         except Exception:
             connections_by_pid = None
             self._collector_failures += 1

@@ -103,7 +103,9 @@ class DashboardFooter(QAbstractButton):
             "(100%); it is a responsiveness proxy, not GPU or display frame rate. "
             f"{state} {pacing_text} Angerona pace is the configured routine-work "
             "pacing budget (100 divided by the interval multiplier), with bounded "
-            "per-task waits. It is not a CPU quota, measured throughput, or security "
+            "per-task waits. Reduced pace also pauses active routine batches by elapsed "
+            "work time; individual native calls finish before yielding. It is not a CPU "
+            "quota, measured throughput, or security "
             "coverage percentage; CPU usage is shown separately."
         )
         if (text, description, pace) == (self._fps, self._fps_description, self._pace):

@@ -23,6 +23,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any
 
+from angerona.core.background_pacing import RoutineWorkPacer
 from angerona.core.data_paths import resource_root
 
 
@@ -722,9 +723,11 @@ class SecurityScanCenter:
         cancellation: ScanCancellationToken | None = None,
         deadline: float | None = None,
         traversal: _TraversalState | None = None,
+        pacer: RoutineWorkPacer | None = None,
     ) -> Iterator[tuple[Path, Path]]:
         """Yield local files while bounding even file-free traversal work."""
         state = traversal if traversal is not None else _TraversalState()
+        work_pacer = pacer if pacer is not None else RoutineWorkPacer(clock=self._monotonic)
 
         def should_stop() -> bool:
             if self._cancelled(cancellation):
@@ -771,10 +774,12 @@ class SecurityScanCenter:
                         if should_stop():
                             return
                         state.entries_seen += 1
-                        if state.entries_seen % 256 == 0:
-                            self._cooperative_pause(cancellation, deadline)
-                            if should_stop():
-                                return
+                        self._cooperative_pause(
+                            cancellation, deadline, pacer=work_pacer,
+                            completed=state.entries_seen, batch_size=256,
+                        )
+                        if should_stop():
+                            return
                         path = Path(entry.path)
                         try:
                             if entry.is_symlink() or _is_reparse_or_link(path):
@@ -797,18 +802,21 @@ class SecurityScanCenter:
                 state.limited = True
                 continue
 
-    def _cooperative_pause(self, cancellation, deadline) -> None:
+    def _cooperative_pause(
+        self, cancellation, deadline, *, pacer: RoutineWorkPacer, completed: int, batch_size: int,
+    ) -> None:
         """Yield routine scan work under GUI pressure; preserve wall deadlines."""
-        from angerona.core.background_pacing import get_pacing_controller
-
-        delay = get_pacing_controller().batch_delay()
-        if deadline is not None:
+        delay = pacer.pause_seconds(completed, batch_size=batch_size)
+        if delay > 0 and deadline is not None:
             delay = min(delay, max(0.0, deadline - self._monotonic()))
         if delay > 0:
-            if cancellation is not None:
-                cancellation.wait(delay)
-            else:
-                time.sleep(delay)
+            try:
+                if cancellation is not None:
+                    cancellation.wait(delay)
+                else:
+                    time.sleep(delay)
+            finally:
+                pacer.resume()
 
     def _make_yara_scanner(self) -> tuple[Any | None, str]:
         module = self._yara
@@ -924,14 +932,17 @@ class SecurityScanCenter:
             timed_out = False
             signature_limit_reached = False
             traversal = _TraversalState()
+            pacer = RoutineWorkPacer(clock=self._monotonic)
             for index, (candidate, relative) in enumerate(self._iter_local_files(
                 root,
                 cancellation=cancellation,
                 deadline=deadline,
                 traversal=traversal,
+                pacer=pacer,
             )):
-                if index and index % 8 == 0:
-                    self._cooperative_pause(cancellation, deadline)
+                self._cooperative_pause(
+                    cancellation, deadline, pacer=pacer, completed=index, batch_size=8,
+                )
                 if self._cancelled(cancellation):
                     break
                 if self._monotonic() >= deadline:

@@ -196,7 +196,7 @@ def test_desktop_to_narrow_resize_releases_old_horizontal_panel_width_caps(shell
 
 
 @pytest.mark.parametrize("selected", ["alerts", "soar", "scan", "orbital"])
-def test_hidden_alert_tab_skips_work_while_soar_receipts_and_security_stay_live(monkeypatch, selected):
+def test_hidden_alert_tab_skips_work_while_soar_receipts_and_security_stay_live(selected):
     calls = []
 
     def panel(name):
@@ -204,9 +204,9 @@ def test_hidden_alert_tab_skips_work_while_soar_receipts_and_security_stay_live(
 
     alerts, soar, scan = panel("alerts"), panel("soar"), panel("scan")
     active = {"alerts": alerts, "soar": soar, "scan": scan, "orbital": alerts}[selected]
-    monkeypatch.setattr(main_window, "reconcile_module_usage", lambda _manager: None)
     owner = SimpleNamespace(
         manager=object(), _quiet_chill_active=lambda: False,
+        _usage_reconciler=SimpleNamespace(request=lambda: calls.append("usage")),
         _current_refresh_plan=lambda: (1000, 1, 1, 1, 1),
         timer=SimpleNamespace(interval=lambda: 1000), _tick_count=0,
         status_strip=panel("status"), resource_strip=panel("resources"),
@@ -224,6 +224,7 @@ def test_hidden_alert_tab_skips_work_while_soar_receipts_and_security_stay_live(
         _write_flow_metrics_async=lambda: calls.append("flow"),
     )
     MainWindow._refresh_body(owner)
+    assert calls.count("usage") == 1
     assert "security" in calls
     assert "status" in calls
     assert calls.count("modules") == (0 if selected == "orbital" else 1)

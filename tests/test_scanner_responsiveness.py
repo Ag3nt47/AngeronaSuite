@@ -125,7 +125,8 @@ def test_scan_center_checks_cancel_after_pressure_yield(monkeypatch, tmp_path):
 
     for number in range(10):
         (tmp_path / f"f{number}").write_bytes(b"inert")
-    center = SecurityScanCenter()
+    # Exercise the retained count boundary independently of elapsed-work pacing.
+    center = SecurityScanCenter(monotonic=lambda: 0.0)
     monkeypatch.setattr(center, "_validated_local_target", lambda value: tmp_path)
     monkeypatch.setattr(center, "_make_yara_scanner", lambda: (None, "unavailable"))
     monkeypatch.setattr(background_pacing, "get_pacing_controller",
@@ -152,7 +153,8 @@ def test_scan_center_directory_discovery_paces_and_stops(monkeypatch, tmp_path):
                         lambda: SimpleNamespace(batch_delay=lambda: 0.05))
     token, state = ScanCancellationToken(), _TraversalState()
     monkeypatch.setattr(token, "wait", lambda delay: token.cancel())
-    files = list(SecurityScanCenter()._iter_local_files(tmp_path, cancellation=token, traversal=state))
+    center = SecurityScanCenter(monotonic=lambda: 0.0)
+    files = list(center._iter_local_files(tmp_path, cancellation=token, traversal=state))
     assert len(files) == 255
     assert state.cancelled and state.entries_seen == 256
 

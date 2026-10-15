@@ -113,14 +113,41 @@ def test_native_walk_preserves_query_coverage_while_pacing_between_batches(scann
 
     def checkpoint(completed, *, batch_size):
         checkpoints.append((completed, batch_size))
-        now[0] += 1.1
+        if completed and completed % batch_size == 0:
+            now[0] += 1.1
         return True
 
     monkeypatch.setattr(scanner, "background_checkpoint", checkpoint)
     result = scanner._scan_pid(101, "fixture.exe", ())
     assert result == memory._PidScanResult(True, True, "scanned")
-    assert checkpoints == [(256, 256), (512, 256)]
+    assert checkpoints == [(index, 256) for index in range(513)]
     assert scanner._k32.queries == 513
+    assert scanner._k32.closed == [101]
+    assert scanner._bus.recent(10) == []
+
+
+def test_slow_native_walk_can_yield_before_256_queries_without_losing_coverage(scanner, monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(memory.time, "monotonic", lambda: now[0])
+    checkpoints = []
+
+    def query(address):
+        now[0] += 0.2
+        return (address, 4096, 0x04) if address < 3 * 4096 else None
+
+    def checkpoint(completed, *, batch_size):
+        checkpoints.append((completed, batch_size, scanner._k32.queries))
+        if completed in (1, 2):
+            now[0] += 1.1
+        return True
+
+    scanner._k32.query = query
+    monkeypatch.setattr(scanner, "background_checkpoint", checkpoint)
+
+    assert scanner._scan_pid(101, "fixture.exe", ()) == memory._PidScanResult(True, True, "scanned")
+    assert checkpoints == [(index, 256, index) for index in range(4)]
+    assert now[0] == pytest.approx(3.0)  # 0.8s native work plus 2.2s cooperative rest
+    assert scanner._k32.queries == 4
     assert scanner._k32.closed == [101]
     assert scanner._bus.recent(10) == []
 
@@ -130,28 +157,56 @@ def test_native_walk_pacing_allowance_is_bounded_and_never_claims_complete(scann
     monkeypatch.setattr(memory.time, "monotonic", lambda: now[0])
     scanner._k32.query = lambda address: (address, 4096, 0x04)
 
-    def checkpoint(_completed, *, batch_size):
+    def checkpoint(completed, *, batch_size):
         assert batch_size == 256
-        now[0] += 10.0
+        if completed:
+            now[0] += 10.0
         return True
 
     monkeypatch.setattr(scanner, "background_checkpoint", checkpoint)
     assert scanner._scan_pid(101, "fixture.exe", ()) == memory._PidScanResult(True, False, "partial")
-    assert scanner._k32.queries == 256
+    assert scanner._k32.queries == 1
     assert scanner._k32.closed == [101]
+
+
+def test_many_early_yields_share_one_cumulative_pacing_allowance(scanner, monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(memory.time, "monotonic", lambda: now[0])
+    scanner._k32.query = lambda address: (address, 4096, 0x04)
+    checkpoints = []
+
+    def checkpoint(completed, *, batch_size):
+        assert batch_size == 256
+        checkpoints.append(completed)
+        if completed:
+            now[0] += 1.0
+        return True
+
+    monkeypatch.setattr(scanner, "background_checkpoint", checkpoint)
+
+    assert scanner._scan_pid(101, "fixture.exe", ()) == memory._PidScanResult(True, False, "partial")
+    # The original 2s budget plus the single 6.4s rest allowance cannot be
+    # extended indefinitely by receiving many sub-256-query checkpoints.
+    assert now[0] == 9.0
+    assert checkpoints == list(range(10))
+    assert scanner._k32.queries == 9
+    assert scanner._k32.closed == [101]
+    assert scanner._bus.recent(10) == []
 
 
 def test_native_walk_stop_during_cooperative_wait_closes_handle_without_more_queries(scanner, monkeypatch):
     scanner._k32.query = lambda address: (address, 4096, 0x04)
 
-    def checkpoint(_completed, *, batch_size):
+    def checkpoint(completed, *, batch_size):
         assert batch_size == 256
+        if not completed:
+            return True
         scanner._stop.set()
         return False
 
     monkeypatch.setattr(scanner, "background_checkpoint", checkpoint)
     assert scanner._scan_pid(101, "fixture.exe", ()) == memory._PidScanResult(True, False, "cancelled")
-    assert scanner._k32.queries == 256
+    assert scanner._k32.queries == 1
     assert scanner._k32.closed == [101]
     assert scanner._bus.recent(10) == []
 

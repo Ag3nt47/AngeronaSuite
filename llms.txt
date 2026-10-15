@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.13.0
-Date: 2026-10-09
+Date: 2026-10-14
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -22,7 +22,35 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST (v1.13.0 — Simulation responsiveness and diagnostic bounds, 2026-10-09)
+## LATEST (v1.13.0 — Hardware responsiveness and unnecessary work, 2026-10-14)
+
+- Record: analysis/hardware-responsiveness-2026-10-14.md. Black Box thread,
+  memory-map and config/resource detail readers sleep until their tab is visible;
+  hiding/minimizing pauses them. Logs, host telemetry and suite health continue.
+  Detail exports identify their last captured snapshot rather than implying live data.
+- Periodic dashboard module reconciliation uses one sleeping background worker
+  and one coalesced follow-up; manager lifecycle locking and explicit settings
+  reconciliation remain intact. Blocking lifecycle work no longer occupies Qt.
+- Eco wake-up cancellation publishes its request before waiting for the active
+  start barrier, preventing lock reacquisition from admitting later modules.
+- YARA uses binary cursor selection and bounded slices after sorting, and one
+  lowercase payload for binary response classification. Freshness, cancellation,
+  signature requirements, cursor fairness and scan intervals remain enforced.
+- Memory Time-Machine queries TCP only on Windows, where psutil omits UDP peers;
+  POSIX retains inet and connected UDP evidence. Unknown listeners no longer
+  trigger per-PID rescans; missing remote ownership or failed bulk reads still do.
+  Collector gaps remain visible.
+- Footer pace near 12% represents an 8x requested routine interval, not CPU use
+  or measured throughput. Healthy feedback restores it over at least 24 seconds.
+  Measurements are component fixtures, not a universal hardware performance claim.
+- Lower pace now also yields active routine work by elapsed time, alongside
+  existing item-count pauses. Per-worker timing survives nested counters and
+  excludes ordinary cadence sleeps; actual waits extend watchdog deadlines
+  without claiming readiness. Scan Center keeps its wall deadline and memory
+  traversal retains its separate cumulative rest allowance. Native calls cannot
+  be preempted; the standalone real-time telemetry scanner retains its cadence.
+
+## Simulation responsiveness and diagnostic bounds (2026-10-09)
 
 - Record: analysis/simulation-responsiveness-2026-10-09.md. Simulation preparation
   and stop cleanup run off Qt with explicit handoff/cancellation and single-flight

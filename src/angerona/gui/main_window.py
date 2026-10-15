@@ -185,6 +185,7 @@ class MainWindow(QMainWindow):
             self, self._prepare_posture_snapshot, self._apply_posture_snapshot,
             name="DashboardPostureReader",
         )
+        self._init_usage_reconciler()
         self.evidence_store = evidence_store
         self.process_baseline = process_baseline
         self.alert_retention_worker = alert_retention_worker
@@ -1283,7 +1284,9 @@ class MainWindow(QMainWindow):
                 self._security_event_wake.emit()
 
     def _refresh_body(self) -> None:
-        reconcile_module_usage(self.manager)
+        # Manager lifecycle operations serialize with startup/watchdog work and
+        # can join an exiting worker. Never wait for those operations on Qt.
+        self._usage_reconciler.request()
         quiet_chill = self._quiet_chill_active()
         timer_ms, status_period, panel_period, posture_period, flow_period = (
             self._current_refresh_plan()
@@ -1338,6 +1341,19 @@ class MainWindow(QMainWindow):
                     self._write_flow_metrics_async()
                 except Exception:
                     pass
+
+    def _init_usage_reconciler(self) -> None:
+        self._usage_reconciler = AsyncSnapshot(
+            self, self._prepare_usage_reconciliation, lambda _result: None,
+            name="DashboardUsageReconciler",
+        )
+        QApplication.instance().aboutToQuit.connect(self._usage_reconciler.close)
+
+    def _prepare_usage_reconciliation(self):
+        # Capture the manager only: an in-flight lifecycle operation must not
+        # retain the window or access widgets after the owner is destroyed.
+        manager = self.manager
+        return lambda: reconcile_module_usage(manager)
 
     def _write_flow_metrics_async(self) -> None:
         """Coalesce the optional canvas feed and keep disk I/O off Qt."""

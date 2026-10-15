@@ -165,3 +165,46 @@ _CONTROLLER = BackgroundPacingController()
 
 def get_pacing_controller() -> BackgroundPacingController:
     return _CONTROLLER
+
+
+class RoutineWorkPacer:
+    """Per-worker elapsed-work budget, independent of CPU model or item cost.
+
+    Count boundaries retain their existing pauses. Slow items also trigger a
+    pause before the count boundary: at 8x, aim for roughly 7ms of work followed
+    by up to 50ms of rest. A native call cannot be preempted. This is cooperative
+    scheduling, not a process CPU quota or a guaranteed throughput percentage.
+    Call resume after waits so idle time is never charged as active work.
+    """
+
+    MAX_WORK_SLICE = 0.05
+    MAX_PAUSE = 0.05
+
+    def __init__(self, controller=None, *, clock=time.monotonic) -> None:
+        self._controller = controller if controller is not None else get_pacing_controller()
+        self._clock = clock
+        self._work_started = clock()
+        self._work_budget = self.MAX_WORK_SLICE
+        self._set_budget(self._controller.batch_delay())
+
+    def _set_budget(self, delay: float) -> None:
+        # batch_delay encodes (multiplier - 1) * 50ms / 7. Budget the work
+        # that can precede one bounded pause at that requested pacing level.
+        self._work_budget = (self.MAX_WORK_SLICE if delay <= 0 else
+                             min(self.MAX_WORK_SLICE, self.MAX_PAUSE ** 2 / (7 * delay)))
+
+    def pause_seconds(self, completed: int, *, batch_size: int) -> float:
+        now = self._clock()
+        elapsed = max(0.0, now - self._work_started)
+        count_due = completed > 0 and completed % max(1, int(batch_size)) == 0
+        if not count_due and elapsed < self._work_budget:
+            return 0.0
+        requested = min(self.MAX_PAUSE, max(0.0, self._controller.batch_delay()))
+        self._set_budget(requested)
+        self._work_started = now
+        # A nested loop restarting its item counter must not reset elapsed
+        # work. Only a serviced checkpoint (or explicit resume) does that.
+        return min(self.MAX_PAUSE, max(requested, elapsed * 7 * requested / self.MAX_PAUSE))
+
+    def resume(self) -> None:
+        self._work_started = self._clock()

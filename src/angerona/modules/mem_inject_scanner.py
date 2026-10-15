@@ -282,8 +282,9 @@ class MemInjectScannerModule(BaseModule):
     _MAX_ADDRESS = 0x7FFFFFFF0000   # stay below kernel space on 64-bit Windows
     _MAX_QUERIES_PER_PID = 32_768
     _PID_TRAVERSAL_SECONDS = 2.0
-    # Cooperative waits do not consume the native-work budget. Their total
-    # allowance is still bounded: at most 128 batches * 50ms per PID.
+    # Cooperative waits do not consume the native-work budget. A separate
+    # cumulative cap keeps traversal bounded even when slow queries trigger
+    # time-based yields before a complete 256-query batch.
     _PID_PACING_ALLOWANCE_SECONDS = 6.4
     _MAX_PROCESS_RECORDS = 65_536
 
@@ -496,18 +497,20 @@ class MemInjectScannerModule(BaseModule):
                 if queried >= self._MAX_QUERIES_PER_PID or time.monotonic() >= deadline:
                     limit_reason = "native traversal budget reached"
                     break
-                if queried and queried % 256 == 0:
-                    before_yield = time.monotonic()
-                    if not self.background_checkpoint(queried, batch_size=256):
-                        return _PidScanResult(True, False, "cancelled")
-                    allowance = min(
-                        max(0.0, time.monotonic() - before_yield), pacing_allowance,
-                    )
-                    deadline += allowance
-                    pacing_allowance -= allowance
-                    if time.monotonic() >= deadline:
-                        limit_reason = "native traversal budget reached"
-                        break
+                # Let the shared pacer observe every query boundary. It also
+                # yields by elapsed work time, so a slow host must not wait for
+                # all 256 native calls before getting its first rest.
+                before_yield = time.monotonic()
+                if not self.background_checkpoint(queried, batch_size=256):
+                    return _PidScanResult(True, False, "cancelled")
+                allowance = min(
+                    max(0.0, time.monotonic() - before_yield), pacing_allowance,
+                )
+                deadline += allowance
+                pacing_allowance -= allowance
+                if time.monotonic() >= deadline:
+                    limit_reason = "native traversal budget reached"
+                    break
                 ctypes.set_last_error(0)
                 ret = self._k32.VirtualQueryEx(
                     handle,

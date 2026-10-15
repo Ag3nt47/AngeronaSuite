@@ -37,6 +37,14 @@ identifiers, timestamps, and counts are synthetic.
 
 ## What's new
 
+The [October 14 performance review](analysis/hardware-responsiveness-2026-10-14.md)
+removes unattended Black Box detail inspections, moves periodic module lifecycle
+work off the dashboard thread, and reduces YARA traversal allocations and
+Memory Time-Machine connection queries. These changes reduce unnecessary work
+on older hardware. Lower **Angerona pace** now also makes slow routine batches
+yield by elapsed work time instead of waiting for a fixed item count. Pace is
+an adaptive work budget, not measured throughput or protection coverage.
+
 The [October 9 simulation and diagnostic review](analysis/simulation-responsiveness-2026-10-09.md)
 moves simulation preparation and cleanup off the GUI thread, bounds Black Box
 refresh work, and extends adaptive pacing to scanner discovery and Scan Center
